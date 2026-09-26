@@ -24,8 +24,8 @@ export async function collectManagementPages<T>(
   }
 }
 
-export function managementPageUrl(path: string, cursor?: string): string {
-  const query = new URLSearchParams({ limit: '100' })
+export function managementPageUrl(path: string, cursor?: string, limit = 100): string {
+  const query = new URLSearchParams({ limit: String(limit) })
   if (cursor !== undefined) query.set('cursor', cursor)
   return `${path}${path.includes('?') ? '&' : '?'}${query}`
 }

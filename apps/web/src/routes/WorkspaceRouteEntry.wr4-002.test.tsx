@@ -21,11 +21,11 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('../shared/api/query', () => ({
   queryKeys: {
-    workspaceDetails: (id: string) => ['workspace', id], managedWorkflows: (id: string) => ['managed', id],
+    workspaceDetails: (id: string) => ['workspace', id], managedWorkflow: (id: string, workflowId: string) => ['managed', id, workflowId],
     agents: (id: string) => ['agents', id], workflow: (workspaceId: string, workflowId: string) => ['workflow', workspaceId, workflowId],
   },
   useWorkspaceDetailsQuery: () => ({ data: route.details, isPending: false, isError: false, refetch: vi.fn() }),
-  useManagedWorkflowsQuery: () => ({ data: undefined, fetchStatus: 'idle' }),
+  useManagedWorkflowQuery: () => ({ data: undefined, fetchStatus: 'idle' }),
 }))
 vi.mock('../features/graph', () => ({
   WorkflowGraph: ({ workflowId }: { workflowId: string }) => {

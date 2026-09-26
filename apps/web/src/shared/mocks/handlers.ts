@@ -371,6 +371,13 @@ export const handlers: RequestHandler[] = [
       .map(managedWorkflow)
     return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
   }),
+  http.get('/api/management/workspaces/:workspaceId/workflows/:workflowId', ({ params }) => {
+    const failure = readFailure()
+    if (failure) return failure
+    const workflow = getMockFixture(String(params.workspaceId))?.workflows.find((item) => item.id === params.workflowId)
+    if (!workflow || managedWorkflowArchives.has(workflow.id)) return fixtureNotFound('workflow', String(params.workflowId))
+    return HttpResponse.json(managedWorkflow(workflow))
+  }),
   http.post('/api/management/workspaces/:workspaceId/workflows', async ({ params, request }) => {
     const workspaceId = String(params.workspaceId)
     if (!getMockFixture(workspaceId)) return fixtureNotFound('workspace', workspaceId)

@@ -43,7 +43,7 @@ import {
   sendUserMessage,
   listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
   getManagedWorkspace, validateWorkspaceLocation, setWorkspaceLocation,
-  listManagedWorkflows, createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
+  createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
   listManagedAgents, getManagedGraphContext, openManagedGraphDraft, applyManagedGraphDraft, saveManagedGraphDraft, discardManagedGraphDraft,
   startManagedRun, stopManagedRun,
   getManagedHarnessCatalog, updateManagedHarnessDefaults,
@@ -80,6 +80,7 @@ export const queryKeys = {
   harnessDefaults: ['workbench', 'settings', 'harness-defaults'] as const,
   managedWorkspaces: ['workbench', 'management', 'workspaces'] as const,
   managedWorkspace: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId] as const,
+  managedWorkflow: (workspaceId: string, workflowId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflows', 'detail', workflowId] as const,
   managedWorkflows: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflows'] as const,
   managedAgents: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'agents'] as const,
   managedDraft: (workspaceId: string, workflowId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflow', workflowId, 'draft'] as const,
@@ -106,6 +107,35 @@ export function useWorkspaceDetailsQuery(
     ...options,
     queryKey: queryKeys.workspaceDetails(workspaceId),
     queryFn: ({ signal }) => getWorkspaceDetails({ workspaceId }, { signal }),
+  })
+}
+
+export function useWorkspacePages(enabled = true) {
+  return useInfiniteQuery({
+    enabled, queryKey: [...queryKeys.managedWorkspaces, 'pages'], initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkspacePage(pageParam, { signal }),
+    getNextPageParam: (last, _pages, _lastParam, params) => {
+      const next = last.pageInfo.nextCursor
+      return next && !params.includes(next) ? next : undefined
+    },
+  })
+}
+
+export function useManagedWorkflowQuery(workspaceId: string, workflowId: string, enabled = true) {
+  return useQuery({
+    enabled: enabled && Boolean(workflowId), queryKey: queryKeys.managedWorkflow(workspaceId, workflowId),
+    queryFn: ({ signal }) => apiClient.getManagedWorkflow(workspaceId, workflowId, { signal }),
+  })
+}
+
+export function useWorkflowPages(workspaceId: string, enabled = true) {
+  return useInfiniteQuery({
+    enabled, queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages'], initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkflowPage(workspaceId, pageParam, { signal }),
+    getNextPageParam: (last, _pages, _lastParam, params) => {
+      const next = last.pageInfo.nextCursor
+      return next && !params.includes(next) ? next : undefined
+    },
   })
 }
 
@@ -183,13 +213,6 @@ export function useUpdateManagedWorkspaceMutation() {
 
 export function useArchiveManagedWorkspaceMutation() {
   return useMutation({ mutationFn: (input: WorkspaceArchiveInput) => archiveManagedWorkspace(input) })
-}
-
-export function useManagedWorkflowsQuery(workspaceId: string, enabled = true) {
-  return useQuery({
-    enabled, queryKey: queryKeys.managedWorkflows(workspaceId),
-    queryFn: ({ signal }) => listManagedWorkflows(workspaceId, { signal }),
-  })
 }
 
 export function useCreateManagedWorkflowMutation() {

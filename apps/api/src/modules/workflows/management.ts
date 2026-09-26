@@ -3,13 +3,14 @@ import { randomUUID } from 'node:crypto'
 import { CompatibleWorkflowDefinitionSchema, WorkflowDefinitionSchema } from '@graphql/contracts'
 import {
   ManagedWorkflowSchema,
+  WorkflowBatchArchiveInputSchema,
+  type WorkflowBatchArchiveInput,
   type ManagedWorkflow,
   type ManagementPrincipal,
 } from '@graphql/contracts/management'
 import type pg from 'pg'
 
-import { requireAuthorization } from '../access/policy.js'
-import { authorizedPage } from '../access/authorizedPage.js'
+import { hasAction, requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
@@ -31,16 +32,20 @@ export class WorkflowManagementService {
   async list(principal: ManagementPrincipal, input: {
     workspaceId: string; cursor?: string | undefined; limit: number; includeArchived: boolean
   }) {
-    return authorizedPage({
-      principal, action: 'workflows:read', cursor: input.cursor, limit: input.limit,
-      read: async (cursor, limit) => (await this.pool.query<WorkflowRow>(
-        `select record, revision, current_version_id, archived_at from workflows
-         where workspace_id = $1 and ($2::text is null or id > $2) and ($3 or archived_at is null)
-         order by id limit $4`, [input.workspaceId, cursor ?? null, input.includeArchived, limit],
-      )).rows.map(managed),
-      id: (item) => item.workflow.id,
-      resource: (item) => ({ workspaceId: input.workspaceId, workflowId: item.workflow.id }),
-    })
+    if (!hasAction(principal, 'workflows:read')) requireAuthorization(principal, 'workflows:read')
+    const grants = principal.grants.filter((grant) => grant.actions.includes('workflows:read')
+      && (!grant.scope.workspaceIds || grant.scope.workspaceIds.includes(input.workspaceId))
+      && grant.scope.runIds === undefined)
+    const allowedIds = grants.some((grant) => grant.scope.workflowIds === undefined)
+      ? null : [...new Set(grants.flatMap((grant) => grant.scope.workflowIds ?? []))]
+    const rows = await this.pool.query<WorkflowRow>(
+      `select record, revision, current_version_id, archived_at from workflows
+       where workspace_id = $1 and ($2::text is null or id > $2) and ($3 or archived_at is null)
+       and ($5::text[] is null or id = any($5)) order by id limit $4`,
+      [input.workspaceId, input.cursor ?? null, input.includeArchived, input.limit + 1, allowedIds],
+    )
+    const items = rows.rows.slice(0, input.limit).map(managed)
+    return { items, pageInfo: { nextCursor: rows.rows.length > input.limit ? items.at(-1)!.workflow.id : null } }
   }
 
   async get(principal: ManagementPrincipal, workspaceId: string, workflowId: string): Promise<ManagedWorkflow> {
@@ -114,6 +119,40 @@ export class WorkflowManagementService {
           [input.workspaceId, input.workflowId, JSON.stringify(workflow)],
         )
         return managed(result.rows[0]!)
+      },
+    })
+  }
+
+  async archiveBatch(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: WorkflowBatchArchiveInput) {
+    const input = WorkflowBatchArchiveInputSchema.parse(raw)
+    for (const item of input.workflows) {
+      requireAuthorization(principal, 'workflows:archive', { workspaceId: input.workspaceId, workflowId: item.workflowId })
+    }
+    const ids = input.workflows.map((item) => item.workflowId).sort()
+    return this.commands.execute({
+      principal, source, operation: 'workflow.batch_archive', commandId: input.commandId,
+      targetKey: `workspace:${input.workspaceId}:workflows`, payload: input,
+      perform: async (client) => {
+        await lockActiveWorkspace(client, input.workspaceId)
+        const current = await client.query<{ id: string; revision: string }>(
+          `select id, revision from workflows where workspace_id = $1 and id = any($2::text[])
+           order by id for update`, [input.workspaceId, ids],
+        )
+        if (current.rows.length !== ids.length) throw new DomainError('WORKFLOW_NOT_FOUND', 'A selected workflow was not found. Nothing was deleted.', 404)
+        const revisions = new Map(input.workflows.map((item) => [item.workflowId, item.expectedRevision]))
+        if (current.rows.some((row) => Number(row.revision) !== revisions.get(row.id))) {
+          throw new DomainError('REVISION_CONFLICT', 'A selected workflow changed. Nothing was deleted. Reload the list and select again.', 409)
+        }
+        const active = await client.query(
+          `select 1 from runs where workspace_id = $1 and workflow_id = any($2::text[])
+           and execution_state <> 'completed' limit 1`, [input.workspaceId, ids],
+        )
+        if (active.rows.length) throw new DomainError('ARCHIVE_BLOCKED_BY_ACTIVE_RUN', 'A selected workflow has active runs. Nothing was deleted. Settle active work and try again.', 409)
+        await client.query(
+          `update workflows set archived_at = coalesce(archived_at, now()), revision = revision + 1
+           where workspace_id = $1 and id = any($2::text[])`, [input.workspaceId, ids],
+        )
+        return { workflowIds: ids }
       },
     })
   }

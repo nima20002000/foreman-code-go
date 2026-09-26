@@ -1,7 +1,8 @@
 import { Link } from '@tanstack/react-router'
 import type { WorkflowDefinition } from '@graphql/contracts'
 
-import { useInteractionsQuery, useManagedWorkflowsQuery } from '../../shared/api/query'
+import { useInteractionsQuery, useWorkflowPages, useManagedWorkflowQuery } from '../../shared/api/query'
+import { LoadMore } from '../../shared/ui/LoadMore'
 import { Badge } from '../../shared/ui/nocturne'
 import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
@@ -47,10 +48,17 @@ function WorkflowNavigationItem({
  * workflow opens a compact creation dialog in the active workspace.
  */
 export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNavigationProps) {
-  const managedQuery = useManagedWorkflowsQuery(workspaceId, true)
+  const managedQuery = useWorkflowPages(workspaceId, true)
   const interactionsQuery = useInteractionsQuery({ workspaceId, status: 'pending', limit: 1 }, true)
 
-  const workflows = managedQuery.data?.items.map((item) => item.workflow) ?? []
+  const workflows = managedQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workflow)) ?? []
+  const activeMissing = Boolean(activeWorkflowId && !workflows.some((workflow) => workflow.id === activeWorkflowId))
+  const activeQuery = useManagedWorkflowQuery(workspaceId, activeWorkflowId ?? '', activeMissing)
+  if (activeMissing && activeQuery.data && !activeQuery.data.archivedAt) {
+    const visibleCount = Math.max(1, workflows.length)
+    workflows.unshift(activeQuery.data.workflow)
+    workflows.length = visibleCount
+  }
   const hasWorkflows = workflows.length > 0
 
   return (
@@ -59,6 +67,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
       data-testid="workflow-navigation"
       aria-label="Workspace workflows"
     >
+      <NewWorkflowAction workspaceId={workspaceId} navigation />
       {hasWorkflows ? (
         <ul className="nav-submenu workflow-navigation-list">
           {workflows.map((workflow) => {
@@ -102,7 +111,7 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
         </p>
       ) : null}
 
-      <NewWorkflowAction workspaceId={workspaceId} navigation />
+      <LoadMore label="workflows" query={managedQuery} />
     </section>
   )
 }

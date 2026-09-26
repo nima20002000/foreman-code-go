@@ -480,6 +480,11 @@ describe('Operator MCP with PostgreSQL', () => {
       },
     })
     expect(blockedArchive.isError).toBe(true)
+    const blockedBatch = await client.callTool({ name: 'workflow_batch_archive', arguments: {
+      workspaceId: workspace.id, commandId: `batch-active-${randomUUID()}`,
+      workflows: [{ workflowId: workflow.id, expectedRevision: workflowRead.revision }],
+    } })
+    expect(blockedBatch.isError).toBe(true)
 
     const runsPage = structured(await client.callTool({
       name: 'run_list', arguments: { workspaceId: workspace.id, workflowId: workflow.id, limit: 100 },
