@@ -1,3 +1,4 @@
+import { registerOperatorRoute } from '../harnesses/operatorMcpLauncher.js'
 import type pg from 'pg'
 import type { OperatorChatSetup, OperatorConfigurationVersion } from '@graphql/contracts'
 import { requireAuthorization } from '../access/policy.js'
@@ -14,7 +15,7 @@ import type { OperatorChatAuthority } from './operatorChat.js'
 export const OPERATOR_MCP_ENVIRONMENT_VARIABLE = 'GRAPHQL_OPERATOR_MCP_TOKEN'
 
 export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
-  private readonly credentials = new Map<string, { environment: ChildProcessEnvironment; ownerId: string }>()
+  private readonly credentials = new Map<string, { environment: ChildProcessEnvironment; ownerId: string; removeRoute: () => Promise<void> }>()
   constructor(private readonly pool: pg.Pool, private readonly access: PostgresAccessService,
     private readonly rollout: NativeRollout, private readonly directory: string, private readonly endpoint: string) {}
 
@@ -32,9 +33,10 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       try {
         const inspected = await manager.inspectMcpConfiguration(this.directory, signal)
         const configured = inspected.serverName === 'graphql-operator' && inspected.configured.enabled
-          && inspected.configured.url === this.endpoint && inspected.configured.transport === 'streamable_http'
+          && (inspected.configured.automaticOperatorEndpoint === true
+            || (inspected.configured.url === this.endpoint && inspected.configured.transport === 'streamable_http'))
           && inspected.configured.bearerTokenEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE
-        return { ...result, status: configured ? 'configured' : 'setup_required' }
+        return { ...result, status: configured ? 'configured' : 'setup_required', routing: inspected.configured.automaticOperatorEndpoint ? 'automatic' : 'fixed' }
       } catch (error) {
         if (error && typeof error === 'object' && 'result' in error
           && (error.result as { error?: { code?: string } })?.error?.code === 'CODEX_MCP_NOT_CONFIGURED') {
@@ -45,10 +47,10 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     }
     if (manager instanceof OpenCodeNativeSessionManager) {
       const inspected = await manager.inspectNativeMcp(this.directory, signal, 'configuration')
-      const configured = inspected.serverName === 'graphql-operator' && inspected.endpoint === this.endpoint
-        && inspected.transport === 'streamable-http' && !['not_detected', 'disabled'].includes(inspected.nativeStatus)
+      const configured = inspected.serverName === 'graphql-operator'
+        && (inspected.automaticOperatorEndpoint === true || (inspected.endpoint === this.endpoint && inspected.transport === 'streamable-http')) && !['not_detected', 'disabled'].includes(inspected.nativeStatus)
         && inspected.credentialEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE
-      return { ...result, status: configured ? 'configured' : 'setup_required' }
+      return { ...result, status: configured ? 'configured' : 'setup_required', routing: inspected.automaticOperatorEndpoint ? 'automatic' : 'fixed' }
     }
     this.invalidSetup()
   }
@@ -91,23 +93,27 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       await client.query('rollback').catch(() => undefined)
       throw error
     } finally { client.release() }
+    let removeRoute: (() => Promise<void>) | undefined
     try {
       signal.throwIfAborted()
       const environment = { agentId: configuration.operatorId, variables: { [OPERATOR_MCP_ENVIRONMENT_VARIABLE]: issued.token } }
-      this.credentials.set(conversationId, { environment, ownerId: principalId })
+      removeRoute = await registerOperatorRoute(issued.token, this.endpoint, issued.principal.expiresAt)
+      signal.throwIfAborted()
+      this.credentials.set(conversationId, { environment, ownerId: principalId, removeRoute })
       return environment
     } catch (error) {
-      await this.access.revoke(issued.principal.id)
+      try { await removeRoute?.() } finally { await this.access.revoke(issued.principal.id) }
       throw error
     }
   }
   private invalidSetup(): never {
-    throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql-operator MCP connection in the selected harness before chatting. Use the app endpoint and GRAPHQL_OPERATOR_MCP_TOKEN environment reference.', 409)
+    throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql-operator MCP connection in the selected harness before chatting. Use the managed Operator MCP launcher for automatic app routing.', 409)
   }
   async release(conversationId: string): Promise<void> {
+    const credential = this.credentials.get(conversationId)
     this.credentials.delete(conversationId)
-    await this.pool.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
-      where id in (select principal_id from operator_chat_credentials where conversation_id=$1)`, [conversationId])
+    try { await credential?.removeRoute() } finally { await this.pool.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
+      where id in (select principal_id from operator_chat_credentials where conversation_id=$1)`, [conversationId]) }
   }
   async revokeOrphanedCredentials(): Promise<void> {
     await this.pool.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
