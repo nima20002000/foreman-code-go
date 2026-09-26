@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { HarnessExecutionSchema } from '@graphql/contracts'
 import {
-  AcceptedNodeResultV2Schema, WAVE25_ADMISSION_ENABLED, canonicalGraphJson, parseChoiceResultEnvelope,
+  AcceptedCurrentNodeResultSchema, canonicalGraphJson, parseChoiceResultEnvelope,
 } from '@graphql/contracts/wave25'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
-import {
-  bindOneShotInput, normalizeOneShotTerminal, oneShotResolution, parseOneShotChoiceResult,
-} from '../src/modules/runs/oneShotResolution.js'
+import { normalizeRepeatTerminal, repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
+import { bindRepeatNodeInput, repeatExecutionIdentity } from '../src/modules/runs/repeatResolution.js'
+import { parseCurrentChoiceResult } from '../src/modules/runs/currentRouting.js'
 import {
   br2001Fixture, br2001InvalidTexts, br2001Providers, br2001Terminal, br2001Text,
 } from './helpers/wave25Br2001Choice.js'
@@ -22,16 +22,16 @@ describe.each(br2001Providers)('BR2-001: %s final-text choice carrier', (provide
     Object.freeze(terminal.result)
     Object.freeze(terminal.execution.result)
     Object.freeze(terminal.execution)
-    const envelope = parseOneShotChoiceResult(terminal.result, f.version.definition.nodes[0]!.choice!)
+    const envelope = parseCurrentChoiceResult(terminal.result, f.version.definition.nodes[0]!.choice!)
     expect(envelope).toEqual({ routing: { outcome }, data: { checks: ['one', 'two'] } })
     expect(terminal.execution).toEqual(before)
-    const normalized = normalizeOneShotTerminal(f.version, terminal.execution)
+    const normalized = normalizeRepeatTerminal(f.version, f.scope, { nodeId: terminal.execution.workflowNodeId, occurrence: null }, terminal.execution)
     expect(normalized).toEqual(before)
     expect(terminal.execution).toEqual(before)
-    expect(normalizeOneShotTerminal(f.version, normalized)).toEqual(normalized)
+    expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: normalized.workflowNodeId, occurrence: null }, normalized)).toEqual(normalized)
     // Exercise the later acceptance/recovery boundary too, not normalization alone.
-    const resolution = oneShotResolution(f.version, normalized)
-    expect(oneShotResolution(f.version, terminal.execution)).toEqual(resolution)
+    const resolution = repeatTerminalResolution(f.version, f.scope, { nodeId: normalized.workflowNodeId, occurrence: null }, normalized).value
+    expect(repeatTerminalResolution(f.version, f.scope, { nodeId: terminal.execution.workflowNodeId, occurrence: null }, terminal.execution).value).toEqual(resolution)
     expect(resolution.resolution).toBe('succeeded')
     expect(resolution.outcome).toBe(outcome)
     expect(resolution.branchEnded).toBe(outcome === 'pass')
@@ -47,21 +47,21 @@ describe.each(br2001Providers)('BR2-001: %s final-text choice carrier', (provide
     const f = br2001Fixture(provider, `br2001-invalid-${provider}`)
     const terminal = br2001Terminal(f.executions[0]!, provider, text)
     const before = structuredClone(terminal.execution)
-    const normalized = normalizeOneShotTerminal(f.version, terminal.execution)
+    const normalized = normalizeRepeatTerminal(f.version, f.scope, { nodeId: terminal.execution.workflowNodeId, occurrence: null }, terminal.execution)
     expect(normalized).toEqual({ ...before, result: { outcome: 'failed', error: {
-      code: 'WORKFLOW_CHOICE_RESULT_INVALID',
-      message: 'The complete result did not satisfy the pinned bounded result contract.', retryable: false,
+      code: 'REPEAT_RESULT_INVALID',
+      message: 'The complete result did not satisfy its pinned bounded result contract.', retryable: false,
     } } })
     expect(terminal.execution).toEqual(before)
-    const resolution = oneShotResolution(f.version, normalized)
+    const resolution = repeatTerminalResolution(f.version, f.scope, { nodeId: normalized.workflowNodeId, occurrence: null }, normalized).value
     expect(resolution.resolution).toBe('failed')
     expect(resolution.outcome).toBeUndefined()
     expect(resolution.acceptedResultDigest).toBeUndefined()
     expect(resolution.branchEnded).toBe(false)
     expect(resolution.selectedRelationshipIds).toEqual([])
     expect(resolution.unselectedRelationshipIds).toEqual([f.version.definition.edges[0]!.id])
-    expect(() => oneShotResolution(f.version, terminal.execution)).toThrow()
-    expect(() => parseOneShotChoiceResult(terminal.result, f.version.definition.nodes[0]!.choice!)).toThrow()
+    expect(() => repeatTerminalResolution(f.version, f.scope, { nodeId: terminal.execution.workflowNodeId, occurrence: null }, terminal.execution).value).toThrow()
+    expect(() => parseCurrentChoiceResult(terminal.result, f.version.definition.nodes[0]!.choice!)).toThrow()
   })
 
   it('rejects mixed, nested, non-string and array carriers instead of discarding their fields', () => {
@@ -73,11 +73,11 @@ describe.each(br2001Providers)('BR2-001: %s final-text choice carrier', (provide
     ]) {
       const terminal = br2001Terminal(f.executions[0]!, provider, text).execution
       const input = HarnessExecutionSchema.parse({ ...terminal, result: { outcome: 'succeeded', output } })
-      expect(normalizeOneShotTerminal(f.version, input).result).toMatchObject({
-        outcome: 'failed', error: { code: 'WORKFLOW_CHOICE_RESULT_INVALID', retryable: false },
+      expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input).result).toMatchObject({
+        outcome: 'failed', error: { code: 'REPEAT_RESULT_INVALID', retryable: false },
       })
-      expect(() => oneShotResolution(f.version, input)).toThrow()
-      expect(() => parseOneShotChoiceResult(input.result!, f.version.definition.nodes[0]!.choice!)).toThrow()
+      expect(() => repeatTerminalResolution(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input).value).toThrow()
+      expect(() => parseCurrentChoiceResult(input.result!, f.version.definition.nodes[0]!.choice!)).toThrow()
     }
   })
 
@@ -88,35 +88,34 @@ describe.each(br2001Providers)('BR2-001: %s final-text choice carrier', (provide
     const data = 'x'.repeat(64 * 1024 - overhead)
     const atLimit = br2001Terminal(f.executions[0]!, provider, br2001Text('pass', data))
     expect(Buffer.byteLength(canonicalGraphJson(atLimit.result), 'utf8')).toBe(64 * 1024)
-    expect(AcceptedNodeResultV2Schema.safeParse(atLimit.result).success).toBe(true)
-    expect(normalizeOneShotTerminal(f.version, atLimit.execution)).toEqual(atLimit.execution)
-    expect(parseOneShotChoiceResult(atLimit.result, f.version.definition.nodes[0]!.choice!))
+    expect(AcceptedCurrentNodeResultSchema.safeParse(atLimit.result).success).toBe(true)
+    expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: atLimit.execution.workflowNodeId, occurrence: null }, atLimit.execution)).toEqual(atLimit.execution)
+    expect(parseCurrentChoiceResult(atLimit.result, f.version.definition.nodes[0]!.choice!))
       .toEqual({ routing: { outcome: 'pass' }, data })
     const overLimit = br2001Terminal(f.executions[0]!, provider, br2001Text('pass', data + 'x'))
-    expect(AcceptedNodeResultV2Schema.safeParse(overLimit.result).success).toBe(false)
+    expect(AcceptedCurrentNodeResultSchema.safeParse(overLimit.result).success).toBe(false)
     // Removing the carrier would fit: accepting this would silently relax the old limit.
-    expect(AcceptedNodeResultV2Schema.safeParse({ ...overLimit.result, output: overLimit.result.output.text }).success).toBe(true)
-    expect(normalizeOneShotTerminal(f.version, overLimit.execution).result).toMatchObject({ outcome: 'failed' })
-    expect(() => oneShotResolution(f.version, overLimit.execution)).toThrow()
+    expect(AcceptedCurrentNodeResultSchema.safeParse({ ...overLimit.result, output: overLimit.result.output.text }).success).toBe(true)
+    expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: overLimit.execution.workflowNodeId, occurrence: null }, overLimit.execution).result).toMatchObject({ outcome: 'failed' })
+    expect(() => repeatTerminalResolution(f.version, f.scope, { nodeId: overLimit.execution.workflowNodeId, occurrence: null }, overLimit.execution).value).toThrow()
     // A persistence caller must not rely on normalization having already enforced this limit.
-    expect(() => parseOneShotChoiceResult(overLimit.result, f.version.definition.nodes[0]!.choice!)).toThrow()
+    expect(() => parseCurrentChoiceResult(overLimit.result, f.version.definition.nodes[0]!.choice!)).toThrow()
   })
 
   it('passes the unchanged accepted carrier and digest to the selected Fixer input', () => {
     const f = br2001Fixture(provider, `br2001-bind-${provider}`)
     const terminal = br2001Terminal(f.executions[0]!, provider, br2001Text('issues', { detail: 'needs fix' }))
-    const execution = normalizeOneShotTerminal(f.version, terminal.execution)
-    const resolution = oneShotResolution(f.version, execution)
-    const bound = bindOneShotInput({ version: f.version, runInput: f.run.input, recipient: f.executions[1]!,
-      boundAt: execution.finishedAt!, resolutions: new Map([[execution.workflowNodeId, resolution]]),
-      predecessors: new Map([[execution.id, { execution, accepted: true }]]),
-    })
-    expect(bound.execution.input).toEqual({ executionSemanticsVersion: 2, runInput: f.run.input, predecessors: [{
-      relationshipId: f.version.definition.edges[0]!.id, senderNodeId: execution.workflowNodeId,
-      senderExecutionId: execution.id, acceptedResult: terminal.result,
-    }] })
+    const execution = normalizeRepeatTerminal(f.version, f.scope, { nodeId: terminal.execution.workflowNodeId, occurrence: null }, terminal.execution)
+    const resolution = repeatTerminalResolution(f.version, f.scope, { nodeId: execution.workflowNodeId, occurrence: null }, execution).value
+    const source = { relationshipId: f.version.definition.edges[0]!.id,
+      execution: repeatExecutionIdentity(execution), occurrence: null,
+      acceptedResult: terminal.result, acceptedResultDigest: resolution.acceptedResultDigest! }
+    const bound = bindRepeatNodeInput({ version: f.version, runInput: f.run.input, recipient: f.executions[1]!,
+      ref: { nodeId: f.executions[1]!.workflowNodeId, occurrence: null }, occurrence: null, entry: null, predecessors: [source] })
+    expect(bound.input).toEqual({ executionSemanticsVersion: 3, runInput: f.run.input,
+      occurrence: null, entry: null, predecessors: [source] })
     expect(bound.bindings).toHaveLength(1)
-    expect(bound.bindings[0]!.acceptedResultDigest).toBe(graphSourceDigest(terminal.result))
+    expect(bound.bindings[0]!.source.acceptedResultDigest).toBe(graphSourceDigest(terminal.result))
   })
 
   it('preserves direct string/object choices, JSON whitespace and ordinary non-choice results', () => {
@@ -124,16 +123,16 @@ describe.each(br2001Providers)('BR2-001: %s final-text choice carrier', (provide
     const base = br2001Terminal(f.executions[0]!, provider, br2001Text()).execution
     for (const output of [br2001Text(), JSON.parse(br2001Text()), { text: ` \n${br2001Text()}\t ` }]) {
       const input = HarnessExecutionSchema.parse({ ...base, result: { outcome: 'succeeded', output } })
-      expect(normalizeOneShotTerminal(f.version, input)).toEqual(input)
-      expect(oneShotResolution(f.version, input).outcome).toBe('pass')
-      expect(parseOneShotChoiceResult(input.result!, f.version.definition.nodes[0]!.choice!))
+      expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input)).toEqual(input)
+      expect(repeatTerminalResolution(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input).value.outcome).toBe('pass')
+      expect(parseCurrentChoiceResult(input.result!, f.version.definition.nodes[0]!.choice!))
         .toEqual({ routing: { outcome: 'pass' }, data: null })
     }
     delete f.version.definition.nodes[0]!.choice
     for (const output of [{ text: 'Ordinary non-JSON reply.' }, { text: br2001Text(), extra: true }, 'plain text', { done: true }]) {
       const input = HarnessExecutionSchema.parse({ ...base, result: { outcome: 'succeeded', output } })
-      expect(normalizeOneShotTerminal(f.version, input)).toEqual(input)
-      const resolution = oneShotResolution(f.version, input)
+      expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input)).toEqual(input)
+      const resolution = repeatTerminalResolution(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input).value
       expect(resolution.outcome).toBeUndefined()
       expect(resolution.branchEnded).toBe(false)
       expect(resolution.selectedRelationshipIds).toEqual([f.version.definition.edges[0]!.id])
@@ -148,17 +147,16 @@ describe.each(br2001Providers)('BR2-001: %s final-text choice carrier', (provide
       code: 'NATIVE_FAILED', message: 'Explicit native failure.', retryable: false,
     } }]) {
       const input = HarnessExecutionSchema.parse({ ...base, result })
-      expect(normalizeOneShotTerminal(f.version, input)).toEqual(input)
-      expect(oneShotResolution(f.version, input).selectedRelationshipIds).toEqual([])
-      expect(() => parseOneShotChoiceResult(input.result!, f.version.definition.nodes[0]!.choice!)).toThrow()
+      expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input)).toEqual(input)
+      expect(repeatTerminalResolution(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input).value.selectedRelationshipIds).toEqual([])
+      expect(() => parseCurrentChoiceResult(input.result!, f.version.definition.nodes[0]!.choice!)).toThrow()
     }
     const queued = f.executions[0]!
-    expect(normalizeOneShotTerminal(f.version, queued)).toEqual(queued)
-    expect(() => oneShotResolution(f.version, queued)).toThrow()
-    for (const input of [{ ...base, attempt: 2 }, { ...base, agentConfigurationVersionId: 'different-pin' }]) {
-      expect(() => normalizeOneShotTerminal(f.version, input)).toThrow()
-      expect(() => oneShotResolution(f.version, input)).toThrow()
+    expect(normalizeRepeatTerminal(f.version, f.scope, { nodeId: queued.workflowNodeId, occurrence: null }, queued)).toEqual(queued)
+    expect(() => repeatTerminalResolution(f.version, f.scope, { nodeId: queued.workflowNodeId, occurrence: null }, queued).value).toThrow()
+    for (const input of [{ ...base, attempt: 0 }, { ...base, agentConfigurationVersionId: 'different-pin' }]) {
+      expect(() => normalizeRepeatTerminal(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input)).toThrow()
+      expect(() => repeatTerminalResolution(f.version, f.scope, { nodeId: input.workflowNodeId, occurrence: null }, input).value).toThrow()
     }
-    expect(WAVE25_ADMISSION_ENABLED).toBe(true)
   })
 })

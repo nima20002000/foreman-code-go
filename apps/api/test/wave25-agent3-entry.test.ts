@@ -1,96 +1,52 @@
 import { describe, expect, it } from 'vitest'
-import { makeWave25Fixture } from '@graphql/contracts/wave25'
-import { buildExecutableWorkflowVersionV2, migrateSavedWorkflowDefinition } from '../src/modules/workflows/executableVersion.js'
-import type { WorkflowVersion } from '@graphql/contracts'
+import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 
-function input() {
-  const fixture = makeWave25Fixture('a3-entry')
-  return { id: fixture.version.id, definition: fixture.version.definition, configurations: fixture.configurations, createdAt: fixture.createdAt, version: 1 }
-}
-
-describe('Agent 3 authored entry acceptance', () => {
-  it('starts a sole Worker itself', () => {
-    const value = input()
-    value.definition.nodes = value.definition.nodes.slice(0, 1)
-    value.definition.edges = []
-    value.definition.entryNodeId = null
-    value.configurations = value.configurations.slice(0, 1)
-    const version = buildExecutableWorkflowVersionV2(value)
-    expect(version.entryNodeId).toBe(value.definition.nodes[0]!.id)
+// Current execution always consumes an explicitly saved entry. Legacy entry
+// inference and V1-to-V2 conversion are retired; historical ENG03 evidence stays
+// in the evidence documents rather than an executable compatibility path.
+describe('Current authored entry acceptance', () => {
+  it.each(['coder', 'orchestrator'] as const)('starts a sole %s at its pinned entry', (role) => {
+    const f = makeCurrentWorkflowFixture(`entry-${role}`, 'single')
+    f.configurations[0]!.productRole = role
+    const { version } = ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations })
+    expect(version.entryNodeId).toBe(f.version.definition.nodes[0]!.id)
+    expect(version.definition.repeat).toBeUndefined()
   })
-  it('accepts a sole Orchestrator with legitimate App approval and no artificial Worker', () => {
-    const value = input()
-    value.definition.nodes = value.definition.nodes.slice(0, 1)
-    value.definition.edges = []
-    value.definition.entryNodeId = null
-    value.configurations = value.configurations.slice(0, 1).map((configuration) => ({ ...configuration, productRole: 'orchestrator' }))
-    value.definition.approval = { handler: 'orchestrator', designatedOrchestratorAgentId: value.configurations[0]!.agentId }
-    expect(buildExecutableWorkflowVersionV2(value).entryNodeId).toBe(value.definition.nodes[0]!.id)
+  it.each(['single', 'sequential'] as const)('rejects an omitted entry for a %s graph', (form) => {
+    const f = makeCurrentWorkflowFixture(`missing-${form}`, form)
+    expect(() => ExecutableWorkflowV3Schema.parse({ configurations: f.configurations,
+      version: { ...f.version, definition: { ...f.version.definition, entryNodeId: null } } })).toThrow()
   })
-  it('accepts a sole Orchestrator with explicit human approval', () => {
-    const value = input()
-    value.definition.nodes = value.definition.nodes.slice(0, 1)
-    value.definition.edges = []
-    value.definition.entryNodeId = null
-    value.configurations = [{ ...value.configurations[0]!, productRole: 'orchestrator' }]
-    value.definition.approval = { handler: 'user' }
-    expect(buildExecutableWorkflowVersionV2(value).entryNodeId).toBe(value.definition.nodes[0]!.id)
+  it('does not let node order or an Orchestrator label choose another entry', () => {
+    const f = makeCurrentWorkflowFixture('entry-order')
+    const entry = f.version.entryNodeId
+    f.version.definition.nodes.reverse()
+    f.version.definition.nodes[0]!.name = 'Orchestrator'
+    expect(ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version.entryNodeId).toBe(entry)
   })
-  it('selects one of multiple pinned Orchestrators without array-order authority', () => {
-    const value = input()
-    value.definition.edges = []
-    value.configurations = value.configurations.map((item) => ({ ...item, productRole: 'orchestrator' }))
-    value.definition.entryNodeId = value.definition.nodes[1]!.id
-    expect(buildExecutableWorkflowVersionV2(value).entryNodeId).toBe(value.definition.nodes[1]!.id)
-    value.definition.nodes.reverse()
-    expect(buildExecutableWorkflowVersionV2(value).entryNodeId).toBe(value.definition.entryNodeId)
+  it('rejects deletion of the accepted entry instead of choosing a remaining node', () => {
+    const f = makeCurrentWorkflowFixture('entry-deleted')
+    f.version.definition.nodes = f.version.definition.nodes.filter((node) => node.id !== f.version.entryNodeId)
+    f.version.definition.edges = []
+    expect(() => ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations })).toThrow()
   })
-  it('requires a selected Worker for a multi-Worker board', () => {
-    const value = input()
-    value.definition.entryNodeId = null
-    expect(() => buildExecutableWorkflowVersionV2(value)).toThrow()
-    value.definition.entryNodeId = value.definition.nodes[0]!.id
-    expect(buildExecutableWorkflowVersionV2(value).entryNodeId).toBe(value.definition.entryNodeId)
+  it('rejects mismatched authored and immutable entry identities', () => {
+    const f = makeCurrentWorkflowFixture('entry-mismatch')
+    f.version.definition.entryNodeId = f.version.definition.nodes[1]!.id
+    expect(() => ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations })).toThrow()
   })
-  it('uses pinned roles, not an Orchestrator label, for a mixed-role board', () => {
-    const value = input()
-    value.configurations[1] = { ...value.configurations[1]!, productRole: 'orchestrator' }
-    value.definition.nodes[0]!.name = 'Orchestrator'
-    expect(() => buildExecutableWorkflowVersionV2(value)).toThrow()
-    value.definition.edges = []
-    value.definition.entryNodeId = value.definition.nodes[1]!.id
-    expect(buildExecutableWorkflowVersionV2(value).entryNodeId).toBe(value.definition.nodes[1]!.id)
+  it('selects an explicitly authored Orchestrator without array-order authority', () => {
+    const f = makeCurrentWorkflowFixture('entry-orchestrators')
+    f.configurations.forEach((config) => { config.productRole = 'orchestrator' })
+    f.version.definition.edges = []
+    f.version.entryNodeId = f.version.definition.entryNodeId = f.version.definition.nodes[1]!.id
+    f.version.definition.nodes.reverse()
+    expect(ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version.entryNodeId)
+      .toBe(f.version.definition.entryNodeId)
   })
-  it('keeps an authored entry under reorder and rejects its deletion', () => {
-    const value = input()
-    const entry = value.definition.entryNodeId
-    value.definition.nodes.reverse()
-    expect(buildExecutableWorkflowVersionV2(value).entryNodeId).toBe(entry)
-    value.definition.nodes = value.definition.nodes.filter((node) => node.id !== entry)
-    value.definition.edges = []
-    expect(() => buildExecutableWorkflowVersionV2(value)).toThrow()
-  })
-  it('hashes optional draft metadata as its persisted JSON representation', () => {
-    const value = input()
-    const before = buildExecutableWorkflowVersionV2(value)
-    Object.assign(value.definition, { description: undefined })
-    Object.assign(value.definition.nodes[0]!, { initialPrompt: undefined })
-    expect(buildExecutableWorkflowVersionV2(value).contentHash).toBe(before.contentHash)
-    expect(Object.hasOwn(buildExecutableWorkflowVersionV2(value).definition, 'description')).toBe(false)
-  })
-  it('migrates from the immutable legacy entry without rewriting that legacy record', () => {
-    const value = input()
-    const { executionSemanticsVersion: _semantics, entryNodeId: _entry, ...definition } = value.definition
-    void _semantics; void _entry
-    const saved = { ...makeWave25Fixture('a3-entry').version,
-      definition: { ...definition, edges: definition.edges.map(({ kind: _kind, ...edge }) => { void _kind; return { ...edge, route: { outcomes: ['succeeded'] } } }) },
-    }
-    const { executionSemanticsVersion: _versionSemantics, ...legacy } = saved
-    void _versionSemantics
-    const before = JSON.stringify(legacy)
-    const migrated = migrateSavedWorkflowDefinition(legacy as WorkflowVersion)
-    expect(migrated.entryNodeId).toBe(legacy.entryNodeId)
-    expect(migrated.edges.every((edge) => edge.kind === 'execution')).toBe(true)
-    expect(JSON.stringify(legacy)).toBe(before)
+  it('rejects a configuration that does not belong to the immutable entry pin', () => {
+    const f = makeCurrentWorkflowFixture('entry-stale-config')
+    f.configurations[0]!.id = 'current-but-not-pinned'
+    expect(() => ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations })).toThrow()
   })
 })
