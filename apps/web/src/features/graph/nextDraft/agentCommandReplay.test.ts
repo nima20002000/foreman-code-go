@@ -10,7 +10,9 @@ const response = (body: unknown) => new Response(JSON.stringify(body), {
 })
 
 describe('pending Board Agent commands', () => {
-  it.each(['patch-response', 'catalog-refresh'])('replays immutable input after losing %s', async (failure) => {
+  it.each(['patch-response', 'catalog-refresh'].flatMap((failure) =>
+    ['configure', 'rename-first', 'configure-first'].map((order) => ({ failure, order }))))(
+    'replays immutable input after losing $failure with $order', async ({ failure, order }) => {
     const context = fixture()
     const original = context.agents[0]!
     const committed = { metadataRevision: original.metadataRevision + 1,
@@ -46,12 +48,20 @@ describe('pending Board Agent commands', () => {
       draftId: draft.id, commandId: 'immutable-agent-command', expectedRevision: draft.revision,
       operations: [{ type: 'agent.configure', agentId: original.agent.id, expectedAgentRevision: original.metadataRevision,
         configuration: DEFAULT_HARNESS_DEFAULTS.codex, prompt: {}, assignedSkills: [], description: 'Updated' }] }
+    if (order !== 'configure') {
+      const rename = { type: 'agent.rename' as const, agentId: original.agent.id,
+        expectedAgentRevision: original.metadataRevision, name: 'Renamed' }
+      request.operations = order === 'rename-first' ? [rename, ...request.operations!] : [...request.operations!, rename]
+    }
     await expect(api.write(request)).rejects.toThrow()
     const retryStart = events.length
     const result = await api.write(request)
     expect(events.slice(retryStart)).toEqual(['patch', 'catalog'])
     expect(JSON.parse(receipt!)).toMatchObject({ commandId: 'immutable-agent-command:0',
       expectedRevision: original.metadataRevision, expectedConfigurationVersionId: original.agent.configurationVersionId })
+    if (order !== 'configure') expect(JSON.parse(receipt!)).toMatchObject({ name: 'Renamed', description: 'Updated',
+      configuration: DEFAULT_HARNESS_DEFAULTS.codex, prompt: {}, assignedSkills: [] })
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(2)
     expect(result.agents).toEqual([committed])
     expect(result.draft.revision).toBe(draft.revision + 1)
   })
