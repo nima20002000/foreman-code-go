@@ -9,7 +9,7 @@ import { WorkflowBoard } from '../features/workflow-board/WorkflowBoard'
 import { useProtectedAccessError } from '../features/auth/useProtectedAccessError'
 import { clearCurrentRunAccess, revokeCurrentRunWorkspace } from '../features/workflow-board/currentRunQuery'
 import { ApiError } from '../shared/api/client'
-import { queryKeys, useManagedWorkflowsQuery, useWorkspaceDetailsQuery } from '../shared/api/query'
+import { queryKeys, useManagedWorkflowQuery, useWorkspaceDetailsQuery } from '../shared/api/query'
 import { WorkspaceSelection } from './WorkspaceRoute'
 
 function cacheWorkspaceProjection(client: ReturnType<typeof useQueryClient>, workspaceId: string, details: CurrentWorkspaceDetails) {
@@ -37,10 +37,10 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
         : 1_000
     },
   })
-  const managed = useManagedWorkflowsQuery(workspaceId)
+  const managed = useManagedWorkflowQuery(workspaceId, requestedId ?? '')
   const denied = useProtectedAccessError(workspace), managedDenied = useProtectedAccessError(managed)
   const details = denied ? undefined : workspace.data
-  const managedWorkflow = managedDenied ? undefined : managed.data?.items.find((item) => item.workflow.id === requestedId)?.workflow
+  const managedWorkflow = managedDenied ? undefined : managed.data?.workflow
   const workflowId = requestedId ?? details?.workflows[0]?.id
   const workflow = details?.workflows.find((item) => item.id === workflowId) ?? managedWorkflow
   useEffect(() => {
@@ -52,12 +52,12 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
   useEffect(() => {
     // Resolve an unpinned workspace default only, but NEVER retarget a pinned Run.
     if (run) return
-    const detailsKey = queryKeys.workspaceDetails(workspaceId), managedKey = queryKeys.managedWorkflows(workspaceId)
-    type Managed = NonNullable<ReturnType<typeof useManagedWorkflowsQuery>['data']>
+    const detailsKey = queryKeys.workspaceDetails(workspaceId), managedKey = queryKeys.managedWorkflow(workspaceId, requestedId ?? '')
+    type Managed = NonNullable<ReturnType<typeof useManagedWorkflowQuery>['data']>
     const latest = client.getQueryData<CurrentWorkspaceDetails>(detailsKey)
     const catalog = client.getQueryData<Managed>(managedKey)
     if (!latest || requestedId && (latest.workflows.some((item) => item.id === requestedId)
-      || catalog?.items.some((item) => item.workflow.id === requestedId)
+      || catalog?.workflow.id === requestedId
       || client.getQueryState(managedKey)?.fetchStatus === 'fetching')) return
     if (requestedId === latest.workflows[0]?.id) return
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, replace: true, search: (previous) => {
@@ -65,7 +65,7 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
       const saved = client.getQueryData<Managed>(managedKey)
       if (!current || previous.runId || previous.workflowId !== search.workflowId || previous.workflowId && (
         current.workflows.some((item) => item.id === previous.workflowId)
-        || saved?.items.some((item) => item.workflow.id === previous.workflowId)
+        || saved?.workflow.id === previous.workflowId
         || client.getQueryState(managedKey)?.fetchStatus === 'fetching')) return previous
       const next = { ...previous }, fallback = current.workflows[0]?.id
       if (fallback) next.workflowId = fallback

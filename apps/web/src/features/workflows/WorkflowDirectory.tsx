@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
+import { useStore } from 'zustand'
+import { createResourceSelection } from '../../shared/ui/resourceSelection'
+import { apiClient } from '../../shared/api/client'
+import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
+import { LoadMore } from '../../shared/ui/LoadMore'
+import type { WorkflowBatchArchiveInput } from '@graphql/contracts/management'
+import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 
 import {
-  queryKeys, useArchiveManagedWorkflowMutation, useManagedWorkflowsQuery,
+  queryKeys, useArchiveManagedWorkflowMutation, useWorkflowPages,
   useUpdateManagedWorkflowMutation,
 } from '../../shared/api/query'
 import {
-  Button, Card, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
+  Alert, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
 } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { NewWorkflowAction } from './NewWorkflowAction'
@@ -74,11 +81,55 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
 }
 
 export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
+  return <WorkflowDirectoryContent key={workspaceId} workspaceId={workspaceId} />
+}
+
+function WorkflowDirectoryContent({ workspaceId }: { workspaceId: string }) {
   const queryClient = useQueryClient()
-  const managedQuery = useManagedWorkflowsQuery(workspaceId, true)
+  const managedQuery = useWorkflowPages(workspaceId, true)
   const updateWorkflow = useUpdateManagedWorkflowMutation()
   const archiveWorkflow = useArchiveManagedWorkflowMutation()
-  const managed = managedQuery.data?.items ?? []
+  const [selectionStore] = useState(createResourceSelection)
+  const selection = useStore(selectionStore)
+  const count = Object.keys(selection.selected).length
+  const attempt = useRef(new CommandAttempt<Omit<WorkflowBatchArchiveInput, 'commandId'>>())
+  const inFlight = useRef(false)
+  const selectRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const wasSelecting = useRef(false)
+  useEffect(() => {
+    if (wasSelecting.current && !selection.selecting) selectRef.current?.focus()
+    wasSelecting.current = selection.selecting
+  }, [selection.selecting])
+  const batch = useMutation({
+    mutationFn: (input: WorkflowBatchArchiveInput) => apiClient.archiveManagedWorkflowBatch(input),
+    onError: (error) => attempt.current.failed(error),
+  })
+  const locked = batch.isPending || attempt.current.unresolved
+  const managed = managedQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const closeConfirmation = () => { if (!locked) { selection.confirm(false); batch.reset() } }
+  const deleteSelected = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    const generation = sessionGeneration()
+    try {
+      const result = await batch.mutateAsync(attempt.current.input({ workspaceId,
+        workflows: Object.entries(selection.selected).map(([workflowId, expectedRevision]) => ({ workflowId, expectedRevision })),
+      }))
+      assertSession(generation)
+      attempt.current.succeeded()
+      const deleted = new Set(result.value.workflowIds)
+      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>>>(
+        [...queryKeys.managedWorkflows(workspaceId), 'pages'], (current) => current ? {
+          ...current, pages: current.pages.map((page) => ({ ...page, items: page.items.filter((item) => !deleted.has(item.workflow.id)) })),
+        } : current,
+      )
+      selection.clear(`${result.value.workflowIds.length} ${result.value.workflowIds.length === 1 ? 'workflow' : 'workflows'} deleted.`)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) })
+    } catch (error) { attempt.current.failed(error) }
+    finally { inFlight.current = false }
+  }
   const managedById = new Map(managed.map((item) => [item.workflow.id, item]))
   const workflows = managed.map((item) => item.workflow)
 
@@ -86,9 +137,20 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
     <section className="workflow-directory resource-directory" aria-label="Workflows">
       <PageHeader
         title="Workflows"
-        actions={workflows.length > 0 ? <NewWorkflowAction workspaceId={workspaceId} /> : undefined}
+        actions={workflows.length > 0 ? <div className="resource-directory-actions">
+          {!selection.selecting ? <>
+            <Button ref={selectRef} onClick={selection.start}>Select workflows</Button>
+            <NewWorkflowAction workspaceId={workspaceId} />
+          </> : <>
+            <span role="status">{count} selected</span>
+            <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
+            <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
+          </>}
+        </div> : undefined}
       />
 
+      {selection.notice ? <p role="status">{selection.notice}</p> : null}
+      {selection.selecting ? <p className="resource-selection-hint">Select workflows to delete. You can show more and keep your selection. Up to 100 at a time.</p> : null}
       {workflows.length > 0 ? (
         <ul className="workflow-card-list resource-card-list" data-testid="workflow-card-list">
           {workflows.map((workflow) => (
@@ -97,8 +159,11 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
               data-testid={`workflow-card-${workflow.id}`}
               key={workflow.id}
             >
-              <Card className="workflow-card resource-card">
-                <Link
+              <Card className={`workflow-card resource-card${workflow.id in selection.selected ? ' is-selected' : ''}`}>
+                {selection.selecting ? <Checkbox className="resource-card-select" label={workflow.name}
+                  aria-label={`Select ${workflow.name}`} checked={workflow.id in selection.selected}
+                  disabled={locked || (count >= 100 && !(workflow.id in selection.selected))}
+                  onChange={() => selection.toggle(workflow.id, managedById.get(workflow.id)!.revision)} /> : <><Link
                   to="/workspaces/$workspaceId"
                   params={{ workspaceId }}
                   search={{ workflowId: workflow.id }}
@@ -123,7 +188,7 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
                       onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
                     })
                   }}
-                />
+                /></>}
               </Card>
             </li>
           ))}
@@ -141,6 +206,20 @@ export function WorkflowDirectory({ workspaceId }: { workspaceId: string }) {
           />
         </div>
       )}
+      <LoadMore label="workflows" query={managedQuery} />
+      <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
+        title={`Delete ${count} ${count === 1 ? 'workflow' : 'workflows'}?`}
+        description="Selected workflows will be removed from the list. Saved versions and run history are retained. Workflows with active runs cannot be deleted."
+        busy={locked} initialFocusRef={cancelRef} size="sm"
+        footer={<>
+          <Button ref={cancelRef} disabled={locked} onClick={closeConfirmation}>Cancel</Button>
+          <Button variant="danger" disabled={batch.isPending} onClick={() => void deleteSelected()}>
+            {batch.isPending ? 'Deleting…' : attempt.current.unresolved ? 'Retry deletion' : `Delete ${count} ${count === 1 ? 'workflow' : 'workflows'}`}
+          </Button>
+        </>}>
+        {batch.isError ? <Alert tone="danger" live title={batch.error.message} /> : null}
+        {attempt.current.unresolved && !batch.isPending ? <p role="status">The request may have succeeded. Retry deletion to check its outcome safely.</p> : null}
+      </Dialog>
     </section>
   )
 }

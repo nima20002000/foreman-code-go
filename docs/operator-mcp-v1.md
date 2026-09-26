@@ -78,8 +78,8 @@ opencode run --pure --model opencode-go/deepseek-v4.1-flash \
 
 - Context: `operator_get_capabilities`
 - Harnesses: `harness_list`, `harness_get`, `harness_defaults_update`
-- Workspaces: `workspace_list`, `workspace_get`, `workspace_create`, `workspace_update`, `workspace_archive`, `workspace_location_validate`, `workspace_location_set`
-- Workflows: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_archive`
+- Workspaces: `workspace_list`, `workspace_get`, `workspace_create`, `workspace_update`, `workspace_archive`, `workspace_batch_archive`, `workspace_location_validate`, `workspace_location_set`
+- Workflows: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_archive`, `workflow_batch_archive`
 - Agents: `agent_list`, `agent_get`
 - Graph: `graph_draft_open`, `graph_draft_get`, `graph_draft_apply`, `graph_validate`, `graph_save`, `graph_draft_discard`
 - Runs: `run_list`, `run_get`, `run_events_list`, `run_start`, `run_stop`
@@ -97,6 +97,12 @@ The selected project directory is the harness `workingDirectory`. GraphQL scratc
 This establishes where native agents start; it is not a filesystem sandbox. Codex/OpenCode native permissions and future runner isolation remain separate controls. The Settings copy states this explicitly.
 
 `graph_draft_apply` accepts strict typed agent, node, edge, execution-limit, and required-agent-count operations. A workflow may declare `requiredAgentCount`; validation, Save, and Start then reject any graph whose number of distinct referenced agents differs. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
+
+Workspace and workflow navigation and directory lists show 5 items initially; each “Show more” request adds 10 items. MCP callers use `workspace_list` / `workflow_list` with `limit` and pass `pageInfo.nextCursor` as `cursor` until it is null. The active navigation selection can also be read directly by ID without fetching intervening pages.
+
+`workflow_batch_archive` accepts `{ workspaceId, commandId, workflows: [{ workflowId, expectedRevision }] }` for 1–100 unique workflows. It requires `workflows:archive` for every selected workflow and removes the whole selection atomically. Missing workflows, stale revisions, or active runs reject the entire batch. Reuse the same command ID and input after an uncertain response; read back with `workflow_get` or `workflow_list`. The UI labels this operation “Delete selected” and explains history retention in its confirmation. The HTTP equivalent is `POST /api/management/workspaces/:workspaceId/workflows/batch-archive`.
+
+`workspace_batch_archive` accepts `{ commandId, workspaces: [{ workspaceId, expectedRevision }] }` for 1–100 unique workspaces. It requires `workspaces:archive` for every selection, locks workspace admission in stable order, and checks all revisions and active runs before one atomic update. It retains workflows, history and project folders. The UI uses the same selection and confirmation flow, with uncertain retries preserving the command ID. Read back with `workspace_get` or `workspace_list`. The HTTP equivalent is `POST /api/management/workspaces/batch-archive`.
 
 Archive retains versions, configurations, runs, results, and activity. Active work blocks archive; archive never silently cancels work. Stop reports `accepted`, `already_terminal`, or `not_owner`; an accepted request does not claim that the child process has already exited.
 

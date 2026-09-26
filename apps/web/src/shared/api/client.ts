@@ -68,6 +68,8 @@ import {
   assertSession, sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError,
 } from './sessionBoundary'
 import {
+  WorkspaceBatchArchiveInputSchema, WorkspaceBatchArchiveResultSchema, type WorkspaceBatchArchiveInput,
+  ManagedWorkflowSchema, WorkflowBatchArchiveInputSchema, WorkflowBatchArchiveResultSchema, type WorkflowBatchArchiveInput,
   ManagedWorkspaceCommandResultSchema,
   ManagedWorkspaceSchema,
   ManagedWorkspacePageSchema,
@@ -291,6 +293,30 @@ export class ApiClient {
   enrollOperator(token: string, options?: RequestOptions) {
     const input = parseRequest(OperatorEnrollmentRequestSchema, { token })
     return this.request('/api/auth/enroll', OperatorEnrollmentResponseSchema, { ...options, method: 'POST', body: input })
+  }
+
+  archiveManagedWorkspaceBatch(input: WorkspaceBatchArchiveInput, options?: RequestOptions) {
+    const request = parseRequest(WorkspaceBatchArchiveInputSchema, input)
+    return this.request('/api/management/workspaces/batch-archive', WorkspaceBatchArchiveResultSchema,
+      { ...options, method: 'POST', body: request })
+  }
+
+  listManagedWorkspacePage(cursor?: string, options?: RequestOptions) {
+    return this.request(managementPageUrl('/api/management/workspaces', cursor, cursor ? 10 : 5), ManagedWorkspacePageSchema, options)
+  }
+
+  getManagedWorkflow(workspaceId: string, workflowId: string, options?: RequestOptions) {
+    return this.request(`/api/management/workspaces/${toPath(workspaceId)}/workflows/${toPath(workflowId)}`, ManagedWorkflowSchema, options)
+  }
+
+  listManagedWorkflowPage(workspaceId: string, cursor?: string, options?: RequestOptions) {
+    return this.request(managementPageUrl(`/api/management/workspaces/${toPath(workspaceId)}/workflows`, cursor, cursor ? 10 : 5), CurrentManagedWorkflowPageSchema, options)
+  }
+
+  archiveManagedWorkflowBatch(input: WorkflowBatchArchiveInput, options?: RequestOptions) {
+    const request = parseRequest(WorkflowBatchArchiveInputSchema, input)
+    return this.request(`/api/management/workspaces/${toPath(request.workspaceId)}/workflows/batch-archive`, WorkflowBatchArchiveResultSchema,
+      { ...options, method: 'POST', body: request })
   }
 
   listManagedWorkspaces(options?: RequestOptions) {

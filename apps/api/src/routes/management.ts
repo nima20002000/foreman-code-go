@@ -20,10 +20,12 @@ import {
   RunListInputSchema,
   RunStopInputSchema,
   WorkflowArchiveInputSchema,
+  WorkflowBatchArchiveInputSchema,
   WorkflowGetInputSchema,
   WorkflowListInputSchema,
   WorkflowUpdateInputSchema,
   WorkspaceArchiveInputSchema,
+  WorkspaceBatchArchiveInputSchema,
   WorkspaceCreateInputSchema,
   WorkspaceGetInputSchema,
   WorkspaceListInputSchema,
@@ -94,6 +96,8 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   })
   app.patch<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId', async (request) =>
     services.workspaces.update(requirePrincipal(request), 'http', WorkspaceUpdateInputSchema.parse(routeInput(request.params, request.body))))
+  app.post<{ Body: unknown }>('/api/management/workspaces/batch-archive', async (request) =>
+    services.workspaces.archiveBatch(requirePrincipal(request), 'http', WorkspaceBatchArchiveInputSchema.parse(request.body)))
   app.delete<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId', async (request) =>
     services.workspaces.archive(requirePrincipal(request), 'http', WorkspaceArchiveInputSchema.parse(routeInput(request.params, request.body))))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/location/validate', async (request) =>
@@ -114,6 +118,8 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   })
   app.patch<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId', async (request) =>
     services.workflows.update(requirePrincipal(request), 'http', WorkflowUpdateInputSchema.parse(routeInput(request.params, request.body))))
+  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/batch-archive', async (request) =>
+    services.workflows.archiveBatch(requirePrincipal(request), 'http', WorkflowBatchArchiveInputSchema.parse(routeInput(request.params, request.body))))
   app.delete<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId', async (request) =>
     services.workflows.archive(requirePrincipal(request), 'http', WorkflowArchiveInputSchema.parse(routeInput(request.params, request.body))))
 

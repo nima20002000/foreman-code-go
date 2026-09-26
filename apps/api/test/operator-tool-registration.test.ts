@@ -35,11 +35,11 @@ const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['workflows:read', ['workflow_get', 'workflow_list']],
   ['workflows:create', ['workflow_create']],
   ['workflows:update', ['workflow_update']],
-  ['workflows:archive', ['workflow_archive']],
+  ['workflows:archive', ['workflow_archive', 'workflow_batch_archive']],
   ['workspaces:read', ['workspace_get', 'workspace_list']],
   ['workspaces:create', ['workspace_create']],
   ['workspaces:update', ['workspace_update']],
-  ['workspaces:archive', ['workspace_archive']],
+  ['workspaces:archive', ['workspace_archive', 'workspace_batch_archive']],
   ['workspace_locations:validate', ['workspace_location_validate']],
   ['workspace_locations:update', ['workspace_location_set']],
 ]

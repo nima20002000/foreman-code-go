@@ -11,7 +11,7 @@ import { ChevronLeft, ChevronRight, UserRound } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
 import { ThemeToggle } from '../../features/theme'
-import { useManagedWorkspacesQuery } from '../api/query'
+import { useWorkspacePages } from '../api/query'
 import { EmptyState, IconButton } from './nocturne'
 import {
   DEFAULT_NAVIGATION_WIDTH,
@@ -74,8 +74,8 @@ export function WorkspaceShell({
   workspaceOverviewActive = false,
   workspaces,
 }: WorkspaceShellProps) {
-  const workspacesQuery = useManagedWorkspacesQuery(workspaces === undefined)
-  const navigationWorkspaces = workspaces ?? workspacesQuery.data?.items.map((item) => item.workspace)
+  const workspacesQuery = useWorkspacePages(workspaces === undefined)
+  const navigationWorkspaces = workspaces ?? workspacesQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workspace))
   const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
   const navigationWidth = useNavigationUiStore((state) => state.width)
   const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
@@ -196,6 +196,7 @@ export function WorkspaceShell({
             activeGlobalSection={activeGlobalSection}
             workspaceOverviewActive={workspaceOverviewActive}
             workspaces={navigationWorkspaces}
+            workspacePagination={workspaces === undefined ? workspacesQuery : undefined}
             navigationCollapsed={navigationCollapsed}
           />
         </nav>

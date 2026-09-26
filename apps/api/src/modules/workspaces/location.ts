@@ -285,6 +285,19 @@ export class WorkspaceLocationService {
     )
     const row = result.rows[0]
     if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${workspaceId}' was not found.`, 404)
+    return this.inspectRow(workspaceId, row)
+  }
+
+  async inspectMany(principal: ManagementPrincipal, workspaceIds: string[]) {
+    for (const workspaceId of workspaceIds) requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
+    const result = await this.pool.query<LocationRow & { id: string }>(
+      `select id, execution_location, execution_location_identity, location_revision, archived_at
+       from workspaces where id = any($1::text[])`, [workspaceIds],
+    )
+    return new Map(await Promise.all(result.rows.map(async (row) => [row.id, await this.inspectRow(row.id, row)] as const)))
+  }
+
+  private async inspectRow(workspaceId: string, row: LocationRow) {
     const locationRevision = Number(row.location_revision)
     if (!row.execution_location) return { executionLocation: null, locationRevision, locationValidation: { status: 'unconfigured' as const } }
     const executionLocation = ExecutionLocationSchema.parse(row.execution_location)

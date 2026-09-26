@@ -15,7 +15,9 @@ export function NewWorkflowAction({ workspaceId, navigation = false, variant = '
   return <>
     <Button
       className={navigation ? 'workflow-navigation-add' : undefined}
-      variant={navigation ? 'ghost' : variant}
+      variant={navigation ? 'secondary' : variant}
+      size={navigation ? 'sm' : 'md'}
+      title="New workflow"
       aria-label="New workflow"
       aria-haspopup="dialog"
       aria-expanded={creating}
