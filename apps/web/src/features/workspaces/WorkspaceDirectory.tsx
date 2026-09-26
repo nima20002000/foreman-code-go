@@ -143,6 +143,8 @@ export function WorkspaceDirectory() {
     () => items.map((item) => item.workspace),
     [items],
   )
+  const selectable = items.slice(0, 100).map((item) => ({ id: item.workspace.id, revision: item.revision }))
+  const allShownSelected = selectable.length > 0 && selectable.every((item) => item.id in selection.selected)
   const managedById = new Map(items.map((item) => [item.workspace.id, item]))
 
   const execute = async (input: CardCommand & { commandId: string }) => {
@@ -171,6 +173,9 @@ export function WorkspaceDirectory() {
         actions={workspaces.length > 0 && !failed ? <div className="resource-directory-actions">
           {!selection.selecting ? <Button ref={selectRef} onClick={selection.start}>Select workspaces</Button> : <>
             <span role="status">{count} selected</span>
+            <Button disabled={locked} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
+              {allShownSelected ? 'Clear selection' : items.length > 100 ? 'Select first 100 shown' : 'Select all shown'}
+            </Button>
             <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
             <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
           </>}

@@ -9,6 +9,8 @@ export function createResourceSelection() {
     notice: string
     start: () => void
     toggle: (id: string, revision: number) => void
+    selectMany: (items: readonly { id: string; revision: number }[]) => void
+    deselectAll: () => void
     confirm: (open: boolean) => void
     clear: (notice?: string) => void
   }>((set) => ({
@@ -20,6 +22,10 @@ export function createResourceSelection() {
       else if (Object.keys(selected).length < 100) selected[id] = revision
       return { selected }
     }),
+    selectMany: (items) => set((state) => ({
+      selected: Object.fromEntries(items.slice(0, 100).map(({ id, revision }) => [id, state.selected[id] ?? revision])),
+    })),
+    deselectAll: () => set({ selected: {} }),
     confirm: (confirming) => set({ confirming }),
     clear: (notice = '') => set({ selecting: false, selected: {}, confirming: false, notice }),
   }))
