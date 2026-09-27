@@ -29,18 +29,18 @@ const unusedPool = { query: async () => ({ rows: [], rowCount: 0 }) } as unknown
 /** Service tests substitute storage and provider I/O; SQL-boundary tests below use the real repository methods. */
 class MemoryRepository extends PostgresAgentChatRepository {
   row = conversation()
-  receipts = [receipt('first'), receipt('queued', 'queued')]
+  storedReceipts = [receipt('first'), receipt('queued', 'queued')]
   bindFailure = false
   constructor() { super(unusedPool) }
   override async get() { return structuredClone(this.row) }
   override async open() { return [await this.get()] }
   override async restoreUnsettled() { return this.get() }
-  override async turn(_id: string, requestId: string) { return this.receipts.find((turn) => turn.requestId === requestId) }
+  override async turn(_id: string, requestId: string) { return this.storedReceipts.find((turn) => turn.requestId === requestId) }
   override async turnContent(_id: string, requestId: string) { return `content-${requestId}` }
-  override async nextQueued() { return this.receipts.find((turn) => turn.delivery === 'queued') }
+  override async nextQueued() { return this.storedReceipts.find((turn) => turn.delivery === 'queued') }
   override async claim(_id: string, requestId: string) {
-    if (this.row.active_request_id || this.row.record.sessionUnavailable || this.receipts.some((turn) => ['submitting', 'accepted', 'unknown'].includes(turn.delivery))) return false
-    const turn = this.receipts.find((entry) => entry.requestId === requestId && entry.delivery === 'queued')
+    if (this.row.active_request_id || this.row.record.sessionUnavailable || this.storedReceipts.some((turn) => ['submitting', 'accepted', 'unknown'].includes(turn.delivery))) return false
+    const turn = this.storedReceipts.find((entry) => entry.requestId === requestId && entry.delivery === 'queued')
     if (!turn) return false
     this.row.active_request_id = requestId; this.row.active_native_turn_id = null; turn.delivery = 'submitting'
     return true
@@ -58,7 +58,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
   override async accepted(_id: string, requestId: string, nativeTurnId: string) {
     if (this.row.active_request_id !== requestId) return false
     assert.ok(!this.row.active_native_turn_id || this.row.active_native_turn_id === nativeTurnId)
-    const turn = this.receipts.find((entry) => entry.requestId === requestId)!
+    const turn = this.storedReceipts.find((entry) => entry.requestId === requestId)!
     turn.delivery = 'accepted'; turn.nativeTurnId = nativeTurnId
     this.row.active_native_turn_id = nativeTurnId
     this.row.record.startupDelivered = true
@@ -66,7 +66,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
     return true
   }
   override async unknown(_id: string, requestId: string) {
-    const turn = this.receipts.find((entry) => entry.requestId === requestId)!
+    const turn = this.storedReceipts.find((entry) => entry.requestId === requestId)!
     if (['submitting', 'accepted'].includes(turn.delivery)) turn.delivery = 'unknown'
     this.row.turn_state = 'uncertain'
   }
@@ -75,7 +75,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
   override async requestCancel() { this.row.cancel_requested = true; return true }
   override async finish(_id: string, requestId: string, result: ExecutionResult) {
     if (this.row.active_request_id !== requestId) return false
-    this.receipts.find((entry) => entry.requestId === requestId)!.delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
+    this.storedReceipts.find((entry) => entry.requestId === requestId)!.delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
     this.row.active_request_id = null; this.row.active_native_turn_id = null; this.row.cancel_requested = false
     return true
   }
@@ -165,16 +165,16 @@ describe('F2 Agent chat native recovery', () => {
   it('A-R07 repairs a lost acknowledgement after history recovers, without restart or resend', async () => {
     const f = await makeService()
     f.repository.row.active_native_turn_id = null
-    f.repository.receipts[0]!.delivery = 'submitting'
+    f.repository.storedReceipts[0]!.delivery = 'submitting'
     f.native.loseTurnAcknowledgement = true
     f.native.historyFailure = true
-    await (f.service as unknown as Internals).runTurn('conversation', f.repository.receipts[0]!)
+    await (f.service as unknown as Internals).runTurn('conversation', f.repository.storedReceipts[0]!)
     await f.service.recover()
     assert.equal(f.repository.row.active_request_id, 'first')
-    assert.equal(f.repository.receipts[1]!.delivery, 'queued')
+    assert.equal(f.repository.storedReceipts[1]!.delivery, 'queued')
     assert.equal(f.native.disposed, 0, 'the manager owning the late acknowledgement must remain alive')
     f.native.historyFailure = false; f.native.loseTurnAcknowledgement = false
-    await eventually(() => f.repository.receipts.every((turn) => turn.delivery === 'completed'))
+    await eventually(() => f.repository.storedReceipts.every((turn) => turn.delivery === 'completed'))
     assert.deepEqual(f.native.prompts.map((input) => input.clientCorrelationId),
       [agentChatCorrelation('conversation', 'first'), agentChatCorrelation('conversation', 'queued')])
     assert.equal(f.native.created, 0)
@@ -183,7 +183,7 @@ describe('F2 Agent chat native recovery', () => {
   it('A-R07 settles a silent interrupt from history before queued work proceeds', async () => {
     const f = await makeService()
     f.repository.row.active_request_id = null; f.repository.row.active_native_turn_id = null
-    f.repository.receipts[0]!.delivery = 'queued'; f.native.holdStream = true
+    f.repository.storedReceipts[0]!.delivery = 'queued'; f.native.holdStream = true
     await f.service.recover()
     await eventually(() => Boolean(f.native.releaseStream))
     f.repository.row.cancel_requested = true
@@ -194,8 +194,8 @@ describe('F2 Agent chat native recovery', () => {
     assert.equal(f.repository.row.cancel_requested, true)
     assert.deepEqual(f.native.prompts.map((input) => input.prompt), ['content-first'])
     f.native.histories.set(agentChatCorrelation('conversation', 'first'), { ...terminal(), terminalResult: { outcome: 'canceled' } })
-    await eventually(() => f.repository.receipts[1]!.delivery === 'completed')
-    assert.equal(f.repository.receipts[0]!.delivery, 'canceled')
+    await eventually(() => f.repository.storedReceipts[1]!.delivery === 'completed')
+    assert.equal(f.repository.storedReceipts[0]!.delivery, 'canceled')
     assert.deepEqual(f.native.prompts.map((input) => input.prompt), ['content-first', 'content-queued'])
   })
 
@@ -203,23 +203,23 @@ describe('F2 Agent chat native recovery', () => {
     it(`A-R08 fences ${fault} durably and never creates a replacement`, async () => {
       const repository = new MemoryRepository()
       repository.row.native_session_id = null; repository.row.provider_version = null; repository.row.active_native_turn_id = null
-      repository.receipts[0]!.delivery = 'submitting'
+      repository.storedReceipts[0]!.delivery = 'submitting'
       const native = new NativeFixture(); native.loseCreation = fault === 'creation-response-lost'
       repository.bindFailure = fault === 'bind-transaction-failed'
       const f = await makeService(repository, native)
-      await (f.service as unknown as Internals).runTurn('conversation', repository.receipts[0]!)
+      await (f.service as unknown as Internals).runTurn('conversation', repository.storedReceipts[0]!)
       assert.equal(native.created, 1)
       assert.deepEqual(repository.row.record.sessionCreation, { requestId: 'first' })
       assert.match(repository.row.record.sessionUnavailable!, /read-only/)
-      assert.equal(repository.receipts[0]!.delivery, 'unknown')
+      assert.equal(repository.storedReceipts[0]!.delivery, 'unknown')
       assert.equal(repository.row.active_request_id, 'first')
       await f.service.shutdown()
       const restarted = await makeService(repository, new NativeFixture())
       await restarted.service.recover()
       assert.equal(restarted.native.created, 0)
       assert.equal(restarted.native.prompts.length, 0)
-      assert.equal(repository.receipts[1]!.delivery, 'queued')
-      repository.receipts.push(receipt('later', 'queued'))
+      assert.equal(repository.storedReceipts[1]!.delivery, 'queued')
+      repository.storedReceipts.push(receipt('later', 'queued'))
       await restarted.service.recover()
       assert.equal(restarted.native.created, 0)
     })
@@ -236,11 +236,11 @@ describe('F2 Agent chat native recovery', () => {
 
   for (const delivery of ['submitting', 'accepted'] as const) {
     it(`A-R10 repairs startup delivery after the ${delivery} acknowledgement boundary`, async () => {
-      const repository = new MemoryRepository(); repository.row.harness = 'opencode'; repository.receipts[0]!.delivery = delivery
+      const repository = new MemoryRepository(); repository.row.harness = 'opencode'; repository.storedReceipts[0]!.delivery = delivery
       const f = await makeService(repository, new NativeFixture('opencode'))
       f.native.histories.set(agentChatCorrelation('conversation', 'first'), terminal())
       await f.service.recover()
-      await eventually(() => repository.receipts[1]!.delivery === 'completed')
+      await eventually(() => repository.storedReceipts[1]!.delivery === 'completed')
       assert.equal(repository.row.record.startupDelivered, true)
       assert.deepEqual(repository.row.record.startupReceipt, { requestId: 'first', nativeSessionId: session.nativeSessionId })
       assert.deepEqual(f.native.prompts.map((input) => input.prompt), ['content-queued'])
@@ -251,11 +251,11 @@ describe('F2 Agent chat native recovery', () => {
   }
 
   it('A-R20 attaches with the stored native turn even when correlation items are absent', async () => {
-    const f = await makeService(); f.repository.receipts.splice(1)
+    const f = await makeService(); f.repository.storedReceipts.splice(1)
     f.native.histories.set(agentChatCorrelation('conversation', 'first'), terminal())
     await f.service.recover()
     assert.equal(f.native.attached[0]?.nativeTurnId, 'native-first')
-    assert.equal(f.repository.receipts[0]!.delivery, 'completed')
+    assert.equal(f.repository.storedReceipts[0]!.delivery, 'completed')
     assert.equal(f.native.prompts.length, 0)
   })
 
@@ -269,8 +269,8 @@ describe('F2 Agent chat native recovery', () => {
       await f.service.recover()
       assert.equal(f.repository.row.active_native_turn_id, 'native-first')
       assert.equal(f.repository.row.active_request_id, 'first')
-      assert.equal(f.repository.receipts[0]!.delivery, 'unknown')
-      assert.equal(f.repository.receipts[1]!.delivery, 'queued')
+      assert.equal(f.repository.storedReceipts[0]!.delivery, 'unknown')
+      assert.equal(f.repository.storedReceipts[1]!.delivery, 'queued')
       assert.equal(f.native.prompts.length, 0)
       assert.equal(f.repository.row.record.startupDelivered, false)
     })

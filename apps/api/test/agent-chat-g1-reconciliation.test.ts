@@ -44,7 +44,7 @@ async function eventually(check: () => boolean) {
 /** Storage fixture for SERVICE control-flow tests; real repository SQL boundaries are tested separately. */
 class MemoryRepository extends PostgresAgentChatRepository {
   row = row()
-  receipts = [receipt('first')]
+  storedReceipts = [receipt('first')]
   recovered = 0
   bound = 0
   bindGate?: ReturnType<typeof gate>
@@ -55,31 +55,31 @@ class MemoryRepository extends PostgresAgentChatRepository {
   override async get() { return structuredClone(this.row) }
   override async byKey() { return this.get() }
   override async open() { return [await this.get()] }
-  override async state() { return { row: await this.get(), turns: structuredClone(this.receipts), messages: [], hasEarlierMessages: false } }
+  override async state() { return { row: await this.get(), turns: structuredClone(this.storedReceipts), messages: [], hasEarlierMessages: false } }
   override async restoreUnsettled() {
     this.recovered++
     if (!this.row.active_request_id) {
-      const unresolved = this.receipts.find((entry) => entry.intent !== 'steer' && ['submitting', 'accepted', 'unknown'].includes(entry.delivery))
+      const unresolved = this.storedReceipts.find((entry) => entry.intent !== 'steer' && ['submitting', 'accepted', 'unknown'].includes(entry.delivery))
       if (unresolved) { this.row.active_request_id = unresolved.requestId; this.row.active_native_turn_id = unresolved.nativeTurnId ?? null }
     }
     return this.get()
   }
   override async unconfirmedSteers() {
-    return this.receipts.filter((entry) => entry.intent === 'steer' && ['submitting', 'unknown'].includes(entry.delivery)).map((entry) => ({
+    return this.storedReceipts.filter((entry) => entry.intent === 'steer' && ['submitting', 'unknown'].includes(entry.delivery)).map((entry) => ({
       requestId: entry.requestId, targetNativeTurnId: entry.targetNativeTurnId ?? null,
       delivery: entry.delivery === 'submitting' ? 'submitting' as const : 'unknown' as const,
-      targetRequestId: this.receipts.find((target) => target.intent !== 'steer' && target.nativeTurnId === entry.targetNativeTurnId)?.requestId ?? null,
+      targetRequestId: this.storedReceipts.find((target) => target.intent !== 'steer' && target.nativeTurnId === entry.targetNativeTurnId)?.requestId ?? null,
     }))
   }
-  override async turn(_id: string, requestId: string) { return structuredClone(this.receipts.find((entry) => entry.requestId === requestId)) }
+  override async turn(_id: string, requestId: string) { return structuredClone(this.storedReceipts.find((entry) => entry.requestId === requestId)) }
   override async turnContent(_id: string, requestId: string) { return `content-${requestId}` }
   override async nextQueued() {
-    return structuredClone(this.receipts.filter((entry) => entry.delivery === 'queued')
+    return structuredClone(this.storedReceipts.filter((entry) => entry.delivery === 'queued')
       .sort((a, b) => Number(b.intent === 'interrupt_and_send') - Number(a.intent === 'interrupt_and_send') || Number(a.sequence) - Number(b.sequence))[0])
   }
   override async claim(_id: string, requestId: string) {
-    if (this.row.active_request_id || this.row.record.sessionUnavailable || this.receipts.some((entry) => entry.intent !== 'steer' && ['submitting', 'accepted', 'unknown'].includes(entry.delivery))) return false
-    const entry = this.receipts.find((item) => item.requestId === requestId && item.delivery === 'queued')
+    if (this.row.active_request_id || this.row.record.sessionUnavailable || this.storedReceipts.some((entry) => entry.intent !== 'steer' && ['submitting', 'accepted', 'unknown'].includes(entry.delivery))) return false
+    const entry = this.storedReceipts.find((item) => item.requestId === requestId && item.delivery === 'queued')
     if (!entry) return false
     entry.delivery = 'submitting'; this.row.active_request_id = requestId; this.row.active_native_turn_id = null
     this.row.cancel_requested = false; this.row.turn_state = 'starting'
@@ -87,10 +87,10 @@ class MemoryRepository extends PostgresAgentChatRepository {
   }
   override async admit(input: Parameters<PostgresAgentChatRepository['admit']>[0]) {
     assert.equal(input.request.intent, 'steer', 'this fixture admits only the steer under test')
-    const prior = this.receipts.find((entry) => entry.requestId === input.request.requestId)
-    const entry = prior ?? { ...receipt(input.request.requestId, input.delivery, String(this.receipts.length + 1)),
+    const prior = this.storedReceipts.find((entry) => entry.requestId === input.request.requestId)
+    const entry = prior ?? { ...receipt(input.request.requestId, input.delivery, String(this.storedReceipts.length + 1)),
       intent: 'steer' as const, targetNativeTurnId: input.targetNativeTurnId! }
-    if (!prior) this.receipts.push(entry)
+    if (!prior) this.storedReceipts.push(entry)
     return { conversationId: this.row.id, turn: structuredClone(entry), replayed: Boolean(prior), created: false }
   }
   override async beginSessionCreation(_id: string, requestId: string) {
@@ -108,7 +108,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
   override async accepted(_id: string, requestId: string, nativeTurnId: string) {
     if (this.row.active_request_id !== requestId) return false
     assert.ok(!this.row.active_native_turn_id || this.row.active_native_turn_id === nativeTurnId)
-    const entry = this.receipts.find((item) => item.requestId === requestId)!
+    const entry = this.storedReceipts.find((item) => item.requestId === requestId)!
     entry.delivery = 'accepted'; entry.nativeTurnId = nativeTurnId
     this.row.active_native_turn_id = nativeTurnId; this.row.record.startupDelivered = true
     this.row.turn_state = this.row.cancel_requested ? 'canceling' : 'active'
@@ -116,14 +116,14 @@ class MemoryRepository extends PostgresAgentChatRepository {
   }
   override async steerAccepted(_id: string, requestId: string, nativeTurnId: string) {
     this.acknowledgedSteers.push(requestId)
-    const entry = this.receipts.find((item) => item.requestId === requestId)!
+    const entry = this.storedReceipts.find((item) => item.requestId === requestId)!
     assert.equal(entry.targetNativeTurnId, nativeTurnId)
-    const target = this.receipts.find((item) => item.intent !== 'steer' && item.nativeTurnId === nativeTurnId)
+    const target = this.storedReceipts.find((item) => item.intent !== 'steer' && item.nativeTurnId === nativeTurnId)
     entry.delivery = target && terminalDeliveries.has(target.delivery) ? target.delivery : 'accepted'
     entry.nativeTurnId = nativeTurnId
   }
   override async unknown(_id: string, requestId: string) {
-    const entry = this.receipts.find((item) => item.requestId === requestId)!
+    const entry = this.storedReceipts.find((item) => item.requestId === requestId)!
     if (['submitting', 'accepted'].includes(entry.delivery)) entry.delivery = 'unknown'
     if (this.row.active_request_id === requestId) this.row.turn_state = 'uncertain'
   }
@@ -136,7 +136,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
     return { requestId: this.row.active_request_id, nativeTurnId: this.row.active_native_turn_id }
   }
   override async cancelQueued(_id?: string, requestId?: string) {
-    const queued = this.receipts.filter((entry) => entry.delivery === 'queued' && (!requestId || entry.requestId === requestId))
+    const queued = this.storedReceipts.filter((entry) => entry.delivery === 'queued' && (!requestId || entry.requestId === requestId))
     for (const entry of queued) entry.delivery = 'canceled'
     return queued.length
   }
@@ -146,8 +146,8 @@ class MemoryRepository extends PostgresAgentChatRepository {
   override async finish(_id: string, requestId: string, result: ExecutionResult) {
     if (this.row.active_request_id !== requestId) return false
     const delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
-    this.receipts.find((entry) => entry.requestId === requestId)!.delivery = delivery
-    for (const steer of this.receipts.filter((entry) => entry.intent === 'steer' && entry.delivery === 'accepted' && entry.nativeTurnId === this.row.active_native_turn_id)) steer.delivery = delivery
+    this.storedReceipts.find((entry) => entry.requestId === requestId)!.delivery = delivery
+    for (const steer of this.storedReceipts.filter((entry) => entry.intent === 'steer' && entry.delivery === 'accepted' && entry.nativeTurnId === this.row.active_native_turn_id)) steer.delivery = delivery
     this.finishes.push(requestId)
     this.row.active_request_id = null; this.row.active_native_turn_id = null; this.row.cancel_requested = false
     this.row.turn_state = 'idle'; this.row.last_result = result; this.row.pending_interaction = null
@@ -248,12 +248,12 @@ interface Internals {
 describe('G1 cancellation and reconciliation', () => {
   it('A2-PF-01 delivers Stop after lost start ACK and holds urgent/FIFO work until terminal proof', async () => {
     const f = await fixture()
-    f.repository.receipts[0]!.delivery = 'submitting'
+    f.repository.storedReceipts[0]!.delivery = 'submitting'
     f.native.loseStartAck = true; f.native.hideHistory = true
-    await f.internal.runTurn('conversation', f.repository.receipts[0]!)
-    assert.equal(f.repository.receipts[0]!.delivery, 'unknown')
+    await f.internal.runTurn('conversation', f.repository.storedReceipts[0]!)
+    assert.equal(f.repository.storedReceipts[0]!.delivery, 'unknown')
     await f.repository.requestCancel()
-    f.repository.receipts.push(receipt('ordinary', 'queued', '2'), { ...receipt('urgent', 'queued', '3'), intent: 'interrupt_and_send' })
+    f.repository.storedReceipts.push(receipt('ordinary', 'queued', '2'), { ...receipt('urgent', 'queued', '3'), intent: 'interrupt_and_send' })
     await f.internal.interruptActive('conversation', false, { requestId: 'first', nativeTurnId: null })
     assert.deepEqual(f.native.cancellations, [])
     f.native.hideHistory = false
@@ -262,12 +262,12 @@ describe('G1 cancellation and reconciliation', () => {
     assert.equal(f.repository.row.cancel_requested, true)
     assert.equal(f.repository.row.active_request_id, 'first')
     assert.deepEqual(f.native.starts.map((entry) => entry.clientCorrelationId), [agentChatCorrelation('conversation', 'first')])
-    assert.equal(f.repository.receipts[1]!.delivery, 'queued')
-    assert.equal(f.repository.receipts[2]!.delivery, 'queued')
+    assert.equal(f.repository.storedReceipts[1]!.delivery, 'queued')
+    assert.equal(f.repository.storedReceipts[2]!.delivery, 'queued')
     f.native.loseStartAck = false; f.native.complete.add('ordinary'); f.native.complete.add('urgent')
     f.native.histories.set(agentChatCorrelation('conversation', 'first'), proof('first', { outcome: 'canceled' }))
     await f.service.recover()
-    await eventually(() => f.repository.receipts.every((entry) => terminalDeliveries.has(entry.delivery)))
+    await eventually(() => f.repository.storedReceipts.every((entry) => terminalDeliveries.has(entry.delivery)))
     assert.deepEqual(f.native.starts.map((entry) => entry.clientCorrelationId.split(':').at(-1)), ['first', 'urgent', 'ordinary'])
     assert.deepEqual(f.repository.finishes, ['first', 'urgent', 'ordinary'])
     assert.equal(f.native.created, 0)
@@ -276,7 +276,7 @@ describe('G1 cancellation and reconciliation', () => {
   it('A2-PF-01 replays persisted cancellation after restart, not the control command or prompt', async () => {
     const f = await fixture()
     f.repository.row.active_native_turn_id = 'native-first'; f.repository.row.cancel_requested = true
-    f.repository.receipts.push(receipt('queued', 'queued', '2'))
+    f.repository.storedReceipts.push(receipt('queued', 'queued', '2'))
     f.native.histories.set(agentChatCorrelation('conversation', 'first'), proof())
     f.native.cancelFailures = 1
     await f.service.recover()
@@ -287,7 +287,7 @@ describe('G1 cancellation and reconciliation', () => {
     assert.equal(f.native.attachments.length, 1)
     assert.equal(f.native.attachments[0]!.nativeTurnId, 'native-first')
     assert.deepEqual(f.native.starts, [])
-    assert.equal(f.repository.receipts[1]!.delivery, 'queued')
+    assert.equal(f.repository.storedReceipts[1]!.delivery, 'queued')
   })
 
   it('A2-PF-01 never applies a captured old cancellation to a later owner', async () => {
@@ -319,11 +319,11 @@ describe('G1 cancellation and reconciliation', () => {
     it(`A2-PF-02 Stop during live ${harness} ${held} does not poison successful creation`, async () => {
       const f = await fixture(new MemoryRepository(), new NativeFixture(harness))
       f.repository.row.native_session_id = null; f.repository.row.provider_version = null
-      f.repository.receipts[0]!.delivery = 'submitting'
+      f.repository.storedReceipts[0]!.delivery = 'submitting'
       const hold = gate(); cleanups.push(hold.release)
       if (held === 'create') f.native.createGate = hold
       else f.repository.bindGate = hold
-      const running = f.internal.runTurn('conversation', f.repository.receipts[0]!)
+      const running = f.internal.runTurn('conversation', f.repository.storedReceipts[0]!)
       await eventually(() => held === 'create' ? f.native.created === 1 : f.repository.bound === 1)
       await f.internal.interruptActive('conversation', true, await f.repository.interrupt())
       await eventually(() => f.repository.recovered > 0) // Exercise the actual one-second repair timer while held.
@@ -334,10 +334,10 @@ describe('G1 cancellation and reconciliation', () => {
       hold.release(); await running
       assert.equal(f.repository.row.native_session_id, session.nativeSessionId)
       assert.equal(f.repository.row.record.sessionUnavailable, undefined)
-      assert.equal(f.repository.receipts[0]!.delivery, 'canceled')
+      assert.equal(f.repository.storedReceipts[0]!.delivery, 'canceled')
       assert.deepEqual(f.native.starts, [], 'Stop before submission settles locally; do not send a prompt just to cancel it')
-      f.repository.receipts.push(receipt('next', 'queued', '2')); f.native.complete.add('next')
-      await f.service.recover(); await eventually(() => f.repository.receipts[1]!.delivery === 'completed')
+      f.repository.storedReceipts.push(receipt('next', 'queued', '2')); f.native.complete.add('next')
+      await f.service.recover(); await eventually(() => f.repository.storedReceipts[1]!.delivery === 'completed')
       assert.equal(f.native.created, 1, 'continuation uses the successfully bound session')
       assert.equal(f.native.starts.length, 1)
     })
@@ -348,7 +348,7 @@ describe('G1 cancellation and reconciliation', () => {
     f.repository.row.native_session_id = null; f.repository.row.provider_version = null
     f.repository.row.record.origin = { kind: 'run_execution', runId: 'run', executionId: 'source-execution', sourceNativeSessionId: 'source-session' }
     const hold = gate(); f.repository.bindGate = hold; cleanups.push(hold.release)
-    const running = f.internal.runTurn('conversation', f.repository.receipts[0]!)
+    const running = f.internal.runTurn('conversation', f.repository.storedReceipts[0]!)
     await eventually(() => f.repository.bound === 1)
     await f.internal.interruptActive('conversation', true, await f.repository.interrupt())
     await f.internal.repair('conversation')
@@ -357,7 +357,7 @@ describe('G1 cancellation and reconciliation', () => {
     assert.equal(f.native.forked, 1); assert.equal(f.native.created, 0)
     assert.equal(f.repository.row.native_session_id, session.nativeSessionId)
     assert.equal(f.repository.row.record.startupDelivered, true)
-    assert.equal(f.repository.receipts[0]!.delivery, 'canceled')
+    assert.equal(f.repository.storedReceipts[0]!.delivery, 'canceled')
     assert.deepEqual(f.native.starts, [])
   })
 
@@ -365,7 +365,7 @@ describe('G1 cancellation and reconciliation', () => {
     const f = await fixture()
     f.repository.row.native_session_id = null; f.repository.row.provider_version = null
     const hold = gate(); f.repository.bindGate = hold; cleanups.push(hold.release)
-    const running = f.internal.runTurn('conversation', f.repository.receipts[0]!)
+    const running = f.internal.runTurn('conversation', f.repository.storedReceipts[0]!)
     await eventually(() => f.repository.bound === 1)
     let stopped = false
     const shutdown = f.service.shutdown().then(() => { stopped = true })
@@ -381,9 +381,9 @@ describe('G1 cancellation and reconciliation', () => {
       const f = await fixture()
       f.repository.row.native_session_id = null; f.repository.row.provider_version = null
       f.native.loseCreation = fault === 'lost-creation'; f.repository.bindFailure = fault === 'failed-binding'
-      await f.internal.runTurn('conversation', f.repository.receipts[0]!)
+      await f.internal.runTurn('conversation', f.repository.storedReceipts[0]!)
       assert.match(f.repository.row.record.sessionUnavailable!, /read-only/)
-      assert.equal(f.repository.receipts[0]!.delivery, 'unknown')
+      assert.equal(f.repository.storedReceipts[0]!.delivery, 'unknown')
       assert.equal(f.repository.row.active_request_id, 'first')
       await f.service.shutdown()
       const restarted = await fixture(f.repository)
@@ -408,9 +408,9 @@ describe('G1 cancellation and reconciliation', () => {
     f.native.histories.set(agentChatCorrelation('conversation', 'first'), proof('first', { outcome: 'succeeded' }))
     await f.service.recover()
     assert.equal(f.repository.row.active_request_id, null)
-    assert.equal(f.repository.receipts[1]!.delivery, 'unknown', 'target completion alone is not a steer receipt')
+    assert.equal(f.repository.storedReceipts[1]!.delivery, 'unknown', 'target completion alone is not a steer receipt')
     f.native.hideSteerEvidence = false
-    await eventually(() => f.repository.receipts[1]!.delivery === 'completed')
+    await eventually(() => f.repository.storedReceipts[1]!.delivery === 'completed')
     assert.deepEqual(f.repository.acknowledgedSteers, ['steer'])
     assert.equal(f.native.steered, 1)
     assert.deepEqual(f.native.starts, [])
@@ -420,12 +420,12 @@ describe('G1 cancellation and reconciliation', () => {
     it(`A2-PF-05 cold steer-only recovery uses the original ${delivery} target and never owns a turn`, async () => {
       const f = await fixture()
       f.repository.row.active_request_id = null
-      f.repository.receipts[0] = { ...receipt('first', delivery), nativeTurnId: 'native-first' }
-      f.repository.receipts.push({ ...receipt('steer', 'unknown', '2'), intent: 'steer', targetNativeTurnId: 'native-first' })
+      f.repository.storedReceipts[0] = { ...receipt('first', delivery), nativeTurnId: 'native-first' }
+      f.repository.storedReceipts.push({ ...receipt('steer', 'unknown', '2'), intent: 'steer', targetNativeTurnId: 'native-first' })
       f.native.hideSteerEvidence = false
       f.native.steerEvidence = [{ nativeSessionId: session.nativeSessionId, nativeTurnId: 'native-first', correlationId: agentChatCorrelation('conversation', 'steer') }]
       await f.service.recover()
-      assert.equal(f.repository.receipts[1]!.delivery, delivery)
+      assert.equal(f.repository.storedReceipts[1]!.delivery, delivery)
       assert.equal(f.repository.row.active_request_id, null)
       assert.equal(f.native.attachments[0]!.correlationId, agentChatCorrelation('conversation', 'first'))
       assert.equal(f.native.attachments[0]!.nativeTurnId, 'native-first')
@@ -436,7 +436,7 @@ describe('G1 cancellation and reconciliation', () => {
 
   it('A2-PF-05 settles an old unknown steer without retargeting a later active request', async () => {
     const f = await fixture()
-    f.repository.receipts = [{ ...receipt('first', 'completed'), nativeTurnId: 'native-first' },
+    f.repository.storedReceipts = [{ ...receipt('first', 'completed'), nativeTurnId: 'native-first' },
       { ...receipt('steer', 'unknown', '2'), intent: 'steer', targetNativeTurnId: 'native-first' },
       { ...receipt('later', 'accepted', '3'), nativeTurnId: 'native-later' }]
     f.repository.row.active_request_id = 'later'; f.repository.row.active_native_turn_id = 'native-later'
@@ -444,7 +444,7 @@ describe('G1 cancellation and reconciliation', () => {
     f.native.hideSteerEvidence = false
     f.native.steerEvidence = [{ nativeSessionId: session.nativeSessionId, nativeTurnId: 'native-first', correlationId: agentChatCorrelation('conversation', 'steer') }]
     await f.service.recover()
-    assert.equal(f.repository.receipts[1]!.delivery, 'completed')
+    assert.equal(f.repository.storedReceipts[1]!.delivery, 'completed')
     assert.equal(f.repository.row.active_request_id, 'later'); assert.equal(f.repository.row.active_native_turn_id, 'native-later')
     assert.equal(f.native.attachments[0]!.correlationId, agentChatCorrelation('conversation', 'later'))
     assert.deepEqual(f.native.steerReads, [[{ clientCorrelationId: agentChatCorrelation('conversation', 'steer'), expectedTurnId: 'native-first' }]])
@@ -453,7 +453,7 @@ describe('G1 cancellation and reconciliation', () => {
 
   it('A2-PF-05 a failed old-steer lookup does not downgrade independently proven active delivery', async () => {
     const f = await fixture()
-    f.repository.receipts = [{ ...receipt('first', 'completed'), nativeTurnId: 'native-first' },
+    f.repository.storedReceipts = [{ ...receipt('first', 'completed'), nativeTurnId: 'native-first' },
       { ...receipt('steer', 'unknown', '2'), intent: 'steer', targetNativeTurnId: 'native-first' },
       { ...receipt('later', 'accepted', '3'), nativeTurnId: 'native-later' }]
     f.repository.row.active_request_id = 'later'; f.repository.row.active_native_turn_id = 'native-later'
@@ -461,8 +461,8 @@ describe('G1 cancellation and reconciliation', () => {
     f.native.steerReadFailure = true
     await f.service.recover()
     assert.equal(f.native.steerReads.length, 1)
-    assert.equal(f.repository.receipts[1]!.delivery, 'unknown')
-    assert.equal(f.repository.receipts[2]!.delivery, 'accepted')
+    assert.equal(f.repository.storedReceipts[1]!.delivery, 'unknown')
+    assert.equal(f.repository.storedReceipts[2]!.delivery, 'accepted')
     assert.equal(f.repository.row.active_request_id, 'later'); assert.equal(f.repository.row.turn_state, 'active')
     assert.equal(f.repository.row.record.sessionUnavailable, undefined)
     assert.deepEqual(f.native.starts, [])
@@ -471,13 +471,13 @@ describe('G1 cancellation and reconciliation', () => {
   it('A2-PF-05 rejects wrong session, correlation and target, including a provisional crash-left steer', async () => {
     const f = await fixture()
     f.repository.row.active_request_id = null
-    f.repository.receipts[0] = { ...receipt('first', 'completed'), nativeTurnId: 'native-first' }
-    f.repository.receipts.push({ ...receipt('steer', 'submitting', '2'), intent: 'steer', targetNativeTurnId: 'native-first' })
+    f.repository.storedReceipts[0] = { ...receipt('first', 'completed'), nativeTurnId: 'native-first' }
+    f.repository.storedReceipts.push({ ...receipt('steer', 'submitting', '2'), intent: 'steer', targetNativeTurnId: 'native-first' })
     const exact = { nativeSessionId: session.nativeSessionId, nativeTurnId: 'native-first', correlationId: agentChatCorrelation('conversation', 'steer') }
     f.native.hideSteerEvidence = false
     for (const evidence of [[], [{ ...exact, nativeSessionId: 'other' }], [{ ...exact, correlationId: agentChatCorrelation('conversation', 'first') }], [{ ...exact, nativeTurnId: 'other' }]]) {
       f.native.steerEvidence = evidence; await f.service.recover()
-      assert.equal(f.repository.receipts[1]!.delivery, 'unknown')
+      assert.equal(f.repository.storedReceipts[1]!.delivery, 'unknown')
       assert.equal(f.repository.row.active_request_id, null)
     }
     assert.deepEqual(f.repository.acknowledgedSteers, [])

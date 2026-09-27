@@ -1,12 +1,10 @@
 import type { FastifyInstance } from 'fastify'
-import { z } from 'zod'
 
 import {
-  AgentChatHistoryPageSchema, AgentChatQuerySchema, AgentChatStateResponseSchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
+  AgentChatHistoryPageSchema, AgentChatTurnPageSchema, AgentChatReadbackQuerySchema, AgentChatQuerySchema, AgentChatStateResponseSchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
   InterruptAgentChatRequestSchema, RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema,
   SendAgentChatMessageResponseSchema, type AgentChatStreamEvent,
 } from '@graphql/contracts/agent-chat'
-import { OperatorHistoryCursorSchema } from '@graphql/contracts/operator-chat'
 
 import { requirePrincipal } from '../modules/access/http.js'
 import type { AgentChatService } from '../modules/conversations/agentChat.js'
@@ -17,7 +15,6 @@ import { createSseWriter } from './sseWriter.js'
 interface WorkspaceParams { workspaceId: string }
 interface ConversationParams extends WorkspaceParams { conversationId: string }
 interface TurnParams extends ConversationParams { turnRequestId: string }
-const HistoryQuerySchema = z.object({ before: OperatorHistoryCursorSchema.optional(), limit: z.coerce.number().int().min(1).max(100).default(50) }).strict()
 const MAX_STREAMS = 64
 const MAX_OWNER_STREAMS = 16
 const MAX_BOOTSTRAP_EVENTS = 128
@@ -51,8 +48,14 @@ export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatSer
       request.params.conversationId, input) })
   })
   app.get<{ Params: ConversationParams; Querystring: unknown }>(`${root}/conversations/:conversationId/history`, async (request) => {
-    const query = HistoryQuerySchema.parse(request.query)
+    const query = AgentChatReadbackQuerySchema.parse(request.query)
     return AgentChatHistoryPageSchema.parse(await chat.history(requirePrincipal(request), request.params.workspaceId,
+      request.params.conversationId, query.before, query.limit))
+  })
+
+  app.get<{ Params: ConversationParams; Querystring: unknown }>(`${root}/conversations/:conversationId/turns`, async (request) => {
+    const query = AgentChatReadbackQuerySchema.parse(request.query)
+    return AgentChatTurnPageSchema.parse(await chat.receipts(requirePrincipal(request), request.params.workspaceId,
       request.params.conversationId, query.before, query.limit))
   })
 

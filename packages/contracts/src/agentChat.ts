@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
 
 import {
   AgentHarnessSchema, ExecutionResultSchema, IdSchema, MessageSchema, OperatorActivityCursorSchema,
@@ -168,8 +169,10 @@ export const AgentChatStateSchema = z.object({
     nativeTurnId: IdSchema.optional(),
     startedAt: TimestampSchema,
   }).strict().nullable(),
-  /** Recent receipts, oldest first, including every non-terminal (queued/submitting/unknown) turn. */
+  /** Recent receipts, oldest first, including every non-terminal turn unless hasMoreTurns is true. */
   turns: z.array(AgentChatTurnSchema).max(100),
+  /** Legacy overflow recovery only: turns is incomplete, sending is blocked, queued cancellation remains available. */
+  hasMoreTurns: z.literal(true).optional(),
   messages: z.array(MessageSchema).max(100),
   hasEarlierMessages: z.boolean(),
   activities: z.array(OperatorActivitySchema).max(100),
@@ -222,6 +225,28 @@ export const AgentChatHistoryPageSchema = z.object({
   conversationId: IdSchema,
   messages: z.array(MessageSchema).max(100),
   nextCursor: OperatorActivityCursorSchema.nullable(),
+}).strict();
+
+/** Shared bigint keyset pagination for HTTP and MCP message/receipt readback. */
+export const AgentChatReadbackQuerySchema = OperatorConversationHistoryQuerySchema;
+
+/** GET .../conversations/:conversationId/turns?before&limit — all retained receipts, oldest first per page. */
+export const AgentChatTurnPageSchema = z.object({
+  conversationId: IdSchema,
+  turns: z.array(AgentChatTurnSchema).max(100),
+  nextCursor: OperatorActivityCursorSchema.nullable(),
+}).strict();
+
+/** agent_chat_read retains its ordinary state response; explicit page requests add readback fields. */
+export const ReadAgentChatRequestSchema = z.object({
+  workspaceId: IdSchema,
+  query: AgentChatQuerySchema,
+  history: AgentChatReadbackQuerySchema.optional(),
+  receipts: AgentChatReadbackQuerySchema.optional(),
+}).strict();
+export const ReadAgentChatResponseSchema = AgentChatStateSchema.extend({
+  history: AgentChatHistoryPageSchema.optional(),
+  receipts: AgentChatTurnPageSchema.optional(),
 }).strict();
 
 /**

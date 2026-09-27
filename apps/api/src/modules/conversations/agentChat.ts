@@ -7,7 +7,7 @@ import {
   ExecutionLocationSchema, type AgentConfigurationVersion, type HarnessExecution, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference,
 } from '@graphql/contracts'
 import {
-  AgentChatStateSchema, AgentChatStreamEventSchema, SendAgentChatMessageRequestSchema,
+  AgentChatStateSchema, AgentChatStreamEventSchema, SendAgentChatMessageRequestSchema, AgentChatReadbackQuerySchema,
   InterruptAgentChatRequestSchema, CancelQueuedAgentChatTurnRequestSchema, RespondAgentChatInteractionRequestSchema,
   type AgentChatBlockedReason, type AgentChatCapabilities, type AgentChatContext, type AgentChatOrigin, type AgentChatQuery,
   type AgentChatSessionState, type AgentChatState, type AgentChatStreamEvent, type AgentChatTurn, type SendAgentChatMessageRequest,
@@ -96,6 +96,10 @@ function nativeUnavailable(error: unknown): { reason: 'native_session_missing' |
   const code = nativeErrorCode(error)
   if (code === 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' || code === 'CODEX_APP_MCP_UNAVAILABLE' || code === 'OPENCODE_APP_MCP_UNAVAILABLE') {
     return { reason: 'harness_unavailable', message: 'This conversation is unavailable because its native configuration requires App MCP authority. Agent chat never receives App MCP or workflow credentials.' }
+  }
+  if (code && ['CODEX_MCP_CONFIG_INVALID', 'CODEX_ENVIRONMENT_INVALID',
+    'OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'OPENCODE_CREDENTIAL_CONTEXT_MISMATCH'].includes(code)) {
+    return { reason: 'harness_unavailable', message: 'Native App MCP/environment validation failed. Agent chat cannot use application or workflow credentials; check the native configuration.' }
   }
   if (code === 'AGENT_CHAT_EPHEMERAL_SESSION_LOST') return { reason: 'native_session_missing', message: EPHEMERAL_SESSION_LOST }
   if (code && (/SESSION_NOT_FOUND|THREAD_NOT_FOUND|SESSION_ID_MISMATCH|SETTING_UNSUPPORTED|VERSION_MISMATCH/.test(code)
@@ -304,15 +308,22 @@ export class AgentChatService {
       return AgentChatStateSchema.parse({ context, conversation: null, sessionState: 'none', availability, capabilities,
         activeTurn: null, turns: [], messages: [], hasEarlierMessages: false, activities: [], revision: 0 })
     }
-    const loaded = await this.repository.state(resolution.row.id)
+    const loaded = await this.repository.state(resolution.row.id, { recoverOverflow: true })
     if (!loaded) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
     const { row } = loaded
+    if (loaded.hasMoreTurns) {
+      availability.canSend = false
+      availability.message = [availability.message,
+        'This chat has more than 100 unfinished messages. Only a recovery window is shown. Cancel queued messages to free capacity; Stop chat also cancels all queued messages when available. Unconfirmed deliveries still require native evidence.']
+        .filter(Boolean).join(' ')
+    }
     const activities = (await this.activity.page(row.id, { limit: 100 })).activities
     return AgentChatStateSchema.parse({
       context, conversation: agentConversation(row), sessionState: this.sessionUnavailable(row, resolution.configuration) ? 'unavailable' : this.sessionState(row), availability, capabilities,
       activeTurn: row.active_request_id ? { requestId: row.active_request_id,
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}), startedAt: row.updated_at.toISOString() } : null,
       turns: loaded.turns, messages: loaded.messages, hasEarlierMessages: loaded.hasEarlierMessages, activities,
+      ...(loaded.hasMoreTurns ? { hasMoreTurns: true } : {}),
       ...(row.pending_interaction ? { pendingInteraction: row.pending_interaction } : {}),
       ...(row.last_result ? { lastResult: row.last_result } : {}),
       revision: Number(row.revision),
@@ -332,7 +343,13 @@ export class AgentChatService {
   }
   async history(principal: ManagementPrincipal, workspaceId: string, id: string, before: string | undefined, limit: number) {
     await this.conversation(workspaceId, id, principal, 'agent_chat:read')
-    return { conversationId: id, ...await this.repository.history(id, before, limit) }
+    const page = AgentChatReadbackQuerySchema.parse({ before, limit })
+    return { conversationId: id, ...await this.repository.history(id, page.before, page.limit) }
+  }
+  async receipts(principal: ManagementPrincipal, workspaceId: string, id: string, before: string | undefined, limit: number) {
+    await this.conversation(workspaceId, id, principal, 'agent_chat:read')
+    const page = AgentChatReadbackQuerySchema.parse({ before, limit })
+    return { conversationId: id, ...await this.repository.receipts(id, page.before, page.limit) }
   }
   async assertReadable(principal: ManagementPrincipal, workspaceId: string, id: string) {
     await this.conversation(workspaceId, id, principal, 'agent_chat:read')

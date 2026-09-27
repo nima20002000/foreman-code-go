@@ -153,6 +153,17 @@ export class PostgresAgentChatRepository {
           [id, unresolved.request_id, unresolved.native_turn_id])
         }
       }
+      if (row?.record.sessionUnavailable) {
+        // Older unavailable conversations skip native repair, but must not retain a running UI claim.
+        // The conversation lock and exact unknown-receipt join preserve concurrent terminal evidence.
+        const activity = await client.query(`update operator_conversation_activity as activity set revision=activity.revision+1,
+          record=jsonb_set(activity.record,'{status}','"unknown"'::jsonb)
+          where activity.conversation_id=$1 and activity.record->>'status' in ('pending','running')
+            and exists (select 1 from operator_conversation_turns receipt
+              where receipt.conversation_id=activity.conversation_id and receipt.request_id=activity.request_id
+                and receipt.delivery='unknown')`, [id])
+        if (activity.rowCount) await this.bump(id, client)
+      }
       const restored = row ? await this.get(id, client) : undefined
       await client.query('commit')
       return restored
@@ -521,11 +532,13 @@ export class PostgresAgentChatRepository {
     return result.rowCount ?? 0
   }
 
-  async state(id: string): Promise<{ row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean } | undefined> {
+  async state(id: string, options: { recoverOverflow?: boolean } = {}): Promise<{
+    row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true
+  } | undefined> {
     const row = await this.get(id)
     if (!row) return undefined
     // Open receipts have priority over recent terminal history, in one SQL snapshot.
-    // Fetch one extra open receipt to detect pre-existing over-capacity data, never truncate it.
+    // Fetch one extra open receipt to detect overflow before selecting an explicit recovery window.
     const receiptRows = (await this.pool.query<TurnRow>(`with open as (
         select ${TURN_COLUMNS} from operator_conversation_turns where conversation_id=$1 and intent is not null
           and delivery = any($2::text[]) order by operator_conversation_turns.turn_sequence limit $3::int + 1
@@ -535,14 +548,24 @@ export class PostgresAgentChatRepository {
           limit least(50, greatest(0, $3::int - (select count(*) from open)))
       ) select * from (select * from open union all select * from recent) visible order by turn_sequence::bigint`,
     [id, OPEN_DELIVERIES, AGENT_CHAT_OPEN_TURN_LIMIT])).rows
-    if (receiptRows.length > AGENT_CHAT_OPEN_TURN_LIMIT) {
+    const overflow = receiptRows.length > AGENT_CHAT_OPEN_TURN_LIMIT
+    if (overflow && !options.recoverOverflow) {
       throw new DomainError('AGENT_CHAT_RECEIPT_OVERFLOW',
         'This chat exceeds the unfinished-message limit. Settle unfinished turns or cancel queued messages before reading state.',
         409, { limit: AGENT_CHAT_OPEN_TURN_LIMIT })
     }
-    const turns = receiptRows.map(turn)
+    const turns = receiptRows.slice(0, AGENT_CHAT_OPEN_TURN_LIMIT).map(turn)
+    if (overflow) {
+      // Make cleanup reachable even when the oldest 100 receipts are all unconfirmed.
+      // Reads never cancel, delete, or settle anything; the omitted receipts remain pageable.
+      const queued = await this.nextQueued(id)
+      if (queued && !turns.some((entry) => entry.requestId === queued.requestId)) {
+        turns[turns.length - 1] = queued
+        turns.sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0)
+      }
+    }
     // Keep the newest contiguous window within the same byte budget as Operator
-    // chat. Oversized/older messages are retained in storage and paged over HTTP.
+    // chat. Oversized/older messages are retained in storage and paged over HTTP/MCP.
     const recent = (await this.pool.query<{ messages: unknown[]; has_earlier: boolean }>(`with candidates as (
       select m.*,row_number() over (order by m.sequence desc) as ordinal,
         sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
@@ -552,7 +575,16 @@ export class PostgresAgentChatRepository {
     select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
       (select count(*) from candidates)>(select count(*) from selected) as has_earlier`,
     [id, AGENT_CHAT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])).rows[0]!
-    return { row, turns, messages: recent.messages.map((entry) => MessageSchema.parse(entry)), hasEarlierMessages: recent.has_earlier }
+    return { row, turns, messages: recent.messages.map((entry) => MessageSchema.parse(entry)), hasEarlierMessages: recent.has_earlier,
+      ...(overflow ? { hasMoreTurns: true as const } : {}) }
+  }
+  async receipts(id: string, before: string | undefined, limit: number) {
+    const rows = (await this.pool.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
+      where conversation_id=$1 and intent is not null and ($2::bigint is null or turn_sequence<$2::bigint)
+      order by operator_conversation_turns.turn_sequence desc limit ($3::integer+1)`, [id, before ?? null, limit])).rows
+    const selected = rows.slice(0, limit)
+    const nextCursor = rows.length > limit ? selected[selected.length - 1]!.turn_sequence : null
+    return { turns: selected.reverse().map(turn), nextCursor }
   }
   async history(id: string, before: string | undefined, limit: number) {
     const page = (await this.pool.query<{ messages: unknown[]; next_cursor: string | null }>(`with candidates as (
@@ -566,7 +598,7 @@ export class PostgresAgentChatRepository {
       case when exists(select 1 from candidates where sequence<(select min(sequence) from selected))
         then (select min(sequence)::text from selected) else null end as next_cursor`,
     [id, before ?? null, limit, OPERATOR_HISTORY_PAGE_BYTES])).rows[0]!
-    // One oversized message is allowed only over HTTP, ensuring cursor progress
+    // One oversized message is allowed over HTTP/MCP readback, ensuring cursor progress
     // without truncating native content or putting it back in a live snapshot.
     return { messages: page.messages.map((entry) => MessageSchema.parse(entry)), nextCursor: page.next_cursor }
   }

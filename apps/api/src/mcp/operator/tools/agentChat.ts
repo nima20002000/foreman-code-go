@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import {
   InterruptAgentChatRequestSchema, CancelQueuedAgentChatTurnRequestSchema, RespondAgentChatInteractionRequestSchema,
-  AgentChatQuerySchema, AgentChatStateResponseSchema, AgentChatStateSchema, SendAgentChatMessageRequestSchema, SendAgentChatMessageResponseSchema,
+  ReadAgentChatRequestSchema, ReadAgentChatResponseSchema, AgentChatStateResponseSchema, SendAgentChatMessageRequestSchema, SendAgentChatMessageResponseSchema,
 } from '@graphql/contracts/agent-chat'
 
 import { invokeOperatorTool } from '../invoke.js'
@@ -17,10 +17,17 @@ export function registerAgentChatTools(server: McpServer, context: OperatorReque
   const chat = context.services.agentChat
   if (!chat) return
   if (operatorToolAvailable(context, 'agent_chat_read')) server.registerTool('agent_chat_read', {
-    description: 'Read the chat for one workflow Agent node, optionally for a finished Run (runId). Returns the conversation, native session, delivery receipts, messages, public activity, capabilities and why sending is blocked. A missing conversation means the first message will create one real native session. Requires agent_chat:read.',
-    inputSchema: z.object({ workspaceId: workspace, query: AgentChatQuerySchema }).strict(), outputSchema: AgentChatStateSchema,
+    description: 'Read the chat for one workflow Agent node, optionally for a finished Run (runId). Returns the conversation, native session, delivery receipts, messages, public activity, capabilities and why sending is blocked. A missing conversation means the first message will create one real native session. Pass history: {limit, before?} to retrieve complete messages omitted from the byte-bounded snapshot (including a single oversized message); follow history.nextCursor until null. Pass receipts: {limit, before?} to page all retained delivery receipts; follow receipts.nextCursor until null. Pages are oldest-first and begin with the newest page when before is omitted. hasMoreTurns marks legacy overflow: sending is blocked, not all receipts fit in state.turns, and queued receipts can be canceled with agent_chat_cancel_queued or agent_chat_interrupt. Unconfirmed deliveries are never treated as canceled. Requires agent_chat:read.',
+    inputSchema: ReadAgentChatRequestSchema, outputSchema: ReadAgentChatResponseSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ workspaceId, query }) => invokeOperatorTool(context, 'agent_chat_read', () => chat.read(context.principal, workspaceId, query)))
+  }, async ({ workspaceId, query, history, receipts }) => invokeOperatorTool(context, 'agent_chat_read', async () => {
+    const state = await chat.read(context.principal, workspaceId, query)
+    const id = state.conversation?.id
+    return { ...state,
+      ...(id && history ? { history: await chat.history(context.principal, workspaceId, id, history.before, history.limit) } : {}),
+      ...(id && receipts ? { receipts: await chat.receipts(context.principal, workspaceId, id, receipts.before, receipts.limit) } : {}),
+    }
+  }))
   if (operatorToolAvailable(context, 'agent_chat_send')) server.registerTool('agent_chat_send', {
     description: 'Send a message to a workflow Agent chat. intent next_turn queues after the active turn (or starts now when idle); steer adds input to the active turn only when capabilities.steer allows it and needs expectedNativeTurnId; interrupt_and_send stops the active turn and sends once. Set expectedConversationId to the conversation id read before (null for the first message). Reuse the exact requestId and input after a lost response: the stored receipt is returned and nothing is resent. Never starts or changes a workflow Run. Requires agent_chat:write and agent_chat:read.',
     inputSchema: z.object({ workspaceId: workspace, request: SendAgentChatMessageRequestSchema }).strict(), outputSchema: SendAgentChatMessageResponseSchema,
