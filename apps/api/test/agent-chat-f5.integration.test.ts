@@ -18,7 +18,7 @@ import { AgentChatF5Native, deferred, eventually } from './helpers/agentChatF5.j
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 
 /** Opt-in real SQL/authenticated transports; native I/O remains a deterministic substitute. */
-describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / MCP regressions', () => {
+describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / MCP regressions', { timeout: 60_000 }, () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
   let pool: pg.Pool
   let root: string

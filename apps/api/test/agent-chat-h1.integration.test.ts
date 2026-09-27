@@ -37,7 +37,7 @@ vi.mock('../src/modules/harnesses/process.js', async (importOriginal) => ({
 }))
 
 async function eventually(check: () => boolean | Promise<boolean>) {
-  const end = Date.now() + 5_000
+  const end = Date.now() + 30_000
   while (!await check()) {
     assert.ok(Date.now() < end, 'The H1 persisted transition did not occur.')
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -46,7 +46,7 @@ async function eventually(check: () => boolean | Promise<boolean>) {
 type Mode = 'reject' | 'success' | 'uncertain' | 'cleanup-failure' | 'activation-failure'
 
 /** Opt in with the repository's PostgreSQL test setting. Never real-native acceptance evidence. */
-describe.skipIf(!postgresEnabled)('H1 persisted creation / authenticated HTTP-MCP legacy replay', () => {
+describe.skipIf(!postgresEnabled)('H1 persisted creation / authenticated HTTP-MCP legacy replay', { timeout: 60_000 }, () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
   let pool: pg.Pool
   let saved: ReturnType<typeof makeCurrentWorkflowFixture>

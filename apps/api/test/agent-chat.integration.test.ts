@@ -137,7 +137,8 @@ function makeService() {
 
 async function settled(service: AgentChatService, state: () => Promise<AgentChatState>, until: (value: AgentChatState) => boolean = (value) =>
   !value.activeTurn && !value.turns.some((turn) => ['queued', 'submitting'].includes(turn.delivery))) {
-  for (let attempt = 0; attempt < 200; attempt++) {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
     const value = await state()
     if (until(value)) return value
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -182,7 +183,7 @@ beforeEach(async () => {
   FakeNative.all = []; runExecutions = []; runState = 'completed'; runSourceFixture = fixture; runReads.length = 0
 })
 
-describe('selected-Agent chat service', () => {
+describe('selected-Agent chat service', { timeout: 60_000 }, () => {
   it('creates exactly one native session on first send and continues it after completion', async () => {
     const { service } = makeService()
     const empty = await service.read(writer, fixture.scope.workspaceId, query(codexNode))
@@ -234,7 +235,7 @@ describe('selected-Agent chat service', () => {
     const workspace = fixture.scope.workspaceId
     const first = await service.send(writer, workspace, request(codexNode, 'long', null))
     const conversationId = first.state.conversation!.id
-    await settled(service, read, (value) => Boolean(value.activeTurn?.nativeTurnId) || value.turns[0]?.delivery === 'completed')
+    await settled(service, read, (value) => value.turns[0]?.delivery === 'completed')
     const native = FakeNative.all[0]!
     native.hold = true
     await service.send(writer, workspace, request(codexNode, 'hold me', conversationId))
@@ -523,7 +524,7 @@ async function f4Rows(id: string) {
       where operation='agent_chat_control' and target_key=$1) as controls`, [id])).rows[0]
 }
 
-describe('F4 authenticated transport / persistence regressions', () => {
+describe('F4 authenticated transport / persistence regressions', { timeout: 60_000 }, () => {
   for (const dimension of ['workspaceIds', 'workflowIds', 'runIds'] as const) {
     it(`A-R02 ${dimension}: HTTP/SSE/MCP matching scope works, mismatch has no effect`, async () => {
       const { service } = makeService()

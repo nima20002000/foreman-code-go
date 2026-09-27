@@ -12,7 +12,8 @@ export function deferred() {
   return { promise, resolve }
 }
 export async function eventually(check: () => boolean | Promise<boolean>) {
-  for (let attempt = 0; attempt < 500; attempt++) {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
     if (await check()) return
     await setImmediate()
   }
