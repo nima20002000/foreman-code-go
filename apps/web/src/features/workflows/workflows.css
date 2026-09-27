@@ -36,7 +36,7 @@
   position: absolute;
   top: 0.2rem;
   right: 0.2rem;
-  color: var(--danger);
+  color: #d94b4b;
   opacity: 0;
   pointer-events: none;
 }
@@ -45,7 +45,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.workflow-navigation-row .workflow-navigation-remove:hover { color: var(--danger); background: var(--danger-subtle); }
+.workflow-navigation-row .workflow-navigation-remove:hover:not(:disabled) { color: #cc3d3d; background: var(--danger-subtle); }
 .workflow-navigation-remove-error { margin: 0.25rem 0.625rem; color: var(--danger); font-size: 12px; }
 @media (hover: none) {
   .workflow-navigation-row .workflow-navigation-remove { opacity: 1; pointer-events: auto; }
