@@ -98,7 +98,7 @@ export const AgentConversationSchema = z.object({
   agentConfigurationVersionId: IdSchema,
   harness: AgentHarnessSchema,
   origin: AgentChatOriginSchema,
-  /** Null only while the first native session is being created. */
+  /** Null until the first native session is bound, including a definitely rejected, retryable attempt. */
   nativeSession: z.object({
     nativeSessionId: IdSchema,
     providerVersion: z.string().trim().min(1),
@@ -200,10 +200,20 @@ export const SendAgentChatMessageRequestSchema = z.object({
   expectedNativeTurnId: IdSchema.optional(),
 }).strict();
 export type SendAgentChatMessageRequest = z.infer<typeof SendAgentChatMessageRequestSchema>;
+/** Legacy urgent receipts did not retain the original target. This is readback, not target verification. */
+export const AgentChatReplayWarningSchema = z.object({
+  code: z.literal("AGENT_CHAT_LEGACY_TARGET_UNVERIFIABLE"),
+  message: z.string().min(1),
+}).strict();
+export type AgentChatReplayWarning = z.infer<typeof AgentChatReplayWarningSchema>;
 export const SendAgentChatMessageResponseSchema = z.object({
   state: AgentChatStateSchema,
   turn: AgentChatTurnSchema,
   replayed: z.boolean(),
+  /** Present on legacy targetless urgent readback, even for an omitted or different claimed target.
+   * Only retained content/intent/context were checked; no target was verified, applied, or adopted.
+   * The original receipt (including delivery) is unchanged. New receipts use strict input identity. */
+  replayWarning: AgentChatReplayWarningSchema.optional(),
 }).strict();
 export type SendAgentChatMessageResponse = z.infer<typeof SendAgentChatMessageResponseSchema>;
 

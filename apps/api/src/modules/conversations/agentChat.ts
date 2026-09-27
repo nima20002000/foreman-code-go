@@ -86,6 +86,26 @@ function definiteRejection(error: unknown): boolean {
   if ('certainty' in error) return error.certainty === 'definite'
   return 'uncertain' in error && error.uncertain === false
 }
+/** Only the native creation boundary can prove that an unbound attempt created no session. */
+class RejectedSessionCreation extends Error {
+  constructor(readonly rejection: unknown) {
+    super('Native session creation was definitely rejected and its owner was disposed.', { cause: rejection })
+  }
+}
+function definiteNonCreation(error: unknown, row: AgentConversationRow): boolean {
+  if (error && typeof error === 'object' && ('uncertain' in error && error.uncertain === true
+    || 'certainty' in error && error.certainty === 'uncertain')) return false
+  if (row.harness === 'codex') {
+    // Model discovery is before thread/start/fork. A rejected later RPC (for example activation)
+    // is NOT evidence that the earlier thread creation failed.
+    if (nativeErrorCode(error) === 'CODEX_MODEL_CATALOG_UNAVAILABLE') return true
+    return definiteRejection(error) && error !== null && typeof error === 'object' && 'method' in error
+      && (error.method === 'initialize' || error.method === (row.record.origin.kind === 'fresh' ? 'thread/start' : 'thread/fork'))
+  }
+  // OpenCode fresh creation has no fallible native operation after POST /session succeeds.
+  // Fork also applies/verifies the child's policy; a definite error there can leave a created child.
+  return row.record.origin.kind === 'fresh' && definiteRejection(error)
+}
 const EPHEMERAL_SESSION_LOST = 'This ephemeral Codex session is no longer live and cannot be resumed after the API restarts. Start a separate conversation.'
 function nativeErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined
@@ -373,7 +393,8 @@ export class AgentChatService {
       if (prior) {
         // Same key and input returns the stored receipt; a different input is a conflict. Never re-sends.
         const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued' })
-        return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true }
+        return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true,
+          ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
       }
     }
     if (resolution.blocked) {
@@ -385,7 +406,8 @@ export class AgentChatService {
     if (input.intent === 'interrupt_and_send' && !row) throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.', 409)
     const create = resolution.create ? { ...resolution.create, context } : undefined
     const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ...(create ? { create } : {}) })
-    if (admitted.replayed) return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true }
+    if (admitted.replayed) return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true,
+      ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
     this.events.publish(admitted.conversationId, 'turn', { requestId: input.requestId, delivery: admitted.turn.delivery })
     if (input.intent === 'interrupt_and_send') await this.interruptActive(admitted.conversationId, false, admitted.interruptTarget)
     this.pump(admitted.conversationId)
@@ -580,17 +602,26 @@ export class AgentChatService {
       if (!row.active_request_id || !await this.repository.beginSessionCreation(row.id, row.active_request_id)) {
         throw new DomainError('AGENT_CHAT_SESSION_CREATION_UNCERTAIN', 'A native session may already exist. A replacement will not be created.', 409)
       }
-      if (row.record.origin.kind === 'run_execution') {
-        const origin = row.record.origin
-        if (!runtime.manager.forkSession) throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'This harness cannot continue a Run session in chat.', 409)
-        const providerVersion = await this.sourceProviderVersion(origin, runtime)
-        runtime.session = await runtime.manager.forkSession({ harness: row.harness, providerVersion, nativeSessionId: origin.sourceNativeSessionId },
-          this.startInput(row, configuration, correlationId, true), signal)
-        await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
-        await this.repository.markStartupDelivered(row.id)
-      } else {
-        runtime.session = await runtime.manager.createSession(this.startInput(row, configuration, correlationId, false), signal)
-        await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
+      try {
+        if (row.record.origin.kind === 'run_execution') {
+          const origin = row.record.origin
+          if (!runtime.manager.forkSession) throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'This harness cannot continue a Run session in chat.', 409)
+          const providerVersion = await this.sourceProviderVersion(origin, runtime)
+          runtime.session = await runtime.manager.forkSession({ harness: row.harness, providerVersion, nativeSessionId: origin.sourceNativeSessionId },
+            this.startInput(row, configuration, correlationId, true), signal)
+          await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
+          await this.repository.markStartupDelivered(row.id)
+        } else {
+          runtime.session = await runtime.manager.createSession(this.startInput(row, configuration, correlationId, false), signal)
+          await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
+        }
+      } catch (error) {
+        // Binding/activation failure after successful creation must never authorize a replacement.
+        if (!runtime.session && !nativeUnavailable(error) && definiteNonCreation(error, row)) {
+          await this.release(row.id) // A cleanup failure keeps the original durable fence.
+          throw new RejectedSessionCreation(error)
+        }
+        throw error
       }
     }
     return runtime
@@ -677,6 +708,12 @@ export class AgentChatService {
       }
       await this.observe(id, turn.requestId, runtime!, correlationId)
     } catch (error) {
+      if (error instanceof RejectedSessionCreation) {
+        // Retire the matching creation marker and terminal receipt in ONE ownership-fenced commit.
+        // finish() also honors a Stop that committed while disposal was being confirmed.
+        await this.settle(id, turn.requestId, failure(error.rejection), undefined, true)
+        return
+      }
       // Reconciliation can prove completion while OpenCode's SSE stays alive. Its observer
       // is detached only after finish() commits; this is neither failed delivery nor cancel.
       if (this.closing || observer.signal.aborted) return // Restart recovery reconciles in-flight work.
@@ -748,12 +785,15 @@ export class AgentChatService {
     }
   }
 
-  private async settle(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string): Promise<void> {
-    if (await this.repository.finish(id, requestId, result, nativeMessageId)) {
+  private async settle(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, rejectedSessionCreation = false): Promise<void> {
+    if (await this.repository.finish(id, requestId, result, nativeMessageId, rejectedSessionCreation)) {
       const observer = this.runtimes.get(id)?.observer
       if (observer?.requestId === requestId) observer.controller.abort(new Error('Agent chat turn settled.'))
       this.events.publish(id, 'message', { requestId })
-      this.events.publish(id, 'state', { requestId, delivery: result.outcome === 'succeeded' ? 'completed' : result.outcome })
+      // Rejected creation may have become canceled under the repository lock. Invalidate rather
+      // than publishing an outcome chosen before that concurrent Stop committed.
+      this.events.publish(id, 'state', { requestId,
+        ...(rejectedSessionCreation ? {} : { delivery: result.outcome === 'succeeded' ? 'completed' : result.outcome }) })
     }
   }
 

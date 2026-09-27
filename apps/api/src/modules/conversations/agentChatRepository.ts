@@ -4,7 +4,7 @@ import type pg from 'pg'
 import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type Message, type PendingNativeInteraction } from '@graphql/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
-  type AgentChatTurn, type AgentConversation, type SendAgentChatMessageRequest,
+  type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
 } from '@graphql/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
@@ -55,7 +55,7 @@ interface TurnRow {
   target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null
   input_hash: string
-  payload: { content: string; interruptRequestId?: string }
+  payload: { content: string; interruptRequestId?: string; requestIdentityVersion?: 1 }
   created_at: Date
   updated_at: Date
 }
@@ -208,7 +208,7 @@ export class PostgresAgentChatRepository {
   async admit(input: {
     key: string; request: SendAgentChatMessageRequest; context: AgentChatContext; create?: NewAgentConversation
     delivery: 'queued' | 'submitting'; targetNativeTurnId?: string
-  }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget }> {
+  }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget; replayWarning?: AgentChatReplayWarning }> {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
@@ -223,16 +223,25 @@ export class PostgresAgentChatRepository {
         if (prior) {
           // Pre-F1 steers retained their native target, but omitted it from the hash. Only that
           // durable target can establish a legacy replay; never infer it from the current owner.
-          // Pre-F1 urgent sends retained no target, so their targeted retries must stay fail-closed.
           const sameSteerTarget = input.request.intent === 'steer' && input.request.expectedNativeTurnId !== undefined
             && prior.target_native_turn_id === input.request.expectedNativeTurnId
           const legacySteerReplay = sameSteerTarget && prior.intent === 'steer'
             && prior.input_hash === agentChatInputHash({ content: input.request.content, intent: input.request.intent, context: input.request.context })
-          if (input.request.intent === 'steer' && !sameSteerTarget || prior.input_hash !== hash && !legacySteerReplay) {
+          // Unversioned urgent receipts with no retained target cannot prove the old precondition.
+          // Return READBACK ONLY, explicitly marked unverifiable for every claimed target (or none).
+          // Never adopt the retry's target, consult the current owner, or rewrite the legacy identity.
+          const legacyUrgentReadback = prior.intent === 'interrupt_and_send' && input.request.intent === prior.intent
+            && prior.target_native_turn_id === null && prior.payload.requestIdentityVersion === undefined
+            && prior.input_hash === agentChatInputHash({ content: input.request.content, intent: input.request.intent, context: input.request.context })
+          if (input.request.intent === 'steer' && !sameSteerTarget || prior.input_hash !== hash && !legacySteerReplay && !legacyUrgentReadback) {
             throw new DomainError('AGENT_CHAT_REQUEST_CONFLICT', 'This request ID was already used with a different message.', 409)
           }
           await client.query('commit')
-          return { conversationId: row.id, turn: turn(prior), replayed: true, created: false }
+          return { conversationId: row.id, turn: turn(prior), replayed: true, created: false,
+            ...(legacyUrgentReadback ? { replayWarning: {
+              code: 'AGENT_CHAT_LEGACY_TARGET_UNVERIFIABLE' as const,
+              message: 'Stored receipt readback only: the original interrupt target was not recorded. The supplied target was not verified or applied; nothing was resent.',
+            } } : {}) }
         }
       }
       if ((row?.id ?? null) !== input.request.expectedConversationId) {
@@ -281,7 +290,7 @@ export class PostgresAgentChatRepository {
       const inserted = (await client.query<TurnRow>(`insert into operator_conversation_turns
           (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,target_native_turn_id)
         values ($1,$2,$3::jsonb,$4,$5,$6,$7,$8) returning ${TURN_COLUMNS}`,
-      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content,
+      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content, requestIdentityVersion: 1,
           ...(interruptTarget ? { interruptRequestId: interruptTarget.requestId } : {}) }), hash, input.request.intent,
         input.delivery, message.id, targetNativeTurnId ?? null])).rows[0]!
       // Durable cancel belongs to the pre-admission owner, not to the newly queued urgent input.
@@ -449,13 +458,25 @@ export class PostgresAgentChatRepository {
   }
 
   /** Terminal settlement of the active turn; clears the conversation's active identity. */
-  async finish(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string): Promise<boolean> {
-    const delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
+  async finish(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, rejectedSessionCreation = false): Promise<boolean> {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
       if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
+      if (rejectedSessionCreation) {
+        // A negative creation result only retires ITS unbound marker, never a later owner/binding.
+        if (row.native_session_id || row.active_native_turn_id || row.record.sessionUnavailable
+          || row.record.sessionCreation?.requestId !== requestId || result.outcome === 'succeeded') {
+          await client.query('commit'); return false
+        }
+        const retired = await client.query(`update operator_conversations set record=record - 'sessionCreation'
+          where id=$1 and kind='agent' and active_request_id=$2 and native_session_id is null
+            and record->'sessionCreation'->>'requestId'=$2`, [id, requestId])
+        if (retired.rowCount !== 1) { await client.query('commit'); return false }
+        if (row.cancel_requested) result = { outcome: 'canceled' }
+      }
+      const delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
       // Cold Codex history has a terminal answer/identity without an item.completed event.
       // Persist it in the settlement transaction, deduplicating native messages and OpenCode parts.
       if (result.outcome === 'succeeded' && nativeMessageId) {

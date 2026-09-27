@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { describe, it } from 'vitest'
-import type { AgentChatTurn, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import { SendAgentChatMessageResponseSchema, type AgentChatTurn, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 
 import { agentChatInputHash, agentChatKey } from '../src/modules/conversations/agentChatRepository.js'
 import { context, fixture } from './helpers/agentChatF1.js'
@@ -112,20 +112,102 @@ describe('G3 receipt identity (production repository with scripted SQL, not Post
     } finally { await f.service.shutdown() }
   })
 
-  it('A2-PF-08 unresolved data case: pre-F1 urgent sends lost their target, so neither claimed target is guessed', async () => {
+  for (const delivery of ['queued', 'submitting', 'unknown', 'accepted', 'completed', 'failed', 'canceled'] as const) {
+    it(`H1/A2-PF-08: legacy urgent ${delivery} replays the identical receipt with explicit unverifiable-target readback`, async () => {
+      const original = fixture()
+      const input = original.request('legacy-urgent', { intent: 'interrupt_and_send', expectedNativeTurnId: 'turn-A' })
+      // Pre-F1 urgent sends retained content only, with no target or identity-version marker.
+      seed(original, input, { legacy: true, delivery, target: null })
+      const retained = original.store.turns.get(input.requestId)!
+      if (['accepted', 'completed', 'failed', 'canceled'].includes(delivery)) retained.native_turn_id = 'turn-urgent-itself'
+      if (delivery === 'failed') retained.delivery_error = { code: 'FIXTURE_REJECTION', message: 'Original failure.' }
+      const expected = await original.repository.turn(original.store.row.id, input.requestId)
+      await original.service.shutdown()
+      const f = fixture(original.store)
+      const before = snapshot(f)
+      try {
+        for (let retry = 0; retry < 2; retry++) {
+          for (const expectedNativeTurnId of ['turn-A', 'turn-later', undefined]) {
+            const result = SendAgentChatMessageResponseSchema.parse(await f.service.send(f.principal, context.workspaceId,
+              { ...input, expectedNativeTurnId }))
+            assert.equal(result.replayed, true)
+            assert.deepEqual(result.turn, expected)
+            assert.equal(result.turn.targetNativeTurnId, undefined)
+            assert.deepEqual(result.replayWarning, {
+              code: 'AGENT_CHAT_LEGACY_TARGET_UNVERIFIABLE',
+              message: 'Stored receipt readback only: the original interrupt target was not recorded. The supplied target was not verified or applied; nothing was resent.',
+            })
+          }
+        }
+        unchanged(f, before) // Includes retained hash/payload, cancel intent, timestamps, and native call counts.
+      } finally { await f.service.shutdown() }
+    })
+  }
+
+  it('H1/A2-PF-08: a receipt found only by the admission transaction retains its readback warning and never interrupts', async () => {
     const f = fixture()
-    const input = f.request('legacy-urgent', { intent: 'interrupt_and_send', expectedNativeTurnId: 'turn-A' })
-    // a8c4ebe sendMessage omitted targetNativeTurnId when calling admit for urgent sends.
+    const input = f.request('legacy-urgent-race', { intent: 'interrupt_and_send', expectedNativeTurnId: 'turn-A' })
     seed(f, input, { legacy: true, target: null })
+    const readTurn = f.repository.turn.bind(f.repository)
+    const expected = await readTurn(f.store.row.id, input.requestId)
+    let firstRead = true
+    f.repository.turn = async (...args) => {
+      if (firstRead) { firstRead = false; return undefined }
+      return readTurn(...args)
+    }
     const before = snapshot(f)
     try {
-      for (const expectedNativeTurnId of ['turn-A', 'turn-later']) {
-        await assert.rejects(f.service.send(f.principal, context.workspaceId, { ...input, expectedNativeTurnId }),
-          { code: 'AGENT_CHAT_REQUEST_CONFLICT' })
-      }
+      const result = SendAgentChatMessageResponseSchema.parse(await f.service.send(f.principal, context.workspaceId, input))
+      assert.equal(result.replayed, true); assert.deepEqual(result.turn, expected)
+      assert.equal(result.replayWarning?.code, 'AGENT_CHAT_LEGACY_TARGET_UNVERIFIABLE')
       unchanged(f, before)
     } finally { await f.service.shutdown() }
   })
+
+  it('H1/A2-PF-08: legacy urgent readback still conflicts on changed content, intent, or context and denies missing authority', async () => {
+    const f = fixture()
+    const input = f.request('legacy-urgent', { intent: 'interrupt_and_send', expectedNativeTurnId: 'turn-A' })
+    seed(f, input, { legacy: true, target: null })
+    const before = snapshot(f)
+    try {
+      for (const actions of [['agent_chat:read'] as const, ['agent_chat:write'] as const]) {
+        const principal = { ...f.principal, grants: [{ scope: { workspaceIds: [context.workspaceId] }, actions: [...actions] }] }
+        await assert.rejects(f.service.send(principal, context.workspaceId, input), { code: 'ACCESS_DENIED' })
+      }
+      assert.equal(f.store.statements.length, 0)
+      for (const change of [{ content: 'different instruction' }, { intent: 'next_turn' as const }]) {
+        await assert.rejects(f.service.send(f.principal, context.workspaceId, { ...input, ...change }),
+          { code: 'AGENT_CHAT_REQUEST_CONFLICT' })
+      }
+      await assert.rejects(f.repository.admit({ key: agentChatKey(context), context,
+        request: { ...input, context: { ...input.context, workflowNodeId: 'different-node' } }, delivery: 'queued' }),
+      { code: 'AGENT_CHAT_REQUEST_CONFLICT' })
+      unchanged(f, before)
+    } finally { await f.service.shutdown() }
+  })
+
+  for (const target of [undefined, 'turn-A']) {
+    it(`H1/A-R05: a new idle urgent receipt (${target ?? 'no target'}) never qualifies for legacy targetless readback`, async () => {
+      const f = fixture()
+      const input = f.request('new-idle-urgent', { intent: 'interrupt_and_send', expectedNativeTurnId: target })
+      try {
+        const admitted = await f.repository.admit({ key: agentChatKey(context), context, request: input, delivery: 'queued' })
+        assert.equal(admitted.turn.targetNativeTurnId, target)
+        assert.equal((f.store.turns.get(input.requestId)!.payload as { requestIdentityVersion?: number }).requestIdentityVersion, 1)
+        f.store.statements.length = 0
+        const before = snapshot(f)
+        for (const expectedNativeTurnId of target ? [undefined, 'turn-B'] : ['turn-A', 'turn-B']) {
+          await assert.rejects(f.service.send(f.principal, context.workspaceId, { ...input, expectedNativeTurnId }),
+            { code: 'AGENT_CHAT_REQUEST_CONFLICT' })
+        }
+        const replay = SendAgentChatMessageResponseSchema.parse(await f.service.send(f.principal, context.workspaceId, input))
+        assert.equal(replay.replayed, true)
+        assert.deepEqual(replay.turn, admitted.turn)
+        assert.equal(replay.replayWarning, undefined)
+        unchanged(f, before)
+      } finally { await f.service.shutdown() }
+    })
+  }
 
   it('A-R05: an untargeted current urgent receipt cannot acquire a supplied precondition on replay', async () => {
     const f = fixture()
