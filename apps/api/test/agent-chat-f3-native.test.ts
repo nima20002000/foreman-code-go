@@ -54,14 +54,16 @@ const openCodeSource: NativeSessionReference = { harness: 'opencode', providerVe
 
 describe('F3 safe native boundaries (mock command output and HTTP only)', () => {
   for (const operation of ['create', 'attach', 'fork'] as const) {
-    it(`A-R01: Codex ${operation} refuses the normal scoped launcher before opening a transport`, async () => {
+    it(`A-R01: Codex ${operation} refuses injected scoped credentials before opening a transport`, async () => {
       vi.mocked(runCommand).mockResolvedValue({ exitCode: 0, stdout: JSON.stringify(scopedCodexEntry()), stderr: '' })
-      const { manager, transport } = codex(), input = codexInput(), snapshot = structuredClone(input)
+      const { manager, transport } = codex(), input = codexInput()
+      input.environment = { agentId: input.request.configuration.agentId, variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } }
+      const snapshot = structuredClone(input)
       const result = operation === 'create' ? manager.createSession(input)
         : operation === 'attach' ? manager.attachSession(codexSource, input) : manager.forkSession(codexSource, input)
       await assert.rejects(result, code('CODEX_APP_MCP_UNAVAILABLE'))
       assert.equal(transport.mock.calls.length, 0); assert.deepEqual(input, snapshot)
-      assert.equal(input.environment, undefined)
+      assert.deepEqual(input.environment, snapshot.environment)
       for (const call of vi.mocked(runCommand).mock.calls) {
         assert.equal(call[1][0], 'mcp')
         assert(!call[4] || !('GRAPHQL_MCP_TOKEN' in call[4]))

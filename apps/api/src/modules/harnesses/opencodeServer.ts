@@ -31,7 +31,7 @@ import {
   type JsonObject, type OpenCodeEvent, type OpenCodeMessage,
 } from './opencodeProtocol.js'
 import {
-  childEnvironmentFingerprint, ManagedOpenCodeServer, OpenCodeNativeDeliveryError, QUALIFIED_OPENCODE_VERSION,
+  assertOpenCodeChatMcpDisabled, childEnvironmentFingerprint, ManagedOpenCodeServer, OpenCodeNativeDeliveryError, QUALIFIED_OPENCODE_VERSION,
   type NativeDeliveryCertainty, type OpenCodeServerController,
 } from './opencodeTransport.js'
 import { redactKnownSecrets } from './secrets.js'
@@ -131,6 +131,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
     if (options.server.ownerAgentId !== undefined && options.server.ownerAgentId !== options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The native manager and resident server must have the same credential owner.')
+    }
+    if (options.appMcpAccess === 'none') {
+      const empty = childEnvironmentFingerprint({ agentId: options.ownerAgentId, variables: {} })
+      if ((options.server.credentialEnvironmentFingerprint && options.server.credentialEnvironmentFingerprint !== empty)
+        || (options.server instanceof ManagedOpenCodeServer
+          && options.server.disabledAppMcpServerName !== (options.appMcpServerName ?? APP_MCP_SERVER_NAME))) {
+        throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Chat requires its own credential-free server with the App MCP launch override.')
+      }
     }
     this.boundEnvironmentFingerprint = options.server.credentialEnvironmentFingerprint
   }
@@ -854,6 +862,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   restartForCredential(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void> {
     const combined = this.signal(signal)
     return this.exclusive(async () => {
+      if (this.options.appMcpAccess === 'none' && Object.keys(environment.variables).length) {
+        throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
+      }
       if (environment.agentId !== this.options.ownerAgentId) throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The replacement credential belongs to another Agent.')
       if ([...this.sessions.values()].some((state) => state.turn && !state.turn.terminalResult)) {
         throw new HarnessExecutionError('OPENCODE_SERVER_RESTART_BUSY', 'Credential renewal requires all owned turns to be reconciled idle.')
@@ -943,14 +954,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async assertConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<unknown> {
-    if (this.options.appMcpAccess === 'none') {
-      const name = this.options.appMcpServerName ?? APP_MCP_SERVER_NAME
-      const configured = object(object(await this.json('/config', directory, signal)).mcp)
-      if (Object.hasOwn(configured, name) && object(configured[name]).enabled !== false
-        || configuration.advanced?.mcp.serverEnabled[name] === true) {
-        throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Agent chat requires the App MCP entry to be disabled in the native configuration.')
-      }
-    }
+    await this.assertChatMcpDisabled(directory, signal)
     if (this.options.server instanceof ManagedOpenCodeServer && !isDeepStrictEqual(configuration.advanced, this.options.server.advancedConfiguration)) {
       throw new HarnessExecutionError('OPENCODE_SERVER_CONFIGURATION_MISMATCH', 'Process-level Advanced settings differ from the pinned session configuration.')
     }
@@ -968,10 +972,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async applyMcpControls(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<void> {
+    await this.assertChatMcpDisabled(directory, signal)
     const controls = configuration.advanced?.mcp.serverEnabled ?? {}
     if (!Object.keys(controls).length) return
     const configured = object(object(await this.json('/config', directory, signal)).mcp)
     for (const [name, enabled] of Object.entries(controls)) {
+      // The accepted switch is retained, but cannot reconnect workflow tools in chat.
+      if (this.options.appMcpAccess === 'none' && name === (this.options.appMcpServerName ?? APP_MCP_SERVER_NAME)) continue
       if (!Object.hasOwn(configured, name)) throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', `MCP server '${name}' is not in resolved configuration.`)
       const before = object(object(await this.json('/mcp', directory, signal))[name]).status
       const expected = enabled ? 'connected' : 'disabled'
@@ -979,6 +986,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const after = object(object(await this.json('/mcp', directory, signal))[name]).status
       if (after !== expected) throw new HarnessExecutionError('OPENCODE_MCP_CONTROL_NOT_APPLIED', `MCP server '${name}' did not reach the accepted ${expected} state.`)
     }
+  }
+
+  private async assertChatMcpDisabled(directory: string, signal: AbortSignal): Promise<void> {
+    if (this.options.appMcpAccess !== 'none') return
+    assertOpenCodeChatMcpDisabled(await this.json('/config', directory, signal), await this.json('/mcp', directory, signal),
+      this.options.appMcpServerName ?? APP_MCP_SERVER_NAME)
   }
 
   private verifyAttachedSession(native: JsonObject, id: string, directory: string, configuration: OpenCodeHarnessConfiguration): void {

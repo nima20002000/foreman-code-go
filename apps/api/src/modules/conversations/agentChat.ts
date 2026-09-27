@@ -95,7 +95,7 @@ function nativeErrorCode(error: unknown): string | undefined {
 function nativeUnavailable(error: unknown): { reason: 'native_session_missing' | 'harness_unavailable'; message: string } | undefined {
   const code = nativeErrorCode(error)
   if (code === 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' || code === 'CODEX_APP_MCP_UNAVAILABLE' || code === 'OPENCODE_APP_MCP_UNAVAILABLE') {
-    return { reason: 'harness_unavailable', message: 'This conversation is unavailable because its native configuration requires App MCP authority. Agent chat never receives App MCP or workflow credentials.' }
+    return { reason: 'harness_unavailable', message: 'Chat could not verify that the scoped GraphQL App MCP server was disabled for its native session. GraphQL workflow tools are not available in chat, and chat never receives App MCP or workflow credentials.' }
   }
   if (code && ['CODEX_MCP_CONFIG_INVALID', 'CODEX_ENVIRONMENT_INVALID',
     'OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'OPENCODE_CREDENTIAL_CONTEXT_MISMATCH'].includes(code)) {
@@ -303,7 +303,7 @@ export class AgentChatService {
   private async state(resolution: Resolution): Promise<AgentChatState> {
     const { context, blocked } = resolution
     const capabilities = this.capabilities(resolution.configuration, resolution.row)
-    const availability = blocked ? { canSend: false, reason: blocked.reason, message: blocked.message } : { canSend: true }
+    const availability = blocked ? { canSend: false, reason: blocked.reason, message: blocked.message } : { canSend: true, message: 'GraphQL workflow tools are not available in chat. The scoped GraphQL App MCP server is disabled for chat only; other accepted Agent settings are retained.' }
     if (!resolution.row) {
       return AgentChatStateSchema.parse({ context, conversation: null, sessionState: 'none', availability, capabilities,
         activeTurn: null, turns: [], messages: [], hasEarlierMessages: false, activities: [], revision: 0 })
@@ -542,7 +542,7 @@ export class AgentChatService {
 
   private startInput(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, delivered: boolean): WorkflowNativeSessionStart {
     // Native adapter descriptor only. The chat conversation id stands in for execution/Run binding; no Run row exists for it.
-    // No environment/credential is borrowed from a workflow or issued for chat. Scoped App MCP fails closed.
+    // No environment/credential is borrowed from a workflow or issued for chat. Its App MCP entry is disabled at native launch.
     return {
       kind: 'workflow', correlationId, instructionsDelivered: delivered,
       ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),

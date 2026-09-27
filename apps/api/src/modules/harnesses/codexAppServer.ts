@@ -99,6 +99,7 @@ interface Prepared {
   scopedCredentialVariable: string | undefined
   environment: NodeJS.ProcessEnv
   qualified: QualifiedCodex
+  disabledAppMcpServerName?: string
 }
 interface Creation {
   identity: string
@@ -210,7 +211,7 @@ function configOverrides(value: CodexHarnessConfiguration): JsonObject {
   }
   return config
 }
-function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input'>): JsonObject {
+function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledAppMcpServerName'>): JsonObject {
   const value = prepared.harnessConfiguration
   const draft = advanced(value)
   return {
@@ -221,6 +222,7 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
     runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
     approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
     sandbox: value.sandbox, config: { ...configOverrides(value),
+      ...(prepared.disabledAppMcpServerName ? { [`mcp_servers.${prepared.disabledAppMcpServerName}.enabled`]: false } : {}),
       ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
     },
     // A resumed or forked thread already carries its accepted developer instructions.
@@ -280,7 +282,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly expectedVersion?: string,
     private readonly appMcpServerName = APP_MCP_SERVER_NAME,
     private readonly processRecovery?: NativeProcessRecovery,
-    /** Chat has no App MCP authority; an enabled entry must fail before a thread is opened. */
+    /** Chat disables only its App MCP entry with a verified process-local override. */
     private readonly appMcpAccess: 'scoped' | 'none' = 'scoped',
   ) {}
 
@@ -982,19 +984,23 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const qualified = await qualifyCodex(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal)
     let scopedCredentialVariable: string | undefined
+    let excludedCredentialVariable: string | undefined
+    let disabledAppMcpServerName: string | undefined
     try {
       const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal)
-      if (mcp.configured.enabled && this.appMcpAccess === 'none') {
-        throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat requires the App MCP entry to be disabled in the native configuration.')
-      }
-      if (mcp.configured.enabled) scopedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
+      excludedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
+      if (this.appMcpAccess === 'none') disabledAppMcpServerName = this.appMcpServerName
+      else if (mcp.configured.enabled) scopedCredentialVariable = excludedCredentialVariable
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
     validateEnvironmentOwner(input, scopedCredentialVariable)
-    const scopedEnvironment = safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : [])
+    const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
+    const scopedEnvironment = safeEnvironment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     await qualifyNativeCodexModel(harnessConfiguration, qualified.binary, workingDirectory, scopedEnvironment, signal)
-    return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified }
+    return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified,
+      ...(disabledAppMcpServerName ? { disabledAppMcpServerName } : {}),
+    }
   }
 
   private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv,
@@ -1139,13 +1145,29 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         disconnected = true
         if (runtime?.generation === generation && runtime.transport === transport && !runtime.disposed) this.handleDisconnect(runtime)
       },
-      undefined, this.processRecovery,
+      undefined, this.processRecovery, prepared.disabledAppMcpServerName,
     )
     // Also own cold-attachment candidates before a Runtime has been published.
     this.transports.add(transport)
     const close = transport.close.bind(transport)
     transport.close = async () => { await close(); this.transports.delete(transport) }
-    await transport.start(signal)
+    try {
+      await transport.start(signal)
+      if (this.appMcpAccess === 'none') {
+        // Read the launched process, not the unmodified on-disk CLI configuration.
+        const response = object(await transport.request('config/read', { includeLayers: false, cwd: prepared.workingDirectory }, signal))
+        const config = object(response.config, 'CODEX_APP_MCP_UNAVAILABLE')
+        const servers = config.mcp_servers === undefined ? {} : object(config.mcp_servers, 'CODEX_APP_MCP_UNAVAILABLE')
+        const entry = servers[this.appMcpServerName]
+        if ((prepared.disabledAppMcpServerName && !Object.hasOwn(servers, this.appMcpServerName))
+          || (Object.hasOwn(servers, this.appMcpServerName) && (!isObject(entry) || entry.enabled !== false))) {
+          throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'GraphQL workflow tools are not available in chat; native launch did not confirm the App MCP entry was disabled.')
+        }
+      }
+    } catch (error) {
+      await transport.close()
+      throw error
+    }
     return {
       transport,
       activate: async (value) => {

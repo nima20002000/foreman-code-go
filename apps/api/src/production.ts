@@ -275,7 +275,7 @@ export function buildProductionApp(
       ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none')
       : new OpenCodeNativeSessionManager({
         server: new ManagedOpenCodeServer({
-          binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId, processRecovery: recovery,
+          binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId, processRecovery: recovery, appMcpAccess: 'none',
           ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
         }),
         ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint, appMcpAccess: 'none',
