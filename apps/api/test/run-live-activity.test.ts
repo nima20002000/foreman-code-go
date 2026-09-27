@@ -69,11 +69,21 @@ describe('safe structured native actions', () => {
     assert.equal(nativeAction('item.started', { item: { id: 'i', type: 'mcpToolCall', server: 'graphql-operator', tool: 'workspace_folder_create' } })?.kind, 'creating_folder')
     assert.equal(nativeAction('item.started', { item: { id: 'i', type: 'collabAgentToolCall', tool: 'spawnAgent' } })?.kind, 'spawning_subagent')
   })
+  it('classifies unified graphql MCP calls by tool, not server name', () => {
+    const codex = (tool: string) => nativeAction('item.started', { item: { id: 'i', type: 'mcpToolCall', server: 'graphql', tool } })?.kind
+    assert.equal(codex('interaction_get'), 'using_app_mcp')
+    assert.equal(codex('interaction_respond'), 'responding_approval')
+    assert.equal(codex('workspace_folder_create'), 'creating_folder')
+    assert.equal(codex('workflow_list'), 'using_operator_mcp')
+    const opencode = (tool: string) => nativeAction('message.part.updated', { part: { id: 'p', type: 'tool', tool, state: { status: 'running' } } })?.kind
+    assert.equal(opencode('graphql_context_get'), 'using_app_mcp')
+    assert.equal(opencode('graphql_workflow_list'), 'using_operator_mcp')
+  })
   it('does not call an undecided response an approval', () => assert.equal(nativeAction('item.started', {
     item: { id: 'i', type: 'mcpToolCall', server: 'graphql-app', tool: 'interaction_respond', arguments: { optionId: 'opaque' } },
   })?.kind, 'responding_approval'))
   it('supports both normalized OpenCode MCP prefixes', () => {
-    for (const tool of ['graphql-app_interaction_get', 'graphql_app_interaction_get']) {
+    for (const tool of ['graphql_interaction_get', 'graphql_app_interaction_get']) {
       assert.equal(nativeAction('message.part.updated', { part: { id: 'p', type: 'tool', tool, state: { status: 'running' } } })?.kind, 'using_app_mcp')
     }
   })

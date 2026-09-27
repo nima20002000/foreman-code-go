@@ -47,8 +47,8 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   }
 
   async inspectMcp(): Promise<McpDetection> {
-    return { harness: this.harness, serverName: 'graphql-app', state: 'connected', endpointMatches: true,
-      credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: '2026-09-16T00:00:00.000Z' }
+    return { harness: this.harness, serverName: 'graphql', state: 'connected', endpointMatches: true,
+      credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', checkedAt: '2026-09-16T00:00:00.000Z' }
   }
 
   private register(reference: NativeSessionReference): FixtureSession {

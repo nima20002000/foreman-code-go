@@ -34,7 +34,7 @@ describe.skipIf(process.platform === 'win32')('Codex owned stdio transport', () 
 const { createInterface } = require('node:readline')
 void (async () => {
   await new Promise((resolve, reject) => {
-    process.stderr.write((process.env.GRAPHQL_APP_MCP_TOKEN + '\\n').repeat(65_536), (error) => error ? reject(error) : resolve())
+    process.stderr.write((process.env.GRAPHQL_MCP_TOKEN + '\\n').repeat(65_536), (error) => error ? reject(error) : resolve())
   })
   const lines = createInterface({ input: process.stdin })
   for await (const line of lines) {
@@ -47,7 +47,7 @@ void (async () => {
 `)
     const observed: unknown[] = []
     const value = new CodexStdioTransport(
-      f.binary, f.directory, { ...process.env, GRAPHQL_APP_MCP_TOKEN: 'fixture-stderr-token' }, protocol,
+      f.binary, f.directory, { ...process.env, GRAPHQL_MCP_TOKEN: 'fixture-stderr-token' }, protocol,
       async () => undefined, (method, params) => { observed.push({ method, params }) }, (error) => { observed.push(error) }, 5_000,
     )
     transports.push(value)

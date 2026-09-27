@@ -5,8 +5,7 @@ import { PostgresRepeatReviewerBindings } from './modules/interactions/repeatRev
 import { createWorkflowRepositoryServices } from './modules/runs/workflowRepositoryServices.js'
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
 import { fileURLToPath } from 'node:url'
-import { WorkerMcpRoutes } from './modules/harnesses/workerMcpRoutes.js'
-import { OperatorMcpRoutes } from './modules/harnesses/operatorMcpRoutes.js'
+import { AppMcpRoutes } from './modules/harnesses/appMcpRoutes.js'
 import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpointRegistration.js'
 import { createCurrentNativeProductionFactory, isCurrentNativeProductionBinding } from './modules/runs/workflowProduction.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -126,10 +125,9 @@ export function buildProductionApp(
   )
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
-  const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/tools`
-  const operatorMcpEndpoint = `http://${endpointHost}:${config.port}/mcp/operator`
-  const workerRoutes = new WorkerMcpRoutes(database.pool, appMcpEndpoint)
-  const operatorRoutes = new OperatorMcpRoutes(database.pool, operatorMcpEndpoint)
+  // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
+  const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
+  const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
   const harnessSettings = {
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
     plugins: new CodexPluginSettingsService(database.pool, new NativeCodexPlugins(config.harnesses.codexBinary, config.harnesses.workspaceRoot,
@@ -139,7 +137,7 @@ export function buildProductionApp(
       opencode: new OpenCodeMcpConnections(config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:opencode')),
     }, () => { harnessCatalog.invalidateChecks(); nativeConfigurations.invalidateOptions() }, async () => {
       await Promise.all([processRegistry.closeOwner('settings:mcp:codex'), processRegistry.closeOwner('settings:mcp:opencode')])
-    }, operatorMcpEndpoint),
+    }, appMcpEndpoint),
   }
   const launchScopes = new WeakMap<NativeHarnessSessionManager, NativeProcessRecovery>()
   const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
@@ -194,7 +192,7 @@ export function buildProductionApp(
       // BEFORE preflight. It owns disposal + durable closure on every failure;
       // releasing an empty resolver here would destroy the only positive proof.
       const prepared = await launch.prepare(input)
-      try { await workerRoutes.refresh() } catch (error) { await credentials.revoke(prepared.credential); throw error }
+      try { await appRoutes.refresh() } catch (error) { await credentials.revoke(prepared.credential); throw error }
       return prepared
     },
     revoke: (credential) => credentials.revoke(credential),
@@ -203,7 +201,7 @@ export function buildProductionApp(
     reconcileTerminalCredentials: () => credentials.reconcileTerminalCredentials(),
     renew: async (executionId, credential) => {
       const expiresAt = await credentials.renewForExecution(executionId, credential)
-      await workerRoutes.refresh()
+      await appRoutes.refresh()
       return expiresAt
     },
   }
@@ -234,7 +232,7 @@ export function buildProductionApp(
     if (existing) return existing
     let manager: NativeHarnessSessionManager
     if (configuration.harness.harness === 'codex') {
-      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, 'graphql-operator',
+      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined,
         processRegistry.scope(`conversation:${conversationId}`))
     } else {
       const server = new ManagedOpenCodeServer({
@@ -248,9 +246,8 @@ export function buildProductionApp(
       manager = new OpenCodeNativeSessionManager({
         server,
         ownerAgentId: configuration.operatorId,
-        appMcpServerName: 'graphql-operator',
         responseJournal,
-        expectedAppMcpEndpoint: operatorMcpEndpoint,
+        expectedAppMcpEndpoint: appMcpEndpoint,
         credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
       })
     }
@@ -259,7 +256,7 @@ export function buildProductionApp(
   }
   resolveOperatorManager.release = (conversationId) => { operatorManagers.delete(conversationId) }
   const chatAuthority = new PostgresOperatorChatAuthority(
-    database.pool, access, rollout, operatorWorkingDirectory, operatorMcpEndpoint,
+    database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
   )
   const chat = new OperatorChatService(
     new PostgresOperatorConversationRepository(database.pool), operators,
@@ -390,8 +387,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
-      { name: 'Worker MCP routes', run: () => workerRoutes.close() },
-      { name: 'Operator MCP routes', run: () => operatorRoutes.close() },
+      { name: 'GraphQL MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Ordinary restart must persist the exact retained Worker/reviewer
         // closes before raw disposal loses their manager lifetime identities.
@@ -447,8 +443,7 @@ export function buildProductionApp(
         assertOpen()
       }
       await chatAuthority.revokeOrphanedCredentials()
-      await operatorRoutes.refresh()
-      await workerRoutes.refresh()
+      await appRoutes.refresh()
       assertOpen()
       await harnessSettings.mcp.recover()
       assertOpen()
@@ -472,8 +467,7 @@ export function buildProductionApp(
       await engine.reconcile(report)
       if (closing) return
       if (initialized) {
-        await operatorRoutes.refresh()
-        await workerRoutes.refresh()
+        await appRoutes.refresh()
         if (closing) return
         await chat.reconcileActive()
         if (closing) return

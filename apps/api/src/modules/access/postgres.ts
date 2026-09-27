@@ -57,7 +57,9 @@ function fromRow(row: PrincipalRow): ManagementPrincipal {
 export class PostgresAccessService {
   constructor(private readonly pool: pg.Pool) {}
 
-  async authenticate(token: string | undefined, audience: ManagementAudience = 'operator'): Promise<ManagementPrincipal> {
+  /** A list accepts any of those audiences; the unified MCP endpoint resolves the caller's role afterwards. */
+  async authenticate(token: string | undefined, audience: ManagementAudience | readonly ManagementAudience[] = 'operator'): Promise<ManagementPrincipal> {
+    const audiences: readonly ManagementAudience[] = typeof audience === 'string' ? [audience] : audience
     if (!token) throw new DomainError('AUTH_REQUIRED', 'A bearer credential is required.', 401)
     const tokenHash = digest(token)
     const result = await this.pool.query<PrincipalRow>(
@@ -69,16 +71,16 @@ export class PostgresAccessService {
     if (!row || !sameDigest(row.token_hash, tokenHash)) {
       throw new DomainError('AUTH_INVALID', 'The supplied credential is invalid.', 401)
     }
-    if (row.audience !== audience) throw new DomainError('AUTH_WRONG_AUDIENCE', 'The credential cannot access this endpoint.', 403)
+    if (!audiences.includes(row.audience)) throw new DomainError('AUTH_WRONG_AUDIENCE', 'The credential cannot access this endpoint.', 403)
     if (row.revoked_at) throw new DomainError('AUTH_REVOKED', 'The credential has been revoked.', 401)
     if (row.expires_at.getTime() <= Date.now()) throw new DomainError('AUTH_EXPIRED', 'The credential has expired.', 401)
     const principal = fromRow(row)
-    if (audience === 'worker') await requireActiveWorkerBinding(this.pool, row.id)
+    if (row.audience === 'worker') await requireActiveWorkerBinding(this.pool, row.id)
     if (row.delegated_from) {
       const parent = await this.currentOperator(row.delegated_from)
       // A name, requested action, or arbitrary delegated token is not evidence
       // of this translation. Require the issuance-time conversation binding.
-      const chat = audience === 'operator' ? (await this.pool.query<{
+      const chat = row.audience === 'operator' ? (await this.pool.query<{
         owner_principal_id: string | null; deleted_at: Date | null; status: string | null;
       }>(`select c.owner_principal_id,c.deleted_at,c.record->>'status' as status
         from operator_chat_credentials credential join operator_conversations c on c.id=credential.conversation_id

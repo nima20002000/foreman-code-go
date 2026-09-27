@@ -22,8 +22,10 @@ mapping, and native Codex/OpenCode process adapters.
   raw native events, and normalized activity.
 - `src/modules/workspaces/location.ts` validates canonical local-runner paths,
   persists revisioned workspace locations, and rechecks immutable Run snapshots.
-- `src/mcp/operator` mounts the authenticated, request-scoped Operator MCP
-  server; management services are shared with the browser HTTP boundary.
+- `src/mcp/unified` mounts the one authenticated, request-scoped GraphQL MCP
+  server at `/mcp`; the credential's role selects the real tools from
+  `src/mcp/operator` (management, shared with the browser HTTP boundary) or
+  `src/mcp/app` (workflow Agents) and lists the rest as role-limited stubs.
 
 The real product slice also implements durable management, graph drafts,
 revision-checked Save, exact-version Start, idempotent Stop, scoped local

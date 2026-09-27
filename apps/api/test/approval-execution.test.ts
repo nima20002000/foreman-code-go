@@ -58,8 +58,8 @@ class ScriptedManager implements NativeHarnessSessionManager {
       configurationInspection: true, mcpDetection: true, supportedInteractionKinds: ['approval'] }
   }
   async inspectMcp(): Promise<McpDetection> {
-    return { harness: this.harness, serverName: 'graphql-app', state: 'connected', endpointMatches: true,
-      credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: now }
+    return { harness: this.harness, serverName: 'graphql', state: 'connected', endpointMatches: true,
+      credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', checkedAt: now }
   }
   async createSession(input: NativeSessionStart) {
     this.creates.push(input)
@@ -260,7 +260,7 @@ function fixture(harness: AgentHarness = 'codex') {
       prepared.push(input.executionId)
       if (prepareFailure) throw prepareFailure
       return { credential: { principalId: 'fixture-principal', expiresAt: new Date(Date.now() + 900_000).toISOString(), environment: {
-        agentId: configuration.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: 'test-scoped-token' },
+        agentId: configuration.agentId, variables: { GRAPHQL_MCP_TOKEN: 'test-scoped-token' },
       } } }
     },
     async revoke() { revoked.push(candidate.id) },

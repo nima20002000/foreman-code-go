@@ -35,7 +35,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
         grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: ['wrong'] } }] })
       expect((await (await f.connect(wrong.token)).callTool({ name: 'workflow_get', arguments: { workspaceId: input.workspaceId, workflowId: input.workflowId } })).isError).toBe(true)
       async function post(token?: string, origin?: string) {
-        return fetch(new URL('/mcp/operator', f.address), { method: 'POST', headers: { 'content-type': 'application/json',
+        return fetch(new URL('/mcp', f.address), { method: 'POST', headers: { 'content-type': 'application/json',
           ...(token ? { authorization: `Bearer ${token}` } : {}), ...(origin ? { origin } : {}) },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) })
       }

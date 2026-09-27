@@ -54,7 +54,7 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
     async function connect(token: string) {
       const client = new Client({ name: 'model-refresh-test', version: '1.0.0' })
       clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return client
     }
     const reader = await connect(readerGrant.token)

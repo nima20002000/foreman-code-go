@@ -30,8 +30,8 @@ describe('ENG-S3-ONLY B wiring (source assertions, not native/PG qualification)'
     expect(source('../src/modules/runs/currentProduction.ts')).toContain('readonly startPublication: RepeatStartPublication')
   })
   it('retires old public execution routes/registrations while preserving authenticated denial audit', () => {
-    const transport = source('../src/mcp/operator/transport.ts')
-    expect(transport.indexOf('await access.authenticate')).toBeLessThan(transport.indexOf('await retiredExecutionToolCall'))
+    const transport = source('../src/mcp/unified/transport.ts')
+    expect(transport.indexOf('await services.access.authenticate')).toBeLessThan(transport.indexOf('await retiredExecutionToolCall'))
     for (const hook of ['unavailableManualRunToolCall', 'unavailableCurrentWorkflowToolCall', 'unavailableRunGraphToolCall']) {
       expect(transport).toContain(`?? await ${hook}`)
     }

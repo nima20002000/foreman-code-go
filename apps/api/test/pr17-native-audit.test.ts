@@ -25,8 +25,8 @@ async function codexFixture(): Promise<Fixture> {
   cleanups.push(() => rm(value.directory, { recursive: true, force: true }))
   return value
 }
-function codexManager(f: Fixture, operator = false) {
-  const native = new CodexAppServerSessionManager(f.binary, undefined, operator ? 'graphql-operator' : 'graphql-app')
+function codexManager(f: Fixture) {
+  const native = new CodexAppServerSessionManager(f.binary)
   cleanups.push(() => native.dispose())
   return native
 }
@@ -39,21 +39,21 @@ function openCodeFixture(cold = false) {
 }
 
 describe.skipIf(process.platform === 'win32')('PR17 Codex native recovery', () => {
-  it('F01: accepts only the owned Operator credential through the Operator session path', async () => {
+  it('F01: accepts the scoped GraphQL credential through the Operator session path and rejects app-global secrets', async () => {
     const f = await codexFixture()
     const worker = input(f.directory)
     worker.environment = { agentId: 'agent-a', variables: { ...worker.environment!.variables, GRAPHQL_OPERATOR_MCP_TOKEN: 'fixture-scoped-operator' } }
     await assert.rejects(codexManager(f).createSession(worker), (error: unknown) => errorCode(error) === 'CODEX_ENVIRONMENT_INVALID')
-    await writeFile(join(f.directory, 'mcp.json'), JSON.stringify({ name: 'graphql-operator', enabled: true, required: true,
-      transport: { type: 'streamable_http', url: 'http://127.0.0.1:4100/mcp/operator', bearer_token_env_var: 'GRAPHQL_OPERATOR_MCP_TOKEN' } }))
+    await writeFile(join(f.directory, 'mcp.json'), JSON.stringify({ name: 'graphql', enabled: true, required: true,
+      transport: { type: 'streamable_http', url: 'http://127.0.0.1:4100/mcp', bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' } }))
     const source = input(f.directory)
     const operator: OperatorNativeSessionStart = {
       kind: 'operator', correlationId: 'operator-turn', workingDirectory: f.directory,
       configuration: { id: 'operator-version', operatorId: 'agent-a', version: 1,
         harness: source.request.configuration.harness, contentHash: 'sha256:fixture', createdAt: '2026-09-16T00:00:00.000Z' },
-      environment: { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_OPERATOR_MCP_TOKEN: 'fixture-scoped-operator' } },
+      environment: { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_MCP_TOKEN: 'fixture-scoped-operator' } },
     }
-    const native = codexManager(f, true)
+    const native = codexManager(f)
     const session = await native.createSession(operator)
     await collect(native.startTurn(session, { prompt: 'complete', clientCorrelationId: 'operator-turn' }))
     assert.equal((await native.reconcile(session, 'operator-turn')).terminalResult?.outcome, 'succeeded')

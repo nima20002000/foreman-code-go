@@ -1,4 +1,4 @@
-import { workerLauncherConnection } from '../src/modules/harnesses/workerMcpLauncher.js'
+import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -18,10 +18,10 @@ import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppS
 import { runCommand, runJsonlProcess } from '../src/modules/harnesses/process.js'
 import { redactKnownSecrets, redactSecretText } from '../src/modules/harnesses/secrets.js'
 
-const endpoint = 'http://127.0.0.1:3000/mcp/tools'
+const endpoint = 'http://127.0.0.1:3000/mcp'
 const matching: NativeMcpEntryEvidence = {
-  name: 'graphql-app', transport: 'streamable-http', endpoint,
-  credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
+  name: 'graphql', transport: 'streamable-http', endpoint,
+  credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
 }
 const context = { harness: 'codex' as const, runnerId: 'runner-local', workingDirectory: process.cwd() }
 function detection(entry: NativeMcpEntryEvidence) {
@@ -48,15 +48,15 @@ console.log(JSON.stringify(JSON.parse(text)));
 
 describe('PR #11 secret and launch boundaries', () => {
   it('does not inherit an ambient App token into inspection commands', async () => {
-    const previous = process.env.GRAPHQL_APP_MCP_TOKEN
-    process.env.GRAPHQL_APP_MCP_TOKEN = 'ambient-pr11-secret'
+    const previous = process.env.GRAPHQL_MCP_TOKEN
+    process.env.GRAPHQL_MCP_TOKEN = 'ambient-pr11-secret'
     try {
-      const result = await runCommand(process.execPath, ['-e', 'console.log(Boolean(process.env.GRAPHQL_APP_MCP_TOKEN))'], process.cwd())
+      const result = await runCommand(process.execPath, ['-e', 'console.log(Boolean(process.env.GRAPHQL_MCP_TOKEN))'], process.cwd())
       assert.equal(result.stdout.trim(), 'false')
-      assert.equal(process.env.GRAPHQL_APP_MCP_TOKEN, 'ambient-pr11-secret')
+      assert.equal(process.env.GRAPHQL_MCP_TOKEN, 'ambient-pr11-secret')
     } finally {
-      if (previous === undefined) delete process.env.GRAPHQL_APP_MCP_TOKEN
-      else process.env.GRAPHQL_APP_MCP_TOKEN = previous
+      if (previous === undefined) delete process.env.GRAPHQL_MCP_TOKEN
+      else process.env.GRAPHQL_MCP_TOKEN = previous
     }
   })
 
@@ -65,14 +65,14 @@ describe('PR #11 secret and launch boundaries', () => {
     const events: unknown[] = []
     const result = await runJsonlProcess({
       binary: process.execPath,
-      args: ['-e', `const value = process.env.GRAPHQL_APP_MCP_TOKEN;
+      args: ['-e', `const value = process.env.GRAPHQL_MCP_TOKEN;
 console.log(JSON.stringify({type:'proof', nested:[{unrelated:value}], [value]:value}));
 console.log('raw ' + value);
 console.log('["' + [...value].map(c => '\\\\u' + c.charCodeAt(0).toString(16).padStart(4,'0')).join('') + '"]');
 process.stderr.write(value.slice(0, 7));
 setTimeout(() => process.stderr.write(value.slice(7) + '\\n'), 10);`],
       cwd: process.cwd(), signal: new AbortController().signal,
-      expectedAgentId: 'agent-a', beforeSpawn: async () => ({ agentId: 'agent-a', variables: { GRAPHQL_APP_MCP_TOKEN: secret } }),
+      expectedAgentId: 'agent-a', beforeSpawn: async () => ({ agentId: 'agent-a', variables: { GRAPHQL_MCP_TOKEN: secret } }),
       onSpawn: () => undefined, onEvent: async (event) => { events.push(event) },
     })
     assert.equal(result.exitCode, 0)
@@ -88,9 +88,9 @@ setTimeout(() => process.stderr.write(value.slice(7) + '\\n'), 10);`],
       const events: unknown[] = []
       await runJsonlProcess({
         binary: process.execPath,
-        args: ['-e', `console.log(JSON.stringify({type:'proof', suffix:process.env.GRAPHQL_APP_MCP_TOKEN.endsWith(${JSON.stringify(agentId)}), argv:process.argv}))`],
+        args: ['-e', `console.log(JSON.stringify({type:'proof', suffix:process.env.GRAPHQL_MCP_TOKEN.endsWith(${JSON.stringify(agentId)}), argv:process.argv}))`],
         cwd: process.cwd(), signal: new AbortController().signal, expectedAgentId: agentId,
-        beforeSpawn: async () => ({ agentId, variables: { GRAPHQL_APP_MCP_TOKEN: `private-pr11-${agentId}` } }),
+        beforeSpawn: async () => ({ agentId, variables: { GRAPHQL_MCP_TOKEN: `private-pr11-${agentId}` } }),
         onSpawn: () => undefined, onEvent: async (event) => { events.push(event) },
       })
       return events
@@ -103,7 +103,7 @@ setTimeout(() => process.stderr.write(value.slice(7) + '\\n'), 10);`],
     let spawned = false
     await assert.rejects(runJsonlProcess({
       binary: process.execPath, args: ['-e', ''], cwd: process.cwd(), signal: new AbortController().signal,
-      expectedAgentId: 'agent-a', beforeSpawn: async () => ({ agentId: 'agent-b', variables: { GRAPHQL_APP_MCP_TOKEN: 'private-pr11-other' } }),
+      expectedAgentId: 'agent-a', beforeSpawn: async () => ({ agentId: 'agent-b', variables: { GRAPHQL_MCP_TOKEN: 'private-pr11-other' } }),
       onSpawn: () => { spawned = true }, onEvent: async () => undefined,
     }), /another Agent/)
     assert.equal(spawned, false)
@@ -151,7 +151,7 @@ describe('PR #11 detection and authorization', () => {
     const service = new McpDetectionService({ inspect: async (input) => {
       observed = input.signal
       return new Promise(() => undefined)
-    } }, endpoint, 'graphql-app', 25)
+    } }, endpoint, 'graphql', 25)
     const result = await service.inspect(context)
     assert.equal(result.detection.state, 'check_failed')
     assert.equal(observed?.aborted, true)
@@ -192,49 +192,47 @@ describe('PR #11 detection and authorization', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('PR #11 provider-native resolved config protocol', () => {
-  it('proves a managed worker launcher reference without accepting a static environment value', async () => {
-    const entry = nativeConnection('opencode', workerLauncherConnection())
-    await fixture({ mcp: { 'graphql-app': entry } }, async (binary, workingDirectory) => {
-      const proof = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql-app' })
-      assert.equal(proof?.automaticWorkerEndpoint, true)
-      assert.equal(proof?.credentialEnvironmentVariable, 'GRAPHQL_APP_MCP_TOKEN')
+  it('proves a managed app launcher reference without accepting a static environment value', async () => {
+    const entry = nativeConnection('opencode', appLauncherConnection())
+    await fixture({ mcp: { 'graphql': entry } }, async (binary, workingDirectory) => {
+      const proof = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql' })
+      assert.equal(proof?.automaticEndpoint, true)
+      assert.equal(proof?.credentialEnvironmentVariable, 'GRAPHQL_MCP_TOKEN')
       assert.equal(proof?.transport, 'stdio')
     })
-    await fixture({ mcp: { 'graphql-app': { ...entry, environment: { GRAPHQL_APP_MCP_TOKEN: 'static' } } } }, async (binary, workingDirectory) => {
-      const proof = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql-app' })
-      assert.equal(proof?.automaticWorkerEndpoint, undefined)
+    await fixture({ mcp: { 'graphql': { ...entry, environment: { GRAPHQL_MCP_TOKEN: 'static' } } } }, async (binary, workingDirectory) => {
+      const proof = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql' })
+      assert.equal(proof?.automaticEndpoint, undefined)
       assert.equal(proof?.credentialEnvironmentVariable, undefined)
     })
   })
 
   it('proves the exact documented Authorization environment reference after substitution', async () => {
-    await fixture({ mcp: { 'graphql-app': { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } } } }, async (binary, workingDirectory) => {
-      const entry = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql-app' })
-      assert.equal(entry?.credentialEnvironmentVariable, 'GRAPHQL_APP_MCP_TOKEN')
+    await fixture({ mcp: { 'graphql': { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } } } }, async (binary, workingDirectory) => {
+      const entry = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql' })
+      assert.equal(entry?.credentialEnvironmentVariable, 'GRAPHQL_MCP_TOKEN')
       assert.equal(entry?.status, 'status_unavailable')
       assert(!JSON.stringify(entry).includes('graphql_probe_'))
     })
   })
 
-  it('proves the Operator token separately from worker credentials', async () => {
-    await fixture({ mcp: { 'graphql-operator': { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_OPERATOR_MCP_TOKEN}' } } } }, async (binary, workingDirectory) => {
-      const input = { binary, workingDirectory, serverName: 'graphql-operator' }
-      assert.equal((await inspectOpenCodeMcpConfiguration(input))?.credentialEnvironmentVariable, undefined)
-      const entry = await inspectOpenCodeMcpConfiguration({ ...input, credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN' })
-      assert.equal(entry?.credentialEnvironmentVariable, 'GRAPHQL_OPERATOR_MCP_TOKEN')
+  it('does not prove a reference to a retired per-role credential variable', async () => {
+    await fixture({ mcp: { graphql: { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_OPERATOR_MCP_TOKEN}' } } } }, async (binary, workingDirectory) => {
+      const entry = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql' })
+      assert.equal(entry?.credentialEnvironmentVariable, undefined)
       assert(!JSON.stringify(entry).includes('graphql_probe_'))
     })
   })
 
   it('rejects unrelated headers, static tokens, bare references, and OAuth mode', async () => {
     for (const config of [
-      { oauth: false, headers: { 'X-Other': '{env:GRAPHQL_APP_MCP_TOKEN}' } },
+      { oauth: false, headers: { 'X-Other': '{env:GRAPHQL_MCP_TOKEN}' } },
       { oauth: false, headers: { Authorization: 'Bearer static-private-pr11' } },
-      { oauth: false, headers: { Authorization: '{env:GRAPHQL_APP_MCP_TOKEN}' } },
-      { headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } },
+      { oauth: false, headers: { Authorization: '{env:GRAPHQL_MCP_TOKEN}' } },
+      { headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } },
     ]) {
-      await fixture({ mcp: { 'graphql-app': { type: 'remote', url: endpoint, ...config } } }, async (binary, workingDirectory) => {
-        const entry = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql-app' })
+      await fixture({ mcp: { 'graphql': { type: 'remote', url: endpoint, ...config } } }, async (binary, workingDirectory) => {
+        const entry = await inspectOpenCodeMcpConfiguration({ binary, workingDirectory, serverName: 'graphql' })
         assert.equal(entry?.credentialEnvironmentVariable, undefined)
       })
     }
@@ -251,7 +249,7 @@ describe.skipIf(process.platform === 'win32')('PR #11 Codex inspection failure c
         [0, '[]', 'CODEX_MCP_NOT_CONFIGURED'],
         [1, '', 'CODEX_MCP_INSPECTION_FAILED'],
         [0, '{bad json', 'CODEX_MCP_INSPECTION_FAILED'],
-        [0, '[{"name":"graphql-app"}]', 'CODEX_MCP_INSPECTION_FAILED'],
+        [0, '[{"name":"graphql"}]', 'CODEX_MCP_INSPECTION_FAILED'],
       ] as const) {
         await writeFile(binary, `#!${process.execPath}
 if (process.argv[3] === 'get') { console.error('configuration unavailable'); process.exit(1); }
@@ -278,14 +276,14 @@ describe.skipIf(process.platform === 'win32')('PR #11 resident process credentia
   it('scrubs ambient App tokens and redacts shutdown stderr after the manager clears its environment', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'graphql-pr11-resident-'))
     const binary = join(directory, 'resident-fixture.cjs')
-    const previous = process.env.GRAPHQL_APP_MCP_TOKEN
-    process.env.GRAPHQL_APP_MCP_TOKEN = 'ambient-pr11-resident-value'
+    const previous = process.env.GRAPHQL_MCP_TOKEN
+    process.env.GRAPHQL_MCP_TOKEN = 'ambient-pr11-resident-value'
     const server = new ManagedOpenCodeServer({ binary, workingDirectory: directory, ownerAgentId: 'agent-a' })
     try {
       await writeFile(binary, `#!${process.execPath}
 if (process.argv.includes('--version')) { console.log('1.18.31'); process.exit(0); }
 const http = require('node:http');
-const value = process.env.GRAPHQL_APP_MCP_TOKEN;
+const value = process.env.GRAPHQL_MCP_TOKEN;
 const server = http.createServer((request, response) => {
   response.setHeader('content-type', 'application/json');
   response.end(JSON.stringify(request.url === '/global/health' ? {healthy:true,version:'1.18.31'} : {present:Boolean(value)}));
@@ -296,7 +294,7 @@ server.listen(0, '127.0.0.1', () => console.log('opencode server listening on ht
       await chmod(binary, 0o755)
       await server.ensure()
       assert.deepEqual(await (await server.request('/environment')).json(), { present: false })
-      await server.restart({ agentId: 'agent-a', variables: { GRAPHQL_APP_MCP_TOKEN: 'scoped-pr11-resident-value' } })
+      await server.restart({ agentId: 'agent-a', variables: { GRAPHQL_MCP_TOKEN: 'scoped-pr11-resident-value' } })
       assert.deepEqual(await (await server.request('/environment')).json(), { present: true })
       await server.dispose()
       const stderr = String(Reflect.get(server, 'stderr'))
@@ -304,8 +302,8 @@ server.listen(0, '127.0.0.1', () => console.log('opencode server listening on ht
       assert(!stderr.includes('scoped-pr11-resident-value'))
     } finally {
       await server.dispose()
-      if (previous === undefined) delete process.env.GRAPHQL_APP_MCP_TOKEN
-      else process.env.GRAPHQL_APP_MCP_TOKEN = previous
+      if (previous === undefined) delete process.env.GRAPHQL_MCP_TOKEN
+      else process.env.GRAPHQL_MCP_TOKEN = previous
       await rm(directory, { recursive: true, force: true })
     }
   })

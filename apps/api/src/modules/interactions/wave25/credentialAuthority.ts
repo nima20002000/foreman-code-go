@@ -74,7 +74,7 @@ export async function assertWave25WorkerBinding(sql: GraphSqlClient, principalId
      join runs r on r.id=b.run_id join workflow_versions v on v.id=r.workflow_version_id where b.principal_id=$1`, [principalId])).rows[0]
   if (!row) return fail('AUTH_REVOKED')
   if (row.execution_semantics_version !== 3) return fail('AUTH_REVOKED')
-  if (!row.live || !['workflow','reviewer'].includes(row.purpose) || row.environment_variable !== 'GRAPHQL_APP_MCP_TOKEN') return fail('AUTH_REVOKED')
+  if (!row.live || !['workflow','reviewer'].includes(row.purpose) || row.environment_variable !== 'GRAPHQL_MCP_TOKEN') return fail('AUTH_REVOKED')
   if (row.purpose === 'reviewer' && row.approval_review_job_id) {
     const epoch = await sql.query(`select 1 from review_jobs where id=$1 and execution_id=$2 and lease_fence=$3::bigint`,
     [row.approval_review_job_id, row.execution_id, row.approval_review_lease_fence])

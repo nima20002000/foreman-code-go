@@ -42,7 +42,7 @@ export async function approvalDatabase() {
     const issued = issuance.mock.results.at(-1)
     if (issued?.type !== 'return') throw new Error('Expected actual dispatcher reviewer credential')
     const credential = await issued.value
-    const principal = await runtime.access.authenticate(credential.environment.variables.GRAPHQL_APP_MCP_TOKEN, 'worker')
+    const principal = await runtime.access.authenticate(credential.environment.variables.GRAPHQL_MCP_TOKEN, 'worker')
     return { ...runtime, pool: runtime.db.pool, close, interaction, reviewer, requester, job, credential, principal,
       commands: new PostgresCommandCoordinator(runtime.db.pool),
       version: runtime.f.version, run: runtime.f.run, scope: runtime.f.scope,

@@ -4,6 +4,12 @@
 - Date: 2026-09-15
 - Scope: NIM-2579 through NIM-2587
 
+> **Amended 2026-09-27:** the two endpoints were unified into one `graphql` MCP
+> server at `/mcp` with role-scoped tools and one credential variable,
+> `GRAPHQL_MCP_TOKEN`. Audiences, grants and bindings are unchanged; the role is
+> resolved from the credential. See [`../graphql-mcp.md`](../graphql-mcp.md). The
+> sections below record the original decision.
+
 ## Decision
 
 The API process owns two logically separate MCP domains:

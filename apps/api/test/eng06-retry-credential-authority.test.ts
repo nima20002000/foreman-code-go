@@ -43,7 +43,7 @@ function bindingFor(row: AuthorityRow) {
     workflow_id: row.run.workflowId, agent_id: row.execution.agentId, purpose: 'workflow' as 'workflow' | 'reviewer',
     approval_review_job_id: null as string | null, approval_review_lease_fence: null as string | null,
     approval_native_session_id: row.execution.nativeSessionId ?? null, approval_connection_generation: row.generation,
-    live: true, environment_variable: 'GRAPHQL_APP_MCP_TOKEN', execution_semantics_version: 3 }
+    live: true, environment_variable: 'GRAPHQL_MCP_TOKEN', execution_semantics_version: 3 }
 }
 function database(row: AuthorityRow, binding = bindingFor(row), currentReviewLease = true) {
   const query = vi.fn(async (text: string) => {

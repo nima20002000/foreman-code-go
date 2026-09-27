@@ -22,7 +22,7 @@ export const OPERATOR_RUNTIME_LIMITS = [
   {feature:'remote_runners_and_host_browsing',state:'unsupported',detail:'Only the local runner is supported. workspace_create can create a named project folder under an explicit parentPath with provisioning, location-update and location-read grants. workspace_folders_list and workspace_folder_create operate only inside app-managed workspace storage; Desktop and runtime storage are not workspace destinations. No arbitrary host browsing or remote dispatch.'},
   {feature:'approval_reassignment',state:'protected',detail:'Read permissions span handlers; response authority stays with the accepted handler. Changing a draft does not take over a running request.'},
   {feature:'operator_self_authorization',state:'protected',detail:'No tools are added for the Operator to answer its own human gates or manage its delegated credential.'},
-  {feature:'native_mcp_provisioning',state:'protected',detail:'Native MCP connections can be listed and changes requested, including installation, removal, disabling, and enabling of exact Operator, Worker, and read-only Linear presets. A signed-in owner applies changes in Harness Settings, including one-click preset actions. The Operator cannot approve its own request, expose credentials, or approve package installation. Connection requests do not download packages.'},
+  {feature:'native_mcp_provisioning',state:'protected',detail:'Native MCP connections can be listed and changes requested, including installation, removal, disabling, and enabling of the exact GraphQL (one connection for every role) and read-only Linear presets. A signed-in owner applies changes in Harness Settings, including one-click preset actions. The Operator cannot approve its own request, expose credentials, or approve package installation. Connection requests do not download packages.'},
   {feature:'codex_plugins',state:'protected',detail:'Installed and available Codex plugins and verified bundle contents can be read through Operator MCP. Installing or removing a plugin is human-only in Codex Harness Settings because plugins can add executable hooks, skills, and external MCP access; Operator cannot request or approve plugin writes.'},
   {feature:'schedule_delivery',state:'unsupported',detail:'Retired unpinned trigger admission is not active. This current delivery exposes only explicit pinned manual run_start; no scheduled or event Start is promised.'},
   {feature:'opencode_thinking',state:'limited',detail:'The stored thinking flag is metadata-only on the server path; choose an advertised variant for runtime model behavior.'},
@@ -44,7 +44,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
       ? Object.values(CANONICAL_RUN_GRAPH_MCP_TOOLS).filter((name) => runGraphToolAvailable(context, name)) : []
     const inspection = Object.values(RUN_INSPECTION_TOOLS).filter((name) => runInspectionToolAvailable(context, name, resource))
     const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection]
-    return {endpoint:'/mcp/operator',audience:'operator',protocol:'2026-07-28',tools,
+    return {endpoint:'/mcp',audience:'operator',protocol:'2026-07-28',tools,
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
       grants:context.principal.grants,requestedResource:resource,
       requirements:[...ordinary.map((name)=>({name,actions:operatorToolRequirements(name,resource).map((item)=>item.action),
@@ -56,6 +56,6 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
           detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' }))],
       runtimeLimits:[...OPERATOR_RUNTIME_LIMITS],
-      workerToolsMcp:{implemented:context.services.workerToolsMcpImplemented===true,endpoint:'/mcp/tools'}}
+      workerToolsMcp:{implemented:context.services.workerToolsMcpImplemented===true,endpoint:'/mcp'}}
   }))
 }

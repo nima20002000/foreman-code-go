@@ -254,7 +254,7 @@ it('[F11] concurrent first credential bindings are serialized and the second tok
   await first
   await checkedSecond
   assert.equal(server.restartEnvironments.length, 1)
-  assert.equal(server.environment?.variables.GRAPHQL_APP_MCP_TOKEN, 'first')
+  assert.equal(server.environment?.variables.GRAPHQL_MCP_TOKEN, 'first')
 })
 
 it('[F11] failed setup cleanup cannot dispose a concurrent valid creation', async () => {
@@ -267,7 +267,7 @@ it('[F11] failed setup cleanup cannot dispose a concurrent valid creation', asyn
   const session = await valid
   assert(server.sessionInfos.has(session.nativeSessionId))
   assert.equal(server.disposals, 1)
-  assert.equal(server.environment?.variables.GRAPHQL_APP_MCP_TOKEN, 'fixture-owner-token')
+  assert.equal(server.environment?.variables.GRAPHQL_MCP_TOKEN, 'fixture-owner-token')
 })
 
 it('[F11] disposal invalidates queued setup instead of publishing a late session', async () => {
@@ -308,29 +308,29 @@ it('[F14] vanished sessions fail attachment without creating a replacement', asy
 
 it('[F16] restores and verifies MCP disable choices after credential and automatic restarts', async () => {
   const server = new FixtureServer()
-  server.config = { mcp: { 'graphql-app': { type: 'remote', enabled: true } } }
-  const harness = configuration(); harness.advanced = { ...advanced(), mcp: { serverEnabled: { 'graphql-app': false } } }
+  server.config = { mcp: { 'graphql': { type: 'remote', enabled: true } } }
+  const harness = configuration(); harness.advanced = { ...advanced(), mcp: { serverEnabled: { 'graphql': false } } }
   const native = manager(server)
   const session = await sessionFor(native, harness)
-  assert.equal(object(server.mcp['graphql-app']).status, 'disabled')
+  assert.equal(object(server.mcp['graphql']).status, 'disabled')
   await native.restartForCredential(environment('renewed'))
-  assert.equal(object(server.mcp['graphql-app']).status, 'disabled')
+  assert.equal(object(server.mcp['graphql']).status, 'disabled')
   server.crashed = true
   await native.history(session)
-  assert.equal(object(server.mcp['graphql-app']).status, 'disabled')
-  assert.equal(server.calls.filter((call) => call.path.startsWith('/mcp/graphql-app/disconnect')).length, 3)
+  assert.equal(object(server.mcp['graphql']).status, 'disabled')
+  assert.equal(server.calls.filter((call) => call.path.startsWith('/mcp/graphql/disconnect')).length, 3)
 })
 
 it('[F16] refuses conflicting instance-scoped MCP choices and unverified native control changes', async () => {
   const server = new FixtureServer()
-  server.config = { mcp: { 'graphql-app': { type: 'remote', enabled: true } } }
-  const first = configuration(); first.advanced = { ...advanced(), mcp: { serverEnabled: { 'graphql-app': false } } }
+  server.config = { mcp: { 'graphql': { type: 'remote', enabled: true } } }
+  const first = configuration(); first.advanced = { ...advanced(), mcp: { serverEnabled: { 'graphql': false } } }
   const native = manager(server)
   await sessionFor(native, first)
-  const conflicting = configuration(); conflicting.advanced = { ...advanced(), mcp: { serverEnabled: { 'graphql-app': true } } }
+  const conflicting = configuration(); conflicting.advanced = { ...advanced(), mcp: { serverEnabled: { 'graphql': true } } }
   await assert.rejects(sessionFor(native, conflicting), errorCode('OPENCODE_MCP_CONTEXT_CONFLICT'))
   const unverified = new FixtureServer(); unverified.config = server.config
-  unverified.beforeRequest = (path) => path.startsWith('/mcp/graphql-app/disconnect') ? json(true) : undefined
+  unverified.beforeRequest = (path) => path.startsWith('/mcp/graphql/disconnect') ? json(true) : undefined
   await assert.rejects(sessionFor(manager(unverified), first), errorCode('OPENCODE_MCP_CONTROL_NOT_APPLIED'))
 })
 
@@ -439,12 +439,12 @@ it('[F22] inspects ordered native config objects and trusted unresolved provenan
   const server = new FixtureServer()
   const native = manager(server)
   await sessionFor(native)
-  server.config = { mcp: { 'graphql-app': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/app', oauth: false, headers: { authorization: 'Bearer RESOLVED_SECRET_CANARY' } } },
+  server.config = { mcp: { 'graphql': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/app', oauth: false, headers: { authorization: 'Bearer RESOLVED_SECRET_CANARY' } } },
     permission: { '*': 'ask', bash: { '*': 'deny', 'git status': 'allow' } } }
-  server.mcp = { 'graphql-app': { status: 'connected' } }
-  server.mcpCredentialReferences = { 'graphql-app': 'GRAPHQL_APP_MCP_TOKEN' }
+  server.mcp = { 'graphql': { status: 'connected' } }
+  server.mcpCredentialReferences = { 'graphql': 'GRAPHQL_MCP_TOKEN' }
   const inspection = await native.inspectNativeMcp('/workspace/project')
-  assert.equal(inspection.credentialEnvironmentVariable, 'GRAPHQL_APP_MCP_TOKEN')
+  assert.equal(inspection.credentialEnvironmentVariable, 'GRAPHQL_MCP_TOKEN')
   assert.equal(inspection.policyScope, 'base_configuration_only')
   assert.deepEqual(inspection.baseConfigurationFilters, [
     { permission: '*', pattern: '*', effect: 'ask' }, { permission: 'bash', pattern: '*', effect: 'deny' }, { permission: 'bash', pattern: 'git status', effect: 'allow' },

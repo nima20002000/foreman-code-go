@@ -87,14 +87,14 @@ export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas })
   // Native preflight must resolve the exact endpoint and environment reference.
   // These are PUBLIC templates, not expanded credentials. Never change HOME's
   // OpenCode/Codex configuration or copy native account files into this task.
-  await writeFile(join(folder, 'opencode.json'), JSON.stringify({ mcp: { 'graphql-app': {
-    type: 'remote', url: `${apiUrl}/mcp/tools`, enabled: true, oauth: false,
-    headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' },
+  await writeFile(join(folder, 'opencode.json'), JSON.stringify({ mcp: { 'graphql': {
+    type: 'remote', url: `${apiUrl}/mcp`, enabled: true, oauth: false,
+    headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' },
   } } }, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
   if (codexModel) {
     await mkdir(join(folder, '.codex'), { mode: 0o700 })
     await writeFile(join(folder, '.codex/config.toml'),
-      `[mcp_servers.graphql-app]\nurl = "${apiUrl}/mcp/tools"\nbearer_token_env_var = "GRAPHQL_APP_MCP_TOKEN"\nenabled = true\n`,
+      `[mcp_servers.graphql]\nurl = "${apiUrl}/mcp"\nbearer_token_env_var = "GRAPHQL_MCP_TOKEN"\nenabled = true\n`,
       { mode: 0o600, flag: 'wx' })
   }
   const workspaceId = workspace.workspace.id

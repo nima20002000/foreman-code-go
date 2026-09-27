@@ -9,14 +9,15 @@ import type pg from 'pg'
 
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, type IssuedWorkerCredential, type WorkerCredentialService } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
+import { APP_MCP_SERVER_NAME } from './appMcpLauncher.js'
 
 export const MCP_INSPECTION_TIMEOUT_MS = 30_000
 export type NativeMcpStatus = 'connected' | 'disabled' | 'authentication_required' | 'broken' | 'status_unavailable'
 export type McpInspectionPhase = 'configuration' | 'health'
 
 export interface NativeMcpEntryEvidence {
-  automaticWorkerEndpoint?: boolean
-  automaticOperatorEndpoint?: boolean
+  /** The managed launcher routes to the owning app instance; no fixed endpoint is configured. */
+  automaticEndpoint?: boolean
   name: string
   transport: 'streamable-http' | 'sse' | 'stdio' | 'unknown'
   endpoint?: string
@@ -85,7 +86,7 @@ export class McpDetectionService {
   constructor(
     private readonly inspector: NativeMcpInspector,
     private readonly expectedEndpoint: string,
-    private readonly serverName = 'graphql-app',
+    private readonly serverName = APP_MCP_SERVER_NAME,
     private readonly timeoutMs = MCP_INSPECTION_TIMEOUT_MS,
   ) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new RangeError('Invalid MCP inspection timeout.')
@@ -120,7 +121,7 @@ export class McpDetectionService {
         throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH', 'Native MCP inspection returned evidence for another launch context.', 500)
       }
       const entry = evidence.entry
-      const automatic = entry?.automaticWorkerEndpoint === true && entry.transport === 'stdio' && this.serverName === 'graphql-app'
+      const automatic = entry?.automaticEndpoint === true && entry.transport === 'stdio' && this.serverName === APP_MCP_SERVER_NAME
       const matches = entry ? automatic || endpointMatches(entry.endpoint, this.expectedEndpoint) : null
       const credentialMatches = entry?.credentialEnvironmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
       let state: McpDetection['state']
@@ -169,7 +170,9 @@ export class McpDetectionService {
     // A correctly configured bearer endpoint may require the not-yet-issued
     // token. This does NOT accept broken connections or relax config checks.
     if (!['connected', 'status_unavailable', 'authentication_required'].includes(result.detection.state)) {
-      throw new DomainError('APP_MCP_PREFLIGHT_FAILED', `App MCP credential injection refused: ${result.detection.state}.`, 409)
+      throw new DomainError('APP_MCP_PREFLIGHT_FAILED', result.detection.state === 'not_detected'
+        ? `GraphQL MCP is not installed for ${input.harness === 'codex' ? 'Codex' : 'OpenCode'}. Add it in Harness Settings › Connections, then start again.`
+        : `GraphQL MCP credential injection refused: ${result.detection.state}.`, 409)
     }
     input.signal?.throwIfAborted()
     return result

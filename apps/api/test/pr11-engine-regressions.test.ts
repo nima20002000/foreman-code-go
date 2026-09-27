@@ -55,7 +55,7 @@ async function createFixture() {
       mcpDetection: true, supportedInteractionKinds: ['approval'] }),
     inspectMcp: async () => { throw new Error('Not part of this fixture') },
     createSession: async (input: NativeSessionStart) => {
-      assert.equal(input.environment?.variables.GRAPHQL_APP_MCP_TOKEN, secret)
+      assert.equal(input.environment?.variables.GRAPHQL_MCP_TOKEN, secret)
       creates += 1
       return session
     },
@@ -103,7 +103,7 @@ async function createFixture() {
   const credentials: ExecutionCredentialProvider = {
     prepare: async () => {
       await prepared()
-      return { credential: { principalId: 'worker-1', environment: { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: secret } },
+      return { credential: { principalId: 'worker-1', environment: { agentId: 'agent-1', variables: { GRAPHQL_MCP_TOKEN: secret } },
         expiresAt: new Date(Date.now() + expiresIn).toISOString() }, detection: {} as never }
     },
     revoke: async () => { revoked.push(candidate.id); if (cleanupFails) throw new Error('database unavailable') },

@@ -15,6 +15,7 @@ export const AppContextSchema = z.object({
     agentId: IdSchema,
     expiresAt: z.iso.datetime(),
   }).strict(),
+  role: z.enum(['orchestrator', 'coder']),
   scope: z.object({
     workspaceIds: z.array(IdSchema).optional(),
     workflowIds: z.array(IdSchema).optional(),

@@ -4,7 +4,7 @@ import { it } from 'vitest'
 import { credentialReferences, parseConfigObject, parseOpenCodeSse, providerSupports, visibleNativeEvent, object } from '../src/modules/harnesses/opencodeProtocol.js'
 
 it('[F22] credential provenance recognizes Bearer placeholders only in unresolved input', () => {
-  assert.deepEqual(credentialReferences({ mcp: { app: { headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } } } }), { app: 'GRAPHQL_APP_MCP_TOKEN' })
+  assert.deepEqual(credentialReferences({ mcp: { app: { headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } } } }), { app: 'GRAPHQL_MCP_TOKEN' })
   assert.deepEqual(credentialReferences({ mcp: { app: { headers: { Authorization: 'Bearer resolved-value' } } } }), {})
 })
 

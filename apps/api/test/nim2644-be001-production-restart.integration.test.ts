@@ -61,7 +61,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BE-001 production graceful rest
   async function mcp(token: string, input: Record<string, unknown>) {
     const client = new Client({ name: 'be001-production-review', version: '1.0' })
     try {
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), { authProvider: { token: async () => token } }))
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return await client.callTool({ name: 'interaction_respond', arguments: input })
     } finally { await client.close() }
   }
@@ -97,22 +97,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BE-001 production graceful rest
     sessions = new Map(); connections = new WeakMap()
     native = { starts: [], attaches: 0, responses: 0, closes: 0, cancels: 0 }
     vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration').mockImplementation(async (cwd) => ({
-      providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'graphql-app', inspectionScope: 'effective_config', configured: {
-        enabled: true, required: true, transport: 'streamable_http', url: 'http://127.0.0.1:4100/mcp/tools',
-        bearerTokenEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
+      providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'graphql', inspectionScope: 'effective_config', configured: {
+        enabled: true, required: true, transport: 'streamable_http', url: 'http://127.0.0.1:4100/mcp',
+        bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
       },
     }))
     vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async function (this: CodexAppServerSessionManager, input) {
       if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
       const reference = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.executionId}` }
       sessions.set(reference.nativeSessionId, { input, pending: [], turns: new Map(), asks: 0 })
-      connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_APP_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+      connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
       return reference
     })
     vi.spyOn(CodexAppServerSessionManager.prototype, 'attachSession').mockImplementation(async function (this: CodexAppServerSessionManager, reference, input) {
       native.attaches++
       if (!sessions.has(reference.nativeSessionId)) throw new Error('Cannot replace a native session')
-      connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_APP_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+      connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
       event(this, 'thread.attached', { threadId: reference.nativeSessionId })
       return reference
     })
@@ -163,8 +163,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BE-001 production graceful rest
       native.closes++
     })
     vi.spyOn(OpenCodeNativeSessionManager.prototype, 'inspectNativeMcp').mockImplementation(async (cwd) => ({
-      cwd, providerVersion: '1.18.31', serverName: 'graphql-app', nativeStatus: 'connected', transport: 'streamable-http',
-      endpoint: 'http://127.0.0.1:4100/mcp/tools', credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
+      cwd, providerVersion: '1.18.31', serverName: 'graphql', nativeStatus: 'connected', transport: 'streamable-http',
+      endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
       endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only',
     }))
     for (const method of ['createSession', 'attachSession', 'startTurn', 'history', 'reconcile', 'pending', 'respond', 'cancel', 'close', 'closeForRestart'] as const) {
@@ -198,8 +198,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('BE-001 production graceful rest
       [JSON.stringify({ harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
         autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
           { permission: '*', pattern: '*', effect: 'deny' },
-          { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
-          { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
+          { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' },
+          { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' },
         ] } })])
     const nodes = [{ id: 'orchestrator', agentId: 'agent-researcher', name: 'Orchestrator' },
       { id: 'worker-a', agentId: 'agent-reviewer', name: 'Worker A' }, { id: 'worker-b', agentId: 'agent-reviewer', name: 'Worker B' }]

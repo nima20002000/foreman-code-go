@@ -236,12 +236,12 @@ export async function reviewerFixture(options: { recovering?: boolean; workflow?
   const renewed: { executionId: string; principalId: string }[] = []
   const revoked: string[] = []
   const credential: IssuedWorkerCredential = { principalId: 'principal-reviewer-exact', expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    environment: { agentId: execution.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: secret } } }
+    environment: { agentId: execution.agentId, variables: { GRAPHQL_MCP_TOKEN: secret } } }
   const credentials: ExecutionCredentialProvider = {
     async prepare(input) {
       prepared.push(input.purpose ?? 'workflow')
-      return { credential, detection: { detection: { harness: 'codex', serverName: 'graphql-app', state: 'connected', endpointMatches: true,
-        credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', checkedAt: now },
+      return { credential, detection: { detection: { harness: 'codex', serverName: 'graphql', state: 'connected', endpointMatches: true,
+        credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', checkedAt: now },
       runnerId: 'fixture', workingDirectory: input.workingDirectory, providerVersion: session.providerVersion, nativeFilters: {} } }
     },
     async renew(id, actual) {

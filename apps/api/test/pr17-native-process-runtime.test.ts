@@ -246,7 +246,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
 
   it('F14: OpenCode retries failed cleanup without losing the child, credential or admission fence', async () => {
     const server = new ManagedOpenCodeServer({ binary: 'must-not-start', workingDirectory: tmpdir(), ownerAgentId: owner,
-      environment: { agentId: owner, variables: { GRAPHQL_APP_MCP_TOKEN: 'fixture-secret' } } })
+      environment: { agentId: owner, variables: { GRAPHQL_MCP_TOKEN: 'fixture-secret' } } })
     const child = Object.assign(new EventEmitter(), {
       pid: 2_000_000_000, exitCode: 0, signalCode: null,
       stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),

@@ -2,8 +2,8 @@ import { copyFile, mkdtemp, rm, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
-import { registerWorkerRoute } from '../src/modules/harnesses/workerMcpLauncher.js'
-import { WorkerMcpRoutes } from '../src/modules/harnesses/workerMcpRoutes.js'
+import { registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
+import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { seedInteractionOwners } from './helpers/interactionOwners.js'
@@ -164,7 +164,7 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
       grants: [{ actions: ['capabilities:read'], scope: {} }],
       expiresAt: new Date(Date.now() + 60_000),
     })
-    const token = (credential: typeof coderCredential) => credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!
+    const token = (credential: typeof coderCredential) => credential.environment.variables.GRAPHQL_MCP_TOKEN!
     const app = buildApp({
       readiness: { database, checkpoints: { ping: async () => undefined } },
       appMcp: { access, interactions: appInteractions },
@@ -177,7 +177,7 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
     const directory = await mkdtemp(join(tmpdir(), 'worker-mcp-routing-'))
     cleanup.push(() => rm(directory, { recursive: true, force: true }))
     const launcher = join(directory, 'launcher.mjs')
-    await copyFile(new URL('../../../scripts/worker-mcp.mjs', import.meta.url), launcher)
+    await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
     const secondApp = buildApp({ readiness: { database, checkpoints: { ping: async () => undefined } }, appMcp: { access, interactions: appInteractions } })
     let secondRequests = 0
     secondApp.addHook('onRequest', async (request) => { if (request.headers.authorization === `Bearer ${token(coderCredential)}`) secondRequests++ })
@@ -187,9 +187,9 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
       const client = new Client({ name, version: '1.0.0' })
       cleanup.push(async () => client.close())
       if (transport === 'launcher') {
-        await registerWorkerRoute(bearer, `${name === 'orchestrator' || name === 'wrong-reviewer' ? address : secondAddress}/mcp/tools`, new Date(Date.now() + 60_000).toISOString(), launcher)
-        await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: { GRAPHQL_APP_MCP_TOKEN: bearer }, stderr: 'pipe' }))
-      } else await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), {
+        await registerAppRoute(bearer, `${name === 'orchestrator' || name === 'wrong-reviewer' ? address : secondAddress}/mcp`, new Date(Date.now() + 60_000).toISOString(), launcher)
+        await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: { GRAPHQL_MCP_TOKEN: bearer }, stderr: 'pipe' }))
+      } else await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
         authProvider: { token: async () => bearer },
       }))
       return client
@@ -209,11 +209,11 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
     }
     const orchestratorTools = await orchestrator.listTools()
     const wrongTools = await wrongReviewer.listTools()
-    expect(coderTools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get'])
-    expect(orchestratorTools.tools.map((tool) => tool.name)).toEqual([
-      'context_get', 'interaction_list', 'interaction_get', 'interaction_respond',
-    ])
-    expect(wrongTools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get'])
+    // Each role lists only its own tools; a Coder never sees interaction_respond.
+    for (const tools of [coderTools, wrongTools]) {
+      expect(tools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get'])
+    }
+    expect(orchestratorTools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get', 'interaction_respond'])
     expect(orchestratorTools.tools.every((tool) => tool.inputSchema.additionalProperties === false
       && tool.outputSchema?.additionalProperties === false)).toBe(true)
 
@@ -221,8 +221,8 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
       coder.callTool({ name: 'context_get', arguments: {} }),
       orchestrator.callTool({ name: 'context_get', arguments: {} }),
     ])
-    expect(structured(coderContext)).toMatchObject({ principal: { agentId: 'agent-developer' }, capabilities: { interactionRespond: false } })
-    expect(structured(orchestratorContext)).toMatchObject({ principal: { agentId: 'agent-reviewer' }, capabilities: { interactionRespond: true } })
+    expect(structured(coderContext)).toMatchObject({ principal: { agentId: 'agent-developer' }, role: 'coder', capabilities: { interactionRespond: false } })
+    expect(structured(orchestratorContext)).toMatchObject({ principal: { agentId: 'agent-reviewer' }, role: 'orchestrator', capabilities: { interactionRespond: true } })
     expect(token(coderCredential)).not.toBe(token(orchestratorCredential))
 
     const firstPage = structured(await orchestrator.callTool({
@@ -244,9 +244,9 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
       interactionId: self.id, optionId: self.responseOptions[0]!.optionId, expectedRevision: 0,
     } })
     expect(failureText(selfResponse)).toContain('INTERACTION_NOT_FOUND')
-    await expect(coder.callTool({ name: 'interaction_respond', arguments: {
+    expect(failureText(await coder.callTool({ name: 'interaction_respond', arguments: {
       interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: 0,
-    } })).rejects.toThrow()
+    } }))).toContain('ROLE_NOT_ALLOWED')
 
     const responseInput = {
       interactionId: pending.id,
@@ -267,7 +267,7 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
     if (transport === 'launcher') {
       // Existing clients and tokens follow a restarted owner on a different port.
       await app.close()
-      const routes = new WorkerMcpRoutes(database.pool, `${secondAddress}/mcp/tools`, launcher)
+      const routes = new AppMcpRoutes(database.pool, `${secondAddress}/mcp`, launcher)
       cleanup.push(() => routes.close())
       await routes.refresh()
       expect(structured(await orchestrator.callTool({ name: 'interaction_get', arguments: { interactionId: pending.id } })))

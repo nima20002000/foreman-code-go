@@ -40,7 +40,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ sourceConversationId, before }) => invokeOperatorTool(context, 'operator_handoff_history_get', () => context.services.operatorChat!.handoffHistory(context.principal, sourceConversationId, before)))
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_mcp_setup_get')) server.registerTool('operator_mcp_setup_get', {
-    description: 'Check the saved Operator harness for the required enabled graphql-operator MCP launcher (automatic instance routing) or legacy endpoint and credential environment reference. This checks installation only; it does not install MCP, issue credentials, or prove provider authentication.',
+    description: 'Check the saved Operator harness for the required enabled graphql MCP launcher (automatic instance routing) or legacy endpoint and credential environment reference. This checks installation only; it does not install MCP, issue credentials, or prove provider authentication.',
     inputSchema: z.object({}).strict(), outputSchema: OperatorChatSetupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'operator_mcp_setup_get', () => context.services.operatorChat!.setup(context.principal)))

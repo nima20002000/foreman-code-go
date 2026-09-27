@@ -37,7 +37,7 @@ function workspace(id = 'workspace-1', rootPath = '/srv/project') {
 function detection(harness: AgentHarness = 'codex', state: McpDetection['state'] = 'connected', workingDirectory = '/srv/project') {
   return ScopedMcpDetectionSchema.parse({
     runnerId: 'runner-local', workingDirectory, providerVersion: '0.154.0', nativeFilters: {},
-    detection: { harness, serverName: 'graphql-app', state, checkedAt,
+    detection: { harness, serverName: 'graphql', state, checkedAt,
       endpointMatches: state === 'not_detected' || state === 'check_failed' ? null : true,
       credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' },
   })
@@ -144,7 +144,7 @@ describe('Workspace App MCP hierarchy', () => {
     seedConnections(value, 'status_unavailable')
     mount(value)
     expect((await screen.findAllByText('Setup found'))).toHaveLength(2)
-    expect(screen.getAllByText('Native settings match. To verify live use, run a workflow that calls an App MCP tool, then check its completed tool activity in Runs.')).toHaveLength(2)
+    expect(screen.getAllByText('Native settings match. To verify live use, run a workflow that calls a GraphQL MCP tool, then check its completed tool activity in Runs.')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Check setup for Codex' })).toBeEnabled()
   })
 

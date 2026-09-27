@@ -24,7 +24,7 @@ describe('Operator native activity projection', () => {
     ['tool', { type: 'commandExecution', command: 'printf hello', cwd: '/project', commandActions: [{ type: 'unknown', command: 'printf hello' }], aggregatedOutput: 'hello' }],
     ['file_read', { type: 'commandExecution', command: 'cat note.txt', cwd: '/project', commandActions: [{ type: 'read', command: 'cat note.txt', name: 'note.txt', path: '/project/note.txt' }], aggregatedOutput: 'saved note' }],
     ['file_write', { type: 'fileChange', changes: [{ path: '/project/note.txt', kind: { type: 'add' }, diff: '+saved note' }] }],
-    ['mcp', { type: 'mcpToolCall', server: 'graphql-operator', tool: 'workspace_list', arguments: {}, result: { content: [{ type: 'text', text: '[]' }] } }],
+    ['mcp', { type: 'mcpToolCall', server: 'graphql', tool: 'workspace_list', arguments: {}, result: { content: [{ type: 'text', text: '[]' }] } }],
     ['web_search', { type: 'webSearch', query: 'IANA examples', action: { type: 'search', query: 'IANA examples' } }],
     ['subagent', { type: 'collabAgentToolCall', tool: 'spawnAgent', model: 'gpt-5.6-luna', reasoningEffort: 'high', receiverThreadIds: ['child'], agentsStates: { child: { status: 'running' } } }],
   ] as const)('projects Codex %s from structured native items', (kind, item) => {

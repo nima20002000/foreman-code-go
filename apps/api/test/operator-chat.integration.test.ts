@@ -123,7 +123,7 @@ beforeEach(async () => {
   repository = new PostgresOperatorConversationRepository(pool)
   manager = new ChatManager()
   authority = { current: (id) => access.currentOperator(id), assertConfiguration() {},
-    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} }
   chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
 }, 30_000)
@@ -245,7 +245,7 @@ describe('Operator chat persistence and native binding', () => {
       async function connect(actions: ManagementPrincipal['grants'][number]['actions']) {
         const issued = await access.issue({ name: 'Fork MCP caller', audience: 'operator', grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
         const client = new Client({ name: 'fork-mcp', version: '1' }); clients.push(client)
-        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => issued.token } }))
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => issued.token } }))
         return client
       }
       const client = await connect(['operator_chat:read', 'operator_chat:write', 'settings:read', 'settings:update', 'harnesses:read'])
@@ -275,7 +275,7 @@ describe('Operator chat persistence and native binding', () => {
       await pool.query('insert into operator_chat_credentials(principal_id,conversation_id) values ($1,$2)',
         [delegated.principal.id,fork.state.conversation.id])
       const reader = new Client({ name: 'handoff-reader', version: '1' }); clients.push(reader)
-      await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => delegated.token } }))
+      await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => delegated.token } }))
       expect((await reader.listTools()).tools.map((tool) => tool.name)).toContain('operator_handoff_history_get')
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
       const history = (await reader.callTool({ name: 'operator_handoff_history_get', arguments: {} })).structuredContent as { messages: Array<{ content: string }> }
@@ -304,7 +304,7 @@ describe('Operator chat persistence and native binding', () => {
       async function connect(actions: ManagementPrincipal['grants'][number]['actions']) {
         const issued = await access.issue({ name: 'Settings parity', audience: 'operator', grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
         const client = new Client({ name: 'settings-parity', version: '1' }); clients.push(client)
-        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => issued.token } }))
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => issued.token } }))
         return client
       }
       const client = await connect(['settings:read', 'settings:update', 'harnesses:read'])
@@ -336,7 +336,7 @@ describe('Operator chat persistence and native binding', () => {
     await chat.send(conversation.id, { requestId: 'before-removal', content: 'Hello' }, owner)
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
     const turns = manager.turns
-    authority.setup = async () => ({ harness: 'codex', status: 'setup_required', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })
+    authority.setup = async () => ({ harness: 'codex', status: 'setup_required', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() })
     authority.prepare = async () => { throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable Operator MCP first.', 409) }
     await chat.send(conversation.id, { requestId: 'after-removal', content: 'Continue' }, owner)
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'error')

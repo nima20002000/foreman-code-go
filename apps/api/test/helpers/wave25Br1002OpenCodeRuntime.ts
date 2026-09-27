@@ -40,9 +40,9 @@ export class Br1002OpenCodeServer extends FixtureServer {
     super()
     // Each execution owns a separate OpenCode process in production. Distinct
     // provider-issued session IDs also keep this deterministic fixture honest.
-    this.config = { mcp: { 'graphql-app': { type: 'remote', url: providerAppEndpoint, enabled: true } } }
-    this.mcpCredentialReferences['graphql-app'] = APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
-    this.mcp = { 'graphql-app': { status: 'connected' } }
+    this.config = { mcp: { 'graphql': { type: 'remote', url: providerAppEndpoint, enabled: true } } }
+    this.mcpCredentialReferences['graphql'] = APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
+    this.mcp = { 'graphql': { status: 'connected' } }
     this.nextSessionIds.push(`ses_${executionId}`)
     this.onPrompt = (sessionID, body) => {
       const workflowCorrelation = `execution:${executionId}`
@@ -96,8 +96,8 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
         ...configuration(), autoApprove: false, advanced: { ...advanced(), permissionHandling: 'graphql_routed',
           permissionRules: [
             { permission: '*', pattern: '*', effect: 'deny' },
-            { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
-            { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
+            { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' },
+            { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' },
           ] },
       } : configuration(),
     }))
@@ -133,7 +133,7 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
       // A fresh review may attach to its completed host; its own live-start and
       // history settlement must then occur on that SAME manager/generation.
       const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: context.agentId,
-        appMcpServerName: 'graphql-app', expectedAppMcpEndpoint: 'http://127.0.0.1:4100/mcp/app' })
+        appMcpServerName: 'graphql', expectedAppMcpEndpoint: 'http://127.0.0.1:4100/mcp/app' })
       adapters.push(native)
       return native
     })

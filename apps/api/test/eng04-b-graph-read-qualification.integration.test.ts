@@ -197,12 +197,12 @@ describe.skipIf(!postgresEnabled)('ENG04-B primary canonical read qualification'
       `select count(*)::text as n from management_audit where principal_id is null and source=$1 and target_key=$2 and outcome='denied'`,
       [source, target])).rows[0]!.n)
     const target = url(t.scope, 'snapshot').split('?')[0]!
-    const beforeHttp = await denialCount('http', target), beforeMcp = await denialCount('mcp', '/mcp/operator')
+    const beforeHttp = await denialCount('http', target), beforeMcp = await denialCount('mcp', '/mcp')
     await t.access.revoke(t.writer.principal.id)
     const denied = await pair(t, 'snapshot')
     expect(denied.http.statusCode).toBe(401)
     expect(denied.mcp.status).toBe(401)
     expect(await denialCount('http', target)).toBe(beforeHttp + 1)
-    expect(await denialCount('mcp', '/mcp/operator')).toBe(beforeMcp + 1)
+    expect(await denialCount('mcp', '/mcp')).toBe(beforeMcp + 1)
   })
 })

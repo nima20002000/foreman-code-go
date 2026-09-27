@@ -33,7 +33,7 @@ export function input(directory: string, agentId = 'agent-a'): WorkflowNativeSes
       contentHash: 'sha256:fixture', createdAt: '2026-09-16T00:00:00.000Z',
     },
   }
-  return { request, environment: { agentId, variables: { TEST_AGENT_ID: agentId, GRAPHQL_APP_MCP_TOKEN: `token-${agentId}` } } }
+  return { request, environment: { agentId, variables: { TEST_AGENT_ID: agentId, GRAPHQL_MCP_TOKEN: `token-${agentId}` } } }
 }
 export async function calls(directory: string): Promise<JsonObject[]> {
   try { return (await readFile(join(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as JsonObject) }

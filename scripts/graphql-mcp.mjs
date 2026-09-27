@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
-const token = process.env.GRAPHQL_OPERATOR_MCP_TOKEN
+const token = process.env.GRAPHQL_MCP_TOKEN
 const directory = join(dirname(fileURLToPath(import.meta.url)), 'routes')
 const output = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 let protocolVersion = '2025-03-26'
@@ -17,7 +17,7 @@ async function forward(message) {
     const route = JSON.parse(await readFile(join(directory, `${key}.json`), 'utf8'))
     const url = new URL(route.endpoint)
     if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
-      || url.pathname !== '/mcp/operator' || url.username || url.password || url.search || url.hash
+      || url.pathname !== '/mcp' || url.username || url.password || url.search || url.hash
       || !Number.isInteger(route.pid) || route.pid <= 0 || Date.parse(route.expiresAt) <= Date.now()
       || !Number.isFinite(Date.parse(route.expiresAt))) throw new Error('invalid route')
     process.kill(route.pid, 0)
@@ -48,7 +48,7 @@ async function forward(message) {
     }
   } catch {
     if (Object.hasOwn(message, 'id')) output({ jsonrpc: '2.0', id: message.id,
-      error: { code: -32000, message: 'Operator MCP could not connect to its owning app. Reopen the Operator conversation to refresh its connection.' } })
+      error: { code: -32000, message: 'GraphQL MCP could not connect to its owning app. Restart the conversation or execution to refresh its connection.' } })
   }
 }
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })

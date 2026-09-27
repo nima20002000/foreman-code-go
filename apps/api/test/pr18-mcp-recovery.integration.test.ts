@@ -8,14 +8,14 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
 import { NativeMcpNotSubmittedError } from '../src/modules/harnesses/nativeMcpDelivery.js'
-import { fingerprint, replacement, type NativeMcpSnapshot, type NativeMcpAdapter } from '../src/modules/harnesses/nativeMcpCommon.js'
+import { applyMcpEdits, fingerprint, mcpEdits, type NativeMcpAdapter, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 
 let admin: pg.Pool, pool: pg.Pool, schema: string, owner: ManagementPrincipal
 let commands: PostgresCommandCoordinator, service: HarnessMcpSettingsService
 let snapshots: Record<'codex' | 'opencode', NativeMcpSnapshot>
 let reads = 0, writes = 0, loseAcknowledgement = false, preWriteFailure = false
 const cleanup = vi.fn(async () => {})
-const endpoint = 'http://127.0.0.1:3000/mcp/operator'
+const endpoint = 'http://127.0.0.1:3000/mcp'
 beforeEach(async () => {
   admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
   schema = `pr18_mcp_${randomUUID().replaceAll('-', '')}`
@@ -33,11 +33,9 @@ beforeEach(async () => {
     apply: async (snapshot, change, _signal, managed) => {
       if (preWriteFailure) throw new NativeMcpNotSubmittedError(new Error('aborted before native entry'))
       writes++
-      const next = replacement(snapshot, change, managed)
-      const user = { ...snapshot.user }
-      if (next) user[change.name] = next; else delete user[change.name]
+      const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
       snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
-        credentialReferences: { 'graphql-operator': 'GRAPHQL_OPERATOR_MCP_TOKEN' } }
+        credentialReferences: { 'graphql': 'GRAPHQL_MCP_TOKEN' } }
       if (loseAcknowledgement) throw new Error('response lost after successful native write')
     },
   })
@@ -49,7 +47,7 @@ afterEach(async () => {
   await admin?.query(`drop schema if exists "${schema}" cascade`); await admin?.end()
 })
 function managed(harness: 'codex' | 'opencode' = 'codex') {
-  return { harness, commandId: randomUUID(), preset: 'operator' as const, installed: true, expectedRevision: snapshots[harness].revision }
+  return { harness, commandId: randomUUID(), preset: 'graphql' as const, installed: true, expectedRevision: snapshots[harness].revision }
 }
 it('replays a pre-PR generic receipt without native inspection, but conflicts on changed input', async () => {
   const input: HarnessMcpPlanInput = HarnessMcpPlanInputSchema.parse({ harness: 'codex', commandId: randomUUID(),

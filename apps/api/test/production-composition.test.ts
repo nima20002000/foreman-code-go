@@ -130,7 +130,7 @@ it('uses one real approval runtime across production HTTP, Operator MCP, App MCP
   expect(options.mcpDetection?.service).toBeDefined()
   await production.app.ready()
   expect(production.app.hasRoute({ method: 'GET', url: '/api/interactions' })).toBe(false)
-  for (const url of ['/mcp/operator', '/mcp/tools']) expect(production.app.hasRoute({ method: 'POST', url })).toBe(true)
+  for (const url of ['/mcp', '/mcp']) expect(production.app.hasRoute({ method: 'POST', url })).toBe(true)
   const resume = vi.spyOn(production.engine, 'resumeInteraction').mockResolvedValue(undefined)
   const callback = Reflect.get(service, 'atomicApprovalResume') as
     Parameters<InteractionService['useAtomicApprovalResume']>[0] | undefined

@@ -81,7 +81,7 @@ describe.skipIf(!postgresEnabled)('NIM-2644 BE-002/003 pre-Stop authority and re
     const issued = await access.issue({ name: 'NIM-2644 isolated owner', audience: 'operator', grants,
       expiresAt: new Date(Date.now() + 300_000) })
     const client = new Client({ name: 'nim2644-receipt-authority-fixture', version: '1.0.0' })
-    try { await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => issued.token } })) }
+    try { await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => issued.token } })) }
     catch (error) { await client.close().catch(() => undefined); throw error }
     clients.push(client)
     const enrollment = await app.inject({ method: 'POST', url: '/api/auth/enroll', headers: { host: 'localhost' }, payload: { token: issued.token } })

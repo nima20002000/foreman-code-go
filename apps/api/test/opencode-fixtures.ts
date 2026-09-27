@@ -27,10 +27,10 @@ export function request(harness = configuration()): HarnessExecutionRequest {
 }
 export function advanced() { return structuredClone(DEFAULT_OPENCODE_ADVANCED_CONFIGURATION) }
 export function environment(token = 'fixture-owner-token'): ChildProcessEnvironment {
-  return { agentId: 'agent-1', variables: { GRAPHQL_APP_MCP_TOKEN: token } }
+  return { agentId: 'agent-1', variables: { GRAPHQL_MCP_TOKEN: token } }
 }
 export function manager(server: FixtureServer) {
-  return new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpServerName: 'graphql-app', expectedAppMcpEndpoint: 'http://127.0.0.1:4100/mcp/app' })
+  return new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpServerName: 'graphql', expectedAppMcpEndpoint: 'http://127.0.0.1:4100/mcp/app' })
 }
 export async function sessionFor(native: OpenCodeNativeSessionManager, harness = configuration()) {
   return native.createSession({ request: request(harness), environment: environment() })

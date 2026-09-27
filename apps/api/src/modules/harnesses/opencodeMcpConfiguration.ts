@@ -1,5 +1,4 @@
-import { isWorkerLauncher } from './workerMcpLauncher.js'
-import { isOperatorLauncher } from './operatorMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, isAppLauncher } from './appMcpLauncher.js'
 import { randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -75,9 +74,7 @@ export async function inspectOpenCodeMcpConfiguration(input: {
     enabled: first.enabled !== false,
     status: first.enabled === false ? 'disabled' : 'status_unavailable',
   }
-  const operatorLauncher = input.serverName === 'graphql-operator' && isOperatorLauncher('opencode', first)
-  const workerLauncher = input.serverName === 'graphql-app' && isWorkerLauncher('opencode', first)
-  const launcher = operatorLauncher || workerLauncher
+  const launcher = input.serverName === APP_MCP_SERVER_NAME && isAppLauncher('opencode', first)
   const initialAuthorization = authorization(first)
   // The App endpoint uses GraphQL-issued bearer auth, never provider OAuth.
   if (!launcher && (first.type !== 'remote' || first.oauth !== false || !initialAuthorization
@@ -88,14 +85,13 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   const marker = `graphql_probe_${randomBytes(32).toString('hex')}`
   const checked = await runCommand(input.binary, args, input.workingDirectory, input.signal, {
     expectedAgentId: owner,
-    credentialAudience: credentialVariable === 'GRAPHQL_OPERATOR_MCP_TOKEN' ? 'operator' : 'worker',
     beforeSpawn: async () => ({ agentId: owner, variables: { [credentialVariable]: marker } }),
   })
   const second = parseEntry(checked)
-  if (launcher && second && (operatorLauncher ? isOperatorLauncher('opencode', second) : isWorkerLauncher('opencode', second))
+  if (launcher && second && isAppLauncher('opencode', second)
     && (second.environment as JsonObject)[credentialVariable] === '[REDACTED]'
     && isDeepStrictEqual({ ...first, environment: null }, { ...second, environment: null })) {
-    return { ...common, credentialEnvironmentVariable: credentialVariable, ...(operatorLauncher ? { automaticOperatorEndpoint: true } : { automaticWorkerEndpoint: true }) }
+    return { ...common, credentialEnvironmentVariable: credentialVariable, automaticEndpoint: true }
   }
   const markedAuthorization = second ? authorization(second) : undefined
   if (!second || !markedAuthorization || !/^Bearer \[REDACTED\]$/i.test(markedAuthorization.value)

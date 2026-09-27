@@ -326,7 +326,7 @@ export class OperatorChatService {
     const existing = this.runtimes.get(id)
     if (existing?.session) {
       if ((await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
-        throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql-operator MCP connection in the selected harness before chatting.', 409)
+        throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql MCP connection in the selected harness before chatting.', 409)
       }
       existing.configuration = configuration; return existing
     }
@@ -376,7 +376,7 @@ export class OperatorChatService {
         // This is deliberately NOT an issued credential: the App rejects it.
         // Do not mint fresh owner authority merely to inspect/stop old work.
         environment: { agentId: configuration.operatorId,
-          variables: { GRAPHQL_OPERATOR_MCP_TOKEN: 'operator-cleanup-disabled' } },
+          variables: { GRAPHQL_MCP_TOKEN: 'operator-cleanup-disabled' } },
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       }, signal)
     }

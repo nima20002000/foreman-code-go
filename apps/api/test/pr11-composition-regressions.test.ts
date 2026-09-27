@@ -43,8 +43,8 @@ describe('PR #11 production composition and HTTP detection', () => {
   })
 
   it('normalizes wildcard listen addresses to usable local endpoints', () => {
-    assert.equal(localAppMcpEndpoint('0.0.0.0', 3000), 'http://127.0.0.1:3000/mcp/tools')
-    assert.equal(localAppMcpEndpoint('::', 3000), 'http://[::1]:3000/mcp/tools')
+    assert.equal(localAppMcpEndpoint('0.0.0.0', 3000), 'http://127.0.0.1:3000/mcp')
+    assert.equal(localAppMcpEndpoint('::', 3000), 'http://[::1]:3000/mcp')
   })
 
   it('accepts workspace-scoped detection authority and denies another workspace', async () => {
@@ -54,7 +54,7 @@ describe('PR #11 production composition and HTTP detection', () => {
       calls += 1
       phase = input.phase
       return { ...input, providerVersion: '0.154.0', inspectedAt: new Date().toISOString() }
-    } }, 'http://127.0.0.1:3000/mcp/tools')
+    } }, 'http://127.0.0.1:3000/mcp')
     const f = route(service)
     await f.handler(f.request, f.reply)
     assert.equal(calls, 1)
@@ -72,7 +72,7 @@ describe('PR #11 production composition and HTTP detection', () => {
       inspected = input.signal
       ready()
       return new Promise((_resolve, reject) => input.signal!.addEventListener('abort', () => reject(new Error('abandoned')), { once: true }))
-    } }, 'http://127.0.0.1:3000/mcp/tools')
+    } }, 'http://127.0.0.1:3000/mcp')
     const f = route(service)
     const response = f.handler(f.request, f.reply)
     await started

@@ -9,12 +9,12 @@ describe('Codex HAP-02 MCP inspection adapter', () => {
       inspectMcpConfiguration: async (cwd) => {
         calls.push(cwd)
         return {
-          providerVersion: '0.154.0', cwd, serverName: 'graphql-app',
+          providerVersion: '0.154.0', cwd, serverName: 'graphql',
           binary: 'codex', inspectionScope: 'effective_config' as const,
           configured: {
-            enabled: true, transport: 'streamable_http', url: 'http://127.0.0.1:3000/mcp/tools',
+            enabled: true, transport: 'streamable_http', url: 'http://127.0.0.1:3000/mcp',
             required: false,
-            bearerTokenEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
+            bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
             enabledTools: ['context_get'], disabledTools: ['interaction_respond'],
             defaultToolsApprovalMode: null, tools: {},
           },
@@ -22,7 +22,7 @@ describe('Codex HAP-02 MCP inspection adapter', () => {
       },
     })
     await expect(inspector.inspect({
-      harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql-app',
+      harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql',
     })).resolves.toMatchObject({
       providerVersion: '0.154.0', workingDirectory: '/workspace',
       entry: { transport: 'streamable-http', status: 'status_unavailable' },
@@ -39,7 +39,7 @@ describe('Codex HAP-02 MCP inspection adapter', () => {
       },
     })
     await expect(inspector.inspect({
-      harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql-app',
+      harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace', serverName: 'graphql',
     })).resolves.not.toHaveProperty('entry')
   })
 })

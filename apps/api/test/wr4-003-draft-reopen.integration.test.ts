@@ -91,7 +91,7 @@ describe.skipIf(!postgresEnabled)('WR4-003 durable draft instance replacement', 
       expiresAt: new Date(Date.now() + 600_000) })
     const client = new Client({ name: 'wr4-003-draft-lifecycle', version: '1.0.0' })
     try {
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
         authProvider: { token: async () => issued.token },
       }))
     } catch (error) { await client.close().catch(() => undefined); throw error }
@@ -320,7 +320,7 @@ describe.skipIf(!postgresEnabled)('WR4-003 durable draft instance replacement', 
       for (const tool of ['graph_draft_open', 'graph_draft_get', 'graph_draft_apply', 'graph_draft_discard', 'graph_save'] as const) {
         const input = tool === 'graph_save' ? saveInput : tool === 'graph_draft_apply' ? editInput : discardInput
         expect((await app.inject({ ...route(tool, input), headers: { host: 'localhost' } })).statusCode).toBe(401)
-        expect((await app.inject({ method: 'POST', url: '/mcp/operator',
+        expect((await app.inject({ method: 'POST', url: '/mcp',
           headers: { host: 'localhost', accept: 'application/json, text/event-stream' },
           payload: { jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name: tool, arguments: input } },
         })).statusCode).toBe(401)

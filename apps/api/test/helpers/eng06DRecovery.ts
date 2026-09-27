@@ -126,7 +126,7 @@ async function openTransport(base: Base, runtime: Runtime, errors: unknown[]): P
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'eng06-d-restarted-reader', version: '1' }); clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return client
     }
     return { app, connect, client: await connect(base.writer.token),

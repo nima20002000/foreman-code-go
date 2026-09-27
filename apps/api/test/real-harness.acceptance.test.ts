@@ -69,7 +69,7 @@ describe.skipIf(!realHarnessesEnabled)('real workflow acceptance', () => {
       const interactions = new PostgresInteractionRepository(database.pool)
       const budgets = new PostgresApprovalBudgetRepository(database.pool)
       const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
-      const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp/tools'
+      const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp'
       const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
         const configuration = context.configuration.harness
         if (configuration.harness !== context.harness) throw new Error('Pinned harness configuration mismatch.')

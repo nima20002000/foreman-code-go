@@ -73,9 +73,8 @@ export class HarnessMcpSettingsService {
         const snapshot = await this.adapters[harness].read(signal)
         const list = publicMcpList(snapshot)
         return { ...list, ...(this.operatorEndpoint ? { presets: {
-          worker: managedStatus(snapshot, 'worker', this.operatorEndpoint),
-          operator: managedStatus(snapshot, 'operator', this.operatorEndpoint),
-          linear: managedStatus(snapshot, 'linear', this.operatorEndpoint),
+          graphql: managedStatus(snapshot, 'graphql', this.operatorEndpoint),
+          linear: managedStatus(snapshot, 'linear', this.operatorEndpoint) as Exclude<ReturnType<typeof managedStatus>, 'legacy'>,
         } } : {}) }
       }
       catch (error) { throw qualificationError(error) }
@@ -151,8 +150,11 @@ export class HarnessMcpSettingsService {
     if (!active.rows[0]) throw new DomainError('PRINCIPAL_REVOKED', 'Sign in again to review this change.', 401)
     requireAuthorization({ ...principal, grants: active.rows[0].grants, expiresAt: active.rows[0].expires_at.toISOString() }, 'harnesses:update')
   }
-  private managed(plan: HarnessMcpPlan) {
+  private managed(plan: HarnessMcpPlan): { preset: HarnessMcpManagedPreset; endpoint: string } | undefined {
     if (!plan.managedPreset) return undefined
+    if (plan.managedPreset === 'operator' || plan.managedPreset === 'worker') {
+      throw new DomainError('MCP_PRESET_RETIRED', 'This request uses a retired Operator/Worker MCP preset. Reject it, then add GraphQL MCP, which serves every role.', 409)
+    }
     if (!this.operatorEndpoint) throw new DomainError('MCP_PRESET_UNAVAILABLE', 'Managed MCP presets are unavailable.', 503)
     return { preset: plan.managedPreset, endpoint: this.operatorEndpoint }
   }
