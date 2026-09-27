@@ -11,11 +11,12 @@ import type { ChildProcessEnvironment } from './port.js'
 import { PROCESS_SHUTDOWN_GRACE_MS, runCommand, signalTree } from './process.js'
 import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
+import { APP_MCP_TOKEN } from './appMcpLauncher.js'
 
 export const QUALIFIED_OPENCODE_VERSION = '1.18.31'
 const STARTUP_TIMEOUT_MS = 30_000
 const REQUEST_TIMEOUT_MS = 30_000
-const APP_CREDENTIAL_ENV = 'GRAPHQL_APP_MCP_TOKEN'
+const APP_CREDENTIAL_ENV = APP_MCP_TOKEN
 
 export type NativeDeliveryCertainty = 'definite' | 'uncertain'
 export class OpenCodeNativeDeliveryError extends Error {

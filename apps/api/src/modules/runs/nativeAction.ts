@@ -12,10 +12,16 @@ export interface NativeActionChange {
   kind: RunNodeActionKind
 }
 
+/** Agent-role tools on the unified graphql server; every other graphql tool is Operator-only. */
+const AGENT_ROLE_TOOLS = new Set(['context_get', 'interaction_list', 'interaction_get', 'interaction_respond'])
 function mcpAction(server: string | undefined, tool: string | undefined): RunNodeActionKind {
-  if (server === 'graphql-app' || server === 'graphql_app') return tool === 'interaction_respond' ? 'responding_approval' : 'using_app_mcp'
-  if (server === 'graphql-operator' || server === 'graphql_operator') return tool === 'workspace_folder_create' ? 'creating_folder' : 'using_operator_mcp'
-  return 'using_mcp'
+  // graphql-app/graphql-operator are pre-unification names still found in recorded native history.
+  const app = server === 'graphql-app' || server === 'graphql_app'
+  const operator = server === 'graphql-operator' || server === 'graphql_operator'
+  if (server !== 'graphql' && !app && !operator) return 'using_mcp'
+  if (tool === 'interaction_respond') return 'responding_approval'
+  if (tool === 'workspace_folder_create') return 'creating_folder'
+  return app || (server === 'graphql' && AGENT_ROLE_TOOLS.has(tool ?? '')) ? 'using_app_mcp' : 'using_operator_mcp'
 }
 
 /** Uses protocol fields only. Never inspect state.title, commands, paths, arguments, output or model text. */
@@ -62,6 +68,7 @@ export function nativeAction(type: string, payload: ObjectValue): NativeActionCh
   else if (['websearch', 'webfetch', 'codesearch'].includes(tool ?? '')) kind = 'searching_web'
   else if (tool?.startsWith('graphql-app_') || tool?.startsWith('graphql_app_')) kind = mcpAction('graphql-app', tool.slice('graphql-app_'.length))
   else if (tool?.startsWith('graphql-operator_') || tool?.startsWith('graphql_operator_')) kind = mcpAction('graphql-operator', tool.slice('graphql-operator_'.length))
+  else if (tool?.startsWith('graphql_')) kind = mcpAction('graphql', tool.slice('graphql_'.length))
   else return undefined
   if (!['pending', 'running', 'completed', 'error'].includes(String(state.status))) return undefined
   return { id, kind, pending: state.status === 'pending', ended: state.status === 'completed' || state.status === 'error' }

@@ -29,7 +29,7 @@ if(args.includes('--version')) {
    if(fs.existsSync(dir+'/fail-health-once')) {fs.unlinkSync(dir+'/fail-health-once');response.statusCode=503;response.end('{}');return;}
    const send=()=>response.end(JSON.stringify({healthy:true,version:'1.18.31'}));
    if(fs.existsSync(dir+'/delay-health')) setTimeout(send,250); else send();
-  } else if(request.url==='/test-env') response.end(JSON.stringify({token:process.env.GRAPHQL_APP_MCP_TOKEN??null,username,pid:process.pid}));
+  } else if(request.url==='/test-env') response.end(JSON.stringify({token:process.env.GRAPHQL_MCP_TOKEN??null,username,pid:process.pid}));
   else if(request.url==='/spawn-child') {
    const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});
    fs.writeFileSync(dir+'/descendant.pid',String(child.pid));
@@ -68,9 +68,9 @@ async function expectStopped(pid: number) {
 }
 
 it.skipIf(process.platform === 'win32')('[F10,F24] strips inherited App tokens and pins the managed username', async () => {
-  const previousToken = process.env.GRAPHQL_APP_MCP_TOKEN
+  const previousToken = process.env.GRAPHQL_MCP_TOKEN
   const previousUsername = process.env.OPENCODE_SERVER_USERNAME
-  process.env.GRAPHQL_APP_MCP_TOKEN = 'PARENT_CANARY_NOT_A_REAL_SECRET'
+  process.env.GRAPHQL_MCP_TOKEN = 'PARENT_CANARY_NOT_A_REAL_SECRET'
   process.env.OPENCODE_SERVER_USERNAME = 'inherited-custom-user'
   const { directory, binary } = await fixture()
   try {
@@ -78,12 +78,12 @@ it.skipIf(process.platform === 'win32')('[F10,F24] strips inherited App tokens a
       const server = new ManagedOpenCodeServer({ binary, workingDirectory: directory, ownerAgentId: 'agent-1', ...(selected ? { environment: selected } : {}) })
       try {
         const actual = await (await server.request('/test-env')).json() as { token: string | null; username: string }
-        assert.equal(actual.token, selected?.variables.GRAPHQL_APP_MCP_TOKEN ?? null)
+        assert.equal(actual.token, selected?.variables.GRAPHQL_MCP_TOKEN ?? null)
         assert.equal(actual.username, 'opencode')
       } finally { await server.dispose() }
     }
   } finally {
-    if (previousToken === undefined) delete process.env.GRAPHQL_APP_MCP_TOKEN; else process.env.GRAPHQL_APP_MCP_TOKEN = previousToken
+    if (previousToken === undefined) delete process.env.GRAPHQL_MCP_TOKEN; else process.env.GRAPHQL_MCP_TOKEN = previousToken
     if (previousUsername === undefined) delete process.env.OPENCODE_SERVER_USERNAME; else process.env.OPENCODE_SERVER_USERNAME = previousUsername
     await rm(directory, { recursive: true, force: true })
   }

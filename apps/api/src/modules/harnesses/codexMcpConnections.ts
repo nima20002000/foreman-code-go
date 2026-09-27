@@ -1,5 +1,4 @@
-import { installWorkerLauncher } from './workerMcpLauncher.js'
-import { installOperatorLauncher } from './operatorMcpLauncher.js'
+import { installAppLauncher } from './appMcpLauncher.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { backupNativeUserFile, readNativeUserFile } from './nativeConfigFiles.js'
 import { runCommand } from './process.js'
@@ -7,7 +6,7 @@ import type { HarnessMcpChange, HarnessMcpManagedPreset } from '@graphql/contrac
 import { DomainError } from '../errors.js'
 import { CodexStdioTransport } from './codexStdioTransport.js'
 import { assertCodexUnchanged, qualifyCodex } from './codexProtocol.js'
-import { fingerprint, record, replacement, type NativeMcpAdapter, type NativeMcpSnapshot } from './nativeMcpCommon.js'
+import { applyMcpEdits, fingerprint, mcpEdits, record, type NativeMcpAdapter, type NativeMcpSnapshot } from './nativeMcpCommon.js'
 import { withNativeMcpDelivery } from './nativeMcpDelivery.js'
 
 /** A second definition can survive user-entry removal, even when its current values are identical. */
@@ -66,7 +65,7 @@ export class CodexMcpConnections implements NativeMcpAdapter {
   async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
     managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void> {
     return withNativeMcpDelivery(async (writing) => {
-      const next = replacement(snapshot, change, managed)
+      const edits = mcpEdits(snapshot, change, managed)
       await this.control(async (transport, binary, environment) => {
         const current = await this.inspect(transport, binary, environment, signal)
         if (current.revision !== snapshot.revision) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
@@ -75,13 +74,11 @@ export class CodexMcpConnections implements NativeMcpAdapter {
         signal.throwIfAborted()
         // Exactly one irreversible native operation. A later error is uncertain.
         writing()
-        if (managed?.preset === 'worker' && change.kind === 'add') await installWorkerLauncher()
-        if (managed?.preset === 'operator' && change.kind === 'add') await installOperatorLauncher()
-        await transport.request('config/batchWrite', { edits: [{ keyPath: `mcp_servers.${change.name}`, value: next ?? null, mergeStrategy: 'replace' }],
+        if (managed?.preset === 'graphql' && change.kind === 'add') await installAppLauncher()
+        await transport.request('config/batchWrite', { edits: edits.map((edit) => ({ keyPath: `mcp_servers.${edit.name}`, value: edit.value ?? null, mergeStrategy: 'replace' })),
           expectedVersion: current.version, filePath: current.file, reloadUserConfig: true }, signal)
         const after = await this.inspect(transport, binary, environment, signal)
-        const expected = { ...current.user }
-        if (next === undefined) delete expected[change.name]; else expected[change.name] = next
+        const expected = applyMcpEdits(current.user, edits)
         if (fingerprint({ ...current.userConfig, mcp_servers: expected }) !== fingerprint({ ...after.userConfig, mcp_servers: after.user })) throw new DomainError('MCP_WRITE_UNCONFIRMED', 'The native write could not be confirmed. Do not retry it automatically.', 409)
       }, signal)
     })

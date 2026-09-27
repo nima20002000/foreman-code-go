@@ -201,7 +201,7 @@ export class WorkflowNativeProofServices {
           set approval_native_session_id=$2,approval_connection_generation=$3::bigint
           from management_principals p where b.execution_id=$1 and b.purpose='workflow'
             and b.run_id=$4 and b.workspace_id=$5 and b.workflow_id=$6 and b.agent_id=$7
-            and b.environment_variable='GRAPHQL_APP_MCP_TOKEN'
+            and b.environment_variable='GRAPHQL_MCP_TOKEN'
             and b.approval_native_session_id is null and b.approval_connection_generation is null
             and b.revoked_at is null and p.id=b.principal_id and p.revoked_at is null
             and p.expires_at>clock_timestamp() and p.audience='worker' and p.agent_id=b.agent_id`,

@@ -1,6 +1,6 @@
 # Operator MCP v1
 
-Operator MCP is the authenticated local product-management interface delivered by NIM-2579 through NIM-2587. It runs inside the existing API process at `POST /mcp/operator`. The future Worker Tools MCP at `/mcp/tools` is not implemented or mounted.
+Operator MCP is the authenticated local product-management interface delivered by NIM-2579 through NIM-2587. It runs inside the existing API process at `POST /mcp`, the one GraphQL MCP endpoint that also serves workflow agents; an Operator credential selects the Operator role. See [`graphql-mcp.md`](./graphql-mcp.md).
 
 The transport uses MCP protocol `2026-07-28` with the official TypeScript SDK packages `@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `@modelcontextprotocol/fastify`, and the acceptance-test `@modelcontextprotocol/client`, all pinned at `2.0.0`. The packages require Node 20 or newer; this repository requires Node 22. The published packages use Zod 4-compatible standard schemas. Their July 27, 2026 publication date satisfies the repository's strict 48-hour package-age policy.
 
@@ -27,7 +27,7 @@ corepack pnpm --filter @graphql/api credential issue --name workspace-operator -
 corepack pnpm --filter @graphql/api credential revoke principal-UUID
 ```
 
-The optional `--audience worker` flag creates a future Worker-audience credential. Such credentials are deliberately rejected at `/mcp/operator`.
+The optional `--audience worker` flag creates a Worker-audience credential. At `/mcp` it is limited to the Agent tools of its bound role; it cannot call Operator tools.
 
 To enroll the browser, open Settings and paste the one-time-visible token into Operator access. The API validates it and sets a SameSite Strict, HttpOnly cookie. The token is not written to Vite configuration or localStorage. Real mode is enabled with:
 
@@ -39,13 +39,13 @@ corepack pnpm dev
 
 Use an environment variable for the token; do not place a literal credential in a checked-in file.
 
-Codex CLI `0.154.0` supports Streamable HTTP and an environment-backed bearer token:
+The managed **Add GraphQL MCP** preset in Harness Settings is the normal setup. For a fixed manual entry, Codex CLI `0.154.0` supports Streamable HTTP and an environment-backed bearer token:
 
 ```sh
-export GRAPHQL_OPERATOR_TOKEN='token-shown-by-the-issue-command'
-codex mcp add graphql-operator \
-  --url http://127.0.0.1:3000/mcp/operator \
-  --bearer-token-env-var GRAPHQL_OPERATOR_TOKEN
+export GRAPHQL_MCP_TOKEN='token-shown-by-the-issue-command'
+codex mcp add graphql \
+  --url http://127.0.0.1:3000/mcp \
+  --bearer-token-env-var GRAPHQL_MCP_TOKEN
 ```
 
 OpenCode CLI `1.18.31` accepts a remote MCP URL and header. For isolated qualification, create a temporary config and set both `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`; do not use `opencode mcp add`, which writes the installed v1 CLI's global config. Environment substitution keeps the credential out of the file:
@@ -54,13 +54,13 @@ OpenCode CLI `1.18.31` accepts a remote MCP URL and header. For isolated qualifi
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "graphql-operator": {
+    "graphql": {
       "type": "remote",
-      "url": "http://127.0.0.1:3000/mcp/operator",
+      "url": "http://127.0.0.1:3000/mcp",
       "enabled": true,
       "oauth": false,
       "headers": {
-        "Authorization": "Bearer {env:GRAPHQL_OPERATOR_TOKEN}"
+        "Authorization": "Bearer {env:GRAPHQL_MCP_TOKEN}"
       }
     }
   }

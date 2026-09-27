@@ -34,7 +34,7 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'batch-test', version: '1.0.0' }); clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return client
     }
     const client = await connect(owner.token)

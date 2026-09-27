@@ -18,7 +18,7 @@ function service(evidence: NativeMcpInspectionEvidence | Error) {
   const inspector: NativeMcpInspector = {
     inspect: async () => { if (evidence instanceof Error) throw evidence; return evidence },
   }
-  return new McpDetectionService(inspector, 'http://127.0.0.1:3000/mcp/tools')
+  return new McpDetectionService(inspector, 'http://127.0.0.1:3000/mcp')
 }
 
 async function state(entry: NativeMcpInspectionEvidence['entry'], harness: 'codex' | 'opencode' = 'codex') {
@@ -29,27 +29,27 @@ async function state(entry: NativeMcpInspectionEvidence['entry'], harness: 'code
 
 describe('App MCP detection normalization', () => {
   const matching = {
-    name: 'graphql-app', transport: 'streamable-http' as const,
-    endpoint: 'http://127.0.0.1:3000/mcp/tools',
-    credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
+    name: 'graphql', transport: 'streamable-http' as const,
+    endpoint: 'http://127.0.0.1:3000/mcp',
+    credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
   }
 
-  it('accepts only proven worker launchers with the worker credential and preserves disabled state', async () => {
-    const launcher = { name: 'graphql-app', transport: 'stdio' as const, automaticWorkerEndpoint: true,
-      credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' }
+  it('accepts only proven app launchers with the shared credential and preserves disabled state', async () => {
+    const launcher = { name: 'graphql', transport: 'stdio' as const, automaticEndpoint: true,
+      credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' }
     for (const harness of ['codex', 'opencode'] as const) {
       expect(await state(launcher, harness)).toBe('status_unavailable')
       expect(await state({ ...launcher, enabled: false }, harness)).toBe('disabled')
-      expect(await state({ ...launcher, automaticWorkerEndpoint: false }, harness)).toBe('misconfigured')
-      expect(await state({ ...launcher, credentialEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN' }, harness)).toBe('misconfigured')
-      expect(await state({ ...launcher, name: 'graphql-operator' }, harness)).toBe('misconfigured')
+      expect(await state({ ...launcher, automaticEndpoint: false }, harness)).toBe('misconfigured')
+      expect(await state({ ...launcher, credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN' }, harness)).toBe('misconfigured')
+      expect(await state({ ...launcher, name: 'graphql-app' }, harness)).toBe('misconfigured')
     }
   })
 
   it('covers every honest normalized state without treating inspection failure as absence', async () => {
     for (const harness of ['codex', 'opencode'] as const) {
       expect(await state(undefined, harness)).toBe('not_detected')
-      expect(await state({ ...matching, endpoint: 'http://127.0.0.1:9999/mcp/tools' }, harness)).toBe('misconfigured')
+      expect(await state({ ...matching, endpoint: 'http://127.0.0.1:9999/mcp' }, harness)).toBe('misconfigured')
       expect(await state(matching, harness)).toBe('status_unavailable')
       expect(await state({ ...matching, status: 'connected' }, harness)).toBe('connected')
       expect(await state({ ...matching, status: 'disabled' }, harness)).toBe('disabled')
@@ -89,7 +89,7 @@ describe('App MCP detection normalization', () => {
       revoke: async () => undefined,
     }
     const launch = new WorkerLaunchCredentialService(
-      service({ ...base, entry: { ...matching, endpoint: 'http://127.0.0.1:9999/mcp/tools' } }),
+      service({ ...base, entry: { ...matching, endpoint: 'http://127.0.0.1:9999/mcp' } }),
       credentials as never,
       'runner-a',
     )

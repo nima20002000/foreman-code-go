@@ -1,16 +1,16 @@
-import { operatorLauncherConnection } from '../src/modules/harnesses/operatorMcpLauncher.js'
+import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { describe, expect, it } from 'vitest'
 import { assertChange, assertManagedChange, fingerprint, LINEAR_MCP_ENDPOINT, managedChange, managedEnableChange, managedStatus,
   nativeConnection, publicMcpList, replacement, userOwnsMcpEntry, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { codexMcpOwnership } from '../src/modules/harnesses/codexMcpConnections.js'
 import { NativeMcpNotSubmittedError, withNativeMcpDelivery } from '../src/modules/harnesses/nativeMcpDelivery.js'
 
-const endpoint = 'http://127.0.0.1:3000/mcp/operator'
-function snapshot(harness: NativeMcpSnapshot['harness'], name = 'graphql-operator', url = endpoint): NativeMcpSnapshot {
-  const entry = harness === 'codex' ? { url, enabled: true, bearer_token_env_var: 'GRAPHQL_OPERATOR_MCP_TOKEN' }
-    : { type: 'remote', url, enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_OPERATOR_MCP_TOKEN}' } }
+const endpoint = 'http://127.0.0.1:3000/mcp'
+function snapshot(harness: NativeMcpSnapshot['harness'], name = 'graphql', url = endpoint): NativeMcpSnapshot {
+  const entry = harness === 'codex' ? { url, enabled: true, bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' }
+    : { type: 'remote', url, enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } }
   return { harness, revision: fingerprint(entry), user: { [name]: entry }, effective: { [name]: structuredClone(entry) },
-    userConfig: {}, version: '1', file: '/private/native-config', credentialReferences: { [name]: 'GRAPHQL_OPERATOR_MCP_TOKEN' } }
+    userConfig: {}, version: '1', file: '/private/native-config', credentialReferences: { [name]: 'GRAPHQL_MCP_TOKEN' } }
 }
 
 describe('PR18 native MCP policy and provenance', () => {
@@ -22,17 +22,18 @@ describe('PR18 native MCP policy and provenance', () => {
     expect(userOwnsMcpEntry(current, 'linear_trial')).toBe(true)
     expect(publicMcpList(current).servers[0]).toMatchObject({ origin: 'user', editable: true })
   })
-  it.each(['codex', 'opencode'] as const)('repairs wrong endpoints and disabled %s entries without dropping any restriction', (harness) => {
+  it.each(['codex', 'opencode'] as const)('repairs fixed-endpoint and disabled %s entries without dropping any restriction', (harness) => {
     for (const enabled of [true, false]) {
-      const current = snapshot(harness, 'graphql-operator', enabled ? 'http://127.0.0.1:9999/mcp/operator' : endpoint)
+      const current = snapshot(harness, 'graphql', enabled ? 'http://127.0.0.1:9999/mcp' : endpoint)
       const policy = { enabled_tools: ['read'], disabled_tools: ['write'], default_tools_approval_mode: 'prompt',
         tools: { delete: { approval_mode: 'prompt', enabled: false } } }
-      const entry = { ...current.user['graphql-operator'] as object, enabled, ...policy }
-      current.user['graphql-operator'] = entry; current.effective['graphql-operator'] = structuredClone(entry)
-      expect(managedStatus(current, 'operator', endpoint)).toBe(enabled ? 'mismatch' : 'disabled')
-      const next = replacement(current, enabled ? managedChange('operator', true, endpoint) : managedEnableChange('operator', true),
-        { preset: 'operator', endpoint })
-      expect(next).toEqual(enabled ? { ...policy, ...nativeConnection(harness, operatorLauncherConnection()) } : { ...entry, enabled: true })
+      const entry = { ...current.user['graphql'] as object, enabled, ...policy }
+      current.user['graphql'] = entry; current.effective['graphql'] = structuredClone(entry)
+      // A fixed endpoint cannot follow the owning app; repair converts it to the launcher and keeps enablement.
+      expect(managedStatus(current, 'graphql', endpoint)).toBe('mismatch')
+      expect(() => replacement(current, managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
+      const next = replacement(current, managedChange('graphql', true, endpoint), { preset: 'graphql', endpoint })
+      expect(next).toEqual({ ...policy, ...nativeConnection(harness, appLauncherConnection()), enabled })
       expect(next).toMatchObject(policy)
     }
   })
@@ -40,8 +41,8 @@ describe('PR18 native MCP policy and provenance', () => {
     const current = snapshot(harness)
     const entry = harness === 'codex' ? { url: endpoint, bearer_token_env_var: 'OTHER_TOKEN' }
       : { type: 'remote', url: endpoint, oauth: false, headers: { Authorization: 'Bearer {env:OTHER_TOKEN}' } }
-    current.user['graphql-operator'] = entry; current.effective['graphql-operator'] = entry
-    expect(() => replacement(current, managedChange('operator', true, endpoint), { preset: 'operator', endpoint })).toThrow()
+    current.user['graphql'] = entry; current.effective['graphql'] = entry
+    expect(() => replacement(current, managedChange('graphql', true, endpoint), { preset: 'graphql', endpoint })).toThrow()
   })
   it.each(['codex', 'opencode'] as const)('requires explicit conversion of a full-access %s Linear endpoint', (harness) => {
     const current = snapshot(harness, 'linear', 'https://mcp.linear.app/mcp')
@@ -57,8 +58,8 @@ describe('PR18 native MCP policy and provenance', () => {
   })
   it.each(['codex', 'opencode'] as const)('refuses protected Linear removal through both %s paths', (harness) => {
     const current = snapshot(harness, 'linear', LINEAR_MCP_ENDPOINT)
-    const entry = harness === 'codex' ? { url: LINEAR_MCP_ENDPOINT, bearer_token_env_var: 'GRAPHQL_APP_MCP_TOKEN' }
-      : { type: 'remote', url: LINEAR_MCP_ENDPOINT, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } }
+    const entry = harness === 'codex' ? { url: LINEAR_MCP_ENDPOINT, bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' }
+      : { type: 'remote', url: LINEAR_MCP_ENDPOINT, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } }
     current.user.linear = entry; current.effective.linear = entry
     expect(publicMcpList(current).servers[0]?.protected).toBe(true)
     expect(managedStatus(current, 'linear', endpoint)).not.toBe('installed')
@@ -68,35 +69,35 @@ describe('PR18 native MCP policy and provenance', () => {
   it.each(['codex', 'opencode'] as const)('detects same-URL %s transport, enable and ownership overrides', (harness) => {
     for (const change of [{ enabled: false }, { type: 'local', command: ['/untrusted'] }]) {
       const current = snapshot(harness)
-      current.effective['graphql-operator'] = { ...current.effective['graphql-operator'] as object, ...change }
-      expect(managedStatus(current, 'operator', endpoint)).toBe('inherited')
+      current.effective['graphql'] = { ...current.effective['graphql'] as object, ...change }
+      expect(managedStatus(current, 'graphql', endpoint)).toBe('inherited')
       expect(publicMcpList(current).servers[0]?.origin).toBe('inherited')
-      expect(() => assertManagedChange(current, managedChange('operator', false, endpoint), 'operator', endpoint)).toThrow()
+      expect(() => assertManagedChange(current, managedChange('graphql', false, endpoint), 'graphql', endpoint)).toThrow()
     }
     const current = snapshot(harness)
-    current.ownership = { 'graphql-operator': false }
-    expect(managedStatus(current, 'operator', endpoint)).toBe('inherited')
+    current.ownership = { 'graphql': false }
+    expect(managedStatus(current, 'graphql', endpoint)).toBe('inherited')
   })
   it('does not classify a same-URL Codex credential override as installed', () => {
     const current = snapshot('codex')
-    current.effective['graphql-operator'] = { url: endpoint, type: 'streamable_http', enabled: true, bearer_token_env_var: 'OTHER_TOKEN' }
-    expect(managedStatus(current, 'operator', endpoint)).toBe('inherited')
+    current.effective['graphql'] = { url: endpoint, type: 'streamable_http', enabled: true, bearer_token_env_var: 'OTHER_TOKEN' }
+    expect(managedStatus(current, 'graphql', endpoint)).toBe('inherited')
   })
   it('uses proven OpenCode references, never expanded secret equality', () => {
     const current = snapshot('opencode')
-    current.effective['graphql-operator'] = { type: 'remote', url: endpoint, enabled: true, oauth: false,
+    current.effective['graphql'] = { type: 'remote', url: endpoint, enabled: true, oauth: false,
       headers: { Authorization: 'Bearer never-return-this-secret' } }
-    expect(managedStatus(current, 'operator', endpoint)).toBe('mismatch')
+    expect(managedStatus(current, 'graphql', endpoint)).toBe('mismatch')
     current.credentialReferences = {}
-    expect(managedStatus(current, 'operator', endpoint)).toBe('inherited')
+    expect(managedStatus(current, 'graphql', endpoint)).toBe('inherited')
     expect(JSON.stringify(publicMcpList(current))).not.toContain('never-return-this-secret')
   })
   it('detects identical Codex entries with a second configuration source', () => {
     const current = snapshot('codex')
     const user = { name: { type: 'user' }, config: { mcp_servers: current.user } }
     const project = { name: { type: 'project' }, config: { mcp_servers: current.user } }
-    expect(codexMcpOwnership([project, user], user, current.user)['graphql-operator']).toBe(false)
-    expect(codexMcpOwnership([{ ...project, disabledReason: 'untrusted' }, user], user, current.user)['graphql-operator']).toBe(true)
+    expect(codexMcpOwnership([project, user], user, current.user)['graphql']).toBe(false)
+    expect(codexMcpOwnership([{ ...project, disabledReason: 'untrusted' }, user], user, current.user)['graphql']).toBe(true)
   })
   it('provides explicit no-delivery evidence for an abort before the native write', async () => {
     const controller = new AbortController(); controller.abort()

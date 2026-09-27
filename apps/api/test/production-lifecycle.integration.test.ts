@@ -60,14 +60,14 @@ function runtime() { return Reflect.get(production.engine, 'nativeExecutions') a
 async function mcp(token: string, input: Record<string, unknown>) {
   const client = new Client({ name: 'production-review', version: '1.0' })
   try {
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/tools', address), { authProvider: { token: async () => token } }))
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return await client.callTool({ name: 'interaction_respond', arguments: input })
   } finally { await client.close() }
 }
 async function operatorGet(token: string, interactionId: string) {
   const client = new Client({ name: 'production-operator-readback', version: '1.0' })
   try {
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return await client.callTool({ name: 'interaction_get', arguments: { interactionId } })
   } finally { await client.close() }
 }
@@ -93,22 +93,22 @@ beforeEach(async () => {
   // lanes, delivery, budgets, checkpoints, HTTP and MCP use production wiring.
   vi.spyOn(CodexAppServerSessionManager.prototype, 'inspectMcpConfiguration').mockImplementation(async (cwd) => {
     native.inspections++
-    return { providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'graphql-app', inspectionScope: 'effective_config', configured: {
-      enabled: true, required: true, transport: 'streamable_http', url: 'http://127.0.0.1:4100/mcp/tools',
-      bearerTokenEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
+    return { providerVersion: '0.154.0', binary: 'fixture', cwd, serverName: 'graphql', inspectionScope: 'effective_config', configured: {
+      enabled: true, required: true, transport: 'streamable_http', url: 'http://127.0.0.1:4100/mcp',
+      bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', enabledTools: null, disabledTools: [], defaultToolsApprovalMode: null, tools: {},
     } }
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async function (this: CodexAppServerSessionManager, input) {
     if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
     const reference = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.executionId}` }
     sessions.set(reference.nativeSessionId, { input, pending: [], turns: new Map(), asks: 0 })
-    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_APP_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     return reference
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'attachSession').mockImplementation(async function (this: CodexAppServerSessionManager, reference, input) {
     native.attaches++
     if (!sessions.has(reference.nativeSessionId)) throw new Error('Cannot replace a native session')
-    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_APP_MCP_TOKEN!, sessionId: reference.nativeSessionId })
+    connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.GRAPHQL_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     event(this, 'thread.attached', { threadId: reference.nativeSessionId })
     return reference
   })
@@ -171,9 +171,9 @@ beforeEach(async () => {
     if (!server) {
       server = new FixtureServer()
       server.providers = { all: [{ id: 'opencode-go', models: { 'gpt-5.6-luna': { variants: { high: {} } } } }] }
-      server.config = { mcp: { 'graphql-app': { type: 'remote', url: 'http://127.0.0.1:4100/mcp/tools', enabled: true } } }
-      server.mcpCredentialReferences['graphql-app'] = 'GRAPHQL_APP_MCP_TOKEN'
-      server.mcp = { 'graphql-app': { status: 'connected' } }
+      server.config = { mcp: { 'graphql': { type: 'remote', url: 'http://127.0.0.1:4100/mcp', enabled: true } } }
+      server.mcpCredentialReferences['graphql'] = 'GRAPHQL_MCP_TOKEN'
+      server.mcp = { 'graphql': { status: 'connected' } }
       server.nextSessionIds.push(`ses_${input.request.executionId}`)
       const external = server
       server.onPrompt = (sessionId, body) => {
@@ -200,8 +200,8 @@ beforeEach(async () => {
   })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'inspectNativeMcp').mockImplementation(async (cwd) => {
     native.inspections++
-    return { cwd, providerVersion: '1.18.31', serverName: 'graphql-app', nativeStatus: 'connected', transport: 'streamable-http',
-      endpoint: 'http://127.0.0.1:4100/mcp/tools', credentialEnvironmentVariable: 'GRAPHQL_APP_MCP_TOKEN',
+    return { cwd, providerVersion: '1.18.31', serverName: 'graphql', nativeStatus: 'connected', transport: 'streamable-http',
+      endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
       endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
   })
   vi.spyOn(OpenCodeNativeSessionManager.prototype, 'startTurn').mockImplementation(async function* (reference, input, signal) {
@@ -215,7 +215,7 @@ beforeEach(async () => {
         const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
         const interaction = (await interactions.get(interactionId))!
         if (!reviewNoDecision) {
-          const response = await mcp(server.environment!.variables.GRAPHQL_APP_MCP_TOKEN!, {
+          const response = await mcp(server.environment!.variables.GRAPHQL_MCP_TOKEN!, {
             interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision,
           })
           expect(response.isError, JSON.stringify(response)).not.toBe(true)
@@ -260,8 +260,8 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
       harness: 'opencode' as const, model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
       autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
         { permission: '*', pattern: '*', effect: 'deny' as const },
-        { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' as const },
-        { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' as const },
+        { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' as const },
+        { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' as const },
       ] },
     } : fixture.configurations[1]!.harness,
   }))
@@ -305,8 +305,8 @@ it('answers a production User approval through its own authenticated API while e
   const payload = { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision }
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${issuer.token}` }, payload })).statusCode).toBe(403)
   const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
-  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${worker.environment.variables.GRAPHQL_APP_MCP_TOKEN}` }, payload })).statusCode).toBe(403)
-  await expect(mcp(worker.environment.variables.GRAPHQL_APP_MCP_TOKEN!, payload)).rejects.toThrow('Tool interaction_respond not found')
+  expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${worker.environment.variables.GRAPHQL_MCP_TOKEN}` }, payload })).statusCode).toBe(403)
+  await expect(mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, payload)).rejects.toThrow('Tool interaction_respond not found')
   const headers = { authorization: `Bearer ${human.token}` }
   const list = await production.app.inject({ method: 'GET', url: `/api/user/interactions?runId=${run.id}`, headers })
   expect(list.statusCode, list.body).toBe(200)
@@ -345,7 +345,7 @@ it('automatically wakes an idle Orchestrator to approve a later Worker request t
   vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
   const { run, issuer, pending } = await start('orchestrator')
   const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
-  await expect(mcp(worker.environment.variables.GRAPHQL_APP_MCP_TOKEN!, {
+  await expect(mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, {
     interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision,
   })).rejects.toThrow()
   await production.initialize()

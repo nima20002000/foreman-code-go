@@ -707,14 +707,14 @@ export const GraphDraftDiscardResultSchema = z.object({
   replayed: z.boolean(),
 }).strict();
 export const OperatorCapabilitiesSchema = z.object({
-  endpoint: z.literal("/mcp/operator"), audience: z.literal("operator"), protocol: z.literal("2026-07-28"),
+  endpoint: z.literal("/mcp"), audience: z.literal("operator"), protocol: z.literal("2026-07-28"),
   tools: z.array(OperatorToolNameSchema),
   principal: z.object({id: IdSchema, name: z.string(), expiresAt: TimestampSchema}).strict().optional(),
   grants: z.array(ManagementGrantSchema).optional(),
   requestedResource: z.object({workspaceId: IdSchema.optional(),workflowId: IdSchema.optional(),runId: IdSchema.optional()}).strict().optional(),
   requirements: z.array(z.object({name: OperatorToolNameSchema, actions: z.array(ManagementActionSchema), detail: z.string()}).strict()).optional(),
   runtimeLimits: z.array(z.object({feature: z.string(), state: z.enum(["unsupported", "protected", "limited"]), detail: z.string()}).strict()).optional(),
-  workerToolsMcp: z.object({ implemented: z.boolean(), endpoint: z.literal("/mcp/tools") }).strict(),
+  workerToolsMcp: z.object({ implemented: z.boolean(), endpoint: z.literal("/mcp") }).strict(),
 }).strict();
 
 export * from './executionReadiness.js'

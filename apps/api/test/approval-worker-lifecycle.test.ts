@@ -76,7 +76,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
         principalId: `principal-${issued.length + 1}`,
         environment: Object.freeze({
           agentId: configuration.agentId,
-          variables: Object.freeze({ GRAPHQL_APP_MCP_TOKEN: `token-${issued.length + 1}` }),
+          variables: Object.freeze({ GRAPHQL_MCP_TOKEN: `token-${issued.length + 1}` }),
         }),
         expiresAt: new Date(Date.now() + DEFAULT_WORKER_CREDENTIAL_TTL_MS).toISOString(),
       }

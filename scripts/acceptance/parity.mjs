@@ -24,7 +24,7 @@ export async function parity({ apiUrl, workspaceId, workflowIds, runId, access, 
       expiresAt: new Date(Date.now() + 10 * 60_000) })
     principals.push(issued.principal.id)
     const client = new Client({ name: 'eng07-acceptance', version: '1' }); clients.push(client)
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', apiUrl), { authProvider: { token: async () => issued.token } }))
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', apiUrl), { authProvider: { token: async () => issued.token } }))
     return { client, token: issued.token }
   }
   try {

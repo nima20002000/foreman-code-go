@@ -39,7 +39,7 @@ describe.skipIf(!postgresEnabled)('saved current Run HTTP/MCP parity', () => {
   const path = () => `/api/management/workspaces/${fixture.run.workspaceId}/runs/${fixture.run.id}`
   async function connect(token: string) {
     const client = new Client({ name: 'current-run-parity', version: '1.0.0' })
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     clients.push(client); return client
   }
   it('returns the same immutable saved pins through HTTP and MCP with grant-based location redaction', async () => {

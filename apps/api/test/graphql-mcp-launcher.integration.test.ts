@@ -1,4 +1,4 @@
-import { OperatorMcpRoutes } from '../src/modules/harnesses/operatorMcpRoutes.js'
+import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { copyFile, mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,7 +12,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { FoundationSettingsManagementService } from '../src/modules/settings/management.js'
-import { registerOperatorRoute } from '../src/modules/harnesses/operatorMcpLauncher.js'
+import { registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 const cleanup: Array<() => Promise<unknown>> = []
@@ -29,7 +29,7 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
   const directory = await mkdtemp(join(tmpdir(), 'operator-routing-'))
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
   const launcher = join(directory, 'launcher.mjs')
-  await copyFile(new URL('../../../scripts/operator-mcp.mjs', import.meta.url), launcher)
+  await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const issue = async (writable: boolean) => access.issue({ name: 'launcher-test', audience: 'operator',
     grants: [{ actions: writable ? ['settings:read', 'settings:update'] : ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
   const owner = await issue(true)
@@ -45,21 +45,21 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
     const app = buildApp({ readiness: { database, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     let requests = 0
     app.addHook('onRequest', async () => { requests++ })
-    const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp/operator`
+    const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
     cleanup.push(() => app.close())
     return { app, endpoint, requests: () => requests }
   }
   const first = await start()
   const second = await start()
   expect(first.endpoint).not.toBe(second.endpoint)
-  let removeOwner = await registerOperatorRoute(owner.token, first.endpoint, owner.principal.expiresAt, launcher)
+  let removeOwner = await registerAppRoute(owner.token, first.endpoint, owner.principal.expiresAt, launcher)
   cleanup.push(() => removeOwner())
-  const removeReader = await registerOperatorRoute(reader.token, second.endpoint, reader.principal.expiresAt, launcher)
+  const removeReader = await registerAppRoute(reader.token, second.endpoint, reader.principal.expiresAt, launcher)
   cleanup.push(removeReader)
   const connect = async (token: string) => {
     const client = new Client({ name: 'launcher-integration', version: '1' })
     cleanup.push(() => client.close())
-    await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: { GRAPHQL_OPERATOR_MCP_TOKEN: token }, stderr: 'pipe' }))
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [launcher], env: { GRAPHQL_MCP_TOKEN: token }, stderr: 'pipe' }))
     return client
   }
   const ownerClient = await connect(owner.token)
@@ -78,7 +78,7 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
   // The SAME launcher and client follow a refreshed owner route after a port change.
   await first.app.close()
   await removeOwner()
-  removeOwner = await registerOperatorRoute(owner.token, second.endpoint, owner.principal.expiresAt, launcher)
+  removeOwner = await registerAppRoute(owner.token, second.endpoint, owner.principal.expiresAt, launcher)
   expect((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent).toMatchObject({ value })
   for (const file of await readdir(join(directory, 'routes'))) {
     const text = await readFile(join(directory, 'routes', file), 'utf8')
@@ -90,7 +90,7 @@ it('routes simultaneous instances and changed ports through authenticated MCP, p
   await removeOwner()
   await expect(ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).rejects.toThrow('could not connect')
   await removeReader()
-  const restarted = new OperatorMcpRoutes(database.pool, second.endpoint, launcher)
+  const restarted = new AppMcpRoutes(database.pool, second.endpoint, launcher)
   cleanup.push(() => restarted.close())
   await restarted.refresh()
   expect((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent).toMatchObject({ value })

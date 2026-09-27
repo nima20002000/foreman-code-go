@@ -89,7 +89,7 @@ describe.skipIf(!postgresEnabled)('WR4-002 committed mixed-v1/v2 workflow read p
   async function connect(token: string) {
     const client = new Client({ name: 'wr4-002-persisted-read', version: '1.0.0' })
     try {
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
         authProvider: { token: async () => token },
       }))
     } catch (error) { await client.close().catch(() => undefined); throw error }

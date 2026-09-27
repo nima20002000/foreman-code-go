@@ -5,7 +5,7 @@
 export const WORKER_BINDING_ELIGIBLE = `
   b.revoked_at is null and p.revoked_at is null
   and p.audience='worker' and p.agent_id=b.agent_id
-  and b.environment_variable='GRAPHQL_APP_MCP_TOKEN'
+  and b.environment_variable='GRAPHQL_MCP_TOKEN'
   and r.worker_credentials_closed_at is null
   and ((b.purpose='workflow' and he.worker_credentials_closed_at is null
       and he.record->>'state' in ('starting','running','waiting')

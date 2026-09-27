@@ -21,9 +21,14 @@ const readAnnotations = {
 } as const
 
 export async function createAppMcpServer(context: AppRequestContext): Promise<McpServer> {
-  const server = new McpServer({ name: 'graphql-app', version: '1.0.0' })
+  const server = new McpServer({ name: 'graphql', version: '1.0.0' })
+  await registerAppTools(server, context)
+  return server
+}
+
+export async function registerAppTools(server: McpServer, context: AppRequestContext): Promise<void> {
   server.registerTool('context_get', {
-    description: 'Return this authenticated GraphQL Agent identity, immutable scope, and current App capabilities. Response capability requires a directly connected requester in the saved Run graph; every decision also checks the exact request, role and credential.',
+    description: 'Return this authenticated GraphQL Agent identity, role, immutable scope, and current App capabilities. Response capability requires a directly connected requester in the saved Run graph; every decision also checks the exact request, role and credential.',
     inputSchema: z.object({}).strict(),
     outputSchema: AppContextSchema,
     annotations: readAnnotations,
@@ -57,5 +62,4 @@ export async function createAppMcpServer(context: AppRequestContext): Promise<Mc
       },
     }, async (input) => invokeAppTool(context, 'interaction_respond', () => context.interactions.respond(context.principal, input)))
   }
-  return server
 }

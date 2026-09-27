@@ -14,7 +14,7 @@ import type { PostgresInteractionRepository } from '../interactions/postgres.js'
 export function localAppMcpEndpoint(host: string, port: number): string {
   const localHost = host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '::1' : host
   const authority = localHost.includes(':') && !localHost.startsWith('[') ? `[${localHost}]` : localHost
-  return new URL('/mcp/tools', `http://${authority}:${port}`).href
+  return new URL('/mcp', `http://${authority}:${port}`).href
 }
 
 /** Used by normal startup and composition tests; no test-only launch wiring. */

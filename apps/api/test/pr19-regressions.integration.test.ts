@@ -105,7 +105,7 @@ beforeEach(async () => {
   defaults = new PostgresFoundationSettingsRepository(pool)
   codex = new PolicyRetainingManager('codex'); openCode = new PolicyRetainingManager('opencode')
   authority = { current: (id) => access.currentOperator(id), assertConfiguration() {},
-    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} }
   chat = new OperatorChatService(repository, new PostgresOperatorRepository(pool),
     (configuration) => configuration.harness.harness === 'codex' ? codex : openCode, '/tmp/pr19-operator-fixture', authority)
@@ -243,8 +243,8 @@ describe('PR19 durable admission, authentication and native-session regressions'
     const id = accepted.state.conversation.id
     await idle(id)
     const configuration = (await repository.configuration(accepted.state.conversation.operatorConfigurationVersionId!))!
-    const native = new PostgresOperatorChatAuthority(pool, access, { assertChat() {} } as never, '/tmp/pr19-operator-fixture', 'http://127.0.0.1:3000/mcp/operator')
-    vi.spyOn(native, 'setup').mockResolvedValue({ harness: 'opencode', status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })
+    const native = new PostgresOperatorChatAuthority(pool, access, { assertChat() {} } as never, '/tmp/pr19-operator-fixture', 'http://127.0.0.1:3000/mcp')
+    vi.spyOn(native, 'setup').mockResolvedValue({ harness: 'opencode', status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() })
     const environment = await native.prepare(openCode, configuration, id, owner.id, new AbortController().signal)
     const token = environment.variables[OPERATOR_MCP_ENVIRONMENT_VARIABLE]!
     const authenticated = await access.authenticate(token)
@@ -255,7 +255,7 @@ describe('PR19 durable admission, authentication and native-session regressions'
     const client = new Client({ name: 'pr19-real-delegation', version: '1' })
     try {
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       const history = await client.callTool({ name: 'operator_handoff_history_get', arguments: {} })
       expect(history.isError).not.toBe(true)
       expect((history.structuredContent as { messages: Array<{ content: string }> }).messages.map((message) => message.content)).toContain('Remember the release context.')

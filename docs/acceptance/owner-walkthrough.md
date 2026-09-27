@@ -50,13 +50,13 @@ Every invocation creates a fresh owner-only `/tmp/eng07-*` directory (canonical 
 
 There is no external database URL, existing-state attachment, reset or drop-database option. All PG calls carry the explicit private socket, user and database. No other installation's database, schema, role, volume or service is used. Task project files and native runtime files have separate roots. Cleanup targets only exact owned child handles and a verified ownership marker, never a process name, port owner or a broad directory glob.
 
-The execution folder receives an `opencode.json` with the selected API's `/mcp/tools` URL and the literal reference `Bearer {env:GRAPHQL_APP_MCP_TOKEN}`. That reference is **not a token**. Runtime issues scoped credentials; the launcher does not fabricate or persist them. Do not archive task database/runtime directories: the existing native recovery subsystem retains private control/ownership state there, and private Run bodies also belong outside acceptance evidence bundles.
+The execution folder receives an `opencode.json` with the selected API's `/mcp` URL and the literal reference `Bearer {env:GRAPHQL_MCP_TOKEN}`. That reference is **not a token**. Runtime issues scoped credentials; the launcher does not fabricate or persist them. Do not archive task database/runtime directories: the existing native recovery subsystem retains private control/ownership state there, and private Run bodies also belong outside acceptance evidence bundles.
 
 ### Optional mixed Codex/OpenCode run
 
 Adding `--codex-model OWNER_AUTHENTICATED_MODEL_ID` replaces only **Right** in S3-02 with Codex, preserving an OpenCode Left branch. Use an actual model available to the owner's already authenticated, repository-qualified Codex installation; the launcher does not guess a model, copy credentials, change trust settings or auto-enable an experimental rollout.
 
-A project-local `.codex/config.toml` contains only the App MCP endpoint and `bearer_token_env_var = "GRAPHQL_APP_MCP_TOKEN"`. Confirm in native configuration inspection that this **task folder's** configuration is trusted/loaded and that the App MCP endpoint matches the printed API port. If project config is ignored or qualification fails, record the Codex row as BLOCKED; do not change global configuration, grant broad permissions or bypass preflight merely to pass. The default all-OpenCode S3-02 does not establish mixed-provider acceptance.
+A project-local `.codex/config.toml` contains only the App MCP endpoint and `bearer_token_env_var = "GRAPHQL_MCP_TOKEN"`. Confirm in native configuration inspection that this **task folder's** configuration is trusted/loaded and that the App MCP endpoint matches the printed API port. If project config is ignored or qualification fails, record the Codex row as BLOCKED; do not change global configuration, grant broad permissions or bypass preflight merely to pass. The default all-OpenCode S3-02 does not establish mixed-provider acceptance.
 
 ## 2. Common owner observation rules
 

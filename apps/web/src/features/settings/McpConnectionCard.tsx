@@ -8,11 +8,11 @@ import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 
 const states: Record<McpDetection['state'], { label: string; hint?: string; tone: Tone; icon: IconName }> = {
   connected: { label: 'Connected', tone: 'success', icon: 'check' },
-  not_detected: { label: 'Not set up', hint: 'App MCP was not found for this workspace.', tone: 'neutral', icon: 'plus' },
+  not_detected: { label: 'Not set up', hint: 'GraphQL MCP was not found for this workspace. Add it in Harness Settings.', tone: 'neutral', icon: 'plus' },
   misconfigured: { label: 'Needs attention', hint: 'The connection settings do not match this workspace.', tone: 'warning', icon: 'warning' },
-  status_unavailable: { label: 'Setup found', hint: 'Native settings match. To verify live use, run a workflow that calls an App MCP tool, then check its completed tool activity in Runs.', tone: 'info', icon: 'info' },
-  disabled: { label: 'Turned off', hint: 'App MCP is disabled in this provider’s configuration.', tone: 'neutral', icon: 'pause' },
-  authentication_required: { label: 'Sign-in required', hint: 'The App MCP connection needs authentication.', tone: 'warning', icon: 'lock' },
+  status_unavailable: { label: 'Setup found', hint: 'Native settings match. To verify live use, run a workflow that calls a GraphQL MCP tool, then check its completed tool activity in Runs.', tone: 'info', icon: 'info' },
+  disabled: { label: 'Turned off', hint: 'GraphQL MCP is disabled in this provider’s configuration.', tone: 'neutral', icon: 'pause' },
+  authentication_required: { label: 'Sign-in required', hint: 'The GraphQL MCP connection needs authentication.', tone: 'warning', icon: 'lock' },
   broken: { label: 'Cannot connect', hint: 'The last connection attempt failed.', tone: 'danger', icon: 'warning' },
   check_failed: { label: 'Check failed', hint: 'The connection check could not finish.', tone: 'danger', icon: 'warning' },
 }

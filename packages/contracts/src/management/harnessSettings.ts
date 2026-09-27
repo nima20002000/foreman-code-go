@@ -30,8 +30,13 @@ export const HarnessMcpChangeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('enable'), name: Name, enabled: z.boolean() }).strict(),
 ])
 export type HarnessMcpChange = z.infer<typeof HarnessMcpChangeSchema>
-export const HarnessMcpManagedPresetSchema = z.enum(['operator', 'worker', 'linear'])
+/** `graphql` is the one app connection for every role; the credential decides what a caller may use. */
+export const HarnessMcpManagedPresetSchema = z.enum(['graphql', 'linear'])
 export type HarnessMcpManagedPreset = z.infer<typeof HarnessMcpManagedPresetSchema>
+/** Plan history keeps the pre-unification `operator` and `worker` presets readable. */
+const HarnessMcpPlanPresetSchema = z.enum(['graphql', 'linear', 'operator', 'worker'])
+/** `legacy`: old graphql-app/graphql-operator entries remain; applying the preset replaces them. */
+const HarnessMcpPresetStatus = z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited', 'legacy'])
 const HarnessMcpManagedBase = z.object({ harness: Harness, preset: HarnessMcpManagedPresetSchema,
   commandId: CommandId, expectedRevision: Revision })
 export const HarnessMcpManagedInputSchema = z.union([
@@ -47,8 +52,7 @@ export const HarnessMcpServerSummarySchema = z.object({
 }).strict()
 export const HarnessMcpListResultSchema = z.object({
   harness: Harness, revision: Revision, servers: z.array(HarnessMcpServerSummarySchema),
-  presets: z.object({ worker: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']).optional(), operator: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']),
-    linear: z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited']) }).strict().optional(),
+  presets: z.object({ graphql: HarnessMcpPresetStatus, linear: HarnessMcpPresetStatus.exclude(['legacy']) }).strict().optional(),
   checkedAt: z.string().datetime({ offset: true }), scope: z.literal('native-user'),
 }).strict()
 export type HarnessMcpList = z.infer<typeof HarnessMcpListResultSchema>
@@ -56,7 +60,7 @@ export const HarnessMcpPlanInputSchema = z.object({ harness: Harness, commandId:
 export type HarnessMcpPlanInput = z.infer<typeof HarnessMcpPlanInputSchema>
 export const HarnessMcpPlanSchema = z.object({
   id: z.string().uuid(), harness: Harness, revision: Revision, change: HarnessMcpChangeSchema,
-  managedPreset: HarnessMcpManagedPresetSchema.nullable().optional(),
+  managedPreset: HarnessMcpPlanPresetSchema.nullable().optional(),
   requestedBy: z.string(), status: z.enum(['pending', 'submitting', 'applied', 'rejected', 'failed', 'uncertain', 'reconciled']),
   createdAt: z.string().datetime({ offset: true }), expiresAt: z.string().datetime({ offset: true }),
   error: z.string().nullable(),

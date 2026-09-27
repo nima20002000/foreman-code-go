@@ -47,7 +47,7 @@ describe.skipIf(!postgresEnabled)('current review failure ownership and cleanup'
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
       async function connect(token: string) {
         const client = new Client({ name: 'review-failure-readback', version: '1' }); clients.push(client)
-        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
         return client
       }
       const allowed = await connect(reader.token), forbidden = await connect(denied.token)

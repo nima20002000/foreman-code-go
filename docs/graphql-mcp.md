@@ -1,0 +1,61 @@
+# GraphQL MCP: one connection, role-scoped tools
+
+The app serves one MCP server, `graphql`, at `POST /mcp`. Operator chat and
+workflow agents use the same native harness entry and the same credential
+variable, `GRAPHQL_MCP_TOKEN`. The bearer credential decides the caller's role:
+
+| Credential | Role | Can call |
+| --- | --- | --- |
+| Operator (root or chat-delegated) | Operator | Management tools, filtered by its grants, plus `interaction_list`/`interaction_get` |
+| Worker, bound Agent's pinned `productRole` is `orchestrator` | Orchestrator | `context_get`, `interaction_list`, `interaction_get`, `interaction_respond` |
+| Worker, any other `productRole` | Coder | `context_get`, `interaction_list`, `interaction_get` |
+
+Every role lists the same tool names. A tool outside the caller's role is listed
+as a stub whose description starts with the allowed roles (for example
+`Operator only; your Coder role cannot call this tool.`). Calling it returns
+`ROLE_NOT_ALLOWED` with the allowed roles and records a denial audit; it never
+reaches the owning service. Stubs accept any arguments and are annotated
+read-only, so harnesses do not ask for approval before the denial. The server's
+`instructions` tell the model its role. `context_get` returns `role`.
+
+The role is necessary, never sufficient. The caller's own tools are the existing
+implementations: Operator grants and scopes, Worker bindings, run scope and the
+exact designated-Orchestrator check still apply on every call. A tool the role
+may use but the credential cannot (for example a read-only Operator and
+`workflow_create`) stays unlisted, as before. The role table lives in
+`apps/api/src/mcp/unified/roles.ts`.
+
+## Installing
+
+In Harness Settings → MCP servers, use **Add GraphQL MCP** for each native
+harness. It installs the managed stdio launcher
+(`~/.local/share/graphql/mcp/launcher.mjs`) with automatic instance routing.
+Existing installs of the retired `graphql-app` and `graphql-operator` entries
+show **Upgrade to GraphQL MCP**; the upgrade writes `graphql` and removes both
+retired entries in one reviewed native write. **Repair GraphQL MCP** converts a
+standard fixed `/mcp` entry to the launcher and keeps its disabled state and
+tool/approval policies. Custom and inherited entries must be changed at their
+native source.
+
+The Operator can discover, request, and read back the `graphql` preset through
+`harness_mcp_servers_list`, `harness_mcp_managed_request`, and
+`harness_mcp_change_get`. A signed-in human applies it in Harness Settings; an
+Operator cannot approve its own native-configuration write. Operator chat setup
+and workflow credential preflight both look for the enabled `graphql` entry.
+
+## Routing
+
+The app registers its endpoint under a SHA-256 digest of each issued
+credential: root Operator credentials and active Worker bindings at startup and
+reconciliation, Worker credentials after issuance and lease renewal, and
+Operator chat credentials for the conversation's lifetime. The launcher reads
+only `GRAPHQL_MCP_TOKEN`, looks up that digest and forwards to the owning app's
+loopback `/mcp`. It never scans ports or falls back to another instance. Route
+files hold an endpoint, runtime PID and expiry, never a token, and are
+owner-only. Restarting on another port refreshes routes without changing native
+configuration. A revoked or expired credential stays denied even if a route file
+survives an interrupted shutdown.
+
+Verification: `graphql-mcp-roles.test.ts` covers the shared catalog and
+`ROLE_NOT_ALLOWED` for each role; `graphql-mcp-launcher.integration.test.ts`
+routes two real instances through the launcher, including a port change.

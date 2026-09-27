@@ -119,8 +119,8 @@ test('seed uses real-route request shapes and reserved journal commands, never R
     assert.equal(demo.workflowIds.length, 8); assert.equal(demo.agentCount, 27)
     assert.equal(calls.some((call) => call.path.includes('/runs')), false)
     const native = JSON.parse(await readFile(join(folder, 'opencode.json'), 'utf8'))
-    assert.deepEqual(native.mcp['graphql-app'], { type: 'remote', url: 'http://127.0.0.1:3307/mcp/tools',
-      enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_APP_MCP_TOKEN}' } })
+    assert.deepEqual(native.mcp['graphql'], { type: 'remote', url: 'http://127.0.0.1:3307/mcp',
+      enabled: true, oauth: false, headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } })
     assert.equal(calls.filter((call) => call.body?.action === 'stage_edits').length, 8)
     assert.equal(calls.filter((call) => call.body?.action === 'stop_and_save').length, 8)
   } finally { globalThis.fetch = original; await rm(state, { recursive: true, force: true }) }

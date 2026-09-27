@@ -1,5 +1,4 @@
-import { isWorkerLauncher, workerLauncherConnection, WORKER_TOKEN } from './workerMcpLauncher.js'
-import { isOperatorLauncher, operatorLauncherConnection } from './operatorMcpLauncher.js'
+import { APP_MCP_PATH, APP_MCP_SERVER_NAME, APP_MCP_TOKEN, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, isAppLauncher } from './appMcpLauncher.js'
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import type { HarnessMcpChange, HarnessMcpConnection, HarnessMcpList, HarnessMcpManagedPreset } from '@graphql/contracts/management'
@@ -24,12 +23,11 @@ export interface NativeMcpAdapter {
 }
 export const LINEAR_MCP_ENDPOINT = 'https://mcp.linear.app/mcp/readonly'
 const LINEAR_READ_WRITE_ENDPOINT = 'https://mcp.linear.app/mcp'
-const OPERATOR_CREDENTIAL = 'GRAPHQL_OPERATOR_MCP_TOKEN'
-export function managedName(preset: HarnessMcpManagedPreset): string { return preset === 'operator' ? 'graphql-operator' : preset === 'worker' ? 'graphql-app' : 'linear' }
+export function managedName(preset: HarnessMcpManagedPreset): string { return preset === 'graphql' ? APP_MCP_SERVER_NAME : 'linear' }
 export function managedChange(preset: HarnessMcpManagedPreset, installed: boolean, _endpoint: string): HarnessMcpChange {
   void _endpoint // Existing callers also pass the endpoint used by legacy presets.
   const name = managedName(preset)
-  return installed ? { kind: 'add', name, connection: preset !== 'linear' ? { ...(preset === 'worker' ? workerLauncherConnection() : operatorLauncherConnection()), environmentVariables: [] } : { transport: 'remote', url: LINEAR_MCP_ENDPOINT } }
+  return installed ? { kind: 'add', name, connection: preset === 'graphql' ? { ...appLauncherConnection(), environmentVariables: [] } : { transport: 'remote', url: LINEAR_MCP_ENDPOINT } }
     : { kind: 'remove', name }
 }
 export function managedEnableChange(preset: HarnessMcpManagedPreset, enabled: boolean): HarnessMcpChange {
@@ -44,17 +42,25 @@ function remote(harness: NativeMcpSnapshot['harness'], entry: JsonObject, effect
 function authorizationHeaders(value: unknown): [string, unknown][] {
   return Object.entries(record(value)).filter(([key]) => key.toLowerCase() === 'authorization')
 }
-function operatorReference(harness: NativeMcpSnapshot['harness'], entry: JsonObject): boolean {
-  if (isOperatorLauncher(harness, entry)) return harness === 'codex'
-    || (entry.environment as JsonObject)[OPERATOR_CREDENTIAL] === `{env:${OPERATOR_CREDENTIAL}}`
-  if (/GRAPHQL_APP_MCP_TOKEN/i.test(JSON.stringify(entry))) return false
-  if (harness === 'codex') return entry.bearer_token_env_var === OPERATOR_CREDENTIAL
-    && authorizationHeaders(entry.http_headers).length === 0
-    && authorizationHeaders(entry.env_http_headers).length === 0
+function appReference(harness: NativeMcpSnapshot['harness'], entry: JsonObject): boolean {
+  if (isAppLauncher(harness, entry)) return harness === 'codex'
+    || record(entry.environment)[APP_MCP_TOKEN] === `{env:${APP_MCP_TOKEN}}`
+  if (harness === 'codex') return entry.bearer_token_env_var === APP_MCP_TOKEN
+    && authorizationHeaders(entry.http_headers).length === 0 && authorizationHeaders(entry.env_http_headers).length === 0
   const headers = authorizationHeaders(entry.headers)
-  return entry.oauth === false && headers.length === 1 && typeof headers[0]![1] === 'string'
-    && /^Bearer /i.test(headers[0]![1])
-    && headers[0]![1].slice(7) === `{env:${OPERATOR_CREDENTIAL}}`
+  return entry.oauth === false && headers.length === 1 && headers[0]![1] === `Bearer {env:${APP_MCP_TOKEN}}`
+}
+function standardAppRemote(harness: NativeMcpSnapshot['harness'], entry: JsonObject): boolean {
+  if (!remote(harness, entry) || !appReference(harness, entry)) return false
+  try {
+    const url = new URL(String(entry.url))
+    return url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+      && url.pathname === APP_MCP_PATH && !url.username && !url.password && !url.search && !url.hash
+  } catch { return false }
+}
+/** Pre-unification app entries in the user file. Installing the graphql preset removes them in the same write. */
+export function legacyAppEntries(snapshot: NativeMcpSnapshot): string[] {
+  return LEGACY_APP_MCP_SERVER_NAMES.filter((name) => Object.hasOwn(snapshot.user, name) && snapshot.ownership?.[name] !== false)
 }
 
 /** A user-file member is not sufficient evidence that its settings are effective. */
@@ -63,94 +69,58 @@ export function userOwnsMcpEntry(snapshot: NativeMcpSnapshot, name: string): boo
   if (!Object.hasOwn(snapshot.effective, name)) return true
   const user = record(snapshot.user[name])
   const effective = record(snapshot.effective[name])
-  if (isWorkerLauncher(snapshot.harness, user) !== isWorkerLauncher(snapshot.harness, effective)) return false
-  if (isOperatorLauncher(snapshot.harness, user) !== isOperatorLauncher(snapshot.harness, effective)) return false
+  if (isAppLauncher(snapshot.harness, user) !== isAppLauncher(snapshot.harness, effective)) return false
   if (user.url !== effective.url || (user.enabled !== false) !== (effective.enabled !== false)) return false
   if (remote(snapshot.harness, user) !== remote(snapshot.harness, effective, true)) return false
   if (snapshot.harness === 'codex' && (user.bearer_token_env_var ?? null) !== (effective.bearer_token_env_var ?? null)) return false
   // An OpenCode resolved Authorization value is a secret, not an environment reference.
-  if (snapshot.harness === 'opencode' && name === managedName('operator')
-    && operatorReference(snapshot.harness, user)
-    && snapshot.credentialReferences?.[name] !== OPERATOR_CREDENTIAL) return false
-  if (snapshot.harness === 'opencode' && name === 'graphql-app' && workerReference(snapshot.harness, user)
-    && snapshot.credentialReferences?.[name] !== WORKER_TOKEN) return false
+  if (snapshot.harness === 'opencode' && name === APP_MCP_SERVER_NAME && appReference(snapshot.harness, user)
+    && snapshot.credentialReferences?.[name] !== APP_MCP_TOKEN) return false
   return true
 }
 
-function workerReference(harness: NativeMcpSnapshot['harness'], entry: JsonObject): boolean {
-  if (isWorkerLauncher(harness, entry)) return harness === 'codex'
-    || record(entry.environment)[WORKER_TOKEN] === `{env:${WORKER_TOKEN}}`
-  if (harness === 'codex') return entry.bearer_token_env_var === WORKER_TOKEN
-    && authorizationHeaders(entry.http_headers).length === 0 && authorizationHeaders(entry.env_http_headers).length === 0
-  const headers = authorizationHeaders(entry.headers)
-  return entry.oauth === false && headers.length === 1 && headers[0]![1] === `Bearer {env:${WORKER_TOKEN}}`
-}
-function standardWorkerRemote(harness: NativeMcpSnapshot['harness'], entry: JsonObject): boolean {
-  if (!remote(harness, entry) || !workerReference(harness, entry)) return false
-  try {
-    const url = new URL(String(entry.url))
-    return url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-      && url.pathname === '/mcp/tools' && !url.username && !url.password && !url.search && !url.hash
-  } catch { return false }
-}
-function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset, endpoint: string): JsonObject {
-  if (preset === 'worker') {
-    const existing = record(snapshot.user['graphql-app'])
-    if (Object.hasOwn(snapshot.user, 'graphql-app') && !standardWorkerRemote(snapshot.harness, existing)
-      && !(isWorkerLauncher(snapshot.harness, existing) && workerReference(snapshot.harness, existing))) {
-      throw new DomainError('MCP_PRESET_CUSTOMIZED', 'The worker entry has custom transport or authentication settings. Edit it at its native source.', 409)
+function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset): JsonObject {
+  const name = managedName(preset)
+  if (preset === 'graphql') {
+    if (!Object.hasOwn(snapshot.user, name)) return nativeConnection(snapshot.harness, appLauncherConnection())
+    const existing = record(snapshot.user[name])
+    if (!standardAppRemote(snapshot.harness, existing) && !(isAppLauncher(snapshot.harness, existing) && appReference(snapshot.harness, existing))) {
+      throw new DomainError('MCP_PRESET_CUSTOMIZED', 'The graphql entry has custom transport or authentication settings. Edit it at its native source.', 409)
     }
+    // Do not reconstruct the entry. Native policy fields, including future supported
+    // fields, must survive config/batchWrite's replace strategy and the JSONC edit.
     const preserved = { ...existing }
     for (const key of ['url', 'bearer_token_env_var', 'headers', 'oauth', 'type']) delete preserved[key]
-    return { ...preserved, ...nativeConnection(snapshot.harness, workerLauncherConnection()), enabled: existing.enabled !== false }
+    return { ...preserved, ...nativeConnection(snapshot.harness, appLauncherConnection()), enabled: existing.enabled !== false }
   }
-  const url = preset === 'operator' ? endpoint : LINEAR_MCP_ENDPOINT
-  const name = managedName(preset)
-  if (!Object.hasOwn(snapshot.user, name)) return nativeConnection(snapshot.harness,
-    preset === 'operator' ? operatorLauncherConnection() : { transport: 'remote', url })
+  if (!Object.hasOwn(snapshot.user, name)) return nativeConnection(snapshot.harness, { transport: 'remote', url: LINEAR_MCP_ENDPOINT })
   const existing = record(snapshot.user[name])
-  if ((!remote(snapshot.harness, existing) && !(preset === 'operator' && isOperatorLauncher(snapshot.harness, existing)))
-    || (preset === 'operator' && !operatorReference(snapshot.harness, existing))
-    || (preset === 'linear' && existing.url !== LINEAR_MCP_ENDPOINT && existing.url !== LINEAR_READ_WRITE_ENDPOINT)) {
+  if (!remote(snapshot.harness, existing) || (existing.url !== LINEAR_MCP_ENDPOINT && existing.url !== LINEAR_READ_WRITE_ENDPOINT)) {
     throw new DomainError('MCP_PRESET_CUSTOMIZED',
       'This entry has custom transport or authentication settings. Review it in the native configuration; automatic repair would not be safe.', 409)
   }
-  // Do not reconstruct the entry. Native policy fields, including future supported
-  // fields, must survive config/batchWrite's replace strategy and the JSONC edit.
-  if (preset === 'operator') {
-    const preserved = { ...existing }
-    for (const key of ['url', 'bearer_token_env_var', 'headers', 'oauth', 'type']) delete preserved[key]
-    return { ...preserved, ...nativeConnection(snapshot.harness, operatorLauncherConnection()) }
-  }
-  return { ...existing, url, enabled: true }
+  return { ...existing, url: LINEAR_MCP_ENDPOINT, enabled: true }
 }
-export function managedStatus(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset, endpoint: string) {
+export function managedStatus(snapshot: NativeMcpSnapshot, preset: HarnessMcpManagedPreset, _endpoint?: string) {
+  void _endpoint // The graphql preset is a launcher; routing follows the owning app automatically.
   const name = managedName(preset)
-  if (!Object.hasOwn(snapshot.effective, name) && !Object.hasOwn(snapshot.user, name)) return 'missing' as const
+  const legacy = preset === 'graphql' && legacyAppEntries(snapshot).length > 0
+  if (!Object.hasOwn(snapshot.effective, name) && !Object.hasOwn(snapshot.user, name)) return legacy ? 'legacy' as const : 'missing' as const
   if (!userOwnsMcpEntry(snapshot, name)) return 'inherited' as const
   const entry = record(snapshot.user[name])
   const effective = record(snapshot.effective[name])
-  if (preset === 'worker') {
-    const reference = workerReference(snapshot.harness, entry) && (snapshot.harness === 'codex'
-      ? workerReference(snapshot.harness, effective) : snapshot.credentialReferences?.[name] === WORKER_TOKEN)
-    if (isWorkerLauncher(snapshot.harness, entry) && isWorkerLauncher(snapshot.harness, effective) && reference)
-      return entry.enabled === false || effective.enabled === false ? 'disabled' as const : 'installed' as const
-    return 'mismatch' as const
-  }
-  // Linear is not an exception to the protected application-credential boundary.
-  if (preset === 'linear' && (protectedServer(name, entry) || protectedServer(name, effective))) return 'mismatch' as const
-  if (preset === 'operator' && isOperatorLauncher(snapshot.harness, entry) && isOperatorLauncher(snapshot.harness, effective)) {
-    if (!operatorReference(snapshot.harness, entry) || (snapshot.harness === 'opencode' && snapshot.credentialReferences?.[name] !== OPERATOR_CREDENTIAL)) return 'inherited' as const
+  if (preset === 'graphql') {
+    const reference = appReference(snapshot.harness, entry) && (snapshot.harness === 'codex'
+      ? appReference(snapshot.harness, effective) : snapshot.credentialReferences?.[name] === APP_MCP_TOKEN)
+    if (!isAppLauncher(snapshot.harness, entry) || !isAppLauncher(snapshot.harness, effective) || !reference) return 'mismatch' as const
+    if (legacy) return 'legacy' as const
     return entry.enabled === false || effective.enabled === false ? 'disabled' as const : 'installed' as const
   }
+  // Linear is not an exception to the protected application-credential boundary.
+  if (protectedServer(name, entry) || protectedServer(name, effective)) return 'mismatch' as const
   if (!remote(snapshot.harness, entry) || !remote(snapshot.harness, effective, true)) return 'mismatch' as const
-  if (preset === 'linear') return entry.url === LINEAR_MCP_ENDPOINT
+  return entry.url === LINEAR_MCP_ENDPOINT
     ? entry.enabled === false || effective.enabled === false ? 'disabled' as const : 'installed' as const : 'mismatch' as const
-  if (entry.url !== endpoint || !operatorReference(snapshot.harness, entry)) return 'mismatch' as const
-  const credentialMatches = snapshot.harness === 'codex' ? operatorReference(snapshot.harness, effective)
-    : snapshot.credentialReferences?.[name] === OPERATOR_CREDENTIAL && effective.oauth === false
-  if (!credentialMatches) return 'inherited' as const
-  return entry.enabled === false || effective.enabled === false ? 'disabled' as const : 'mismatch' as const
 }
 export function assertManagedChange(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
   preset: HarnessMcpManagedPreset, endpoint: string): void {
@@ -164,10 +134,10 @@ export function assertManagedChange(snapshot: NativeMcpSnapshot, change: Harness
     throw new DomainError('MCP_SERVER_PROTECTED', 'Application credential-bearing connections cannot be changed as a Linear preset.', 403)
   }
   const status = managedStatus(snapshot, preset, endpoint)
-  if (change.kind === 'add' && status !== 'missing' && status !== 'mismatch') {
+  if (change.kind === 'add' && status !== 'missing' && status !== 'mismatch' && status !== 'legacy') {
     throw new DomainError('MCP_SERVER_EXISTS', 'This MCP server already has a native configuration. Inspect it before changing the preset.', 409)
   }
-  if (change.kind === 'add') managedNativeConnection(snapshot, preset, endpoint)
+  if (change.kind === 'add') managedNativeConnection(snapshot, preset)
   if (change.kind === 'remove' && status !== 'installed' && status !== 'disabled')
     throw new DomainError('MCP_PRESET_MISMATCH', 'Only the matching user-owned preset can be removed here.', 409)
   if (change.kind === 'enable' && status !== (change.enabled ? 'disabled' : 'installed'))
@@ -176,7 +146,7 @@ export function assertManagedChange(snapshot: NativeMcpSnapshot, change: Harness
 export function protectedServer(name: string, entry: unknown): boolean {
   if (/^(graphql[-_]|__)/i.test(name) || ['graphql', 'app', 'operator'].includes(name.toLowerCase())) return true
   // Also protect renamed credential-bearing application entries. This value never leaves the adapter.
-  return /GRAPHQL_(?:APP|OPERATOR)_MCP_TOKEN|\/mcp\/(?:tools|operator)(?:["'/?\s]|$)/i.test(JSON.stringify(entry))
+  return /GRAPHQL_(?:(?:APP|OPERATOR)_)?MCP_TOKEN|\/mcp\/(?:tools|operator)(?:["'/?\s]|$)|\/graphql\/(?:mcp|worker-mcp|operator-mcp)\/launcher\.mjs/i.test(JSON.stringify(entry))
 }
 export function assertChange(snapshot: NativeMcpSnapshot, change: HarnessMcpChange): void {
   const current = snapshot.effective[change.name]
@@ -205,13 +175,27 @@ export function replacement(snapshot: NativeMcpSnapshot, change: HarnessMcpChang
   managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): JsonObject | undefined {
   if (managed) {
     assertManagedChange(snapshot, change, managed.preset, managed.endpoint)
-    return change.kind === 'add' ? managedNativeConnection(snapshot, managed.preset, managed.endpoint)
+    return change.kind === 'add' ? managedNativeConnection(snapshot, managed.preset)
       : change.kind === 'enable' ? { ...record(snapshot.user[change.name]), enabled: change.enabled } : undefined
   }
   assertChange(snapshot, change)
   if (change.kind === 'remove') return undefined
   if (change.kind === 'add') return nativeConnection(snapshot.harness, change.connection)
   return { ...record(snapshot.user[change.name]), enabled: change.enabled }
+}
+/** Every user-file member one change writes. A graphql install also retires the legacy app entries. */
+export function mcpEdits(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
+  managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): { name: string; value: JsonObject | undefined }[] {
+  const edits = [{ name: change.name, value: replacement(snapshot, change, managed) }]
+  if (managed?.preset === 'graphql' && change.kind === 'add') {
+    for (const name of legacyAppEntries(snapshot)) edits.push({ name, value: undefined })
+  }
+  return edits
+}
+export function applyMcpEdits(user: JsonObject, edits: readonly { name: string; value: JsonObject | undefined }[]): JsonObject {
+  const next = { ...user }
+  for (const edit of edits) { if (edit.value === undefined) delete next[edit.name]; else next[edit.name] = edit.value }
+  return next
 }
 export function mcpUserFingerprint(snapshot: NativeMcpSnapshot): string {
   const key = snapshot.harness === 'codex' ? 'mcp_servers' : 'mcp'
@@ -220,9 +204,7 @@ export function mcpUserFingerprint(snapshot: NativeMcpSnapshot): string {
 /** Opaque durable evidence; the raw native configuration never enters a receipt. */
 export function expectedMcpUserFingerprint(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
   managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): string {
-  const next = replacement(snapshot, change, managed)
-  const user = { ...snapshot.user }
-  if (next === undefined) delete user[change.name]; else user[change.name] = next
+  const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
   const key = snapshot.harness === 'codex' ? 'mcp_servers' : 'mcp'
   return fingerprint({ ...snapshot.userConfig, [key]: user })
 }
@@ -236,15 +218,14 @@ export function publicMcpList(snapshot: NativeMcpSnapshot): HarnessMcpList {
       const remote = typeof entry.url === 'string'
       let label = local ? 'Local program' : 'Native connection'
       if (local) { const command = Array.isArray(entry.command) ? entry.command[0] : entry.command; if (typeof command === 'string') label = basename(command) }
-      if (name === 'graphql-app' && isWorkerLauncher(snapshot.harness, entry)) label = 'Automatic worker connection'
-      if (name === 'graphql-operator' && isOperatorLauncher(snapshot.harness, entry)) label = 'Automatic app connection'
+      if (name === APP_MCP_SERVER_NAME && isAppLauncher(snapshot.harness, entry)) label = 'Automatic app connection'
+      if ((LEGACY_APP_MCP_SERVER_NAMES as readonly string[]).includes(name)) label = 'Legacy app connection · replaced by graphql'
       let endpoint: string | undefined
       if (remote) { try {
         const url = new URL(String(entry.url))
         label = url.origin
         if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
-          && ((name === 'graphql-app' && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname === '/mcp/tools')
-            || (name === 'graphql-operator' && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname === '/mcp/operator')
+          && ((name === APP_MCP_SERVER_NAME && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname === APP_MCP_PATH)
             || (name === 'linear' && url.protocol === 'https:' && url.hostname === 'mcp.linear.app' && ['/mcp', '/mcp/readonly'].includes(url.pathname)))) endpoint = url.toString()
       } catch { label = 'Remote connection' } }
       const locked = protectedServer(name, entry) || protectedServer(name, snapshot.user[name])

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { installManagedLauncher, isManagedLauncherCommand, isOperatorLauncher, operatorLauncherPath, OPERATOR_TOKEN } from '../src/modules/harnesses/operatorMcpLauncher.js'
+import { APP_MCP_TOKEN, appLauncherPath, installManagedLauncher, isAppLauncher, isManagedLauncherCommand } from '../src/modules/harnesses/appMcpLauncher.js'
 
 const runtime = process.execPath
 const directories: string[] = []
@@ -69,15 +69,15 @@ describe('managed launcher installation identity', () => {
 
   it.each(['codex', 'opencode'] as const)('retains %s command and authentication restrictions', (harness) => {
     const entry = harness === 'codex'
-      ? { command: process.execPath, args: [operatorLauncherPath()], env_vars: [OPERATOR_TOKEN] }
-      : { type: 'local', command: [process.execPath, operatorLauncherPath()], environment: { [OPERATOR_TOKEN]: `{env:${OPERATOR_TOKEN}}` } }
-    expect(isOperatorLauncher(harness, entry)).toBe(true)
-    expect(isOperatorLauncher(harness, { ...entry, url: 'https://custom.invalid' })).toBe(false)
-    expect(isOperatorLauncher(harness, { ...entry, bearer_token_env_var: 'CUSTOM' })).toBe(false)
-    expect(isOperatorLauncher(harness, { ...entry, headers: { Authorization: 'custom' } })).toBe(false)
-    expect(isOperatorLauncher(harness, { ...entry, oauth: true })).toBe(false)
-    expect(isOperatorLauncher(harness, harness === 'codex'
+      ? { command: process.execPath, args: [appLauncherPath()], env_vars: [APP_MCP_TOKEN] }
+      : { type: 'local', command: [process.execPath, appLauncherPath()], environment: { [APP_MCP_TOKEN]: `{env:${APP_MCP_TOKEN}}` } }
+    expect(isAppLauncher(harness, entry)).toBe(true)
+    expect(isAppLauncher(harness, { ...entry, url: 'https://custom.invalid' })).toBe(false)
+    expect(isAppLauncher(harness, { ...entry, bearer_token_env_var: 'CUSTOM' })).toBe(false)
+    expect(isAppLauncher(harness, { ...entry, headers: { Authorization: 'custom' } })).toBe(false)
+    expect(isAppLauncher(harness, { ...entry, oauth: true })).toBe(false)
+    expect(isAppLauncher(harness, harness === 'codex'
       ? { ...entry, env: { CUSTOM: 'value' } }
-      : { ...entry, environment: { [OPERATOR_TOKEN]: 'resolved', CUSTOM: 'value' } })).toBe(false)
+      : { ...entry, environment: { [APP_MCP_TOKEN]: 'resolved', CUSTOM: 'value' } })).toBe(false)
   })
 })

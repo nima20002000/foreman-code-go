@@ -18,7 +18,7 @@ describe('F12 read-only receipt recovery owner boundary', () => {
     }
     const chat = new OperatorChatService(memory.repository, {} as PostgresOperatorRepository, () => manager, '/tmp/operator', {
       current: async () => owner, assertConfiguration() {},
-    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }), prepare: async () => { throw new Error('Receipt reads cannot prepare native work') },
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }), prepare: async () => { throw new Error('Receipt reads cannot prepare native work') },
       release: async () => {},
     })
     const command = { requestId: 'accepted-id', content: 'Accepted once' }

@@ -24,7 +24,7 @@ async function setup() {
 describe.skipIf(!postgresEnabled)('A4 authenticated App and Operator MCP with persisted PostgreSQL readback', { timeout: 60000 }, () => {
   it('App response records one scoped decision; exact replay is safe and no native delivery is inferred', async () => {
     const f = await setup()
-    const client = await f.connect('/mcp/tools', f.credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!)
+    const client = await f.connect('/mcp', f.credential.environment.variables.GRAPHQL_MCP_TOKEN!)
     const tools = await client.listTools()
     expect(tools.tools.some((tool) => tool.name === 'interaction_respond')).toBe(true)
     const args = { interactionId: f.interaction.id, optionId: f.interaction.responseOptions.find((option) => option.semantic === 'approve_once')!.optionId, expectedRevision: f.interaction.revision }
@@ -47,7 +47,7 @@ describe.skipIf(!postgresEnabled)('A4 authenticated App and Operator MCP with pe
     await f.pool.query('update management_principals set grants=$2::jsonb where id=$1', [f.principal.id, JSON.stringify([
       { actions: ['interactions:read'], scope: { workspaceIds: [f.run.workspaceId], workflowIds: [f.run.workflowId], runIds: [f.run.id] } },
     ])])
-    const client = await f.connect('/mcp/tools', f.credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!)
+    const client = await f.connect('/mcp', f.credential.environment.variables.GRAPHQL_MCP_TOKEN!)
     expect((await client.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(false)
     const denied = await client.callTool({ name: 'interaction_respond', arguments: { interactionId: f.interaction.id, optionId: f.interaction.responseOptions.find((option) => option.semantic === 'approve_once')!.optionId, expectedRevision: f.interaction.revision } }).catch(() => ({ isError: true }))
     expect(denied.isError).toBe(true)

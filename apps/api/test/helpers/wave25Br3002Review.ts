@@ -39,7 +39,7 @@ export function br3002Assistant(server: FixtureServer, correlationId: string, se
   if (variant.missingFinish) delete message.info.finish
   if (variant.error) message.info.error = { name: 'APIError', data: { message: 'fixture assistant error', isRetryable: false } }
   if (variant.pendingTool) message.parts.push({ id: `prt_pending_${String(message.info.id)}`, type: 'tool',
-    sessionID, messageID: message.info.id, callID: 'call_still_running', tool: 'graphql-app_interaction_get',
+    sessionID, messageID: message.info.id, callID: 'call_still_running', tool: 'graphql_interaction_get',
     state: { status: 'running', input: {} } })
   server.statuses.delete(sessionID)
   return message
@@ -99,7 +99,7 @@ export async function br3002Decision(f: Br1002Runtime, args: Br3002ReviewArgs) {
   const host = (await readCurrentExecutions(f.runs, f.f.run.id)).find((execution) => execution.agentId === job.reviewerAgentId)!
   const credential = await f.credentials.issueForReviewer(host.id)
   try {
-    const principal = await f.access.authenticate(credential.environment.variables.GRAPHQL_APP_MCP_TOKEN, 'worker')
+    const principal = await f.access.authenticate(credential.environment.variables.GRAPHQL_MCP_TOKEN, 'worker')
     const option = interaction.responseOptions.find((item) => item.semantic === 'approve_once')
     if (!option) throw new Error('Expected the actual OpenCode approve-once option')
     // Real issued/scoped principal and decision transaction; NOT an authenticated

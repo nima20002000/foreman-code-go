@@ -37,7 +37,7 @@ export async function lockPrincipal(sql: GraphTransactionSql, snapshot: Manageme
   if (!binding || binding.revoked_at || binding.execution_id !== reviewer.id || binding.run_id !== context.scope.runId
     || binding.agent_id !== reviewer.agentId || binding.workspace_id !== context.scope.workspaceId
     || binding.workflow_id !== context.scope.workflowId || binding.purpose !== 'reviewer'
-    || binding.environment_variable !== 'GRAPHQL_APP_MCP_TOKEN'
+    || binding.environment_variable !== 'GRAPHQL_MCP_TOKEN'
     || binding.approval_native_session_id !== reviewer.nativeSessionId) return fail('AUTH_REVOKED')
   await assertWave25WorkerBinding(sql, principal.id)
   if (replay) return principal

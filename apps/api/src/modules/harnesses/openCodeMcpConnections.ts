@@ -1,5 +1,4 @@
-import { installWorkerLauncher } from './workerMcpLauncher.js'
-import { installOperatorLauncher } from './operatorMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, installAppLauncher } from './appMcpLauncher.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { lstat, open, realpath, rename, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -11,7 +10,7 @@ import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
 import { parseConfigObject } from './opencodeProtocol.js'
 import { editJsoncMcp } from './jsoncMcpEditor.js'
 import { backupNativeUserFile, readNativeUserFile, syncNativeConfigDirectory } from './nativeConfigFiles.js'
-import { fingerprint, record, replacement, type NativeMcpAdapter, type NativeMcpSnapshot } from './nativeMcpCommon.js'
+import { applyMcpEdits, fingerprint, mcpEdits, record, type NativeMcpAdapter, type NativeMcpSnapshot } from './nativeMcpCommon.js'
 import { withNativeMcpDelivery } from './nativeMcpDelivery.js'
 import { inspectOpenCodeMcpSources } from './openCodeMcpSources.js'
 
@@ -51,7 +50,7 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
     const userConfig = source.trim() ? parseConfigObject(source) : {}
     const user = record(userConfig.mcp)
     const credentialReferences: Record<string, string> = {}
-    for (const [name, credential] of [['graphql-operator', 'GRAPHQL_OPERATOR_MCP_TOKEN'], ['graphql-app', 'GRAPHQL_APP_MCP_TOKEN']] as const) {
+    for (const [name, credential] of [[APP_MCP_SERVER_NAME, APP_MCP_TOKEN]] as const) {
       if (!Object.hasOwn(user, name) || !Object.hasOwn(effective, name)) continue
       const evidence = await inspectOpenCodeMcpConfiguration({ binary: this.binary, workingDirectory: this.directory,
         serverName: name, credentialEnvironmentVariable: credential, signal })
@@ -77,7 +76,7 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
   async apply(snapshot: NativeMcpSnapshot, change: HarnessMcpChange, signal: AbortSignal,
     managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): Promise<void> {
     return withNativeMcpDelivery(async (writing) => {
-      const next = replacement(snapshot, change, managed)
+      const edits = mcpEdits(snapshot, change, managed)
       const lockPath = `${snapshot.file}.graphql-mcp.lock`
       let lock
       try { lock = await open(lockPath, 'wx', 0o600) } catch { throw new DomainError('MCP_CONFIG_BUSY', 'Native configuration is locked. A crashed writer requires an administrator to reconcile its lock.', 409) }
@@ -88,9 +87,8 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
         if (current.revision !== snapshot.revision || current.file !== snapshot.file) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
         const source = await this.contents(current.file)
         if (fingerprint(source) !== current.version) throw new DomainError('REVISION_CONFLICT', 'The native configuration changed while it was being read.', 409)
-        const updated = editJsoncMcp(source, change.name, next)
-        const expected = { ...current.user }
-        if (next === undefined) delete expected[change.name]; else expected[change.name] = next
+        const updated = edits.reduce((text, edit) => editJsoncMcp(text, edit.name, edit.value), source)
+        const expected = applyMcpEdits(current.user, edits)
         if (fingerprint(parseConfigObject(updated)) !== fingerprint({ ...current.userConfig, mcp: expected })) throw new Error('MCP edit verification failed.')
         await backupNativeUserFile(current.file, source)
         const handle = await open(temporary, 'wx', 0o600)
@@ -99,8 +97,7 @@ export class OpenCodeMcpConnections implements NativeMcpAdapter {
         if (fingerprint(await this.contents(current.file)) !== current.version) throw new DomainError('REVISION_CONFLICT', 'A native editor changed this file. Nothing was overwritten.', 409)
         // The backup and temporary file are not a delivered configuration change.
         writing()
-        if (managed?.preset === 'worker' && change.kind === 'add') await installWorkerLauncher()
-        if (managed?.preset === 'operator' && change.kind === 'add') await installOperatorLauncher()
+        if (managed?.preset === 'graphql' && change.kind === 'add') await installAppLauncher()
         await rename(temporary, current.file)
         await syncNativeConfigDirectory(current.file)
         const written = await readNativeUserFile(current.file)

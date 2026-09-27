@@ -181,7 +181,7 @@ it('F8: owner replacement during renewal cannot be overwritten or have its crede
     const attached = await fixture.attach()
     const registry = (fixture.runtime as unknown as { managerCredentials: WeakMap<NativeHarnessSessionManager, IssuedWorkerCredential> }).managerCredentials
     const replacement: IssuedWorkerCredential = { ...fixture.credential, principalId: 'principal-successor',
-      environment: { agentId: fixture.execution.agentId, variables: { GRAPHQL_APP_MCP_TOKEN: 'replacement-token' } } }
+      environment: { agentId: fixture.execution.agentId, variables: { GRAPHQL_MCP_TOKEN: 'replacement-token' } } }
     fixture.hooks.renew = async () => { registry.set(attached.manager, replacement); return new Date(Date.now() + 60_000).toISOString() }
     const maintenance = await fixture.runtime.maintainReviewCredential(fixture.execution.id, session, new AbortController().signal, async () => {})
     await vi.advanceTimersByTimeAsync(1)

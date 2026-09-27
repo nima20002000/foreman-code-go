@@ -1,4 +1,4 @@
-import { operatorLauncherConnection } from '../src/modules/harnesses/operatorMcpLauncher.js'
+import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
@@ -21,42 +21,42 @@ describe('native MCP settings reads', () => {
     expect(JSON.stringify(list)).not.toContain('password')
     expect(JSON.stringify(list)).not.toContain('secret')
   })
-  it.each(['codex', 'opencode'] as const)('limits %s one-click Operator writes to the managed automatic launcher and credential reference', (harness) => {
-    const endpoint = 'http://127.0.0.1:3000/mcp/operator'
+  it.each(['codex', 'opencode'] as const)('limits %s one-click GraphQL writes to the managed automatic launcher and credential reference', (harness) => {
+    const endpoint = 'http://127.0.0.1:3000/mcp'
     const snapshot: NativeMcpSnapshot = { harness, revision: 'revision', effective: {}, user: {}, userConfig: {}, file: '/tmp/native', version: 'v' }
-    const add = managedChange('operator', true, endpoint)
-    expect(replacement(snapshot, add, { preset: 'operator', endpoint })).toEqual(nativeConnection(harness,
-      operatorLauncherConnection()))
+    const add = managedChange('graphql', true, endpoint)
+    expect(replacement(snapshot, add, { preset: 'graphql', endpoint })).toEqual(nativeConnection(harness,
+      appLauncherConnection()))
     expect(() => replacement(snapshot, add)).toThrow('Application MCP connections are managed')
-    expect(() => assertManagedChange(snapshot, { kind: 'add', name: 'graphql-operator', connection: { transport: 'remote', url: 'https://other.test/mcp' } },
-      'operator', endpoint)).toThrow('does not match')
-    const installed = replacement(snapshot, add, { preset: 'operator', endpoint })!
-    const current = { ...snapshot, user: { 'graphql-operator': installed }, effective: { 'graphql-operator': installed },
-      credentialReferences: { 'graphql-operator': 'GRAPHQL_OPERATOR_MCP_TOKEN' } }
-    expect(managedStatus(current, 'operator', endpoint)).toBe('installed')
-    expect(() => replacement(current, managedEnableChange('operator', false))).toThrow('Application MCP connections are managed')
-    expect(managedStatus({ ...current, effective: { 'graphql-operator': { url: 'https://override.test/mcp' } } },
-      'operator', endpoint)).toBe('inherited')
-    expect(managedStatus({ ...current, user: { 'graphql-operator': { ...installed,
+    expect(() => assertManagedChange(snapshot, { kind: 'add', name: 'graphql', connection: { transport: 'remote', url: 'https://other.test/mcp' } },
+      'graphql', endpoint)).toThrow('does not match')
+    const installed = replacement(snapshot, add, { preset: 'graphql', endpoint })!
+    const current = { ...snapshot, user: { 'graphql': installed }, effective: { 'graphql': installed },
+      credentialReferences: { 'graphql': 'GRAPHQL_MCP_TOKEN' } }
+    expect(managedStatus(current, 'graphql', endpoint)).toBe('installed')
+    expect(() => replacement(current, managedEnableChange('graphql', false))).toThrow('Application MCP connections are managed')
+    expect(managedStatus({ ...current, effective: { 'graphql': { url: 'https://override.test/mcp' } } },
+      'graphql', endpoint)).toBe('inherited')
+    expect(managedStatus({ ...current, user: { 'graphql': { ...installed,
       ...(harness === 'codex' ? { http_headers_helper: '/local/helper' } : { timeout: 5000 }), enabled: undefined } } },
-    'operator', endpoint)).toBe('installed')
-    expect(replacement(current, managedChange('operator', false, endpoint), { preset: 'operator', endpoint })).toBeUndefined()
-    expect(() => replacement({ ...current, user: { 'graphql-operator': { ...installed, url: 'https://other.test/mcp' } } },
-      managedChange('operator', false, endpoint), { preset: 'operator', endpoint })).toThrow('matching user-owned preset')
-    const legacy = nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3012/mcp/operator', bearerTokenEnvironmentVariable: 'GRAPHQL_OPERATOR_MCP_TOKEN' })
-    expect(replacement({ ...current, user: { 'graphql-operator': legacy }, effective: { 'graphql-operator': legacy } },
-      add, { preset: 'operator', endpoint })).toEqual(installed)
-    expect(managedStatus(current, 'operator', 'http://127.0.0.1:4567/mcp/operator')).toBe('installed')
+    'graphql', endpoint)).toBe('installed')
+    expect(replacement(current, managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toBeUndefined()
+    expect(() => replacement({ ...current, user: { 'graphql': { ...installed, url: 'https://other.test/mcp' } } },
+      managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
+    const legacy = nativeConnection(harness, { transport: 'remote', url: 'http://127.0.0.1:3012/mcp', bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' })
+    expect(replacement({ ...current, user: { 'graphql': legacy }, effective: { 'graphql': legacy } },
+      add, { preset: 'graphql', endpoint })).toEqual(installed)
+    expect(managedStatus(current, 'graphql', 'http://127.0.0.1:4567/mcp')).toBe('installed')
     const disabled = { ...installed, enabled: false }
-    const inactive = { ...current, user: { 'graphql-operator': disabled }, effective: { 'graphql-operator': disabled } }
-    expect(managedStatus(inactive, 'operator', endpoint)).toBe('disabled')
-    expect(() => replacement(inactive, add, { preset: 'operator', endpoint })).toThrow('already has a native configuration')
-    expect(replacement(current, managedEnableChange('operator', false), { preset: 'operator', endpoint })).toEqual(disabled)
-    expect(replacement(inactive, managedEnableChange('operator', true), { preset: 'operator', endpoint })).toEqual(installed)
-    expect(replacement(inactive, managedChange('operator', false, endpoint), { preset: 'operator', endpoint })).toBeUndefined()
-    expect(() => replacement(current, managedEnableChange('operator', true), { preset: 'operator', endpoint })).toThrow('matching user-owned preset')
-    expect(() => replacement({ ...inactive, effective: { 'graphql-operator': { ...disabled, url: 'https://override.test/mcp' } } },
-      managedEnableChange('operator', true), { preset: 'operator', endpoint })).toThrow('matching user-owned preset')
+    const inactive = { ...current, user: { 'graphql': disabled }, effective: { 'graphql': disabled } }
+    expect(managedStatus(inactive, 'graphql', endpoint)).toBe('disabled')
+    expect(() => replacement(inactive, add, { preset: 'graphql', endpoint })).toThrow('already has a native configuration')
+    expect(replacement(current, managedEnableChange('graphql', false), { preset: 'graphql', endpoint })).toEqual(disabled)
+    expect(replacement(inactive, managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toEqual(installed)
+    expect(replacement(inactive, managedChange('graphql', false, endpoint), { preset: 'graphql', endpoint })).toBeUndefined()
+    expect(() => replacement(current, managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
+    expect(() => replacement({ ...inactive, effective: { 'graphql': { ...disabled, url: 'https://override.test/mcp' } } },
+      managedEnableChange('graphql', true), { preset: 'graphql', endpoint })).toThrow('matching user-owned preset')
     expect(managedChange('linear', true, endpoint)).toMatchObject({ kind: 'add', connection: { url: LINEAR_MCP_ENDPOINT } })
     expect(managedStatus({ ...snapshot, effective: { linear: harness === 'codex' ? { url: 'https://mcp.linear.app/mcp' }
       : { type: 'remote', url: 'https://mcp.linear.app/mcp' } },

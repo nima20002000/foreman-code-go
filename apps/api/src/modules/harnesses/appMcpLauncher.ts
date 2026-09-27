@@ -5,10 +5,15 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { HarnessMcpConnection } from '@graphql/contracts/management'
 
-export const OPERATOR_TOKEN = 'GRAPHQL_OPERATOR_MCP_TOKEN'
-export const operatorLauncherPath = () => join(homedir(), '.local', 'share', 'graphql', 'operator-mcp', 'launcher.mjs')
-export function operatorLauncherConnection(): Extract<HarnessMcpConnection, { transport: 'stdio' }> {
-  return { transport: 'stdio', executable: process.execPath, arguments: [operatorLauncherPath()], environmentVariables: [OPERATOR_TOKEN] }
+/** One native entry serves every role; the credential decides Operator, Orchestrator or Coder. */
+export const APP_MCP_SERVER_NAME = 'graphql'
+export const APP_MCP_TOKEN = 'GRAPHQL_MCP_TOKEN'
+export const APP_MCP_PATH = '/mcp'
+/** Pre-unification entries. Recognized only so they can be reported and removed. */
+export const LEGACY_APP_MCP_SERVER_NAMES = ['graphql-app', 'graphql-operator'] as const
+export const appLauncherPath = () => join(homedir(), '.local', 'share', 'graphql', 'mcp', 'launcher.mjs')
+export function appLauncherConnection(): Extract<HarnessMcpConnection, { transport: 'stdio' }> {
+  return { transport: 'stdio', executable: process.execPath, arguments: [appLauncherPath()], environmentVariables: [APP_MCP_TOKEN] }
 }
 interface LauncherInstallation { version: 1; executables: { path: string; realpath: string }[] }
 function installationPath(launcher: string): string { return `${launcher}.installation.json` }
@@ -34,22 +39,22 @@ export function isManagedLauncherCommand(command: unknown, launcher: string): bo
     return readInstallation(launcher)?.executables.some((entry) => entry.path === command[0] && entry.realpath === executable) ?? false
   } catch { return false }
 }
-export function isOperatorLauncher(harness: 'codex' | 'opencode', entry: Record<string, unknown>): boolean {
+export function isAppLauncher(harness: 'codex' | 'opencode', entry: Record<string, unknown>): boolean {
   const command = harness === 'codex' ? [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])] : entry.command
-  if (!isManagedLauncherCommand(command, operatorLauncherPath())) return false
+  if (!isManagedLauncherCommand(command, appLauncherPath())) return false
   if (entry.url != null || entry.bearer_token_env_var != null || entry.oauth != null
     || (entry.headers != null && Object.keys(entry.headers as object).length > 0)
     || (entry.http_headers != null && Object.keys(entry.http_headers as object).length > 0)
     || (entry.env_http_headers != null && Object.keys(entry.env_http_headers as object).length > 0)) return false
   if (harness === 'codex') return (!entry.env || Object.keys(entry.env as object).length === 0)
-    && JSON.stringify(entry.env_vars) === JSON.stringify([OPERATOR_TOKEN])
+    && JSON.stringify(entry.env_vars) === JSON.stringify([APP_MCP_TOKEN])
   const environment = entry.environment as Record<string, unknown> | undefined
   // OpenCode expands the reference in effective configuration. Proven separately by its inspector.
   return entry.type === 'local' && !!environment && Object.keys(environment).length === 1
-    && typeof environment[OPERATOR_TOKEN] === 'string'
+    && typeof environment[APP_MCP_TOKEN] === 'string'
 }
-export async function installOperatorLauncher(): Promise<void> {
-  await installManagedLauncher(new URL('../../../../../scripts/operator-mcp.mjs', import.meta.url), operatorLauncherPath())
+export async function installAppLauncher(): Promise<void> {
+  await installManagedLauncher(new URL('../../../../../scripts/graphql-mcp.mjs', import.meta.url), appLauncherPath())
 }
 export async function installManagedLauncher(sourceUrl: URL, destination: string): Promise<void> {
   const source = await readFile(sourceUrl, 'utf8')
@@ -66,11 +71,11 @@ export async function installManagedLauncher(sourceUrl: URL, destination: string
     await rename(pending, metadata)
   } finally { await rm(pending, { force: true }) }
 }
-export async function registerOperatorRoute(token: string, endpoint: string, expiresAt: string, launcher = operatorLauncherPath()): Promise<() => Promise<void>> {
-  return registerOperatorRouteDigest(createHash('sha256').update(token).digest('hex'), endpoint, expiresAt, launcher)
+export async function registerAppRoute(token: string, endpoint: string, expiresAt: string, launcher = appLauncherPath()): Promise<() => Promise<void>> {
+  return registerAppRouteDigest(createHash('sha256').update(token).digest('hex'), endpoint, expiresAt, launcher)
 }
-export async function registerOperatorRouteDigest(digest: string, endpoint: string, expiresAt: string, launcher = operatorLauncherPath()): Promise<() => Promise<void>> {
-  if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid Operator route identity.')
+export async function registerAppRouteDigest(digest: string, endpoint: string, expiresAt: string, launcher = appLauncherPath()): Promise<() => Promise<void>> {
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid GraphQL MCP route identity.')
   const directory = join(dirname(launcher), 'routes')
   const file = join(directory, `${digest}.json`)
   await mkdir(directory, { recursive: true, mode: 0o700 })

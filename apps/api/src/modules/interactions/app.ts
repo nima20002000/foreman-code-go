@@ -45,6 +45,8 @@ export interface AppInteractionService {
   context(principal: ManagementPrincipal): Promise<unknown>
   canRead(principal: ManagementPrincipal): Promise<boolean>
   canRespond(principal: ManagementPrincipal): Promise<boolean>
+  /** The bound Agent's product role. It decides which GraphQL MCP tools the credential may call. */
+  role(principal: ManagementPrincipal): Promise<'orchestrator' | 'coder'>
   list(principal: ManagementPrincipal, input: unknown): Promise<unknown>
   get(principal: ManagementPrincipal, interactionId: string): Promise<unknown>
   respond(principal: ManagementPrincipal, input: unknown): Promise<unknown>
@@ -69,6 +71,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
         agentId: principal.agentId!,
         expiresAt: principal.expiresAt,
       },
+      role: await this.role(principal),
       scope,
       capabilities: {
         contextGet: true,
@@ -77,6 +80,20 @@ export class PostgresAppInteractionService implements AppInteractionService {
         interactionRespond: responseAllowed,
       },
     }
+  }
+
+  async role(principal: ManagementPrincipal): Promise<'orchestrator' | 'coder'> {
+    workerScope(principal)
+    // The Run pins the exact configuration version; its productRole is immutable for this credential.
+    const result = await this.pool.query<{ role: string | null }>(
+      `select c.record->>'productRole' as role from worker_credential_bindings b
+       join runs r on r.id=b.run_id
+       join agent_configuration_versions c on c.id=(r.record->'agentConfigurationVersionIds'->>b.agent_id)
+         and c.workspace_id=r.workspace_id and c.agent_id=b.agent_id
+       where b.principal_id=$1 and b.agent_id=$2 and b.revoked_at is null`,
+      [principal.id, principal.agentId],
+    )
+    return result.rows[0]?.role === 'orchestrator' ? 'orchestrator' : 'coder'
   }
 
   async canRead(principal: ManagementPrincipal): Promise<boolean> {

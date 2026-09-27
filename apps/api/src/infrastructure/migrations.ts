@@ -23,6 +23,7 @@ import { nativeEventSequenceMigration } from './nativeEventSequenceMigration.js'
 
 import { interactionDeliveryMigration } from './interactionDeliveryMigration.js'
 import { operatorMcpMigration } from './operatorMcpMigration.js'
+import { unifiedMcpMigration } from './unifiedMcpMigration.js'
 import { operatorApprovalRemovalMigration } from './operatorApprovalRemovalMigration.js'
 import { wave25RunGraphMigration } from './wave25RunGraphMigration.js'
 import { wave25ReliabilityMigration } from './wave25ReliabilityMigration.js'
@@ -717,6 +718,7 @@ export const migrations = [
         where r.operation = 'workspace.create' and r.result->'workspace'->>'id' = w.id
           and r.result->'executionLocation' = w.execution_location);
   ` },
+  unifiedMcpMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

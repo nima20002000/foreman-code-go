@@ -55,7 +55,7 @@ describe('Operator chat UX', () => {
     chat()
     expect(await screen.findByText(/The previous conversation is no longer available/)).toBeVisible()
     await waitFor(() => expect(setupTargets).toContain(null))
-    expect(screen.queryByText('Operator MCP could not be checked')).not.toBeInTheDocument()
+    expect(screen.queryByText('GraphQL MCP could not be checked')).not.toBeInTheDocument()
     expect(screen.queryByText('Conversation could not be loaded')).not.toBeInTheDocument()
     expect(api.get).toHaveBeenCalledTimes(1)
     expect(useOperatorChatStore.getState().selectedConversationId).toBeUndefined()
@@ -84,7 +84,7 @@ describe('Operator chat UX', () => {
       http.get('/api/operator/setup', () => HttpResponse.json(configured ? configuredOperatorSetup('opencode') : unconfiguredOperatorSetup('opencode'))),
     )
     chat()
-    expect(await screen.findByText('Install Operator MCP in OpenCode first')).toBeVisible()
+    expect(await screen.findByText('Install GraphQL MCP in OpenCode first')).toBeVisible()
     const input = await screen.findByRole('textbox', { name: 'Message' })
     fireEvent.change(input, { target: { value: 'Hello' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -94,7 +94,7 @@ describe('Operator chat UX', () => {
     configured = true
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
-    expect(screen.queryByText('Install Operator MCP in OpenCode first')).not.toBeInTheDocument()
+    expect(screen.queryByText('Install GraphQL MCP in OpenCode first')).not.toBeInTheDocument()
   })
 
   it('does not enable Send for configured setup without an accepted configuration ID', async () => {
@@ -381,7 +381,7 @@ describe('PR19 receipt recovery and navigation fencing', () => {
       http.get('/api/management/settings/agents', () => HttpResponse.json({ revision: 8, versionId: null,
         value: { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })),
       http.get('/api/operator/setup', () => HttpResponse.json({ harness: 'opencode', status: 'setup_required',
-        endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() })),
+        endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() })),
     )
     api.send.mockResolvedValue({ replayed: true, state: operatorState({ turnState: 'idle', activeRequestId: null,
       messages: [{ id: 'accepted-message', conversationId: 'conversation-one', requestId: command.requestId, role: 'user', content: command.content }] }) })

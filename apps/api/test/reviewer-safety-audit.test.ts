@@ -146,7 +146,7 @@ it('F6: Domain/Harness/Aggregate/cause errors cannot export raw tokens or provid
   const redactor = nativePersistenceRedactor([secret])
   const domain = new DomainError('TEST_FAILURE', secret, 409, { nested: historicalSecret })
   const provider = new HarnessExecutionError('PROVIDER_FAILURE', historicalSecret)
-  const error = Object.assign(new Error(secret, { cause: domain }), { environment: { GRAPHQL_APP_MCP_TOKEN: secret } })
+  const error = Object.assign(new Error(secret, { cause: domain }), { environment: { GRAPHQL_MCP_TOKEN: secret } })
   const safe = redactor.error(new AggregateError([domain, provider, error], `${secret} ${historicalSecret}`))
   assertNoSecrets(safe)
   assert.ok(safe instanceof AggregateError)

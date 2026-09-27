@@ -86,7 +86,7 @@ async function decision(f: Br1002Runtime, args: ReviewArgs) {
   const host = (await readCurrentExecutions(f.runs, f.f.run.id)).find((e) => e.agentId === job.reviewerAgentId)!
   const credential = await f.credentials.issueForReviewer(host.id)
   try {
-    const principal = await f.access.authenticate(credential.environment.variables.GRAPHQL_APP_MCP_TOKEN, 'worker')
+    const principal = await f.access.authenticate(credential.environment.variables.GRAPHQL_MCP_TOKEN, 'worker')
     const input = br1002Response(interaction)
     const option = interaction.responseOptions.find((item) => item.optionId === input.optionId)!
     // This is the real decision repository and SQL worker authority, not an

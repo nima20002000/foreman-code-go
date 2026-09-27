@@ -32,7 +32,7 @@ test('allowlist excludes ambient database, code injection, web secrets and rollo
   const forbidden = ['DATABASE_URL', 'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGOPTIONS',
     'PGSERVICE', 'PGSERVICEFILE', 'PGPASSFILE', 'PGDATA', 'NODE_OPTIONS', 'GRAPHQL_API_ENV_FILE',
     'GRAPHQL_OPENCODE_PARITY_QUALIFIED', 'GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER', 'VITE_PRIVATE_KEY',
-    'HTTP_PROXY', 'HTTPS_PROXY', 'GRAPHQL_APP_MCP_TOKEN', 'GRAPHQL_OPERATOR_MCP_TOKEN']
+    'HTTP_PROXY', 'HTTPS_PROXY', 'GRAPHQL_MCP_TOKEN', 'GRAPHQL_APP_MCP_TOKEN', 'GRAPHQL_OPERATOR_MCP_TOKEN']
   const input = Object.fromEntries(forbidden.map((key) => [key, 'forbidden-sentinel']))
   input.PATH = '/bin'; input.HOME = '/home/local'; input.OPENAI_API_KEY = 'test-only-provider-sentinel'
   const result = environment(input)

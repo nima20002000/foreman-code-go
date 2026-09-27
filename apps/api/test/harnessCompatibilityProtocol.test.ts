@@ -49,7 +49,7 @@ describe('model-free command and schema diagnostics', () => {
   })
   it('removes real credentials, config overrides and executable preload hooks', () => {
     const environment = diagnosticEnvironment('/isolated', {
-      PATH: '/bin', HOME: '/real/home', OPENAI_API_KEY: 'secret', GRAPHQL_APP_MCP_TOKEN: 'secret',
+      PATH: '/bin', HOME: '/real/home', OPENAI_API_KEY: 'secret', GRAPHQL_MCP_TOKEN: 'secret',
       BETTER_AUTH_SECRET: 'secret', NODE_OPTIONS: '--require malicious', OPENCODE_CONFIG: '/private/config',
       DATABASE_URL: 'postgresql://secret', OPENCODE_CONFIG_CONTENT: '{"plugin":["external"]}',
     })

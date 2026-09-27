@@ -9,8 +9,8 @@ function openCodeReviewer(): HarnessConfiguration {
   return { harness: 'opencode', model: 'test-model', variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false,
     advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'graphql_routed', permissionRules: [
       { permission: '*', pattern: '*', effect: 'deny' },
-      { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
-      { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
+      { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' },
+      { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' },
     ] } }
 }
 function fixture() {
@@ -130,7 +130,7 @@ describe('current workflow approval authority', () => {
     expect(() => bootstrap(codex)).toThrowError(expect.objectContaining({ code: 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED' }))
     expect(() => bootstrap({ ...codex, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
       approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' } })).not.toThrow()
-    for (const extra of [[], [{ permission: 'graphql-app_*', pattern: '*', effect: 'deny' as const }]]) {
+    for (const extra of [[], [{ permission: 'graphql_*', pattern: '*', effect: 'deny' as const }]]) {
       const reviewer = openCodeReviewer()
       if (reviewer.harness !== 'opencode') throw new Error('OpenCode reviewer fixture required')
       const configuration: HarnessConfiguration = { ...reviewer, advanced: { ...reviewer.advanced!,

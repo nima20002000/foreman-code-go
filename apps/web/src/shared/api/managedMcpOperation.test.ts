@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { HarnessMcpPlan } from '@graphql/contracts/management'
 import { managedMcpFailed, managedMcpSucceeded, reserveManagedMcpOperation } from './managedMcpOperation'
-const input = { harness: 'codex' as const, preset: 'operator' as const, installed: true,
+const input = { harness: 'codex' as const, preset: 'graphql' as const, installed: true,
   commandId: 'original-command-identity', expectedRevision: `sha256:${'a'.repeat(64)}` }
 const plan = { id: 'original-plan', harness: 'codex', status: 'pending', error: 'Another change is busy.' } as HarnessMcpPlan
 

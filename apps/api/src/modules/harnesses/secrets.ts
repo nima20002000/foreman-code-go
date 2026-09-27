@@ -2,7 +2,7 @@
 export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...source, NO_COLOR: '1' }
   for (const key of Object.keys(environment)) {
-    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_')
+    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_') || key === 'GRAPHQL_MCP_TOKEN'
       || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') delete environment[key]
   }
   return environment

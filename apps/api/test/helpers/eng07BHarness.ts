@@ -118,7 +118,7 @@ export async function scenarioHarness(scenario: Scenario) {
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     async function connect(token: string) {
       const client = new Client({ name: 'eng07-b-scenarios', version: '1' }); clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), {
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
         authProvider: { token: async () => token },
       }))
       return client

@@ -29,7 +29,7 @@ beforeEach(async () => {
   manager = new ReviewManager()
   chat = new OperatorChatService(repository, new PostgresOperatorRepository(pool), () => manager, '/tmp/operator-history', {
     current: (id) => access.currentOperator(id), assertConfiguration() {},
-    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {},
   })
 }, 30_000)

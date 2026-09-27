@@ -129,7 +129,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
     const access = new PostgresAccessService(f.db.pool)
     const original = f.provider.createSession.bind(f.provider)
     vi.spyOn(f.provider, 'createSession').mockImplementation(async (input) => {
-      const token = input.environment?.variables.GRAPHQL_APP_MCP_TOKEN
+      const token = input.environment?.variables.GRAPHQL_MCP_TOKEN
       if (token) {
         await expect(access.authenticate(token, 'worker')).resolves.toMatchObject({ audience: 'worker' })
         tokens.push(token)

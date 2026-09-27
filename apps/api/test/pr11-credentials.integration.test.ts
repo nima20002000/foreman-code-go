@@ -15,7 +15,7 @@ import { PostgresInteractionRepository } from '../src/modules/interactions/postg
 import { seedOrchestratorApproval } from './helpers/seedOrchestratorApproval.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
-const token = (credential: IssuedWorkerCredential) => credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!
+const token = (credential: IssuedWorkerCredential) => credential.environment.variables.GRAPHQL_MCP_TOKEN!
 
 async function database(perform: (pool: pg.Pool) => Promise<void>) {
   const schema = `pr11_${randomUUID().replaceAll('-', '')}`

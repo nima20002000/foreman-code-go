@@ -56,7 +56,7 @@ test('parity uses the same scoped principal, checks read/write denials and revok
     assert.deepEqual(result, { comparisons: 3, deniedTransports: 2, deniedOperations: 4, mutationReplayed: true })
     assert.equal(workspace.revision, 1)
     assert.deepEqual(revoked, ['principal-0', 'principal-1'])
-    assert.deepEqual(transports, ['/mcp/operator', '/mcp/operator'])
+    assert.deepEqual(transports, ['/mcp', '/mcp'])
     assert.deepEqual(issued[0].input.grants[0].scope, { workspaceIds: ['ws-demo'] })
     assert.equal(issued[0].input.grants[0].actions.includes('runs:start'), false)
     assert.equal(commands.some((command) => command.name === 'run_start'), false)

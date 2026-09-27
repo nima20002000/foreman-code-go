@@ -7,7 +7,7 @@ import type { PostgresAccessService } from './postgres.js'
 import { lockWorkerExecution, requireActiveWorkerExecution } from './workerLifecycle.js'
 import { WORKER_BINDING_ELIGIBLE } from './workerEligibility.js'
 
-export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_APP_MCP_TOKEN'
+export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_MCP_TOKEN'
 export const DEFAULT_WORKER_CREDENTIAL_TTL_MS = 15 * 60 * 1000
 export const WORKER_CREDENTIAL_EXPIRY_MARGIN_MS = 30_000
 export const WORKER_CREDENTIAL_RENEWAL_WINDOW_MS = 60_000

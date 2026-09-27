@@ -1,5 +1,4 @@
-import { isWorkerLauncher, WORKER_TOKEN } from './workerMcpLauncher.js'
-import { isOperatorLauncher, OPERATOR_TOKEN } from './operatorMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, isAppLauncher } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
@@ -119,8 +118,7 @@ export interface CodexMcpConfigurationInspection {
   configured: {
     enabled: boolean; required: boolean; transport: 'stdio' | 'streamable_http' | 'unknown'
     url: string | null; bearerTokenEnvironmentVariable: string | null
-    automaticWorkerEndpoint?: boolean
-    automaticOperatorEndpoint?: boolean
+    automaticEndpoint?: boolean
     enabledTools: string[] | null; disabledTools: string[]
     defaultToolsApprovalMode: string | null; tools: JsonObject
   }
@@ -157,16 +155,16 @@ function instructions(input: NativeSessionStart): string | null {
 function credentialIdentity(input: NativeSessionStart): string {
   return canonical(input.environment ?? null)
 }
-function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = [], operator = false): NodeJS.ProcessEnv {
+function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
   for (const key of Object.keys(environment)) {
-    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_')
+    if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_') || key === APP_MCP_TOKEN
       || scopedNames.includes(key) || ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD'].includes(key)) delete environment[key]
   }
   if (input) {
     for (const [key, value] of Object.entries(input.variables)) {
-      const ownedOperatorCredential = operator && key === 'GRAPHQL_OPERATOR_MCP_TOKEN'
-      if (!ownedOperatorCredential && (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
+      // Operator and Worker credentials share GRAPHQL_MCP_TOKEN; the server resolves the role from the token.
+      if ((key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_')
         || ['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD'].includes(key))) {
         throw new HarnessExecutionError('CODEX_ENVIRONMENT_INVALID', 'An Agent environment cannot contain application-global secrets.')
       }
@@ -278,7 +276,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   constructor(
     private readonly binary: string,
     private readonly expectedVersion?: string,
-    private readonly appMcpServerName = 'graphql-app',
+    private readonly appMcpServerName = APP_MCP_SERVER_NAME,
     private readonly processRecovery?: NativeProcessRecovery,
   ) {}
 
@@ -677,8 +675,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return McpDetectionSchema.parse({
         harness: 'codex', serverName: this.appMcpServerName,
         state: value.configured.enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
-        credentialEnvironmentVariable: value.configured.bearerTokenEnvironmentVariable === 'GRAPHQL_APP_MCP_TOKEN'
-          ? 'GRAPHQL_APP_MCP_TOKEN' : null,
+        credentialEnvironmentVariable: value.configured.bearerTokenEnvironmentVariable === APP_MCP_TOKEN
+          ? APP_MCP_TOKEN : null,
         checkedAt,
         detail: 'CLI inspection proves configuration only; inspectNativeMcp reports runtime status.',
       })
@@ -868,7 +866,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     validateEnvironmentOwner(input)
     const harnessConfiguration = configuration(input)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
-    const environment = safeEnvironment(input.environment, [], input.kind === 'operator')
+    const environment = safeEnvironment(input.environment)
     const qualified = await qualifyCodex(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal)
     let scopedCredentialVariable: string | undefined
@@ -879,7 +877,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
     validateEnvironmentOwner(input, scopedCredentialVariable)
-    const scopedEnvironment = safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : [], input.kind === 'operator')
+    const scopedEnvironment = safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : [])
     await qualifyNativeCodexModel(harnessConfiguration, qualified.binary, workingDirectory, scopedEnvironment, signal)
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified }
   }
@@ -908,9 +906,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           enabled: parsed.enabled !== false, required: parsed.required === true,
           transport: transport.type === 'streamable_http' || transport.type === 'stdio'
             ? transport.type : url ? 'streamable_http' : text(transport.command) ? 'stdio' : 'unknown',
-          url, bearerTokenEnvironmentVariable: isOperatorLauncher('codex', transport) ? OPERATOR_TOKEN : isWorkerLauncher('codex', transport) ? WORKER_TOKEN : text(transport.bearer_token_env_var) ?? null,
-          automaticOperatorEndpoint: isOperatorLauncher('codex', transport),
-          automaticWorkerEndpoint: this.appMcpServerName === 'graphql-app' && isWorkerLauncher('codex', transport),
+          url, bearerTokenEnvironmentVariable: isAppLauncher('codex', transport) ? APP_MCP_TOKEN : text(transport.bearer_token_env_var) ?? null,
+          automaticEndpoint: this.appMcpServerName === APP_MCP_SERVER_NAME && isAppLauncher('codex', transport),
           enabledTools: stringArray(parsed.enabled_tools) ?? null, disabledTools: stringArray(parsed.disabled_tools) ?? [],
           defaultToolsApprovalMode: text(parsed.default_tools_approval_mode) ?? null,
           tools: isObject(parsed.tools) ? parsed.tools : {},

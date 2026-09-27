@@ -47,8 +47,8 @@ export function validateReviewerBootstrap(
   // These final rules cannot be shadowed by a later wildcard deny.
   const tail = (rules ?? []).slice(-2)
   const allowed = new Set(tail.filter((rule) => rule.pattern === '*' && rule.effect === 'allow').map((rule) => rule.permission))
-  if (tail.length !== 2 || !allowed.has('graphql-app_interaction_get') || !allowed.has('graphql-app_interaction_respond')) {
+  if (tail.length !== 2 || !allowed.has('graphql_interaction_get') || !allowed.has('graphql_interaction_respond')) {
     throw new DomainError('APPROVAL_REVIEWER_APP_MCP_REQUIRED',
-      'The OpenCode Orchestrator must end its deny-default policy with explicit allow rules for graphql-app_interaction_get and graphql-app_interaction_respond so it can decide through App MCP without a human.', 409)
+      'The OpenCode Orchestrator must end its deny-default policy with explicit allow rules for graphql_interaction_get and graphql_interaction_respond so it can decide through GraphQL MCP without a human.', 409)
   }
 }

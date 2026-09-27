@@ -78,16 +78,21 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       }
       const reader = await f.access.issue({ name: 'Read approvals', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
         grants: [{ actions: ['interactions:read'], scope: { runIds: [f.run.id] } }] })
-      const operator = await connect('/mcp/operator', reader.token)
+      const operator = await connect('/mcp', reader.token)
       const denied = await f.credentials.issueForExecution(f.requester.id)
-      const worker = await connect('/mcp/tools', denied.environment.variables.GRAPHQL_APP_MCP_TOKEN!)
-      expect((await worker.listTools()).tools.map((tool) => tool.name)).not.toContain('interaction_respond')
-      expect((await operator.listTools()).tools.map((tool) => tool.name)).not.toContain('interaction_respond')
+      const worker = await connect('/mcp', denied.environment.variables.GRAPHQL_MCP_TOKEN!)
+      // Both see the one catalog; neither role may respond, and the stub never reaches the decision service.
+      for (const client of [worker, operator]) {
+        const refused = await client.callTool({ name: 'interaction_respond', arguments: br1002Response(f.interaction) })
+        expect(refused.isError).toBe(true)
+        expect(JSON.stringify(refused.content)).toContain('ROLE_NOT_ALLOWED')
+      }
+      expect(f.counts().responses).toBe(0)
       dispatch = f.native.reviewers.dispatchNext(f.reviewerId, 'current-mcp-proof')
       void dispatch.catch(() => undefined)
       await br1002At(cuts.started.promise, dispatch)
       const credential = await f.credentials.issueForReviewer(f.reviewer.id)
-      const reviewer = await connect('/mcp/tools', credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!)
+      const reviewer = await connect('/mcp', credential.environment.variables.GRAPHQL_MCP_TOKEN!)
       const input = br1002Response(f.interaction)
       const stale = await reviewer.callTool({ name: 'interaction_respond', arguments: { ...input, expectedRevision: 999 } })
       expect(stale.isError).toBe(true)

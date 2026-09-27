@@ -66,7 +66,7 @@ afterEach(async () => {
 
 it('renews the same scoped token after an expired two-hour approval wait', async () => {
   const issued = await credentials.issueForExecution(execution.id)
-  const token = issued.environment.variables.GRAPHQL_APP_MCP_TOKEN!
+  const token = issued.environment.variables.GRAPHQL_MCP_TOKEN!
   const before = await access.authenticate(token, 'worker')
   const tokenHash = (await pool.query('select token_hash from management_principals where id=$1', [issued.principalId])).rows[0].token_hash
   await pool.query(`update management_principals set expires_at=now()-interval '2 hours' where id=$1`, [issued.principalId])
@@ -135,7 +135,7 @@ it('issues and renews explicit reviewer credentials only after finalization and 
   await expect(credentials.issueForExecution(execution.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
   await pool.query('update approval_execution_state set active_elapsed_ms=active_timeout_ms where execution_id=$1', [execution.id])
   await expect(credentials.renewForExecution(execution.id, review)).resolves.toEqual(expect.any(String))
-  const principal = await access.authenticate(review.environment.variables.GRAPHQL_APP_MCP_TOKEN!, 'worker')
+  const principal = await access.authenticate(review.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')
   expect(principal.agentId).toBe(execution.agentId)
   await pool.query("update runs set record=record || $2::jsonb where id=$1", [execution.runId,
     JSON.stringify({ executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded' }, finishedAt: new Date().toISOString() })])
@@ -149,8 +149,8 @@ it('revokes a superseded token when a new process credential is prepared', async
   const fresh = await launch.prepare({ executionId: execution.id, harness: 'opencode', workingDirectory: '/project' })
   expect(fresh.credential.principalId).not.toBe(issued.principalId)
   expect(fresh.credential.environment.agentId).toBe(issued.environment.agentId)
-  await expect(access.authenticate(issued.environment.variables.GRAPHQL_APP_MCP_TOKEN!, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-  expect((await access.authenticate(fresh.credential.environment.variables.GRAPHQL_APP_MCP_TOKEN!, 'worker')).id).toBe(fresh.credential.principalId)
+  await expect(access.authenticate(issued.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+  expect((await access.authenticate(fresh.credential.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')).id).toBe(fresh.credential.principalId)
 })
 
 it('finalizes at the durable finish time exactly once and prevents later resume', async () => {

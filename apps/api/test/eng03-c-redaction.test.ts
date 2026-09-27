@@ -47,7 +47,7 @@ describe('ENG-03 concurrent native event redaction', () => {
     const password = 'server-password-' + 'C'.repeat(48)
     const basic = Buffer.from(`opencode:${password}`).toString('base64')
     const server = new ManagedOpenCodeServer({ binary: '/bin/false', workingDirectory: '/tmp',
-      ownerAgentId: 'test-agent', environment: { agentId: 'test-agent', variables: { GRAPHQL_APP_MCP_TOKEN: current } } })
+      ownerAgentId: 'test-agent', environment: { agentId: 'test-agent', variables: { GRAPHQL_MCP_TOKEN: current } } })
     Reflect.set(server, 'password', password)
     const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'test-agent' })
     const knownSecrets = Reflect.get(manager, 'knownSecrets') as Set<string>
@@ -70,7 +70,7 @@ describe('ENG-03 concurrent native event redaction', () => {
     const current = 'current-token-' + 'A'.repeat(64)
     const previous = 'previous-token-' + 'B'.repeat(64)
     const server = new ManagedOpenCodeServer({ binary: '/bin/false', workingDirectory: '/tmp',
-      ownerAgentId: 'test-agent', environment: { agentId: 'test-agent', variables: { GRAPHQL_APP_MCP_TOKEN: current } } })
+      ownerAgentId: 'test-agent', environment: { agentId: 'test-agent', variables: { GRAPHQL_MCP_TOKEN: current } } })
     const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'test-agent' })
     ;(Reflect.get(manager, 'knownSecrets') as Set<string>).add(previous)
     const payload = { messages: Array.from({ length: 10_000 }, (_, index) => ({

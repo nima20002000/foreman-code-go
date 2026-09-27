@@ -20,8 +20,8 @@ function authorityFixture() {
     harness: c.agentId === entry.agentId ? { ...configuration(), advanced: {
       ...advanced(), permissionRules: [
         { permission: '*', pattern: '*', effect: 'deny' },
-        { permission: 'graphql-app_interaction_get', pattern: '*', effect: 'allow' },
-        { permission: 'graphql-app_interaction_respond', pattern: '*', effect: 'allow' },
+        { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' },
+        { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' },
       ],
     } } : configuration(),
   }))

@@ -27,7 +27,7 @@ export function openCodeMcpInspectorAdapter(manager: OpenCodeMcpConfigurationIns
         ...common,
         entry: {
           name: result.serverName,
-          automaticWorkerEndpoint: result.automaticWorkerEndpoint === true,
+          automaticEndpoint: result.automaticEndpoint === true,
           transport: result.transport ?? 'unknown',
           ...(result.endpoint ? { endpoint: result.endpoint } : {}),
           enabled: result.nativeStatus !== 'disabled',

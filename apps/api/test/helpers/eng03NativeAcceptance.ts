@@ -237,7 +237,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       requireAuthorization(principal, 'runs:stop', { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id })
     }
     const livePool = pool
-    const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp/tools'
+    const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp'
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)

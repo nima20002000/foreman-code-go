@@ -60,7 +60,7 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'plugin-test', version: '1' }); clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp/operator', address), { authProvider: { token: async () => token } }))
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return client
     }
     const allowed = await connect(reader.token)

@@ -50,7 +50,7 @@ async function http(method: string, route: string, body?: unknown) {
   return { status: response.status, body: json }
 }
 async function rpc(name: string, args: unknown): Promise<{ failed: boolean; value: unknown }> {
-  const response = await fetch(new URL('/mcp/operator', origin), { method: 'POST', signal: AbortSignal.timeout(30000),
+  const response = await fetch(new URL('/mcp', origin), { method: 'POST', signal: AbortSignal.timeout(30000),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name, arguments: args } }) })
   const text = await response.text()

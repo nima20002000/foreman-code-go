@@ -11,9 +11,8 @@ import { localhostHostValidation, localhostOriginValidation } from '@modelcontex
 import type pg from 'pg'
 import { z } from 'zod'
 
-import { registerAppMcp } from './mcp/app/transport.js'
 import type { AppMcpServices } from './mcp/app/types.js'
-import { registerOperatorMcp } from './mcp/operator/transport.js'
+import { registerGraphqlMcp } from './mcp/unified/transport.js'
 import type { OperatorServices } from './mcp/operator/types.js'
 import { registerOperatorHttpSecurity } from './modules/access/http.js'
 import { registerBrowserAuthRoutes } from './modules/browser-auth/routes.js'
@@ -143,10 +142,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator), options.operator?.services)
-  if (options.operator) registerOperatorMcp(app, options.operator.access, {
-    ...options.operator.services, workerToolsMcpImplemented: Boolean(options.appMcp),
+  if (options.operator || options.appMcp) registerGraphqlMcp(app, {
+    access: (options.operator?.access ?? options.appMcp?.access)!,
+    ...(options.operator ? { operator: { ...options.operator.services, workerToolsMcpImplemented: Boolean(options.appMcp) } } : {}),
+    ...(options.appMcp ? { interactions: options.appMcp.interactions } : {}),
   })
-  if (options.appMcp) registerAppMcp(app, options.appMcp)
 
   app.setErrorHandler(async (error, request, reply) => {
     const domain = error instanceof DomainError
@@ -157,10 +157,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
           })
         : new DomainError('INTERNAL_ERROR', 'The API could not complete the request.', 500)
     if (domain.status >= 500) request.log.error({ err: error }, domain.message)
+    const mcpRequest = request.url.split('?')[0] === '/mcp'
     if (options.operator && (domain.status === 401 || domain.status === 403)
-      && (request.url.startsWith('/api/') || request.url.startsWith('/mcp/'))) {
+      && (request.url.startsWith('/api/') || mcpRequest)) {
       await options.operator.services.commands.recordDenied(
-        request.operatorPrincipal?.id, request.url.startsWith('/mcp/') ? 'mcp' : 'http',
+        request.operatorPrincipal?.id, mcpRequest ? 'mcp' : 'http',
         domain.code, request.url.split('?')[0] ?? request.url,
       ).catch((auditError: unknown) => request.log.error({ err: auditError }, 'management denial audit failed'))
     }

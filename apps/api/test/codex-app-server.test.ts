@@ -1,4 +1,4 @@
-import { workerLauncherConnection } from '../src/modules/harnesses/workerMcpLauncher.js'
+import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
@@ -78,11 +78,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   })
 
   it('recognizes the managed worker launcher and permits only its scoped execution credential', async () => {
-    const entry = nativeConnection('codex', workerLauncherConnection())
+    const entry = nativeConnection('codex', appLauncherConnection())
     await json('mcp.json', { enabled: true, transport: { ...entry, type: 'stdio' } })
     const inspected = await manager.inspectMcpConfiguration(f.directory)
-    assert.equal(inspected.configured.automaticWorkerEndpoint, true)
-    assert.equal(inspected.configured.bearerTokenEnvironmentVariable, 'GRAPHQL_APP_MCP_TOKEN')
+    assert.equal(inspected.configured.automaticEndpoint, true)
+    assert.equal(inspected.configured.bearerTokenEnvironmentVariable, 'GRAPHQL_MCP_TOKEN')
     const session = await manager.createSession(source)
     assert.equal(session.harness, 'codex')
     assert(session.nativeSessionId)
@@ -130,7 +130,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
       await assertCode(manager.attachSession(session, changed), 'CODEX_SESSION_CONFIGURATION_MISMATCH')
     }
     const changed = structuredClone(source)
-    changed.environment = { agentId: 'agent-a', variables: { ...changed.environment!.variables, GRAPHQL_APP_MCP_TOKEN: 'new-token' } }
+    changed.environment = { agentId: 'agent-a', variables: { ...changed.environment!.variables, GRAPHQL_MCP_TOKEN: 'new-token' } }
     await assertCode(manager.attachSession(session, changed), 'CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED')
     assert.equal((await wire('thread/read')).length, 0)
   })
@@ -468,16 +468,16 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   })
 
   it('F25: native approval_mode and unordered tool sets normalize semantically', async () => {
-    codex().advanced!.mcpServers = { 'graphql-app': {
+    codex().advanced!.mcpServers = { 'graphql': {
       enabled: true, required: true, enabledTools: ['a', 'b'], disabledTools: ['c', 'd'], defaultToolsApprovalMode: 'prompt',
       tools: { b: { approvalMode: 'writes', enabled: false }, a: { approvalMode: 'prompt' } },
     } }
     await json('mcp.json', { enabled: true, required: true, enabled_tools: ['b', 'a'], disabled_tools: ['d', 'c'],
       default_tools_approval_mode: 'prompt', tools: { a: { approval_mode: 'prompt', enabled: true }, b: { enabled: false, approval_mode: 'writes' } },
-      transport: { type: 'streamable_http', bearer_token_env_var: 'GRAPHQL_APP_MCP_TOKEN' } })
+      transport: { type: 'streamable_http', bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' } })
     await manager.createSession(source)
     const changed = input(f.directory, 'agent-b'); codex(changed).advanced = structuredClone(codex().advanced!)
-    codex(changed).advanced!.mcpServers['graphql-app']!.tools!.a!.approvalMode = 'auto'
+    codex(changed).advanced!.mcpServers['graphql']!.tools!.a!.approvalMode = 'auto'
     await assertCode(manager.createSession(changed), 'CODEX_MCP_POLICY_MISMATCH')
   })
 
@@ -543,7 +543,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await unflag('no-mcp')
     await assertCode(manager.refreshProcessEnvironment(session, { agentId: 'agent-a', variables: {} }), 'CODEX_SCOPED_ENVIRONMENT_REQUIRED')
     assert.equal((await wire('thread/resume')).length, 0)
-    await manager.refreshProcessEnvironment(session, { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_APP_MCP_TOKEN: 'new' } })
+    await manager.refreshProcessEnvironment(session, { agentId: 'agent-a', variables: { TEST_AGENT_ID: 'agent-a', GRAPHQL_MCP_TOKEN: 'new' } })
     assert.equal((await wire('thread/resume')).length, 1)
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'refreshed' }))
   })

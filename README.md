@@ -16,9 +16,9 @@ uses LangGraph to coordinate native Codex and OpenCode headless sessions.
 See [`AGENTS.md`](./AGENTS.md) for state ownership and scope rules.
 
 The authenticated local Operator Management MCP is documented in
-[`docs/operator-mcp-v1.md`](./docs/operator-mcp-v1.md), with board-agent and
-future Worker MCP access decisions in
-[`docs/adr/operator-and-worker-mcp-access.md`](./docs/adr/operator-and-worker-mcp-access.md).
+[`docs/operator-mcp-v1.md`](./docs/operator-mcp-v1.md). Operator chat and
+workflow agents share one role-scoped GraphQL MCP connection; see
+[`docs/graphql-mcp.md`](./docs/graphql-mcp.md).
 Workspace execution directories, immutable Run snapshots, and the boundary
 between start location and isolation are documented in
 [`docs/adr/workspace-execution-locations.md`](./docs/adr/workspace-execution-locations.md).

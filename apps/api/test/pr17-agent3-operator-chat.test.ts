@@ -56,7 +56,7 @@ function fixture() {
   repository.responseFailed = async () => { row.response_delivery = 'offered' }
   const authority: OperatorChatAuthority = {
     current: async () => current, assertConfiguration() {},
-    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp/operator', checkedAt: new Date().toISOString() }),
+    setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
     prepare: async () => { prepared++; return { agentId: configuration.operatorId, variables: {} } },
     release: async () => {},
   }
@@ -171,7 +171,7 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
     expect(f.row.active_request_id).toBeNull()
     expect(f.finishResults[0]?.outcome).toBe(terminal ? 'succeeded' : 'canceled')
     expect(f.prepared()).toBe(0) // No new delegated authority.
-    expect(f.manager.attachInputs[0]?.environment?.variables).toEqual({ GRAPHQL_OPERATOR_MCP_TOKEN: 'operator-cleanup-disabled' })
+    expect(f.manager.attachInputs[0]?.environment?.variables).toEqual({ GRAPHQL_MCP_TOKEN: 'operator-cleanup-disabled' })
     expect(f.manager.stoppedAutomatic).toBeGreaterThan(0)
     await expect(f.chat.send(f.row.id, { requestId: 'denied', content: 'New execution' }, f.owner)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     await f.chat.shutdown()

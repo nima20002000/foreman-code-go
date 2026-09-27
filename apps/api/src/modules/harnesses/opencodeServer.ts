@@ -1,5 +1,4 @@
-import { isWorkerLauncher } from './workerMcpLauncher.js'
-import { isOperatorLauncher } from './operatorMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, isAppLauncher } from './appMcpLauncher.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -97,8 +96,7 @@ export interface OpenCodeNativeSessionManagerOptions {
   credentialEnvironmentVariable?: string
 }
 export interface OpenCodeMcpInspection {
-  automaticWorkerEndpoint?: boolean
-  automaticOperatorEndpoint?: boolean
+  automaticEndpoint?: boolean
   cwd: string
   providerVersion: string
   serverName: string
@@ -849,7 +847,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (!environment && this.boundEnvironmentFingerprint && this.options.server.credentialEnvironmentFingerprint === this.boundEnvironmentFingerprint) return
     const selected = environment ?? { agentId: this.options.ownerAgentId, variables: {} }
     if (selected.agentId !== this.options.ownerAgentId) throw new HarnessExecutionError('OPENCODE_SESSION_OWNER_MISMATCH', 'The session credential belongs to another Agent.')
-    const credentialEnvironmentVariable = this.options.credentialEnvironmentVariable ?? 'GRAPHQL_APP_MCP_TOKEN'
+    const credentialEnvironmentVariable = this.options.credentialEnvironmentVariable ?? APP_MCP_TOKEN
     if (Object.keys(selected.variables).some((key) => key !== credentialEnvironmentVariable)
       || (credentialEnvironmentVariable in selected.variables && !selected.variables[credentialEnvironmentVariable])) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_ENV_UNSUPPORTED', 'Only the scoped App credential can be bound.')
@@ -1119,7 +1117,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     phase: 'configuration' | 'health' = 'health',
   ): Promise<OpenCodeMcpInspection> {
     const combined = this.signal(signal)
-    const name = this.options.appMcpServerName ?? 'graphql-app'
+    const name = this.options.appMcpServerName ?? APP_MCP_SERVER_NAME
     if (!this.options.server.inspectMcpConfiguration) {
       throw new HarnessExecutionError('OPENCODE_MCP_AUTH_EVIDENCE_UNAVAILABLE', 'This controller cannot prove the App Authorization environment reference.')
     }
@@ -1128,12 +1126,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (phase === 'configuration' || !proof) {
       return {
         cwd: directory, providerVersion: QUALIFIED_OPENCODE_VERSION, serverName: name,
-        ...(proof?.automaticWorkerEndpoint ? { automaticWorkerEndpoint: true } : {}),
-        ...(proof?.automaticOperatorEndpoint ? { automaticOperatorEndpoint: true } : {}),
+        ...(proof?.automaticEndpoint ? { automaticEndpoint: true } : {}),
         nativeStatus: !proof ? 'not_detected' : proof.enabled === false ? 'disabled' : 'status_unavailable',
         transport: proof?.transport ?? 'unknown', endpoint: proof?.endpoint ?? null,
         credentialEnvironmentVariable: proof?.credentialEnvironmentVariable ?? null,
-        endpointMatches: (proof?.automaticOperatorEndpoint || proof?.automaticWorkerEndpoint) ? true : expected && proof ? endpointMatches(proof.endpoint, expected) : null,
+        endpointMatches: proof?.automaticEndpoint ? true : expected && proof ? endpointMatches(proof.endpoint, expected) : null,
         baseConfigurationFilters: [], policyScope: 'base_configuration_only',
       }
     }
@@ -1148,12 +1145,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         : ['connected', 'disabled', 'failed', 'needs_auth', 'needs_client_registration'].includes(String(status))
           ? status as OpenCodeMcpInspection['nativeStatus'] : 'status_unavailable'
     const endpoint = typeof entry.url === 'string' ? entry.url : null
-    const automaticOperatorEndpoint = proof.automaticOperatorEndpoint === true && isOperatorLauncher('opencode', entry)
-    const automaticWorkerEndpoint = proof.automaticWorkerEndpoint === true && name === 'graphql-app' && isWorkerLauncher('opencode', entry)
-    const automaticEndpoint = automaticOperatorEndpoint || automaticWorkerEndpoint
+    const automaticEndpoint = proof.automaticEndpoint === true && name === APP_MCP_SERVER_NAME && isAppLauncher('opencode', entry)
     const matchesProof = (automaticEndpoint || (entry.type === 'remote' && entry.oauth === false
       && entry.url === proof.endpoint)) && (entry.enabled !== false) === (proof.enabled !== false)
-    return { cwd: directory, providerVersion: QUALIFIED_OPENCODE_VERSION, serverName: name, nativeStatus, endpoint, automaticOperatorEndpoint, automaticWorkerEndpoint,
+    return { cwd: directory, providerVersion: QUALIFIED_OPENCODE_VERSION, serverName: name, nativeStatus, endpoint, automaticEndpoint,
       transport: automaticEndpoint ? 'stdio' : entry.type === 'remote' ? 'streamable-http' : 'unknown',
       credentialEnvironmentVariable: matchesProof ? proof.credentialEnvironmentVariable ?? null : null,
       endpointMatches: automaticEndpoint ? true : expected ? endpointMatches(endpoint ?? undefined, expected) : null,
@@ -1163,13 +1158,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   async inspectMcp(signal?: AbortSignal): Promise<McpDetection> {
     const first = this.sessions.values().next().value as SessionState | undefined
-    const baseline = { harness: 'opencode' as const, serverName: this.options.appMcpServerName ?? 'graphql-app',
+    const baseline = { harness: 'opencode' as const, serverName: this.options.appMcpServerName ?? APP_MCP_SERVER_NAME,
       endpointMatches: null, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString() }
     if (!first) return { ...baseline, state: 'status_unavailable', detail: 'A runner working directory is required for native MCP inspection.' }
     try {
       const native = await this.inspectNativeMcp(first.directory, signal)
       const state: McpDetection['state'] = native.nativeStatus !== 'not_detected'
-        && (native.credentialEnvironmentVariable !== (this.options.credentialEnvironmentVariable ?? 'GRAPHQL_APP_MCP_TOKEN') || (native.transport !== 'streamable-http' && !native.automaticOperatorEndpoint && !native.automaticWorkerEndpoint))
+        && (native.credentialEnvironmentVariable !== (this.options.credentialEnvironmentVariable ?? APP_MCP_TOKEN) || (native.transport !== 'streamable-http' && !native.automaticEndpoint))
         ? 'misconfigured'
         : native.nativeStatus === 'not_detected' ? 'not_detected' : native.endpointMatches === false ? 'misconfigured'
           : native.nativeStatus === 'connected' ? 'connected' : native.nativeStatus === 'disabled' ? 'disabled'

@@ -212,7 +212,7 @@ export class CodexStdioTransport {
 
   private async receive(line: string): Promise<void> {
     let message: unknown
-    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_APP_MCP_TOKEN ?? '', this.environment.GRAPHQL_OPERATOR_MCP_TOKEN ?? '']) } catch {
+    try { message = redactKnownSecrets(JSON.parse(line), [this.environment.GRAPHQL_MCP_TOKEN ?? '']) } catch {
       this.onNotification('protocol/malformed', { reason: 'invalid_json' }); return
     }
     if (!isObject(message)) { this.onNotification('protocol/malformed', { reason: 'invalid_envelope' }); return }

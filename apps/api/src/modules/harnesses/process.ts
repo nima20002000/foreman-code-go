@@ -5,6 +5,7 @@ import { spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } fr
 
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
 import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
+import { APP_MCP_TOKEN } from './appMcpLauncher.js'
 
 const MAX_STDERR_LENGTH = 1_000_000
 export const PROCESS_SHUTDOWN_GRACE_MS = 1_000
@@ -29,13 +30,12 @@ export interface JsonlProcessResult {
   stderr: string
 }
 
-type ScopedCommandEnvironment = Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'> & { credentialAudience?: 'worker' | 'operator' }
+type ScopedCommandEnvironment = Pick<JsonlProcessOptions, 'beforeSpawn' | 'expectedAgentId'>
 
 type ProcessOptions = Pick<JsonlProcessOptions, 'binary' | 'args' | 'cwd' | 'stdin' | 'beforeSpawn' | 'expectedAgentId'> & {
   signal?: AbortSignal
   onSpawn?(process: ChildProcess): void
   environment?: NodeJS.ProcessEnv
-  credentialAudience?: 'worker' | 'operator'
   recovery?: NativeProcessRecovery
 }
 type ProcessExit = Pick<JsonlProcessResult, 'exitCode' | 'exitSignal'>
@@ -87,13 +87,11 @@ async function runOwnedProcess<T>(
       throw new Error('Child process environment belongs to another Agent.')
     }
     const entries = Object.entries(scopedEnvironment.variables)
-    const credentialName = options.credentialAudience === 'operator' ? 'GRAPHQL_OPERATOR_MCP_TOKEN' : 'GRAPHQL_APP_MCP_TOKEN'
-    if (entries.length !== 1 || entries[0]?.[0] !== credentialName || !entries[0][1]) {
-      throw new Error(options.credentialAudience === 'operator'
-        ? 'Only the scoped Operator MCP credential may be injected into this process.'
-        : 'Only the scoped GraphQL App MCP credential may be injected into an Agent process.')
+    // Operator and Worker credentials share one variable; the server resolves the role from the token.
+    if (entries.length !== 1 || entries[0]?.[0] !== APP_MCP_TOKEN || !entries[0][1]) {
+      throw new Error('Only the scoped GraphQL MCP credential may be injected into an Agent process.')
     }
-    childEnvironment[credentialName] = entries[0][1]
+    childEnvironment[APP_MCP_TOKEN] = entries[0][1]
     secrets.push(entries[0][1])
   }
   options.signal?.throwIfAborted()

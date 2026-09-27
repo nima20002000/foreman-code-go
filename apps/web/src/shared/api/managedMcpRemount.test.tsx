@@ -18,7 +18,7 @@ it('restores an uncertain original operation after leaving and returning to its 
   let fail!: (error: Error) => void
   vi.mocked(apiClient.request).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject }))
   const first = renderHook(() => useApplyManagedMcpChange('codex'), { wrapper })
-  act(() => first.result.current.start({ preset: 'operator', installed: true, expectedRevision: `sha256:${'1'.repeat(64)}` }))
+  act(() => first.result.current.start({ preset: 'graphql', installed: true, expectedRevision: `sha256:${'1'.repeat(64)}` }))
   await waitFor(() => expect(apiClient.request).toHaveBeenCalledTimes(1))
   const original = first.result.current.operation!.input
   first.unmount()
