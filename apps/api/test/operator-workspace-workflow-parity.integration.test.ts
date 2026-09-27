@@ -208,22 +208,38 @@ it.skipIf(process.env.RUN_WAVE25_POSTGRES_TESTS !== '1')('provides authenticated
     const renamedWorkflow = (await call('workflow_update', current.SavedManagedWorkflowCommandResultSchema, {
       workspaceId, workflowId, commandId: randomUUID(), expectedRevision: workflow.revision, name: 'Renamed workflow',
     })).value
+    const agentInput = { workspaceId, agentId: 'parity-agent', name: 'Coder', productRole: 'coder',
+      configuration: { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } }
+    // An Agent's GraphQL MCP tools stay within its role: Orchestrator-only tools are refused for a Coder.
+    const refusedTools = await client.callTool({ name: 'agent_create', arguments: { ...agentInput, commandId: randomUUID(), graphqlTools: ['interaction_respond'] } })
+    expect(refusedTools.isError).toBe(true)
+    expect(JSON.stringify(refusedTools.content)).toContain('GRAPHQL_TOOL_NOT_ALLOWED_FOR_ROLE')
     const agent = (await call('agent_create', c.AgentMutationResultSchema, {
-      workspaceId, agentId: 'parity-agent', commandId: randomUUID(), name: 'Coder', productRole: 'coder',
-      configuration: { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
+      ...agentInput, commandId: randomUUID(), graphqlTools: ['context_get'],
     })).value.agent
+    expect(agent.graphqlTools).toEqual(['context_get'])
+    expect((await pool.query<{ tools: unknown }>(`select record->'graphqlTools' as tools from agent_configuration_versions where id=$1`,
+      [agent.configurationVersionId])).rows[0]?.tools).toEqual(['context_get'])
     const location = await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })
     const saveInput = { workspaceId, workflowId, executionSemanticsVersion: 3, commandId: randomUUID(),
       expectedRevision: renamedWorkflow.revision, expectedWorkflowVersionId: null,
       expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId }, expectedLocationRevision: location.locationRevision,
-      graph: { ...renamedWorkflow.workflow, entryNodeId: 'parity-node', nodes: [{ id: 'parity-node', agentId: agent.id, name: 'Coder' }],
+      graph: { ...renamedWorkflow.workflow, entryNodeId: 'parity-node', nodes: [{ id: 'parity-node', agentId: agent.id, name: 'Coder',
+        graphqlTools: { add: ['interaction_list'], remove: [] } }],
         edges: [], approval: { handler: 'user' }, executionCondition: { kind: 'manual', description: 'Operator managed' },
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 5 } } }
+    const outsideRole = structuredClone(saveInput)
+    outsideRole.commandId = randomUUID()
+    outsideRole.graph.nodes[0]!.graphqlTools = { add: ['interaction_respond' as 'interaction_list'], remove: [] }
+    const outsideSave = await client.callTool({ name: 'workflow_save_v3', arguments: outsideRole })
+    expect(outsideSave.isError).toBe(true)
+    expect(JSON.stringify(outsideSave.content)).toContain('outside its Agent role: interaction_respond')
     const saved = await call('workflow_save_v3', current.CurrentWorkflowSaveResultSchema, saveInput)
     expect((await call('workflow_save_v3', current.CurrentWorkflowSaveResultSchema, saveInput)).replayed).toBe(true)
     const exact = await call('workflow_saved_get_v3', current.CurrentWorkflowReadResultSchema, { workspaceId, workflowId,
       workflowVersionId: saved.value.currentVersionId })
     expect(exact.version).toEqual(saved.value.version)
+    expect(exact.version.definition.nodes[0]?.graphqlTools).toEqual({ add: ['interaction_list'], remove: [] })
     const readback = await call('workflow_get', current.SavedManagedWorkflowSchema, { workspaceId, workflowId })
     expect(readback.workflow.name).toBe('Renamed workflow')
     expect(readback.workflow.executionPolicy?.maxNodeExecutions).toBe(5)

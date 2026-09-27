@@ -18,7 +18,7 @@ function managedAgent(row: AgentRow) {
       harness: harness.harness, harnessConfiguration: harness, model: harness.model,
       effort: projectHarnessEffort(harness),
       fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
-      prompt: configuration.prompt, assignedSkills: configuration.assignedSkills })
+      prompt: configuration.prompt, assignedSkills: configuration.assignedSkills, graphqlTools: configuration.graphqlTools })
   }
   return { agent, metadataRevision: Number(row.metadata_revision), archivedAt: row.archived_at?.toISOString() ?? null }
 }

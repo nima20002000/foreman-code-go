@@ -6,6 +6,10 @@ import {
   RespondToInteractionRequestSchema,
   RespondToInteractionResponseSchema,
   HarnessExecutionSchema,
+  GraphqlToolDefaultsSchema,
+  GraphqlToolOverrideSchema,
+  effectiveGraphqlTools,
+  type GraphqlAgentTool,
 } from '@graphql/contracts'
 import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { resolveImmutableApprovalRoute } from '../workflows/approvalRoutes.js'
@@ -41,12 +45,14 @@ export function decodeInteractionCursor(cursor: string | undefined): string | un
   }
 }
 
+export interface WorkerToolAccess { role: 'orchestrator' | 'coder'; tools: GraphqlAgentTool[] }
+
 export interface AppInteractionService {
   context(principal: ManagementPrincipal): Promise<unknown>
   canRead(principal: ManagementPrincipal): Promise<boolean>
   canRespond(principal: ManagementPrincipal): Promise<boolean>
-  /** The bound Agent's product role. It decides which GraphQL MCP tools the credential may call. */
-  role(principal: ManagementPrincipal): Promise<'orchestrator' | 'coder'>
+  /** The bound Agent's product role and the GraphQL MCP tools enabled for its pinned configuration and node. */
+  toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess>
   list(principal: ManagementPrincipal, input: unknown): Promise<unknown>
   get(principal: ManagementPrincipal, interactionId: string): Promise<unknown>
   respond(principal: ManagementPrincipal, input: unknown): Promise<unknown>
@@ -71,7 +77,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
         agentId: principal.agentId!,
         expiresAt: principal.expiresAt,
       },
-      role: await this.role(principal),
+      ...await this.toolAccess(principal),
       scope,
       capabilities: {
         contextGet: true,
@@ -82,18 +88,27 @@ export class PostgresAppInteractionService implements AppInteractionService {
     }
   }
 
-  async role(principal: ManagementPrincipal): Promise<'orchestrator' | 'coder'> {
+  async toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess> {
     workerScope(principal)
-    // The Run pins the exact configuration version; its productRole is immutable for this credential.
-    const result = await this.pool.query<{ role: string | null }>(
-      `select c.record->>'productRole' as role from worker_credential_bindings b
+    // The Run pins the exact configuration version and workflow version; both are immutable for this credential.
+    const result = await this.pool.query<{ role: string | null; defaults: unknown; override: unknown }>(
+      `select c.record->>'productRole' as role, c.record->'graphqlTools' as defaults,
+         (select n->'graphqlTools' from jsonb_array_elements(v.record->'definition'->'nodes') n
+          where n->>'id'=e.workflow_node_id limit 1) as override
+       from worker_credential_bindings b
        join runs r on r.id=b.run_id
        join agent_configuration_versions c on c.id=(r.record->'agentConfigurationVersionIds'->>b.agent_id)
          and c.workspace_id=r.workspace_id and c.agent_id=b.agent_id
+       left join harness_executions e on e.id=b.execution_id and e.run_id=b.run_id and e.agent_id=b.agent_id
+       left join workflow_versions v on v.id=r.workflow_version_id and v.workspace_id=r.workspace_id
        where b.principal_id=$1 and b.agent_id=$2 and b.revoked_at is null`,
       [principal.id, principal.agentId],
     )
-    return result.rows[0]?.role === 'orchestrator' ? 'orchestrator' : 'coder'
+    const row = result.rows[0]
+    const role = row?.role === 'orchestrator' ? 'orchestrator' : 'coder'
+    const defaults = row?.defaults == null ? undefined : GraphqlToolDefaultsSchema.parse(row.defaults)
+    const override = row?.override == null ? undefined : GraphqlToolOverrideSchema.parse(row.override)
+    return { role, tools: effectiveGraphqlTools(role, defaults, override) }
   }
 
   async canRead(principal: ManagementPrincipal): Promise<boolean> {

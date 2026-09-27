@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js'
+import { GraphqlToolOverrideSchema } from '../graphqlMcpTools.js'
 
 /** Leaf schemas: do not import the root, management or saved DTO entrypoints.
  * Both public management DTOs and the execution validators use these same
@@ -92,6 +93,8 @@ export const CurrentWorkflowNodeSchema = z.object({
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
   width: z.number().finite().positive().optional(), height: z.number().finite().positive().optional(),
   join: z.object({ mode: z.literal('all') }).strict().optional(), choice: WorkflowChoiceSchema.optional(),
+  /** Changes the Agent's default GraphQL MCP tools for this node only. */
+  graphqlTools: GraphqlToolOverrideSchema.optional(),
 }).strict().superRefine((node, context) => {
   if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
 })

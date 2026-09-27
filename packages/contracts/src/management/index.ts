@@ -326,6 +326,7 @@ const AgentAddOperationSchema = z.object({
   configuration: ManagementHarnessConfigurationSchema.optional(),
   prompt: AgentSchema.shape.prompt,
   assignedSkills: AgentSchema.shape.assignedSkills,
+  graphqlTools: AgentSchema.shape.graphqlTools,
   description: z.string().max(10_000).optional(),
   role: z.string().trim().min(1).max(200).optional(),
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
@@ -347,6 +348,7 @@ const AgentConfigureOperationSchema = z.object({
   expectedAgentRevision: ExpectedRevisionSchema, configuration: ManagementHarnessConfigurationSchema,
   prompt: AgentSchema.shape.prompt,
   assignedSkills: AgentSchema.shape.assignedSkills,
+  graphqlTools: AgentSchema.shape.graphqlTools,
   description: z.string().max(10_000).nullable().optional(),
   role: z.string().trim().min(1).max(200).nullable().optional(),
 }).strict();

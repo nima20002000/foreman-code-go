@@ -1,0 +1,51 @@
+// @vitest-environment jsdom
+import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { defaultAgentForHarness } from '../agents/agentSettings'
+import { AgentSettingsForm } from './AgentSettingsForm'
+
+afterEach(cleanup)
+
+function open(role: 'orchestrator' | 'coder', extra: { graphqlTools?: ['context_get'] } = {}, nodeGraphqlTools?: { add: ['interaction_list'], remove: [] }) {
+  const agent = { ...defaultAgentForHarness('codex', 'agent', 'Agent', DEFAULT_HARNESS_DEFAULTS.codex, role), ...extra }
+  const onSave = vi.fn()
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><AgentSettingsForm agent={agent} nodeGraphqlTools={nodeGraphqlTools}
+    creationDefaults={DEFAULT_HARNESS_DEFAULTS} onClose={() => undefined} onSave={onSave} /></QueryClientProvider>)
+  fireEvent.click(screen.getByRole('button', { name: 'Advanced settings' }))
+  return { onSave, tools: screen.getByRole('group', { name: 'GraphQL MCP tools' }) }
+}
+
+describe('GraphQL MCP tools in Agent settings', () => {
+  it('lists only the role tools, never Operator tools', () => {
+    const coder = open('coder').tools
+    expect(within(coder).queryByText('Respond to approvals')).toBeNull()
+    expect(within(coder).queryByText(/workflow_create/)).toBeNull()
+    cleanup()
+    expect(within(open('orchestrator').tools).getByText('Respond to approvals')).toBeInTheDocument()
+  })
+
+  it('saves the Agent default and this node change separately', () => {
+    const { onSave, tools } = open('coder')
+    fireEvent.click(within(tools).getByLabelText('Read an interaction: Agent default'))
+    fireEvent.click(within(tools).getByLabelText('Read run context: Agent default'))
+    const group = within(tools).getByRole('group', { name: 'Read run context: this workflow' })
+    fireEvent.click(within(group).getByLabelText('On'))
+    expect(tools).toHaveTextContent('Enabled in this workflow: Read run context, List interactions.')
+    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    expect(onSave.mock.calls[0]![0].graphqlTools).toEqual(['interaction_list'])
+    expect(onSave.mock.calls[0]![3]).toEqual({ add: ['context_get'], remove: [] })
+  })
+
+  it('drops a node change that the new default already matches', () => {
+    const { onSave, tools } = open('coder', { graphqlTools: ['context_get'] }, { add: ['interaction_list'], remove: [] })
+    expect(within(within(tools).getByRole('group', { name: 'List interactions: this workflow' })).getByLabelText('On')).toBeChecked()
+    fireEvent.click(within(tools).getByLabelText('List interactions: Agent default'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    expect(onSave.mock.calls[0]![0].graphqlTools).toEqual(['context_get', 'interaction_list'])
+    expect(onSave.mock.calls[0]![3]).toBeUndefined()
+  })
+})

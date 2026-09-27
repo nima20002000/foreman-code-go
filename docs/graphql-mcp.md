@@ -13,7 +13,23 @@ variable, `GRAPHQL_MCP_TOKEN`. The bearer credential decides the caller's role:
 Each role lists only its own tools. A direct call to a tool outside the
 caller's role returns `ROLE_NOT_ALLOWED` with the allowed roles and records a
 denial audit; it never reaches the owning service. The server's `instructions`
-tell the model its role. `context_get` returns `role`.
+tell the model its role. `context_get` returns `role` and `tools`.
+
+### Per-Agent tools
+
+Within its role, each Agent can have fewer tools:
+
+- **Agent default** (`graphqlTools` on the Agent configuration, edited in the
+  Agent's Advanced settings or with `agent_create`/`agent_update`): the tools
+  it gets in every workflow. Absent means every tool its role allows.
+- **Workflow node** (`graphqlTools: { add, remove }` on the node): turns tools
+  on or off for that Agent in that workflow only.
+
+Enabled = (Agent default) + node `add` − node `remove`, never beyond the role.
+A Run pins both through its configuration and workflow version. Tools not
+enabled are not listed; a direct call returns `TOOL_NOT_ENABLED`. Operator-only
+tools can never be enabled for an Agent: saves naming a tool outside the role
+are rejected.
 
 The role is necessary, never sufficient. The caller's own tools are the existing
 implementations: Operator grants and scopes, Worker bindings, run scope and the

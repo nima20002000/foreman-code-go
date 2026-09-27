@@ -16,7 +16,8 @@ export function editorAgents(edit: NextDraftEdit): Agent[] {
   return [...new Map([...draftAgents(edit.context), ...Object.values(edit.agentEdits ?? {})].map((agent) => [agent.id, agent])).values()]
 }
 function content(agent: Agent) {
-  return { prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [], description: agent.description ?? null, role: agent.role ?? null }
+  return { prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [], description: agent.description ?? null, role: agent.role ?? null,
+    ...(agent.graphqlTools ? { graphqlTools: agent.graphqlTools } : {}) }
 }
 function configuration(agent: Agent) {
   if (!agent.harnessConfiguration) throw new Error('Reload the complete Agent configuration before editing it.')

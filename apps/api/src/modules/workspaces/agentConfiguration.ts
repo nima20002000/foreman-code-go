@@ -6,6 +6,7 @@ import {
   projectHarnessEffort,
   type Agent,
   type AgentConfigurationVersion,
+  graphqlToolsOutsideRole,
 } from '@graphql/contracts'
 import type pg from 'pg'
 
@@ -24,6 +25,13 @@ export function configurationInput(
   const harness = agent.harnessConfiguration?.harness ?? agent.harness ?? current?.harness.harness ?? 'codex'
   const prompt = agent.prompt ?? current?.prompt ?? {}
   const assignedSkills = agent.assignedSkills ?? current?.assignedSkills ?? []
+  const productRole = agent.productRole ?? current?.productRole
+  const graphqlTools = agent.graphqlTools ?? current?.graphqlTools
+  const outside = graphqlToolsOutsideRole(productRole ?? 'coder', graphqlTools ?? [])
+  if (outside.length) {
+    throw new DomainError('GRAPHQL_TOOL_NOT_ALLOWED_FOR_ROLE',
+      `The ${productRole === 'orchestrator' ? 'Orchestrator' : 'Coder'} role cannot use ${outside.join(', ')}.`, 400, { tools: outside })
+  }
   if (harness === 'opencode') {
     const suppliedHarness = agent.harnessConfiguration?.harness === 'opencode'
       ? agent.harnessConfiguration
@@ -34,9 +42,10 @@ export function configurationInput(
     return {
       workspaceId,
       agentId: agent.id,
-      productRole: agent.productRole ?? current?.productRole,
+      productRole,
       prompt,
       assignedSkills,
+      ...(graphqlTools ? { graphqlTools } : {}),
       harness: {
         harness,
         model: agent.model ?? currentHarness?.model ?? 'opencode-go/deepseek-v4.1-flash',
@@ -57,9 +66,10 @@ export function configurationInput(
   return {
     workspaceId,
     agentId: agent.id,
-    productRole: agent.productRole ?? current?.productRole,
+    productRole,
     prompt,
     assignedSkills,
+    ...(graphqlTools ? { graphqlTools } : {}),
     harness: {
       harness,
       model: agent.model ?? currentHarness?.model ?? 'gpt-5.6-luna',
@@ -172,6 +182,7 @@ export async function saveAgentConfiguration(
     configurationVersionId: configuration.id,
     prompt: configuration.prompt,
     assignedSkills: configuration.assignedSkills,
+    graphqlTools: configuration.graphqlTools,
     createdAt: previousAgent?.createdAt ?? parsed.createdAt ?? now,
     updatedAt: now,
   })

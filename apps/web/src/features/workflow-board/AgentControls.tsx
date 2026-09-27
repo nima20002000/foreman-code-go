@@ -1,5 +1,5 @@
 import { storeEditSnapshot } from '../graph/nextDraft/editIntentStorage'
-import type { Agent } from '@graphql/contracts'
+import type { Agent, GraphqlToolOverride } from '@graphql/contracts'
 import { useAgentDefaultsQuery } from '../../shared/api/query'
 import { Alert, Button, Icon } from '../../shared/ui/nocturne'
 import { defaultAgentForHarness } from '../agents/agentSettings'
@@ -8,14 +8,16 @@ import { AgentSettingsForm } from '../graph/AgentSettingsForm'
 import { changeDraftAgent, editorAgents } from '../graph/nextDraft/agentEdits'
 import type { NextDraftEdit } from '../graph/nextDraft/state'
 
-function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId?: string, prompt?: string) {
+function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId?: string, prompt?: string, graphqlTools?: GraphqlToolOverride) {
   useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => {
     if (current.instanceId !== instanceId) throw new Error('The draft instance changed. Reopen these settings.')
     const graph = current.graph
     const node = nodeId ? graph.nodes.find((item) => item.id === nodeId && item.agentId === agent.id) : undefined
     if (nodeId && !node) throw new Error('This Agent node is no longer in the draft.')
     const id = node?.id ?? `node-${crypto.randomUUID()}`
-    const nextNode = node ? { ...node, name: agent.name, initialPrompt: prompt } : {
+    const kept = node ? { ...node } : undefined
+    if (kept) delete kept.graphqlTools
+    const nextNode = kept ? { ...kept, name: agent.name, initialPrompt: prompt, ...(graphqlTools ? { graphqlTools } : {}) } : {
       id, agentId: agent.id, name: agent.name,
       position: { x: 80 + graph.nodes.length % 4 * 320, y: 100 + Math.floor(graph.nodes.length / 4) * 300 },
     }
@@ -51,7 +53,8 @@ export function BoardAgentSettings({ draftKey, edit, nodeId, close, remove }: { 
   const agent = node && editorAgents(edit).find((item) => item.id === node.agentId)
   if (!node || !agent) return <Alert tone="warning" title="This agent’s settings aren’t available." />
   // Re-key on the staged agent so a discard or reload never leaves stale values in the open form.
-  return <AgentSettingsForm key={`${edit.instanceId}:${node.id}:${JSON.stringify(agent)}:${node.initialPrompt ?? ''}`} embedded agent={agent} initialPrompt={node.initialPrompt}
+  return <AgentSettingsForm key={`${edit.instanceId}:${node.id}:${JSON.stringify(agent)}:${node.initialPrompt ?? ''}:${JSON.stringify(node.graphqlTools ?? null)}`} embedded agent={agent} initialPrompt={node.initialPrompt}
+    nodeGraphqlTools={node.graphqlTools}
     retainedForm={edit.agentForms?.[node.id]}
     onFormChange={(form) => useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => ({ ...current,
       agentForms: { ...current.agentForms, [node.id]: form } }))}
@@ -67,5 +70,5 @@ export function BoardAgentSettings({ draftKey, edit, nodeId, close, remove }: { 
     workspaceId={edit.graph.workspaceId} workflowApprovalHandler={edit.graph.approval?.handler}
     designatedOrchestrator={edit.graph.approval?.handler === 'orchestrator' && edit.graph.approval.designatedOrchestratorAgentId === agent.id}
     executionPolicy={edit.graph.executionPolicy} onClose={close} onRemove={remove}
-    onSave={(next, prompt) => installAgent(draftKey, edit.instanceId, next, node.id, prompt)} />
+    onSave={(next, prompt, _policy, graphqlTools) => installAgent(draftKey, edit.instanceId, next, node.id, prompt, graphqlTools)} />
 }
