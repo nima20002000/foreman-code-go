@@ -51,47 +51,32 @@ function agentCatalog(): Promise<ToolDefinition[]> {
   return appCatalog
 }
 
-function summary(description: string): string {
-  const sentence = description.split(/(?<=\.)\s/)[0] ?? description
-  // Every role receives every stub, so keep each one small.
-  return sentence.length > 90 ? `${sentence.slice(0, 89)}…` : sentence
+const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
+  method: z.literal('tools/call'), params: z.object({ name: z.string() }).passthrough() }).passthrough()
+
+/** Tools outside the caller's role are not listed. A direct call to one still gets an audited,
+ * explicit ROLE_NOT_ALLOWED instead of the SDK's generic unknown-tool response. */
+export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unknown) {
+  const call = ToolCall.safeParse(body)
+  if (!call.success) return undefined
+  const name = call.data.params.name
+  const allowed = toolRoles(name)
+  if (allowed.includes(context.role)) return undefined
+  const catalog = [...(context.operator ? await operatorCatalog(context.operator) : []), ...(context.interactions ? await agentCatalog() : [])]
+  if (!catalog.some((tool) => tool.name === name)) return undefined
+  await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`).catch(() => undefined)
+  return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('ROLE_NOT_ALLOWED',
+    `Your ${MCP_ROLE_LABELS[context.role]} role cannot use ${name}. Allowed roles: ${roleList(allowed)}.`, 403,
+    { role: context.role, allowedRoles: [...allowed] })) }
 }
 
-/** One server for every role. The caller's own tools are the existing, grant-checked
- * implementations; every other tool is listed as a stub that explains the role limit. */
+/** One server for every role. Each role lists only its own tools: the existing, grant-checked implementations. */
 export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promise<McpServer> {
   const server = new McpServer({ name: 'graphql', version: '1.0.0' }, { instructions: roleInstructions(context.role) })
-  const registered = new Set<string>()
-  const recorder = new Proxy(server, { get(target, key) {
-    if (key === 'registerTool') return (name: string, ...rest: unknown[]) => {
-      registered.add(name)
-      return (target.registerTool as (...args: unknown[]) => unknown).call(target, name, ...rest)
-    }
-    const value: unknown = Reflect.get(target, key, target)
-    return typeof value === 'function' ? value.bind(target) : value
-  } })
   if (context.role === 'operator') {
-    if (context.operator) registerOperatorTools(recorder, { principal: context.principal, services: context.operator })
+    if (context.operator) registerOperatorTools(server, { principal: context.principal, services: context.operator })
   } else if (context.interactions) {
-    await registerAppTools(recorder, { principal: context.principal, interactions: context.interactions })
-  }
-  const catalog = [...(context.operator ? await operatorCatalog(context.operator) : []), ...(context.interactions ? await agentCatalog() : [])]
-  for (const tool of catalog) {
-    const allowed = toolRoles(tool.name)
-    // A tool the role may use but this credential cannot keeps its existing unlisted/audited behavior.
-    if (registered.has(tool.name) || allowed.includes(context.role)) continue
-    registered.add(tool.name)
-    server.registerTool(tool.name, {
-      description: `${roleList(allowed)} only; your ${MCP_ROLE_LABELS[context.role]} role cannot call this tool. ${summary(tool.description)}`,
-      inputSchema: z.object({}).passthrough(),
-      // Describes the stub itself: it only returns a denial, so harnesses need not ask for approval.
-      annotations: { readOnlyHint: true },
-    }, async () => {
-      await context.operator?.commands.recordDenied(context.principal.id, 'mcp', tool.name, `mcp:${tool.name}`).catch(() => undefined)
-      return toolFailure(new DomainError('ROLE_NOT_ALLOWED',
-        `Your ${MCP_ROLE_LABELS[context.role]} role cannot use ${tool.name}. Allowed roles: ${roleList(allowed)}.`, 403,
-        { role: context.role, allowedRoles: [...allowed] }))
-    })
+    await registerAppTools(server, { principal: context.principal, interactions: context.interactions })
   }
   return server
 }

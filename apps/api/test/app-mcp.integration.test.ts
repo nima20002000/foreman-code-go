@@ -209,12 +209,11 @@ describe.each(['http', 'launcher'] as const)('App MCP real %s transport and Post
     }
     const orchestratorTools = await orchestrator.listTools()
     const wrongTools = await wrongReviewer.listTools()
-    // One catalog for every role; a Coder sees interaction_respond only as a role-limited stub.
-    for (const tools of [coderTools, orchestratorTools, wrongTools]) {
-      expect(tools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get', 'interaction_respond'])
+    // Each role lists only its own tools; a Coder never sees interaction_respond.
+    for (const tools of [coderTools, wrongTools]) {
+      expect(tools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get'])
     }
-    expect(coderTools.tools.find((tool) => tool.name === 'interaction_respond')?.description).toMatch(/^Orchestrator only; your Coder role/)
-    expect(wrongTools.tools.find((tool) => tool.name === 'interaction_respond')?.description).toMatch(/^Orchestrator only; your Coder role/)
+    expect(orchestratorTools.tools.map((tool) => tool.name)).toEqual(['context_get', 'interaction_list', 'interaction_get', 'interaction_respond'])
     expect(orchestratorTools.tools.every((tool) => tool.inputSchema.additionalProperties === false
       && tool.outputSchema?.additionalProperties === false)).toBe(true)
 

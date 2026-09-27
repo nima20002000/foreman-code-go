@@ -81,7 +81,7 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const operator = await connect('/mcp', reader.token)
       const denied = await f.credentials.issueForExecution(f.requester.id)
       const worker = await connect('/mcp', denied.environment.variables.GRAPHQL_MCP_TOKEN!)
-      // Both see the one catalog; neither role may respond, and the stub never reaches the decision service.
+      // Neither role lists interaction_respond; a direct call is refused before the decision service.
       for (const client of [worker, operator]) {
         const refused = await client.callTool({ name: 'interaction_respond', arguments: br1002Response(f.interaction) })
         expect(refused.isError).toBe(true)

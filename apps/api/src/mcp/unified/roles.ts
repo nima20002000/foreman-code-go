@@ -22,8 +22,6 @@ export function roleList(roles: readonly McpRole[]): string {
 }
 
 export function roleInstructions(role: McpRole): string {
-  const label = MCP_ROLE_LABELS[role]
-  return `GraphQL app tools. Your credential has the ${label} role. Every role sees the same tool names, `
-    + 'but a tool whose description starts with a role list (for example "Operator only") is not available to you: '
-    + 'calling it returns ROLE_NOT_ALLOWED. Use the other tools; they still check your grants and scope on every call.'
+  return `GraphQL app tools. Your credential has the ${MCP_ROLE_LABELS[role]} role, and you see only the tools that role may use. `
+    + 'Every call still checks your grants and scope.'
 }

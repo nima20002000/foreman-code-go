@@ -12,7 +12,7 @@ import { unavailableRunInspectionToolCall } from '../operator/tools/runInspectio
 import { unavailableManualRunToolCall } from '../operator/tools/runs.js'
 import type { OperatorServices } from '../operator/types.js'
 import type { McpRole } from './roles.js'
-import { createGraphqlMcpServer } from './server.js'
+import { createGraphqlMcpServer, roleDeniedToolCall } from './server.js'
 
 export const GRAPHQL_MCP_PATH = '/mcp'
 
@@ -44,9 +44,12 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableRunInspectionToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
-    const server = await createGraphqlMcpServer({ role, principal,
+    const context = { role, principal,
       ...(services.operator ? { operator: services.operator } : {}),
-      ...(services.interactions ? { interactions: services.interactions } : {}) })
+      ...(services.interactions ? { interactions: services.interactions } : {}) }
+    const denied = await roleDeniedToolCall(context, request.body)
+    if (denied) return reply.send(denied)
+    const server = await createGraphqlMcpServer(context)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     await server.connect(transport)

@@ -10,13 +10,10 @@ variable, `GRAPHQL_MCP_TOKEN`. The bearer credential decides the caller's role:
 | Worker, bound Agent's pinned `productRole` is `orchestrator` | Orchestrator | `context_get`, `interaction_list`, `interaction_get`, `interaction_respond` |
 | Worker, any other `productRole` | Coder | `context_get`, `interaction_list`, `interaction_get` |
 
-Every role lists the same tool names. A tool outside the caller's role is listed
-as a stub whose description starts with the allowed roles (for example
-`Operator only; your Coder role cannot call this tool.`). Calling it returns
-`ROLE_NOT_ALLOWED` with the allowed roles and records a denial audit; it never
-reaches the owning service. Stubs accept any arguments and are annotated
-read-only, so harnesses do not ask for approval before the denial. The server's
-`instructions` tell the model its role. `context_get` returns `role`.
+Each role lists only its own tools. A direct call to a tool outside the
+caller's role returns `ROLE_NOT_ALLOWED` with the allowed roles and records a
+denial audit; it never reaches the owning service. The server's `instructions`
+tell the model its role. `context_get` returns `role`.
 
 The role is necessary, never sufficient. The caller's own tools are the existing
 implementations: Operator grants and scopes, Worker bindings, run scope and the
@@ -56,6 +53,6 @@ owner-only. Restarting on another port refreshes routes without changing native
 configuration. A revoked or expired credential stays denied even if a route file
 survives an interrupted shutdown.
 
-Verification: `graphql-mcp-roles.test.ts` covers the shared catalog and
+Verification: `graphql-mcp-roles.test.ts` covers each role's tool list and
 `ROLE_NOT_ALLOWED` for each role; `graphql-mcp-launcher.integration.test.ts`
 routes two real instances through the launcher, including a port change.
