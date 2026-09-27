@@ -20,6 +20,10 @@
       "types": "./dist/operatorChat.d.ts",
       "import": "./dist/operatorChat.js"
     },
+    "./agent-chat": {
+      "types": "./dist/agentChat.d.ts",
+      "import": "./dist/agentChat.js"
+    },
     "./wave25": {
       "types": "./dist/wave25/index.d.ts",
       "import": "./dist/wave25/index.js"
