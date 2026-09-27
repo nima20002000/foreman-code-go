@@ -147,12 +147,16 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     request.operatorPrincipal = principal
     request.operatorAuthentication = headerToken ? 'bearer' : 'browser'
     if (!headerToken && localDevBrowserAccess) request.operatorLocalDev = true
+    // Agent-chat resources live in the validated query/body or persisted conversation,
+    // not these workspace-only route params. The shared chat service checks the full
+    // resource before reads/mutations; SSE repeats that check after authenticating.
+    const agentChat = /^\/api\/workspaces\/[^/]+\/agent-chat(?:\/|$)/.test(path)
     request.reauthorizeOperator = async () => {
       const current = await authenticate()
-      requireAuthorization(current, actionFor(request))
+      if (!agentChat) requireAuthorization(current, actionFor(request))
       return current
     }
-    if (!request.url.startsWith('/api/management/') && !request.url.startsWith('/api/auth/')) {
+    if (!agentChat && !request.url.startsWith('/api/management/') && !request.url.startsWith('/api/auth/')) {
       const params = request.params as Record<string, string | undefined>
       const resource = {
         ...(params.workspaceId ? { workspaceId: params.workspaceId } : {}),

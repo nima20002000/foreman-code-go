@@ -63,12 +63,16 @@ function approvalFixture() {
     repository as unknown as PostgresAgentChatRepository, {} as ConstructorParameters<typeof AgentChatService>[2],
     workflows as unknown as ConstructorParameters<typeof AgentChatService>[3], {} as ConstructorParameters<typeof AgentChatService>[4],
     () => { throw new Error('No native creation is allowed in this unit fixture.') }, '/unused-f5')
+  ;(service as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
+    execute: async (...args: unknown[]) => (args.at(-1) as () => Promise<unknown>)(), drain: async () => undefined,
+  }
   const internals = service as unknown as {
     runtimes: Map<string, { manager: AgentChatF5Native; session: AgentChatF5Native['session']; configuration: typeof configuration }>
     runTurn(id: string, turn: AgentChatTurn): Promise<void>
   }
   internals.runtimes.set(current.id, { manager: native, session: native.session, configuration })
-  const respond = (id: string) => service.respond(principal, workspaceId, current.id, id, 'approve-once')
+  const respond = (id: string) => service.respond(principal, workspaceId, current.id,
+    { requestId: `reply-${id}`, nativeRequestId: id, optionId: 'approve-once' })
   const read = () => service.readConversation(principal, workspaceId, current.id)
   const run = () => internals.runTurn(current.id, { requestId: 'active-f5', sequence: '1', intent: 'next_turn', delivery: 'accepted',
     messageId: 'message-active', createdAt: now.toISOString(), updatedAt: now.toISOString() })
@@ -92,6 +96,7 @@ function sqlFixture(openCount: number, prior?: ReturnType<typeof receipt>, state
     }
     if (sql.startsWith('update operator_conversations set revision=')) return { rows: [], rowCount: 1 }
     if (sql.startsWith('with open as (')) return { rows: stateRows, rowCount: stateRows.length }
+    if (sql.startsWith('with candidates as (')) return { rows: [{ messages: [], has_earlier: false }], rowCount: 1 }
     if (sql.startsWith('select record,sequence::text')) return { rows: [], rowCount: 0 }
     throw new Error(`Unexpected SQL in F5 fixture: ${sql}`)
   }
@@ -200,8 +205,10 @@ describe('F5 / A-R11 pending approval handoff', () => {
     const f = approvalFixture()
     const before = structuredClone(f.current)
     const denied: ManagementPrincipal = { ...principal, grants: [{ scope: {}, actions: ['agent_chat:read'] }] }
-    await assert.rejects(f.service.respond(denied, workspaceId, f.current.id, 'approval-a', 'approve-once'), { code: 'ACCESS_DENIED' })
-    await assert.rejects(f.service.respond(principal, workspaceId, f.current.id, 'approval-a', 'not-offered'),
+    await assert.rejects(f.service.respond(denied, workspaceId, f.current.id,
+      { requestId: 'denied-reply', nativeRequestId: 'approval-a', optionId: 'approve-once' }), { code: 'ACCESS_DENIED' })
+    await assert.rejects(f.service.respond(principal, workspaceId, f.current.id,
+      { requestId: 'invalid-reply', nativeRequestId: 'approval-a', optionId: 'not-offered' }),
       { code: 'AGENT_CHAT_INTERACTION_OPTION_INVALID' })
     assert.deepEqual(f.current, before)
     assert.deepEqual(f.native.responses, [])

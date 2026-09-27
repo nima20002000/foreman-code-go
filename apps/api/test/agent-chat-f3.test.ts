@@ -158,6 +158,9 @@ async function setup(options: { harness?: 'codex' | 'opencode'; ephemeral?: bool
   function service() {
     const value = new AgentChatService(pool, repository as unknown as PostgresAgentChatRepository,
       {} as PostgresOperatorConversationRepository, workflows, runs as unknown as ConstructorParameters<typeof AgentChatService>[4], factory, root)
+    ;(value as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
+      execute: async (...args: unknown[]) => (args.at(-1) as () => Promise<unknown>)(), drain: async () => undefined,
+    }
     cleanups.push(() => value.shutdown()); return value
   }
   const chat = service()
@@ -280,7 +283,7 @@ describe('F3 native availability and ownership', () => {
   it('A-R18: shutdown drains in-flight command persistence and prevents queued controls from dispatching', async () => {
     const f = await setup(), entered = deferred<void>(), gate = deferred<void>()
     f.repository.beforeCancel = () => { entered.resolve(); return gate.promise }
-    const cancel = f.chat.cancelQueued(principal, f.context.workspaceId, f.repository.row!.id, 'queued')
+    const cancel = f.chat.cancelQueued(principal, f.context.workspaceId, f.repository.row!.id, 'queued', { requestId: 'f3-cancel' })
     await entered.promise
     const controlGate = deferred<void>(), controlEntered = deferred<void>()
     const active = f.chat['control'](f.repository.row!.id, () => { controlEntered.resolve(); return controlGate.promise })

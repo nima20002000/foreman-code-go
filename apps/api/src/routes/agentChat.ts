@@ -11,6 +11,7 @@ import { OperatorHistoryCursorSchema } from '@graphql/contracts/operator-chat'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { AgentChatService } from '../modules/conversations/agentChat.js'
 import { DomainError } from '../modules/errors.js'
+import { agentChatStreamFrame } from '../modules/conversations/agentChatStream.js'
 import { createSseWriter } from './sseWriter.js'
 
 interface WorkspaceParams { workspaceId: string }
@@ -20,6 +21,7 @@ const HistoryQuerySchema = z.object({ before: OperatorHistoryCursorSchema.option
 const MAX_STREAMS = 64
 const MAX_OWNER_STREAMS = 16
 const MAX_BOOTSTRAP_EVENTS = 128
+const MAX_BOOTSTRAP_BYTES = 256 * 1024
 
 export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatService): void {
   const root = '/api/workspaces/:workspaceId/agent-chat'
@@ -36,17 +38,17 @@ export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatSer
   app.post<{ Params: ConversationParams; Body: unknown }>(`${root}/conversations/:conversationId/interrupt`, async (request) => {
     const input = InterruptAgentChatRequestSchema.parse(request.body)
     return AgentChatStateResponseSchema.parse({ state: await chat.interrupt(requirePrincipal(request), request.params.workspaceId,
-      request.params.conversationId, input.expectedNativeTurnId) })
+      request.params.conversationId, input) })
   })
   app.post<{ Params: TurnParams; Body: unknown }>(`${root}/conversations/:conversationId/turns/:turnRequestId/cancel`, async (request) => {
-    CancelQueuedAgentChatTurnRequestSchema.parse(request.body)
+    const input = CancelQueuedAgentChatTurnRequestSchema.parse(request.body)
     return AgentChatStateResponseSchema.parse({ state: await chat.cancelQueued(requirePrincipal(request), request.params.workspaceId,
-      request.params.conversationId, request.params.turnRequestId) })
+      request.params.conversationId, request.params.turnRequestId, input) })
   })
   app.post<{ Params: ConversationParams; Body: unknown }>(`${root}/conversations/:conversationId/responses`, async (request) => {
     const input = RespondAgentChatInteractionRequestSchema.parse(request.body)
     return AgentChatStateResponseSchema.parse({ state: await chat.respond(requirePrincipal(request), request.params.workspaceId,
-      request.params.conversationId, input.nativeRequestId, input.optionId) })
+      request.params.conversationId, input) })
   })
   app.get<{ Params: ConversationParams; Querystring: unknown }>(`${root}/conversations/:conversationId/history`, async (request) => {
     const query = HistoryQuerySchema.parse(request.query)
@@ -65,21 +67,28 @@ export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatSer
     let bootstrapping = true
     let heartbeat: NodeJS.Timeout | undefined
     let checking = false
+    let queuedBytes = 0
+    let unsubscribe = () => {}
     const queued: string[] = []
     const stop = () => {
       if (stopped) return
       stopped = true; writer.close(); clearInterval(heartbeat); unsubscribe(); streams.delete(stop)
+      queued.length = 0; queuedBytes = 0
+      reply.raw.removeListener('close', stop); reply.raw.removeListener('error', stop)
       if (reply.raw.headersSent && !reply.raw.writableEnded) reply.raw.end()
     }
     const writer = createSseWriter(reply.raw, () => !stopped && Date.parse(principal.expiresAt) > Date.now(), stop)
-    const frame = (value: AgentChatStreamEvent) => `event: ${value.type}\nid: ${value.id}\ndata: ${JSON.stringify(value)}\n\n`
     const event = (value: AgentChatStreamEvent) => {
-      if (!bootstrapping) { writer.write(frame(value)); return }
-      if (queued.length >= MAX_BOOTSTRAP_EVENTS) { stop(); return }
-      queued.push(frame(value))
+      if (stopped) return
+      const frame = agentChatStreamFrame(value)
+      if (!bootstrapping) { writer.write(frame); return }
+      const bytes = Buffer.byteLength(frame)
+      if (queued.length >= MAX_BOOTSTRAP_EVENTS || queuedBytes + bytes > MAX_BOOTSTRAP_BYTES) { stop(); return }
+      queued.push(frame); queuedBytes += bytes
     }
     // Subscribe before the snapshot so nothing between the read and the stream is lost.
-    const unsubscribe = chat.events.subscribe(id, event)
+    unsubscribe = chat.events.subscribe(id, event)
+    if (stopped) { unsubscribe(); return }
     streams.set(stop, principal.id)
     reply.raw.once('close', stop); reply.raw.once('error', stop)
     try {
@@ -90,11 +99,13 @@ export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatSer
       reply.hijack()
       reply.raw.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive', 'x-accel-buffering': 'no' })
-      // Every connection starts from an authoritative snapshot; deltas are never replayed.
-      writer.write(`event: snapshot\ndata: ${JSON.stringify({ id: 0, conversationId: id, type: 'snapshot', data: snapshot })}\n\n`)
+      // Bootstrap from a snapshot, or an explicit HTTP readback invalidation if
+      // the frame would be too large. Never truncate a result or replay deltas.
+      writer.write(agentChatStreamFrame({ id: 0, conversationId: id, type: 'snapshot', data: snapshot }))
       bootstrapping = false
-      for (const queuedFrame of queued) writer.write(queuedFrame)
-      queued.length = 0
+      for (const queuedFrame of queued) { if (stopped) break; writer.write(queuedFrame) }
+      queued.length = 0; queuedBytes = 0
+      if (stopped) return
       heartbeat = setInterval(() => {
         if (checking || stopped) return
         checking = true

@@ -99,6 +99,9 @@ export class F1Store {
         .slice(-recentLimit) : []
       return result([...open, ...recent].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)))
     }
+    if (sql.startsWith('with candidates as (')) {
+      return result([{ messages: [...this.messages.values()], has_earlier: false, next_cursor: null }])
+    }
     if (sql.startsWith('select request_id')) {
       if (sql.includes("delivery='queued'")) return result([...this.turns.values()].filter((entry) => entry.delivery === 'queued')
         .sort((a, b) => Number(b.intent === 'interrupt_and_send') - Number(a.intent === 'interrupt_and_send')
@@ -252,6 +255,9 @@ export function fixture(store = new F1Store()) {
     tasks: Map<string, Promise<void>>
     control<T>(id: string, operation: () => Promise<T>): Promise<T>
     pump(id: string): void
+  }
+  ;(service as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
+    execute: async (...args: unknown[]) => (args.at(-1) as () => Promise<unknown>)(), drain: async () => undefined,
   }
   internals.runtimes.set(store.row.id, { manager, session: manager.session, configuration })
   const request = (requestId: string, extra: Partial<SendAgentChatMessageRequest> = {}): SendAgentChatMessageRequest => ({

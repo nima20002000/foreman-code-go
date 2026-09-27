@@ -298,6 +298,7 @@ function sqlFixture() {
     if (sql.startsWith('insert into operator_conversation_messages')) messages.push({ record: JSON.parse(String(values[4])), sequence: '1' })
     if (sql.includes('set active_request_id=null')) { row.active_request_id = null; row.active_native_turn_id = null }
     if (sql.startsWith('select record,sequence::text from operator_conversation_messages')) return { rows: messages, rowCount: messages.length }
+    if (sql.startsWith('with candidates as (')) return { rows: [{ messages: messages.map((entry) => entry.record), has_earlier: false, next_cursor: null }], rowCount: 1 }
     if (sql.startsWith('select * from (')) return { rows: [], rowCount: 0 }
     return { rows: [], rowCount: 1 }
   }

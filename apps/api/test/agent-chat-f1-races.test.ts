@@ -89,7 +89,8 @@ describe('F1 A-R04: interrupts stay bound to the pre-admission turn', () => {
       }
       return row
     }
-    await assert.rejects(f.service.interrupt(f.principal, context.workspaceId, f.store.row.id, 'turn-A'), { code: 'AGENT_CHAT_TURN_NOT_ACTIVE' })
+    await assert.rejects(f.service.interrupt(f.principal, context.workspaceId, f.store.row.id,
+      { requestId: 'stale-interrupt', expectedNativeTurnId: 'turn-A' }), { code: 'AGENT_CHAT_TURN_NOT_ACTIVE' })
     assert.deepEqual(f.manager.cancels, [])
     assert.equal(f.store.turns.get('C')?.delivery, 'queued')
     assert.equal(f.store.row.cancel_requested, false)
@@ -103,7 +104,8 @@ describe('F1 A-R04: interrupts stay bound to the pre-admission turn', () => {
     f.repository.interrupt = async (...args) => {
       const target = await interrupt(...args); committed.resolve(); await resume.promise; return target
     }
-    const stopping = track(f.service.interrupt(f.principal, context.workspaceId, f.store.row.id, 'turn-A'))
+    const stopping = track(f.service.interrupt(f.principal, context.workspaceId, f.store.row.id,
+      { requestId: 'captured-interrupt', expectedNativeTurnId: 'turn-A' }))
     await committed.promise
     assert.equal(f.store.turns.get('queued')?.delivery, 'canceled')
     f.manager.holds.set('later', gate()); await f.send('later'); f.manager.finish('A')
@@ -138,7 +140,8 @@ describe('F1 A-R04: interrupts stay bound to the pre-admission turn', () => {
 
   it('rejects an expected plain-interrupt target on an idle conversation before any mutation', async () => {
     const f = setup()
-    await assert.rejects(f.service.interrupt(f.principal, context.workspaceId, f.store.row.id, 'turn-ended'), { code: 'AGENT_CHAT_TURN_NOT_ACTIVE' })
+    await assert.rejects(f.service.interrupt(f.principal, context.workspaceId, f.store.row.id,
+      { requestId: 'idle-interrupt', expectedNativeTurnId: 'turn-ended' }), { code: 'AGENT_CHAT_TURN_NOT_ACTIVE' })
     assert(!f.store.statements.some((entry) => entry.sql.startsWith('update ')))
     assert.deepEqual(f.manager.cancels, [])
   })
@@ -267,7 +270,7 @@ describe('F1 A-R14: queue-head cancellation and worker wakeups', () => {
       return claim(id, requestId)
     }
     f.manager.finish('A'); await selected.promise
-    await f.service.cancelQueued(f.principal, context.workspaceId, f.store.row.id, 'B')
+    await f.service.cancelQueued(f.principal, context.workspaceId, f.store.row.id, 'B', { requestId: 'cancel-B' })
     resume.resolve(); await f.idle()
     assert.deepEqual(f.manager.starts, ['A', 'C'])
     assert.equal(f.store.turns.get('B')?.delivery, 'canceled')

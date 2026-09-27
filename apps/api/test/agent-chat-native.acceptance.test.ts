@@ -9,6 +9,7 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
+import { readNativeSource } from './helpers/agentChatNativeSource.js'
 
 /**
  * Real installed Codex/OpenCode proof for the FEAT-15 native primitives that a live Run cannot
@@ -55,11 +56,14 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
         const sourceSession = await source.createSession(start(config, directory, 'source', false))
         expect(await turn(source, sourceSession, 'source', 'Remember the codeword KIWI. Reply OK.')).toMatch(/ok/i)
         const before = (await source.history(sourceSession)).events.length
+        const sourceBefore = await readNativeSource(sourceSession, directory, config.agentId)
         const fork = await forker.forkSession!(sourceSession, start(config, directory, 'fork', true))
         expect(fork.nativeSessionId).not.toBe(sourceSession.nativeSessionId)
         expect(await turn(forker, fork, 'fork', 'What codeword did I ask you to remember? One word.')).toMatch(/kiwi/i)
         // The source session is not written by the fork or the fork's turn.
         expect((await source.history(sourceSession)).events.length).toBe(before)
+        // Fresh storage observers on BOTH sides: same event counts cannot hide changed content/IDs.
+        expect(await readNativeSource(sourceSession, directory, config.agentId)).toBe(sourceBefore)
       } finally {
         await Promise.allSettled([source.dispose?.(), forker.dispose?.()])
         await rm(directory, { recursive: true, force: true })

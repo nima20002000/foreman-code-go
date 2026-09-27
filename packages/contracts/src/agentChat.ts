@@ -225,8 +225,11 @@ export const AgentChatHistoryPageSchema = z.object({
 }).strict();
 
 /**
- * GET .../conversations/:conversationId/events — SSE. First event is `snapshot` (full AgentChatState);
- * later events carry partial data and the client re-reads state on `state` or after reconnect.
+ * GET .../conversations/:conversationId/events — SSE. Normally the first event is `snapshot`
+ * (full AgentChatState). If its serialized payload exceeds the transport byte budget, the first
+ * event is `state` with { snapshotRequired: true }; read state via HTTP instead. Large live events
+ * use the same invalidation, never truncated approval/result content. Later events may carry
+ * partial data; the client re-reads state on `state` or after reconnect.
  */
 export const AgentChatStreamEventSchema = z.object({
   id: z.number().int().nonnegative(),

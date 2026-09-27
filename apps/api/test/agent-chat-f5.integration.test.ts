@@ -113,7 +113,7 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
       const readback = await f.mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query } })
       assert.equal(AgentChatStateSchema.parse(readback.structuredContent).pendingInteraction?.turn.nativeRequestId, 'approval-b')
       const second = await f.mcp.callTool({ name: 'agent_chat_respond', arguments: { workspaceId: f.workspaceId, conversationId: f.id,
-        nativeRequestId: 'approval-b', optionId: 'approve-once' } })
+        requestId: 'reply-b', nativeRequestId: 'approval-b', optionId: 'approve-once' } })
       assert.notEqual(second.isError, true)
       assert.equal(AgentChatStateSchema.parse((second.structuredContent as { state: unknown } | undefined)?.state)
         .pendingInteraction?.turn.nativeRequestId, 'approval-c')
@@ -188,7 +188,7 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
       for (const [index, turn] of queued.entries()) {
         if (index % 2) {
           const result = await f.mcp.callTool({ name: 'agent_chat_cancel_queued', arguments: { workspaceId: f.workspaceId,
-            conversationId: f.id, turnRequestId: turn.requestId } })
+            conversationId: f.id, turnRequestId: turn.requestId, requestId: `cancel-${turn.requestId}` } })
           assert.notEqual(result.isError, true)
         } else {
           const result = await f.app.inject({ method: 'POST', url: `${f.url}/conversations/${f.id}/turns/${turn.requestId}/cancel`,

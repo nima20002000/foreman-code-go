@@ -6,7 +6,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
-  AgentConfigurationVersionSchema, NativeHarnessEventSchema,
+  AgentConfigurationVersionSchema, CODEX_APPROVAL_OPTIONS_FIXTURE, NativeHarnessEventSchema,
   type ExecutionResult, type HarnessExecution, type NativeSessionReference,
 } from '@graphql/contracts'
 import { AgentChatHistoryPageSchema, AgentChatStateSchema, type AgentChatState, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
@@ -113,6 +113,7 @@ let codexNode: { id: string; agentId: string }
 let openCodeNode: { id: string; agentId: string }
 let runExecutions: HarnessExecution[] = []
 let runState = 'completed'
+let runSourceFixture: ReturnType<typeof makeCurrentWorkflowFixture>
 const runReads: string[] = []
 
 function makeService() {
@@ -125,7 +126,7 @@ function makeService() {
     // Read-only fake Run store for the Run-origin path. The service has no write port to it.
     getForWorkspace: async (_workspaceId: string, runId: string) => {
       runReads.push(runId)
-      return { ...fixture.run, id: runId, executionState: runState, workflowVersionId: fixture.version.id } as never
+      return { ...runSourceFixture.run, id: runId, executionState: runState, workflowVersionId: runSourceFixture.version.id } as never
     },
     async *executionPages() { yield runExecutions },
   }
@@ -178,7 +179,7 @@ afterAll(async () => {
 })
 beforeEach(async () => {
   await pool.query(`delete from operator_conversations where kind='agent' and workspace_id=$1`, [fixture.scope.workspaceId])
-  FakeNative.all = []; runExecutions = []; runState = 'completed'; runReads.length = 0
+  FakeNative.all = []; runExecutions = []; runState = 'completed'; runSourceFixture = fixture; runReads.length = 0
 })
 
 describe('selected-Agent chat service', () => {
@@ -241,7 +242,7 @@ describe('selected-Agent chat service', () => {
     const queuedA = await service.send(writer, workspace, request(codexNode, 'queued A', conversationId))
     const queuedB = await service.send(writer, workspace, request(codexNode, 'queued B', conversationId))
     expect(queuedA.turn.delivery).toBe('queued')
-    await service.cancelQueued(writer, workspace, conversationId, queuedB.turn.requestId)
+    await service.cancelQueued(writer, workspace, conversationId, queuedB.turn.requestId, { requestId: randomUUID() })
     native.hold = false
     const urgent = await service.send(writer, workspace, request(codexNode, 'urgent', conversationId, { intent: 'interrupt_and_send' }))
     const done = await settled(service, read)
@@ -495,5 +496,234 @@ describe('selected-Agent chat service', () => {
       await Promise.allSettled(clients.map((client) => client.close()))
       await app.close()
     }
+  })
+})
+
+/** F4 regressions: authenticated transports and durable SQL are real; native/Run
+ * read ports retain this suite's fakes. Real native/Run proof lives in the opt-in
+ * agent-chat-run-native.acceptance.test.ts, not in these tests.
+ */
+async function f4Transport(service: AgentChatService) {
+  const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+    operator: { access, services: { agentChat: service, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
+  const clients: Client[] = []
+  return { app, address, async connect(token: string) {
+    const client = new Client({ name: 'f4-regression', version: '1' }); clients.push(client)
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
+    return client
+  }, async close() { await Promise.allSettled(clients.map((client) => client.close())); await app.close(); await service.shutdown() } }
+}
+async function f4Rows(id: string) {
+  return (await pool.query(`select
+    (select to_jsonb(c) from operator_conversations c where id=$1) as conversation,
+    (select jsonb_agg(to_jsonb(t) order by request_id) from operator_conversation_turns t where conversation_id=$1) as turns,
+    (select jsonb_agg(to_jsonb(m) order by sequence) from operator_conversation_messages m where conversation_id=$1) as messages,
+    (select jsonb_agg(to_jsonb(r) order by command_id) from management_command_receipts r
+      where operation='agent_chat_control' and target_key=$1) as controls`, [id])).rows[0]
+}
+
+describe('F4 authenticated transport / persistence regressions', () => {
+  for (const dimension of ['workspaceIds', 'workflowIds', 'runIds'] as const) {
+    it(`A-R02 ${dimension}: HTTP/SSE/MCP matching scope works, mismatch has no effect`, async () => {
+      const { service } = makeService()
+      let runId: string | undefined
+      let scopedNode = codexNode
+      let scopedWorkspaceId = fixture.scope.workspaceId
+      let scopedWorkflowId = fixture.scope.workflowId
+      if (dimension === 'runIds') {
+        const origin = await seedAgent3(pool, root, makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential'))
+        runSourceFixture = origin
+        runId = origin.run.id
+        scopedNode = origin.version.definition.nodes[0]!
+        scopedWorkspaceId = origin.scope.workspaceId
+        scopedWorkflowId = origin.scope.workflowId
+        const executionId = `f4-execution-${randomUUID()}`
+        const record: HarnessExecution = { id: executionId, runId, workflowNodeId: scopedNode.id, agentId: scopedNode.agentId,
+          agentConfigurationVersionId: origin.version.agentConfigurationVersionIds[scopedNode.agentId]!, attempt: 1,
+          nativeSessionId: 'f4-source', workingDirectory: root, input: {}, state: 'completed',
+          result: { outcome: 'succeeded' }, createdAt: origin.createdAt, finishedAt: origin.createdAt }
+        await pool.query('insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)',
+          [executionId, runId, scopedNode.id, scopedNode.agentId, JSON.stringify(record)])
+        runExecutions = [record]
+      }
+      const context = { ...query(scopedNode, runId), workflowId: scopedWorkflowId }
+      const input = request(scopedNode, 'scoped conversation', null, { context })
+      const first = await service.send(writer, scopedWorkspaceId, input)
+      const id = first.state.conversation!.id
+      await settled(service, () => service.read(writer, scopedWorkspaceId, context))
+      const f = await f4Transport(service)
+      const path = `/api/workspaces/${scopedWorkspaceId}/agent-chat`
+      const resource = dimension === 'workspaceIds' ? scopedWorkspaceId : dimension === 'workflowIds' ? scopedWorkflowId : runId!
+      try {
+        for (const matching of [true, false]) {
+          const credential = await access.issue({ name: `F4 ${dimension} ${matching}`, audience: 'operator', expiresAt: new Date(Date.now() + 60_000),
+            grants: [{ actions: ['agent_chat:read', 'agent_chat:write', 'agent_chat:cancel', 'agent_chat:respond'], scope: { [dimension]: [matching ? resource : 'other'] } }] })
+          const headers = { authorization: `Bearer ${credential.token}` }
+          const before = await f4Rows(id)
+          for (const url of [`${path}?${new URLSearchParams(Object.entries(context).filter((entry): entry is [string, string] => entry[1] !== undefined))}`, `${path}/conversations/${id}/history`]) {
+            const response = await f.app.inject({ method: 'GET', url, headers })
+            expect(response.statusCode, response.body).toBe(matching ? 200 : 403)
+          }
+          const replay = await f.app.inject({ method: 'POST', url: `${path}/messages`, headers, payload: input })
+          expect(replay.statusCode, replay.body).toBe(matching ? 200 : 403)
+          const mcp = await f.connect(credential.token)
+          expect((await mcp.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['agent_chat_read', 'agent_chat_send',
+            'agent_chat_interrupt', 'agent_chat_cancel_queued', 'agent_chat_respond']))
+          const read = await mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: scopedWorkspaceId, query: context } })
+          expect(read.isError === true).toBe(!matching)
+          if (matching) expect(AgentChatStateSchema.parse(read.structuredContent).conversation?.id).toBe(id)
+          const controller = new AbortController()
+          try {
+            const stream = await fetch(`${f.address}${path}/conversations/${id}/events`, { headers,
+              signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]) })
+            expect(stream.status).toBe(matching ? 200 : 403)
+            if (matching) {
+              const reader = stream.body!.getReader()
+              try {
+                let frames = ''
+                while (!frames.includes(': heartbeat')) {
+                  const chunk = await reader.read()
+                  if (chunk.done) throw new Error('Scoped stream closed before its reauthorized heartbeat.')
+                  frames += new TextDecoder().decode(chunk.value)
+                }
+                expect(frames).toContain('event: snapshot')
+              } finally { await reader.cancel() }
+            } else { await stream.text() }
+          } finally { controller.abort() }
+          expect(await f4Rows(id)).toEqual(before)
+        }
+      } finally { await f.close() }
+    }, 30_000)
+  }
+
+  it('A-R03 action-only callers cannot disclose command state or mutate before a denied response, over HTTP and MCP', async () => {
+    const { service } = makeService()
+    const initial = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'protected transcript', null))
+    const id = initial.state.conversation!.id
+    await settled(service, () => service.read(writer, fixture.scope.workspaceId, query(codexNode)))
+    const f = await f4Transport(service)
+    const path = `/api/workspaces/${fixture.scope.workspaceId}/agent-chat`
+    try {
+      const native = FakeNative.all[0]!
+      for (const action of ['agent_chat:read', 'agent_chat:write', 'agent_chat:cancel', 'agent_chat:respond'] as const) {
+        const credential = await access.issue({ name: `F4 ${action}`, audience: 'operator', expiresAt: new Date(Date.now() + 60_000),
+          grants: [{ actions: [action], scope: { workspaceIds: [fixture.scope.workspaceId] } }] })
+        const headers = { authorization: `Bearer ${credential.token}` }
+        const before = await f4Rows(id), calls = { prompts: native.prompts.length, cancels: native.cancels }
+        const commands = [
+          { tool: 'agent_chat_send', suffix: '/messages', body: request(codexNode, 'denied', id) },
+          { tool: 'agent_chat_interrupt', suffix: `/conversations/${id}/interrupt`, body: { requestId: randomUUID() } },
+          { tool: 'agent_chat_cancel_queued', suffix: `/conversations/${id}/turns/${initial.turn.requestId}/cancel`, body: { requestId: randomUUID() } },
+          { tool: 'agent_chat_respond', suffix: `/conversations/${id}/responses`, body: { requestId: randomUUID(), nativeRequestId: 'approval', optionId: 'accept' } },
+        ]
+        const mcp = await f.connect(credential.token)
+        const available = (await mcp.listTools()).tools.map((tool) => tool.name)
+        for (const command of commands) {
+          const response = await f.app.inject({ method: 'POST', url: `${path}${command.suffix}`, headers, payload: command.body })
+          expect(response.statusCode, response.body).toBe(403)
+          expect(response.body).not.toContain('protected transcript')
+          expect(available).not.toContain(command.tool)
+          await expect(mcp.callTool({ name: command.tool, arguments: { workspaceId: fixture.scope.workspaceId, conversationId: id,
+            ...(command.tool === 'agent_chat_send' ? { request: command.body } : command.body) } })).rejects.toThrow(/not found/)
+        }
+        const history = await f.app.inject({ method: 'GET', url: `${path}/conversations/${id}/history`, headers })
+        expect(history.statusCode).toBe(action === 'agent_chat:read' ? 200 : 403)
+        expect(await f4Rows(id)).toEqual(before)
+        expect({ prompts: native.prompts.length, cancels: native.cancels }).toEqual(calls)
+      }
+    } finally { await f.close() }
+  })
+
+  it('A-R12 lost cancel/respond/interrupt responses replay original SQL receipts across HTTP/MCP and conflict before native effects', async () => {
+    const { service } = makeService()
+    const initial = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'warm', null))
+    const id = initial.state.conversation!.id, read = () => service.read(writer, fixture.scope.workspaceId, query(codexNode))
+    await settled(service, read)
+    const native = FakeNative.all[0]!
+    native.hold = true
+    await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'active', id))
+    const active = await settled(service, read, (state) => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
+    const queued = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'queued', id))
+    const f = await f4Transport(service), mcp = await f.connect(writerToken)
+    const path = `/api/workspaces/${fixture.scope.workspaceId}/agent-chat/conversations/${id}`
+    const headers = { authorization: `Bearer ${writerToken}` }
+    const http = (suffix: string, body: Record<string, unknown>) => f.app.inject({ method: 'POST', url: `${path}${suffix}`, headers, payload: body })
+    const replay = (name: string, body: Record<string, unknown>) => mcp.callTool({ name, arguments: { workspaceId: fixture.scope.workspaceId, conversationId: id, ...body } })
+    const conflict = async (suffix: string, name: string, body: Record<string, unknown>, addressing = {}) => {
+      const response = await http(suffix, body)
+      expect(response.statusCode, response.body).toBe(409)
+      expect(response.body).toContain('AGENT_CHAT_REQUEST_CONFLICT')
+      const result = await replay(name, { ...addressing, ...body })
+      expect(result.isError).toBe(true)
+      expect(JSON.stringify(result.content)).toContain('AGENT_CHAT_REQUEST_CONFLICT')
+    }
+    try {
+      const cancel = { requestId: randomUUID() }, cancelPath = `/turns/${queued.turn.requestId}/cancel`
+      const canceled = await http(cancelPath, cancel)
+      expect(canceled.statusCode, canceled.body).toBe(200)
+      const later = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later queued', id))
+      expect((await replay('agent_chat_cancel_queued', { ...cancel, turnRequestId: queued.turn.requestId })).structuredContent).toEqual(canceled.json())
+      await conflict(`/turns/${later.turn.requestId}/cancel`, 'agent_chat_cancel_queued', cancel, { turnRequestId: later.turn.requestId })
+      expect((await read()).turns.find((turn) => turn.requestId === later.turn.requestId)?.delivery).toBe('queued')
+      let responses = 0
+      native.respond = async () => { responses++ }
+      const repository = new PostgresAgentChatRepository(pool)
+      const pending = { session: { harness: 'codex' as const, providerVersion: 'fixture-1', nativeSessionId: active.conversation!.nativeSession!.nativeSessionId },
+        turn: { nativeTurnId: active.activeTurn!.nativeTurnId!, nativeRequestId: 'approval-one' }, nativeRequestType: 'approval', request: {},
+        responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }
+      await repository.pending(id, active.activeTurn!.requestId, pending)
+      const respond = { requestId: randomUUID(), nativeRequestId: 'approval-one', optionId: 'codex-approve-once' }
+      const responded = await http('/responses', respond)
+      expect(responded.statusCode, responded.body).toBe(200)
+      await repository.pending(id, active.activeTurn!.requestId, { ...pending, turn: { ...pending.turn, nativeRequestId: 'approval-two' } })
+      expect((await replay('agent_chat_respond', respond)).structuredContent).toEqual(responded.json())
+      await conflict('/responses', 'agent_chat_respond', { ...respond, optionId: 'codex-reject' })
+      expect(responses).toBe(1)
+      expect((await read()).pendingInteraction?.turn.nativeRequestId).toBe('approval-two')
+      const interrupt = { requestId: randomUUID() }
+      const interrupted = await http('/interrupt', interrupt)
+      expect(interrupted.statusCode, interrupted.body).toBe(200)
+      await settled(service, read)
+      await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later active', id))
+      const next = await settled(service, read, (state) => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
+      expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual(interrupted.json())
+      await conflict('/interrupt', 'agent_chat_interrupt', { ...interrupt, expectedNativeTurnId: next.activeTurn!.nativeTurnId! })
+      expect(native.cancels).toBe(1)
+      expect((await read()).activeTurn?.requestId).toBe(next.activeTurn?.requestId)
+      const receipts = (await pool.query<{ result: { status: string } }>(`select result from management_command_receipts
+        where principal_id=$1 and operation='agent_chat_control' and target_key=$2`, [writer.id, id])).rows
+      expect(receipts.map((row) => row.result.status)).toEqual(['completed', 'completed', 'completed'])
+    } finally { await f.close() }
+  })
+
+  it('A-R17 keeps snapshots byte bounded while HTTP history returns every oversized message intact and advances', async () => {
+    const { service } = makeService()
+    try {
+      const initial = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'before large history', null))
+      const id = initial.state.conversation!.id
+      await settled(service, () => service.read(writer, fixture.scope.workspaceId, query(codexNode)))
+      const huge = '界'.repeat(3 * 1024 * 1024), hugeId = randomUUID()
+      for (const [messageId, content] of [[hugeId, huge], [randomUUID(), 'newest message']]) {
+        const record = { id: messageId, conversationId: id, role: 'assistant', content, createdAt: new Date().toISOString() }
+        await pool.query(`insert into operator_conversation_messages(id,conversation_id,role,content,record) values($1,$2,'assistant',$3,$4::jsonb)`,
+          [messageId, id, content, JSON.stringify(record)])
+      }
+      const state = await service.read(writer, fixture.scope.workspaceId, query(codexNode))
+      expect(Buffer.byteLength(JSON.stringify(state.messages))).toBeLessThan(256 * 1024)
+      expect(state.hasEarlierMessages).toBe(true)
+      expect(state.messages.map((message) => message.content)).toEqual(['newest message'])
+      const messages: AgentChatState['messages'] = [], cursors = new Set<string>()
+      let cursor: string | undefined
+      do {
+        const page = await service.history(writer, fixture.scope.workspaceId, id, cursor, 100)
+        messages.push(...page.messages)
+        cursor = page.nextCursor ?? undefined
+        if (cursor) { expect(cursors.has(cursor)).toBe(false); cursors.add(cursor) }
+      } while (cursor)
+      expect(messages.find((message) => message.id === hugeId)?.content === huge).toBe(true)
+      expect(messages).toHaveLength(4)
+      expect(new Set(messages.map((message) => message.id)).size).toBe(4)
+    } finally { await service.shutdown() }
   })
 })

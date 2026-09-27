@@ -8,6 +8,7 @@ import {
 } from '@graphql/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
+import { OPERATOR_SNAPSHOT_MESSAGE_BYTES, OPERATOR_HISTORY_PAGE_BYTES } from './operatorChatRepository.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
 
@@ -509,23 +510,34 @@ export class PostgresAgentChatRepository {
         409, { limit: AGENT_CHAT_OPEN_TURN_LIMIT })
     }
     const turns = receiptRows.map(turn)
-    const messages = (await this.pool.query<{ record: unknown; sequence: string }>(`select record,sequence::text from operator_conversation_messages
-      where conversation_id=$1 order by operator_conversation_messages.sequence desc limit $2`, [id, AGENT_CHAT_MESSAGE_LIMIT + 1])).rows
-    return {
-      row, turns,
-      messages: messages.slice(0, AGENT_CHAT_MESSAGE_LIMIT).reverse().map((entry) => MessageSchema.parse(entry.record)),
-      hasEarlierMessages: messages.length > AGENT_CHAT_MESSAGE_LIMIT,
-    }
+    // Keep the newest contiguous window within the same byte budget as Operator
+    // chat. Oversized/older messages are retained in storage and paged over HTTP.
+    const recent = (await this.pool.query<{ messages: unknown[]; has_earlier: boolean }>(`with candidates as (
+      select m.*,row_number() over (order by m.sequence desc) as ordinal,
+        sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
+      from (select record,sequence from operator_conversation_messages
+        where conversation_id=$1 order by sequence desc limit ($2::integer+1)) m
+    ), selected as (select * from candidates where ordinal<=$2 and bytes<=$3)
+    select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
+      (select count(*) from candidates)>(select count(*) from selected) as has_earlier`,
+    [id, AGENT_CHAT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])).rows[0]!
+    return { row, turns, messages: recent.messages.map((entry) => MessageSchema.parse(entry)), hasEarlierMessages: recent.has_earlier }
   }
   async history(id: string, before: string | undefined, limit: number) {
-    const rows = (await this.pool.query<{ record: unknown; sequence: string }>(`select record,sequence::text from operator_conversation_messages
-      where conversation_id=$1 and ($2::bigint is null or operator_conversation_messages.sequence < $2::bigint) order by operator_conversation_messages.sequence desc limit $3`,
-    [id, before ?? null, limit + 1])).rows
-    const page = rows.slice(0, limit)
-    return {
-      messages: page.reverse().map((entry) => MessageSchema.parse(entry.record)),
-      nextCursor: rows.length > limit ? page[0]!.sequence : null,
-    }
+    const page = (await this.pool.query<{ messages: unknown[]; next_cursor: string | null }>(`with candidates as (
+      select m.*,row_number() over (order by m.sequence desc) as ordinal,
+        sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
+      from (select record,sequence from operator_conversation_messages
+        where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
+        order by sequence desc limit ($3::integer+1)) m
+    ), selected as (select * from candidates where ordinal<=$3 and (bytes<=$4 or ordinal=1))
+    select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
+      case when exists(select 1 from candidates where sequence<(select min(sequence) from selected))
+        then (select min(sequence)::text from selected) else null end as next_cursor`,
+    [id, before ?? null, limit, OPERATOR_HISTORY_PAGE_BYTES])).rows[0]!
+    // One oversized message is allowed only over HTTP, ensuring cursor progress
+    // without truncating native content or putting it back in a live snapshot.
+    return { messages: page.messages.map((entry) => MessageSchema.parse(entry)), nextCursor: page.next_cursor }
   }
 
   private async bump(id: string, query: Queryable = this.pool): Promise<void> {

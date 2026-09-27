@@ -1,18 +1,21 @@
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type pg from 'pg'
+import type { z } from 'zod'
 
 import {
   ExecutionLocationSchema, type AgentConfigurationVersion, type HarnessExecution, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference,
 } from '@graphql/contracts'
 import {
   AgentChatStateSchema, AgentChatStreamEventSchema, SendAgentChatMessageRequestSchema,
+  InterruptAgentChatRequestSchema, CancelQueuedAgentChatTurnRequestSchema, RespondAgentChatInteractionRequestSchema,
   type AgentChatBlockedReason, type AgentChatCapabilities, type AgentChatContext, type AgentChatOrigin, type AgentChatQuery,
   type AgentChatSessionState, type AgentChatState, type AgentChatStreamEvent, type AgentChatTurn, type SendAgentChatMessageRequest,
 } from '@graphql/contracts/agent-chat'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import { RepeatOccurrenceIdentityV1Schema } from '@graphql/contracts/wave25'
 
+import { AgentChatCommands } from './agentChatCommands.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { NativeTurnNotActiveError } from '../harnesses/errors.js'
@@ -107,10 +110,11 @@ export class AgentChatService {
   private readonly wakeups = new Set<string>()
   private readonly controls = new Map<string, Promise<unknown>>()
   private readonly reconciliationTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  private readonly commands = new Set<Promise<unknown>>()
+  private readonly inflightCommands = new Set<Promise<unknown>>()
   private recovery: Promise<void> | undefined
   private shutdownAttempt: Promise<void> | undefined
   private readonly activity: PostgresOperatorActivityRepository
+  private readonly commands: AgentChatCommands
   private readonly lifetime = new AbortController()
   private closing = false
 
@@ -125,13 +129,14 @@ export class AgentChatService {
     private readonly runtimeRoot: string,
   ) {
     this.activity = new PostgresOperatorActivityRepository(pool)
+    this.commands = new AgentChatCommands(pool)
   }
 
   /** Publish command ownership before the first await so shutdown also drains admission/readback. */
   private command<T>(operation: () => Promise<T>): Promise<T> {
     const next = Promise.resolve().then(() => { this.assertOpen(); return operation() })
-    this.commands.add(next)
-    void next.finally(() => this.commands.delete(next)).catch(() => undefined)
+    this.inflightCommands.add(next)
+    void next.finally(() => this.inflightCommands.delete(next)).catch(() => undefined)
     return next
   }
 
@@ -153,6 +158,10 @@ export class AgentChatService {
     const row = await this.repository.get(id)
     if (!row || row.workspace_id !== workspaceId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
     this.authorize(principal, action, { workspaceId, workflowId: row.workflow_id, ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) })
+    // Commands return transcript/activity/approval state: check its authority
+    // before command reservation or any native/database mutation, also on replay.
+    if (action !== 'agent_chat:read') this.authorize(principal, 'agent_chat:read', { workspaceId, workflowId: row.workflow_id,
+      ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) })
     return row
   }
 
@@ -335,6 +344,7 @@ export class AgentChatService {
     const input = SendAgentChatMessageRequestSchema.parse(value)
     const context: AgentChatContext = { workspaceId, ...input.context }
     this.authorize(principal, 'agent_chat:write', context)
+    this.authorize(principal, 'agent_chat:read', context)
     const resolution = await this.resolve(context)
     const key = agentChatKey(context)
     if (resolution.row) {
@@ -396,54 +406,60 @@ export class AgentChatService {
     })
   }
 
-  interrupt(principal: ManagementPrincipal, workspaceId: string, id: string, expectedNativeTurnId?: string): Promise<AgentChatState> {
-    return this.command(() => this.interruptConversation(principal, workspaceId, id, expectedNativeTurnId))
-  }
-  private async interruptConversation(principal: ManagementPrincipal, workspaceId: string, id: string, expectedNativeTurnId?: string): Promise<AgentChatState> {
-    this.assertOpen()
-    await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
-    // Stop cancels the queue and captures the active target in one transaction.
-    const target = await this.repository.interrupt(id, expectedNativeTurnId)
-    await this.interruptActive(id, true, target)
-    return this.readConversation(principal, workspaceId, id)
-  }
-  cancelQueued(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string): Promise<AgentChatState> {
-    return this.command(() => this.cancelQueuedTurn(principal, workspaceId, id, turnRequestId))
-  }
-  private async cancelQueuedTurn(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string): Promise<AgentChatState> {
-    await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
-    if (!await this.repository.cancelQueued(id, turnRequestId)) {
-      const turn = await this.repository.turn(id, turnRequestId)
-      if (!turn) throw new DomainError('AGENT_CHAT_TURN_NOT_FOUND', 'That message was not found.', 404)
-      if (turn.delivery !== 'canceled') throw new DomainError('AGENT_CHAT_TURN_STARTED', 'That message was already sent to the Agent.', 409)
-    }
-    this.events.publish(id, 'turn', { requestId: turnRequestId, delivery: 'canceled' })
-    this.pump(id)
-    return this.readConversation(principal, workspaceId, id)
-  }
-  respond(principal: ManagementPrincipal, workspaceId: string, id: string, nativeRequestId: string, optionId: string): Promise<AgentChatState> {
-    return this.command(() => this.respondToInteraction(principal, workspaceId, id, nativeRequestId, optionId))
-  }
-  private async respondToInteraction(principal: ManagementPrincipal, workspaceId: string, id: string, nativeRequestId: string, optionId: string): Promise<AgentChatState> {
-    this.assertOpen()
-    await this.control(id, async () => {
-      // Re-read after earlier controls: the displayed approval may already have been answered.
-      const row = await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
-      const pending = row.pending_interaction
-      const runtime = this.runtimes.get(id)
-      if (!pending || pending.turn.nativeRequestId !== nativeRequestId || !runtime?.session || !row.active_request_id) {
-        throw new DomainError('AGENT_CHAT_INTERACTION_NOT_PENDING', 'This approval is no longer pending.', 409)
-      }
-      const option = pending.responseOptions.find((entry) => entry.optionId === optionId)
-      if (!option) throw new DomainError('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
-      const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
-      await runtime.manager.respond(runtime.session, nativeRequestId, option, signal)
-      // Other approvals may already be waiting without another native event to expose them.
-      const next = await runtime.manager.pending(runtime.session, signal)
-      await this.repository.pending(id, row.active_request_id, next)
-      this.events.publish(id, 'state', { pending: Boolean(next) })
+  interrupt(principal: ManagementPrincipal, workspaceId: string, id: string,
+    value: z.infer<typeof InterruptAgentChatRequestSchema>, source: 'http' | 'mcp' = 'http'): Promise<AgentChatState> {
+    return this.command(async () => {
+      const input = InterruptAgentChatRequestSchema.parse(value)
+      await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
+      return this.commands.execute(principal, source, id, input.requestId, { kind: 'interrupt', workspaceId, ...input }, async () => {
+        await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
+        const target = await this.repository.interrupt(id, input.expectedNativeTurnId)
+        await this.interruptActive(id, true, target)
+        return this.readConversation(principal, workspaceId, id)
+      })
     })
-    return this.readConversation(principal, workspaceId, id)
+  }
+  cancelQueued(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string,
+    value: z.infer<typeof CancelQueuedAgentChatTurnRequestSchema>, source: 'http' | 'mcp' = 'http'): Promise<AgentChatState> {
+    return this.command(async () => {
+      const input = CancelQueuedAgentChatTurnRequestSchema.parse(value)
+      await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
+      return this.commands.execute(principal, source, id, input.requestId, { kind: 'cancel_queued', workspaceId, turnRequestId, ...input }, async () => {
+        if (!await this.repository.cancelQueued(id, turnRequestId)) {
+          const turn = await this.repository.turn(id, turnRequestId)
+          if (!turn) throw new DomainError('AGENT_CHAT_TURN_NOT_FOUND', 'That message was not found.', 404)
+          if (turn.delivery !== 'canceled') throw new DomainError('AGENT_CHAT_TURN_STARTED', 'That message was already sent to the Agent.', 409)
+        }
+        this.events.publish(id, 'turn', { requestId: turnRequestId, delivery: 'canceled' })
+        this.pump(id)
+        return this.readConversation(principal, workspaceId, id)
+      })
+    })
+  }
+  respond(principal: ManagementPrincipal, workspaceId: string, id: string,
+    value: z.infer<typeof RespondAgentChatInteractionRequestSchema>, source: 'http' | 'mcp' = 'http'): Promise<AgentChatState> {
+    return this.command(async () => {
+      const input = RespondAgentChatInteractionRequestSchema.parse(value)
+      await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
+      return this.commands.execute(principal, source, id, input.requestId, { kind: 'respond', workspaceId, ...input }, async () => {
+        await this.control(id, async () => {
+          const row = await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
+          const pending = row.pending_interaction
+          const runtime = this.runtimes.get(id)
+          if (!pending || pending.turn.nativeRequestId !== input.nativeRequestId || !runtime?.session || !row.active_request_id) {
+            throw new DomainError('AGENT_CHAT_INTERACTION_NOT_PENDING', 'This approval is no longer pending.', 409)
+          }
+          const option = pending.responseOptions.find((entry) => entry.optionId === input.optionId)
+          if (!option) throw new DomainError('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
+          const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
+          await runtime.manager.respond(runtime.session, input.nativeRequestId, option, signal)
+          const next = await runtime.manager.pending(runtime.session, signal)
+          await this.repository.pending(id, row.active_request_id, next)
+          this.events.publish(id, 'state', { pending: Boolean(next) })
+        })
+        return this.readConversation(principal, workspaceId, id)
+      })
+    })
   }
 
   private async interruptActive(id: string, explicit: boolean, target: AgentChatInterruptTarget | undefined): Promise<void> {
@@ -781,9 +797,10 @@ export class AgentChatService {
     const attempt = Promise.resolve().then(async () => {
       // An admitted command/recovery pass may still be awaiting SQL or publishing control work.
       // Drain producers before disposing managers or allowing the production owner to unlock.
-      while (this.commands.size || this.tasks.size || this.controls.size || this.recovery) {
-        await Promise.allSettled([...this.commands, ...this.tasks.values(), ...this.controls.values(), ...(this.recovery ? [this.recovery] : [])])
+      while (this.inflightCommands.size || this.tasks.size || this.controls.size || this.recovery) {
+        await Promise.allSettled([...this.inflightCommands, ...this.tasks.values(), ...this.controls.values(), ...(this.recovery ? [this.recovery] : [])])
       }
+      await this.commands.drain()
       const results = await Promise.allSettled([...this.runtimes.keys()].map((id) => this.release(id)))
       const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Agent chat native cleanup was incomplete; ownership is retained for retry.')
