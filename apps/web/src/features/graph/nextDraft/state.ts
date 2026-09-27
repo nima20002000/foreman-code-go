@@ -1,3 +1,4 @@
+import type { AgentForm } from './agentForm'
 import type { GraphDraftOperationV3, GraphEditIntentV3, WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
 import { hasAgentEdits, referencedAgentEdits, type DraftAgentEdits } from './agentEdits'
 import { hasLocalChanges, sameValue, type AuthoringIssue, type NextDraftContext } from './model'
@@ -26,6 +27,7 @@ export type NextDraftEdit = {
   history: WorkflowDefinitionV3[]
   future?: { graph: WorkflowDefinitionV3; agentEdits: DraftAgentEdits }[]
   agentEdits?: DraftAgentEdits
+  agentForms?: Record<string, AgentForm>
   agentHistory?: DraftAgentEdits[]
   /** Local form provenance from authenticated hydration, never a command submission. */
   remoteEditIntent?: Pick<GraphEditIntentV3, 'id' | 'ownerPrincipalId' | 'stageCommandId' | 'stageInputHash'>

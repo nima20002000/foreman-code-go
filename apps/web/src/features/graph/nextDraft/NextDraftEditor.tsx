@@ -15,7 +15,7 @@ import { authoringHints, discardMeaningfulChanges, hasLocalChanges, nodeTitle, r
 import { editorAgents } from './agentEdits'
 import { nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
-import { readEditOutbox, readEditSnapshot } from './editIntentStorage'
+import { readEditOutbox, readEditSnapshot, storeEditSnapshot } from './editIntentStorage'
 import { useGraphEditIntent } from './useGraphEditIntent'
 import { EditIntentStatus } from './EditIntentStatus'
 import { draftFailure } from './writer'
@@ -69,7 +69,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
       // its exact journal result rather than substituting current mutable Agent heads.
       // Retained Agent edits are never superseded by a newer saved workflow: they
       // belong to shared Agents, not the graph, and need explicit save or discard.
-      const agentEdited = Object.keys(snapshot?.agentEdits ?? {}).length > 0
+      const agentEdited = Object.keys(snapshot?.agentEdits ?? {}).length > 0 || Object.keys(snapshot?.agentForms ?? {}).length > 0
       const stale = snapshot && !snapshot.remoteEditIntent && !agentEdited && fresh && (snapshot.context.draft.baseWorkflowVersionId !== fresh.baseWorkflowVersionId
         || snapshot.context.draft.publishedRevision !== fresh.publishedRevision)
         && (!hasLocalChanges(snapshot.context, snapshot.graph) || sameExecutableWorkflow(snapshot.graph, fresh.graph))
@@ -77,7 +77,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
       if (retained) {
         useGraphDraftStore.getState().installNextDraft(draftKey, retained.context)
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
-          graph: retained.graph, agentEdits: retained.agentEdits, remoteEditIntent: retained.remoteEditIntent }))
+          graph: retained.graph, agentEdits: retained.agentEdits, agentForms: retained.agentForms, remoteEditIntent: retained.remoteEditIntent }))
       } else if (source.data && !source.isError) {
         useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents, savedDraft: source.data.savedDraft })
       }
@@ -182,7 +182,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     canvas.current?.flush()
     useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state, graph: discardMeaningfulChanges(state.context, state.graph),
       context: { ...state.context, draft: { ...(state.context.savedDraft ?? state.context.draft), layoutRevision: state.context.draft.layoutRevision } },
-      history: [], future: [], agentEdits: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
+      history: [], future: [], agentEdits: undefined, agentForms: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
     nextDraftApi.discardLocal(graph.workspaceId, graph.id)
     setLocalError(undefined); setMessage('Changes discarded.')
   }
@@ -296,6 +296,11 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const starting = startMutation.isPending
   const start = () => startMutation.mutateAsync()
   useUnsavedChanges({ label: `${graph.name} next draft`,
+    canResume: () => {
+      const current = useGraphDraftStore.getState().nextDrafts[draftKey]
+      if (!current || current.busy || current.pending || reloading || starting || editIntent.mutation.isPending) return false
+      try { storeEditSnapshot(draftKey, current); return true } catch { return false }
+    },
     dirty: nextDraftDirty(edit) || edit.busy || !!pendingStart || editIntent.locked,
     busy: edit.busy || reloading || starting || editIntent.mutation.isPending, uncertain: edit.error?.uncertain || !!pendingStart || editIntent.intent?.state === 'uncertain',
     error: edit.error?.message ?? localError,
@@ -306,7 +311,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       : Promise.reject(new Error('Use “Save changes” on the board to review affected Runs, or Discard changes.')),
     discard: discardChanges }, (current, next) =>
     // The draft document stays mounted when authoring selection changes; dirty contextual forms
-    // keep their separate surface registrations and still require a decision before unmounting.
+    // keep separate registrations for explicit Save/Discard and failed recovery.
     !staysOnWorkflowBoard({ ...current, search: { ...current.search, agentId: undefined } },
       { ...next, search: { ...next.search, agentId: undefined } }))
   const prepare = async (action: () => void | Promise<unknown>) => {

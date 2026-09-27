@@ -58,6 +58,7 @@ export function acknowledgeEditIntentSnapshot(draftKey: string, current: NextDra
     && sameExecutableWorkflow(current.graph, intent.stagedDraft.graph)
     && sameWorkflowValue(current.agentEdits ?? {}, remoteAgents(intent))
   const cleanRemoteForm = !hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
+    && !Object.keys(current.agentForms ?? {}).length
   // A terminal command may be shared across tabs, but its saved revision is not.
   // Keep an independently-diverged unsent form pinned to its original base so
   // its next Stage receives the authoritative stale-revision conflict.
@@ -153,7 +154,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       // Fresh/reopened clean boards show the exact private payload. Never
       // overwrite another tab's/newer unsent form or replace its revision base.
       if (!hasLocalChanges(current.context, current.graph) && !hasAgentEdits(current)
-        && remoteBaseMatches(current, intent)) {
+        && !Object.keys(current.agentForms ?? {}).length && remoteBaseMatches(current, intent)) {
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
           graph: preserveWorkflowGeometry(submittedGraph, state.graph),
           agentEdits: submittedAgents,

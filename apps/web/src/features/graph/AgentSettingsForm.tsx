@@ -1,3 +1,5 @@
+import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import type { AgentForm } from './nextDraft/agentForm'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -15,11 +17,15 @@ import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from '
 import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, validationIssues, type FieldIssue } from '../settings/fieldValidation'
 import './agentSettingsPanel.css'
 
-export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onClose, onRemove, onSave,
+export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
   executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
 }: {
   /** Inside an agent popover: the popover owns the title and close button. */
   embedded?: boolean
+  retainedForm?: AgentForm
+  onFormChange?(form: AgentForm): void
+  onDiscardForm?(): void
+  canResume?(): boolean
   agent: Agent
   initialPrompt?: string
   creationDefaults?: HarnessDefaults
@@ -32,20 +38,30 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
   workflowApprovalHandler?: ApprovalHandler
   designatedOrchestrator?: boolean
 }) {
-  const [name, setName] = useState(agent.name)
-  const [prompt, setPrompt] = useState(initialPrompt ?? '')
+  const [localName, setLocalName] = useState(agent.name)
+  const [localPrompt, setLocalPrompt] = useState(initialPrompt ?? '')
   const [error, setError] = useState<string>()
   const [issues, setIssues] = useState<FieldIssue[]>([])
   const [view, setView] = useState<'general' | 'advanced'>('general')
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => { if (issues.length) focusFirstInvalid(root.current) }, [issues])
-  const [editor, setEditor] = useState(() => {
+  const [localEditor, setLocalEditor] = useState(() => {
     const harness = agent.harnessConfiguration?.harness ?? agent.harness ?? 'codex'
     return createHarnessEditor(agent.harnessConfiguration ?? configuredHarness(agent, harness,
       initialModel(agent, harness), agent.effort ?? 'medium', agent.fastMode ?? false, 'read-only', creationDefaults))
   })
+  const base = JSON.stringify({ agent, initialPrompt })
+  const retained = retainedForm && sameWorkflowValue(JSON.parse(retainedForm.base), JSON.parse(base)) ? retainedForm : undefined
+  const name = retained?.name ?? localName, prompt = retained?.prompt ?? localPrompt, editor = retained?.editor ?? localEditor
+  const changeForm = (patch: Partial<AgentForm>) => onFormChange?.({ base, name, prompt, editor, ...patch })
+  const setName = (value: string) => { if (onFormChange) changeForm({ name: value }); else setLocalName(value) }
+  const setPrompt = (value: string) => { if (onFormChange) changeForm({ prompt: value }); else setLocalPrompt(value) }
+  const setEditor = (update: typeof editor | ((current: typeof editor) => typeof editor)) => {
+    const value = typeof update === 'function' ? update(editor) : update
+    if (onFormChange) changeForm({ editor: value }); else setLocalEditor(value)
+  }
   const initialSnapshot = useRef<string | undefined>(undefined)
-  if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor })
+  if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor: localEditor })
   const defaultsQuery = useHarnessDefaultsQuery({ enabled: !creationDefaults })
   const providerDefaults = creationDefaults ?? defaultsQuery.data?.defaults
   const configuration = withAdvancedDefaults(editor.configuration)
@@ -86,8 +102,8 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
       setError(nextIssues.length ? 'Review the marked fields before saving.' : failure instanceof Error ? failure.message : 'Agent settings are invalid.')
     }
   }
-  const leave = useUnsavedChanges({ scope: 'surface', label: 'agent settings', get dirty() { return currentSnapshot !== initialSnapshot.current },
-    error, save, discard: () => { initialSnapshot.current = currentSnapshot; onClose() },
+  const leave = useUnsavedChanges({ scope: 'surface', label: 'agent settings', canResume, get dirty() { return currentSnapshot !== initialSnapshot.current },
+    error, save, discard: () => { initialSnapshot.current = currentSnapshot; onDiscardForm?.(); onClose() },
   })
   return <div ref={root} className={`agent-settings-panel${embedded ? ' agent-settings-panel-embedded' : ''}`}>
     {embedded ? view === 'advanced' ? <header className="agent-settings-heading">

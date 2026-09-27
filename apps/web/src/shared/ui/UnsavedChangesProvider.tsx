@@ -47,13 +47,13 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   const shouldBlockFn = useCallback(async ({ current, next }: { current: LeaveTarget; next: LeaveTarget }) => {
     if (current.pathname === next.pathname && JSON.stringify(current.search) === JSON.stringify(next.search)) return false
     // Nested aliases and Run query selection keep all authoring surfaces mounted.
-    // Only Run pins may differ; Agent/workflow selection and departure still prompt.
+    // Run selection keeps editors mounted. Other departures only prompt for edits that cannot be recovered.
     if (pending.current) return true
     if (staysOnWorkflowBoard(current, next)) return false
-    const ids = [...editors.current].filter(([, editor]) => !editor.blocks || editor.blocks(current, next)).map(([id]) => id)
+    const ids = [...editors.current].filter(([, editor]) => (!editor.blocks || editor.blocks(current, next)) && !editor.current.canResume?.()).map(([id]) => id)
     return !await ask(ids)
   }, [ask])
-  const enableBeforeUnload = useCallback(() => activeEditors([...editors.current.keys()]).length > 0, [activeEditors])
+  const enableBeforeUnload = useCallback(() => activeEditors([...editors.current.keys()]).some(({ editor }) => !editor.canResume?.()), [activeEditors])
   useBlocker({ shouldBlockFn, enableBeforeUnload })
   useEffect(() => () => { pending.current?.resolve(false) }, [])
   // Read after the save/discard React commit, so newer edits cannot be mistaken for a clean draft.

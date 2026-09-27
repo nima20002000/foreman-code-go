@@ -6,6 +6,8 @@ export interface UnsavedEditor {
   dirty: boolean
   busy?: boolean
   uncertain?: boolean
+  /** True only when this editor can be recovered after navigation or reload. */
+  canResume?(): boolean
   saveDisabled?: boolean
   error?: string
   save(): unknown | Promise<unknown>

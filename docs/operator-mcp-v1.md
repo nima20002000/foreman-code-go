@@ -111,3 +111,11 @@ Archive retains versions, configurations, runs, results, and activity. Active wo
 `corepack pnpm test:integration` uses the official SDK client against the real Fastify Streamable HTTP endpoint and PostgreSQL. It covers the complete discovered catalog, credential audience and scope isolation, command replay/conflicts, concurrent duplicate Start, location validation and canonical persistence, stale location writes, HTTP/MCP parity, immutable Run locations, migration, batch rollback, explicit Save/Start, archive blocking, bad Origin, revocation, and legacy HTTP mutation-bypass prevention. Process fixtures—not model output—prove both adapters receive the accepted project CWD and separate runtime storage. `corepack pnpm test:acceptance` is the separately reported live Codex/OpenCode gate.
 
 The current local credential mechanism is not OAuth. Worker Tools MCP, board-agent credential delivery, remote/public access, a full Operator chat UI, memory, Files, Kanban, browser services, scheduling, and remote runners remain deferred. See [the access ADR](./adr/operator-and-worker-mcp-access.md).
+
+### Browser editing continuity
+
+The Board retains its private, per-tab workflow draft and unfinished agent-settings
+fields across reloads and application navigation. This recovery checkpoint is browser
+interaction state, not a saved WorkflowVersion or an Operator-readable shared draft.
+It does not publish edits or grant permissions. Operator authoring continues through
+the authenticated shared Stage/Save/read services; browser recovery adds no MCP action.

@@ -1,3 +1,4 @@
+import { AgentFormSchema } from './agentForm'
 import { LocalWorkflowFormSchema } from './localGraph'
 import { z } from 'zod'
 import { AgentSchema } from '@graphql/contracts'
@@ -13,6 +14,7 @@ const prefix = 'graph-edit-intent:'
 const SnapshotSchema = z.object({
   context: z.object({ draft: GraphDraftV3Schema, savedDraft: GraphDraftV3Schema.optional(), agents: z.array(ManagedAgentSchema) }).strict(),
   graph: LocalWorkflowFormSchema, agentEdits: z.record(z.string(), AgentSchema).optional(),
+  agentForms: z.record(z.string(), AgentFormSchema).optional(),
   remoteEditIntent: z.object({ id: z.string().min(1), ownerPrincipalId: z.string().min(1),
     stageCommandId: z.string().min(1), stageInputHash: z.string().min(1) }).strict().optional(),
   acknowledgedStageCommands: z.array(z.string()).optional(), submittedStageCommands: z.array(z.string()).optional(),
@@ -68,7 +70,7 @@ export function readEditSnapshot(scope: string) {
     // Copy the acknowledgement metadata with the form. A new tab must not
     // replay an old Discard against edits made after this snapshot settled.
     if (!existing) write(own, value)
-    return { context: value.context, graph: value.graph, agentEdits: value.agentEdits,
+    return { context: value.context, graph: value.graph, agentEdits: value.agentEdits, agentForms: value.agentForms,
       ...(value.remoteEditIntent ? { remoteEditIntent: value.remoteEditIntent } : {}) }
   }
   return undefined
@@ -94,8 +96,9 @@ export function editSnapshotSubmitted(scope: string, edit: NextDraftEdit, stageC
   return !!snapshot && sameDraftBase(snapshot.context.draft, edit.context.draft)
     && !!snapshot.submittedStageCommands?.includes(stageCommandId)
 }
-export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits' | 'remoteEditIntent'>, acknowledgedStageCommandId?: string) {
+export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits' | 'agentForms' | 'remoteEditIntent'>, acknowledgedStageCommandId?: string) {
   const value = SnapshotSchema.parse({ context: edit.context, graph: edit.graph,
+    ...(edit.agentForms ? { agentForms: edit.agentForms } : {}),
     ...(edit.agentEdits ? { agentEdits: edit.agentEdits } : {}),
     ...(edit.remoteEditIntent ? { remoteEditIntent: edit.remoteEditIntent } : {}) })
   assertScope(scope, value.graph.workspaceId, value.graph.id)

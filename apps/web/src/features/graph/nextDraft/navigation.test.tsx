@@ -77,3 +77,50 @@ it('principal teardown purges the unified local draft store', () => {
   useGraphDraftStore.getState().clearAllDrafts()
   expect(useGraphDraftStore.getState().nextDrafts).toEqual({})
 })
+
+it.each(['navigation', 'reload'])('quietly retains unfinished agent settings across %s', async (departure) => {
+  useGraphDraftStore.getState().installNextDraft(key, fixture())
+  const registrations = new Map<string, EditorRegistration>()
+  const guard = { changed: vi.fn(), surfaces: async () => true, request: async () => true,
+    register: (id: string, editor: EditorRegistration) => { registrations.set(id, editor); return () => { registrations.delete(id) } } }
+  const user = userEvent.setup(), client = readyClient()
+  const mount = () => render(<QueryClientProvider client={client}><UnsavedChangesContext.Provider value={guard}>
+    <NextDraftEditor workspaceId="workspace" workflowId="workflow" />
+  </UnsavedChangesContext.Provider></QueryClientProvider>)
+  const first = mount()
+  await user.click(screen.getByRole('button', { name: /Entry · Node 0/ }))
+  const name = within(await screen.findByRole('dialog', { name: /settings$/ })).getByRole('textbox', { name: 'Name' })
+  await user.clear(name); await user.type(name, 'Continue here')
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, description: 'Local workflow edit' })))
+  const form = [...registrations.values()].find((entry) => entry.current.label === 'agent settings')!
+  expect(form.current.dirty).toBe(true)
+  expect(form.current.canResume?.()).toBe(true)
+  first.unmount()
+  if (departure === 'reload') useGraphDraftStore.setState({ nextDrafts: {} })
+  mount()
+  await user.click(await screen.findByRole('button', { name: /Entry · Node 0/ }))
+  expect(within(await screen.findByRole('dialog', { name: /settings$/ })).getByRole('textbox', { name: 'Name' })).toHaveValue('Continue here')
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  expect(screen.queryByText(/Draft restored/)).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+  const draft = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(draft.graph.nodes[0]?.name).toBe('Continue here')
+  expect(draft.graph.description).toBe('Local workflow edit')
+  expect(draft.context.draft.revision).toBe(7)
+})
+
+it('keeps protection when local storage fails', async () => {
+  useGraphDraftStore.getState().installNextDraft(key, fixture())
+  const registrations = new Map<string, EditorRegistration>()
+  const guard = { changed: vi.fn(), surfaces: async () => true, request: async () => true,
+    register: (id: string, editor: EditorRegistration) => { registrations.set(id, editor); return () => { registrations.delete(id) } } }
+  render(<QueryClientProvider client={readyClient()}><UnsavedChangesContext.Provider value={guard}>
+    <NextDraftEditor workspaceId="workspace" workflowId="workflow" />
+  </UnsavedChangesContext.Provider></QueryClientProvider>)
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, name: 'Unpublished name' })))
+  const board = [...registrations.values()].find((entry) => entry.current.label.endsWith('next draft'))!
+  expect(board.current.canResume?.()).toBe(true)
+  const fail = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage full') })
+  expect(board.current.canResume?.()).toBe(false)
+  fail.mockRestore()
+})

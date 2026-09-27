@@ -1,3 +1,4 @@
+import { storeEditSnapshot } from '../graph/nextDraft/editIntentStorage'
 import type { Agent } from '@graphql/contracts'
 import { useAgentDefaultsQuery } from '../../shared/api/query'
 import { Alert, Button, Icon } from '../../shared/ui/nocturne'
@@ -18,7 +19,8 @@ function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId
       id, agentId: agent.id, name: agent.name,
       position: { x: 80 + graph.nodes.length % 4 * 320, y: 100 + Math.floor(graph.nodes.length / 4) * 300 },
     }
-    return changeDraftAgent(current, agent, { ...graph,
+    const agentForms = { ...current.agentForms }; delete agentForms[id]
+    return changeDraftAgent({ ...current, agentForms }, agent, { ...graph,
       nodes: node ? graph.nodes.map((item) => item.id === id ? nextNode : item) : [...graph.nodes, nextNode],
       entryNodeId: !graph.nodes.length ? id : graph.entryNodeId,
     })
@@ -50,6 +52,18 @@ export function BoardAgentSettings({ draftKey, edit, nodeId, close, remove }: { 
   if (!node || !agent) return <Alert tone="warning" title="This agent’s settings aren’t available." />
   // Re-key on the staged agent so a discard or reload never leaves stale values in the open form.
   return <AgentSettingsForm key={`${edit.instanceId}:${node.id}:${JSON.stringify(agent)}:${node.initialPrompt ?? ''}`} embedded agent={agent} initialPrompt={node.initialPrompt}
+    retainedForm={edit.agentForms?.[node.id]}
+    onFormChange={(form) => useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => ({ ...current,
+      agentForms: { ...current.agentForms, [node.id]: form } }))}
+    onDiscardForm={() => useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => {
+      const agentForms = { ...current.agentForms }; delete agentForms[node.id]
+      return { ...current, agentForms }
+    })}
+    canResume={() => {
+      const current = useGraphDraftStore.getState().nextDrafts[draftKey]
+      if (!current) return false
+      try { storeEditSnapshot(draftKey, current); return true } catch { return false }
+    }}
     workspaceId={edit.graph.workspaceId} workflowApprovalHandler={edit.graph.approval?.handler}
     designatedOrchestrator={edit.graph.approval?.handler === 'orchestrator' && edit.graph.approval.designatedOrchestratorAgentId === agent.id}
     executionPolicy={edit.graph.executionPolicy} onClose={close} onRemove={remove}
