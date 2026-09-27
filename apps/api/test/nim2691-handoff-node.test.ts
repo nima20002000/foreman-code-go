@@ -43,4 +43,56 @@ describe('NIM-2691 workflow activation routing', () => {
     expect(calls.sort()).toEqual(version.definition.edges.filter((edge) => edge.source === source.id).map((edge) => edge.id).sort())
     expect(new Set(next)).toEqual(new Set(calls.map((id) => `activation-${id}`)))
   })
+
+  it('keeps a technical retry in one activation before admitting its first business request', async () => {
+    const fixture = makeCurrentWorkflowFixture('work-node-retry')
+    const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+      ...fixture.version.definition, handoffs: { contractVersion: 1 },
+      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 3 },
+    } })
+    const node = version.definition.nodes[0]!, edge = version.definition.edges[0]!
+    const base = { runId: fixture.run.id, workflowNodeId: node.id, agentId: node.agentId,
+      agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
+      input: {}, createdAt: fixture.createdAt, finishedAt: fixture.createdAt,
+      state: 'completed' as const }
+    const first = HarnessExecutionSchema.parse({ ...base, id: 'execution-retry-1', attempt: 1,
+      result: { outcome: 'failed', error: { code: 'TRANSIENT', message: 'A retryable native failure.', retryable: true } } })
+    const second = HarnessExecutionSchema.parse({ ...base, id: 'execution-retry-2', attempt: 2,
+      result: { outcome: 'succeeded', output: { routing: { kind: 'finish' },
+        data: { latestDeliverable: { revision: 2 }, remainingFindings: [] } } } })
+    const observed: string[] = [], attempts: number[] = [], requests: string[] = []
+    let terminalCalls = 0
+    const store = {
+      admitWorkActivation: async () => ({ execution: first, reused: true }),
+      acceptWorkTerminal: async (_id: string, candidate: (attempt: number) => unknown) => {
+        terminalCalls++
+        if (terminalCalls === 1) {
+          candidate(2)
+          return { kind: 'retry' as const, execution: second }
+        }
+        return { kind: 'accepted' as const, execution: second, replayed: false }
+      },
+      admitWorkRequest: async (executionId: string) => {
+        requests.push(executionId)
+        return { kind: 'accepted' as const, replayed: false, destinationReady: true,
+          request: WorkRequestSchema.parse({ scope: fixture.scope, requestId: 'request-after-retry',
+            relationshipId: edge.id, requesterActivationId: 'activation-entry',
+            requesterExecutionId: executionId, destinationActivationId: 'activation-next',
+            requesterNodeId: node.id, destinationNodeId: edge.target,
+            payloadDigest: `sha256:${'0'.repeat(64)}`, acceptedAt: fixture.createdAt, ordinal: 1 }) }
+      },
+      returnWork: async () => { throw new Error('A finish cannot return work') },
+    }
+    const action = workHandoffNodeAction({ version, store: store as never,
+      driver: { candidate: (_ref, attempt) => {
+        attempts.push(attempt)
+        return HarnessExecutionSchema.parse({ ...base, id: 'queued-retry', attempt,
+          state: 'queued', result: undefined, finishedAt: undefined })
+      }, observe: async (execution) => { observed.push(execution.id) } },
+      limiter: new ExecutionLimiter(1, 10), signal: new AbortController().signal })
+    expect(await action('activation-entry')).toEqual(['activation-next'])
+    expect(observed).toEqual([first.id, second.id])
+    expect(attempts).toEqual([2])
+    expect(requests).toEqual([second.id])
+  })
 })

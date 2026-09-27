@@ -57,3 +57,17 @@ The NIM-2693 forward SQL migration creates `run_work_activations`, `run_work_res
 A definitive cancellation before request admission leaves no counter row or charge. Once the accepted request and reservation commit, later cancellation or uncertain native delivery does not refund that ordinal or erase its ancestry. A new Run alone resets usage.
 
 Run-wide `maxNodeExecutions`, owner/session/Stop gates and technical retry limits remain separate safeguards. Unlimited connection allowance removes only that connection's cap and never creates an automatic loop.
+
+## FLOW-02 qualification checkpoint
+
+The migration and admission code in NIM-2693 have these focused tests. The provider tests are opt-in and use new `nim2691_*` PostgreSQL databases plus a temporary trusted project directory. They install the product's managed launcher but keep the existing global Codex/OpenCode MCP entries unchanged. Every test database and project directory is removed after its test.
+
+| Requirement | Source | Evidence and limit |
+| --- | --- | --- |
+| Three includes first; last-slot race, replay, independent connections, Stop, fresh Run, uncapped above three, separate Run budget | `workHandoffAdmission.ts`, `workHandoffMigration.ts` | `nim2691-handoff-postgres.integration.test.ts` uses real PostgreSQL and Run ownership. Its quota-only fixture has explicit native/authority test hooks. |
+| Exact source and join ancestry; no earlier terminal masking a new activation | `workHandoffAdmission.ts`, `currentActivity.ts`, `publicProjection.ts` | The same PostgreSQL suite checks one queued join and activation-sequence ordering. `nim2691-real-native.acceptance.test.ts` checks live provider result/request digests, Codex→OpenCode handoff, accepted review return without a requester wake-up, conditional route, and a four-Agent unequal join. |
+| Lost COMMIT acknowledgement and uncertain native-session restart | `connection.ts`, `repeatPostgres.ts`, `repeatRuntime.ts` | `nim2691-ambiguous-commit.integration.test.ts` lets PostgreSQL commit then loses the client reply. The production-owner test proves launch permits are not inherited; `nim2691-handoff-native.test.ts` proves the observer makes no provider call without an exact recovered session. |
+| Technical retry is not another business request | `repeatPostgres.ts`, `workHandoffNode.ts` | `nim2691-work-retry.integration.test.ts` uses PostgreSQL for the two attempts and counter, with physical provider settlement explicitly doubled. `nim2691-handoff-node.test.ts` checks routing calls only after retry acceptance. |
+| Old saved/in-flight path stays readable | Existing `repeat*` runtime and additive migration | ENG-04 repository activation/recovery PostgreSQL suite: 7 tests passed in a task-owned database with the new migration installed. |
+
+These checks establish the above boundaries, not the third-review exhausted notice, explicit fourth-request continuation, review rerouting, or all provider uncertainty cases. Those remain open until FLOW-03 and the integrated qualification gate.

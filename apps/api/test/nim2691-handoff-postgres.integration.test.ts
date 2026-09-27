@@ -1,9 +1,5 @@
 import assert from 'node:assert/strict'
-import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import pg from 'pg'
+import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { workHandoffMigration } from '../src/infrastructure/workHandoffMigration.js'
@@ -23,43 +19,11 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { writerFixture } from './eng04-writer-fixtures.js'
 import { graphFixture, graphHeaders, graphRpcValue, graphUrl } from './eng04-graph-composition-fixture.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
+import { nim2691TaskDatabase as taskDatabase } from './helpers/nim2691Database.js'
 import { digest, seedRun, text, transaction, type JsonObject } from './eng04-migration-fixtures.js'
 
 const enabled = process.env.NIM2691_POSTGRES === '1'
 const postgresDescribe = describe.skipIf(!enabled)
-
-async function taskDatabase<T>(work: (pool: pg.Pool, directory: string) => Promise<T>): Promise<T> {
-  assert.equal(process.env.NIM2691_POSTGRES, '1')
-  const configured = process.env.NIM2691_ADMIN_DATABASE_URL
-  assert.ok(configured, 'NIM2691_ADMIN_DATABASE_URL is required')
-  const url = new URL(configured)
-  assert.ok(['postgres:', 'postgresql:'].includes(url.protocol))
-  const name = `nim2691_${randomBytes(12).toString('hex')}`
-  const admin = new pg.Client({ connectionString: configured, connectionTimeoutMillis: 10000 })
-  let pool: pg.Pool | undefined
-  let directory: string | undefined
-  let created = false
-  try {
-    await admin.connect()
-    assert.equal((await admin.query<{ server_version_num: string }>('show server_version_num')).rows[0]?.server_version_num.startsWith('17'), true)
-    await admin.query(`create database "${name}" template template0 encoding 'UTF8'`)
-    created = true
-    url.pathname = `/${name}`
-    pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
-    directory = await mkdtemp(join(tmpdir(), 'nim2691-workspace-'))
-    assert.equal((await pool.query<{ name: string }>('select current_database() as name')).rows[0]?.name, name)
-    return await work(pool, directory)
-  } finally {
-    try { if (pool) await pool.end() }
-    finally {
-      try { if (created) await admin.query(`drop database "${name}"`) }
-      finally {
-        await admin.end()
-        if (directory) await rm(directory, { recursive: true, force: true })
-      }
-    }
-  }
-}
 
 function handoffVersion(version: JsonObject) {
   const definition = version.definition as JsonObject
@@ -439,14 +403,14 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
     })
   }, 120000)
 
-  it('admits more than three uncapped exchanges and starts a fresh Run at one', async () => {
+  it('admits more than three uncapped exchanges, enforces Run budget, and resets on a fresh Run', async () => {
     await taskDatabase(async (pool) => {
       await applyApplicationMigrations(pool)
       const fixture = makeCurrentWorkflowFixture('nim2691-unbounded')
       const source = fixture.version.definition.nodes[0]!, edge = fixture.version.definition.edges[0]!
       const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
         ...fixture.version.definition, handoffs: { contractVersion: 1 },
-        executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 },
+        executionPolicy: { maxParallelism: 2, maxNodeExecutions: 11 },
         nodes: [{ ...source, choice: { outcomes: [
           { outcome: 'review', target: { kind: 'edge', relationshipId: edge.id } },
         ] } }, fixture.version.definition.nodes[1]],
@@ -507,7 +471,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         })
         return run
       }
-      const firstRun = await seed('nim2691-uncapped-run', 5)
+      const firstRun = await seed('nim2691-uncapped-run', 6)
       const firstOwner = await RunOwnership.acquire(pool, firstRun.id, () => undefined)
       assert.ok(firstOwner)
       try {
@@ -520,6 +484,8 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect((await pool.query<{ used: number; maximum: number | null }>(
           'select used,maximum from run_work_connection_usage where run_id=$1', [firstRun.id])).rows[0])
           .toEqual({ used: 5, maximum: null })
+        await expect(store.admitWorkRequest(`${firstRun.id}-execution-6`))
+          .rejects.toMatchObject({ code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED' })
       } finally { await firstOwner.release() }
       const freshRun = await seed('nim2691-fresh-run', 1)
       const freshOwner = await RunOwnership.acquire(pool, freshRun.id, () => undefined)
