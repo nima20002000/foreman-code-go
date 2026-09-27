@@ -18,7 +18,9 @@ describe('ENG04 migration successor registry/static guardrails', () => {
     const versions = migrations.map((migration) => migration.version)
     const occurrence = versions.indexOf(repeatOccurrenceMigration.version)
     expect(versions.indexOf(264502)).toBe(occurrence + 1)
-    expect(versions.slice(occurrence + 1).every((version) => version > repeatOccurrenceMigration.version)).toBe(true)
+    // Later unrelated migrations may carry lower numbers (264402-264405 were appended after it and are
+    // already applied, so they cannot be renumbered). No later writer may be placed before it.
+    expect(versions.slice(0, occurrence).every((version) => version < repeatOccurrenceMigration.version)).toBe(true)
   })
 
   it('does not silently skip drift, rewrite legacy rows or require pgcrypto', () => {

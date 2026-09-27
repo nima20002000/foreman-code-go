@@ -19,6 +19,7 @@ import { acknowledgeEditOutbox, readEditOutbox, readEditSnapshot, storeEditSnaps
 import { acknowledgeEditIntentSnapshot } from './useGraphEditIntent'
 import { inFollowupTab } from './nim2644Followup.cases'
 import { repairFixture } from './nim2644State.cases'
+import { bindMockInstallation } from '../../../shared/mocks/handlers'
 
 async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
@@ -65,8 +66,8 @@ const saveButton = () => screen.getByRole('button', { name: /^Save changes$/ })
 const recoveryName = /^(?:Stop affected Runs and save|Reconcile Save)$/
 async function retainedSaveReady() {
   await waitFor(() => {
-    // A pending journal is reconciled; ordinary Save must not create a new command.
-    expect(saveButton()).toBeDisabled()
+    // A pending journal is reconciled; ordinary Save is not offered and cannot create a new command.
+    expect(screen.queryByRole('button', { name: /^Save changes$/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: recoveryName })).toBeEnabled()
     expect(screen.getByRole('button', { name: /^Discard changes$/ })).toBeEnabled()
   })
@@ -97,7 +98,15 @@ async function saveWithStop(user: ReturnType<typeof userEvent.setup>) {
   expect(stage.mock.calls.at(-1)![0]).toEqual(request)
 }
 
-const startButton = () => screen.getByRole('button', { name: 'Start saved version' })
+// Unsaved edits relabel the one Run control "Save and run".
+const startButton = () => screen.getByRole('button', { name: /^(Start saved version|Save and run)$/ })
+/** Only a clean board offers the saved version itself; waiting on it proves reconciliation finished. */
+const savedStartButton = () => screen.getByRole('button', { name: 'Start saved version' })
+/** Retained edits never start the stale saved version: Run first saves them. */
+function expectNoSavedStart() {
+  expect(screen.queryByRole('button', { name: 'Start saved version' })).not.toBeInTheDocument()
+  expect(startButton()).toHaveAccessibleName('Save and run')
+}
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   clients.push(client)
@@ -151,7 +160,7 @@ async function createWorker(user: ReturnType<typeof userEvent.setup>) {
   return node
 }
 beforeEach(() => {
-  useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear()
+  useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); bindMockInstallation(); sessionStorage.clear()
   useGraphDraftStore.getState().installNextDraft(key, repairFixture(1))
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
   vi.spyOn(nextDraftApi, 'context').mockResolvedValue(repairFixture(1))
@@ -180,11 +189,11 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(advance).not.toHaveBeenCalled()
     expect(readEditOutbox(key)).toBeUndefined(); expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
     expect(readEditSnapshot(key)?.graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
-    expect(startButton()).toBeDisabled()
+    expectNoSavedStart()
     await confirmDiscard(user)
     expect(edit().graph.nodes[0]?.initialPrompt).toBeUndefined()
     expect(stage).toHaveBeenCalledOnce(); expect(advance).not.toHaveBeenCalled(); expect(boardStartClient.start).not.toHaveBeenCalled()
-    await waitFor(() => expect(startButton()).toBeEnabled())
+    await waitFor(() => expect(savedStartButton()).toBeEnabled())
   })
   it('FE-001 reopens a safely rejected form and permits explicit reload/correction with a new Stage identity', async () => {
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValueOnce(new ApiError({ code: 'REVISION_CONFLICT', message: 'Rejected before insert' }, 409))
@@ -259,9 +268,9 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const option = screen.getByRole('option', { name: /^Worker \d$/ })
     expect(option).toBeEnabled()
     await user.selectOptions(screen.getByRole('combobox', { name: 'Starts the workflow' }), node.id)
-    expect(edit().graph.entryNodeId).toBe(node.id); expect(startButton()).toBeDisabled()
+    expect(edit().graph.entryNodeId).toBe(node.id); expectNoSavedStart()
     await saveWithStop(user); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
-    await waitFor(() => expect(startButton()).toBeEnabled())
+    await waitFor(() => expect(savedStartButton()).toBeEnabled())
     const request = stage.mock.calls[0]![0]
     expect(request.graph.entryNodeId).toBe(node.id)
     expect(request.graph.nodes.map((item) => item.id)).toEqual([node.id])
@@ -280,7 +289,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     })
     expect(readEditOutbox(key)).toBeUndefined(); expect(boardStartClient.start).not.toHaveBeenCalled()
     reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
-    await waitFor(() => expect(startButton()).toBeEnabled())
+    await waitFor(() => expect(savedStartButton()).toBeEnabled())
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().context.draft.baseWorkflowVersionId).toBe('version-2')
   })
   it('FE-002 a lost publication reply is acknowledged from readback using the retained raw new-Agent snapshot', async () => {
@@ -295,7 +304,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(readEditOutbox(key)).toBeDefined()
     visible = persisted; reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
     await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
-    await waitFor(() => expect(startButton()).toBeEnabled())
+    await waitFor(() => expect(savedStartButton()).toBeEnabled())
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[node.agentId]).toBeUndefined()
     expect(edit().context.agents.find((item) => item.agent.id === node.agentId)?.metadataRevision).toBe(1)
     // Initial Stage plus confirmation replay; readback adds no new Stage.
@@ -318,7 +327,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(edit().agentEdits?.[node.agentId]).toMatchObject({ name: 'Independently newer Worker',
       configurationVersionId: `saved-${node.agentId}`, createdAt: now, updatedAt: now })
     expect(edit().context.agents.find((item) => item.agent.id === node.agentId)?.agent.name).toBe('Worker 2')
-    expect(nextDraftDirty(edit())).toBe(true); expect(startButton()).toBeDisabled(); expect(boardStartClient.start).not.toHaveBeenCalled()
+    expect(nextDraftDirty(edit())).toBe(true); expectNoSavedStart(); expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it.each([[true, false], [true, true], [false, false], [false, true]])('FE-003 topology Discard: dropped reply=%s, newer edits=%s', async (dropped, newer) => {
     const context = repairFixture()
@@ -397,7 +406,7 @@ describe('NIM-2644 follow-up stale existing-Agent attach', () => {
       await confirmDiscard(user)
       expect(edit().graph.nodes.some((node) => node.id === 'attached-worker')).toBe(false)
       expect(stage).toHaveBeenCalledOnce()
-      await waitFor(() => expect(startButton()).toBeEnabled())
+      await waitFor(() => expect(savedStartButton()).toBeEnabled())
     } else {
       reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
       const fresh = structuredClone(context)
@@ -454,7 +463,7 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     visible = persisted
     if (recovery === 'refresh') reopen(first)
     else await requestSave(user)
-    await waitFor(() => expect(startButton()).toBeEnabled())
+    await waitFor(() => expect(savedStartButton()).toBeEnabled())
     // The sibling already saved: refresh/retry only reads its terminal receipt,
     // without showing another Stop dialog or sending another Stage or Advance.
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()

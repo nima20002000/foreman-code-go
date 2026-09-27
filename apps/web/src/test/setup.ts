@@ -4,7 +4,7 @@ import { cleanup } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 
 import { server } from '../mocks/server'
-import { mockRuntimeIdentity, resetTestFixtures } from '../shared/mocks/handlers'
+import { bindMockInstallation, resetTestFixtures } from '../shared/mocks/handlers'
 import { useNavigationUiStore } from '../features/workspaces/navigationUiStore'
 
 if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.showModal) {
@@ -25,7 +25,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 
 // Ordinary route fixtures model an already-bound installation. Boundary tests
 // explicitly exercise first binding, recreation, and unavailable storage.
-beforeEach(() => window.localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${mockRuntimeIdentity.installationId}`))
+beforeEach(bindMockInstallation)
 
 afterEach(() => {
   server.resetHandlers()

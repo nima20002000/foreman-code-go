@@ -207,6 +207,10 @@ const currentAuthoringHandler = http.all(/\/api\/management\/workspaces\/[^/]+\/
 })
 
 export const mockRuntimeIdentity = { installationId: 'd95abeb8-598a-49a4-8c3c-c6e3533053e8', checkoutId: 'a'.repeat(64), databaseId: 'b'.repeat(64) }
+/** Ordinary fixtures model an already-bound installation; call again after clearing localStorage. */
+export function bindMockInstallation(): void {
+  window.localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${mockRuntimeIdentity.installationId}`)
+}
 
 export const handlers: RequestHandler[] = [
   currentAuthoringHandler,
