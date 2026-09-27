@@ -33,7 +33,12 @@ export interface AgentConversationRow {
   revision: string | number
   pending_interaction: PendingNativeInteraction | null
   last_result: ExecutionResult | null
-  record: { origin: AgentChatOrigin; workingDirectory: string; runtimeDirectory: string; startupDelivered?: boolean; sessionUnavailable?: string }
+  record: {
+    origin: AgentChatOrigin; workingDirectory: string; runtimeDirectory: string; startupDelivered?: boolean; sessionUnavailable?: string
+    /** Durable fence: an unbound native creation is never permission to create a replacement. */
+    sessionCreation?: { requestId: string }
+    startupReceipt?: { requestId: string; nativeSessionId: string }
+  }
   created_at: Date
   updated_at: Date
 }
@@ -124,8 +129,35 @@ export class PostgresAgentChatRepository {
   async open(): Promise<AgentConversationRow[]> {
     return (await this.pool.query<AgentConversationRow>(`select c.* from operator_conversations c
       where c.kind='agent' and c.deleted_at is null and (c.active_request_id is not null or exists (
-        select 1 from operator_conversation_turns t where t.conversation_id=c.id and t.delivery='queued'))
+        select 1 from operator_conversation_turns t where t.conversation_id=c.id and t.delivery in ('queued','submitting','accepted','unknown')))
       order by c.updated_at,c.id`)).rows
+  }
+
+  /** Restore ownership for receipts left orphaned by an older process. Never re-submit them. */
+  async restoreUnsettled(id: string): Promise<AgentConversationRow | undefined> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const row = (await client.query<AgentConversationRow>(`select * from operator_conversations
+        where id=$1 and kind='agent' and deleted_at is null for update`, [id])).rows[0]
+      if (row && !row.active_request_id) {
+        const unresolved = (await client.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
+          where conversation_id=$1 and intent <> 'steer' and delivery in ('submitting','accepted','unknown')
+          order by turn_sequence limit 1`, [id])).rows[0]
+        if (unresolved) {
+          await client.query(`update operator_conversations set active_request_id=$2,active_native_turn_id=$3,
+            active_phase=case when $3::text is null then 'accepted' else 'submitted' end,
+            turn_state='uncertain',revision=revision+1,updated_at=now() where id=$1`,
+          [id, unresolved.request_id, unresolved.native_turn_id])
+        }
+      }
+      const restored = row ? await this.get(id, client) : undefined
+      await client.query('commit')
+      return restored
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined)
+      throw error
+    } finally { client.release() }
   }
 
   async turn(id: string, requestId: string, query: Queryable = this.pool): Promise<AgentChatTurn | undefined> {
@@ -254,7 +286,11 @@ export class PostgresAgentChatRepository {
     try {
       await client.query('begin')
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
-      if (!row || row.active_request_id) { await client.query('commit'); return false }
+      if (!row || row.active_request_id || row.record.sessionUnavailable) { await client.query('commit'); return false }
+      // A legacy orphan must be reconciled before any queued input can own this session.
+      const unresolved = await client.query(`select 1 from operator_conversation_turns
+        where conversation_id=$1 and intent <> 'steer' and delivery in ('submitting','accepted','unknown') limit 1`, [id])
+      if (unresolved.rowCount) { await client.query('commit'); return false }
       const claimed = await client.query(`update operator_conversation_turns set delivery='submitting',updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery='queued'`, [id, requestId])
       if (claimed.rowCount !== 1) { await client.query('commit'); return false }
@@ -269,9 +305,18 @@ export class PostgresAgentChatRepository {
     } finally { client.release() }
   }
 
+  async beginSessionCreation(id: string, requestId: string): Promise<boolean> {
+    return (await this.pool.query(`update operator_conversations
+      set record=record || jsonb_build_object('sessionCreation',jsonb_build_object('requestId',$2::text)),
+        revision=revision+1,updated_at=now()
+      where id=$1 and kind='agent' and active_request_id=$2 and native_session_id is null
+        and not (record ? 'sessionCreation')`, [id, requestId])).rowCount === 1
+  }
+
   async bindSession(id: string, providerVersion: string, nativeSessionId: string): Promise<void> {
-    await this.pool.query(`update operator_conversations set provider_version=$2,native_session_id=$3,revision=revision+1,updated_at=now()
+    const bound = await this.pool.query(`update operator_conversations set provider_version=$2,native_session_id=$3,revision=revision+1,updated_at=now()
       where id=$1 and kind='agent' and (native_session_id is null or native_session_id=$3)`, [id, providerVersion, nativeSessionId])
+    if (bound.rowCount !== 1) throw new DomainError('AGENT_CHAT_SESSION_CONFLICT', 'The native session binding changed.', 409)
   }
   async markStartupDelivered(id: string): Promise<void> {
     await this.pool.query(`update operator_conversations set record=record || '{"startupDelivered":true}'::jsonb where id=$1 and kind='agent'`, [id])
@@ -286,10 +331,23 @@ export class PostgresAgentChatRepository {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
-      const updated = await client.query(`update operator_conversation_turns set delivery='accepted',native_turn_id=$3,updated_at=now()
+      const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
+      if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
+      if (row.active_native_turn_id && row.active_native_turn_id !== nativeTurnId) {
+        throw new DomainError('AGENT_CHAT_NATIVE_TURN_MISMATCH', 'Native evidence addressed a different turn.', 409)
+      }
+      const updated = await client.query(`update operator_conversation_turns set delivery='accepted',native_turn_id=$3,delivery_error=null,updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery in ('submitting','unknown')`, [id, requestId, nativeTurnId])
+      if (!updated.rowCount && row.active_native_turn_id === nativeTurnId && row.record.startupDelivered
+        && row.record.startupReceipt?.requestId === requestId) {
+        await client.query('commit')
+        return false
+      }
+      // Acceptance and startup delivery are one commit, including positive recovery evidence.
       await client.query(`update operator_conversations set active_native_turn_id=$3,active_phase='submitted',
-        turn_state=case when cancel_requested then 'canceling' else 'active' end,revision=revision+1,updated_at=now()
+        record=record || jsonb_build_object('startupDelivered',true,'startupReceipt',
+          coalesce(record->'startupReceipt',jsonb_build_object('requestId',$2::text,'nativeSessionId',native_session_id))),
+        turn_state=case when cancel_requested then 'canceling' else 'active' end,last_error=null,revision=revision+1,updated_at=now()
         where id=$1 and active_request_id=$2`, [id, requestId, nativeTurnId])
       await client.query('commit')
       return updated.rowCount === 1
@@ -327,7 +385,7 @@ export class PostgresAgentChatRepository {
 
   async pending(id: string, requestId: string, pending: PendingNativeInteraction | undefined): Promise<void> {
     await this.pool.query(`update operator_conversations set pending_interaction=$3::jsonb,revision=revision+1,updated_at=now()
-      where id=$1 and active_request_id=$2`, [id, requestId, pending ? JSON.stringify(PendingNativeInteractionSchema.parse(pending)) : null])
+      where id=$1 and active_request_id=$2 and pending_interaction is distinct from $3::jsonb`, [id, requestId, pending ? JSON.stringify(PendingNativeInteractionSchema.parse(pending)) : null])
   }
   async requestCancel(id: string, requestId: string, query: Queryable = this.pool): Promise<boolean> {
     return (await query.query(`update operator_conversations set cancel_requested=true,turn_state='canceling',revision=revision+1,updated_at=now()
@@ -356,13 +414,32 @@ export class PostgresAgentChatRepository {
   }
 
   /** Terminal settlement of the active turn; clears the conversation's active identity. */
-  async finish(id: string, requestId: string, result: ExecutionResult): Promise<boolean> {
+  async finish(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string): Promise<boolean> {
     const delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
     const client = await this.pool.connect()
     try {
       await client.query('begin')
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
       if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
+      // Cold Codex history has a terminal answer/identity without an item.completed event.
+      // Persist it in the settlement transaction, deduplicating native messages and OpenCode parts.
+      if (result.outcome === 'succeeded' && nativeMessageId) {
+        const output = result.output
+        const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
+          ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : '' : ''
+        const prior = await client.query(`select 1 from operator_conversation_messages
+          where conversation_id=$1 and (native_message_id=$2 or
+            (record->>'nativeParentMessageId'=$2 and record->>'requestId'=$3)) limit 1`, [id, nativeMessageId, requestId])
+        if (content && !prior.rowCount) {
+          const activity = await client.query<{ sequence: string }>(
+            'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id, requestId])
+          const now = new Date().toISOString()
+          const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'assistant', requestId, content,
+            nativeMessageId, afterActivitySequence: activity.rows[0]!.sequence, createdAt: now, updatedAt: now })
+          await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
+            values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id, id, content, nativeMessageId, JSON.stringify(message)])
+        }
+      }
       await client.query(`update operator_conversation_turns set delivery=$3,delivery_error=$4::jsonb,result=$5::jsonb,updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery in ('submitting','accepted','unknown')`,
       [id, requestId, delivery, result.error ? JSON.stringify({ code: result.error.code, message: result.error.message }) : null,
@@ -399,11 +476,9 @@ export class PostgresAgentChatRepository {
     } finally { client.release() }
   }
 
-  /** After restart without native evidence: keep the receipt unknown and release the conversation. */
+  /** Missing evidence never releases ownership, cancellation or pending native interactions. */
   async abandon(id: string, requestId: string, message: string): Promise<void> {
     await this.unknown(id, requestId, message)
-    await this.pool.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null,active_phase=null,
-      cancel_requested=false,pending_interaction=null,revision=revision+1,updated_at=now() where id=$1 and active_request_id=$2`, [id, requestId])
   }
 
   async cancelQueued(id: string, requestId?: string, query: Queryable = this.pool): Promise<number> {

@@ -84,6 +84,10 @@ export class F1Store {
       return result([{ count: String([...this.turns.values()].filter((entry) => entry.intent !== null
         && deliveries.includes(entry.delivery)).length) }])
     }
+    if (sql.startsWith('select 1 from operator_conversation_turns')) {
+      return result([...this.turns.values()].filter((entry) => entry.intent !== 'steer'
+        && ['submitting', 'accepted', 'unknown'].includes(entry.delivery)).slice(0, 1).map(() => ({ '1': 1 })))
+    }
     if (sql.startsWith('select payload')) return result(receipt ? [{ content: receipt.payload.content }] : [])
     if (sql.startsWith('with open as (')) {
       const deliveries = values[1] as string[]
@@ -162,6 +166,8 @@ export class F1Store {
         this.row.active_native_turn_id = String(values[2]); this.row.turn_state = this.row.cancel_requested ? 'canceling' : 'active'
       } else if (sql.includes('set cancel_requested=true')) {
         this.row.cancel_requested = true; this.row.turn_state = 'canceling'
+      } else if (sql.includes('set pending_interaction=$3::jsonb')) {
+        this.row.pending_interaction = values[2] === null ? null : JSON.parse(String(values[2])) as AgentConversationRow['pending_interaction']
       } else if (sql.includes('set active_request_id=null')) {
         Object.assign(this.row, { active_request_id: null, active_native_turn_id: null, cancel_requested: false, pending_interaction: null })
         if (sql.includes('last_result=$4')) {

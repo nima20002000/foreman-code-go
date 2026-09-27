@@ -89,6 +89,7 @@ export class AgentChatService {
   private readonly tasks = new Map<string, Promise<void>>()
   private readonly wakeups = new Set<string>()
   private readonly controls = new Map<string, Promise<unknown>>()
+  private readonly reconciliationTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly activity: PostgresOperatorActivityRepository
   private readonly lifetime = new AbortController()
   private closing = false
@@ -372,6 +373,7 @@ export class AgentChatService {
       const row = await this.repository.get(id)
       if (!row || row.active_request_id !== target.requestId || !row.cancel_requested
         || (target.nativeTurnId && row.active_native_turn_id !== target.nativeTurnId)) return
+      this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId: target.requestId, sessionState: 'interrupting', explicit })
       const runtime = this.runtimes.get(id)
       if (!runtime?.session || !row.active_native_turn_id) return // Submission path observes cancel_requested.
@@ -408,6 +410,7 @@ export class AgentChatService {
       this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Agent chat delivery failed.' })
     }).finally(() => {
       this.tasks.delete(id)
+      this.scheduleReconcile(id)
       // An admission may have seen this task after its empty-queue read but before teardown.
       if (this.wakeups.delete(id)) this.pump(id)
     })
@@ -418,6 +421,7 @@ export class AgentChatService {
     // Native adapter descriptor only. The chat conversation id stands in for execution/Run binding; no Run row exists for it.
     return {
       kind: 'workflow', correlationId, instructionsDelivered: delivered,
+      ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       request: {
         executionId: `agent-chat:${row.id}`, runId: `agent-chat:${row.id}`, workspaceId: row.workspace_id, workflowNodeId: row.workflow_node_id,
         workingDirectory: row.record.workingDirectory, runtimeDirectory: row.record.runtimeDirectory || this.runtimeDirectory(row.id),
@@ -429,7 +433,12 @@ export class AgentChatService {
 
   private async runtime(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, signal: AbortSignal): Promise<Runtime> {
     const existing = this.runtimes.get(row.id)
-    if (existing?.session) return existing
+    if (existing?.session) {
+      if (existing.session.nativeSessionId !== row.native_session_id) {
+        throw new DomainError('AGENT_CHAT_SESSION_UNBOUND', 'Native session creation has not been durably bound.', 409)
+      }
+      return existing
+    }
     await mkdir(this.runtimeDirectory(row.id), { recursive: true })
     const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory), configuration }
     this.runtimes.set(row.id, runtime)
@@ -437,17 +446,22 @@ export class AgentChatService {
       // Resume the exact stored session. Its startup instructions are already in native history.
       runtime.session = await runtime.manager.attachSession({ harness: row.harness, providerVersion: row.provider_version,
         nativeSessionId: row.native_session_id }, this.startInput(row, configuration, correlationId, true), signal)
-    } else if (row.record.origin.kind === 'run_execution') {
-      const origin = row.record.origin
-      if (!runtime.manager.forkSession) throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'This harness cannot continue a Run session in chat.', 409)
-      const providerVersion = await this.sourceProviderVersion(origin, runtime)
-      runtime.session = await runtime.manager.forkSession({ harness: row.harness, providerVersion, nativeSessionId: origin.sourceNativeSessionId },
-        this.startInput(row, configuration, correlationId, true), signal)
-      await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
-      await this.repository.markStartupDelivered(row.id)
     } else {
-      runtime.session = await runtime.manager.createSession(this.startInput(row, configuration, correlationId, false), signal)
-      await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
+      if (!row.active_request_id || !await this.repository.beginSessionCreation(row.id, row.active_request_id)) {
+        throw new DomainError('AGENT_CHAT_SESSION_CREATION_UNCERTAIN', 'A native session may already exist. A replacement will not be created.', 409)
+      }
+      if (row.record.origin.kind === 'run_execution') {
+        const origin = row.record.origin
+        if (!runtime.manager.forkSession) throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'This harness cannot continue a Run session in chat.', 409)
+        const providerVersion = await this.sourceProviderVersion(origin, runtime)
+        runtime.session = await runtime.manager.forkSession({ harness: row.harness, providerVersion, nativeSessionId: origin.sourceNativeSessionId },
+          this.startInput(row, configuration, correlationId, true), signal)
+        await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
+        await this.repository.markStartupDelivered(row.id)
+      } else {
+        runtime.session = await runtime.manager.createSession(this.startInput(row, configuration, correlationId, false), signal)
+        await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
+      }
     }
     return runtime
   }
@@ -473,6 +487,7 @@ export class AgentChatService {
     const correlationId = agentChatCorrelation(id, turn.requestId)
     const signal = this.lifetime.signal
     let submitted = false
+    let creatingSession = false
     let runtime: Runtime | undefined
     try {
       const row = await this.repository.get(id)
@@ -481,7 +496,9 @@ export class AgentChatService {
       const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
       if (!configuration) throw new DomainError('AGENT_CHAT_CONFIGURATION_MISSING', 'The pinned Agent configuration is unavailable.', 409)
       try {
+        creatingSession = !row.native_session_id
         runtime = await this.runtime(row, configuration, correlationId, signal)
+        creatingSession = false
       } catch (error) {
         if (row.native_session_id && sessionMissing(error)) {
           const reason = 'The native session for this chat no longer exists or cannot be resumed.'
@@ -506,7 +523,7 @@ export class AgentChatService {
         onSubmitted: async (id_) => {
           nativeTurnId = id_; submitted = true
           await this.repository.accepted(id, turn.requestId, id_)
-          if (prompt.startup) await this.repository.markStartupDelivered(id)
+          this.scheduleReconcile(id)
           this.events.publish(id, 'turn', { requestId: turn.requestId, delivery: 'accepted', nativeTurnId: id_ })
           const current = await this.repository.get(id)
           if (current?.cancel_requested) {
@@ -527,15 +544,23 @@ export class AgentChatService {
           })
         }
       }
-      await this.observe(id, turn.requestId, runtime, correlationId)
+      await this.observe(id, turn.requestId, runtime!, correlationId)
     } catch (error) {
       if (this.closing) return // Restart recovery reconciles in-flight work.
+      if (creatingSession && (await this.repository.get(id))?.record.sessionCreation) {
+        // No reliable identity/commit means read-only, not another create/fork attempt.
+        await this.repository.markSessionUnavailable(id, 'Native session creation could not be confirmed. This conversation is read-only; no replacement session will be created automatically.')
+        await this.repository.abandon(id, turn.requestId, 'Native session creation or binding is unconfirmed.')
+        this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
+        return
+      }
       if (!submitted && definiteRejection(error) || !submitted && error instanceof DomainError) {
         const current = await this.repository.get(id)
         await this.settle(id, turn.requestId, current?.cancel_requested ? { outcome: 'canceled' } : failure(error))
       } else {
         await this.repository.abandon(id, turn.requestId, error instanceof Error ? error.message : 'Native delivery is unconfirmed.')
-        await this.release(id)
+        // Retain the manager: it may still own a late acknowledgement or a live native turn.
+        this.scheduleReconcile(id)
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
       }
     }
@@ -555,10 +580,15 @@ export class AgentChatService {
   }
 
   /** Settle from native history: identity must match, and only terminal evidence completes a turn. */
-  private async observe(id: string, requestId: string, runtime: Runtime, correlationId: string): Promise<void> {
+  private async observe(id: string, requestId: string, runtime: Runtime, correlationId: string, controlled = false): Promise<void> {
+    const row = await this.repository.get(id)
+    if (!row || row.active_request_id !== requestId) return
     const history = await runtime.manager.reconcile(runtime.session!, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]))
-    if (history.correlationId !== correlationId || !history.nativeTurnId) {
-      await this.repository.abandon(id, requestId, 'The provider has not proven this message was received. It will not be resent automatically.')
+    if (runtime.session?.nativeSessionId !== row.native_session_id || history.correlationId !== correlationId || !history.nativeTurnId
+      || row.active_native_turn_id && history.nativeTurnId !== row.active_native_turn_id
+      || history.terminalTurn && (history.terminalTurn.correlationId !== correlationId || history.terminalTurn.providerId !== history.nativeTurnId)) {
+      await this.repository.abandon(id, requestId, 'The provider has not proven this exact message and native turn. It will not be resent automatically.')
+      this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
       return
     }
@@ -567,19 +597,63 @@ export class AgentChatService {
     for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.record(id, requestId, runtime, event, redact)
     const pending = history.pendingInteraction ?? history.pendingInteractions[0]
     if (history.terminalResult && !pending) {
-      await this.settle(id, requestId, history.terminalResult)
+      await this.settle(id, requestId, history.terminalResult, history.nativeMessageId)
     } else {
-      await this.repository.abandon(id, requestId, 'The native turn ended without terminal evidence.')
-      await this.release(id)
-      this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
+      // Acknowledged but not terminal (including approvals) still owns the native session.
+      if (controlled) await this.repository.pending(id, requestId, pending)
+      else await this.control(id, () => this.repository.pending(id, requestId, pending))
+      this.scheduleReconcile(id)
+      this.events.publish(id, 'state', { requestId, delivery: 'accepted' })
     }
   }
 
-  private async settle(id: string, requestId: string, result: ExecutionResult): Promise<void> {
-    if (await this.repository.finish(id, requestId, result)) {
+  private async settle(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string): Promise<void> {
+    if (await this.repository.finish(id, requestId, result, nativeMessageId)) {
       this.events.publish(id, 'message', { requestId })
       this.events.publish(id, 'state', { requestId, delivery: result.outcome === 'succeeded' ? 'completed' : result.outcome })
     }
+  }
+
+  /** Poll exact native history even when the event stream or an interrupt notification is silent. */
+  private scheduleReconcile(id: string): void {
+    if (this.closing || this.reconciliationTimers.has(id)) return
+    const timer = setTimeout(() => {
+      this.reconciliationTimers.delete(id)
+      void this.repair(id).catch((error: unknown) => {
+        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Native reconciliation failed.' })
+        this.scheduleReconcile(id)
+      })
+    }, 1_000)
+    timer.unref()
+    this.reconciliationTimers.set(id, timer)
+  }
+
+  private async repair(id: string): Promise<void> {
+    await this.control(id, async () => {
+      const row = await this.repository.restoreUnsettled(id)
+      if (!row?.active_request_id || row.record.sessionUnavailable) return
+      const requestId = row.active_request_id
+      const correlationId = agentChatCorrelation(id, requestId)
+      try {
+        if (!row.native_session_id) {
+          await this.repository.markSessionUnavailable(id, 'No native session identity was stored before recovery. This conversation is read-only; no replacement session will be created automatically.')
+          await this.repository.abandon(id, requestId, 'Native session creation is unconfirmed.')
+          this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
+          return
+        }
+        const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
+        if (!configuration) throw new Error('The pinned Agent configuration is unavailable.')
+        const runtime = await this.runtime(row, configuration, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(60_000)]))
+        await this.observe(id, requestId, runtime, correlationId, true)
+      } catch (error) {
+        await this.repository.abandon(id, requestId,
+          `Native delivery is not yet confirmed. ${error instanceof Error ? error.message : ''}`.trim())
+        this.scheduleReconcile(id)
+        this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
+      }
+    })
+    const current = await this.repository.get(id)
+    if (current && !current.active_request_id && !current.record.sessionUnavailable && await this.repository.nextQueued(id)) this.pump(id)
   }
 
   private async release(id: string): Promise<void> {
@@ -593,35 +667,21 @@ export class AgentChatService {
 
   // ---------------------------------------------------------------- lifecycle
 
-  /**
-   * After an API restart no native turn survives in memory. In-flight receipts are reconciled from native
-   * history when possible, otherwise kept `unknown` and never resubmitted. Queued turns continue.
-   */
+  /** Recover exact stored sessions; unresolved work remains fenced and is polled without resubmission. */
   async recover(): Promise<void> {
     for (const row of await this.repository.open()) {
       if (this.closing) return
-      if (row.active_request_id) {
-        const requestId = row.active_request_id
-        const correlationId = agentChatCorrelation(row.id, requestId)
-        try {
-          const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
-          if (!configuration || !row.native_session_id) throw new Error('No native session was stored before restart.')
-          const runtime = await this.runtime(row, configuration, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(60_000)]))
-          await this.control(row.id, () => this.observe(row.id, requestId, runtime, correlationId))
-        } catch (error) {
-          await this.repository.abandon(row.id, requestId,
-            `The API restarted before delivery was confirmed. ${error instanceof Error ? error.message : ''}`.trim())
-          await this.release(row.id).catch(() => undefined)
-        }
-      }
-      this.pump(row.id)
+      await this.repair(row.id)
     }
   }
 
   async shutdown(): Promise<void> {
     this.closing = true
+    for (const timer of this.reconciliationTimers.values()) clearTimeout(timer)
+    this.reconciliationTimers.clear()
     this.lifetime.abort(new Error('Agent chat is shutting down.'))
     await Promise.allSettled([...this.tasks.values()])
+    await Promise.allSettled([...this.controls.values()])
     await Promise.allSettled([...this.runtimes.keys()].map((id) => this.release(id)))
   }
 }

@@ -9,7 +9,7 @@ import {
   AgentConfigurationVersionSchema, NativeHarnessEventSchema,
   type ExecutionResult, type HarnessExecution, type NativeSessionReference,
 } from '@graphql/contracts'
-import { AgentChatStateSchema, type AgentChatState, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import { AgentChatHistoryPageSchema, AgentChatStateSchema, type AgentChatState, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 
@@ -18,7 +18,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
-import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
+import { agentChatCorrelation, agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { NativeTurnNotActiveError } from '../src/modules/harnesses/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeTurnInput } from '../src/modules/harnesses/port.js'
@@ -352,7 +352,7 @@ describe('selected-Agent chat service', () => {
     expect((await service.read(writer, workspace, query(codexNode))).conversation).toBeNull()
   })
 
-  it('never resends an in-flight turn after restart and continues queued work', async () => {
+  it('A-R07 never resends an in-flight turn after restart and fences queued work until terminal evidence', async () => {
     const first = makeService()
     const workspace = fixture.scope.workspaceId
     const read = (service: AgentChatService) => () => service.read(writer, workspace, query(codexNode))
@@ -365,11 +365,90 @@ describe('selected-Agent chat service', () => {
     await first.service.shutdown()
     const restarted = makeService()
     await restarted.service.recover()
+    const unknown = await read(restarted.service)()
+    const byId = new Map(unknown.turns.map((turn) => [turn.requestId, turn.delivery]))
+    expect(byId.get(inflight.turn.requestId), JSON.stringify(unknown.turns)).toBe('unknown')
+    expect(byId.get(queued.turn.requestId)).toBe('queued')
+    expect(unknown.activeTurn?.requestId).toBe(inflight.turn.requestId)
+    // Native storage becomes readable later. The periodic repair must not need another restart or send.
+    const resumed = FakeNative.all.at(-1)!
+    const previousReconcile = resumed.reconcile.bind(resumed)
+    const correlationId = agentChatCorrelation(warm.state.conversation!.id, inflight.turn.requestId)
+    resumed.reconcile = async (session, correlation) => correlation === correlationId
+      ? { correlationId, nativeTurnId: unknown.activeTurn!.nativeTurnId!, events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } }
+      : previousReconcile(session, correlation)
     const done = await settled(restarted.service, read(restarted.service))
-    const byId = new Map(done.turns.map((turn) => [turn.requestId, turn.delivery]))
-    expect(byId.get(inflight.turn.requestId), JSON.stringify(done.turns)).toBe('unknown')
+    for (const turn of done.turns) byId.set(turn.requestId, turn.delivery)
+    expect(byId.get(inflight.turn.requestId)).toBe('completed')
     expect(byId.get(queued.turn.requestId), JSON.stringify(done.turns)).toBe('completed')
     expect(FakeNative.all.flatMap((native) => native.prompts).filter((prompt) => prompt === 'inflight')).toHaveLength(1)
+  })
+
+  it('A-R09/A-R10/A-R20 recovers the exact Codex answer once through HTTP history/state and MCP', async () => {
+    const repository = new PostgresAgentChatRepository(pool)
+    const workspaceId = fixture.scope.workspaceId
+    const input = request(codexNode, 'answer before the crash', null)
+    const context = { workspaceId, ...input.context }
+    const admitted = await repository.admit({ key: agentChatKey(context), request: input, context, delivery: 'queued', create: {
+      context, agentConfigurationVersionId: fixture.configurations[0]!.id, harness: 'codex', origin: { kind: 'fresh' },
+      workingDirectory: root, runtimeDirectory: '',
+    } })
+    const id = admitted.conversationId
+    expect(await repository.claim(id, input.requestId)).toBe(true)
+    expect(await repository.beginSessionCreation(id, input.requestId)).toBe(true)
+    const nativeSessionId = `recovered-session-${randomUUID()}`
+    await repository.bindSession(id, 'fixture-1', nativeSessionId)
+    await repository.accepted(id, input.requestId, 'recovered-turn')
+    // Model the old acknowledgement-boundary crash: the provider accepted, but the app saved no answer/startup flag.
+    await pool.query(`update operator_conversations set record=record-'startupDelivered'-'startupReceipt' where id=$1`, [id])
+    const { service, managers } = makeService()
+    const native = new FakeNative('codex', true)
+    const correlationId = agentChatCorrelation(id, input.requestId)
+    native.reconcile = async (_session, correlation) => correlation === correlationId
+      ? { correlationId, nativeTurnId: 'recovered-turn', nativeMessageId: 'recovered-answer', events: [], pendingInteractions: [],
+          terminalResult: { outcome: 'succeeded', output: { text: 'RECOVERED-EXACT-ANSWER\nsecond line' } } }
+      : { events: [], pendingInteractions: [] }
+    managers.set(id, native)
+    const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+      operator: { access, services: { agentChat: service, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    const client = new Client({ name: 'agent-chat-f2-recovery', version: '1' })
+    try {
+      await service.recover()
+      await service.recover()
+      expect(native.attached).toHaveLength(1)
+      expect(native.attached[0]).toMatchObject({ nativeTurnId: 'recovered-turn', instructionsDelivered: true })
+      expect(native.created).toHaveLength(0)
+      expect(native.prompts).toHaveLength(0)
+      expect((await repository.get(id))!.record).toMatchObject({ startupDelivered: true,
+        startupReceipt: { requestId: input.requestId, nativeSessionId } })
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      const base = `/api/workspaces/${workspaceId}/agent-chat`
+      const stateReply = await app.inject({ method: 'GET', url: `${base}?workflowId=${fixture.scope.workflowId}&workflowNodeId=${codexNode.id}&agentId=${codexNode.agentId}`,
+        headers: { authorization: `Bearer ${readOnlyToken}` } })
+      expect(stateReply.statusCode).toBe(200)
+      const state = AgentChatStateSchema.parse(stateReply.json())
+      expect(state.turns[0]).toMatchObject({ requestId: input.requestId, delivery: 'completed', nativeTurnId: 'recovered-turn' })
+      const answers = state.messages.filter((message) => message.role === 'assistant')
+      expect(answers).toHaveLength(1)
+      expect(answers[0]).toMatchObject({ nativeMessageId: 'recovered-answer', content: 'RECOVERED-EXACT-ANSWER\nsecond line' })
+      const historyReply = await app.inject({ method: 'GET', url: `${base}/conversations/${id}/history?limit=100`,
+        headers: { authorization: `Bearer ${readOnlyToken}` } })
+      expect(historyReply.statusCode).toBe(200)
+      expect(AgentChatHistoryPageSchema.parse(historyReply.json()).messages).toEqual(state.messages)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => readOnlyToken } }))
+      const read = await client.callTool({ name: 'agent_chat_read', arguments: { workspaceId, query: query(codexNode) } })
+      expect(AgentChatStateSchema.parse(read.structuredContent).messages).toEqual(state.messages)
+      const denied = await app.inject({ method: 'POST', url: `${base}/messages`, headers: { authorization: `Bearer ${readOnlyToken}` },
+        payload: request(codexNode, 'must not send', id) })
+      expect(denied.statusCode).toBe(403)
+      await expect(client.callTool({ name: 'agent_chat_send', arguments: { workspaceId, request: request(codexNode, 'must not send via mcp', id) } })).rejects.toThrow(/not found/)
+      expect((await repository.state(id))!.messages).toEqual(state.messages)
+      expect(native.prompts).toHaveLength(0)
+    } finally {
+      await client.close().catch(() => undefined)
+      await app.close()
+      await service.shutdown()
+    }
   })
 
   it('serves HTTP and Operator MCP on the same service with scope checks and persisted readback', async () => {
