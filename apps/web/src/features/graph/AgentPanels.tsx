@@ -11,9 +11,9 @@ export function AgentChatPanel({ name, activity, running, context, onNewConversa
 }) {
   const generation = useHarnessSessionEpoch()
   if (sessionIsSwitching()) return null
+  const runActivity = activity ? <p className="agent-chat-now">{running ? <Spinner label="Working" /> : null}<span><strong>{name}</strong> · {activity}</span></p> : null
   return <div className="agent-chat-panel">
-    {activity ? <p className="agent-chat-now">{running ? <Spinner label="Working" /> : null}<span><strong>{name}</strong> · {activity}</span></p> : null}
-    {context ? <AgentConversation key={`${generation}:${agentChatContextKey(context)}`} context={context} name={name} onNewConversation={onNewConversation} />
-      : <EmptyState icon="info" title="Select a saved Agent to chat" description="Open this Agent on its workflow Board. Chat requires the workspace, workflow, node, Agent and selected Run context." />}
+    {context ? <AgentConversation key={`${generation}:${agentChatContextKey(context)}`} context={context} name={name} runActivity={runActivity} onNewConversation={onNewConversation} />
+      : <>{runActivity}<EmptyState icon="info" title="Select a saved Agent to chat" description="Open this Agent on its workflow Board. Chat requires the workspace, workflow, node, Agent and selected Run context." /></>}
   </div>
 }

@@ -29,8 +29,13 @@ describe('AgentChatPanel frozen fixtures', () => {
     if (fixture.availability.message) expect(screen.getAllByText(fixture.availability.message).length).toBeGreaterThan(0)
     expect(screen.getByText(/Business occurrence 1 · technical attempt 1/)).toBeInTheDocument()
     expect(sent(mounted.mock)).toHaveLength(0)
-    expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
-    if (!fixture.availability.canSend) {
+    if (!fixture.conversation && !fixture.availability.canSend) {
+      expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Send message' })).not.toBeInTheDocument()
+    } else {
+      expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
+    }
+    if (!fixture.availability.canSend && fixture.conversation) {
       write('Keep this draft')
       expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     }

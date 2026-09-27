@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { AgentChatState } from '@graphql/contracts/agent-chat'
 import type { Message } from '@graphql/contracts'
 import { Badge, Button, MessageBubble } from '../../../shared/ui/nocturne'
@@ -10,9 +11,9 @@ import { confirmedCommandReceipt } from './commandRecords'
 import { placeChatActivities } from './activityPlacement'
 import { commandMayHaveBeenAccepted, type AgentChatCommandRecord, type useAgentChat } from './useAgentChat'
 
-export function AgentChatTranscript({ state, name, commands, history, cancelReason, responseReason, resendReason, onCancel, onRespond, onSendAgain }: {
+export function AgentChatTranscript({ state, name, commands, history, notices, cancelReason, responseReason, resendReason, onCancel, onRespond, onSendAgain }: {
   state: AgentChatState; name: string; commands: AgentChatCommandRecord[]; history: ReturnType<typeof useAgentChat>['history']
-  cancelReason?: string; responseReason?: string; resendReason?: string
+  notices?: ReactNode; cancelReason?: string; responseReason?: string; resendReason?: string
   onCancel(requestId: string): void; onRespond(optionId: string): void; onSendAgain(content: string): void
 }) {
   const id = state.conversation?.id
@@ -39,6 +40,7 @@ export function AgentChatTranscript({ state, name, commands, history, cancelReas
   const placement = placeChatActivities(messages, activities, state.activeTurn?.requestId)
   const revision = JSON.stringify([state.messages, state.turns, activities, state.pendingInteraction, unresolved.map((record) => [record.command, record.status])])
   return <ConversationViewport revision={revision}>{(onBrowse) => <>
+    {notices}
     {id && (state.hasEarlierMessages && !history.data || history.hasNextPage) ? <Button size="sm" variant="ghost" disabled={history.isFetching}
       onClick={() => { onBrowse(); void history.fetchNextPage() }}>Load earlier messages</Button> : null}
     {history.isError ? <p role="alert">Earlier messages could not be loaded. <Button size="sm" disabled={history.isFetching}
