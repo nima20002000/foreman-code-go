@@ -45,7 +45,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.workflow-navigation-row .workflow-navigation-remove:hover:not(:disabled) { color: #cc3d3d; background: var(--n-hover); }
+.workflow-navigation-row .workflow-navigation-remove:hover:not(:disabled) { color: #cc3d3d; background: color-mix(in srgb, var(--n-hover) 65%, black); }
 .workflow-navigation-remove-error { margin: 0.25rem 0.625rem; color: var(--danger); font-size: 12px; }
 @media (hover: none) {
   .workflow-navigation-row .workflow-navigation-remove { opacity: 1; pointer-events: auto; }
