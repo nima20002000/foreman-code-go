@@ -1,7 +1,8 @@
+import { BoardNotice } from './BoardNotice'
 import { ZodError } from 'zod'
 import { workflowSaveIssues, WorkflowSaveIssuesSchema, type WorkflowSaveIssue } from '@graphql/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
-import { Alert, Button } from '../../../shared/ui/nocturne'
+import { Button } from '../../../shared/ui/nocturne'
 
 export function WorkflowSaveError({ error, pending, openField }: {
   error: Error; pending: boolean; openField: (path: WorkflowSaveIssue['path']) => void
@@ -15,7 +16,7 @@ export function WorkflowSaveError({ error, pending, openField }: {
     'AGENT_REVISION_CONFLICT', 'LAYOUT_REVISION_CONFLICT'].includes(api.code)
   const title = uncertain ? 'Save not confirmed.' : denied ? 'You can’t save this workflow.'
     : conflict ? 'The workflow changed.' : issues.length ? `Can’t save — fix ${issues.length} ${issues.length === 1 ? 'setting' : 'settings'}` : 'Can’t save.'
-  return <Alert tone="danger" live title={title}>
+  return <BoardNotice noticeKey={error} tone="danger" live title={title}>
     {uncertain ? 'Check the pending save before trying again.'
       : denied ? 'Ask for workflow edit permission.'
         : conflict ? 'Review the latest saved workflow before saving again.'
@@ -24,5 +25,5 @@ export function WorkflowSaveError({ error, pending, openField }: {
             {['approval', 'executionPolicy', 'entryNodeId'].includes(String(issue.path[0]))
               ? <Button size="sm" variant="ghost" onClick={() => openField(issue.path)}>Fix setting</Button> : null}
           </li>)}</ul> : error.message}
-  </Alert>
+  </BoardNotice>
 }

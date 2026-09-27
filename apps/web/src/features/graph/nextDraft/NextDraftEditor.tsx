@@ -1,3 +1,4 @@
+import { BoardNotice } from './BoardNotice'
 import { useDraftLayout } from './useDraftLayout'
 import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
 import { canUseBoardAction } from '../../workflow-board/permissions'
@@ -453,25 +454,24 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         </div>
       </header>
       <div className="board-notices" aria-live="polite">
-        {layout.isError || layout.retained || layout.journalError ? <Alert tone="warning" title="Positions are retained locally.">{layout.journalError ?? layout.error?.message}
-          <Button size="sm" disabled={layout.isPending || !!layout.journalError} onClick={() => layout.mutate()}>Reconcile layout</Button></Alert> : null}
-        {!pendingStart && workspace.data && workspace.data.locationValidation.status !== 'ready' ? <Alert tone="warning" title="Choose an execution folder to run this workflow."
+        {layout.isError || layout.retained || layout.journalError ? <BoardNotice tone="warning" title="Positions are retained locally.">{layout.journalError ?? layout.error?.message}
+          <Button size="sm" disabled={layout.isPending || !!layout.journalError} onClick={() => layout.mutate()}>Reconcile layout</Button></BoardNotice> : null}
+        {!pendingStart && workspace.data && workspace.data.locationValidation.status !== 'ready' ? <BoardNotice tone="warning" title="Choose an execution folder to run this workflow."
           action={<Button size="sm" onClick={board?.openLocation}>Choose folder</Button>} /> : null}
-        {pendingStart ? <Alert tone="warning" title="An earlier start may have gone through."
-          action={<Button size="sm" onClick={() => void (pendingStart ? start() : prepare(start)).catch(report)}>Check again</Button>}>Confirm it before starting another run.</Alert> : null}
-        {startReloadRequired ? <Alert tone="warning" title="Reload the saved draft before starting another Run."
+        {pendingStart ? <BoardNotice tone="warning" title="An earlier start may have gone through."
+          action={<Button size="sm" onClick={() => void (pendingStart ? start() : prepare(start)).catch(report)}>Check again</Button>}>Confirm it before starting another run.</BoardNotice> : null}
+        {startReloadRequired ? <BoardNotice tone="warning" title="Reload the saved draft before starting another Run."
           action={<Button size="sm" disabled={reloading} onClick={() => void reload()}>Reload saved draft</Button>}>
-          The previous Start was rejected because its saved version is no longer supported.</Alert> : null}
-        {message ? <Alert tone="success" title={message} action={<IconButton size="sm" variant="ghost" label="Dismiss" onClick={() => setMessage(undefined)}><Icon name="close" size={14} /></IconButton>} /> : null}
-        {editIntent.storageError ? <Alert tone="danger" live title="Changes can’t be kept in this browser.">{editIntent.storageError}</Alert> : null}
-        {editIntent.query.error ? <Alert tone="warning" title="Couldn’t check the status of your last save.">Your changes are still here. {editIntent.query.error.message}</Alert> : null}
+          The previous Start was rejected because its saved version is no longer supported.</BoardNotice> : null}
+        {message ? <BoardNotice tone="success" title={message} /> : null}
+        {editIntent.storageError ? <BoardNotice tone="danger" live title="Changes can’t be kept in this browser.">{editIntent.storageError}</BoardNotice> : null}
+        {editIntent.query.error ? <BoardNotice tone="warning" title="Couldn’t check the status of your last save.">Your changes are still here. {editIntent.query.error.message}</BoardNotice> : null}
         {editIntent.mutation.error ? <WorkflowSaveError error={editIntent.mutation.error} pending={editIntent.outboxPending || !!editIntent.intent && !['saved', 'discarded'].includes(editIntent.intent.state)} openField={openSaveField} /> : null}
-        {editIntent.locked && !editIntent.sameDisplayedPayload ? <Alert tone="warning" title="You made more edits after saving started.">They stay here and won’t be overwritten.</Alert> : null}
+        {editIntent.locked && !editIntent.sameDisplayedPayload ? <BoardNotice tone="warning" title="You made more edits after saving started.">They stay here and won’t be overwritten.</BoardNotice> : null}
         {editIntent.query.data?.intent && !['saved', 'discarded'].includes(editIntent.query.data.intent.state) ? <EditIntentStatus data={editIntent.query.data} /> : null}
-        {errorText ? <Alert tone="danger" live title={edit.error?.uncertain ? 'We couldn’t confirm whether that worked.' : 'Something went wrong.'}
-          action={<IconButton size="sm" variant="ghost" label="Dismiss" onClick={() => setLocalError(undefined)}><Icon name="close" size={14} /></IconButton>}>
+        {errorText ? <BoardNotice noticeKey={errorText} tone="danger" live title={edit.error?.uncertain ? 'We couldn’t confirm whether that worked.' : 'Something went wrong.'}>
           {errorText}{edit.error?.issues?.length ? <ul>{edit.error.issues.map((issue, i) => <li key={i}>{issue.message}</li>)}</ul> : null}
-        </Alert> : null}
+        </BoardNotice> : null}
       </div>
       <aside className="board-side-panel" hidden={panel !== 'repeat'} style={panel === 'repeat' ? undefined : { display: 'none' }} aria-label="Business repeats">
         <header><h2>Business repeats</h2><IconButton variant="ghost" label="Close panel" onClick={() => openPanel(null)}><Icon name="close" size={16} /></IconButton></header>
