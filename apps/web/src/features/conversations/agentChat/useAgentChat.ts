@@ -15,13 +15,14 @@ import { readEarlierChatHistory } from './historyReadback'
 import { claimDraftReadback, receiptForCommand } from './receiptReadback'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, stateBelongsToContext } from './model'
 
-import { compactAgentChatResult, currentCommandReceipt, retireAgentChatAcknowledgements, type AgentChatCommand as Command, type AgentChatCommandResult as Result, type AgentChatCommandRecord } from './commandRecords'
+import { agentChatReadbacksKey, compactAgentChatResult, confirmedCommandReceipt, currentCommandReceipt, rememberAgentChatReadback, retireAgentChatAcknowledgements, type AgentChatReadbacks, type AgentChatCommand as Command, type AgentChatCommandResult as Result, type AgentChatCommandRecord } from './commandRecords'
 export type { AgentChatCommandRecord } from './commandRecords'
 
 function reconcileDraftReadback(state: AgentChatState | undefined, commands: AgentChatCommandRecord[], draftKey: string) {
   let reconciled = false
-  for (const { command } of commands) {
-    if (claimDraftReadback(command, receiptForCommand(state, command)) && command?.kind === 'send') {
+  for (const record of commands) {
+    const { command } = record
+    if (claimDraftReadback(command, confirmedCommandReceipt(record, state) ?? receiptForCommand(state, command)) && command?.kind === 'send') {
       useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
       reconciled = true
     }
@@ -61,10 +62,12 @@ export function useAgentChat(context: AgentChatContext) {
     && !access.isError && !!access.data && Date.parse(access.data.principal.expiresAt) > Date.now()
     && canUseBoardAction(access.data.principal.grants, action, context)
   const canRead = permits('agent_chat:read')
-  const commands = useMutationState<AgentChatCommandRecord>({ filters: { mutationKey: commandKey, exact: true }, select: (mutation) => ({
-    command: mutation.state.variables as Command | undefined, result: mutation.state.data as Result | undefined,
+  const readbacks = useQuery<AgentChatReadbacks>({ queryKey: agentChatReadbacksKey, enabled: false, gcTime: Infinity })
+  const records = useMutationState<AgentChatCommandRecord & { mutationId: number }>({ filters: { mutationKey: commandKey, exact: true }, select: (mutation) => ({
+    mutationId: mutation.mutationId, command: mutation.state.variables as Command | undefined, result: mutation.state.data as Result | undefined,
     error: mutation.state.error, status: mutation.state.status, submittedAt: mutation.state.submittedAt,
   }) })
+  const commands = useMemo(() => records.map((record) => ({ ...record, readback: readbacks.data?.[record.mutationId] })), [records, readbacks.data])
   const latestCommand = commands.at(-1)
   const pending = useIsMutating({ mutationKey: commandKey, exact: true }) > 0
   const [localError, setLocalError] = useState<string>()
@@ -75,7 +78,11 @@ export function useAgentChat(context: AgentChatContext) {
       if (!stateBelongsToContext(state, context)) throw new ApiError({ code: 'AGENT_CHAT_CONTEXT_STALE', message: 'Chat returned a different selection. Refresh before sending.' }, 409)
       return state
     },
-    structuralSharing: (previous, incoming) => acceptAgentChatState(previous as AgentChatState | undefined, incoming as AgentChatState),
+    structuralSharing: (previous, incoming) => {
+      const accepted = acceptAgentChatState(previous as AgentChatState | undefined, incoming as AgentChatState)
+      if (generation === sessionGeneration() && !sessionIsSwitching()) rememberAgentChatReadback(client, key, accepted)
+      return accepted
+    },
   })
   const historyId = query.data?.conversation?.id
   const history = useInfiniteQuery({ queryKey: ['agent-chat', generation, context, historyId, 'history'],
@@ -99,7 +106,8 @@ export function useAgentChat(context: AgentChatContext) {
   const currentReceipt = latestCommand?.result
     ? currentCommandReceipt(latestCommand.result, state)
     : receiptForCommand(state, latestCommand?.command)
-  const latestReceipt = currentReceipt ?? latestCommand?.result?.turn
+  const confirmedReceipt = confirmedCommandReceipt(latestCommand, state)
+  const latestReceipt = currentReceipt ?? latestCommand?.result?.turn ?? confirmedReceipt
   useEffect(() => {
     if (generation === sessionGeneration() && !sessionIsSwitching() && reconcileDraftReadback(state, commands, draftKey)) setLocalError(undefined)
   }, [state, commands, draftKey, generation])
@@ -202,7 +210,7 @@ export function useAgentChat(context: AgentChatContext) {
     const unconfirmed = state.turns.some((turn) => turn.delivery === 'unknown' && state.messages.some((message) => message.id === turn.messageId && message.content.trim() === text))
       || commands.some((record) => {
         if (record.command?.kind !== 'send' || record.command.input.content !== text) return false
-        const receipt = receiptForCommand(state, record.command) ?? (record.result && 'turn' in record.result ? record.result.turn : undefined)
+        const receipt = confirmedCommandReceipt(record, state) ?? receiptForCommand(state, record.command) ?? (record.result && 'turn' in record.result ? record.result.turn : undefined)
         return receipt ? receipt.delivery === 'unknown' : record.status === 'error' && commandMayHaveBeenAccepted(record.error)
       })
     if (unconfirmed && !allowNewMessage) { setLocalError('Delivery is unknown. Use “Send again as new message” and review the warning.'); return false }
@@ -230,6 +238,6 @@ export function useAgentChat(context: AgentChatContext) {
     runCommand(() => ({ kind: 'respond', conversationId: state.conversation!.id, requestId: `agent-chat-response-${crypto.randomUUID()}`,
       nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId }))
   }
-  return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, localError, blocked,
+  return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, confirmedReceipt, localError, blocked,
     send, stop, cancelQueued, respond, refresh, draftKey }
 }

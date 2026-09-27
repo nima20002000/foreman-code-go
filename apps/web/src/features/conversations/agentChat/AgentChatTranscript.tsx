@@ -6,6 +6,7 @@ import { OperatorApprovalCard } from '../../operator-chat/OperatorApprovalCard'
 import { ConversationHistory } from '../ConversationHistory'
 import { ConversationViewport } from '../ConversationViewport'
 import { approvalReplyAvailable, deliveryLabels, intentLabels, mergeChatMessages } from './model'
+import { confirmedCommandReceipt } from './commandRecords'
 import { placeChatActivities } from './activityPlacement'
 import { commandMayHaveBeenAccepted, type AgentChatCommandRecord, type useAgentChat } from './useAgentChat'
 
@@ -21,6 +22,7 @@ export function AgentChatTranscript({ state, name, commands, history, cancelReas
   const orphaned = state.turns.filter((turn) => !messages.some((message) => message.id === turn.messageId))
   const unresolved = commands.filter((record) => record.command?.kind === 'send'
     && (record.status === 'pending' || record.status === 'error' && commandMayHaveBeenAccepted(record.error))
+    && !confirmedCommandReceipt(record, state)
     && !state.turns.some((turn) => record.command?.kind === 'send' && turn.requestId === record.command.input.requestId))
   const status = (message: Message) => {
     const receipt = receipts.get(message.id)

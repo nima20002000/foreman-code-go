@@ -86,7 +86,8 @@ export function AgentConversation({ context, name, onNewConversation }: {
       onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={setSendAgain} /> : null}
     {busy && !state?.messages.some((message) => message.role === 'assistant' && message.requestId === state.activeTurn?.requestId && message.nativeMessageComplete === false)
       ? <p className="agent-chat-note">No partial assistant text has been received for this turn. A completed reply will appear when available.</p> : null}
-    {receipt ? <p className="agent-chat-note" role="status">{currentReceipt ? 'Server recorded' : 'Initial acknowledgement'}: {intentLabels[receipt.intent]} · {deliveryLabels[currentReceipt?.delivery ?? receipt.delivery]}</p> : null}
+    {receipt ? <p className="agent-chat-note" role="status">{currentReceipt ? 'Server recorded' : latest?.result?.turn ? 'Initial acknowledgement' : 'Last confirmed receipt'}: {intentLabels[receipt.intent]} · {deliveryLabels[currentReceipt?.delivery ?? receipt.delivery]}</p> : null}
+    {!currentReceipt && latest?.result?.turn && chat.confirmedReceipt ? <p className="agent-chat-note" role="status">Last confirmed receipt: {intentLabels[chat.confirmedReceipt.intent]} · {deliveryLabels[chat.confirmedReceipt.delivery]}</p> : null}
     {error ? <Alert title={stale ? 'Chat context changed' : notActive ? 'The targeted turn has finished' : 'Command not confirmed'} tone="warning" live>
       <p>{error instanceof Error ? error.message : 'The command could not be confirmed.'}</p>
       {stale ? <p>The latest conversation is being fetched. Your draft is kept; review it before sending again.</p> : null}
