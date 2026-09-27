@@ -483,17 +483,25 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect((await pool.query<{ delivery_state: string }>(
           'select delivery_state from run_work_notices where notice_id=$1',
           [notice.noticeId])).rows[0]?.delivery_state).toBe('pending')
-        await owner.oneShotConnection().transaction((sql) => markWorkNoticeUnknownLocked({
-          sql, scope: fixture.scope, version, now: new Date().toISOString(),
-        }, notice.continuationActivationId, returnTurn.execution.id))
+        await owner.release()
+        const pendingOwner = await RunOwnership.acquire(pool, run.id, () => undefined)
+        assert.ok(pendingOwner)
+        try {
+          const pending = new RepeatRunRepository(pendingOwner, host, version)
+          expect((await pending.admitWorkActivation(notice.continuationActivationId,
+            () => { throw new Error('A pending notice must reuse its exact native input.') })).reused).toBe(true)
+          await pendingOwner.oneShotConnection().transaction((sql) => markWorkNoticeUnknownLocked({
+            sql, scope: fixture.scope, version, now: new Date().toISOString(),
+          }, notice.continuationActivationId, returnTurn.execution.id))
+        } finally { await pendingOwner.release() }
         expect((await pool.query<{ delivery_state: string }>(
           'select delivery_state from run_work_notices where notice_id=$1',
           [notice.noticeId])).rows[0]?.delivery_state).toBe('unknown')
-        await owner.release()
         const recoveredOwner = await RunOwnership.acquire(pool, run.id, () => undefined)
         assert.ok(recoveredOwner)
         try {
           const recovered = new RepeatRunRepository(recoveredOwner, host, version)
+          expect((await recovered.returnWork(thirdReview.execution.id)).replayed).toBe(true)
           expect((await recovered.admitWorkActivation(notice.continuationActivationId,
             () => { throw new Error('An uncertain notice must not allocate another native turn.') })).reused).toBe(true)
           expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1', [run.id])).rows[0]?.used).toBe(3)
