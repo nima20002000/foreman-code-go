@@ -1,3 +1,4 @@
+import { useRef, type RefObject } from 'react'
 import { MessageComposer } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from './conversationDraftStore'
 
@@ -11,6 +12,9 @@ export interface ConversationComposerProps {
   allowEditingWhileSending?: boolean
   isSending?: boolean
   error?: string
+  sendLabel?: string
+  maxLength?: number
+  inputRef?: RefObject<HTMLTextAreaElement | null>
   onSubmit: (content: string) => void
 }
 
@@ -22,8 +26,13 @@ export function ConversationComposer({
   allowEditingWhileSending = false,
   isSending = false,
   error,
+  sendLabel = 'Send message',
+  maxLength,
+  inputRef,
   onSubmit,
 }: ConversationComposerProps) {
+  const localRef = useRef<HTMLTextAreaElement>(null)
+  const field = inputRef ?? localRef
   const draft = useConversationDraftStore((state) => state.drafts[conversationId] ?? '')
   const setDraft = useConversationDraftStore((state) => state.setDraft)
 
@@ -32,10 +41,12 @@ export function ConversationComposer({
       formLabel="Conversation composer"
       label="Message"
       placeholder="Write a message for this agent"
-      sendLabel="Send message"
+      sendLabel={sendLabel}
+      maxLength={maxLength}
+      inputRef={field}
       value={draft}
       onValueChange={(value) => setDraft(conversationId, value)}
-      onSend={(content) => onSubmit(content.trim())}
+      onSend={(content) => { onSubmit(content.trim()); field.current?.focus({ preventScroll: true }) }}
       pending={isSending}
       disabled={disabled || (isSending && !allowEditingWhileSending)}
       sendDisabled={sendDisabled}

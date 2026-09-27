@@ -1,0 +1,93 @@
+import type { Message } from '@graphql/contracts'
+import type { AgentChatContext, AgentChatIntent, AgentChatState, AgentChatTurn } from '@graphql/contracts/agent-chat'
+
+/** A draft exists before a conversation does. Never key it by Agent alone or by a native id. */
+export function agentChatContextKey(context: AgentChatContext): string {
+  return JSON.stringify(['agent-chat', context.workspaceId, context.workflowId, context.workflowNodeId, context.agentId, context.runId ?? null])
+}
+export function sameAgentChatContext(a: AgentChatContext, b: AgentChatContext): boolean {
+  return agentChatContextKey(a) === agentChatContextKey(b)
+}
+export function stateBelongsToContext(state: AgentChatState, context: AgentChatContext): boolean {
+  if (!sameAgentChatContext(state.context, context)) return false
+  const conversation = state.conversation
+  if (!conversation) return state.messages.length === 0 && state.turns.length === 0 && !state.pendingInteraction
+  if (conversation.workspaceId !== context.workspaceId || conversation.workflowId !== context.workflowId
+    || conversation.workflowNodeId !== context.workflowNodeId || conversation.agentId !== context.agentId) return false
+  if (context.runId ? conversation.origin.kind !== 'run_execution' || conversation.origin.runId !== context.runId
+    : conversation.origin.kind !== 'fresh') return false
+  return state.messages.every((message) => message.conversationId === conversation.id)
+}
+
+/** Full server projections replace, not append. Completed native text cannot become partial again. */
+export function mergeChatMessages(...sources: readonly (readonly Message[])[]): Message[] {
+  const messages = new Map<string, Message>()
+  const order: string[] = []
+  for (const source of sources) {
+    for (const message of source) {
+      const previous = messages.get(message.id)
+      if (previous?.nativeMessageComplete === true && message.nativeMessageComplete === false) continue
+      messages.set(message.id, message)
+    }
+    // Each source is an ordered server window. Anchor an unseen prefix before its overlap,
+    // rather than letting Map insertion order move a newer subset ahead of older messages.
+    let insertAt = order.length
+    for (const id of [...new Set(source.map((message) => message.id))].reverse()) {
+      const index = order.indexOf(id)
+      if (index < 0) order.splice(insertAt, 0, id)
+      else insertAt = index
+    }
+  }
+  return order.map((id) => messages.get(id)!)
+}
+export function acceptAgentChatState(previous: AgentChatState | undefined, incoming: AgentChatState): AgentChatState {
+  if (previous && sameAgentChatContext(previous.context, incoming.context)) {
+    // A GET started before the first POST may still return `none` after its receipt arrived.
+    if (previous.conversation && !incoming.conversation && incoming.revision <= previous.revision) return previous
+    if (previous.conversation?.id === incoming.conversation?.id && incoming.revision < previous.revision) return previous
+  }
+  const previousMessages = previous?.conversation?.id === incoming.conversation?.id ? previous?.messages : undefined
+  const complete = new Map(previousMessages?.filter((message) => message.nativeMessageComplete === true).map((message) => [message.id, message]))
+  return { ...incoming, messages: mergeChatMessages(incoming.messages.map((message) =>
+    message.nativeMessageComplete === false && complete.has(message.id) ? complete.get(message.id)! : message)),
+    turns: [...new Map(incoming.turns.map((turn) => [turn.requestId, turn])).values()]
+      .sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0) }
+}
+
+export const deliveryLabels: Record<AgentChatTurn['delivery'], string> = {
+  queued: 'Queued', submitting: 'Sending', accepted: 'Delivered', completed: 'Completed', failed: 'Failed', canceled: 'Canceled', unknown: 'Unknown',
+}
+export const intentLabels: Record<AgentChatIntent, string> = { next_turn: 'Next turn', steer: 'Steer', interrupt_and_send: 'Interrupt and send' }
+export function chatBusy(state: AgentChatState): boolean {
+  return !!state.activeTurn || ['creating', 'active', 'interrupting', 'waiting_approval'].includes(state.sessionState)
+}
+
+/** UI affordances only; the server rechecks authority and native capability at admission. */
+export function intentUnavailable(state: AgentChatState, intent: AgentChatIntent): string | undefined {
+  if (!state.availability.canSend) return state.availability.message ?? 'Messaging is unavailable for this selection.'
+  if (state.sessionState === 'unavailable') return state.availability.message ?? 'The native session is unavailable.'
+  if (state.sessionState === 'creating' || state.sessionState === 'interrupting') return 'Wait for the current native operation to settle.'
+  const capabilities = state.capabilities
+  if (intent === 'steer') {
+    if (capabilities.steer === 'unavailable') return capabilities.unavailable.steer ?? 'Steering is unavailable.'
+    if (!state.activeTurn) return 'The turn has finished. Send as next turn instead.'
+    if (capabilities.steer === 'native_expected_turn' && !state.activeTurn.nativeTurnId) return 'Waiting for the active native turn identity.'
+  }
+  if (intent === 'interrupt_and_send' && !capabilities.interruptAndSend) {
+    return capabilities.unavailable.interruptAndSend ?? 'Interrupt and send is unavailable.'
+  }
+  if (intent === 'next_turn') {
+    if (chatBusy(state) && !capabilities.queueNextTurn) return capabilities.unavailable.queueNextTurn ?? 'Queueing is unavailable.'
+    if (!chatBusy(state) && state.conversation && !capabilities.resume) return capabilities.unavailable.resume ?? 'This conversation cannot continue.'
+  }
+  return undefined
+}
+
+/** A response must address the exact pending request in this conversation, not a workflow approval. */
+export function approvalReplyAvailable(state: AgentChatState): boolean {
+  const pending = state.pendingInteraction
+  return !!pending?.turn.nativeRequestId && !!state.conversation?.nativeSession
+    && pending.session.nativeSessionId === state.conversation.nativeSession.nativeSessionId
+    && pending.session.harness === state.conversation.harness
+    && (!state.activeTurn?.nativeTurnId || pending.turn.nativeTurnId === state.activeTurn.nativeTurnId)
+}

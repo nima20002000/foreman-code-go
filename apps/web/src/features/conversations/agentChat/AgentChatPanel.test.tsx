@@ -1,0 +1,483 @@
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import { agentChatFixtures, type AgentChatContext, type AgentChatState, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import { server } from '../../../mocks/server'
+import { agentChatFixtureFor, createAgentChatMock } from '../../../shared/mocks/agentChatHandlers'
+import { getConversationDraft, useConversationDraftStore } from '../conversationDraftStore'
+import { agentChatContextKey } from './model'
+import { agentChatStateKey } from './useAgentChat'
+import { AgentChatTestSource, approvalState, installChatSource, mountChat } from './testSupport'
+
+const messagePath = '/api/workspaces/:workspaceId/agent-chat/messages'
+const errorResponse = (code: string, message = code, status = 409) => HttpResponse.json({ error: { code, message } }, { status })
+const sent = (mock: ReturnType<typeof createAgentChatMock>) => mock.calls.filter((call) => call.path.endsWith('/messages') && call.method === 'POST')
+const write = (value: string) => fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value } })
+
+afterEach(() => {
+  useConversationDraftStore.getState().clearAllDrafts()
+  localStorage.clear()
+  vi.unstubAllGlobals()
+})
+
+describe('AgentChatPanel frozen fixtures', () => {
+  it.each(Object.entries(agentChatFixtures))('renders fixture: %s', async (_name, fixture) => {
+    const mounted = mountChat(fixture)
+    await mounted.ready()
+    for (const message of fixture.messages) expect(within(screen.getByRole('list', { name: 'Conversation history' })).getByText(message.content)).toBeInTheDocument()
+    if (fixture.availability.message) expect(screen.getAllByText(fixture.availability.message).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Business occurrence 1 · technical attempt 1/)).toBeInTheDocument()
+    expect(sent(mounted.mock)).toHaveLength(0)
+    if (!fixture.conversation && !fixture.availability.canSend) {
+      expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Send message' })).not.toBeInTheDocument()
+    } else {
+      expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
+    }
+    if (!fixture.availability.canSend && fixture.conversation) {
+      write('Keep this draft')
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    }
+    if (fixture === agentChatFixtures.steerUnavailable) {
+      expect(screen.getByRole('button', { name: 'Steer' })).toBeDisabled()
+      expect(screen.getByText(fixture.capabilities.unavailable.steer!)).toBeInTheDocument()
+    }
+  })
+
+  it.each(['creating', 'interrupting'] as const)('keeps the draft editable while %s', async (sessionState) => {
+    const state: AgentChatState = { ...structuredClone(agentChatFixtures.active), sessionState }
+    const mounted = mountChat(state); await mounted.ready(); write('Later')
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Queue message' })).toBeDisabled()
+    expect(sent(mounted.mock)).toHaveLength(0)
+  })
+
+  it('uses authorized native approval controls, not a chat message', async () => {
+    const mounted = mountChat(approvalState()); await mounted.ready()
+    const card = screen.getByRole('region', { name: 'Agent approval request' })
+    await userEvent.click(within(card).getByRole('button', { name: 'Approve once' }))
+    await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/responses'))).toBe(true))
+    const request = mounted.mock.calls.find((call) => call.path.endsWith('/responses'))!
+    expect(request.body).toMatchObject({ nativeRequestId: 'native-approval-1', optionId: 'codex-approve-once' })
+    expect(sent(mounted.mock)).toHaveLength(0)
+  })
+
+  it('denies approval and cancel affordances independently of chat write access', async () => {
+    const mounted = mountChat(approvalState(), ['agent_chat:read', 'agent_chat:write'])
+    await mounted.ready()
+    expect(screen.getByRole('button', { name: 'Approve once' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Stop chat' })).toBeDisabled()
+  })
+
+  it('a stale native approval never offers an ordinary-chat fallback', async () => {
+    const mounted = mountChat(approvalState()); await mounted.ready(); write('Unrelated chat draft')
+    server.use(http.post('/api/workspaces/:workspaceId/agent-chat/conversations/:id/responses', () =>
+      errorResponse('AGENT_CHAT_TURN_NOT_ACTIVE', 'This approval request ended.')))
+    await userEvent.click(screen.getByRole('button', { name: 'Approve once' }))
+    await screen.findByText('This approval request ended.')
+    expect(screen.queryByRole('button', { name: 'Send as next turn' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Unrelated chat draft')
+    expect(sent(mounted.mock)).toHaveLength(0)
+  })
+
+  it('does not reply to a pending approval belonging to a different native session', async () => {
+    const state = approvalState(); state.pendingInteraction!.session.nativeSessionId = 'another-session'
+    const mounted = mountChat(state); await mounted.ready()
+    expect(screen.getByRole('button', { name: 'Approve once' })).toBeDisabled()
+    expect(screen.getByText(/original native request is not available/)).toBeInTheDocument()
+  })
+
+  it('offers a separate new-conversation path for missing sessions, never Resume', async () => {
+    const context = { ...agentChatFixtures.sessionMissing.context, runId: 'past-run' }
+    const mounted = mountChat(agentChatFixtureFor(agentChatFixtures.sessionMissing, context)); await mounted.ready()
+    await userEvent.click(screen.getByRole('button', { name: 'Start separate chat without this Run' }))
+    expect(mounted.newConversation).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
+    expect(sent(mounted.mock)).toHaveLength(0)
+  })
+
+  it('renders delivery receipts including sending and canceled honestly', async () => {
+    const state: AgentChatState = structuredClone(agentChatFixtures.activeWithQueue)
+    state.turns[0]!.delivery = 'submitting'; state.turns[1]!.delivery = 'canceled'
+    const mounted = mountChat(state); await mounted.ready()
+    expect(screen.getByText('Sending', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(screen.getByText('Canceled', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(screen.getByText('Queued', { selector: '.n-badge' })).toBeInTheDocument()
+  })
+})
+
+describe('AgentChatPanel commands and drafts', () => {
+  it('first send creates a conversation with null expectation and one requestId on fast double Enter/click', async () => {
+    const mounted = mountChat(); await mounted.ready(); write('First message')
+    const input = screen.getByRole('textbox', { name: 'Message' }), button = screen.getByRole('button', { name: 'Send message' })
+    act(() => { fireEvent.keyDown(input, { key: 'Enter' }); fireEvent.keyDown(input, { key: 'Enter' }); fireEvent.click(button) })
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    await waitFor(() => expect(input).toHaveValue(''))
+    const body = sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest
+    expect(body).toMatchObject({ content: 'First message', intent: 'next_turn', expectedConversationId: null, context: {
+      workflowId: 'workflow-fixture', workflowNodeId: 'node-coder', agentId: 'agent-coder',
+    } })
+    expect(body.requestId).toMatch(/^agent-chat-/)
+    expect(body).not.toHaveProperty('nativeSessionId')
+    expect(input).toHaveFocus()
+  })
+
+  it('follow-up after completion targets the same conversation with a new requestId', async () => {
+    const mounted = mountChat(agentChatFixtures.idleAfterCompletion); await mounted.ready(); write('What next?')
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    const body = sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest
+    expect(body.expectedConversationId).toBe(agentChatFixtures.idleAfterCompletion.conversation.id)
+    expect(body.requestId).not.toBe('request-1')
+    expect(mounted.mock.getState(agentChatFixtures.empty.context).conversation?.nativeSession).toEqual(agentChatFixtures.idleAfterCompletion.conversation.nativeSession)
+  })
+
+  it('steers the exact active native turn', async () => {
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Focus on tests')
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'steer', expectedNativeTurnId: 'turn-1' })
+    expect(await screen.findByText('Server recorded: Steer · Delivered')).toBeInTheDocument()
+  })
+
+  it('queues the next turn and cancels it by turn request identity', async () => {
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Then list TODOs')
+    await userEvent.click(screen.getByRole('button', { name: 'Queue message' }))
+    const cancel = await screen.findByRole('button', { name: 'Cancel queued message' })
+    await userEvent.click(cancel)
+    await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/cancel'))).toBe(true))
+    const sentId = (sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest).requestId
+    expect(mounted.mock.calls.find((call) => call.path.endsWith('/cancel'))!.path).toContain(`/turns/${sentId}/cancel`)
+    expect(await screen.findByText('Canceled', { selector: '.n-badge' })).toBeInTheDocument()
+  })
+
+  it('interrupt-and-send is one backend command, not client-side stop then send', async () => {
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Start over with tests')
+    await userEvent.click(screen.getByRole('button', { name: 'Interrupt and send' }))
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'interrupt_and_send', expectedNativeTurnId: 'turn-1' })
+    expect(mounted.mock.calls.filter((call) => call.path.endsWith('/interrupt'))).toHaveLength(0)
+  })
+
+  it('Stop cancels the chat and queue, never calls a workflow Run endpoint', async () => {
+    const mounted = mountChat(agentChatFixtures.activeWithQueue); await mounted.ready()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop chat' }))
+    await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/interrupt'))).toBe(true))
+    expect(mounted.mock.getState(agentChatFixtures.empty.context).turns.every((turn) => turn.delivery === 'canceled')).toBe(true)
+    expect(mounted.mock.calls.some((call) => call.path.includes('/runs/'))).toBe(false)
+  })
+
+  it('keeps a failed-send draft and offers next turn only after explicit consent', async () => {
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Keep my input')
+    let posts = 0
+    server.use(http.post(messagePath, () => {
+      posts++; mounted.mock.setState(agentChatFixtures.idleAfterCompletion)
+      return errorResponse('AGENT_CHAT_TURN_NOT_ACTIVE', 'The native turn ended.')
+    }))
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    const next = await screen.findByRole('button', { name: 'Send as next turn' })
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep my input')
+    expect(posts).toBe(1)
+    // No automatic fallback to next_turn, even though the state read is now idle.
+    server.use(...mounted.mock.handlers)
+    await waitFor(() => expect(next).toBeEnabled())
+    await userEvent.click(next)
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'next_turn', content: 'Keep my input' })
+  })
+
+  it('stale context refetches but keeps the draft and does not auto-submit', async () => {
+    const mounted = mountChat(); await mounted.ready(); write('Keep after conflict')
+    let posts = 0
+    server.use(http.post(messagePath, () => {
+      posts++; mounted.mock.setState(agentChatFixtures.idleAfterCompletion)
+      return errorResponse('AGENT_CHAT_CONTEXT_STALE', 'Another tab started this conversation.')
+    }))
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByText('Chat context changed')).toBeInTheDocument()
+    await waitFor(() => expect(mounted.client.getQueryData<AgentChatState>(agentChatStateKey(agentChatFixtures.empty.context))?.conversation?.id)
+      .toBe(agentChatFixtures.idleAfterCompletion.conversation.id))
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep after conflict')
+    expect(posts).toBe(1)
+  })
+
+  it('shows the accepted intent when the busy state changes during a steer submission', async () => {
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Tests next')
+    server.use(http.post(messagePath, async ({ request }) => {
+      const input = await request.json() as SendAgentChatMessageRequest
+      const state: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
+      const turn = { ...state.turns[0]!, requestId: input.requestId, messageId: `message-${input.requestId}`, sequence: '2', intent: 'next_turn' as const, delivery: 'accepted' as const }
+      state.turns.push(turn); state.revision++
+      state.messages.push({ id: turn.messageId, conversationId: state.conversation!.id, requestId: turn.requestId, role: 'user', content: input.content })
+      mounted.mock.setState(state)
+      return HttpResponse.json({ state, turn, replayed: false })
+    }))
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
+    expect(await screen.findByText('Server recorded: Next turn · Delivered')).toBeInTheDocument()
+    expect(screen.queryByText('Server recorded: Steer · Delivered')).not.toBeInTheDocument()
+  })
+
+  it('unknown delivery requires the explicit new-message warning and a fresh requestId', async () => {
+    const mounted = mountChat(agentChatFixtures.unknownDelivery); await mounted.ready()
+    await userEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+    const warning = screen.getByRole('alertdialog')
+    expect(within(warning).getByText(/original message may already have been accepted/)).toBeInTheDocument()
+    expect(sent(mounted.mock)).toHaveLength(0)
+    await userEvent.click(within(warning).getByRole('button', { name: 'Send as new message' }))
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'next_turn', content: 'Summarize the repository.' })
+    expect((sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest).requestId).not.toBe('request-1')
+  })
+
+  it('lost HTTP acknowledgement stays unknown, preserves the draft, and cannot blindly resend', async () => {
+    const mounted = mountChat(); await mounted.ready(); write('Possibly delivered')
+    let posts = 0
+    server.use(http.post(messagePath, () => { posts++; return HttpResponse.error() }))
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByText('Unknown', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Possibly delivered')
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
+    await waitFor(() => expect(screen.getByText(/review the warning/)).toBeInTheDocument())
+    expect(posts).toBe(1)
+  })
+
+  it('keeps edits made while a send is pending and retains composer focus', async () => {
+    const mounted = mountChat(); await mounted.ready()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    server.use(http.post(messagePath, async ({ request }) => {
+      const input = await request.json() as SendAgentChatMessageRequest
+      await gate
+      const state: AgentChatState = structuredClone(agentChatFixtures.active)
+      state.turns[0]!.requestId = input.requestId; state.turns[0]!.messageId = 'message-new'
+      state.messages = [{ id: 'message-new', conversationId: state.conversation!.id, requestId: input.requestId, role: 'user', content: input.content }]
+      mounted.mock.setState(state)
+      return HttpResponse.json({ state, turn: state.turns[0], replayed: false })
+    }))
+    write('Submitted'); await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    const input = screen.getByRole('textbox', { name: 'Message' }); expect(input).toHaveFocus()
+    write('A different draft'); await act(async () => { release() })
+    await waitFor(() => expect(screen.getByText('Server recorded: Next turn · Delivered')).toBeInTheDocument())
+    expect(input).toHaveValue('A different draft'); expect(input).toHaveFocus()
+  })
+
+  it('a late POST receipt updates only its original key after Agent switching', async () => {
+    const initial = agentChatFixtures.idleAfterCompletion, mounted = mountChat(initial); await mounted.ready()
+    let release!: () => void, posted = false
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    server.use(http.post(messagePath, async ({ request }) => {
+      const input = await request.json() as SendAgentChatMessageRequest; posted = true
+      await gate
+      const state: AgentChatState = structuredClone(initial)
+      const turn = { ...state.turns[0]!, requestId: input.requestId, messageId: 'late-user', sequence: '2', delivery: 'accepted' as const }
+      state.revision++; state.turns.push(turn)
+      state.messages.push({ id: turn.messageId, conversationId: state.conversation!.id, role: 'user', requestId: turn.requestId, content: input.content })
+      mounted.mock.setState(state)
+      return HttpResponse.json({ state, turn, replayed: false })
+    }))
+    write('Original selection send'); await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(posted).toBe(true))
+    const other = { ...initial.context, agentId: 'second-agent' }
+    mounted.switchContext(other)
+    await waitFor(() => expect(screen.getByText('Start a conversation')).toBeInTheDocument())
+    write('Second selection draft')
+    await act(async () => { release() })
+    await waitFor(() => expect(mounted.client.getQueryData<AgentChatState>(agentChatStateKey(initial.context))?.messages.some((message) => message.content === 'Original selection send')).toBe(true))
+    expect(screen.queryByText('Original selection send')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Second selection draft')
+    expect(mounted.client.getQueryData<AgentChatState>(agentChatStateKey(other))?.conversation).toBeNull()
+    mounted.switchContext(initial.context)
+    await screen.findByText('Original selection send')
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+  })
+
+  it('a failed delivery receipt keeps the draft even when HTTP succeeded', async () => {
+    const mounted = mountChat(); await mounted.ready(); write('Keep failed native input')
+    server.use(http.post(messagePath, async ({ request }) => {
+      const input = await request.json() as SendAgentChatMessageRequest
+      const state: AgentChatState = structuredClone(agentChatFixtures.failed)
+      state.turns[0]!.requestId = input.requestId
+      state.messages[0]!.requestId = input.requestId; state.messages[0]!.content = input.content
+      mounted.mock.setState(state)
+      return HttpResponse.json({ state, turn: state.turns[0], replayed: false })
+    }))
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await screen.findByText('Server recorded: Next turn · Failed')
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep failed native input')
+  })
+
+  it.each(['workspaceId', 'workflowId', 'workflowNodeId', 'agentId', 'runId'] as const)('isolates %s switching and preserves drafts per key', async (dimension) => {
+    const first = agentChatFixtures.idleAfterCompletion, mounted = mountChat(first); await mounted.ready(); write('Draft for first key')
+    const secondContext: AgentChatContext = { ...first.context, [dimension]: `${dimension}-other` }
+    const second = agentChatFixtureFor(first, secondContext, 'second-conversation')
+    second.messages = [{ id: 'other-message', conversationId: 'second-conversation', role: 'assistant', content: 'Only the other key' }]
+    second.turns = []; mounted.mock.setState(second)
+    mounted.switchContext(secondContext)
+    expect(screen.queryByText('It is a workflow engine.')).not.toBeInTheDocument()
+    await screen.findByText('Only the other key')
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+    write('Second key message'); await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    const body = sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest
+    expect(body.expectedConversationId).toBe('second-conversation')
+    expect(body.context).toMatchObject({ workflowId: secondContext.workflowId, workflowNodeId: secondContext.workflowNodeId, agentId: secondContext.agentId })
+    expect(body.context.runId).toBe(secondContext.runId)
+    expect(sent(mounted.mock)[0]!.path).toContain(`/workspaces/${secondContext.workspaceId}/`)
+    mounted.switchContext(first.context); await screen.findByText('It is a workflow engine.')
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Draft for first key')
+    expect(getConversationDraft(agentChatContextKey(first.context))).toBe('Draft for first key')
+  })
+})
+
+describe('AgentChatPanel live reads and interaction', () => {
+  it('duplicate and out-of-order SSE deltas refetch without appending or duplicating messages', async () => {
+    installChatSource()
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready()
+    await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(1))
+    const source = AgentChatTestSource.instances[0]!, id = agentChatFixtures.active.conversation.id
+    act(() => source.snapshot(agentChatFixtures.active))
+    const next: AgentChatState = structuredClone(agentChatFixtures.active); next.revision++
+    next.messages[1]!.content = 'Reading the README and package files'
+    mounted.mock.setState(next)
+    act(() => {
+      source.event({ id: 3, conversationId: id, type: 'delta', data: { text: 'must not be guessed' } })
+      source.event({ id: 3, conversationId: id, type: 'delta', data: { text: 'must not be guessed' } })
+      source.event({ id: 2, conversationId: id, type: 'delta', data: { text: 'out of order' } })
+    })
+    await screen.findByText(next.messages[1]!.content)
+    expect(screen.queryByText('must not be guessed')).not.toBeInTheDocument()
+    expect(screen.getAllByText(next.messages[1]!.content)).toHaveLength(1)
+    // A replayed older snapshot cannot roll back the newer revision from GET.
+    act(() => source.snapshot(agentChatFixtures.active, 4))
+    expect(screen.getByText(next.messages[1]!.content)).toBeInTheDocument()
+    mounted.mock.setState(agentChatFixtures.idleAfterCompletion)
+    act(() => source.event({ id: 5, conversationId: id, type: 'message', data: {} }))
+    await screen.findByText('It is a workflow engine.', { selector: '.conversation-message-content' })
+    expect(screen.queryByText('Reply in progress')).not.toBeInTheDocument()
+    expect(sent(mounted.mock)).toHaveLength(0)
+  })
+
+  it('reconnects with a state read and never resubmits messages', async () => {
+    installChatSource()
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready()
+    await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(1))
+    const first = AgentChatTestSource.instances[0]!
+    act(() => { first.snapshot(agentChatFixtures.active); first.fail() })
+    expect(screen.getByText('Connecting to live activity')).toBeInTheDocument()
+    mounted.mock.setState(agentChatFixtures.idleAfterCompletion)
+    await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(2), { timeout: 2000 })
+    act(() => AgentChatTestSource.instances[1]!.snapshot(agentChatFixtures.idleAfterCompletion))
+    await screen.findByText('Ready for a follow-up')
+    expect(first.close).toHaveBeenCalled()
+    expect(sent(mounted.mock)).toHaveLength(0)
+  })
+
+  it('ignores an old stream after switching Agent context', async () => {
+    installChatSource()
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready()
+    await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(1))
+    const old = AgentChatTestSource.instances[0]!
+    const context = { ...agentChatFixtures.empty.context, agentId: 'other-agent' }
+    mounted.switchContext(context)
+    await waitFor(() => expect(mounted.client.getQueryData(agentChatStateKey(context))).toBeDefined())
+    act(() => old.snapshot(agentChatFixtures.active))
+    expect(screen.queryByText('Reading the README')).not.toBeInTheDocument()
+    expect(old.close).toHaveBeenCalled()
+  })
+
+  it('supports Enter, Shift+Enter, IME composition and focus without intercepting Escape', async () => {
+    const mounted = mountChat(); await mounted.ready()
+    const input = screen.getByRole('textbox', { name: 'Message' })
+    await userEvent.type(input, 'First{shift>}{enter}{/shift}Second')
+    expect(input).toHaveValue('First\nSecond'); expect(sent(mounted.mock)).toHaveLength(0)
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 })
+    expect(sent(mounted.mock)).toHaveLength(0)
+    const escape = vi.fn(); window.addEventListener('keydown', escape)
+    fireEvent.keyDown(input, { key: 'Escape' }); expect(escape).toHaveBeenCalledOnce()
+    window.removeEventListener('keydown', escape)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
+    expect(input).toHaveFocus()
+  })
+
+  it('does not force-scroll while reading above; Jump to latest restores following', async () => {
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready()
+    const scroll = screen.getByRole('region', { name: 'Agent conversation transcript' })
+    Object.defineProperties(scroll, { scrollHeight: { configurable: true, value: 600 }, clientHeight: { configurable: true, value: 200 } })
+    scroll.scrollTop = 0; fireEvent.scroll(scroll)
+    const state: AgentChatState = structuredClone(agentChatFixtures.active); state.revision++
+    state.messages[1]!.content = 'More public output'; mounted.mock.setState(state)
+    await act(() => mounted.refresh())
+    expect(scroll.scrollTop).toBe(0)
+    await userEvent.click(await screen.findByRole('button', { name: 'Jump to latest' }))
+    expect(scroll.scrollTop).toBe(600)
+  })
+
+  it('keeps queued receipts visible and cancelable when text is outside the bounded history cut', async () => {
+    const state: AgentChatState = structuredClone(agentChatFixtures.activeWithQueue)
+    state.messages = state.messages.filter((message) => message.id !== state.turns[2]!.messageId); state.hasEarlierMessages = true
+    const mounted = mountChat(state); await mounted.ready()
+    const omitted = screen.getByRole('region', { name: 'Messages outside the current history page' })
+    expect(within(omitted).getByText('Queued')).toBeInTheDocument()
+    expect(within(omitted).getByText(/Message text is not included/)).toBeInTheDocument()
+    await userEvent.click(within(omitted).getByRole('button', { name: 'Cancel queued message' }))
+    await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/turns/request-3/cancel'))).toBe(true))
+    expect(sent(mounted.mock)).toHaveLength(0)
+  })
+
+  it('loads bounded history pages with the returned cursor and deduplicates overlaps', async () => {
+    const initial: AgentChatState = { ...structuredClone(agentChatFixtures.idleAfterCompletion), hasEarlierMessages: true }
+    const mounted = mountChat(initial); await mounted.ready()
+    const cursors: (string | null)[] = []
+    const older = { id: 'old-user', conversationId: initial.conversation!.id, role: 'user', content: 'Earlier prompt' }
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat/conversations/:id/history', ({ request }) => {
+      const params = new URL(request.url).searchParams; cursors.push(params.get('before'))
+      expect(params.get('limit')).toBe('50')
+      return HttpResponse.json({ conversationId: initial.conversation!.id,
+        messages: params.has('before') ? [older] : [older, ...initial.messages], nextCursor: params.has('before') ? null : '40' })
+    }))
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+    await screen.findByText('Earlier prompt')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load earlier messages' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+    await waitFor(() => expect(cursors).toEqual([null, '40']))
+    expect(screen.getAllByText('Earlier prompt')).toHaveLength(1)
+    expect(screen.getAllByText('It is a workflow engine.', { selector: '.conversation-message-content' })).toHaveLength(1)
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load earlier messages' })).not.toBeInTheDocument())
+  })
+
+  it('a denied read hides cached messages and a later network error cannot reveal them', async () => {
+    const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Protected draft')
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat', () => errorResponse('FORBIDDEN', 'Chat read access revoked.', 403)))
+    await act(() => mounted.refresh())
+    await screen.findByText('Agent chat access unavailable')
+    expect(screen.queryByText('Reading the README')).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat', () => HttpResponse.error()))
+    await act(() => mounted.refresh())
+    expect(screen.queryByText('Reading the README')).not.toBeInTheDocument()
+    expect(getConversationDraft(agentChatContextKey(agentChatFixtures.active.context))).toBe('Protected draft')
+  })
+
+  it('has narrow layout containment classes and an accessible reply live region', async () => {
+    const mounted = mountChat(agentChatFixtures.idleAfterCompletion); await mounted.ready()
+    expect(screen.getByTestId('agent-conversation')).toHaveClass('agent-conversation')
+    expect(screen.getByRole('region', { name: 'Agent conversation transcript' })).toHaveClass('conversation-viewport-scroll')
+    expect(screen.getByText('New reply from Coder: It is a workflow engine.')).toHaveAttribute('aria-live', 'polite')
+    // jsdom cannot prove geometry; HANDOFF.md includes the actual 320px/phone overflow check.
+  })
+
+  it('keeps drafts offline and does not send them automatically on reconnect', async () => {
+    const mounted = mountChat(); await mounted.ready(); write('Offline draft')
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+    act(() => window.dispatchEvent(new Event('offline')))
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    expect(screen.getByText('You are offline')).toBeInTheDocument()
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    act(() => window.dispatchEvent(new Event('online')))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(sent(mounted.mock)).toHaveLength(0)
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Offline draft')
+  })
+})

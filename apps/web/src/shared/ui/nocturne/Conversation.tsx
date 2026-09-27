@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react'
+import { useId, type ReactNode, type Ref } from 'react'
 import { Button } from './Button'
 import { Avatar } from './Layout'
 import { Icon, type IconName } from './Icon'
@@ -16,9 +16,9 @@ export function MessageBubble({ author, role = 'assistant', children, time, date
 
 /** The caller owns the draft and mutation. Rejected sends never erase the draft here. */
 export function MessageComposer({ value, onValueChange, onSend, pending = false, disabled = false, sendDisabled = false, error, onStop, maxLength = 16000,
-  label = 'Message the operator', placeholder = 'Describe what you want to do…', sendLabel = 'Send', pendingLabel = 'Sending…', formLabel, context }:
+  label = 'Message the operator', placeholder = 'Describe what you want to do…', sendLabel = 'Send', pendingLabel = 'Sending…', formLabel, context, inputRef }:
   { value: string; onValueChange: (value: string) => void; onSend: (value: string) => void; pending?: boolean; disabled?: boolean; sendDisabled?: boolean; error?: string;
-    onStop?: () => void; maxLength?: number; label?: string; placeholder?: string; sendLabel?: string; pendingLabel?: string; formLabel?: string; context?: ReactNode }) {
+    onStop?: () => void; maxLength?: number; label?: string; placeholder?: string; sendLabel?: string; pendingLabel?: string; formLabel?: string; context?: ReactNode; inputRef?: Ref<HTMLTextAreaElement> }) {
   const id = useId()
   const limit = Number.isFinite(maxLength) ? Math.max(1, Math.floor(maxLength)) : 16000
   const cannotSend = disabled || sendDisabled || pending || !value.trim() || value.length > limit
@@ -26,7 +26,7 @@ export function MessageComposer({ value, onValueChange, onSend, pending = false,
   return <form className="n-composer" onSubmit={(event) => { event.preventDefault(); send() }} aria-label={formLabel} aria-busy={pending || undefined}>
     {context && <div className="n-composer-context">{context}</div>}
     <label className="n-sr-only" htmlFor={id}>{label}</label>
-    <textarea id={id} className="n-input" value={value} maxLength={limit} placeholder={placeholder} disabled={disabled}
+    <textarea ref={inputRef} id={id} className="n-input" value={value} maxLength={limit} placeholder={placeholder} disabled={disabled}
       aria-invalid={Boolean(error) || value.length > limit || undefined}
       aria-describedby={`${id}-hint${error ? ` ${id}-error` : ''}`}
       onChange={(event) => onValueChange(event.currentTarget.value)} onKeyDown={(event) => {
