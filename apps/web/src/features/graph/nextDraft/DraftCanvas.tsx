@@ -2,7 +2,7 @@ import { createContext, forwardRef, memo, useContext, useImperativeHandle, useLa
 import { Background, ConnectionMode, ReactFlow, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
 import { WorkflowRelationshipSchema, type WorkflowDefinitionV3, type WorkflowRelationship } from '@graphql/contracts/wave25'
 import type { Agent } from '@graphql/contracts'
-import { AgentNodeView, AgentPopover, type AgentPanel } from '../../../shared/ui/nocturne'
+import { AgentNodeView, AgentPopover, IconButton, Icon, type AgentPanel } from '../../../shared/ui/nocturne'
 import { createGraphTopologyProjector } from '../topology'
 import { createGraphGeometryAdapter, type GraphGeometryChange } from '../geometry'
 import { useGraphDraftStore } from '../store'
@@ -11,7 +11,7 @@ import { AgentHandles } from '../AgentHandles'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../signalEdge'
 import { SignalEdgeShape } from '../SignalEdgeShape'
 import type { GraphNode } from '../types'
-import { nodeTitle, putRelationship } from './model'
+import { nodeTitle, putRelationship, removeRelationship } from './model'
 import type { EditGraph } from './AuthoringFields'
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { SelectedRunCanvas } from '../../workflow-board/inspect/SelectedRunCanvas'
@@ -57,14 +57,20 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<Gr
   </>
 })
 
-type DraftEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean }>
-const TypedEdge = memo(function TypedEdge({ id, source, target, data, selected }: EdgeProps<DraftEdge>) {
+type DraftEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean;
+  remove: () => void; removeLabel: string; removalDisabled: boolean }>
+const TypedEdge = memo(function TypedEdge({ id, source, target, data }: EdgeProps<DraftEdge>) {
   const curve = useFloatingCurve(source, target, data?.bend ?? 28)
   const [hovered, setHovered] = useState(false)
   if (!curve) return null
+  const offset = data?.explicit ? (data.label.length * 7.2 + 24) / 2 + 8 : 0
   return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
     <SignalEdgeShape id={id} curve={curve} kind={data?.kind}
-      label={data?.label} showLabel={data?.explicit && (hovered || selected)} />
+      label={data?.label} showLabel={data?.explicit && hovered} />
+    {hovered ? <foreignObject className="board-edge-remove nodrag nopan" x={curve.mid.x + offset - 18} y={curve.mid.y - 36} width={36} height={36}>
+      <IconButton size="sm" variant="ghost" label={data?.removeLabel ?? `Remove connection from ${source} to ${target}`}
+        disabled={data?.removalDisabled} onClick={(event) => { event.stopPropagation(); data?.remove() }}><Icon name="close" size={14} /></IconButton>
+    </foreignObject> : null}
   </g>
 })
 const nodeTypes = { agent: DraftAgent }, edgeTypes = { typed: TypedEdge }
@@ -78,10 +84,10 @@ export type DraftCanvasHandle = { flush(): void; cancel(): void }
 export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   draftKey: string; graph: WorkflowDefinitionV3; agents: readonly Agent[]; kind: WorkflowRelationship['kind']
   change: EditGraph; geometry: (changes: GraphGeometryChange[]) => void; pending: (pending: boolean) => void
-  report: (error: unknown) => void; inspect?: (action: () => void) => void
+  report: (error: unknown) => void; inspect?: (action: () => void) => void; removalDisabled?: boolean
   open?: OpenAgentPanel; setOpen?: (next?: OpenAgentPanel) => void; panels?: (nodeId: string) => AgentPanels
   children?: ReactNode
-}>(function DraftCanvas({ draftKey, graph, agents, kind, change, geometry, pending, report, inspect = (action) => action(),
+}>(function DraftCanvas({ draftKey, graph, agents, kind, change, geometry, pending, report, inspect = (action) => action(), removalDisabled = false,
   open, setOpen = () => undefined, panels = () => ({ chat: null, settings: null, info: null }), children }, ref) {
   const selectedRun = useWorkflowBoard()?.run
   const [project] = useState(() => createGraphTopologyProjector())
@@ -91,7 +97,6 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   const [connecting, setConnecting] = useState(false)
   const connectionSource = useRef<string | undefined>(undefined)
   const selectedIds = useGraphPresentation((state) => state.selectedNodeIds)
-  const focusedEdge = useGraphPresentation((state) => state.focusedEdgeId)
   const presentation = useGraphPresentationStore()
   useLayoutEffect(() => { setNodes(adapter.reconcile(topology.nodes, selectedIds)) }, [adapter, topology.nodes, selectedIds])
   const flush = () => {
@@ -107,11 +112,14 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       const pair = JSON.stringify([edge.source, edge.target].sort()), count = counts.get(pair) ?? 0
       counts.set(pair, count + 1)
       const kindLabel = members.length > 1 ? 'Handoff · approval' : edge.kind === 'approval' ? 'Approval' : 'Handoff'
-      return { ...edge, type: 'typed', selected: members.some((member) => member.id === focusedEdge),
+      return { ...edge, type: 'typed',
         ariaLabel: `${kindLabel} from ${nodeTitle(graph, edge.source)} to ${nodeTitle(graph, edge.target)}${edge.label ? `: ${edge.label}` : ''}`,
-        data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel, explicit: Boolean(edge.label) } }
+        data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel, explicit: Boolean(edge.label),
+          remove: () => change((value) => removeRelationship(value, edge.id)),
+          removeLabel: `Remove ${edge.kind === 'approval' ? 'approval' : 'handoff'} from ${nodeTitle(graph, edge.source)} to ${nodeTitle(graph, edge.target)}`,
+          removalDisabled } }
     })
-  }, [graph, focusedEdge])
+  }, [graph, change, removalDisabled])
   const onNodesChange = (changes: NodeChange<GraphNode>[]) => {
     const nextSelection = new Set(presentation.getState().selectedNodeIds)
     for (const item of changes) if (item.type === 'select') {
@@ -149,7 +157,6 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
         onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
         onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}
         onNodeClick={(_, node) => selectNode(node.id)}
-        onEdgeClick={(_, edge) => inspect(() => { setOpen(undefined); presentation.getState().setFocusedEdgeId(edge.id); presentation.getState().setFocusedNodeId(undefined) })}
         onPaneClick={() => inspect(() => { connectionSource.current = undefined; setOpen(undefined); presentation.getState().setFocusedNodeId(undefined); presentation.getState().setFocusedEdgeId(undefined) })}
         onConnect={(connection) => {
           connectionSource.current = undefined

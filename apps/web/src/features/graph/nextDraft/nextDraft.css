@@ -18,3 +18,6 @@
 .next-draft-canvas { position: relative; height: min(58vh, 650px); min-height: 340px; overflow: hidden; }
 .next-draft-section > .n-button, .next-draft-section > p > .n-button { justify-self: start; }
 .next-draft-connections li[data-direction='in'] > svg { transform: rotate(180deg); }
+.board-edge-remove { overflow: visible; pointer-events: auto; }
+.board-edge-remove .n-icon-button { width: 36px; height: 36px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full); background: var(--surface-raised); box-shadow: var(--shadow-popover); }
