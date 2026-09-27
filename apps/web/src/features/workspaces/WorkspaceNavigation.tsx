@@ -11,9 +11,6 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   ChevronDown,
-  Files,
-  History,
-  ListTodo,
   PanelsTopLeft,
   Workflow,
 } from 'lucide-react'
@@ -82,30 +79,7 @@ const workspaceSections: readonly WorkspaceSection[] = [
   'runs',
 ]
 
-const sectionLinks = [
-  { section: 'files', label: 'Files', to: '/workspaces/$workspaceId/files', icon: Files },
-  { section: 'tasks', label: 'Tasks', to: '/workspaces/$workspaceId/tasks', icon: ListTodo },
-  { section: 'runs', label: 'Runs', to: '/workspaces/$workspaceId/runs', icon: History },
-] as const
-
-const sectionLinkBySection = new Map<WorkspaceSection, (typeof sectionLinks)[number]>(
-  sectionLinks.map((item) => [item.section, item]),
-)
-
-const sectionLabels: Record<WorkspaceSection, string> = {
-  agents: 'Agents',
-  workflows: 'Workflows',
-  files: 'Files',
-  tasks: 'Tasks',
-  runs: 'Runs',
-  terminal: 'Terminal',
-  settings: 'Settings',
-}
-
-const workspaceSectionItems = workspaceSections.map((section) => ({
-  id: section,
-  label: sectionLabels[section],
-}))
+const workspaceSectionItems = [{ id: 'workflows', label: 'Workflows' }]
 
 /** The always-visible, server-backed create entry point for the workspace list. */
 function NewWorkspaceControl() {
@@ -254,7 +228,6 @@ interface WorkspaceTreeItemProps {
   expanded: boolean
   onActivate: () => void
   onToggle: () => void
-  activeSection: WorkspaceSection
   activeWorkflowId?: string
   navigationCollapsed: boolean
   workflowsContent?: ReactNode
@@ -268,7 +241,6 @@ function WorkspaceTreeItem({
   expanded,
   onActivate,
   onToggle,
-  activeSection,
   activeWorkflowId,
   navigationCollapsed,
   workflowsContent,
@@ -297,8 +269,13 @@ function WorkspaceTreeItem({
       return (
         <>
           <div className="nav-item-row" {...reorderProps}>
-            <span
-              className="nav-item nav-section-label"
+            <Link
+              to="/workspaces/$workspaceId/workflows"
+              params={{ workspaceId: entry.id }}
+              activeOptions={{ exact: true }}
+              activeProps={{ className: 'nav-item-active', 'aria-current': 'page' }}
+              className="nav-item"
+              {...sections.getKeyboardProps(section)}
               aria-label={navigationCollapsed ? 'Workflows' : undefined}
               title="Workflows"
             >
@@ -306,7 +283,7 @@ function WorkspaceTreeItem({
                 <Workflow aria-hidden="true" className="nav-item-icon" size={16} />
                 <span className="nav-item-label">Workflows</span>
               </span>
-            </span>
+            </Link>
             <IconButton
               className="nav-item-toggle"
               label={`${workflowsExpanded ? 'Collapse' : 'Expand'} workflows in ${entry.name}`}
@@ -337,27 +314,7 @@ function WorkspaceTreeItem({
       )
     }
 
-    const item = sectionLinkBySection.get(section)
-    if (!item) return null
-    const itemActive = active && activeSection === item.section
-
-    return (
-      <Link
-        to={item.to}
-        params={{ workspaceId: entry.id }}
-        className={`nav-item${itemActive ? ' nav-item-active' : ''}`}
-        aria-current={itemActive ? 'page' : undefined}
-        aria-label={navigationCollapsed ? item.label : undefined}
-        title={item.label}
-        {...reorderProps}
-        {...sections.getKeyboardProps(section)}
-      >
-        <span className="nav-item-primary">
-          <item.icon aria-hidden="true" className="nav-item-icon" size={16} />
-          <span className="nav-item-label">{item.label}</span>
-        </span>
-      </Link>
-    )
+    return null
   }
 
   return (
@@ -417,8 +374,8 @@ function WorkspaceTreeItem({
 
 /**
  * The workspace-first sidebar hierarchy. Workspaces is the collapsible parent,
- * every workspace entry opens its settings and expands into Workflows, Files,
- * Tasks, and Runs. App Settings lives in the shell footer.
+ * every workspace entry opens its settings and expands into Workflows.
+ * App Settings lives in the shell footer.
  * The Agents destination remains routed but is temporarily hidden here.
  * Workspace and workflow lists are server-shaped query projections; selection
  * stays in the URL through router links.
@@ -532,7 +489,6 @@ export function WorkspaceNavigation({
                     )}
                     onActivate={() => rememberWorkspace(entry.id)}
                     onToggle={() => toggleWorkspace(entry.id)}
-                    activeSection={activeSection}
                     activeWorkflowId={activeWorkflowId}
                     navigationCollapsed={navigationCollapsed}
                     workflowsContent={workflowsContent}

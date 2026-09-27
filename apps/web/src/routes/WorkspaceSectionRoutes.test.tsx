@@ -85,12 +85,12 @@ describe('workspace section routes', () => {
     expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
   })
 
-  it('keeps the Workflows sidebar label on the current workspace settings page', async () => {
+  it('opens the workflow directory from the Workflows sidebar link', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
     await user.click(await screen.findByTitle('Workflows'))
-    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
-    expect(screen.queryByRole('link', { name: 'Workflows' })).not.toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows')
+    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
     expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
   })
 
@@ -100,7 +100,7 @@ describe('workspace section routes', () => {
 
     await screen.findByRole('heading', { name: 'Agents', level: 1 })
     await user.click(screen.getByRole('button', { name: 'Collapse workflows in Website' }))
-    await user.click(screen.getByRole('link', { name: 'Files' }))
+    await router.navigate({ to: '/workspaces/$workspaceId/files', params: { workspaceId: 'workspace-1' } })
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/files'))
     expect(await screen.findByRole('button', { name: 'Expand workflows in Website' })).toHaveAttribute(
@@ -115,7 +115,7 @@ describe('workspace section routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Files' })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
-    expect(await screen.findByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
 

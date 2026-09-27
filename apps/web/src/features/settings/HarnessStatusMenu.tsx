@@ -19,9 +19,9 @@ function HarnessStatus({ harness }: { harness: AgentHarness }) {
   const detail = query.isError ? 'Could not check harness availability.' : query.data?.reason?.message ?? 'Availability with saved harness settings. Workspace checks run when execution starts.'
   return <Link to="/settings/harnesses" search={{ harness, section: 'model' }} className="harness-status-link"
     aria-label={`${name}: ${label}`} title={`${name}: ${label}. ${detail}`}>
+    <span className={`harness-status-light harness-status-light--${state}`} aria-hidden="true" />
     <span className="harness-status-initial" aria-hidden="true">{name[0]}</span>
     <span className="harness-status-name">{name}</span>
-    <span className={`harness-status-light harness-status-light--${state}`} aria-hidden="true" />
   </Link>
 }
 

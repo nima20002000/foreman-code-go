@@ -206,10 +206,9 @@ export function WorkspaceShell({
           <HarnessStatusMenu />
           <div className="sidebar-account-row">
             <Link to="/account" className={`sidebar-account-link${activeGlobalSection === 'account' ? ' sidebar-account-link-active' : ''}`}
-              aria-current={activeGlobalSection === 'account' ? 'page' : undefined} aria-label={navigationCollapsed ? 'Account' : undefined}
+              aria-current={activeGlobalSection === 'account' ? 'page' : undefined} aria-label="Account"
               title="Account">
               <UserRound aria-hidden="true" size={17} />
-              <span className="sidebar-account-label">Account</span>
             </Link>
             <Link
               to="/settings"

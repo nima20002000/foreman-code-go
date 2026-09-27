@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -103,38 +103,6 @@ afterEach(() => {
 })
 
 describe('sidebar menu reordering', () => {
-  it('swaps sibling sections with Alt+Arrow keys and announces the new position', async () => {
-    const user = userEvent.setup()
-    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-
-    const files = await screen.findByRole('link', { name: 'Files' })
-    files.focus()
-    await user.keyboard('{Alt>}{ArrowUp}{/Alt}')
-
-    expect(reorderIds(sectionsGroup)).toEqual([
-      'files',
-      'workflows',
-      'tasks',
-      'runs',
-    ])
-    expect(screen.getByTestId('navigation-reorder-announcement')).toHaveTextContent(
-      'Moved Files to position 1 of 4',
-    )
-  })
-
-  it('keeps nested submenu contents and the active section intact after a section swap', async () => {
-    const user = userEvent.setup()
-    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-
-    const workflows = await screen.findByRole('link', { name: 'Workflows' })
-    workflows.focus()
-    await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
-
-    expect(reorderIds(sectionsGroup).slice(0, 2)).toEqual(['files', 'workflows'])
-    expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
-  })
-
   it('reorders sibling workspace entries with Alt+Arrow keys', async () => {
     const user = userEvent.setup()
     renderWithRouter(
@@ -153,25 +121,6 @@ describe('sidebar menu reordering', () => {
 
     expect(reorderIds(workspacesGroup)).toEqual(['workspace-2', 'workspace-1'])
     expect(item(workspacesGroup, 'workspace-2')).toContainElement(docs)
-  })
-
-  it('reorders siblings by pointer drag and suppresses the click that follows it', async () => {
-    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-    await screen.findByRole('link', { name: 'Files' })
-
-    stubLayout(layoutList(sectionsGroup, 100))
-
-    pointerDrag(item(sectionsGroup, 'files'), { x: 50, y: 105 }, 'mouse', { x: 50, y: 145 })
-
-    expect(reorderIds(sectionsGroup)).toEqual([
-      'files',
-      'workflows',
-      'tasks',
-      'runs',
-    ])
-    expect(screen.getByTestId('navigation-reorder-announcement')).toHaveTextContent(
-      'Moved Files to position 1 of 4',
-    )
   })
 
   it('never moves a dragged item into another workspace list', async () => {
@@ -194,19 +143,13 @@ describe('sidebar menu reordering', () => {
     ])
     stubLayout(rects)
 
-    pointerDrag(item(sectionsGroup, 'files'), { x: 50, y: 415 }, 'mouse', { x: 50, y: 175 })
+    pointerDrag(item(sectionsGroup, 'workflows'), { x: 50, y: 415 }, 'mouse', { x: 50, y: 175 })
 
     expect(reorderIds(sectionsGroup)).toEqual([
       'workflows',
-      'files',
-      'tasks',
-      'runs',
     ])
     expect(reorderIds(sectionsGroupTwo)).toEqual([
       'workflows',
-      'files',
-      'tasks',
-      'runs',
     ])
   })
 
@@ -223,7 +166,7 @@ describe('sidebar menu reordering', () => {
     )
     await user.click(await screen.findByRole('button', { name: 'Expand Docs' }))
 
-    const nestedFile = item(sectionsGroup, 'files')
+    const nestedFile = item(sectionsGroup, 'workflows')
     expect(nestedFile.closest('[data-reorder-id="workspace-1"]')).toBeNull()
     const rects = new Map([
       ...layoutList(workspacesGroup, 50, 200),
@@ -237,79 +180,7 @@ describe('sidebar menu reordering', () => {
     expect(reorderIds(workspacesGroup)).toEqual(['workspace-1', 'workspace-2'])
     expect(reorderIds(sectionsGroup)).toEqual([
       'workflows',
-      'files',
-      'tasks',
-      'runs',
     ])
   })
 
-  it('does not reorder on a quick touch movement that is a scroll', async () => {
-    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-    await screen.findByRole('link', { name: 'Files' })
-
-    stubLayout(layoutList(sectionsGroup, 100))
-
-    pointerDrag(item(sectionsGroup, 'files'), { x: 50, y: 140 }, 'touch', { x: 50, y: 175 })
-
-    expect(reorderIds(sectionsGroup)).toEqual([
-      'workflows',
-      'files',
-      'tasks',
-      'runs',
-    ])
-  })
-
-  it('reorders after a touch hold', async () => {
-    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-    await screen.findByRole('link', { name: 'Files' })
-
-    stubLayout(layoutList(sectionsGroup, 100))
-
-    vi.useFakeTimers()
-    try {
-      const source = item(sectionsGroup, 'files')
-      fireEvent.pointerDown(source, {
-        button: 0,
-        pointerId: 1,
-        pointerType: 'touch',
-        clientX: 50,
-        clientY: 145,
-      })
-      act(() => {
-        vi.advanceTimersByTime(400)
-      })
-      fireEvent.pointerMove(window, {
-        pointerId: 1,
-        pointerType: 'touch',
-        clientX: 50,
-        clientY: 105,
-        buttons: 1,
-      })
-      fireEvent.pointerUp(window, {
-        pointerId: 1,
-        pointerType: 'touch',
-        clientX: 50,
-        clientY: 105,
-      })
-    } finally {
-      vi.useRealTimers()
-    }
-
-    expect(reorderIds(sectionsGroup).slice(0, 2)).toEqual(['files', 'workflows'])
-  })
-
-  it('keeps the session-local order across shell remounts without touching the URL', async () => {
-    const user = userEvent.setup()
-    const first = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-
-    const files = await screen.findByRole('link', { name: 'Files' })
-    files.focus()
-    await user.keyboard('{Alt>}{ArrowUp}{/Alt}')
-    first.unmount()
-
-    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-
-    expect(await screen.findByRole('link', { name: 'Files' })).toBeVisible()
-    expect(reorderIds(sectionsGroup).slice(0, 3)).toEqual(['files', 'workflows', 'tasks'])
-  })
 })

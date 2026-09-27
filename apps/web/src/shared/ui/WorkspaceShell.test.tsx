@@ -47,19 +47,13 @@ describe('WorkspaceShell', () => {
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
 
     const workflows = await screen.findByTitle('Workflows')
-    expect(workflows).not.toHaveAttribute('href')
+    expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1/workflows')
     expect(workflows).toHaveTextContent('Workflows')
 
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
 
-    const files = screen.getByRole('link', { name: 'Files' })
-    expect(files).toHaveAttribute('href', '/workspaces/workspace-1/files')
-    expect(files.querySelector('svg')).toBeInTheDocument()
-
-    for (const label of ['Tasks', 'Runs']) {
-      const item = screen.getByRole('link', { name: label })
-      expect(item).toHaveAttribute('href', expect.stringContaining('/workspaces/workspace-1/'))
-      expect(item.querySelector('svg')).toBeInTheDocument()
+    for (const label of ['Files', 'Tasks', 'Runs']) {
+      expect(screen.queryByRole('link', { name: label })).not.toBeInTheDocument()
     }
     expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
@@ -168,7 +162,7 @@ describe('WorkspaceShell', () => {
     expect(entry).toHaveAttribute('href', '/workspaces/workspace-1/settings')
     expect(screen.queryByRole('link', { name: 'Workspace settings' })).not.toBeInTheDocument()
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('link', { name: 'Files' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Collapse workflows in Website' })).toBeVisible()
 
     await user.click(toggle)
 
@@ -179,7 +173,7 @@ describe('WorkspaceShell', () => {
     await user.click(toggle)
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(await screen.findByRole('link', { name: 'Files' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Collapse workflows in Website' })).toBeVisible()
   })
 
   it('collapses and expands the nested Workflows submenu while Agents stays hidden', async () => {
@@ -228,11 +222,9 @@ describe('WorkspaceShell', () => {
     await user.click(docsToggle)
 
     expect(docsToggle).toHaveAttribute('aria-expanded', 'true')
-    const filesLinks = screen.getAllByRole('link', { name: 'Files' })
-    expect(filesLinks.some((link) => link.getAttribute('href') === '/workspaces/workspace-2/files')).toBe(true)
     const workflowsLinks = screen.getAllByTitle('Workflows')
     expect(workflowsLinks).toHaveLength(2)
-    expect(workflowsLinks.every((label) => !label.hasAttribute('href'))).toBe(true)
+    expect(workflowsLinks.every((label) => label.hasAttribute('href'))).toBe(true)
   })
 
   it('resizes the navigation by pointer and keyboard within safe bounds', async () => {
