@@ -2,8 +2,9 @@ import { createContext, useContext, memo, useMemo, useRef, useState } from 'reac
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Background, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { RepeatGraphScopeV3, WorkflowRelationship } from '@graphql/contracts/wave25'
-import { AgentNodeView, Alert, Button, type AgentNodeState, type AgentNodeTransition } from '../../../shared/ui/nocturne'
+import { AgentNodeView, AgentPopover, Alert, Button, type AgentNodeState, type AgentNodeTransition } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
+import type { AgentPanelRenderer, OpenAgentPanel } from '../../graph/nextDraft/DraftCanvas'
 import { AgentHandles } from '../../graph/AgentHandles'
 import { SignalEdgeShape } from '../../graph/SignalEdgeShape'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../../graph/signalEdge'
@@ -17,20 +18,30 @@ import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
 import { useRunChoreography } from './runChoreography'
 import './inspection.css'
 
+const RunAgentPanels = createContext<{ panels?: AgentPanelRenderer; open?: OpenAgentPanel; setOpen(value?: OpenAgentPanel): void } | null>(null)
+
 type Facts = ReturnType<typeof agentNodeFacts>
 type RunNode = Node<{
   label: string; agentId: string; configurationId: string; entry: boolean
   blockId?: string; recorded: string; status: string; state: AgentNodeState; transition?: AgentNodeTransition; transitionKey?: number; facts: Facts
   selected: boolean; inspect(): void
 }, 'pinnedRunNode'>
-/** The editor's agent card, locked: no rim actions, no connections, status from the Run. */
-const PinnedRunNode = memo(function PinnedRunNode({ data }: NodeProps<RunNode>) {
+/** The editor's agent card, locked for edits. The same chat popover uses the Run's pinned identity. */
+const PinnedRunNode = memo(function PinnedRunNode({ id, data }: NodeProps<RunNode>) {
+  const ui = useContext(RunAgentPanels), anchor = useRef<HTMLButtonElement>(null)
+  const panel = ui?.open?.nodeId === id ? ui.open.panel : undefined
   const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []), ...data.facts.meta].slice(0, 2)
-  return <AgentNodeView className="pinned-run-node" name={data.label} harness={data.facts.harness} harnessLabel={data.facts.harnessLabel}
+  return <><AgentNodeView ref={anchor} className="pinned-run-node" name={data.label} harness={data.facts.harness} harnessLabel={data.facts.harnessLabel}
     model={data.facts.model} icon={data.facts.icon} statusLabel={data.status} state={data.state} transition={data.transition} transitionKey={data.transitionKey} meta={meta}
-    entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={data.inspect}>
+    entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={data.inspect} openPanel={panel}
+    onAction={ui?.panels ? (next) => ui.setOpen(panel === next ? undefined : { nodeId: id, panel: next }) : undefined}>
     <AgentHandles name={data.label} connectable={false} />
   </AgentNodeView>
+    {panel && ui?.panels ? <AgentPopover open anchor={anchor} title={data.label} subtitle={`Selected Run · ${data.recorded}`}
+      harness={data.facts.harness} icon={data.facts.icon} panel={panel}
+      onPanelChange={(next) => ui.setOpen({ nodeId: id, panel: next })} onClose={() => ui.setOpen(undefined)}
+      {...ui.panels(id, { agentId: data.agentId, name: data.label })} /> : null}
+  </>
 })
 // Pulses and traces are timed once per canvas, so an edge remount never replays a handoff.
 type LineMotion = { pulses: Map<string, EdgePulse[]>; reversed: Map<string, boolean> }
@@ -55,7 +66,8 @@ const unknownFacts: Facts = { harnessLabel: 'Pinned settings unavailable', icon:
 /** Mounted in the EXISTING canvas region. The editor owner and buffered draft
  * stay mounted beside it, but neither draft nodes nor current Agent settings
  * enter this read-only topology. URL pins are verified by the /version service. */
-export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
+export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3; panels?: AgentPanelRenderer }) {
+  const [open, setOpen] = useState<OpenAgentPanel>()
   const board = useWorkflowBoard()!
   const query = useRunVersionQuery(scope)
   const denied = useProtectedAccessError(query)
@@ -158,14 +170,14 @@ export function SelectedRunCanvas({ scope }: { scope: RepeatGraphScopeV3 }) {
       if (!edgeId || !topology?.edges.some((edge) => edge.id === edgeId)) return
       event.preventDefault(); board.selectInspection({ runRelationshipId: edgeId }); board.openRuns()
     }}>
-      <Choreography.Provider value={motion}><ReactFlow<RunNode, RunEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      <RunAgentPanels.Provider value={{ panels, open, setOpen }}><Choreography.Provider value={motion}><ReactFlow<RunNode, RunEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable
         elementsSelectable deleteKeyCode={null} onlyRenderVisibleElements
         onEdgeClick={(_, edge) => { board.selectInspection({ runRelationshipId: edge.id }); board.openRuns() }}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.1} maxZoom={1.6}
         aria-label="Run graph canvas">
         <Background color="var(--border)" gap={24} size={1} />
-      </ReactFlow></Choreography.Provider>
+      </ReactFlow></Choreography.Provider></RunAgentPanels.Provider>
     </div> : null}
     {version ? <p className="pinned-run-footnote">{version.definition.repeat
       ? 'Configured repeat blocks belong to this saved version. Node badges show the bounded current cut; inspect a repetition for its recorded facts.'

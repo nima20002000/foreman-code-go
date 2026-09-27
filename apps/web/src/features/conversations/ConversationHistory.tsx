@@ -1,12 +1,16 @@
+import type { ReactNode } from 'react'
 import type { Message } from '@graphql/contracts'
 import { EmptyState, MessageBubble } from '../../shared/ui/nocturne'
 import './conversationHistory.css'
 
 export interface ConversationHistoryProps {
   messages: Message[]
+  assistantName?: string
+  renderStatus?: (message: Message) => ReactNode
+  renderActions?: (message: Message) => ReactNode
 }
 
-export function ConversationHistory({ messages }: ConversationHistoryProps) {
+export function ConversationHistory({ messages, assistantName = 'Assistant', renderStatus, renderActions }: ConversationHistoryProps) {
   if (messages.length === 0) {
     return <div data-testid="conversation-empty"><EmptyState icon="history" title="No conversation history yet" description="Messages will appear here after the conversation starts." /></div>
   }
@@ -16,8 +20,10 @@ export function ConversationHistory({ messages }: ConversationHistoryProps) {
       {messages.map((message) => (
         <li key={message.id} data-message-role={message.role}>
           <MessageBubble
-            author={message.role === 'assistant' ? 'Assistant' : message.role === 'user' ? 'You' : message.role}
+            author={message.role === 'assistant' ? assistantName : message.role === 'user' ? 'You' : message.role}
             role={message.role === 'assistant' || message.role === 'user' ? message.role : 'system'}
+            status={renderStatus?.(message)}
+            actions={renderActions?.(message)}
           >
             <p className="conversation-message-content">{message.content}</p>
           </MessageBubble>

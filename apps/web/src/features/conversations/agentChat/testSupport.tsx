@@ -1,0 +1,60 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen, waitFor } from '@testing-library/react'
+import { expect, vi } from 'vitest'
+import type { ManagementAction } from '@graphql/contracts/management'
+import type { AgentChatContext, AgentChatState, AgentChatStreamEvent } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures } from '@graphql/contracts/agent-chat'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE } from '@graphql/contracts'
+import { AgentChatPanel } from '../../graph/AgentPanels'
+import { server } from '../../../mocks/server'
+import { createAgentChatMock } from '../../../shared/mocks/agentChatHandlers'
+import { agentChatStateKey } from './useAgentChat'
+
+/** A controlled wire, not a running browser or native harness. HTTP remains intercepted by MSW. */
+export class AgentChatTestSource extends EventTarget {
+  static instances: AgentChatTestSource[] = []
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSED = 2
+  readyState = 0
+  close = vi.fn(() => { this.readyState = 2 })
+  constructor(readonly url: string) { super(); AgentChatTestSource.instances.push(this) }
+  open() { this.readyState = 1; this.dispatchEvent(new Event('open')) }
+  snapshot(state: AgentChatState, id = 0) {
+    this.event({ id, conversationId: state.conversation!.id, type: 'snapshot', data: state as unknown as Record<string, unknown> })
+  }
+  event(event: AgentChatStreamEvent) { this.dispatchEvent(new MessageEvent(event.type, { data: JSON.stringify(event) })) }
+  fail() { this.dispatchEvent(new Event('error')) }
+}
+export function installChatSource() {
+  AgentChatTestSource.instances = []
+  vi.stubGlobal('EventSource', AgentChatTestSource)
+}
+export function approvalState(): AgentChatState {
+  const state: AgentChatState = structuredClone(agentChatFixtures.active)
+  state.sessionState = 'waiting_approval'
+  state.pendingInteraction = {
+    session: { harness: 'codex', nativeSessionId: state.conversation!.nativeSession!.nativeSessionId, providerVersion: '0.157.1' },
+    turn: { nativeTurnId: 'turn-1', nativeRequestId: 'native-approval-1' }, nativeRequestType: 'item/commandExecution/requestApproval',
+    request: { command: ['read', 'README.md'] }, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE,
+  }
+  return state
+}
+export function mountChat(initial: AgentChatState = agentChatFixtures.empty, actions?: ManagementAction[]) {
+  const mock = createAgentChatMock(initial, actions)
+  server.use(...mock.handlers)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const renderPanel = (context: AgentChatContext) => <QueryClientProvider client={client}>
+    <AgentChatPanel name="Coder" context={context} activity="Business occurrence 1 · technical attempt 1" running onNewConversation={newConversation} />
+  </QueryClientProvider>
+  const newConversation = vi.fn()
+  const rendered = render(renderPanel(initial.context))
+  const ready = () => waitFor(() => {
+    expect(client.getQueryData(agentChatStateKey(initial.context))).toBeDefined()
+    expect(screen.getByTestId('agent-conversation').querySelector('.agent-chat-session-label')).not.toBeNull()
+  })
+  return { mock, client, ready, newConversation, ...rendered,
+    switchContext: (context: AgentChatContext) => rendered.rerender(renderPanel(context)),
+    refresh: () => client.invalidateQueries({ queryKey: agentChatStateKey(initial.context) }),
+  }
+}

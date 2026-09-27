@@ -8,9 +8,10 @@ import './operatorApprovalCard.css'
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const string = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined
 
-export function OperatorApprovalCard({ interaction, disabled, onSelect, onBrowse }: {
+export function OperatorApprovalCard({ interaction, disabled, onSelect, onBrowse, actor = 'Operator' }: {
   interaction: PendingNativeInteraction
   disabled: boolean
+  actor?: 'Operator' | 'Agent'
   onSelect: (optionId: string) => void
   onBrowse?: () => void
 }) {
@@ -43,10 +44,10 @@ export function OperatorApprovalCard({ interaction, disabled, onSelect, onBrowse
       </p>
     </div>
   }
-  return <section className="operator-approval-card" aria-label="Operator approval request">
+  return <section className="operator-approval-card" aria-label={`${actor} approval request`}>
     <div className="operator-approval-heading"><span className="operator-approval-mark"><Icon name="lock" size={15} /></span><div>
       <h3>{mcp && tool ? `${tool}?` : summary.operation}</h3>
-      <p>{mcp ? `MCP tool · ${connector ?? 'Provider'}` : interaction.nativeRequestType === 'item/commandExecution/requestApproval' ? 'Shell command' : interaction.nativeRequestType === 'item/fileChange/requestApproval' ? 'File change' : 'Operator request'}</p>
+      <p>{mcp ? `MCP tool · ${connector ?? 'Provider'}` : interaction.nativeRequestType === 'item/commandExecution/requestApproval' ? 'Shell command' : interaction.nativeRequestType === 'item/fileChange/requestApproval' ? 'File change' : `${actor} request`}</p>
     </div></div>
     {destination ? <p className="operator-approval-target">{mcp ? 'Access' : 'Target'} <strong>{destination}</strong></p> : null}
     {summary.command ? <code className="operator-approval-command">{summary.command}</code> : null}
