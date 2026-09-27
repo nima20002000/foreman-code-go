@@ -90,11 +90,12 @@ describe('WorkflowNavigation', () => {
     )
   })
 
-  it('keeps workflow management actions out of the navigation', async () => {
+  it('offers direct removal without a separate actions menu', async () => {
     renderNavigation('workflow-content-pipeline')
 
     expect(await screen.findByRole('link', { name: 'Research to review' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /Open actions for/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove Research to review' })).toBeEnabled()
   })
 
   it('clears an agent selection when workflow identity changes', async () => {
@@ -165,14 +166,14 @@ describe('WorkflowNavigation', () => {
     expect(await screen.findByText('Workflow created, but its graph could not be opened. Retry opening it.')).toHaveAttribute('role', 'alert')
     expect(router.state.location.search.workflowId).toBeUndefined()
     expect(screen.queryByRole('button', { name: 'Create workflow' })).not.toBeInTheDocument()
-    const newLink = await screen.findByRole('link', { name: 'Draft workflow' })
+    const newLink = await screen.findByRole('link', { name: /Draft workflow/ })
     expect(newLink).toBeVisible()
 
     server.resetHandlers()
     await user.click(screen.getByRole('button', { name: 'Open workflow' }))
     const createdId = new URL(newLink.getAttribute('href')!, 'http://localhost').searchParams.get('workflowId')
     await waitFor(() => expect(router.state.location.search.workflowId).toBe(createdId))
-    expect(screen.getAllByRole('link', { name: 'Draft workflow' })).toHaveLength(1)
+    expect(screen.getAllByRole('link', { name: /Draft workflow/ })).toHaveLength(1)
   })
 
   it('keeps inside presses open and dismisses the creation dialog from its backdrop', async () => {
@@ -192,4 +193,39 @@ describe('WorkflowNavigation', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(trigger).toHaveFocus())
   })
+})
+
+
+it('marks an unpublished workflow and removes it in one click without another dialog', async () => {
+  const user = userEvent.setup()
+  const { router } = renderNavigation()
+  await user.click(await screen.findByRole('button', { name: 'New workflow' }))
+  await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Temporary draft')
+  await user.click(screen.getByRole('button', { name: 'Create workflow' }))
+  expect(await screen.findByRole('link', { name: /Temporary draft/ })).toBeVisible()
+  screen.getByRole('button', { name: 'Remove Temporary draft' }).focus()
+  await user.keyboard('{Enter}')
+  await waitFor(() => expect(screen.queryByRole('link', { name: /Temporary draft/ })).not.toBeInTheDocument())
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(router.state.location.search.workflowId).toBeUndefined()
+})
+
+it('keeps a failed removal visible and retries the same command', async () => {
+  const requests: unknown[] = []
+  server.use(http.delete('/api/management/workspaces/workspace-1/workflows/workflow-content-pipeline', async ({ request }) => {
+    requests.push(await request.json())
+    return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Could not remove workflow.' } }, { status: 503 })
+  }))
+  const user = userEvent.setup()
+  renderNavigation()
+  const remove = await screen.findByRole('button', { name: 'Remove Research to review' })
+  remove.focus()
+  await user.keyboard('{Enter}')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove workflow.')
+  expect(screen.getByRole('link', { name: 'Research to review' })).toBeVisible()
+  screen.getByRole('button', { name: 'Retry removing Research to review' }).focus()
+  await user.keyboard('{Enter}')
+  await waitFor(() => expect(requests).toHaveLength(2))
+  expect(requests[1]).toEqual(requests[0])
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })

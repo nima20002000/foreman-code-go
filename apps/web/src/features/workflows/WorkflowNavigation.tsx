@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { Link } from '@tanstack/react-router'
-import { type WorkflowDefinitionV3 as WorkflowDefinition } from '@graphql/contracts/wave25'
+import type { ManagedWorkflow } from '@graphql/contracts/management'
 
 import { useInteractionsQuery, useWorkflowPages, useManagedWorkflowQuery } from '../../shared/api/query'
 import { LoadMore } from '../../shared/ui/LoadMore'
 import { Badge } from '../../shared/ui/nocturne'
+import { RemoveWorkflowButton } from './RemoveWorkflowButton'
 import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
 
@@ -15,16 +16,17 @@ export interface WorkflowNavigationProps {
 }
 
 function WorkflowNavigationItem({
-  workflow,
+  item,
   workspaceId,
   active,
   pendingCount,
 }: {
-  workflow: WorkflowDefinition
+  item: ManagedWorkflow
   workspaceId: string
   active: boolean
   pendingCount: number | undefined
 }) {
+  const { workflow } = item
   // The open workflow stays in sight in a long list instead of sitting clipped below the fold.
   const row = useRef<HTMLLIElement>(null)
   useEffect(() => { if (active) row.current?.scrollIntoView?.({ block: 'nearest' }) }, [active])
@@ -39,9 +41,11 @@ function WorkflowNavigationItem({
         title={workflow.name}
       >
         <span className="nav-item-label">{workflow.name}</span>
+        {item.currentVersionId === null ? <Badge className="workflow-draft-badge">Draft</Badge> : null}
         {pendingCount === undefined ? <span className="visually-hidden">Approval count unavailable</span> : null}
         {pendingCount !== undefined && pendingCount > 0 ? <Badge tone="accent" className="workflow-approval-badge">{pendingCount}</Badge> : null}
       </Link>
+      <RemoveWorkflowButton workspaceId={workspaceId} workflowId={workflow.id} name={workflow.name} revision={item.revision} />
     </li>
   )
 }
@@ -55,12 +59,12 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
   const managedQuery = useWorkflowPages(workspaceId, true)
   const interactionsQuery = useInteractionsQuery({ workspaceId, status: 'pending', limit: 1 }, true)
 
-  const workflows = managedQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workflow)) ?? []
-  const activeMissing = Boolean(activeWorkflowId && !workflows.some((workflow) => workflow.id === activeWorkflowId))
+  const workflows = managedQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const activeMissing = Boolean(activeWorkflowId && !workflows.some((item) => item.workflow.id === activeWorkflowId))
   const activeQuery = useManagedWorkflowQuery(workspaceId, activeWorkflowId ?? '', activeMissing)
   if (activeMissing && activeQuery.data && !activeQuery.data.archivedAt) {
     const visibleCount = Math.max(1, workflows.length)
-    workflows.unshift(activeQuery.data.workflow)
+    workflows.unshift(activeQuery.data)
     workflows.length = visibleCount
   }
   const hasWorkflows = workflows.length > 0
@@ -74,13 +78,14 @@ export function WorkflowNavigation({ workspaceId, activeWorkflowId }: WorkflowNa
       <NewWorkflowAction workspaceId={workspaceId} navigation />
       {hasWorkflows ? (
         <ul className="nav-submenu workflow-navigation-list">
-          {workflows.map((workflow) => {
+          {workflows.map((item) => {
+            const { workflow } = item
             const active = workflow.id === activeWorkflowId
             const pendingCount = interactionsQuery.isError ? undefined : interactionsQuery.data?.pendingByWorkflow?.[workflow.id]
               ?? (interactionsQuery.data?.pendingByWorkflow ? 0 : undefined)
             return <WorkflowNavigationItem
               key={workflow.id}
-              workflow={workflow}
+              item={item}
               workspaceId={workspaceId}
               active={active}
               pendingCount={pendingCount}

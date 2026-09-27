@@ -14,7 +14,41 @@
 }
 
 .workflow-navigation-row {
+  position: relative;
   min-width: 0;
+}
+
+.workflow-navigation-row .workflow-navigation-item { padding-right: 2rem; justify-content: flex-start; gap: 6px; }
+.workflow-navigation-item .nav-item-label { flex: 0 1 auto; }
+.workflow-navigation-item .workflow-draft-badge {
+  flex-shrink: 0;
+  min-height: 0;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 3px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  font-size: 9px;
+  line-height: 1.35;
+  font-weight: 400;
+}
+.workflow-navigation-row .workflow-navigation-remove {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  color: var(--danger);
+  opacity: 0;
+  pointer-events: none;
+}
+.workflow-navigation-row:hover .workflow-navigation-remove,
+.workflow-navigation-row:focus-within .workflow-navigation-remove {
+  opacity: 1;
+  pointer-events: auto;
+}
+.workflow-navigation-row .workflow-navigation-remove:hover { color: var(--danger); background: var(--danger-subtle); }
+.workflow-navigation-remove-error { margin: 0.25rem 0.625rem; color: var(--danger); font-size: 12px; }
+@media (hover: none) {
+  .workflow-navigation-row .workflow-navigation-remove { opacity: 1; pointer-events: auto; }
 }
 
 .workflow-navigation-row .workflow-navigation-item {
