@@ -59,11 +59,12 @@ export async function resolveAssignedSkills(client: pg.ClientBase, workspaceId: 
 export async function resolveWorkspaceSkills(client: pg.ClientBase, references: readonly WorkspaceSkillReference[],
   retained: readonly WorkspaceSkillReference[] = []): Promise<ResolvedSkill[]> {
   if (references.length > 100) throw new DomainError('SKILL_LIMIT_EXCEEDED', 'At most 100 skills can be assigned.', 400)
-  if (new Set(references.map((item) => item.skillId)).size !== references.length) throw new DomainError('SKILL_DUPLICATE', 'Assign only one version of each skill.', 400)
+  if (new Set(references.map((item) => JSON.stringify([item.workspaceId, item.skillId]))).size !== references.length) throw new DomainError('SKILL_DUPLICATE', 'Assign only one version of each skill.', 400)
   const resolved: ResolvedSkill[] = []
   for (const reference of references) {
-    resolved.push(...await resolveAssignedSkills(client, reference.workspaceId, [{ skillId: reference.skillId, version: reference.version }],
-      retained.filter((item) => item.workspaceId === reference.workspaceId)))
+    const snapshots = await resolveAssignedSkills(client, reference.workspaceId, [{ skillId: reference.skillId, version: reference.version }],
+      retained.filter((item) => item.workspaceId === reference.workspaceId))
+    resolved.push(...snapshots.map((skill) => ({ ...skill, workspaceId: reference.workspaceId })))
   }
   return resolved
 }
@@ -188,6 +189,7 @@ export class SkillCatalogService {
   /** Archive hides a skill from discovery and new assignment; versions and pinned snapshots remain. */
   async archive(principal: ManagementPrincipal, input: SkillArchiveInput, source: Source) {
     requireAuthorization(principal, 'skills:publish', { workspaceId: input.workspaceId })
+    requireAuthorization(principal, 'skills:read', { workspaceId: input.workspaceId })
     return this.commands.execute({ principal, source, operation: 'skill.archive', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:skill:${input.skillId}`, payload: input,
       perform: async (client) => {

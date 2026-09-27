@@ -126,7 +126,7 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_update', () => extension.skills.update(context.principal,input,'mcp')))
   if (skillTools) server.registerTool('skill_archive', {
-    description: "Archive (archived=true) or restore a skill. Archived skills are hidden from default lists and cannot be newly assigned; versions and pinned Agent snapshots are kept.", inputSchema: contracts.SkillArchiveInputSchema, outputSchema: contracts.SkillMutationResultSchema,
+    description: "Archive (archived=true) or restore a skill. Requires skills:publish and skills:read in its workspace because the result includes the current version. Archived skills are hidden from default lists and cannot be newly assigned; versions and pinned Agent snapshots are kept.", inputSchema: contracts.SkillArchiveInputSchema, outputSchema: contracts.SkillMutationResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_archive', () => extension.skills.archive(context.principal,input,'mcp')))
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import * as c from '@graphql/contracts/management'
-import { AgentConfigurationVersionSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, OperatorConfigurationVersionSchema } from '@graphql/contracts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.js'
@@ -21,6 +21,7 @@ import { FoundationSettingsManagementService } from '../src/modules/settings/man
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import type { AppInteractionService } from '../src/modules/interactions/app.js'
 import { createGraphqlMcpServer } from '../src/mcp/unified/server.js'
+import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 
 const qualify = { qualifyConfiguration: async (value: { harness: 'codex' | 'opencode' }) => ({ harness: value.harness, version: 'fixture', authenticated: true,
@@ -200,6 +201,20 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
       expect(denied.isError, name).toBe(true)
       expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     }
+    // Publish permission alone must not reveal the existing body through archive/restore.
+    const publisherToken = await issue([{ actions: ['skills:publish'], scope: { workspaceIds: [workspaceB] } }])
+    const publisher = await mcp(publisherToken)
+    for (const archived of [true, false]) {
+      const input = { skillId: skill.skillId, expectedRevision: 2, archived }
+      const deniedHttp = await http('PUT', `/api/management/workspaces/${workspaceB}/skills/${skill.skillId}/archive`, publisherToken,
+        { ...input, commandId: `publish-only-http-${archived}` })
+      expect(deniedHttp.status).toBe(403)
+      expect(JSON.stringify(deniedHttp.json)).not.toContain('Edited by MCP')
+      const deniedMcp = await call(publisher, 'skill_archive', { ...input, workspaceId: workspaceB, commandId: `publish-only-mcp-${archived}` })
+      expect(deniedMcp.isError).toBe(true)
+      expect(JSON.stringify(deniedMcp.content)).toContain('ACCESS_DENIED')
+      expect(JSON.stringify(deniedMcp)).not.toContain('Edited by MCP')
+    }
     // Read-only callers cannot create.
     const reader = await mcp(await issue([{ actions: ['skills:read'], scope: {} }]))
     const readerCreate = await call(reader, 'skill_create', { workspaceId: workspaceB, commandId: 'mcp-denied-0003', name: 'X', instructions: 'Y' })
@@ -314,5 +329,47 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
       `select c.record from application_operators o join operator_configuration_versions c on c.id=o.current_configuration_version_id`)).rows[0]!.record
     expect(configuration.instructionDelivery).toBe('native-v1')
     expect(configuration.resolvedSkills.map((item) => item.instructions)).toEqual(['Operator B rules.', 'Operator A rules.'])
+    const before = await read(operator)
+    const countBefore = (await database.pool.query('select count(*) from operator_configuration_versions')).rows[0].count
+    const unchangedSkills = { ...before.value, operator: { ...before.value.operator, showThinking: !before.value.operator.showThinking } }
+    const deniedRepublish = await limited.callTool({ name: 'agent_defaults_update', arguments: {
+      commandId: 'operator-unchanged-skills-denied', expectedRevision: before.revision, value: unchangedSkills } })
+    expect(deniedRepublish.isError).toBe(true)
+    expect(JSON.stringify(deniedRepublish.content)).toContain('ACCESS_DENIED')
+    const limitedToken = await issue([{ actions: ['settings:read', 'settings:update'], scope: {} }])
+    expect((await http('PUT', '/api/management/settings/agents', limitedToken, {
+      commandId: 'operator-unchanged-skills-http-denied', expectedRevision: before.revision, value: unchangedSkills })).status).toBe(403)
+    expect(await read(operator)).toEqual(before)
+    expect((await database.pool.query('select count(*) from operator_configuration_versions')).rows[0].count).toBe(countBefore)
+    const republished = await operator.callTool({ name: 'agent_defaults_update', arguments: {
+      commandId: 'operator-unchanged-skills-authorized', expectedRevision: before.revision, value: unchangedSkills } })
+    expect(republished.isError).not.toBe(true)
+    expect((await read(operator)).value.operator).toEqual(unchangedSkills.operator)
+  })
+
+  it('pins and delivers same-named historical skill IDs from distinct Operator workspaces', async () => {
+    for (const [workspaceId, instructions] of [[workspaceA, 'Workspace A guidance.'], [workspaceB, 'Workspace B guidance.']] as const) {
+      const record = { workspaceId, skillId: 'legacy-shared', version: '1', name: 'Shared historical ID', instructions,
+        contentHash: `sha256:${createHash('sha256').update(instructions).digest('hex')}`, createdAt: new Date().toISOString() }
+      await database.pool.query(`insert into workspace_skill_versions(workspace_id,skill_id,version,sequence,record) values($1,$2,$3,1,$4)`,
+        [workspaceId, record.skillId, record.version, JSON.stringify(record)])
+      await database.pool.query(`insert into workspace_skills(workspace_id,skill_id,head_version,revision,version_count) values($1,$2,'1',1,1)`,
+        [workspaceId, record.skillId])
+    }
+    const operator = await mcp(owner)
+    const defaults = c.ManagedAgentDefaultsSchema.parse((await operator.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+    const assignedSkills = [workspaceB, workspaceA].map((workspaceId) => ({ workspaceId, skillId: 'legacy-shared', version: '1' }))
+    const saved = await operator.callTool({ name: 'agent_defaults_update', arguments: { commandId: 'operator-workspace-qualified',
+      expectedRevision: defaults.revision, value: { ...defaults.value, operator: { ...defaults.value.operator, assignedSkills } } } })
+    expect(saved.isError, JSON.stringify(saved.content)).not.toBe(true)
+    const record = (await database.pool.query(`select c.record from application_operators o join operator_configuration_versions c
+      on c.id=o.current_configuration_version_id`)).rows[0].record
+    const configuration = OperatorConfigurationVersionSchema.parse(record)
+    expect(configuration.resolvedSkills?.map(({ workspaceId, skillId }) => ({ workspaceId, skillId })))
+      .toEqual(assignedSkills.map(({ workspaceId, skillId }) => ({ workspaceId, skillId })))
+    const text = agentInstructionBundle(configuration)!.text
+    expect(text).toContain('Workspace B guidance.')
+    expect(text).toContain('Workspace A guidance.')
+    expect(text.indexOf('Workspace B')).toBeLessThan(text.indexOf('Workspace A'))
   })
 })

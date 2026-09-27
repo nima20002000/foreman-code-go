@@ -124,6 +124,8 @@ export const MAX_SKILL_INSTRUCTIONS_CHARS = 100_000;
 export const MAX_AGENT_INSTRUCTIONS_BYTES = 512 * 1024;
 /** Server-resolved immutable snapshot. Callers cannot supply one. */
 export const ResolvedSkillSchema = AssignedSkillSchema.extend({
+  // Operator snapshots include scope; optional for previously accepted snapshots.
+  workspaceId: IdSchema.optional(),
   name: z.string().min(1).max(200).optional(),
   instructions: z.string().min(1).max(MAX_SKILL_INSTRUCTIONS_CHARS),
   contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),

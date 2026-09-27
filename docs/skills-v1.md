@@ -22,7 +22,7 @@ immutable version pinning, and native instruction delivery for Codex and OpenCod
 - Board Agents keep an ordered `assignedSkills: [{ skillId, version }]`, one version per skill, from the
   Agent's workspace. The application-level Operator keeps
   `agentDefaults.operator.assignedSkills: [{ workspaceId, skillId, version }]` because it is not
-  workspace-owned.
+  workspace-owned. Operator snapshot identity includes the workspace, so two workspaces may have the same skill ID.
 - On configuration publication the server resolves exact versions and pins full snapshots
   (`resolvedSkills` with name, body, hash) plus `instructionDelivery: "native-v1"` into the immutable
   Agent/Operator configuration. Callers cannot supply `resolvedSkills` (strict schemas reject it).
@@ -55,7 +55,7 @@ prompt sections, so existing sessions do not switch behavior.
 | Version history | `GET …/skills/:id/versions` | `skill_versions_list` | `skills:read` |
 | Create | `POST /api/management/workspaces/:ws/skills` | `skill_create` | `skills:publish` |
 | Save new version | `PATCH …/skills/:id` | `skill_update` | `skills:publish` |
-| Archive / restore | `PUT …/skills/:id/archive` | `skill_archive` | `skills:publish` |
+| Archive / restore | `PUT …/skills/:id/archive` | `skill_archive` | `skills:publish` + `skills:read` |
 | Assign to a board Agent | Agent create/update, board Save | `agent_create`, `agent_update`, `workflow_edit_v3`/`workflow_save_v3` staged Agents | `skills:read` (source) + Agent/graph edit (destination) |
 | Assign to the Operator | `PUT /api/management/settings/agents` | `agent_defaults_update` | `settings:update` + `skills:read` on each referenced workspace |
 
@@ -63,6 +63,7 @@ prompt sections, so existing sessions do not switch behavior.
 Skill tools are Operator-role tools on the one `/mcp` server. They stay listed for every Operator
 credential and the service checks grants and workspace scope on each call, so a forbidden call returns
 an audited `ACCESS_DENIED` with no side effects. Orchestrator/Coder credentials are not offered them.
+Republishing Operator settings (including harness or thinking-only changes) requires source `skills:read` for every assigned workspace.
 Audit rows record `http` or `mcp` as the source; bodies are not logged.
 
 ## Migration

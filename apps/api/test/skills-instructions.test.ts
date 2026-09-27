@@ -67,8 +67,17 @@ describe('Agent instruction composition', () => {
 
   it('composes application-level Operator skills with the same rule, without persistent Agent instructions', () => {
     const skills = [skill('skill-a', '4', 'Operator guidance', 'Guide')]
-    const bundle = agentInstructionBundle({ assignedSkills: [{ workspaceId: 'workspace-2', skillId: 'skill-a', version: '4' }] as never, resolvedSkills: skills, instructionDelivery: 'native-v1' })
+    const bundle = agentInstructionBundle({ assignedSkills: [{ workspaceId: 'workspace-2', skillId: 'skill-a', version: '4' }], resolvedSkills: skills, instructionDelivery: 'native-v1' })
     expect(bundle?.text).toBe('# Skill: Guide (skill-a@4)\n\nOperator guidance')
     expect(agentInstructionBundle({ instructionDelivery: 'native-v1' })).toBeUndefined()
   })
+  it('verifies workspace-qualified Operator snapshots and rejects cross-workspace swaps', () => {
+    const references = ['workspace-a', 'workspace-b'].map((workspaceId) => ({ workspaceId, skillId: 'shared', version: '1' }))
+    const snapshots = references.map((reference) => ({ ...skill('shared', '1', 'Same body'), workspaceId: reference.workspaceId }))
+    const source = { assignedSkills: references, resolvedSkills: snapshots, instructionDelivery: 'native-v1' as const }
+    expect(agentInstructionBundle(source)?.text.match(/Same body/g)).toHaveLength(2)
+    expect(() => agentInstructionBundle({ ...source, assignedSkills: [references[0]!, references[0]!] })).toThrow(/Republish/)
+    expect(() => agentInstructionBundle({ ...source, resolvedSkills: [...snapshots].reverse() })).toThrow(/integrity/)
+  })
+
 })

@@ -5,7 +5,7 @@ import { HarnessExecutionError } from '../harnesses/errors.js'
 /** Board Agent and application-level Operator configurations share one composition rule. */
 interface InstructionSource {
   prompt?: AgentConfigurationVersion['prompt'] | undefined
-  assignedSkills?: readonly AssignedSkill[] | undefined
+  assignedSkills?: readonly (AssignedSkill & { workspaceId?: string })[] | undefined
   resolvedSkills?: readonly ResolvedSkill[] | undefined
 }
 
@@ -26,12 +26,13 @@ export function verifiedSkills(configuration: InstructionSource): ResolvedSkill[
   const references = configuration.assignedSkills ?? []
   const snapshots = configuration.resolvedSkills ?? []
   if (!references.length && !snapshots.length) return []
-  if (references.length !== snapshots.length || new Set(references.map((item) => item.skillId)).size !== references.length) {
+  if (references.length !== snapshots.length || new Set(references.map((item) => JSON.stringify([item.workspaceId, item.skillId]))).size !== references.length) {
     throw new HarnessExecutionError('SKILL_SNAPSHOT_MISSING', 'Republish the Agent configuration with validated skill versions before running it.')
   }
   return references.map((reference, index) => {
     const skill = snapshots[index]
-    if (!skill || skill.skillId !== reference.skillId || skill.version !== reference.version || skill.contentHash !== sha256(skill.instructions)) {
+    if (!skill || skill.skillId !== reference.skillId || skill.version !== reference.version
+      || (skill.workspaceId !== undefined && skill.workspaceId !== reference.workspaceId) || skill.contentHash !== sha256(skill.instructions)) {
       throw new HarnessExecutionError('SKILL_SNAPSHOT_INVALID', 'The accepted skill snapshot failed its identity/integrity check.')
     }
     return skill

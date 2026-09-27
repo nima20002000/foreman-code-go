@@ -80,13 +80,13 @@ export class FoundationSettingsManagementService {
         const operators = this.operators
         const skills = value.operator.assignedSkills ?? []
         const skillsChanged = !isDeepStrictEqual(previous.value.operator.assignedSkills ?? [], skills)
-        if (skillsChanged) {
-          // Source authority for every referenced workspace; resolution rejects missing, archived or forged references.
+        const operatorChanged = skillsChanged || !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
+          || (previous.value.operator.showThinking ?? false) !== (value.operator.showThinking ?? false)
+        if (operatorChanged) {
+          // Republishing unchanged references still requires authority over their source workspaces.
           for (const reference of skills) requireAuthorization(principal, 'skills:read', { workspaceId: reference.workspaceId })
           await operatorSkillContent(client, skills, previous.value.operator.assignedSkills)
         }
-        const operatorChanged = skillsChanged || !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
-          || (previous.value.operator.showThinking ?? false) !== (value.operator.showThinking ?? false)
         const current = operatorChanged ? await operators?.ensureWithClient(client) : undefined
         const result = await this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
         if (operators && current && (!isDeepStrictEqual(current.configuration.harness, value.operator.harness)
