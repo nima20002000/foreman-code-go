@@ -62,10 +62,11 @@ export function AgentChatTranscript({ state, name, commands, history, cancelReas
         </div>
       })}
     </section> : null}
-    <OperatorActivityList entries={placement.earlier} onBrowse={onBrowse} />
     <ConversationHistory messages={messages} assistantName={name} renderStatus={status}
-      renderBefore={(message) => <OperatorActivityList entries={placement.before.get(message.id) ?? []} activeRequestId={state.activeTurn?.requestId} onBrowse={onBrowse} />}
-      renderAfter={(message) => <OperatorActivityList entries={placement.after.get(message.id) ?? []} activeRequestId={state.activeTurn?.requestId} onBrowse={onBrowse} />}
+      interleaved={placement.rows.map(({ entry, beforeMessageId }) => ({
+        key: JSON.stringify([id, entry.requestId, entry.id]), beforeMessageId,
+        content: <OperatorActivityList entries={[entry]} activeRequestId={state.activeTurn?.requestId} onBrowse={onBrowse} />,
+      }))}
       renderActions={(message) => {
       const turn = receipts.get(message.id)
       if (message.role !== 'user' || !turn) return null
@@ -84,7 +85,6 @@ export function AgentChatTranscript({ state, name, commands, history, cancelReas
       <p className="agent-chat-note">{record.status === 'pending' ? 'Waiting for the server receipt.' : 'No receipt was confirmed. The original may have been accepted; it will not be resent automatically.'}</p>
       {record.status === 'error' ? <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => { if (record.command?.kind === 'send') onSendAgain(record.command.input.content) }}>Send again as new message</Button> : null}
     </MessageBubble> : null)}
-    <OperatorActivityList entries={placement.trailing} activeRequestId={state.activeTurn?.requestId} onBrowse={onBrowse} />
     {state.pendingInteraction ? <><p className="agent-chat-note">Use these approval controls to reply. An ordinary chat message is not an approval.</p>
       <OperatorApprovalCard actor="Agent" interaction={state.pendingInteraction} onBrowse={onBrowse}
         disabled={!!responseReason || !approvalReplyAvailable(state)} onSelect={onRespond} />

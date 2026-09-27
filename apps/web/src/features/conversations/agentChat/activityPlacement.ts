@@ -19,5 +19,15 @@ export function placeChatActivities(messages: readonly Message[], activities: re
     } else if (entry.requestId === activeRequestId) trailing.push(entry)
     else earlier.push(entry)
   }
-  return { before, after, earlier, trailing }
+  // All activity rows share the history list as their parent. An anchor change must
+  // not move a disclosure into a different message subtree (and remount it).
+  const rows = [
+    ...earlier.map((entry) => ({ entry, beforeMessageId: messages[0]?.id })),
+    ...messages.flatMap((message, index) => [
+      ...(before.get(message.id) ?? []).map((entry) => ({ entry, beforeMessageId: message.id })),
+      ...(after.get(message.id) ?? []).map((entry) => ({ entry, beforeMessageId: messages[index + 1]?.id })),
+    ]),
+    ...trailing.map((entry) => ({ entry, beforeMessageId: undefined })),
+  ]
+  return { before, after, earlier, trailing, rows }
 }
