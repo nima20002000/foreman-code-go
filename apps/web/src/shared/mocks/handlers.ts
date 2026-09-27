@@ -2,6 +2,7 @@ import { agentChatHandlers, resetAgentChatFixtures } from './agentChatHandlers'
 import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
+import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
 import { currentWorkflowFixture as makeWave25Fixture } from './currentWorkflow'
 import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, } from '@graphql/contracts'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@graphql/contracts/wave25'
@@ -59,6 +60,7 @@ export function resetTestFixtures() {
   resetAgentChatFixtures()
   resetExistingMockFixtures()
   resetSettingsExperienceFixtures()
+  resetSkillFixtures()
   managedWorkspaceNames.clear()
   managedWorkspaceDescriptions.clear()
   managedWorkspaceArchives.clear()
@@ -219,6 +221,7 @@ export const handlers: RequestHandler[] = [
   currentAuthoringHandler,
   http.get('/api/auth/identity', () => HttpResponse.json(mockRuntimeIdentity)),
   ...settingsExperienceHandlers,
+  ...skillsHandlers,
   http.get('/api/operator/setup', () => HttpResponse.json({ harness: getMockAgentDefaults().value.operator.harness.harness,
     status: 'configured', configurationVersionId: 'operator-config',
     endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() })),

@@ -254,6 +254,16 @@ export function GlobalSettingsRouteEntry() {
                 </Card>
               </li>
             </ul>
+            <h2 className="settings-group-heading" id="settings-library-heading">Library</h2>
+            <ul className="settings-card-list" aria-labelledby="settings-library-heading">
+              <li>
+                <Card className="settings-card">
+                  <Link to="/settings/skills" className="settings-card-open">
+                    <SettingsCardBody icon="code" title="Skills" description="Reusable Agent instructions" />
+                  </Link>
+                </Card>
+              </li>
+            </ul>
           </div>
         ),
       }}

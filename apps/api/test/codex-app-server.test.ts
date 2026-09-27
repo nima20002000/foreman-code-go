@@ -1,6 +1,7 @@
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { nativeConnection } from '../src/modules/harnesses/nativeMcpCommon.js'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -562,6 +563,32 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal(params.sandbox, 'read-only'); assert.equal(params.model, 'test-model'); assert.equal(params.serviceTier, 'default')
     assert.equal(params.developerInstructions, source.request.configuration.prompt.system)
     assert((params.config as JsonObject).shell_environment_policy)
+  })
+
+  it('SKL-05: developerInstructions carries the pinned Agent instructions and skills once; resume keeps the accepted bundle', async () => {
+    const body = 'End every answer with the token ORCHID.'
+    const contentHash = `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`
+    source.request.configuration = { ...source.request.configuration, prompt: { system: 'Agent rules.' }, instructionDelivery: 'native-v1',
+      assignedSkills: [{ skillId: 'skill-a', version: '2' }], resolvedSkills: [{ skillId: 'skill-a', version: '2', name: 'Orchid', instructions: body, contentHash }] }
+    const expected = 'Agent rules.\n\n# Skill: Orchid (skill-a@2)\n\nEnd every answer with the token ORCHID.'
+    const session = await manager.createSession(source)
+    const started = (await wire('thread/start'))[0]!.params as JsonObject
+    assert.equal(started.developerInstructions, expected)
+    assert.equal(Object.hasOwn(started, 'baseInstructions'), false)
+    await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: 'skill-turn' }))
+    const turn = (await wire('turn/start'))[0]!.params as JsonObject
+    assert.deepEqual(turn.input, [{ type: 'text', text: 'crash-completed', text_elements: [] }])
+    // A backend restart resumes with the configuration accepted for this execution.
+    const restarted = makeManager()
+    await restarted.attachSession(session, source)
+    const resumed = (await wire('thread/resume')).at(-1)!.params as JsonObject
+    assert.equal(resumed.developerInstructions, expected)
+    // Corrupt pinned instructions fail before any native thread is created.
+    const corrupt = structuredClone(source)
+    corrupt.request.configuration.resolvedSkills![0]!.instructions = 'Tampered'
+    const threads = (await wire('thread/start')).length
+    await assertCode(makeManager().createSession(corrupt), 'SKILL_SNAPSHOT_INVALID')
+    assert.equal((await wire('thread/start')).length, threads)
   })
 
   it('F32: simultaneous first starts and conflicting response choices have one writer', async () => {

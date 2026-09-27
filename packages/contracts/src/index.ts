@@ -113,9 +113,19 @@ export const AssignedSkillSchema = z
   })
   .strict();
 export type AssignedSkill = z.infer<typeof AssignedSkillSchema>;
+/** The application-level Operator is not workspace-owned, so its skill references name their workspace. */
+export const WorkspaceSkillReferenceSchema = AssignedSkillSchema.extend({ workspaceId: IdSchema }).strict();
+export type WorkspaceSkillReference = z.infer<typeof WorkspaceSkillReferenceSchema>;
 
+/** Per-skill instruction body limit, in UTF-16 code units (JavaScript string length). */
+export const MAX_SKILL_INSTRUCTIONS_CHARS = 100_000;
+/** Aggregate persistent Agent instructions plus pinned skill bodies, in UTF-8 bytes.
+ * A bounded context size, never a token or cost quota; exceeding it is rejected, never truncated. */
+export const MAX_AGENT_INSTRUCTIONS_BYTES = 512 * 1024;
+/** Server-resolved immutable snapshot. Callers cannot supply one. */
 export const ResolvedSkillSchema = AssignedSkillSchema.extend({
-  instructions: z.string().min(1).max(100_000),
+  name: z.string().min(1).max(200).optional(),
+  instructions: z.string().min(1).max(MAX_SKILL_INSTRUCTIONS_CHARS),
   contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
 }).strict();
 export type ResolvedSkill = z.infer<typeof ResolvedSkillSchema>;
@@ -308,6 +318,8 @@ export const AgentDefaultsSchema = z.object({
   coder: AgentTemplateSchema.safeExtend({ role: z.literal("coder"), boardAddable: z.literal(true) }),
   operator: AgentTemplateSchema.safeExtend({
     role: z.literal("operator"), boardAddable: z.literal(false), uiEnabled: z.boolean(), showThinking: z.boolean().optional(),
+    /** Ordered exact skill versions for the Operator; pinned into its configuration when saved. */
+    assignedSkills: z.array(WorkspaceSkillReferenceSchema).max(100).optional(),
   }),
 }).strict();
 export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
@@ -698,6 +710,10 @@ export const AgentConfigurationVersionSchema = z
     assignedSkills: z.array(AssignedSkillSchema),
     resolvedSkills: z.array(ResolvedSkillSchema).max(100).optional(),
     graphqlTools: GraphqlToolDefaultsSchema.optional(),
+    /** Present on configurations accepted after Skills v1: the persistent prompt and pinned
+     * skills are delivered as native app instructions, separate from task text. Absent on
+     * earlier accepted configurations, which keep their original in-task delivery. */
+    instructionDelivery: z.literal("native-v1").optional(),
     harness: HarnessConfigurationSchema,
     contentHash: z.string().trim().min(1),
     createdAt: TimestampSchema,
@@ -711,6 +727,9 @@ export const OperatorConfigurationVersionSchema = z.object({
   version: z.number().int().positive(),
   harness: HarnessConfigurationSchema,
   showThinking: z.boolean().optional(),
+  assignedSkills: z.array(WorkspaceSkillReferenceSchema).max(100).optional(),
+  resolvedSkills: z.array(ResolvedSkillSchema).max(100).optional(),
+  instructionDelivery: z.literal("native-v1").optional(),
   contentHash: z.string().startsWith("sha256:"),
   createdAt: TimestampSchema,
 }).strict();

@@ -95,7 +95,19 @@ const extensions: Partial<Record<OperatorToolName,{scope:ScopeKind;extension:key
     "scope": "workspace",
     "extension": "skills"
   },
-  "skill_publish": {
+  "skill_versions_list": {
+    "scope": "workspace",
+    "extension": "skills"
+  },
+  "skill_create": {
+    "scope": "workspace",
+    "extension": "skills"
+  },
+  "skill_update": {
+    "scope": "workspace",
+    "extension": "skills"
+  },
+  "skill_archive": {
     "scope": "workspace",
     "extension": "skills"
   },

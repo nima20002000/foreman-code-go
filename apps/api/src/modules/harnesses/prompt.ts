@@ -1,26 +1,30 @@
 import type { HarnessExecutionRequest } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
-import { resolvedSkillPrompt } from '../skills/prompt.js'
+import { legacySkillPrompt } from '../skills/instructions.js'
 
 /** UTF-8 bytes, including system prompt, skill references, and accepted inputs. */
 export const MAX_HARNESS_PROMPT_BYTES = 8 * 1024 * 1024
 
+/** Task input for one turn. Native-v1 configurations receive their persistent instructions and
+ * skills through the harness instruction channel instead, so they are never repeated here. */
 export function buildHarnessPrompt(request: HarnessExecutionRequest): string {
-  const skills = request.configuration.assignedSkills.length > 0
-    ? request.configuration.assignedSkills.map((skill) => `${skill.skillId}@${skill.version}`).join(', ')
+  const configuration = request.configuration
+  const legacy = configuration.instructionDelivery !== 'native-v1'
+  const skills = configuration.assignedSkills.length > 0
+    ? configuration.assignedSkills.map((skill) => `${skill.skillId}@${skill.version}`).join(', ')
     : 'None'
-  const systemPrompt = request.configuration.prompt.system
-    ? ['PRODUCT AGENT SYSTEM PROMPT', request.configuration.prompt.system, '']
-    : []
+  const appInstructions = legacy ? [
+    ...(configuration.prompt.system ? ['PRODUCT AGENT SYSTEM PROMPT', configuration.prompt.system, ''] : []),
+    `ASSIGNED SKILLS: ${skills}`,
+    ...legacySkillPrompt(configuration),
+    '',
+  ] : []
   const initialPrompt = request.initialPrompt
     ? ['INITIAL USER PROMPT', request.initialPrompt, '']
     : []
   const prompt = [
-    ...systemPrompt,
-    `ASSIGNED SKILLS: ${skills}`,
-    ...resolvedSkillPrompt(request.configuration),
-    '',
+    ...appInstructions,
     ...initialPrompt,
     'ACCEPTED INPUT FROM THE WORKFLOW',
     JSON.stringify(request.input),

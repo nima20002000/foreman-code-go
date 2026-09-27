@@ -8,6 +8,7 @@ import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from '.
 import { issuesAt, withValidationPath } from './fieldValidation'
 import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions'
 import { useSettingsValidation } from './useSettingsValidation'
+import { AgentSkillsField } from '../skills/AgentSkillsField'
 import { useRevisionedForm, useSettingsDraftStatus } from './revisionedForm'
 import { SettingsChoice, SettingsEditorLayout, SettingsOverview } from './SettingsEditorLayout'
 import { agentRoleOrder, harnessSummary, rolePresentation } from './settingsPresentation'
@@ -82,6 +83,9 @@ function AgentTemplateEditor({ role, section, onSectionChange, onBack, showBack 
         hint="Show or hide the chat interface. This does not revoke the Operator’s access."
         checked={draft.operator.uiEnabled} onChange={(event) => form.setDraft((value) => value && ({ ...value,
           operator: { ...value.operator, uiEnabled: event.target.checked } }))} /></div> : null}
+      {role === 'operator' && section === 'model' ? <div className="settings-simple-row"><AgentSkillsField acrossWorkspaces
+        value={draft.operator.assignedSkills ?? []} onChange={(assignedSkills) => form.setDraft((value) => value && ({ ...value,
+          operator: { ...value.operator, assignedSkills } }))} /></div> : null}
       {role === 'operator' && section === 'model' && current.configuration.harness === 'codex' ? <div className="settings-simple-row"><Checkbox label="Show thinking"
         checked={draft.operator.showThinking ?? false} onChange={(event) => form.setDraft((value) => value && ({ ...value,
           operator: { ...value.operator, showThinking: event.target.checked } }))} /></div> : null}

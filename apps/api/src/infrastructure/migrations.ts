@@ -1,4 +1,3 @@
-import { agentChatMigration } from './agentChatMigration.js'
 import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
 import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
 import { runInspectionMigration } from './runInspectionMigration.js'
@@ -17,6 +16,8 @@ import { pr18RecoveryMigration } from './pr18RecoveryMigration.js'
 import { runLiveActivityMigration } from './runLiveActivityMigration.js'
 import { reviewFailureLifecycleMigration } from './reviewFailureLifecycleMigration.js'
 import { browserAuthMigration } from './browserAuthMigration.js'
+import { skillsLibraryMigration } from './skillsLibraryMigration.js'
+import { agentChatMigration } from './agentChatMigration.js'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
 import { pr17AuditMigration } from './pr17AuditMigration.js'
@@ -720,6 +721,7 @@ export const migrations = [
           and r.result->'executionLocation' = w.execution_location);
   ` },
   unifiedMcpMigration,
+  skillsLibraryMigration,
   agentChatMigration,
 ] as const
 

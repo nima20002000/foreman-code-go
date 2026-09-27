@@ -12,6 +12,7 @@ import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
 import { resolveAssignedSkills } from '../skills/catalog.js'
+import { composeInstructionText, instructionsTooLarge } from '../skills/instructions.js'
 
 export function configurationInput(
   workspaceId: string,
@@ -81,6 +82,19 @@ export function configurationInput(
   } as const
 }
 
+/** Pins exact server-resolved skill snapshots and native instruction delivery into new
+ * configuration content. Callers cannot supply resolvedSkills; only references are accepted. */
+export async function pinnedConfigurationContent<T extends Pick<AgentConfigurationVersion, 'prompt' | 'assignedSkills'>>(
+  client: pg.ClientBase, workspaceId: string, input: T, current?: AgentConfigurationVersion,
+) {
+  const resolvedSkills = await resolveAssignedSkills(client, workspaceId, input.assignedSkills, current?.assignedSkills)
+  const content = { ...input, ...(resolvedSkills.length ? { resolvedSkills } : {}), instructionDelivery: 'native-v1' as const }
+  if (instructionsTooLarge(composeInstructionText(content))) {
+    throw new DomainError('AGENT_INSTRUCTIONS_TOO_LARGE', 'Agent instructions and assigned skills exceed the 512 KiB limit. Remove skills or shorten the instructions.', 400)
+  }
+  return content
+}
+
 /** Lock every referenced agent in the same order before taking row locks. */
 export async function lockAgentConfigurations(client: pg.PoolClient, agentIds: readonly string[]): Promise<void> {
   for (const agentId of [...new Set(agentIds)].sort()) {
@@ -129,8 +143,7 @@ export async function saveAgentConfiguration(
     throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', 'This agent has no persisted configuration to edit.', 409)
   }
   const nextConfiguration = configurationInput(workspaceId, parsed, current)
-  const resolvedSkills = await resolveAssignedSkills(client, workspaceId, nextConfiguration.assignedSkills)
-  const nextInput = { ...nextConfiguration, ...(resolvedSkills.length ? { resolvedSkills } : {}) }
+  const nextInput = await pinnedConfigurationContent(client, workspaceId, nextConfiguration, current)
   const nextHash = `sha256:${createHash('sha256').update(JSON.stringify(nextInput)).digest('hex')}`
   const now = new Date().toISOString()
 

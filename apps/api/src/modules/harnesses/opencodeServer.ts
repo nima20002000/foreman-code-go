@@ -40,6 +40,7 @@ import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js
 import { isOpenCodeReplyAcknowledgement } from './openCodeResponseAcknowledgement.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
 import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './opencodeReconciliation.js'
+import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -74,6 +75,8 @@ interface SessionState {
   autoReplies: OpenCodeNativeAutoReplies
   directory: string
   configuration: OpenCodeHarnessConfiguration
+  /** The accepted configuration's pinned app instructions, sent as system on every new turn. */
+  instructions: AgentInstructionBundle | undefined
   events: NativeHarnessEvent[]
   eventBytes: number
   eventIds: Set<string>
@@ -197,6 +200,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         combined.throwIfAborted()
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
         const configuration = this.configuration(input)
+        const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
         await this.assertConfiguration(configuration, directory, combined)
@@ -217,7 +221,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_OPENCODE_VERSION, nativeSessionId: response.id })
         // A returned provider identity is authoritative even if cancellation raced
         // the response. Publish and return it so the caller can persist ownership.
-        this.sessions.set(response.id, newState(directory, configuration))
+        this.sessions.set(response.id, newState(directory, configuration, instructions))
         this.restartClosures.delete(response.id)
         return session
       } catch (error) { return this.cleanupFailedSetup(error) }
@@ -267,6 +271,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         }
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
         const configuration = this.configuration(input)
+        const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
         await this.assertConfiguration(configuration, directory, combined)
@@ -274,7 +279,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
         await this.applyMcpControls(configuration, directory, combined)
         combined.throwIfAborted()
-        const state = newState(directory, configuration)
+        const state = newState(directory, configuration, instructions)
         if (input.correlationId) state.recoveryCorrelationId = input.correlationId
         this.sessions.set(session.nativeSessionId, state)
         this.restartClosures.delete(session.nativeSessionId)
@@ -312,18 +317,19 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const root = await this.message(session.nativeSessionId, messageID, state.directory, signal)
         if (state.turn?.correlationId === correlationId) {
           turn = state.turn
-          if (prompt !== undefined && turn.promptHash && turn.promptHash !== digest(prompt)) {
+          if (prompt !== undefined && turn.promptHash && turn.promptHash !== turnDigest(prompt, state.instructions)) {
             throw new HarnessExecutionError('OPENCODE_CORRELATION_CONFLICT', 'The correlation ID was already used for a different prompt.')
           }
         } else {
           if (!root && prompt === undefined) {
             throw new HarnessExecutionError('OPENCODE_TURN_IDENTITY_MISSING', 'The requested native turn identity could not be recovered; no prompt was replayed.')
           }
-          if (root && prompt !== undefined && root.parts.filter((part) => part.type === 'text' && part.ignored !== true).map((part) => part.text).join('') !== prompt) {
+          if (root && prompt !== undefined && (root.parts.filter((part) => part.type === 'text' && part.ignored !== true).map((part) => part.text).join('') !== prompt
+            || (root.info.system ?? undefined) !== state.instructions?.text)) {
             throw new HarnessExecutionError('OPENCODE_CORRELATION_CONFLICT', 'The persisted correlation belongs to a different prompt.')
           }
           turn = {
-            correlationId, messageID, promptHash: prompt === undefined ? undefined : digest(prompt),
+            correlationId, messageID, promptHash: prompt === undefined ? undefined : turnDigest(prompt, state.instructions),
             submitted: !!root, observing: false, generation: this.generation, submittedAt: 0,
             idleObserved: false, scopedError: undefined, terminalResult: undefined,
           }
@@ -351,6 +357,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             body: JSON.stringify({ messageID, model: { providerID, modelID: model.join('/') },
               ...(state.configuration.variant ? { variant: state.configuration.variant } : {}),
               agent: state.configuration.nativeAgent, parts: [{ type: 'text', text: prompt }],
+              ...(state.instructions ? { system: state.instructions.text } : {}),
             }),
           }, signal)
           await onSubmitted?.(messageID)
@@ -1250,8 +1257,16 @@ function historyWithOwnedTerminal(history: NativeHistory, turn: OwnedTurn, gener
   }
 }
 
-function newState(directory: string, configuration: OpenCodeHarnessConfiguration): SessionState {
-  return { connectionId: randomUUID(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
+/** Resolved before any native side effect, so invalid pinned instructions fail before task work. */
+function sessionInstructions(input: NativeSessionStart): AgentInstructionBundle | undefined {
+  return agentInstructionBundle(input.kind === 'operator' ? input.configuration : input.request.configuration)
+}
+/** A reused correlation must match both task text and the accepted instruction identity. */
+function turnDigest(prompt: string, instructions: AgentInstructionBundle | undefined): string {
+  return digest(`${instructions?.hash ?? 'none'}\n${prompt}`)
+}
+function newState(directory: string, configuration: OpenCodeHarnessConfiguration, instructions: AgentInstructionBundle | undefined): SessionState {
+  return { connectionId: randomUUID(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, instructions, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
     partTypes: new Map(), ownedIds: new Map(), sequence: 0, turn: undefined }
 }
 function withDirectory(path: string, directory: string): string {

@@ -3,7 +3,7 @@ import { WorkflowVersionV3Schema } from "../wave25/workflowSchemas.js";
 import {
   AgentSchema, AgentConfigurationVersionSchema,
   HarnessConfigurationSchema, HarnessQualificationSchema, ScopedMcpDetectionSchema,
-  IdSchema, TimestampSchema, ApprovalHandlerSchema,
+  IdSchema, TimestampSchema, ApprovalHandlerSchema, MAX_SKILL_INSTRUCTIONS_CHARS,
 } from "../index.js";
 
 // Kept separate from index.ts to avoid a management-module initialization cycle.
@@ -118,24 +118,64 @@ export const LocationProvisionResultSchema = z.object({
     locationRevision: Revision }).strict(), replayed: z.boolean(),
 }).strict();
 
-export const SkillReferenceInputSchema = z.object({ ...Workspace, skillId: IdSchema, version: z.string().trim().min(1).max(100) }).strict();
-export const SkillPublishInputSchema = SkillReferenceInputSchema.extend({
-  commandId: Command, name: z.string().trim().min(1).max(200),
-  instructions: z.string().trim().min(1).max(100_000),
-}).strict();
-export const SkillListInputSchema = z.object({ ...Workspace, ...Page }).strict();
+/** Skills are workspace-owned instruction text. Users edit a logical skill; the server
+ * allocates immutable versions, and Agent configurations pin exact versions. */
+const SkillId = { ...Workspace, skillId: IdSchema };
+const SkillVersionLabel = z.string().trim().min(1).max(100);
+const SkillContent = {
+  name: z.string().trim().min(1, "Enter a skill name.").max(200),
+  description: z.string().trim().max(1_000).optional(),
+  // Stored literally: never trimmed, expanded, or interpreted.
+  instructions: z.string().max(MAX_SKILL_INSTRUCTIONS_CHARS).refine((value) => value.trim().length > 0, "Enter skill instructions."),
+};
 export const SkillVersionSchema = z.object({
-  ...Workspace, skillId: IdSchema, version: z.string().min(1), name: z.string().min(1),
-  instructions: z.string().min(1).max(100_000), contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  ...SkillId, version: SkillVersionLabel, name: z.string().min(1), description: z.string().max(1_000).optional(),
+  instructions: z.string().min(1).max(MAX_SKILL_INSTRUCTIONS_CHARS), contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   createdAt: TimestampSchema,
 }).strict();
-export const SkillGetResultSchema = z.object({ skill: SkillVersionSchema }).strict();
+export type SkillVersion = z.infer<typeof SkillVersionSchema>;
+export const SkillVersionSummarySchema = SkillVersionSchema.omit({ instructions: true });
+/** One row per logical skill. Summaries never carry instruction bodies. */
+export const SkillSummarySchema = z.object({
+  ...SkillId, name: z.string().min(1), description: z.string().optional(),
+  version: SkillVersionLabel, contentHash: SkillVersionSchema.shape.contentHash,
+  revision: z.number().int().positive(), versionCount: z.number().int().positive(),
+  archived: z.boolean(), createdAt: TimestampSchema, updatedAt: TimestampSchema,
+}).strict();
+export type SkillSummary = z.infer<typeof SkillSummarySchema>;
+export const SkillListInputSchema = z.object({
+  /** Omitted: every workspace the caller may read. */
+  workspaceId: IdSchema.optional(),
+  query: z.string().trim().max(200).optional(),
+  includeArchived: z.boolean().default(false),
+  ...Page,
+}).strict();
 export const SkillPageSchema = z.object({
-  items: z.array(SkillVersionSchema.omit({ instructions: true })),
+  items: z.array(SkillSummarySchema),
   pageInfo: z.object({ nextCursor: z.string().nullable() }).strict(),
 }).strict();
-export const SkillPublishResultSchema = z.object({ value: SkillVersionSchema, replayed: z.boolean() }).strict();
-export type SkillPublishInput = z.infer<typeof SkillPublishInputSchema>;
+export const SkillGetInputSchema = z.object({ ...SkillId, version: SkillVersionLabel.optional() }).strict();
+/** The logical head plus one exact version: the head's unless a version was requested. */
+export const SkillGetResultSchema = z.object({ skill: SkillSummarySchema, version: SkillVersionSchema }).strict();
+export const SkillVersionListInputSchema = z.object({ ...SkillId, ...Page }).strict();
+export const SkillVersionPageSchema = z.object({
+  items: z.array(SkillVersionSummarySchema),
+  pageInfo: z.object({ nextCursor: z.string().nullable() }).strict(),
+}).strict();
+export const SkillCreateInputSchema = z.object({ ...Workspace, commandId: Command, ...SkillContent }).strict();
+export const SkillUpdateInputSchema = z.object({ ...SkillId, ...Mutation, ...SkillContent }).strict();
+export const SkillArchiveInputSchema = z.object({ ...SkillId, ...Mutation, archived: z.boolean() }).strict();
+export const SkillMutationResultSchema = z.object({
+  value: z.object({ skill: SkillSummarySchema, version: SkillVersionSchema,
+    /** False when the save matched the current version; no version was created. */
+    changed: z.boolean() }).strict(),
+  replayed: z.boolean(),
+}).strict();
+export type SkillListInput = z.infer<typeof SkillListInputSchema>;
+export type SkillCreateInput = z.infer<typeof SkillCreateInputSchema>;
+export type SkillUpdateInput = z.infer<typeof SkillUpdateInputSchema>;
+export type SkillArchiveInput = z.infer<typeof SkillArchiveInputSchema>;
+export type SkillMutationResult = z.infer<typeof SkillMutationResultSchema>;
 
 export const WorkflowTriggerSchema = z.discriminatedUnion("kind", [
   z.object({kind: z.literal("manual")}).strict(),
