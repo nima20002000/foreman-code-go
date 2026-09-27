@@ -1,0 +1,90 @@
+/* The existing Agent popover: flexible even at 320px, no fixed-width chat surface. */
+.agent-chat-panel, .agent-conversation, .agent-chat-composer-controls {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  gap: var(--space-3);
+  overflow-wrap: anywhere;
+}
+.agent-chat-panel p { margin: 0; }
+.agent-chat-now { display: flex; gap: var(--space-2); align-items: flex-start; }
+.agent-chat-now > span { min-width: 0; }
+.agent-chat-session-label { color: var(--text-strong); font: var(--type-label); }
+.agent-chat-note, .agent-chat-reasons { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.agent-chat-reasons { display: grid; gap: var(--space-2); }
+.agent-chat-controls, .agent-chat-delivery { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+.agent-chat-message-actions, .agent-chat-orphaned-turns, .agent-chat-new-conversation { display: grid; gap: var(--space-2); min-width: 0; }
+.agent-conversation .n-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.agent-conversation .n-composer { min-width: 0; width: 100%; box-sizing: border-box; }
+.agent-conversation .n-composer textarea {
+  width: 100%; min-width: 0; box-sizing: border-box; resize: none;
+  height: clamp(2.5rem, calc(var(--agent-chat-viewport-height, 100dvh) * .1), 5rem);
+  min-height: 2.5rem; max-height: 5rem;
+}
+.agent-conversation .n-composer footer { flex-wrap: wrap; gap: var(--space-2); }
+.agent-conversation .n-composer footer > span { min-width: 0; flex: 1 1 8rem; white-space: normal; }
+.agent-conversation .n-composer footer > .n-actions { margin-left: auto; flex-wrap: wrap; }
+.agent-conversation .n-message, .agent-conversation .n-message-main { min-width: 0; }
+.agent-conversation .n-message-main > header { flex-wrap: wrap; }
+.agent-conversation .n-message-actions { flex-wrap: wrap; }
+.agent-conversation .n-alert { min-width: 0; }
+.agent-conversation .n-alert > div { min-width: 0; }
+.conversation-viewport { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.conversation-viewport-scroll { flex: 1 1 0; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; overflow-anchor: auto; }
+.conversation-viewport-scroll > div { display: grid; gap: var(--space-3); min-width: 0; }
+.conversation-jump { flex-shrink: 0; align-self: center; margin-top: var(--space-2); }
+.agent-conversation .operator-activity-list { display: grid; gap: var(--space-2); min-width: 0; }
+.agent-conversation .operator-tool-activity, .agent-conversation .operator-activity-disclosure { min-width: 0; }
+.agent-conversation .operator-activity-disclosure summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.agent-conversation .operator-activity-disclosure summary > span { flex: 1; min-width: 0; }
+.agent-conversation .operator-activity-details pre, .agent-conversation .operator-approval-command {
+  display: block; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; min-width: 0; max-height: none; overflow: visible;
+}
+.agent-conversation .operator-approval-card { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); }
+.agent-conversation .operator-approval-heading { display: flex; gap: var(--space-2); align-items: flex-start; }
+.agent-conversation .operator-approval-heading h3 { margin: 0; }
+.agent-conversation .operator-approval-actions, .agent-conversation .operator-approval-decline { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-3); }
+.agent-conversation .operator-approval-disclosure dl { display: grid; grid-template-columns: minmax(0, 1fr); }
+.agent-conversation .operator-approval-disclosure dd { margin: 0; }
+@media (max-width: 400px) {
+  .agent-conversation .n-message { gap: var(--space-2); }
+  .agent-conversation .n-avatar { display: none; }
+}
+
+/* One bounded transcript/notices region; controls are never part of its scroll content.
+   Scope the flex budget to Chat so Settings/Info retain their existing panel scrolling. */
+.n-agent-popover[data-panel='chat'] {
+  box-sizing: border-box;
+  width: min(392px, calc(var(--agent-chat-viewport-width, 100vw) - 24px));
+  height: min(48rem, calc(var(--agent-chat-viewport-height, 100dvh) - 24px));
+  max-height: calc(var(--agent-chat-viewport-height, 100dvh) - 24px);
+  bottom: auto;
+}
+.n-agent-popover[data-panel='chat'] > .n-agent-popover-header,
+.n-agent-popover[data-panel='chat'] .n-tab-list { flex-shrink: 0; }
+.n-agent-popover[data-panel='chat'] .n-tab-panel:not([hidden]),
+.n-agent-popover[data-panel='chat'] .n-agent-popover-body {
+  display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: hidden;
+}
+.n-agent-popover[data-panel='chat'] .agent-chat-panel,
+.n-agent-popover[data-panel='chat'] .agent-conversation { flex: 1 1 0; overflow: hidden; }
+.agent-chat-panel > .conversation-viewport,
+.agent-conversation > .conversation-viewport { flex: 1 1 0; }
+.agent-chat-notices { display: grid; gap: var(--space-3); min-width: 0; }
+.agent-chat-composer-controls { flex: 0 0 auto; gap: var(--space-2); border-top: 1px solid var(--border); padding-top: var(--space-2); }
+.agent-chat-composer-controls > .agent-chat-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.agent-chat-composer-controls .n-button { min-height: 44px; }
+.agent-chat-composer-controls .n-composer { padding: var(--space-2); }
+/* The fixed Operator launcher otherwise paints above this nonmodal sheet (z-index 100 vs 40).
+   Hide only the launcher while Chat is open; do not close/mutate an Operator conversation. */
+body:has(.n-agent-popover[data-panel='chat']) .operator-chat-launcher { visibility: hidden; pointer-events: none; }
+@media (max-width: 720px) {
+  .n-agent-popover[data-panel='chat'] {
+    width: var(--agent-chat-viewport-width, 100vw);
+    height: min(48rem, calc(var(--agent-chat-viewport-height, 100dvh) - 12px));
+    max-height: calc(var(--agent-chat-viewport-height, 100dvh) - 12px);
+  }
+  .n-agent-popover[data-panel='chat'] .n-agent-popover-body { padding-bottom: max(var(--space-3), env(safe-area-inset-bottom)); }
+}

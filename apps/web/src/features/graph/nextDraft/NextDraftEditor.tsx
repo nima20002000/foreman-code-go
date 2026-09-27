@@ -376,19 +376,35 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     presentation.getState().setFocusedNodeId(nodeId); presentation.getState().setFocusedEdgeId(undefined)
     setOpenNode({ nodeId, panel: next })
   })
-  const panels = (nodeId: string): AgentPanels => {
-    const node = graph.nodes.find((item) => item.id === nodeId)
+  const panels = (nodeId: string, pinned?: { agentId: string; name: string }): AgentPanels => {
+    const node = pinned ? { id: nodeId, agentId: pinned.agentId } : graph.nodes.find((item) => item.id === nodeId)
     if (!node) return { chat: null, settings: null, info: null }
     const agent = agents.find((item) => item.id === node.agentId)
     const run = runNodeView(runRecord, Boolean(board?.run), node.id, node.agentId)
+    const chat = <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}
+      context={{ workspaceId: graph.workspaceId, workflowId: graph.id, workflowNodeId: node.id, agentId: node.agentId,
+        ...(board?.run ? { runId: board.run.runId } : {}) }}
+      onNewConversation={() => {
+        // Navigation only. Never replace/resume a missing native session under the old key.
+        if (board?.run) {
+          board.selectRun()
+          if (graph.nodes.some((item) => item.id === node.id && item.agentId === node.agentId)) setOpenNode({ nodeId: node.id, panel: 'chat' })
+          else { setOpenNode(undefined); setPanel('agents') }
+        } else { setOpenNode(undefined); setPanel('agents') }
+      }} />
+    if (pinned) return { chat,
+      settings: <p className="agent-panel-note">This is a saved Run Agent. Return to the draft to edit settings for future work. Chat does not change this Run.</p>,
+      info: <AgentFacts items={[{ label: 'Status', value: run.activity ? `${run.label} · ${run.activity}` : run.label },
+        { label: 'Node', value: node.id, mono: true }, { label: 'Agent', value: node.agentId, mono: true },
+        { label: 'Run', value: board?.run?.runId, mono: true }]} /> }
     const role = roleEvidence(context, node.agentId, edit.agentEdits)
     return {
-      chat: <AgentChatPanel name={nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'} />,
+      chat,
       settings: <fieldset className="board-popover-fields" disabled={edit.busy || reloading || editIntent.locked}>
         <p className="agent-panel-note">Executable changes require every affected Run to stop and finish cleanup before Save. Use Stop-and-save or discard the edits. Moving Agents on the Board does not require Stop.</p>
         <BoardAgentSettings draftKey={draftKey} edit={edit} nodeId={node.id} close={() => setOpenNode(undefined)}
           remove={() => { setOpenNode(undefined); change((value) => removeNode(value, node.id)) }} />
-        <NodeWorkflowFields graph={graph} node={node} context={context} agentEdits={edit.agentEdits} change={change} />
+        <NodeWorkflowFields graph={graph} node={graph.nodes.find((item) => item.id === node.id)!} context={context} agentEdits={edit.agentEdits} change={change} />
       </fieldset>,
       info: <>
         <AgentFacts items={[

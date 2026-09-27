@@ -1,3 +1,4 @@
+import { agentChatHandlers, resetAgentChatFixtures } from './agentChatHandlers'
 import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
@@ -55,6 +56,7 @@ function syncManagedFixtures() {
 }
 
 export function resetTestFixtures() {
+  resetAgentChatFixtures()
   resetExistingMockFixtures()
   resetSettingsExperienceFixtures()
   managedWorkspaceNames.clear()
@@ -213,6 +215,7 @@ export function bindMockInstallation(): void {
 }
 
 export const handlers: RequestHandler[] = [
+  ...agentChatHandlers,
   currentAuthoringHandler,
   http.get('/api/auth/identity', () => HttpResponse.json(mockRuntimeIdentity)),
   ...settingsExperienceHandlers,

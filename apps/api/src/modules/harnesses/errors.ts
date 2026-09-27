@@ -9,3 +9,11 @@ export class HarnessExecutionError extends Error {
     this.result = { outcome: 'failed', error: { code, message, retryable } }
   }
 }
+
+/** Definite provider refusal: the addressed turn is not the active turn. No input was accepted. */
+export class NativeTurnNotActiveError extends HarnessExecutionError {
+  constructor(message = 'The addressed native turn is no longer active.') {
+    super('NATIVE_TURN_NOT_ACTIVE', message)
+    this.name = 'NativeTurnNotActiveError'
+  }
+}

@@ -19,12 +19,14 @@ import '@xyflow/react/dist/style.css'
 
 export type OpenAgentPanel = { nodeId: string; panel: AgentPanel }
 export type AgentPanels = { chat: ReactNode; settings: ReactNode; info: ReactNode }
+/** A selected Run supplies its pinned identity, including nodes no longer present in the draft. */
+export type AgentPanelRenderer = (nodeId: string, pinned?: { agentId: string; name: string }) => AgentPanels
 type Canvas = {
   draftKey: string
   inspect: (action: () => void) => void
   open?: OpenAgentPanel
   setOpen: (next?: OpenAgentPanel) => void
-  panels: (nodeId: string) => AgentPanels
+  panels: AgentPanelRenderer
   selectNode?: (nodeId: string) => void
 }
 const CanvasContext = createContext<Canvas>({ draftKey: '', inspect: (action) => action(), setOpen: () => undefined,
@@ -85,7 +87,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   draftKey: string; graph: WorkflowDefinitionV3; agents: readonly Agent[]; kind: WorkflowRelationship['kind']
   change: EditGraph; geometry: (changes: GraphGeometryChange[]) => void; pending: (pending: boolean) => void
   report: (error: unknown) => void; inspect?: (action: () => void) => void; removalDisabled?: boolean
-  open?: OpenAgentPanel; setOpen?: (next?: OpenAgentPanel) => void; panels?: (nodeId: string) => AgentPanels
+  open?: OpenAgentPanel; setOpen?: (next?: OpenAgentPanel) => void; panels?: AgentPanelRenderer
   children?: ReactNode
 }>(function DraftCanvas({ draftKey, graph, agents, kind, change, geometry, pending, report, inspect = (action) => action(), removalDisabled = false,
   open, setOpen = () => undefined, panels = () => ({ chat: null, settings: null, info: null }), children }, ref) {
@@ -166,6 +168,6 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       </ReactFlow>}
       {children}
     </div>
-    {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} /> : null}
+    {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} panels={panels} /> : null}
   </CanvasContext.Provider>
 })

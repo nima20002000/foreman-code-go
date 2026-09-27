@@ -1,3 +1,4 @@
+import { agentChatMigration } from './agentChatMigration.js'
 import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
 import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
 import { runInspectionMigration } from './runInspectionMigration.js'
@@ -719,6 +720,7 @@ export const migrations = [
           and r.result->'executionLocation' = w.execution_location);
   ` },
   unifiedMcpMigration,
+  agentChatMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

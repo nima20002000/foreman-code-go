@@ -103,23 +103,50 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
   close.current = onClose
   useLayoutEffect(() => {
     if (!open) return
-    let frame = 0, last = ''
+    let frame = 0, last = '', lastViewport = ''
     const place = () => {
+      cancelAnimationFrame(frame)
       const node = anchor.current, element = surface.current
+      // The keyboard can shrink/pan the visual viewport without changing innerHeight.
+      // Chat alone has a reserved action area; keep its whole surface in the visible budget.
+      const viewport = panel === 'chat' ? window.visualViewport : null
+      const viewportWidth = viewport?.width ?? window.innerWidth, viewportHeight = viewport?.height ?? window.innerHeight
+      const viewportLeft = viewport?.offsetLeft ?? 0, viewportTop = viewport?.offsetTop ?? 0
+      if (element && panel === 'chat') {
+        const size = `${viewportWidth}:${viewportHeight}`
+        if (size !== lastViewport) {
+          lastViewport = size
+          element.style.setProperty('--agent-chat-viewport-width', `${viewportWidth}px`)
+          element.style.setProperty('--agent-chat-viewport-height', `${viewportHeight}px`)
+        }
+      }
       if (node && element && window.innerWidth > 720) {
         const rect = node.getBoundingClientRect()
         const width = element.offsetWidth, height = element.offsetHeight
-        const right = rect.right + GAP + width <= window.innerWidth - 12
-        const left = right ? rect.right + GAP : Math.max(12, rect.left - GAP - width)
-        const top = Math.min(Math.max(12, rect.top + rect.height / 2 - 120), Math.max(12, window.innerHeight - height - 12))
+        const right = rect.right + GAP + width <= viewportLeft + viewportWidth - 12
+        const preferredLeft = right ? rect.right + GAP : Math.max(viewportLeft + 12, rect.left - GAP - width)
+        const left = panel === 'chat' ? Math.max(viewportLeft + 12, Math.min(preferredLeft, viewportLeft + viewportWidth - width - 12)) : preferredLeft
+        const top = Math.min(Math.max(viewportTop + 12, rect.top + rect.height / 2 - 120), Math.max(viewportTop + 12, viewportTop + viewportHeight - height - 12))
         const key = `${Math.round(left)}:${Math.round(top)}`
         if (key !== last) { last = key; element.style.left = `${left}px`; element.style.top = `${top}px` }
-      } else if (element && last !== 'sheet') { last = 'sheet'; element.style.left = ''; element.style.top = '' }
+      } else if (element) {
+        const left = panel === 'chat' ? `${viewportLeft}px` : ''
+        const top = panel === 'chat' ? `${viewportTop + Math.max(0, viewportHeight - element.offsetHeight)}px` : ''
+        const key = `sheet:${left}:${top}`
+        if (key !== last) { last = key; element.style.left = left; element.style.top = top }
+      }
       frame = requestAnimationFrame(place)
     }
     place()
-    return () => cancelAnimationFrame(frame)
-  }, [open, anchor])
+    const viewport = panel === 'chat' ? window.visualViewport : null
+    viewport?.addEventListener('resize', place)
+    viewport?.addEventListener('scroll', place)
+    return () => {
+      cancelAnimationFrame(frame)
+      viewport?.removeEventListener('resize', place)
+      viewport?.removeEventListener('scroll', place)
+    }
+  }, [open, anchor, panel])
   useEffect(() => {
     if (!open) return
     const owner = anchor.current?.closest('.n-agent')
@@ -159,7 +186,7 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
   }, [open, anchor])
   if (!open || typeof document === 'undefined') return null
   const known = harness === 'codex' || harness === 'opencode' ? harness : 'neutral'
-  return createPortal(<section ref={surface} className={cx('n-agent-popover nodrag nowheel', className)} data-harness={known}
+  return createPortal(<section ref={surface} className={cx('n-agent-popover nodrag nowheel', className)} data-harness={known} data-panel={panel}
     role="dialog" aria-modal="false" aria-label={`${title} ${actionLabels[panel]}`}
     onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}
     onKeyDown={(event) => { if (event.key !== 'Escape') event.stopPropagation() }}>
