@@ -4,7 +4,7 @@ import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema,
 import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@graphql/contracts/management'
 import {
   CurrentManagedWorkflowSchema, CurrentWorkspaceDetailsSchema, CurrentWorkflowCreateInputSchema,
-  CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema, WorkflowVersionV3Schema,
+  CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema,
   ExecutableWorkflowV3Schema, AcceptedWorkflowRunV3Schema, GraphEditStageInputV3Schema, GraphEditReadResultV3Schema,
   GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema, CURRENT_WORKFLOW_CAPABILITIES, sameExecutableWorkflow,
   RunStartV3InputSchema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3, sameWorkflowValue,

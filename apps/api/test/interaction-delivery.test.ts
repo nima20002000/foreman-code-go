@@ -39,7 +39,8 @@ const userPrincipal: ManagementPrincipal = { id: 'unit-user', name: 'Unit User',
   expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
   grants: [{ actions: ['interactions:respond'], scope: { workspaceIds: ['workspace-fixture'] } }] }
 const reviewerPrincipal: ManagementPrincipal = { ...userPrincipal, id: 'unit-reviewer',
-  audience: 'worker', agentId: 'agent-reviewer' }
+  audience: 'worker', agentId: 'agent-reviewer', grants: [{ actions: ['interactions:read', 'interactions:respond'],
+    scope: { workspaceIds: ['workspace-fixture'], workflowIds: ['workflow-fixture'], runIds: ['run-fixture'] } }] }
 
 /** Real current service and SingleWriterSessionManager; repository methods are
  * explicit recording ports, not PostgreSQL/native receipt qualification. The
@@ -173,6 +174,9 @@ function harness() {
   const writer = new SingleWriterSessionManager(rawManager, nativeLanes(), record.requestingAgentId)
   const runtime: InteractionNativeRuntime = {
     validateInteraction: async () => { await budgets.assertActive(record.executionId) },
+    attachOwnedSession: async () => {
+      throw new Error('Unexpected owned-session attach')
+    },
     attachInteraction: async () => {
       calls.attaches++; await control.onAttach()
       return { session, manager: writer }

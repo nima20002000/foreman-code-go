@@ -164,11 +164,12 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       return next
     }); setMessage(undefined)
   }, [draftKey, editIntent.locked])
+  const persistLayout = layout.mutate
   const geometry = useCallback((changes: GraphGeometryChange[]) => {
     change((value) => applyGraphGeometry(value, changes))
     // Only independent layout revisions are written. Semantic staging is untouched.
-    layout.mutate()
-  }, [change, layout.mutate])
+    persistLayout()
+  }, [change, persistLayout])
   const report = useCallback((error: unknown) => setLocalError(draftFailure(error, false).message), [])
   const inspect = useCallback((action: () => void) => {
     void (async () => {

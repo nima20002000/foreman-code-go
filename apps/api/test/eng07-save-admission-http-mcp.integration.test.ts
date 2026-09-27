@@ -152,7 +152,7 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`ENG07 nat
       } else {
         const reply = await rpc(f, CURRENT_WORKFLOW_TOOLS.save, rejected)
         expect(reply.result?.isError).toBe(true)
-        expect(graphRpcValue(reply.result)).toMatchObject({ error: { code: 'WORKFLOW_RUNS_UNSETTLED' } })
+        expect(graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0])).toMatchObject({ error: { code: 'WORKFLOW_RUNS_UNSETTLED' } })
       }
       const blocked = await editThrough(f, transport, stage.advance)
       expect(blocked.intent?.state).toBe('waiting')
@@ -200,7 +200,7 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`ENG07 nat
       } else {
         const reply = await rpc(f, CURRENT_WORKFLOW_TOOLS.save, rejected)
         expect(reply.result?.isError).toBe(true)
-        expect(graphRpcValue(reply.result)).toMatchObject({ error: { code: 'WORKFLOW_RUNS_UNSETTLED' } })
+        expect(graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0])).toMatchObject({ error: { code: 'WORKFLOW_RUNS_UNSETTLED' } })
       }
       expect(await versionCount(f)).toBe(count)
       expect(f.provider.counts.sessions).toBe(0); expect(f.provider.counts.starts).toBe(0)

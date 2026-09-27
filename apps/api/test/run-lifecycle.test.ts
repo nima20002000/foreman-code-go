@@ -73,7 +73,7 @@ function fixture() {
     checkpoint: { values: { runId: run.id }, next: [], tasks: [] } as RepeatCheckpoint,
     stopRequested: false, cleanupPending: false,
     read: async (): Promise<RepeatCheckpoint> => structuredClone(control.checkpoint),
-    work: async (_context: RepeatEngineStartContext) => { void _context; throw new Error('Unexpected runtime entry') },
+    work: async (_context: RepeatEngineStartContext): Promise<void> => { void _context; throw new Error('Unexpected runtime entry') },
     waitFailure: undefined as Error | undefined,
   }
   const host: EnginePorts = {

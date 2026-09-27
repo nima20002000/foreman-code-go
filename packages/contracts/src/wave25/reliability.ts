@@ -9,7 +9,7 @@ import { canonicalGraphJson } from './json.js'
 
 // Graph effects have one schema identity; the current primitive module is also
 // used by the public protocol. Re-exporting it avoids two conflicting families.
-import { GraphEffectIdentitySchema, GraphEffectSchema } from './graphPrimitives.js'
+import { GraphEffectIdentitySchema } from './graphPrimitives.js'
 export { GraphEffectIdentitySchema, GraphEffectSchema, type GraphEffectIdentity, type GraphEffect } from './graphPrimitives.js'
 
 /** A reference to EXISTING authority. These fields do not acquire a lease or grant permissions. */

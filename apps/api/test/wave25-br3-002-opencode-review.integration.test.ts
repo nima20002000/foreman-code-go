@@ -239,7 +239,7 @@ describe.skipIf(!postgresEnabled)('BR3-002 actual OpenCode / ReviewerDispatcher 
           await f.db.pool.query("update review_jobs set provider_version='wrong-provider-version' where id=$1", [job.id])
           await cuts.original(...args)
         } else {
-          await f.runs.requestStop(f.f.run.id)
+          await f.stop()
           // Already-owned terminal evidence may truthfully aid cleanup after Stop;
           // it must not authorize business completion or Worker delivery.
           await cuts.original(...args).catch((error: unknown) => { expect(error).toBeDefined() })

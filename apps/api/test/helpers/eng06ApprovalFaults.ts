@@ -33,10 +33,10 @@ export class ApprovalTransportFaults {
     signal.throwIfAborted()
     return this.recoveryAvailable && this.processes.recover(executionId, signal)
   }
-  private hold: ReturnType<typeof deferred> | undefined
+  private hold: ReturnType<typeof deferred<void>> | undefined
   private entered: ReturnType<typeof deferred<string>> | undefined
   private holdNext = false
-  private workerGate: { entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred>; deliveryObserved: Set<string> } | undefined
+  private workerGate: { entered: ReturnType<typeof deferred<void>>; release: ReturnType<typeof deferred<void>>; deliveryObserved: Set<string> } | undefined
 
   holdNextTurn() {
     if (this.hold) throw new Error('A native turn gate is already installed')
@@ -76,6 +76,8 @@ export class ApprovalTransportFaults {
   }
 
   wrap(raw: NativeHarnessSessionManager): NativeHarnessSessionManager {
+    // The returned manager methods need this fixture instance after wrap returns.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const faults = this
     let disposed = false
     let disposal: Promise<void> | undefined

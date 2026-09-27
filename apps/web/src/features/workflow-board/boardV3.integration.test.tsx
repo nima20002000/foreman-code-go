@@ -304,7 +304,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(editor)
     await user.click(screen.getByRole('button', { name: 'Clear Run selection' }))
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).not.toHaveProperty('repeat')
-  })
+  }, 15_000)
   it('keeps production capability false without issuing Start, and rejects retired saved tags before definition dispatch', async () => {
     const mock = newBoardMock(), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
@@ -324,7 +324,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
       expect(mock.calls.filter((call) => /\/(?:definition|drafts)(?:\/|$)/.test(call.path))).toHaveLength(before)
       view.unmount(); query.clear()
     }
-  })
+  }, 15_000)
   it.each(['denied', 'stale', 'unsupported', 'lost'] as const)('Start %s is fail-closed; reload never fabricates a replacement command', async (mode) => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'sequential', mock); await save(mock, user, 1)

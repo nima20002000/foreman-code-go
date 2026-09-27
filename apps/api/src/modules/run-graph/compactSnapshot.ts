@@ -45,6 +45,7 @@ export async function readPublicProjectionLocked(sql: GraphTransactionSql, scope
 
 /** Public composition retains a single current reader, not a version dispatcher. */
 export function createCompactSnapshotAssembler(_readExchanges: ReadCurrentGraphExchanges) {
+  void _readExchanges
   return async (sql: GraphTransactionSql, scope: RunGraphScope) => {
     const { version } = await readRepeatGraphPinsLocked(sql, scope)
     return { topology: repeatGraphTopologyV3(version), state: await readPublicProjectionLocked(sql, scope) }

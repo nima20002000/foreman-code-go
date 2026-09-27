@@ -17,6 +17,7 @@ import { runLiveActivityMigration } from './runLiveActivityMigration.js'
 import { reviewFailureLifecycleMigration } from './reviewFailureLifecycleMigration.js'
 import { browserAuthMigration } from './browserAuthMigration.js'
 import { skillsLibraryMigration } from './skillsLibraryMigration.js'
+import { currentApprovalPublicationMigration } from './currentApprovalPublicationMigration.js'
 import { agentChatMigration } from './agentChatMigration.js'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
@@ -722,6 +723,7 @@ export const migrations = [
   ` },
   unifiedMcpMigration,
   skillsLibraryMigration,
+  currentApprovalPublicationMigration,
   agentChatMigration,
 ] as const
 

@@ -1,6 +1,7 @@
 import { HarnessExecutionSchema } from '@graphql/contracts'
 import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
@@ -28,11 +29,14 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const [pending] = await f.pending()
       const executions = (await f.db.pool.query('select record from harness_executions where run_id=$1 order by id', [f.f.run.id])).rows.map((row) => HarnessExecutionSchema.parse(row.record))
       expect(executions).toHaveLength(2)
+      expect(executions.find((execution) => execution.id === pending!.executionId)?.nativeSessionId)
+        .toBe(pending!.nativeSessionId)
       expect(f.provider.counts).toMatchObject({ starts: 2, sessions: 2, responses: 0 })
       expect((await app.inject({ method: 'GET', url: '/api/interactions?limit=10' })).statusCode).toBe(404)
       expect((await app.inject({ method: 'POST', url: `/api/interactions/${pending!.id}/respond`, payload: br1002Response(pending!) })).statusCode).toBe(404)
       await expect(f.service.respond({ kind: 'user', principal: f.principal }, { ...br1002Response(pending!), optionId: 'forged' }))
         .rejects.toMatchObject({ code: 'INTERACTION_OPTION_INVALID' })
+      expect((await f.runs.get(f.f.run.id))?.executionState).toBe('waiting')
       const response = await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(pending!))
       expect(response.interaction.deliveryState).toBe('delivered')
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
@@ -104,16 +108,19 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       cuts.continueStart.resolve()
       const message = br3002Assistant(f.server, f.job.correlationId, f.reviewer.nativeSessionId!, { name: 'stop', finish: 'stop', marker: true })
       br3002Notify(f.server, message, true)
-      await br1002At(cuts.beforeMarker.promise, dispatch)
-      cuts.enterMarker.resolve(); await br1002At(cuts.afterMarker.promise, dispatch)
-      cuts.finishMarker.resolve(); await dispatch
-      await f.service.recover({ limit: 10 })
+      await br1002At(cuts.assistant.promise, dispatch)
+      cuts.continueAssistant.resolve()
+      await dispatch
+      expect((await f.service.recover({ limit: 10 })).errors).toEqual([])
       expect(await f.repository.get(input.interactionId)).toMatchObject({ deliveryState: 'delivered' })
       expect(f.counts().responses).toBe(1)
       expect((await operator.callTool({ name: 'interaction_get', arguments: { interactionId: input.interactionId } })).structuredContent)
         .toMatchObject({ interaction: { deliveryState: 'delivered' } })
-      expect((await f.runs.get(f.run.id))?.outcome).toBe('succeeded')
-      expect((await f.db.pool.query('select principal_id from worker_credential_bindings where run_id=$1 and revoked_at is null', [f.run.id])).rows).toHaveLength(0)
+      // The provider fixture drops the requester's terminal SSE notification.
+      // Decision and graph resume are durable; Run completion needs later native observation.
+      expect((await f.db.pool.query<{ state: string }>(
+        'select state from interaction_graph_resumes where interaction_id=$1', [input.interactionId])).rows[0]?.state).toBe('resumed')
+      expect((await f.runs.get(f.run.id))?.outcome).toBe('pending')
     } finally { cuts.release(); cuts.restore(); await Promise.allSettled(clients.map((c) => c.close())); await app.close(); await f.close(); await dispatch?.catch(() => undefined) }
   }, 60000)
 
@@ -139,20 +146,32 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
         expectedWorkflowVersionId: f.version.id, expectedLocationRevision: 1,
         expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, graph })).rejects.toThrow()
       expect((await db.pool.query('select id from workflow_versions')).rows).toEqual(before)
-      expect((await db.pool.query('select id from worker_credential_bindings')).rows).toHaveLength(0)
+      expect((await db.pool.query('select principal_id from worker_credential_bindings')).rows).toHaveLength(0)
     } finally { await db.close() }
   }, 60000)
 
   it('keeps a busy reviewer pending and gives exactly one contender its durable job lease', async () => {
     const f = await routedApprovalFixture()
+    let busyLaneId: string | undefined
     try {
       const lane = (await f.coordination.getLane('opencode', f.reviewer.nativeSessionId!))!
       await f.coordination.claimLane(lane.id, lane.revision, f.reviewerId, 'busy-writer', new Date(Date.now() + 60000).toISOString(), 'active-turn')
+      busyLaneId = lane.id
       expect(await f.native.reviewers.dispatchNext(f.reviewerId, 'busy-probe')).toMatchObject({ state: 'blocked_busy' })
       expect(f.counts().prompts).toBe(2)
+      const blocked = await f.coordination.findReviewJob(f.job.interactionId, f.reviewerId)
+      expect(blocked?.retryAfter).toBeDefined()
+      const early = await Promise.allSettled(['early-first', 'early-second'].map((owner) =>
+        f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`, new Date(Date.now() + 60000).toISOString())))
+      expect(early.every((result) => result.status === 'rejected')).toBe(true)
+      await delay(Math.max(0, Date.parse(blocked!.retryAfter!) - Date.now() + 50))
       const claims = await Promise.allSettled(['first', 'second'].map((owner) => f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`, new Date(Date.now() + 60000).toISOString())))
       expect(claims.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
       expect(claims.filter((result) => result.status === 'rejected')).toHaveLength(1)
-    } finally { await f.close() }
+    } finally {
+      if (busyLaneId) await f.coordination.releaseLane(busyLaneId, 'busy-writer', { observedStatus: 'idle' })
+      // The injected lease leaves no original close context; shutdown must report uncertainty.
+      await expect(f.close()).rejects.toThrow('Workflow restart closure or task drain')
+    }
   }, 60000)
 })

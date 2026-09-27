@@ -42,7 +42,13 @@ was not stopped or reset. Logs are local `/tmp/graphql-skills-review-*.log` arti
   Both installed harnesses received the marker skills, a concurrent no-skill control did not,
   later turns and exact-session attach after manager restart retained the instructions, and
   Operator sessions received the skills. Codex 0.156.1 was not installed or claimed qualified.
-- Broad PostgreSQL integration/acceptance comparison: pending final results below.
+- Root `test:acceptance`: the same four setup failures on candidate and main (missing native
+  capture/proof composition; legacy ENG-03 matrix database setup). This is not a passing suite;
+  the four passing Skills-native scenarios above are separate evidence.
+- An additional all-suite `RUN_WAVE25_POSTGRES_TESTS=1` sweep was interrupted on both trees
+  after unrelated recovery failures and long timeouts. It is not claimed as completed or passing.
+  The documented integration command is being compared on fresh isolated databases without that
+  optional repository-wide gate; the Skills PostgreSQL suite was separately enabled and passed.
 
 ## Live browser evidence
 
@@ -70,11 +76,52 @@ with the standard scoped bearer environment variable. Preflight, native sandbox 
 not bypassed. Native credentials were not copied or printed.
 
 At 390 × 844 the Skills editor remained usable with document width 375 (no horizontal overflow);
-the temporary viewport override was reset afterward. Exact immutable versions and accepted Run
-outputs were inspected through the live app.
+the temporary viewport override was reset afterward. A two-editor conflict preserved unsaved text,
+showed the competing revision, and loaded it only after explicit discard; navigation also showed the
+unsaved-change guard. Exact immutable versions and accepted Run outputs were inspected through the live app.
 
 ## Delivery status
 
-Corrective source and feature-specific acceptance are complete. Broad-suite failure comparison,
-remote publication and the merge decision are still pending. No merge or post-merge smoke is
+Corrective source and feature-specific acceptance are complete and published as `0f33bd1`.
+The documented integration-suite comparison and merge decision remain pending. No merge or post-merge smoke is
 claimed by this report.
+
+## Later integration repair (uncommitted)
+
+Three GPT-6 Sol agents at medium effort split the stale API test suites. The
+starting check had 234 API test type errors and eight lint errors (seven API,
+one web). Current root `typecheck`, `lint`, `test`, and `build` pass. Root test
+counts are 306 contracts, 2,386 API (15 skipped), and 1,162 web. Two long
+Board interactions use a 15-second test timeout because they exceeded the
+default five seconds only under the full parallel web run.
+
+The documented `test:integration` command passed 28 files and 116 tests;
+59 files and 450 tests were skipped by optional gates. With the PostgreSQL
+gate enabled, the current approval orchestration and atomic publication suites
+passed 18/18. Focused PR17 native event allocation, production User approval,
+worker credential, workspace archive, and launcher suites also passed. The
+old App MCP fixture fabricated a reviewer and native state that V3 refuses;
+current authenticated MCP decision coverage remains in the passing approval
+orchestration suite. Other retired suites depended on removed execution
+semantics or raw one-shot/graph writers. The old A5 graph-read suite was also
+run against PostgreSQL: its legacy publications could not advance the V3
+reader, so it and its unused fixture were retired.
+
+Two app issues were fixed: exact approval retries can read a completed Run
+while live principal checks still apply, and a pending decision checks caller
+scope and continuation authority before it can commit. A second continuation
+check after attachment prevents a known-invalid native response from entering
+the delivery write. New migration `267202` requires a same-transaction graph
+source for V3 interaction and review writes; the focused raw-writer regression
+and normal approval writers both passed.
+
+`test:acceptance` now targets the current ENG-03 C native suite and defaults
+to the pinned Codex 0.154.0 binary. With a task-owned loopback test database,
+its seven cases failed before the first native turn with
+`APP_MCP_PREFLIGHT_FAILED`: the active Codex profile lists `graphql-app` and
+`graphql-operator`, but no required `graphql` entry. The initial run also
+selected the machine's unqualified Codex 0.157.1; a rerun with pinned 0.154.0
+confirmed the MCP preflight blocker. No paid native acceptance result is
+claimed. The retired acceptance suite's exact Codex → OpenCode → Codex chain
+has not been re-established on V3. This repair is on the PR #49 branch;
+the PR remains open and unmerged.

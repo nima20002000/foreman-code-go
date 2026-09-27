@@ -3,14 +3,12 @@ import type { RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import { Alert, Badge, Button } from '../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { repeatGraphClient, type RepeatGraphClient } from './canonicalClient'
-import { currentRunKey, useCurrentRunQuery } from '../workflow-board/currentRunQuery'
+import { useCurrentRunQuery } from '../workflow-board/currentRunQuery'
 import { RepeatResultDetails } from './RepeatResultDetails'
 import './repeats.css'
 
 const reasonLabel = (reason: 'repeat' | 'early_exit' | 'limit_exit') => reason === 'repeat' ? 'Repeat decided'
   : reason === 'early_exit' ? 'Early exit' : 'Limit exit'
-
-export const repeatRunKey = currentRunKey
 
 /** Only a complete canonical cut supplies status. Private result pages are not a
  * fallback for an unqualified graph reader, nor evidence that a Run is active. */

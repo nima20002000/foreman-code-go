@@ -86,6 +86,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       await f.db.pool.query('update workspaces set execution_location_identity=$2::jsonb where id=$1',
         [f.f.scope.workspaceId, JSON.stringify({ device: String(identity.dev), inode: String(identity.ino) })])
       const input = await f.create(), { commandId: _commandId, ...validation } = input
+    void _commandId
       value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.validate, arguments: validation }))
       const saved = CurrentWorkflowSaveResultSchema.parse(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input })))
       expect(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input }))).toEqual({ ...saved, replayed: true })

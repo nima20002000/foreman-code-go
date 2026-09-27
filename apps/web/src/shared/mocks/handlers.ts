@@ -3,7 +3,6 @@ import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
-import { currentWorkflowFixture as makeWave25Fixture } from './currentWorkflow'
 import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, } from '@graphql/contracts'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@graphql/contracts/wave25'
 import {

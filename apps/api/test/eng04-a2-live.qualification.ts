@@ -124,7 +124,8 @@ try {
       return rows.rows[0]?.ready === true // Merely selects when to validate REAL proof below.
     }, `${item.id} durable settlement`)
     const owner = await RunOwnership.acquire(pool, runId, () => undefined); assert.ok(owner, 'Original runtime owner has not released')
-    let executions: HarnessExecution[] = [], proofIds: string[] = []
+    let executions: HarnessExecution[] = []
+    const proofIds: string[] = []
     try {
       await owner.oneShotConnection().transaction(async (sql) => {
         const accepted = await readAcceptedRepeatRunLocked(sql, runId)
@@ -195,5 +196,5 @@ try {
 } catch (error) {
   await writeFile(output, JSON.stringify({ status: 'failed', candidate, evidence,
     failure: error instanceof Error ? error.name : 'qualification failed', note: 'Retain original command identities; no Stop/cleanup is inferred.' }, null, 2))
-  throw new Error('A2 live qualification failed; retained report and original manifest commands must be reconciled. No native success is claimed.')
+  throw new Error('A2 live qualification failed; retained report and original manifest commands must be reconciled. No native success is claimed.', { cause: error })
 } finally { await pool.end() }

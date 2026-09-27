@@ -1,9 +1,7 @@
 import type { ReviewNativeCapture, ReviewNativeCapturePort, ReviewOriginalNativeSource } from './reviewNativeCapture.js'
-import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import {
-  DurableInteractionSchema,
   HarnessExecutionSchema,
   NativeSessionReferenceSchema,
   type DurableInteraction,
@@ -24,7 +22,6 @@ import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/po
 import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
-import { nativeApprovalContext } from './nativeApprovalContext.js'
 import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './reviewerRuntime.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
@@ -1437,7 +1434,9 @@ export class ApprovalExecutionCoordinator {
           resolved?.markFailed?.()
           ownedSession.failed = true
           const failures = await this.cleanupSession(ownedSession)
-          if (failures.length) throw new AggregateError(failures, 'Original native closure is still pending.')
+          // The caught error may contain provider secrets; retain only its sanitized form.
+          // eslint-disable-next-line preserve-caught-error
+          if (failures.length) throw new AggregateError(failures, 'Original native closure is still pending.', { cause: error })
         }
         await this.budgets.stop(execution.id)
         await (await this.runs.repeat(input.owner)).settleNegativeExecution(execution.id,

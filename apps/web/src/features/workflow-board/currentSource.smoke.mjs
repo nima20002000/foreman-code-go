@@ -46,7 +46,7 @@ test('one editor calls one shared saved Start and private edit-intent family', (
   assert.match(read('apps/web/src/features/workflow-board/stopOutbox.ts'), /RepeatGraphScopeV3Schema/)
 })
 test('ordinary V3 omits repeat and the shared schema makes only configured finite plans optional', () => {
-  assert.match(read('packages/contracts/src/wave25/repeat.ts'), /repeat:\s*RepeatPlanV1Schema\.optional\(\)/)
+  assert.match(read('packages/contracts/src/wave25/workflowShape.ts'), /repeat:\s*RepeatPlanV1Schema\.optional\(\)/)
   assert.match(read('apps/web/src/features/repeats/RepeatEditor.tsx'), /repeat:\s*_removed,\s*\.\.\.ordinary/)
   assert.doesNotMatch(read('apps/web/src/shared/mocks/currentWorkflow.ts'), /repeat:\s*\{/)
   assert.doesNotMatch(read('packages/contracts/src/wave25/currentWorkflowFoundation.ts'), /WorkflowVersionV2Schema|WorkflowDefinitionV2Schema|executionSemanticsVersion:\s*2/)

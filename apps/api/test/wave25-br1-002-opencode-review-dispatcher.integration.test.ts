@@ -337,7 +337,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
           await f.db.pool.query("update review_jobs set provider_version='different-provider-version' where id=$1", [job.id])
           await cuts.original(...args)
         } else {
-          await f.runs.requestStop(f.f.run.id)
+          await f.stop()
           await cuts.original(...args).catch((error: unknown) => {
             expect(error).toBeDefined()
           })

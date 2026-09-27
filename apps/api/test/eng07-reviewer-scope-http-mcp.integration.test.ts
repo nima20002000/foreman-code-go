@@ -43,7 +43,7 @@ async function rejected(f: SaveFixture, transport: Transport, tool: string, url:
   } else {
     const reply = await rpc(f, tool, input)
     expect(reply.result?.isError, JSON.stringify(reply)).toBe(true)
-    expect(JSON.stringify(graphRpcValue(reply.result))).toContain(code)
+    expect(JSON.stringify(graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0]))).toContain(code)
   }
 }
 
@@ -76,7 +76,7 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`ENG07 rev
       } else {
         const reply = await rpc(f, CURRENT_WORKFLOW_TOOLS.validate, validation)
         expect(reply.result?.isError, JSON.stringify(reply)).not.toBe(true)
-        expect(graphRpcValue(reply.result)).toMatchObject({ valid: true, executionSemanticsVersion: 3 })
+        expect(graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0])).toMatchObject({ valid: true, executionSemanticsVersion: 3 })
       }
       const saved = CurrentWorkflowSaveResultSchema.parse(await saveThrough(f, transport, input))
       expect(saved.value.currentVersionId).not.toBe(input.expectedWorkflowVersionId)

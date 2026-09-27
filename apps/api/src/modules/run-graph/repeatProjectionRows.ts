@@ -2,7 +2,7 @@ import { readPublicRunStateLocked } from './publicRunState.js'
 import {
   GraphExecutionIdentitySchema, RepeatOccurrenceV1Schema, RepeatDecisionMetadataV1Schema,
   RepeatGraphExecutionV3Schema, RepeatGraphBindingV3Schema, RepeatGraphResolutionV3Schema,
-  RepeatGraphRunStateV3Schema, RepeatGraphScopeV3Schema, WorkflowVersionV3Schema,
+  RepeatGraphScopeV3Schema, WorkflowVersionV3Schema,
   CurrentRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, REPEAT_GRAPH_LIMITS,
   sameCanonicalGraphScope, canonicalGraphJson, qualifyRepeatGraphExecution,
   type RepeatGraphScopeV3, type RepeatGraphExecutionV3, type RepeatGraphBindingV3,

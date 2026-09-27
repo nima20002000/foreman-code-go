@@ -5,7 +5,7 @@ export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 export type { Id, Timestamp } from "./schemaPrimitives.js";
 import {
   ApprovalHandlerSchema, AcceptedWorkflowApprovalConfigurationSchema,
-  WorkflowApprovalConfigurationSchema, ExecutionConditionSchema,
+  ExecutionConditionSchema,
   CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
   WorkflowDefinitionV3Schema, ExecutionSemanticsVersionSchema,
 } from "./wave25/workflowShape.js";

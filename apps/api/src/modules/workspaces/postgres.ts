@@ -19,7 +19,7 @@ export class PostgresWorkspaceRepository {
     private readonly pool: pg.Pool,
     private readonly workflows: PostgresWorkflowRepository,
     _runs: PostgresRunRepository,
-  ) {}
+  ) { void _runs }
 
   async listAgents(workspaceId: string): Promise<Agent[]> {
     const result = await this.pool.query<{ record: unknown }>(

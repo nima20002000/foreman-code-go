@@ -21,7 +21,6 @@ import {
   RunActivitySchema,
   ReviewStatusSchema,
   IdSchema,
-  RunInputSchema,
   TimestampSchema,
   WorkflowApprovalConfigurationSchema,
   ExecutionConditionSchema,

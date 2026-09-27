@@ -1,6 +1,6 @@
 import {
   NativeGraphProjectionKeySchema, NativeGraphActivityRecordSchema, NativeGraphCorrelationRecordSchema,
-  canonicalGraphJson, type NativeGraphProjectionKey, type NativeGraphActivityRecord,
+  type NativeGraphProjectionKey, type NativeGraphActivityRecord,
   type NativeGraphCorrelationRecord, type RunGraphScope, type NativeGraphProjectionFence,
   type NativeGraphProjectionAuthority,
 } from '@graphql/contracts/wave25'

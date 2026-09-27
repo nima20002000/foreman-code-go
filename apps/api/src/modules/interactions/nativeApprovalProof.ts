@@ -1,7 +1,7 @@
 import { DurableInteractionSchema, type DurableInteraction } from '@graphql/contracts'
 import { canonicalGraphJson, GraphEvidenceSchema, GraphExecutionIdentitySchema, GraphIdSchema,
   GraphDigestSchema, RepeatOccurrenceIdentityV1Schema, RunGraphScopeSchema, type GraphEvidence,
-  type GraphExecutionIdentity, type RepeatOccurrenceIdentityV1 } from '@graphql/contracts/wave25'
+  type GraphExecutionIdentity } from '@graphql/contracts/wave25'
 import { z } from 'zod'
 import { beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { currentRunGraphPublication, graphSourceDigest } from '../run-graph/publication.js'

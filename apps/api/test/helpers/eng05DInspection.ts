@@ -11,13 +11,13 @@ import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 export type InspectionHarness = Awaited<ReturnType<typeof currentOperatorIntegration>>
 export type InspectionReader = { token: string; client: InspectionHarness['client']; principal: ManagementPrincipal }
 export type InspectionMeasurement = { tool: string; status: number; bytes: number; items?: number; cursor: boolean; limit?: unknown }
-export function value(result: { isError?: boolean; structuredContent?: unknown }): unknown {
+export function value(result: { isError?: boolean | undefined; structuredContent?: unknown }): unknown {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
   expect(result.structuredContent).toBeDefined()
   return result.structuredContent
 }
 export function errorCode(result: unknown): string {
-  const failure = result as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
+  const failure = result as { isError?: boolean | undefined; content?: Array<{ type: string; text?: string }> }
   expect(failure.isError).toBe(true)
   const text = failure.content?.find((item) => item.type === 'text')?.text
   expect(text).toBeDefined()
