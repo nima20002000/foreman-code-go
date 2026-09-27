@@ -80,6 +80,7 @@ const responseTypes: Record<string, string> = {
   'thread/start': 'ThreadStartResponse', 'thread/resume': 'ThreadResumeResponse', 'thread/read': 'ThreadReadResponse',
   'thread/turns/list': 'ThreadTurnsListResponse', 'thread/items/list': 'ThreadItemsListResponse',
   'turn/start': 'TurnStartResponse', 'turn/interrupt': 'TurnInterruptResponse',
+  'turn/steer': 'TurnSteerResponse', 'thread/fork': 'ThreadForkResponse',
   'config/read': 'ConfigReadResponse', 'model/list': 'ModelListResponse',
   'config/batchWrite': 'ConfigWriteResponse',
   'mcpServerStatus/list': 'ListMcpServerStatusResponse',

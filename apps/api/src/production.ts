@@ -39,6 +39,8 @@ import {
   type NativeManagerResolver,
 } from './modules/conversations/operatorChat.js'
 import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from './modules/conversations/operatorChatAuthority.js'
+import { AgentChatService, type AgentChatManagerFactory } from './modules/conversations/agentChat.js'
+import { PostgresAgentChatRepository } from './modules/conversations/agentChatRepository.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
@@ -262,6 +264,28 @@ export function buildProductionApp(
     new PostgresOperatorConversationRepository(database.pool), operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
+  const agentChatManagers = new Map<string, NativeHarnessSessionManager>()
+  const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory) => {
+    const existing = agentChatManagers.get(conversationId)
+    if (existing) return existing
+    // Chat processes have their own owner scope; they never share a workflow execution's manager.
+    const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
+    const harness = configuration.harness
+    const manager = harness.harness === 'codex'
+      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery)
+      : new OpenCodeNativeSessionManager({
+        server: new ManagedOpenCodeServer({
+          binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId, processRecovery: recovery,
+          ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
+        }),
+        ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint,
+      })
+    agentChatManagers.set(conversationId, manager)
+    return manager
+  }
+  resolveAgentChatManager.release = (conversationId) => { agentChatManagers.delete(conversationId) }
+  const agentChat = new AgentChatService(database.pool, new PostgresAgentChatRepository(database.pool),
+    new PostgresOperatorConversationRepository(database.pool), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)
   const reviews = new AutomaticReviewService(database.pool, runs, approvals, locations, rollout,
     async (runId) => {
       // AutomaticReviewService committed the exact review cause and durable Stop
@@ -301,6 +325,7 @@ export function buildProductionApp(
   const operatorServices = {
     executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
     operatorChat: chat,
+    agentChat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),
@@ -377,6 +402,7 @@ export function buildProductionApp(
       { name: 'Codex plugin settings', run: () => harnessSettings.plugins.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
       { name: 'Operator chat', run: () => chat.shutdown() },
+      { name: 'Agent chat', run: () => agentChat.shutdown() },
       { name: 'automatic reviews', run: () => reviews.shutdown() },
       { name: 'workflow engine', run: () => engine.shutdown() },
     ],
@@ -455,6 +481,8 @@ export function buildProductionApp(
       harnessCompatibility.start()
       assertOpen()
       initialized = true
+      // Reconcile chat turns interrupted by the previous process; never blocks startup.
+      void agentChat.recover().catch((error: unknown) => app.log.error({ err: error }, 'agent chat recovery failed'))
     })
     // On failure the startup caller closes the app. Only the shared shutdown
     // barrier may release the owner, after any already-admitted work drains.

@@ -49,6 +49,12 @@ function actionFor(request: FastifyRequest) {
     if (url.endsWith('/responses')) return 'operator_chat:respond' as const
     return 'operator_chat:write' as const
   }
+  if (/^\/api\/workspaces\/[^/]+\/agent-chat(?:\/|$)/.test(url)) {
+    if (['GET', 'HEAD'].includes(request.method)) return 'agent_chat:read' as const
+    if (url.endsWith('/interrupt') || url.endsWith('/cancel')) return 'agent_chat:cancel' as const
+    if (url.endsWith('/responses')) return 'agent_chat:respond' as const
+    return 'agent_chat:write' as const
+  }
   if (url === '/api/settings/agents' || url === '/api/settings/workflows') return request.method === 'GET' ? 'settings:read' as const : 'settings:update' as const
   if (url === '/api/settings/harnesses') return request.method === 'GET' ? 'harnesses:read' as const : 'harnesses:update' as const
   if (url.includes('/agents')) return request.method === 'GET' ? 'agents:read' as const : 'graph:edit' as const

@@ -4,6 +4,7 @@ import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSetti
 import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryBrowser.js'
 import type { CodexPluginSettingsService } from '../../modules/harnesses/codexPluginSettings.js'
 import type { OperatorChatService } from '../../modules/conversations/operatorChat.js'
+import type { AgentChatService } from '../../modules/conversations/agentChat.js'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
@@ -21,6 +22,7 @@ export interface OperatorServices {
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService
   runGraph?: RunGraphReadApi
   operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
+  agentChat?: AgentChatService
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }
   extensions?: OperatorExtensions
   workerToolsMcpImplemented?: boolean

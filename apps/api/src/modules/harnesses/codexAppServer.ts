@@ -11,12 +11,12 @@ import {
   type NativeSessionReference, type PendingNativeInteraction,
 } from '@graphql/contracts'
 
-import { HarnessExecutionError } from './errors.js'
+import { HarnessExecutionError, NativeTurnNotActiveError } from './errors.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { nativeQualification } from './nativeQualification.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
-import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
+import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
 import {
   assertCodexUnchanged, canonical, isQualifiedCodexVersion, qualifyCodex, QUALIFIED_CODEX_VERSION,
@@ -222,7 +222,9 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
     approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
     sandbox: value.sandbox, config: { ...configOverrides(value),
       ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
-    }, developerInstructions: instructions(prepared.input),
+    },
+    // A resumed or forked thread already carries its accepted developer instructions.
+    ...(prepared.input.kind !== 'operator' && prepared.input.instructionsDelivered ? {} : { developerInstructions: instructions(prepared.input) }),
   }
 }
 function sameSet(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
@@ -528,6 +530,60 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     } finally {
       signal?.removeEventListener('abort', abort)
       runtime.streamActive = false
+    }
+  }
+
+  async steerTurn(session: NativeSessionReference, input: NativeSteerInput, signal?: AbortSignal): Promise<{ nativeTurnId: string }> {
+    const runtime = this.requireRuntime(session)
+    signal?.throwIfAborted()
+    if (runtime.closed || runtime.disposed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before steering.')
+    if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Steering requires a stable correlation ID.')
+    if (!runtime.activeTurnId || runtime.terminalResult || runtime.activeTurnId !== input.expectedTurnId) throw new NativeTurnNotActiveError()
+    let result: unknown
+    try {
+      result = await runtime.transport.request('turn/steer', {
+        threadId: session.nativeSessionId, expectedTurnId: input.expectedTurnId, clientUserMessageId: input.clientCorrelationId,
+        input: [{ type: 'text', text: input.prompt, text_elements: [] }],
+      }, signal)
+    } catch (error) {
+      // Codex enforces expectedTurnId. A definite RPC rejection accepted no input.
+      if (error instanceof CodexRpcError && !error.uncertain) throw new NativeTurnNotActiveError(`Codex rejected the steer: ${error.nativeMessage ?? error.message}`)
+      throw error
+    }
+    const turnId = object(result, 'CODEX_TURN_STEER_INVALID').turnId
+    if (!text(turnId)) throw new HarnessExecutionError('CODEX_TURN_STEER_INVALID', 'Codex accepted the steer without a turn identity.')
+    this.record(runtime, 'turn.steered', { turnId, correlationId: input.clientCorrelationId })
+    return { nativeTurnId: String(turnId) }
+  }
+
+  /** `thread/fork` copies the source history into a new thread; the source thread is never written. */
+  async forkSession(source: NativeSessionReference, value: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    this.assertSessionVersion(source)
+    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    const input = structuredClone(value)
+    if (input.kind !== 'operator') input.instructionsDelivered = true
+    const prepared = await this.prepareInput(input, signal)
+    if (prepared.qualified.providerVersion !== source.providerVersion) {
+      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
+    }
+    const candidate = await this.transport(prepared, 0, signal)
+    try {
+      const response = object(await candidate.transport.request('thread/fork', {
+        ...threadParameters(prepared), threadId: source.nativeSessionId, excludeTurns: true,
+        ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
+      }, signal), 'CODEX_THREAD_FORK_INVALID')
+      const thread = this.validateThreadResponse(prepared, response)
+      if (thread.id === source.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned the source thread instead of a fork.')
+      const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
+      if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
+      const runtime = this.runtime(prepared, session, candidate.transport)
+      await candidate.activate(runtime)
+      this.runtimes.set(session.nativeSessionId, runtime)
+      this.record(runtime, 'thread.forked', { threadId: session.nativeSessionId, sourceThreadId: source.nativeSessionId })
+      return session
+    } catch (error) {
+      await candidate.transport.close().catch(() => undefined)
+      throw error
     }
   }
 

@@ -638,6 +638,7 @@ export const OperatorToolNameSchema = z.enum([
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
   "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_handoff_history_get",
+  "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
   "workspace_defaults_update",
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get",

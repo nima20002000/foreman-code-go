@@ -5,9 +5,9 @@ import { diagnosticEnvironment, parseInstalledVersion, schemaExportArguments } f
 
 /** Synthetic schemas test the diagnostic itself; they are not provider qualification evidence. */
 function codexSchema() {
-  const methods = ['initialize', 'thread/start', 'thread/resume', 'thread/read', 'thread/turns/list', 'thread/items/list', 'turn/start', 'turn/interrupt', 'config/read', 'model/list', 'config/batchWrite', 'mcpServerStatus/list', 'account/login/start', 'account/login/cancel']
+  const methods = ['initialize', 'thread/start', 'thread/resume', 'thread/read', 'thread/turns/list', 'thread/items/list', 'turn/start', 'turn/interrupt', 'turn/steer', 'thread/fork', 'config/read', 'model/list', 'config/batchWrite', 'mcpServerStatus/list', 'account/login/start', 'account/login/cancel']
   const serverMethods = ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'item/tool/requestUserInput', 'mcpServer/elicitation/request']
-  const responses = ['InitializeResponse', 'ThreadStartResponse', 'ThreadResumeResponse', 'ThreadReadResponse', 'ThreadTurnsListResponse', 'ThreadItemsListResponse', 'TurnStartResponse', 'TurnInterruptResponse', 'ConfigReadResponse', 'ModelListResponse', 'ConfigWriteResponse', 'ListMcpServerStatusResponse', 'LoginAccountResponse', 'CancelLoginAccountResponse', 'CommandExecutionRequestApprovalResponse', 'FileChangeRequestApprovalResponse', 'PermissionsRequestApprovalResponse', 'ToolRequestUserInputResponse', 'McpServerElicitationRequestResponse']
+  const responses = ['InitializeResponse', 'ThreadStartResponse', 'ThreadResumeResponse', 'ThreadReadResponse', 'ThreadTurnsListResponse', 'ThreadItemsListResponse', 'TurnStartResponse', 'TurnInterruptResponse', 'TurnSteerResponse', 'ThreadForkResponse', 'ConfigReadResponse', 'ModelListResponse', 'ConfigWriteResponse', 'ListMcpServerStatusResponse', 'LoginAccountResponse', 'CancelLoginAccountResponse', 'CommandExecutionRequestApprovalResponse', 'FileChangeRequestApprovalResponse', 'PermissionsRequestApprovalResponse', 'ToolRequestUserInputResponse', 'McpServerElicitationRequestResponse']
   const branch = (method: string) => ({ type: 'object', properties: {
     method: { const: method }, id: { type: 'integer' },
     params: method === 'thread/start' ? { $ref: '#/definitions/v2/ThreadStartParams' } : { type: 'object' },

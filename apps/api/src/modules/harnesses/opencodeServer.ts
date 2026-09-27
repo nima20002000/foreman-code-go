@@ -214,6 +214,38 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  /** `POST /session/{id}/fork` copies source history into a new session; the source session is not written. */
+  forkSession(source: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    const combined = this.signal(signal)
+    return this.exclusive(async () => {
+      try {
+        this.validateReference(source)
+        combined.throwIfAborted()
+        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const configuration = this.configuration(input)
+        await this.bindEnvironment(input.environment, combined)
+        await this.ready(combined)
+        await this.assertConfiguration(configuration, directory, combined)
+        const response = object(await this.mutate(withDirectory(`/session/${encodeURIComponent(source.nativeSessionId)}/fork`, directory), {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+        }, combined))
+        if (typeof response.id !== 'string' || !response.id || response.id === source.nativeSessionId) {
+          throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_ID_MISSING', 'Session fork may have succeeded but did not return a new native identity.', 'uncertain')
+        }
+        // A fork copies history, not the permission ruleset. Apply the accepted policy explicitly, then verify it.
+        await this.mutate(withDirectory(`/session/${encodeURIComponent(response.id)}`, directory), {
+          method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ permission: nativePolicy(configuration) }),
+        }, combined)
+        const native = object(await this.json(`/session/${encodeURIComponent(response.id)}`, directory, combined))
+        this.verifyAttachedSession(native, response.id, directory, configuration)
+        await this.applyMcpControls(configuration, directory, combined)
+        this.sessions.set(response.id, newState(directory, configuration))
+        this.restartClosures.delete(response.id)
+        return NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_OPENCODE_VERSION, nativeSessionId: response.id })
+      } catch (error) { return this.cleanupFailedSetup(error) }
+    })
+  }
+
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     const combined = this.signal(signal)
     return this.exclusive(async () => {

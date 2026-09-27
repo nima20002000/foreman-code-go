@@ -17,7 +17,9 @@ Base: the commit that adds this file on branch `feat/chat-foundation`.
   (createSession/attachSession/startTurn/cancel/history/reconcile/respond/close). No steer/fork yet.
 - Workflow executions: `harness_executions` (+ `nativeSessionId`), `native_session_lanes`. Chat must not
   write these rows, Run records, run graph, checkpoints or accepted stage results.
-- Installed natives: `codex-cli 0.157.1`, `opencode 1.18.31`.
+- Installed natives: the API runs the repository-pinned `@openai/codex` **0.154.0** (`apps/api/package.json`,
+  resolved by `harnessBinaries`); a global `codex-cli 0.157.1` also exists but is not what the app launches.
+  OpenCode is the global `opencode 1.18.31`. Both Codex versions expose the same `turn/steer`/`thread/fork` shapes.
   - Codex app-server schema (`codex app-server generate-json-schema`): `thread/start`, `thread/resume`,
     `thread/fork`, `thread/read`, `thread/turns/list`, `turn/start`, `turn/steer`
     (`{threadId, input, expectedTurnId, clientUserMessageId?}` → `{turnId}`; fails when the active turn
