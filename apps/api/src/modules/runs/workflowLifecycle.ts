@@ -111,13 +111,16 @@ export async function persistWorkflowApprovalWait(owner: RunOwnership, saver: Ba
       await retainOwner(sql, owner)
       if (snapshot.stopRequested || snapshot.cleanupPending) return fail('GRAPH_STOP_CONFLICT')
       if (!['running', 'waiting'].includes(run.executionState)) return fail('GRAPH_TERMINAL_CONFLICT')
-      const wrappers = new Map(compileRepeatLayout(version).nodes.map((node) => [node.name, node]))
+      const workHandoffs = version.definition.handoffs !== undefined
+      const wrappers = workHandoffs ? null : new Map(compileRepeatLayout(version).nodes.map((node) => [node.name, node]))
       const seen = new Set<string>(), current: DurableInteraction[] = []
       const retained: Array<{ item: DurableInteraction; checkpointId: string }> = []
       for (const task of checkpoint.tasks) {
         if (!task.interrupts?.length) continue
-        const wrapper = wrappers.get(task.name)
-        if (!wrapper || !['once', 'body'].includes(wrapper.kind)) return fail('GRAPH_INTERRUPT_INVALID')
+        const wrapper = wrappers?.get(task.name)
+        if (workHandoffs ? task.name !== 'activation' : !wrapper || !['once', 'body'].includes(wrapper.kind)) {
+          return fail('GRAPH_INTERRUPT_INVALID')
+        }
         for (const pending of task.interrupts) {
           if (!pending.id || !pending.value || typeof pending.value !== 'object') return fail('GRAPH_INTERRUPT_INVALID')
           const value = pending.value as { interactionId?: unknown; interactionIds?: unknown }
@@ -135,11 +138,13 @@ export async function persistWorkflowApprovalWait(owner: RunOwnership, saver: Ba
             if (executionId && executionId !== item.executionId) return fail('INTERACTION_INTERRUPT_CONFLICT')
             executionId = item.executionId
             const stored = await readRepeatExecutionLocked(sql, snapshot, item.executionId)
-            if (stored.ref.nodeId !== wrapper.nodeId || stored.execution.nativeSessionId !== item.nativeSessionId
+            if (!workHandoffs && stored.ref.nodeId !== wrapper!.nodeId
+              || stored.execution.nativeSessionId !== item.nativeSessionId
               || stored.execution.agentId !== item.requestingAgentId
-              || (wrapper.kind === 'body'
-                ? !stored.ref.occurrence || stored.ref.occurrence.occurrenceId !== checkpoint.values.occurrences?.[wrapper.blockId!]
-                : stored.ref.occurrence !== null)) return fail('REPEAT_CHECKPOINT_OCCURRENCE_CONFLICT')
+              || (workHandoffs ? !stored.workActivationId || stored.ref.occurrence !== null
+                : wrapper!.kind === 'body'
+                  ? !stored.ref.occurrence || stored.ref.occurrence.occurrenceId !== checkpoint.values.occurrences?.[wrapper!.blockId!]
+                  : stored.ref.occurrence !== null)) return fail('REPEAT_CHECKPOINT_OCCURRENCE_CONFLICT')
             await assertSavedPendingApprovalOriginalLocked(sql, item)
             const bound = item.graphInterruptId ? item : nextInteraction(item, { graphInterruptId: pending.id })
             const checkpointId = await saver.inspectApprovalInterrupt(sql, bound)

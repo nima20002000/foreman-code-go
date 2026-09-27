@@ -269,10 +269,14 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
       return repeatConflict('WORK_JOIN_ACTIVATION_CONFLICT')
     }
   }
-  const activationCount = (await sql.query<{ total: string }>(
-    'select count(*)::text as total from run_work_activations where run_id=$1', [scope.runId])).rows[0]
-  if (!activationCount || !existingActivation
-    && BigInt(activationCount.total) >= BigInt(version.definition.executionPolicy!.maxNodeExecutions)) {
+  const reservedBudget = (await sql.query<{ total: string }>(`select (
+      (select count(*) from harness_executions where run_id=$1)
+      + (select count(*) from run_work_activations a where a.run_id=$1 and not exists (
+          select 1 from harness_executions e where e.run_id=a.run_id and e.work_activation_id=a.activation_id
+        ))
+    )::text as total`, [scope.runId])).rows[0]
+  if (!reservedBudget || !existingActivation
+    && BigInt(reservedBudget.total) >= BigInt(version.definition.executionPolicy!.maxNodeExecutions)) {
     return repeatConflict('WORK_RUN_EXECUTION_BUDGET_EXHAUSTED')
   }
   const reserved = (await sql.query<{ used: number }>(`update run_work_connection_usage set used=used+1

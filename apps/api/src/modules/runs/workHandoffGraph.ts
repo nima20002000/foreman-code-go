@@ -21,6 +21,7 @@ export interface WorkHandoffGraphPort {
 export function buildWorkHandoffGraph(input: {
   runId: string; version: WorkflowVersionV3; port: WorkHandoffGraphPort
   checkpointer: BaseCheckpointSaver; signal: AbortSignal
+  track?: (task: Promise<readonly string[]>) => void
 }) {
   const version = WorkflowVersionV3Schema.parse(input.version)
   if (!version.definition.handoffs || version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
@@ -35,7 +36,9 @@ export function buildWorkHandoffGraph(input: {
       input.signal.throwIfAborted()
       const state = value as WorkActivationTask
       if (state.runId !== input.runId || !state.activationId) return repeatConflict('WORK_CHECKPOINT_ACTIVATION_MISSING')
-      const successors = await input.port.executeActivation(state.activationId, input.signal)
+      const task = input.port.executeActivation(state.activationId, input.signal)
+      input.track?.(task)
+      const successors = await task
       input.signal.throwIfAborted()
       if (new Set(successors).size !== successors.length) return repeatConflict('WORK_SUCCESSOR_DUPLICATE')
       return new Command({ goto: successors.length ? successors.map(send) : END })

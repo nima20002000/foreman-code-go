@@ -453,4 +453,52 @@ begin
 end $$;
 create constraint trigger work_accepted_result after insert on run_work_results
   deferrable initially deferred for each row execute function assert_work_accepted_result();
+
+create function protect_work_activation_update() returns trigger language plpgsql as $$
+begin
+  if new.activation_id is distinct from old.activation_id or new.run_id is distinct from old.run_id
+    or new.workflow_version_id is distinct from old.workflow_version_id
+    or new.workflow_node_id is distinct from old.workflow_node_id
+    or new.cause_kind is distinct from old.cause_kind or new.cause_id is distinct from old.cause_id
+    or new.record is distinct from old.record or new.created_at is distinct from old.created_at
+    or old.state='completed' and new.state<>'completed'
+    or old.state<>'queued' and new.state='queued' and old.state<>'waiting' then
+    raise exception 'WORK_ACTIVATION_IMMUTABLE'; end if;
+  return new;
+end $$;
+create trigger work_activation_update before update on run_work_activations
+  for each row execute function protect_work_activation_update();
+
+create function protect_work_usage_update() returns trigger language plpgsql as $$
+begin
+  if new.run_id is distinct from old.run_id or new.workflow_version_id is distinct from old.workflow_version_id
+    or new.relationship_id is distinct from old.relationship_id or new.maximum is distinct from old.maximum
+    or new.used<old.used then raise exception 'WORK_COUNTER_IMMUTABLE'; end if;
+  return new;
+end $$;
+create trigger work_usage_update before update on run_work_connection_usage
+  for each row execute function protect_work_usage_update();
+
+create function reject_work_evidence_update() returns trigger language plpgsql as $$
+begin raise exception 'WORK_EVIDENCE_IMMUTABLE'; end $$;
+create function assert_work_evidence_retention() returns trigger language plpgsql as $$
+begin
+  if exists(select 1 from runs where id=old.run_id) then raise exception 'WORK_RETAIN_WITH_RUN'; end if;
+  return null;
+end $$;
+create function reject_work_evidence_truncate() returns trigger language plpgsql as $$
+begin raise exception 'WORK_TRUNCATE_FORBIDDEN_USE_RUN_RETENTION'; end $$;
+do $$ declare name text; begin
+  foreach name in array array['run_work_activations','run_work_results','run_work_connection_usage',
+    'run_work_requests','run_work_returns','run_work_denials'] loop
+    execute format('create constraint trigger work_retention after delete on %I deferrable initially deferred
+      for each row execute function assert_work_evidence_retention()',name);
+    execute format('create trigger work_no_truncate before truncate on %I
+      for each statement execute function reject_work_evidence_truncate()',name);
+  end loop;
+  foreach name in array array['run_work_results','run_work_requests','run_work_returns','run_work_denials'] loop
+    execute format('create trigger work_no_update before update on %I
+      for each row execute function reject_work_evidence_update()',name);
+  end loop;
+end $$;
 ` } as const

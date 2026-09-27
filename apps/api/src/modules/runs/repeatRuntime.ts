@@ -21,6 +21,9 @@ import type { RunOwnership } from './ownership.js'
 import { normalizeRepeatTerminal, type RepeatExecutionDriver } from './repeatNode.js'
 import { assertRepeatExecution, repeatConflict, type RepeatNodeRef, type RepeatScope } from './repeatResolution.js'
 import type { RepeatRunRepository } from './repeatPostgres.js'
+import { buildWorkHandoffGraph } from './workHandoffGraph.js'
+import { workHandoffNodeAction } from './workHandoffNode.js'
+import { ExecutionLimiter } from './limiter.js'
 
 /** Adapt the existing exact-session native driver, not a second native runtime.
  * The shell supplies the same ApprovalExecutionCoordinator/SingleWriterSessionManager
@@ -305,7 +308,9 @@ export interface RepeatRuntimeLifecycle {
 export async function executeRepeatRuntime(input: {
   runId: string; version: WorkflowVersionV3
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
-  store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition' | 'resolveExcluded' | 'completeRun'>
+  store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'
+    | 'resolveExcluded' | 'completeRun' | 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
+    | 'admitWorkRequest' | 'returnWork' | 'completeWorkRun'>
   driver: RepeatExecutionDriver; lifecycle: RepeatRuntimeLifecycle
   checkpointer: import('@langchain/langgraph-checkpoint').BaseCheckpointSaver
   configuredParallelism?: number
@@ -315,7 +320,7 @@ export async function executeRepeatRuntime(input: {
   const { withCleanupDeadline } = await import('../interactions/cleanup.js')
   const { ZodError } = await import('zod')
   const failed = new AbortController(), signal = AbortSignal.any([input.signal, failed.signal])
-  const tasks = new Set<Promise<Partial<import('./repeatNode.js').RepeatGraphState>>>()
+  const tasks = new Set<Promise<unknown>>()
   let firstFailure: unknown, preflightComplete = false, cancellation: Promise<boolean> | undefined
   const definitive = (error: unknown): boolean => {
     if (repeatSettlementPending(error) || isGraphInterrupt(error)) return false
@@ -332,8 +337,7 @@ export async function executeRepeatRuntime(input: {
   }
   const cancel = () => cancellation ??= input.lifecycle.cancelNativeAndRequestCleanup()
   const drain = () => withCleanupDeadline(async () => { while (tasks.size) await Promise.allSettled([...tasks]) })
-  const { graph, config } = buildRepeatGraph({ ...input, signal,
-    track: (task) => {
+  const track = (task: Promise<unknown>) => {
       tasks.add(task)
       void task.then(() => { tasks.delete(task) }, (error: unknown) => {
         tasks.delete(task)
@@ -343,28 +347,42 @@ export async function executeRepeatRuntime(input: {
           void cancel().catch(() => undefined)
         }
       })
+    }
+  const work = input.version.definition.handoffs ? buildWorkHandoffGraph({
+    runId: input.runId, version: input.version, checkpointer: input.checkpointer, signal, track,
+    port: { ensureEntryActivation: () => input.store.ensureWorkEntry(),
+      executeActivation: workHandoffNodeAction({ version: input.version, store: input.store,
+        driver: input.driver, limiter: new ExecutionLimiter(
+          Math.min(input.configuredParallelism ?? 4, input.version.definition.executionPolicy!.maxParallelism), 1000), signal }),
     },
-  })
+  }) : null
+  const repeat = work ? null : buildRepeatGraph({ ...input, signal, track })
+  const readCheckpoint = async (): Promise<import('./repeatGraph.js').RepeatCheckpoint> => work
+    ? await work.graph.getState(work.config) as import('./repeatGraph.js').RepeatCheckpoint
+    : await repeat!.graph.getState(repeat!.config)
+  const invoke = (state: unknown): Promise<unknown> => work
+    ? work.graph.invoke(state as typeof work.initial | null, work.config)
+    : repeat!.graph.invoke(state as import('./repeatNode.js').RepeatGraphState | null, repeat!.config)
   try {
     input.owner.assertOwned()
     await input.lifecycle.preflight()
     preflightComplete = true
     signal.throwIfAborted()
     await input.lifecycle.markRunning()
-    await input.store.resolveExcluded()
-    const snapshot = await graph.getState(config)
+    if (!work) await input.store.resolveExcluded()
+    const snapshot = await readCheckpoint()
     if (snapshot.values.runId && snapshot.values.runId !== input.runId) return repeatConflict('RUN_PIN_CONFLICT')
     // A2 commits authenticated task-local resume writes on this checkpointer.
     // The runtime never accepts an unreceipted raw resume Command.
     let state = snapshot.values.runId === input.runId ? null
-      : { runId: input.runId, occurrences: {}, boundaries: {}, executionIds: {} }
+      : work ? work.initial : { runId: input.runId, occurrences: {}, boundaries: {}, executionIds: {} }
     for (let attempt = 0; ; attempt++) {
       try {
         // Native iterators need not honor cancellation; the graph invocation is raced
         // independently, then existing exact native cleanup and wrapper drain run below.
         let onAbort: (() => void) | undefined
         try {
-          await Promise.race([graph.invoke(state, config), new Promise<never>((_resolve, reject) => {
+          await Promise.race([invoke(state), new Promise<never>((_resolve, reject) => {
             onAbort = () => reject(signal.reason)
             signal.addEventListener('abort', onAbort, { once: true })
             if (signal.aborted) onAbort()
@@ -373,8 +391,9 @@ export async function executeRepeatRuntime(input: {
         await drain()
         signal.throwIfAborted()
         if (firstFailure) throw firstFailure
-        if (await input.lifecycle.persistWait(await graph.getState(config))) return
-        await input.store.completeRun()
+        if (await input.lifecycle.persistWait(await readCheckpoint())) return
+        if (work) await input.store.completeWorkRun()
+        else await input.store.completeRun()
         await input.lifecycle.requestCleanup()
         await input.lifecycle.finishNative()
         await input.lifecycle.finishCleanup()
@@ -389,7 +408,7 @@ export async function executeRepeatRuntime(input: {
         if (current.stopRequested || current.executionState === 'completed') throw error
         // Yield to the caller when another REAL approval is outstanding. Holding
         // this callback could prevent the orchestrator from answering that wait.
-        if (await input.lifecycle.persistWait(await graph.getState(config))) return
+        if (await input.lifecycle.persistWait(await readCheckpoint())) return
         // Retry only the same saved checkpoint, after all wrappers have drained.
         // Bound this local retry: a reviewer may itself be awaiting this MCP
         // response. The existing engine reconciliation handles longer receipt
@@ -414,7 +433,7 @@ export async function executeRepeatRuntime(input: {
     if (!terminalFailure) {
       await drain()
       if ((isGraphInterrupt(error) || repeatSettlementPending(error))
-        && await input.lifecycle.persistWait(await graph.getState(config))) return
+        && await input.lifecycle.persistWait(await readCheckpoint())) return
       // I/O, ambiguous receipts and settlement waits retain exact durable work.
       // The owning engine may retry the same checkpoint, never initial state.
       throw error

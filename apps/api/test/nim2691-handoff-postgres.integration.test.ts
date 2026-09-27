@@ -1,19 +1,31 @@
 import assert from 'node:assert/strict'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { workHandoffMigration } from '../src/infrastructure/workHandoffMigration.js'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
+  CurrentWorkflowReadResultSchema, makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'
 import { readRepeatGraphExecutionsLocked } from '../src/modules/run-graph/repeatProjectionRows.js'
+import { canonicalRepeatEffect } from '../src/modules/run-graph/repeatPublication.js'
+import { RepeatRepositoryFactory } from '../src/modules/runs/repeatRepositoryHost.js'
+import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { writerFixture } from './eng04-writer-fixtures.js'
+import { graphFixture, graphHeaders, graphRpcValue, graphUrl } from './eng04-graph-composition-fixture.js'
+import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { digest, seedRun, text, transaction, type JsonObject } from './eng04-migration-fixtures.js'
 
 const enabled = process.env.NIM2691_POSTGRES === '1'
 const postgresDescribe = describe.skipIf(!enabled)
 
-async function taskDatabase<T>(work: (pool: pg.Pool) => Promise<T>): Promise<T> {
+async function taskDatabase<T>(work: (pool: pg.Pool, directory: string) => Promise<T>): Promise<T> {
   assert.equal(process.env.NIM2691_POSTGRES, '1')
   const configured = process.env.NIM2691_ADMIN_DATABASE_URL
   assert.ok(configured, 'NIM2691_ADMIN_DATABASE_URL is required')
@@ -22,6 +34,7 @@ async function taskDatabase<T>(work: (pool: pg.Pool) => Promise<T>): Promise<T> 
   const name = `nim2691_${randomBytes(12).toString('hex')}`
   const admin = new pg.Client({ connectionString: configured, connectionTimeoutMillis: 10000 })
   let pool: pg.Pool | undefined
+  let directory: string | undefined
   let created = false
   try {
     await admin.connect()
@@ -30,13 +43,17 @@ async function taskDatabase<T>(work: (pool: pg.Pool) => Promise<T>): Promise<T> 
     created = true
     url.pathname = `/${name}`
     pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
+    directory = await mkdtemp(join(tmpdir(), 'nim2691-workspace-'))
     assert.equal((await pool.query<{ name: string }>('select current_database() as name')).rows[0]?.name, name)
-    return await work(pool)
+    return await work(pool, directory)
   } finally {
     try { if (pool) await pool.end() }
     finally {
       try { if (created) await admin.query(`drop database "${name}"`) }
-      finally { await admin.end() }
+      finally {
+        await admin.end()
+        if (directory) await rm(directory, { recursive: true, force: true })
+      }
     }
   }
 }
@@ -52,6 +69,82 @@ function handoffVersion(version: JsonObject) {
 }
 
 postgresDescribe('NIM-2691 durable handoff migration', () => {
+  it('queues an entry through the production owner, native slot and canonical graph publication', async () => {
+    await taskDatabase(async (pool, directory) => {
+      await applyApplicationMigrations(pool)
+      const db = { pool, directory, schema: 'public', close: async () => undefined } as Awaited<ReturnType<typeof currentDatabase>>
+      const t = await graphFixture(db, { form: 'sequential', handoffs: true, qualifiedReads: true })
+      const owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+      assert.ok(owner)
+      try {
+        const locations = new WorkspaceLocationService(pool, t.commands, directory, 'runner-local', directory)
+        const factory = new RepeatRepositoryFactory(locations, directory,
+          createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify).services)
+        const store = factory.forOwner(owner, t.version)
+        const entry = await store.ensureWorkEntry()
+        expect(await store.ensureWorkEntry()).toBe(entry)
+        const node = t.version.definition.nodes[0]!
+        const admitted = await store.admitWorkActivation(entry, () => ({
+          id: `nim2691-entry-execution-${randomUUID()}`, runId: t.run.id,
+          workflowNodeId: node.id, agentId: node.agentId,
+          agentConfigurationVersionId: t.version.agentConfigurationVersionIds[node.agentId]!,
+          attempt: 1, input: {}, state: 'queued', createdAt: new Date().toISOString(),
+        }))
+        expect(admitted.reused).toBe(false)
+        expect((await store.admitWorkActivation(entry, () => { throw new Error('replay allocated') })).reused).toBe(true)
+        const projected = await owner.oneShotConnection().transaction((sql) =>
+          readRepeatGraphExecutionsLocked(sql, t.scope, [admitted.execution.id]), true)
+        expect(projected[0]?.workActivationId).toBe(entry)
+        const privateEffect = (await pool.query<{ payload_digest: string }>(`select payload_digest
+          from run_repeat_effects where run_id=$1 and effect_kind='input.bind' and entity_id=$2`,
+        [t.run.id, admitted.execution.id])).rows[0]
+        assert.ok(privateEffect)
+        const publicId = canonicalRepeatEffect(t.scope, { kind: 'input.bind', entityId: admitted.execution.id,
+          digest: privateEffect.payload_digest }).identity.entityId
+        expect((await pool.query(`select effect_kind from run_graph_effects
+          where run_id=$1 and entity_id=$2 and effect_kind='input.bind'`, [t.run.id, publicId])).rowCount).toBe(1)
+        const http = await t.app.inject({ method: 'GET', url: graphUrl(t, 'current'),
+          headers: graphHeaders(t.writer.token) })
+        expect(http.statusCode, http.body).toBe(200)
+        expect(http.json().state.executions).toEqual(expect.arrayContaining([
+          expect.objectContaining({ workActivationId: entry }),
+        ]))
+      } finally { await owner.release(); await t.app.close() }
+    })
+  }, 120000)
+
+  it('saves a marked line limit through authenticated HTTP and reads it through Operator MCP', async () => {
+    await taskDatabase(async (pool, directory) => {
+      await applyApplicationMigrations(pool)
+      const db = { pool, directory, schema: 'public', close: async () => undefined } as Awaited<ReturnType<typeof currentDatabase>>
+      const t = await writerFixture(db)
+      try {
+        const input = CurrentWorkflowSaveInputSchema.parse({ ...t.input, graph: {
+          ...t.input.graph, handoffs: { contractVersion: 1 },
+          edges: t.input.graph.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })),
+        } })
+        const response = await t.app.inject({ method: 'PUT', url: t.url,
+          headers: graphHeaders(t.writer.token), payload: input })
+        expect(response.statusCode, response.body).toBe(200)
+        const saved = CurrentWorkflowSaveResultSchema.parse(response.json())
+        expect(saved.value.version.definition.handoffs).toEqual({ contractVersion: 1 })
+        expect(saved.value.version.definition.edges[0]?.maxWorkHandoffsPerRun).toBe(3)
+        const read = await t.call(CURRENT_WORKFLOW_TOOLS.saved,
+          { workspaceId: input.workspaceId, workflowId: input.workflowId })
+        expect(read.result?.isError).not.toBe(true)
+        const persisted = CurrentWorkflowReadResultSchema.parse(graphRpcValue(read.result))
+        expect(persisted.version.id).toBe(saved.value.version.id)
+        expect(persisted.version.definition.edges[0]?.maxWorkHandoffsPerRun).toBe(3)
+        const reader = await t.credential([{ actions: ['workflows:read', 'graph:read'],
+          scope: { workspaceIds: [input.workspaceId] } }])
+        const denied = await t.call(CURRENT_WORKFLOW_TOOLS.save, { ...input, commandId: randomUUID() }, reader.token)
+        expect(denied.result?.isError).toBe(true)
+        expect((await pool.query('select count(*)::integer as n from workflow_versions where workflow_id=$1',
+          [input.workflowId])).rows[0]?.n).toBe(1)
+      } finally { await t.app.close() }
+    })
+  }, 120000)
+
   it('applies once and keeps old repeat Runs and their attempt indexes intact', async () => {
     await taskDatabase(async (pool) => {
       await applyApplicationMigrations(pool)
@@ -150,6 +243,12 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         where run_id=$1 and relationship_id='body-other'`, [run.id])).rows[0]?.used).toBe(1)
       await expect(transaction(pool, (sql) => sql.query(`update run_work_connection_usage set used=4
         where run_id=$1 and relationship_id='body-outside'`, [run.id]))).rejects.toThrow()
+      await expect(pool.query(`update run_work_connection_usage set used=2
+        where run_id=$1 and relationship_id='body-outside'`, [run.id])).rejects.toThrow()
+      await expect(pool.query('delete from run_work_requests where run_id=$1', [run.id])).rejects.toThrow()
+      await expect(pool.query(`update run_work_results set result_json='{}' where run_id=$1`, [run.id])).rejects.toThrow()
+      expect((await pool.query('delete from runs where id=$1', [run.id])).rowCount).toBe(1)
+      expect((await pool.query('select 1 from run_work_requests where run_id=$1', [run.id])).rowCount).toBe(0)
     })
   }, 120000)
 
@@ -350,6 +449,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         const first = await store.admitWorkRequest('branch-execution-0', incoming[0]!.id)
         assert.equal(first.kind, 'accepted')
         expect(first.destinationReady).toBe(false)
+        await expect(store.completeWorkRun()).rejects.toMatchObject({ code: 'WORK_ACTIVATIONS_UNRESOLVED' })
         await expect(store.admitWorkActivation(first.request.destinationActivationId,
           () => { throw new Error('incomplete join allocated') })).rejects.toMatchObject({ code: 'WORK_JOIN_INCOMPLETE' })
         const second = await store.admitWorkRequest('branch-execution-1', incoming[1]!.id)
