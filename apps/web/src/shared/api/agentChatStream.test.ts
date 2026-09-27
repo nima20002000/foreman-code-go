@@ -33,6 +33,16 @@ describe('Agent chat SSE transport', () => {
     expect(calls.refetch).toHaveBeenCalledOnce()
     expect(calls.event).toHaveBeenCalledTimes(types.length)
   })
+  it('accepts an oversized-snapshot state notice as live and reads state over HTTP instead of reconnecting', () => {
+    const calls = listeners(); close = subscribeAgentChat('workspace-fixture', state.conversation.id, calls)
+    const source = AgentChatTestSource.instances[0]!
+    source.event({ id: 0, type: 'state', conversationId: state.conversation.id, data: { snapshotRequired: true } })
+    expect(calls.refetch).toHaveBeenCalledOnce()
+    expect(calls.connection).toHaveBeenCalledWith('connected')
+    source.event({ id: 1, type: 'turn', conversationId: state.conversation.id, data: {} })
+    expect(calls.event).toHaveBeenCalledOnce()
+    vi.runAllTimers(); expect(AgentChatTestSource.instances).toHaveLength(1)
+  })
   it('uses exponential backoff and resets only after a valid snapshot', () => {
     const calls = listeners(); close = subscribeAgentChat('workspace-fixture', state.conversation.id, calls)
     AgentChatTestSource.instances[0]!.fail()

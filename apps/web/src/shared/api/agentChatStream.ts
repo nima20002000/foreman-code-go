@@ -54,6 +54,11 @@ export function subscribeAgentChat(workspaceId: string, conversationId: string, 
         ready = true; failures = 0
         listeners.snapshot(parsed.data)
         listeners.connection('connected')
+      } else if (!ready && event.type === 'state' && event.data.snapshotRequired === true) {
+        // The server's snapshot exceeded its byte budget: the stream is live, read state over HTTP.
+        ready = true; failures = 0
+        listeners.refetch()
+        listeners.connection('connected')
       } else {
         if (!ready) { retry(); return }
         // data is deliberately opaque in the frozen contract. The consumer reads a full,
