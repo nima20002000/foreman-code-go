@@ -79,8 +79,22 @@ export class F1Store {
       return result([...this.turns.values()].filter((entry) => entry.native_turn_id === values[1] && entry.intent !== 'steer'
         && ['completed', 'failed', 'canceled'].includes(entry.delivery)).slice(-1))
     }
+    if (sql.startsWith('select count(*)::text as count from operator_conversation_turns')) {
+      const deliveries = values[1] as string[]
+      return result([{ count: String([...this.turns.values()].filter((entry) => entry.intent !== null
+        && deliveries.includes(entry.delivery)).length) }])
+    }
     if (sql.startsWith('select payload')) return result(receipt ? [{ content: receipt.payload.content }] : [])
-    if (sql.startsWith('select * from (')) return result([...this.turns.values()])
+    if (sql.startsWith('with open as (')) {
+      const deliveries = values[1] as string[]
+      const limit = Number(values[2])
+      const turns = [...this.turns.values()]
+      const open = turns.filter((entry) => entry.intent !== null && deliveries.includes(entry.delivery)).slice(0, limit + 1)
+      const recentLimit = Math.min(50, Math.max(0, limit - open.length))
+      const recent = recentLimit ? turns.filter((entry) => entry.intent !== null && !deliveries.includes(entry.delivery))
+        .slice(-recentLimit) : []
+      return result([...open, ...recent].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)))
+    }
     if (sql.startsWith('select request_id')) {
       if (sql.includes("delivery='queued'")) return result([...this.turns.values()].filter((entry) => entry.delivery === 'queued')
         .sort((a, b) => Number(b.intent === 'interrupt_and_send') - Number(a.intent === 'interrupt_and_send')

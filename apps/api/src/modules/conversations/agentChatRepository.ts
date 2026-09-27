@@ -54,6 +54,8 @@ interface TurnRow {
 }
 
 export const AGENT_CHAT_MESSAGE_LIMIT = 100
+/** Every unfinished receipt must fit in the frozen AgentChatState.turns window. */
+export const AGENT_CHAT_OPEN_TURN_LIMIT = 100
 const OPEN_DELIVERIES = ['queued', 'submitting', 'accepted', 'unknown'] as const
 
 /** Stable selection key. `runId` absent is its own key, never a wildcard. */
@@ -170,6 +172,17 @@ export class PostgresAgentChatRepository {
       }
       if ((row?.id ?? null) !== input.request.expectedConversationId) {
         throw new DomainError('AGENT_CHAT_CONTEXT_STALE', 'The conversation for this Agent changed. Reload it before sending.', 409)
+      }
+      if (row) {
+        // The selection-key advisory lock serializes this check with every new admission.
+        // Replays above do not consume capacity; reject before writing a message or receipt.
+        const open = (await client.query<{ count: string }>(`select count(*)::text as count from operator_conversation_turns
+          where conversation_id=$1 and intent is not null and delivery = any($2::text[])`, [row.id, OPEN_DELIVERIES])).rows[0]!
+        if (Number(open.count) >= AGENT_CHAT_OPEN_TURN_LIMIT) {
+          throw new DomainError('AGENT_CHAT_CAPACITY_EXCEEDED',
+            'This chat has 100 unfinished messages. Wait for completion or cancel a queued message before sending another.',
+            409, { limit: AGENT_CHAT_OPEN_TURN_LIMIT })
+        }
       }
       let created = false
       if (!row) {
@@ -403,12 +416,23 @@ export class PostgresAgentChatRepository {
   async state(id: string): Promise<{ row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean } | undefined> {
     const row = await this.get(id)
     if (!row) return undefined
-    const turns = (await this.pool.query<TurnRow>(`select * from (
+    // Open receipts have priority over recent terminal history, in one SQL snapshot.
+    // Fetch one extra open receipt to detect pre-existing over-capacity data, never truncate it.
+    const receiptRows = (await this.pool.query<TurnRow>(`with open as (
         select ${TURN_COLUMNS} from operator_conversation_turns where conversation_id=$1 and intent is not null
-          and (delivery = any($2::text[]) or turn_sequence >= coalesce((select min(turn_sequence) from (
-            select turn_sequence from operator_conversation_turns where conversation_id=$1 and intent is not null
-            order by turn_sequence desc limit 50) recent), 0))
-      ) visible order by turn_sequence::bigint limit 100`, [id, OPEN_DELIVERIES])).rows.map(turn)
+          and delivery = any($2::text[]) order by operator_conversation_turns.turn_sequence limit $3::int + 1
+      ), recent as (
+        select ${TURN_COLUMNS} from operator_conversation_turns where conversation_id=$1 and intent is not null
+          and not (delivery = any($2::text[])) order by operator_conversation_turns.turn_sequence desc
+          limit least(50, greatest(0, $3::int - (select count(*) from open)))
+      ) select * from (select * from open union all select * from recent) visible order by turn_sequence::bigint`,
+    [id, OPEN_DELIVERIES, AGENT_CHAT_OPEN_TURN_LIMIT])).rows
+    if (receiptRows.length > AGENT_CHAT_OPEN_TURN_LIMIT) {
+      throw new DomainError('AGENT_CHAT_RECEIPT_OVERFLOW',
+        'This chat exceeds the unfinished-message limit. Settle unfinished turns or cancel queued messages before reading state.',
+        409, { limit: AGENT_CHAT_OPEN_TURN_LIMIT })
+    }
+    const turns = receiptRows.map(turn)
     const messages = (await this.pool.query<{ record: unknown; sequence: string }>(`select record,sequence::text from operator_conversation_messages
       where conversation_id=$1 order by operator_conversation_messages.sequence desc limit $2`, [id, AGENT_CHAT_MESSAGE_LIMIT + 1])).rows
     return {

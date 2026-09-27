@@ -346,19 +346,23 @@ export class AgentChatService {
   }
   async respond(principal: ManagementPrincipal, workspaceId: string, id: string, nativeRequestId: string, optionId: string): Promise<AgentChatState> {
     this.assertOpen()
-    const row = await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
-    const pending = row.pending_interaction
-    const runtime = this.runtimes.get(id)
-    if (!pending || pending.turn.nativeRequestId !== nativeRequestId || !runtime?.session || !row.active_request_id) {
-      throw new DomainError('AGENT_CHAT_INTERACTION_NOT_PENDING', 'This approval is no longer pending.', 409)
-    }
-    const option = pending.responseOptions.find((entry) => entry.optionId === optionId)
-    if (!option) throw new DomainError('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
     await this.control(id, async () => {
-      await runtime.manager.respond(runtime.session!, nativeRequestId, option, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]))
-      await this.repository.pending(id, row.active_request_id!, undefined)
+      // Re-read after earlier controls: the displayed approval may already have been answered.
+      const row = await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
+      const pending = row.pending_interaction
+      const runtime = this.runtimes.get(id)
+      if (!pending || pending.turn.nativeRequestId !== nativeRequestId || !runtime?.session || !row.active_request_id) {
+        throw new DomainError('AGENT_CHAT_INTERACTION_NOT_PENDING', 'This approval is no longer pending.', 409)
+      }
+      const option = pending.responseOptions.find((entry) => entry.optionId === optionId)
+      if (!option) throw new DomainError('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
+      const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
+      await runtime.manager.respond(runtime.session, nativeRequestId, option, signal)
+      // Other approvals may already be waiting without another native event to expose them.
+      const next = await runtime.manager.pending(runtime.session, signal)
+      await this.repository.pending(id, row.active_request_id, next)
+      this.events.publish(id, 'state', { pending: Boolean(next) })
     })
-    this.events.publish(id, 'state', { pending: false })
     return this.readConversation(principal, workspaceId, id)
   }
 
@@ -515,9 +519,12 @@ export class AgentChatService {
         await this.record(id, turn.requestId, runtime, event, redact)
         for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: turn.requestId })
         if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
-          const pending = await runtime.manager.pending(session, signal)
-          await this.repository.pending(id, turn.requestId, pending)
-          this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
+          // Share the response lock so an older observation cannot overwrite its next approval.
+          await this.control(id, async () => {
+            const pending = await runtime!.manager.pending(session, signal)
+            await this.repository.pending(id, turn.requestId, pending)
+            this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
+          })
         }
       }
       await this.observe(id, turn.requestId, runtime, correlationId)
