@@ -37,10 +37,13 @@ export function workConnectionForRequest(definition: WorkflowDefinitionV3, reque
 
 export const WorkActivationIdentitySchema = z.object({
   scope: WorkHandoffScopeSchema, activationId: GraphIdSchema, workflowNodeId: GraphIdSchema,
+  /** Stable root work item across review returns and sibling branches. */
+  lineageId: GraphIdSchema,
   /** The exact accepted request, return or denial that caused this activation. */
   cause: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('entry') }).strict(),
     z.object({ kind: z.literal('dependency'), resolutionId: GraphIdSchema }).strict(),
+    z.object({ kind: z.literal('join'), joinId: GraphIdSchema }).strict(),
     z.object({ kind: z.literal('work_request'), requestId: GraphIdSchema }).strict(),
     z.object({ kind: z.literal('work_return'), returnId: GraphIdSchema }).strict(),
     z.object({ kind: z.literal('limit_denial'), denialId: GraphIdSchema }).strict(),
@@ -76,7 +79,8 @@ export type WorkReturn = z.infer<typeof WorkReturnSchema>
 
 export const WorkLimitDenialSchema = z.object({
   scope: WorkHandoffScopeSchema, denialId: GraphIdSchema, requestId: GraphIdSchema,
-  relationshipId: GraphIdSchema, requesterActivationId: GraphIdSchema, destinationNodeId: GraphIdSchema,
+  relationshipId: GraphIdSchema, requesterActivationId: GraphIdSchema,
+  requesterExecutionId: GraphIdSchema, destinationNodeId: GraphIdSchema,
   payloadDigest: GraphDigestSchema, used: z.number().int().min(1).max(2147483647),
   maxWorkHandoffsPerRun: z.number().int().min(1).max(2147483647), deniedAt: TimestampSchema,
 }).strict().refine((value) => value.used === value.maxWorkHandoffsPerRun, 'HANDOFF_DENIAL_NOT_EXHAUSTED')
@@ -95,12 +99,51 @@ export const WorkNoticeSchema = z.object({
   'HANDOFF_NOTICE_ACKNOWLEDGEMENT_CONFLICT')
 export type WorkNotice = z.infer<typeof WorkNoticeSchema>
 
+/** Frozen private native input for one logical activation. Public projections
+ * expose references and safe summaries, never this source result payload. */
+export const WorkActivationInputSchema = z.object({
+  executionSemanticsVersion: z.literal(3), runInput: z.json(),
+  occurrence: z.null(), entry: z.null(), predecessors: z.tuple([]),
+  work: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('entry'), activation: WorkActivationIdentitySchema }).strict(),
+    z.object({ kind: z.literal('work_request'), activation: WorkActivationIdentitySchema,
+      request: WorkRequestSchema, acceptedSourceResult: ExecutionResultSchema }).strict(),
+    z.object({ kind: z.literal('work_return'), activation: WorkActivationIdentitySchema,
+      returned: WorkReturnSchema, acceptedSourceResult: ExecutionResultSchema }).strict(),
+    z.object({ kind: z.literal('join'), activation: WorkActivationIdentitySchema,
+      sources: z.array(z.object({ request: WorkRequestSchema,
+        acceptedSourceResult: ExecutionResultSchema }).strict()).min(2).max(1000) }).strict(),
+  ]),
+}).strict().superRefine((value, context) => {
+  const { work } = value
+  if (work.activation.cause.kind !== work.kind
+    || work.kind === 'work_request' && (work.activation.cause.kind !== 'work_request'
+      || work.activation.cause.requestId !== work.request.requestId
+      || work.activation.activationId !== work.request.destinationActivationId)
+    || work.kind === 'work_return' && (work.activation.cause.kind !== 'work_return'
+      || work.activation.cause.returnId !== work.returned.returnId
+      || work.activation.activationId !== work.returned.continuationActivationId)
+    || work.kind === 'join' && (work.activation.cause.kind !== 'join'
+      || work.activation.cause.joinId !== work.activation.activationId
+      || new Set(work.sources.map((item) => item.request.relationshipId)).size !== work.sources.length
+      || work.sources.some((item) => item.request.destinationActivationId !== work.activation.activationId))) {
+    context.addIssue({ code: 'custom', path: ['work'], message: 'WORK_ACTIVATION_INPUT_ANCESTRY_CONFLICT' })
+  }
+  if (work.kind !== 'entry' && work.kind !== 'join' && work.acceptedSourceResult.outcome !== 'succeeded'
+    || work.kind === 'join' && work.sources.some((item) => item.acceptedSourceResult.outcome !== 'succeeded')) {
+    context.addIssue({ code: 'custom', path: ['work', 'acceptedSourceResult'], message: 'WORK_INPUT_SOURCE_NOT_ACCEPTED' })
+  }
+  try { canonicalGraphJson(value, 4 * 1024 * 1024) }
+  catch { context.addIssue({ code: 'custom', message: 'WORK_ACTIVATION_INPUT_TOO_LARGE' }) }
+})
+export type WorkActivationInput = z.infer<typeof WorkActivationInputSchema>
+
 /** A typed native decision; the server resolves and validates saved routes. */
 export const WorkHandoffResultSchema = z.object({
   routing: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('request'), outcome: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/) }).strict(),
     z.object({ kind: z.literal('return'), requestId: GraphIdSchema, outcome: z.enum(['accepted', 'needs_changes']) }).strict(),
-    z.object({ kind: z.literal('finish') }).strict(),
+    z.object({ kind: z.literal('finish'), outcome: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/).optional() }).strict(),
   ]),
   data: z.object({ latestDeliverable: z.json(), remainingFindings: z.array(z.json()).max(1000) }).strict(),
 }).strict().superRefine((value, context) => {

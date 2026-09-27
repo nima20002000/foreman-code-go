@@ -11,7 +11,7 @@ import {
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'
-import { repeatSlotId } from '../runs/repeatResolution.js'
+import { repeatSlotId, workActivationSlotId } from '../runs/repeatResolution.js'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration,
   type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
 
@@ -61,6 +61,7 @@ export const readRepeatRunStateLocked = readPublicRunStateLocked
 
 interface ExecutionRow {
   execution_id: string; run_id: string; slot_id: string; occurrence_id: string | null;
+  work_activation_id: string | null; slot_work_activation_id: string | null; native_work_activation_id: string | null;
   technical_attempt: number; previous_execution_id: string | null; identity: unknown;
   execution_run_id: string; execution_node_id: string; execution_agent_id: string; execution_attempt: number;
   execution_occurrence_id: string | null; record_id: string; record_run_id: string; record_node_id: string;
@@ -74,12 +75,15 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
   executionIds?: readonly string[]): Promise<RepeatGraphExecutionV3[]> {
   if (executionIds && executionIds.length > REPEAT_GRAPH_LIMITS.executions) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const rows = await sql.query<ExecutionRow>(`select x.execution_id,x.run_id,x.slot_id,x.occurrence_id,x.technical_attempt,
+      x.work_activation_id,
       x.previous_execution_id,x.identity,e.run_id as execution_run_id,e.workflow_node_id as execution_node_id,
       e.agent_id as execution_agent_id,e.attempt as execution_attempt,e.repeat_occurrence_id as execution_occurrence_id,
+      e.work_activation_id as native_work_activation_id,
       e.record->>'id' as record_id,e.record->>'runId' as record_run_id,e.record->>'workflowNodeId' as record_node_id,
       e.record->>'agentId' as record_agent_id,e.record->>'agentConfigurationVersionId' as record_configuration_id,
       (e.record->>'attempt')::integer as record_attempt,e.record->>'state' as state,e.record #>> '{result,outcome}' as result_outcome,
-      s.run_id as slot_run_id,s.occurrence_id as slot_occurrence_id,s.workflow_node_id as slot_node_id,s.input_digest,
+      s.run_id as slot_run_id,s.occurrence_id as slot_occurrence_id,
+      s.work_activation_id as slot_work_activation_id,s.workflow_node_id as slot_node_id,s.input_digest,
       o.record as occurrence
     from run_repeat_executions x left join harness_executions e on e.id=x.execution_id
     left join run_repeat_slots s on s.slot_id=x.slot_id left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id
@@ -99,8 +103,13 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
       || row.execution_occurrence_id !== row.occurrence_id || row.slot_occurrence_id !== row.occurrence_id
       || (occurrence && (!sameCanonicalGraphScope(occurrence.scope, scope) || occurrence.occurrenceId !== row.occurrence_id))
       || !equal(row.identity, occurrence ? identity : bare)
-      || row.slot_id !== repeatSlotId(scope.runId, { nodeId: identity.workflowNodeId, occurrence })) return conflict()
+      || (row.work_activation_id ?? null) !== (row.slot_work_activation_id ?? null)
+      || (row.work_activation_id ?? null) !== (row.native_work_activation_id ?? null)
+      || row.slot_id !== (row.work_activation_id
+        ? workActivationSlotId(scope.runId, row.work_activation_id)
+        : repeatSlotId(scope.runId, { nodeId: identity.workflowNodeId, occurrence }))) return conflict()
     return RepeatGraphExecutionV3Schema.parse({ identity, inputDigest: row.input_digest,
+      ...(row.work_activation_id ? { workActivationId: row.work_activation_id } : {}),
       previousExecutionId: row.previous_execution_id, state: row.state, resultOutcome: row.result_outcome })
   })
   if (executionIds && (new Set(executionIds).size !== parsed.length

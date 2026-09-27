@@ -5,7 +5,8 @@ create table run_work_activations (
   run_id text not null references runs(id) on delete cascade,
   workflow_version_id text not null references workflow_versions(id),
   workflow_node_id text not null,
-  cause_kind text not null check (cause_kind in ('entry','dependency','work_request','work_return','limit_denial')),
+  lineage_id text generated always as (record->>'lineageId') stored not null,
+  cause_kind text not null check (cause_kind in ('entry','dependency','join','work_request','work_return','limit_denial')),
   cause_id text not null,
   state text not null check (state in ('queued','running','waiting','completed','needs_direction','unknown')),
   input_digest text check (input_digest ~ '^sha256:[0-9a-f]{64}$'),
@@ -17,14 +18,30 @@ create table run_work_activations (
   check (record #>> '{scope,runId}' is not distinct from run_id),
   check (record #>> '{scope,workflowVersionId}' is not distinct from workflow_version_id),
   check (record->>'workflowNodeId' is not distinct from workflow_node_id),
+  check (lineage_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'),
   check (record #>> '{cause,kind}' is not distinct from cause_kind),
   check (case cause_kind when 'entry' then cause_id=run_id
     when 'dependency' then cause_id=record #>> '{cause,resolutionId}'
+    when 'join' then cause_id=record #>> '{cause,joinId}'
     when 'work_request' then cause_id=record #>> '{cause,requestId}'
     when 'work_return' then cause_id=record #>> '{cause,returnId}'
     else cause_id=record #>> '{cause,denialId}' end)
 );
 create index run_work_activations_node_recent on run_work_activations(run_id,workflow_node_id,created_at desc,activation_id);
+
+create table run_work_results (
+  execution_id text primary key references harness_executions(id) on delete cascade deferrable initially deferred,
+  run_id text not null references runs(id) on delete cascade,
+  activation_id text not null,
+  result_json text not null check (octet_length(result_json)<=65536),
+  result_digest text not null check (result_digest = 'sha256:' || encode(sha256(convert_to(result_json,'UTF8')),'hex')),
+  accepted_at timestamptz not null,
+  foreign key (run_id,activation_id) references run_work_activations(run_id,activation_id)
+    on delete cascade deferrable initially deferred,
+  unique (run_id,execution_id,result_digest),
+  unique (run_id,activation_id,execution_id,result_digest)
+);
+create index run_work_results_activation on run_work_results(run_id,activation_id,accepted_at,execution_id);
 
 create table run_work_connection_usage (
   run_id text not null references runs(id) on delete cascade,
@@ -57,8 +74,8 @@ create table run_work_requests (
   foreign key (run_id,destination_activation_id)
     references run_work_activations(run_id,activation_id) on delete cascade deferrable initially deferred,
   unique (run_id,request_id),
+  unique (run_id,requester_execution_id,relationship_id),
   unique (run_id,workflow_version_id,relationship_id,ordinal),
-  unique (run_id,destination_activation_id),
   check (requester_node_id<>destination_node_id),
   check (record->>'requestId' is not distinct from request_id),
   check (record #>> '{scope,runId}' is not distinct from run_id),
@@ -108,6 +125,7 @@ create table run_work_denials (
   workflow_version_id text not null,
   relationship_id text not null,
   requester_activation_id text not null,
+  requester_execution_id text not null references harness_executions(id) on delete cascade deferrable initially deferred,
   payload_digest text not null check (payload_digest ~ '^sha256:[0-9a-f]{64}$'),
   record jsonb not null,
   denied_at timestamptz not null default clock_timestamp(),
@@ -116,10 +134,12 @@ create table run_work_denials (
   foreign key (run_id,requester_activation_id)
     references run_work_activations(run_id,activation_id) on delete cascade deferrable initially deferred,
   unique (run_id,request_id),
+  unique (run_id,requester_execution_id,relationship_id),
   check (record->>'denialId' is not distinct from denial_id),
   check (record #>> '{scope,runId}' is not distinct from run_id),
   check (record->>'requestId' is not distinct from request_id),
   check (record->>'relationshipId' is not distinct from relationship_id),
+  check (record->>'requesterExecutionId' is not distinct from requester_execution_id),
   check (record->>'payloadDigest' is not distinct from payload_digest)
 );
 
@@ -136,6 +156,106 @@ create unique index harness_executions_legacy_attempt on harness_executions(run_
   where repeat_occurrence_id is null and work_activation_id is null;
 create unique index harness_executions_work_attempt on harness_executions(run_id,work_activation_id,workflow_node_id,attempt)
   where work_activation_id is not null;
+
+-- The same native receipt/launch implementation can now bind its existing
+-- slot and technical-attempt rows to a work activation. Old outside slots keep
+-- their one-per-(Run,node) uniqueness and exact historical JSON/keys.
+alter table run_repeat_slots add column work_activation_id text;
+alter table run_repeat_slots add constraint work_slot_activation_fk
+  foreign key (run_id,work_activation_id) references run_work_activations(run_id,activation_id)
+  deferrable initially deferred;
+alter table run_repeat_slots add constraint work_slot_not_repeat
+  check (work_activation_id is null or occurrence_id is null);
+drop index run_repeat_slots_outside;
+create unique index run_repeat_slots_outside on run_repeat_slots(run_id,workflow_node_id)
+  where occurrence_id is null and work_activation_id is null;
+create unique index run_repeat_slots_work on run_repeat_slots(run_id,work_activation_id,workflow_node_id)
+  where work_activation_id is not null;
+alter table run_repeat_executions add column work_activation_id text;
+alter table run_repeat_executions add constraint work_attempt_activation_fk
+  foreign key (run_id,work_activation_id) references run_work_activations(run_id,activation_id)
+  deferrable initially deferred;
+alter table run_repeat_executions add constraint work_attempt_not_repeat
+  check (work_activation_id is null or occurrence_id is null);
+
+create function assert_work_slot_identity() returns trigger language plpgsql as $$
+declare pinned jsonb; activation run_work_activations%rowtype; request run_work_requests%rowtype;
+  returned run_work_returns%rowtype; source_result jsonb; work_input jsonb; joined jsonb; expected integer;
+begin
+  if not exists(select 1 from run_repeat_slots where slot_id=new.slot_id) then return null; end if;
+  pinned := repeat_pinned_version(new.run_id);
+  if pinned #> '{definition,handoffs}' is distinct from '{"contractVersion":1}'::jsonb then
+    if new.work_activation_id is not null then raise exception 'WORK_SLOT_ON_OLD_RUN'; end if;
+    return null;
+  end if;
+  if new.work_activation_id is null or new.occurrence_id is not null
+    or new.input_json::jsonb #>> '{work,activation,activationId}' is distinct from new.work_activation_id then
+    raise exception 'WORK_SLOT_ACTIVATION_CONFLICT'; end if;
+  select * into strict activation from run_work_activations where activation_id=new.work_activation_id;
+  if activation.run_id<>new.run_id or activation.workflow_node_id<>new.workflow_node_id
+    or activation.workflow_version_id<>pinned->>'id' then raise exception 'WORK_SLOT_ACTIVATION_CONFLICT'; end if;
+  work_input := new.input_json::jsonb->'work';
+  if work_input->>'kind' is distinct from activation.cause_kind
+    or work_input->'activation' is distinct from activation.record then
+    raise exception 'WORK_SLOT_INPUT_CONFLICT'; end if;
+  if activation.cause_kind='entry' then
+    if activation.workflow_node_id<>pinned->>'entryNodeId' then raise exception 'WORK_ENTRY_NODE_CONFLICT'; end if;
+  elsif activation.cause_kind='work_request' then
+    select * into strict request from run_work_requests where request_id=activation.cause_id;
+    select result_json::jsonb into strict source_result from run_work_results
+      where run_id=new.run_id and execution_id=request.requester_execution_id;
+    if request.run_id<>new.run_id or request.destination_activation_id<>activation.activation_id
+      or work_input->'request' is distinct from request.record
+      or work_input->'acceptedSourceResult' is distinct from source_result then
+      raise exception 'WORK_SLOT_INPUT_CONFLICT'; end if;
+  elsif activation.cause_kind='work_return' then
+    select * into strict returned from run_work_returns where return_id=activation.cause_id;
+    select result_json::jsonb into strict source_result from run_work_results
+      where run_id=new.run_id and execution_id=returned.source_execution_id;
+    if returned.run_id<>new.run_id or returned.requester_continuation_activation_id<>activation.activation_id
+      or work_input->'returned' is distinct from returned.record
+      or work_input->'acceptedSourceResult' is distinct from source_result then
+      raise exception 'WORK_SLOT_INPUT_CONFLICT'; end if;
+  elsif activation.cause_kind='join' then
+    select coalesce(jsonb_agg(jsonb_build_object('request',r.record,'acceptedSourceResult',x.result_json::jsonb)
+      order by r.relationship_id),'[]'::jsonb) into joined
+      from run_work_requests r join run_work_results x on x.run_id=r.run_id
+        and x.execution_id=r.requester_execution_id
+      where r.run_id=new.run_id and r.destination_activation_id=new.work_activation_id;
+    select count(*) into expected from jsonb_array_elements(pinned #> '{definition,edges}') e
+      where e->>'kind'='execution' and e->>'target'=new.workflow_node_id;
+    if activation.state<>'queued' or expected<2 or jsonb_array_length(joined)<>expected
+      or (select count(distinct r.relationship_id) from run_work_requests r
+        where r.run_id=new.run_id and r.destination_activation_id=new.work_activation_id)<>expected
+      or work_input->'sources' is distinct from joined then
+      raise exception 'WORK_JOIN_INPUT_CONFLICT'; end if;
+  else
+    raise exception 'WORK_SLOT_CAUSE_UNSUPPORTED';
+  end if;
+  return null;
+end $$;
+create constraint trigger work_slot_identity after insert on run_repeat_slots
+  deferrable initially deferred for each row execute function assert_work_slot_identity();
+
+create function assert_work_attempt_identity() returns trigger language plpgsql as $$
+declare slot run_repeat_slots%rowtype; native harness_executions%rowtype; pinned jsonb;
+begin
+  if not exists(select 1 from run_repeat_executions where execution_id=new.execution_id) then return null; end if;
+  select * into strict slot from run_repeat_slots where slot_id=new.slot_id;
+  select * into strict native from harness_executions where id=new.execution_id;
+  pinned := repeat_pinned_version(new.run_id);
+  if pinned #> '{definition,handoffs}' is distinct from '{"contractVersion":1}'::jsonb then
+    if new.work_activation_id is not null then raise exception 'WORK_ATTEMPT_ON_OLD_RUN'; end if;
+    return null;
+  end if;
+  if new.work_activation_id is null or new.occurrence_id is not null
+    or new.work_activation_id<>slot.work_activation_id or new.work_activation_id<>native.work_activation_id
+    or new.run_id<>slot.run_id or new.run_id<>native.run_id then
+    raise exception 'WORK_ATTEMPT_ACTIVATION_CONFLICT'; end if;
+  return null;
+end $$;
+create constraint trigger work_attempt_identity after insert on run_repeat_executions
+  deferrable initially deferred for each row execute function assert_work_attempt_identity();
 
 create function protect_work_activation_identity() returns trigger language plpgsql as $$
 begin
@@ -158,6 +278,8 @@ begin
     if new.workflow_version_id is distinct from pinned->>'id'
       or (select count(*) from jsonb_array_elements(pinned #> '{definition,nodes}') n
         where n->>'id'=new.workflow_node_id)<>1 then raise exception 'WORK_ACTIVATION_SCOPE_CONFLICT'; end if;
+    if new.cause_kind='entry' and (new.workflow_node_id<>pinned->>'entryNodeId'
+      or new.lineage_id<>new.run_id) then raise exception 'WORK_ENTRY_PIN_CONFLICT'; end if;
   elsif tg_table_name='run_work_connection_usage' then
     select * into strict current_usage from run_work_connection_usage
       where run_id=new.run_id and workflow_version_id=new.workflow_version_id and relationship_id=new.relationship_id;
@@ -180,7 +302,7 @@ create constraint trigger work_usage_scope after insert or update on run_work_co
 create function assert_work_request() returns trigger language plpgsql as $$
 declare pinned jsonb; work_edge jsonb; current_usage run_work_connection_usage%rowtype;
   source_activation run_work_activations%rowtype; destination_activation run_work_activations%rowtype;
-  source_execution harness_executions%rowtype;
+  source_execution harness_executions%rowtype; accepted_digest text;
 begin
   if not exists(select 1 from run_work_requests where request_id=new.request_id) then return null; end if;
   pinned := repeat_pinned_version(new.run_id);
@@ -198,12 +320,19 @@ begin
   select * into strict source_activation from run_work_activations where activation_id=new.requester_activation_id;
   select * into strict destination_activation from run_work_activations where activation_id=new.destination_activation_id;
   select * into strict source_execution from harness_executions where id=new.requester_execution_id;
+  select result_digest into strict accepted_digest from run_work_results
+    where run_id=new.run_id and execution_id=new.requester_execution_id
+      and activation_id=new.requester_activation_id;
   if source_activation.run_id<>new.run_id or source_activation.workflow_node_id<>new.requester_node_id
     or source_execution.run_id<>new.run_id or source_execution.work_activation_id<>new.requester_activation_id
     or source_execution.workflow_node_id<>new.requester_node_id or not source_execution.accepted
     or source_execution.record->>'state'<>'completed'
+    or accepted_digest<>new.payload_digest
     or destination_activation.run_id<>new.run_id or destination_activation.workflow_node_id<>new.destination_node_id
-    or destination_activation.cause_kind<>'work_request' or destination_activation.cause_id<>new.request_id then
+    or destination_activation.lineage_id<>source_activation.lineage_id
+    or not (destination_activation.cause_kind='work_request' and destination_activation.cause_id=new.request_id
+      or destination_activation.cause_kind='join'
+        and destination_activation.cause_id=destination_activation.activation_id) then
     raise exception 'WORK_REQUEST_ANCESTRY_CONFLICT'; end if;
   if (select count(*) from run_work_requests where run_id=new.run_id
       and workflow_version_id=new.workflow_version_id and relationship_id=new.relationship_id)<>current_usage.used then
@@ -215,18 +344,21 @@ create constraint trigger work_request_evidence after insert on run_work_request
 
 create function assert_work_return() returns trigger language plpgsql as $$
 declare work_request run_work_requests%rowtype; source_activation run_work_activations%rowtype;
-  source_execution harness_executions%rowtype;
+  source_execution harness_executions%rowtype; accepted_digest text;
   continuation run_work_activations%rowtype;
 begin
   if not exists(select 1 from run_work_returns where return_id=new.return_id) then return null; end if;
   select * into strict work_request from run_work_requests where request_id=new.request_id;
   select * into strict source_activation from run_work_activations where activation_id=new.source_activation_id;
   select * into strict source_execution from harness_executions where id=new.source_execution_id;
+  select result_digest into strict accepted_digest from run_work_results
+    where run_id=new.run_id and execution_id=new.source_execution_id and activation_id=new.source_activation_id;
   if new.run_id<>work_request.run_id or new.source_activation_id<>work_request.destination_activation_id
     or source_activation.workflow_node_id<>work_request.destination_node_id
     or source_execution.run_id<>new.run_id or source_execution.work_activation_id<>new.source_activation_id
     or source_execution.workflow_node_id<>work_request.destination_node_id or not source_execution.accepted
     or source_execution.record->>'state'<>'completed'
+    or accepted_digest<>new.result_digest
     or new.record #>> '{scope,workflowVersionId}' is distinct from work_request.workflow_version_id
     or new.record->>'requesterActivationId' is distinct from work_request.requester_activation_id
     or new.record->'latestDeliverable' is null or new.record->'latestDeliverable'='null'::jsonb
@@ -236,6 +368,7 @@ begin
     select * into strict continuation from run_work_activations
       where activation_id=new.requester_continuation_activation_id;
     if continuation.run_id<>new.run_id or continuation.workflow_node_id<>work_request.requester_node_id
+      or continuation.lineage_id<>source_activation.lineage_id
       or continuation.cause_kind<>'work_return' or continuation.cause_id<>new.return_id then
       raise exception 'WORK_RETURN_CONTINUATION_CONFLICT'; end if;
   end if;
@@ -246,7 +379,8 @@ create constraint trigger work_return_evidence after insert on run_work_returns
 
 create function assert_work_denial() returns trigger language plpgsql as $$
 declare usage run_work_connection_usage%rowtype; pinned jsonb; work_edge jsonb;
-  source_activation run_work_activations%rowtype;
+  source_activation run_work_activations%rowtype; source_execution harness_executions%rowtype;
+  accepted_digest text;
 begin
   if not exists(select 1 from run_work_denials where denial_id=new.denial_id) then return null; end if;
   pinned := repeat_pinned_version(new.run_id);
@@ -255,17 +389,24 @@ begin
   select value into strict work_edge from jsonb_array_elements(pinned #> '{definition,edges}') e
     where e->>'id'=new.relationship_id and e->>'kind'='execution';
   select * into strict source_activation from run_work_activations where activation_id=new.requester_activation_id;
+  select * into strict source_execution from harness_executions where id=new.requester_execution_id;
+  select result_digest into strict accepted_digest from run_work_results
+    where run_id=new.run_id and execution_id=new.requester_execution_id and activation_id=new.requester_activation_id;
   if pinned #> '{definition,handoffs}' is distinct from '{"contractVersion":1}'::jsonb
     or usage.maximum is null or usage.used<>usage.maximum
     or new.record->'used' is distinct from to_jsonb(usage.used)
     or new.record->'maxWorkHandoffsPerRun' is distinct from to_jsonb(usage.maximum)
     or new.workflow_version_id<>pinned->>'id' or source_activation.run_id<>new.run_id
+    or source_execution.run_id<>new.run_id or source_execution.work_activation_id<>new.requester_activation_id
+    or not source_execution.accepted or accepted_digest<>new.payload_digest
     or new.record->>'requesterActivationId' is distinct from new.requester_activation_id
     or new.record->>'destinationNodeId' is distinct from
       (case when work_edge->>'source'=source_activation.workflow_node_id then work_edge->>'target'
         when work_edge->>'workRequestDirection'='both' and work_edge->>'target'=source_activation.workflow_node_id
           then work_edge->>'source' else null end)
-    or exists(select 1 from run_work_requests where request_id=new.request_id) then
+    or exists(select 1 from run_work_requests where request_id=new.request_id
+      or (run_id=new.run_id and requester_execution_id=new.requester_execution_id
+        and relationship_id=new.relationship_id)) then
     raise exception 'WORK_DENIAL_ANCESTRY_CONFLICT'; end if;
   return null;
 end $$;
@@ -296,4 +437,20 @@ begin
 end $$;
 create constraint trigger work_native_activation after insert or update on harness_executions
   deferrable initially deferred for each row execute function assert_work_native_activation();
+
+create function assert_work_accepted_result() returns trigger language plpgsql as $$
+declare native harness_executions%rowtype; activation run_work_activations%rowtype;
+begin
+  if not exists(select 1 from run_work_results where execution_id=new.execution_id) then return null; end if;
+  select * into strict native from harness_executions where id=new.execution_id;
+  select * into strict activation from run_work_activations where activation_id=new.activation_id;
+  if native.run_id<>new.run_id or native.work_activation_id<>new.activation_id
+    or activation.run_id<>new.run_id or activation.workflow_node_id<>native.workflow_node_id
+    or not native.accepted or native.record->>'state' is distinct from 'completed'
+    or native.record->'result' is distinct from new.result_json::jsonb then
+    raise exception 'WORK_RESULT_NOT_ACCEPTED'; end if;
+  return null;
+end $$;
+create constraint trigger work_accepted_result after insert on run_work_results
+  deferrable initially deferred for each row execute function assert_work_accepted_result();
 ` } as const

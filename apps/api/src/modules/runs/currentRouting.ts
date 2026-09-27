@@ -28,7 +28,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       'routing.kind is request, return, or finish.',
       `For a NEW work request, use {"kind":"request","outcome":<one of ${JSON.stringify(outcomes)}>}; only saved named outcomes are permitted.`,
       'For correlated feedback, use {"kind":"return","requestId":<the exact request ID in your received work>,"outcome":"accepted" or "needs_changes"}.',
-      'To finish without another work request, use {"kind":"finish"}. Include unresolved findings honestly.',
+      'To finish this activation, use {"kind":"finish"}; include a declared outcome when selecting a final downstream branch. Include unresolved findings honestly.',
       'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
       'Do not invent request IDs, connection IDs, destinations, approval outcomes or permissions. The backend validates saved routes.',
       'Do not wrap JSON in Markdown, commentary or partial output. The complete result must be at most 65536 UTF-8 bytes.',

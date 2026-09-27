@@ -96,6 +96,7 @@ describe('FLOW-01 versioned work handoff contract', () => {
     const result = { routing: { kind: 'return', requestId: 'request-3', outcome: 'needs_changes' },
       data: { latestDeliverable: { id: 'artifact-3' }, remainingFindings: [{ id: 'finding-1' }] } }
     expect(WorkHandoffResultSchema.parse(result)).toEqual(result)
+    expect(WorkHandoffResultSchema.safeParse({ ...result, routing: { kind: 'finish', outcome: 'done' } }).success).toBe(true)
     expect(parseWorkHandoffResult({ outcome: 'succeeded', output: { text: JSON.stringify(result) } })).toEqual(result)
     expect(() => parseWorkHandoffResult({ outcome: 'succeeded', output: `feedback: ${JSON.stringify(result)}` })).toThrow()
     expect(WorkHandoffResultSchema.safeParse({ ...result, routing: { kind: 'return', outcome: 'needs_changes' } }).success).toBe(false)

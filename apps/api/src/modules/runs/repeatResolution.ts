@@ -76,6 +76,9 @@ export function repeatExecutionIdentity(execution: HarnessExecution): GraphExecu
 export function repeatSlotId(runId: string, ref: RepeatNodeRef): string {
   return repeatId('repeat-slot', runId, ref.occurrence?.occurrenceId ?? 'outside', ref.nodeId)
 }
+export function workActivationSlotId(runId: string, activationId: string): string {
+  return repeatId('work-slot', runId, activationId)
+}
 export function repeatBlock(version: WorkflowVersionV3, blockId: string): RepeatBlockV1 {
   const block = version.definition.repeat?.blocks.find((item) => item.id === blockId)
   if (!block) return repeatConflict('REPEAT_BLOCK_NOT_FOUND')

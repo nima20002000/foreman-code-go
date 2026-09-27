@@ -1,5 +1,5 @@
 import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
-import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1,
+import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1, parseWorkHandoffResult,
   type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
@@ -44,6 +44,14 @@ export function normalizeRepeatTerminal(version: WorkflowVersionV3, scope: Repea
   if (execution.state !== 'completed') return execution
   if (!execution.result) return repeatConflict('EXECUTION_RESULT_MISSING')
   if (execution.result.outcome !== 'succeeded') return execution
+  if (version.definition.handoffs) {
+    try { parseWorkHandoffResult(execution.result); return execution }
+    catch {
+      return HarnessExecutionSchema.parse({ ...execution, result: { outcome: 'failed', error: {
+        code: 'WORK_RESULT_INVALID', message: 'The complete result did not satisfy the pinned work-handoff contract.', retryable: false,
+      } } })
+    }
+  }
   try {
     repeatTerminalResolution(version, scope, ref, execution)
     return execution

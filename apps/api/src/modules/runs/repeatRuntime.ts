@@ -242,7 +242,9 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         },
         consumeLaunch: (id) => { check(); return id === execution.id && store.consumeLaunch(id) },
       }
-      const initialPrompt = currentInitialPrompt(node, context.version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false)
+      const initialPrompt = currentInitialPrompt(node,
+        context.version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false,
+        context.version.definition.handoffs !== undefined)
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
         workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
         ...(initialPrompt ? { initialPrompt } : {}), configuration, input: execution.input })

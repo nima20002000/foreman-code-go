@@ -38,6 +38,8 @@ export type RepeatGraphExecutionIdentityV3 = z.infer<typeof RepeatGraphExecution
 export const RepeatGraphRunStateV3Schema = GraphRunStateSchema
 export const RepeatGraphExecutionV3Schema = z.object({
   identity: RepeatGraphExecutionIdentityV3Schema, inputDigest: GraphDigestSchema,
+  /** Present only for the new versioned work-handoff policy. */
+  workActivationId: GraphIdSchema.optional(),
   previousExecutionId: GraphIdSchema.nullable(),
   // Observed durable lifecycle only. No native-active/acknowledged inference.
   state: z.enum(['queued', 'starting', 'running', 'waiting', 'completed']),
@@ -45,7 +47,8 @@ export const RepeatGraphExecutionV3Schema = z.object({
 }).strict().superRefine((value, context) => {
   if ((value.state === 'completed') !== (value.resultOutcome !== null)
     || (value.identity.attempt === 1) !== (value.previousExecutionId === null)
-    || value.previousExecutionId === value.identity.executionId) {
+    || value.previousExecutionId === value.identity.executionId
+    || value.workActivationId !== undefined && value.identity.occurrence !== null) {
     context.addIssue({ code: 'custom', message: 'REPEAT_GRAPH_EXECUTION_CONFLICT' })
   }
 })

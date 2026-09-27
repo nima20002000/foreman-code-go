@@ -2,7 +2,7 @@ import {
   canonicalGraphJson, GraphDigestSchema, GraphIdSchema, RepeatGraphEffectV3Schema,
   RepeatGraphFactV3Schema, RepeatGraphScopeV3Schema, sameCanonicalGraphScope,
   qualifyRepeatGraphExecution, validateRepeatGraphFactsV3, RUN_GRAPH_LIMITS,
-  type RepeatGraphEffectV3, type RepeatGraphFactV3, type RepeatGraphScopeV3,
+  type RepeatGraphEffectV3, type RepeatGraphFactV3, type RepeatGraphScopeV3, type WorkflowVersionV3,
 } from '@graphql/contracts/wave25'
 import type { RepeatEffect, RepeatFact } from '../runs/repeatPostgres.js'
 import type { RepeatCanonicalPublication } from '../runs/repeatRepositoryHost.js'
@@ -102,7 +102,7 @@ async function assertPersistedFact(sql: GraphTransactionSql, scope: RepeatGraphS
     case 'repeat.execution': case 'repeat.input.bound': return
   }
 }
-function assertEffectFacts(scope: RepeatGraphScopeV3, effect: RepeatEffect, facts: readonly RepeatFact[]): void {
+function assertEffectFacts(scope: RepeatGraphScopeV3, version: WorkflowVersionV3, effect: RepeatEffect, facts: readonly RepeatFact[]): void {
   if (effect.kind === 'run.complete') { if (effect.entityId !== scope.runId || facts.length !== 0) return fail(); return }
   if (effect.kind === 'occurrence.create') {
     if (facts.length !== 1 || facts[0]!.type !== 'repeat.occurrence' || facts[0]!.occurrence.identity.occurrenceId !== effect.entityId) return fail()
@@ -113,6 +113,11 @@ function assertEffectFacts(scope: RepeatGraphScopeV3, effect: RepeatEffect, fact
     if (facts.length !== 1 || fact?.type !== 'repeat.node.resolved' || fact.resolution.value.execution
       || effect.entityId !== repeatSlotId(scope.runId, fact.resolution.ref)) return fail()
   } else if (effect.kind === 'terminal.accept') {
+    if (version.definition.handoffs) {
+      if (facts.length !== 1 || facts[0]?.type !== 'repeat.result.accepted'
+        || facts[0].execution.executionId !== effect.entityId || facts[0].ref.occurrence !== null) return fail()
+      return
+    }
     let position = 0
     const result = facts[position]?.type === 'repeat.result.accepted' ? facts[position++] : undefined
     const local = facts[position++]
@@ -176,7 +181,7 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
         canonicalGraphJson(factValues, RUN_GRAPH_LIMITS.transactionBytes)
         const effect = structuredClone(effectValue), facts = structuredClone(factValues)
         const publicEffect = canonicalRepeatEffect(scope, effect), receipt = canonicalRepeatEffectReceipt(scope, effect)
-        assertEffectFacts(scope, effect, facts)
+        assertEffectFacts(scope, version, effect, facts)
         const result = await publication.repeatChange({ evidence: receipt.evidence, sourceDigest: receipt.sourceDigest, effect: publicEffect }, owner,
           async () => { await mutate() }, async () => {
             const privateReceipt = (await sql.query<{ payload_digest: string }>(
