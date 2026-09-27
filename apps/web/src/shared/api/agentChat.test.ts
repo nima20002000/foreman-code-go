@@ -37,7 +37,7 @@ describe('frozen Agent chat HTTP client', () => {
   it('serves an enveloped contract snapshot over the MSW SSE endpoint', async () => {
     const state = agentChatFixtures.active
     server.use(...createAgentChatMock(state).handlers)
-    const response = await fetch(`http://localhost/api/workspaces/${state.context.workspaceId}/agent-chat/conversations/${state.conversation.id}/events`)
+    const response = await fetch(`${location.origin}/api/workspaces/${state.context.workspaceId}/agent-chat/conversations/${state.conversation.id}/events`)
     expect(response.headers.get('content-type')).toContain('text/event-stream')
     const text = await response.text(), data = text.split('\n').find((line) => line.startsWith('data: '))!.slice(6)
     const event = AgentChatStreamEventSchema.parse(JSON.parse(data))

@@ -130,7 +130,7 @@ describe('AgentChatPanel commands and drafts', () => {
 
   it('steers the exact active native turn', async () => {
     const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Focus on tests')
-    await userEvent.click(screen.getByRole('button', { name: 'Steer', exact: true }))
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
     await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
     expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'steer', expectedNativeTurnId: 'turn-1' })
     expect(await screen.findByText('Server recorded: Steer · Delivered')).toBeInTheDocument()
@@ -149,7 +149,7 @@ describe('AgentChatPanel commands and drafts', () => {
 
   it('interrupt-and-send is one backend command, not client-side stop then send', async () => {
     const mounted = mountChat(agentChatFixtures.active); await mounted.ready(); write('Start over with tests')
-    await userEvent.click(screen.getByRole('button', { name: 'Interrupt and send', exact: true }))
+    await userEvent.click(screen.getByRole('button', { name: 'Interrupt and send' }))
     await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
     expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'interrupt_and_send', expectedNativeTurnId: 'turn-1' })
     expect(mounted.mock.calls.filter((call) => call.path.endsWith('/interrupt'))).toHaveLength(0)
@@ -170,7 +170,7 @@ describe('AgentChatPanel commands and drafts', () => {
       posts++; mounted.mock.setState(agentChatFixtures.idleAfterCompletion)
       return errorResponse('AGENT_CHAT_TURN_NOT_ACTIVE', 'The native turn ended.')
     }))
-    await userEvent.click(screen.getByRole('button', { name: 'Steer', exact: true }))
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
     const next = await screen.findByRole('button', { name: 'Send as next turn' })
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep my input')
     expect(posts).toBe(1)
@@ -208,7 +208,7 @@ describe('AgentChatPanel commands and drafts', () => {
       mounted.mock.setState(state)
       return HttpResponse.json({ state, turn, replayed: false })
     }))
-    await userEvent.click(screen.getByRole('button', { name: 'Steer', exact: true }))
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
     expect(await screen.findByText('Server recorded: Next turn · Delivered')).toBeInTheDocument()
     expect(screen.queryByText('Server recorded: Steer · Delivered')).not.toBeInTheDocument()
   })
@@ -405,7 +405,7 @@ describe('AgentChatPanel live reads and interaction', () => {
     state.messages[1]!.content = 'More public output'; mounted.mock.setState(state)
     await act(() => mounted.refresh())
     expect(scroll.scrollTop).toBe(0)
-    await userEvent.click(screen.getByRole('button', { name: 'Jump to latest' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Jump to latest' }))
     expect(scroll.scrollTop).toBe(600)
   })
 

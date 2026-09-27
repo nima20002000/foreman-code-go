@@ -120,7 +120,7 @@ export function useAgentChat(context: AgentChatContext) {
             : await agentChatApi.respond(workspaceId, command.conversationId, { requestId: command.requestId, nativeRequestId: command.nativeRequestId, optionId: command.optionId })
       if (!stateBelongsToContext(result.state, context)
         || command.kind !== 'send' && result.state.conversation?.id !== command.conversationId
-        || command.kind === 'send' && (!('turn' in result) || result.turn.requestId !== command.input.requestId
+        || command.kind === 'send' && (!('turn' in result) || (result as { turn: { requestId: string } }).turn.requestId !== command.input.requestId
           || command.input.expectedConversationId !== null && result.state.conversation?.id !== command.input.expectedConversationId)) {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The response did not confirm this command in this conversation.' })
       }
