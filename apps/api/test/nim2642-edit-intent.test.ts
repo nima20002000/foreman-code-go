@@ -31,10 +31,12 @@ describe('NIM-2642 exact affected-set and current settlement mapping', () => {
     expect(sameAffectedSet({ affected: [pin] }, [{ ...settled, pin: { ...pin, agentConfigurationVersionIds: { agent: 'new' } } }])).toBe(false)
   })
   it('requires the canceled retirement source receipt and counts unlaunched reviews by owning interaction', async () => {
-    const query = vi.fn(async () => ({ rows: [row], rowCount: 1 }))
+    // The Run has no executions, so its canonical native-settlement page is empty.
+    const query = vi.fn(async (text: string) => text.startsWith('select e.id,e.run_id,') ? { rows: [], rowCount: 0 } : { rows: [row], rowCount: 1 })
     const result = await readAffectedGraphRuns({ query } as unknown as Pick<pg.PoolClient, 'query'>, scope)
     expect(result).toEqual([settled])
-    const [sql] = query.mock.calls[0]! as unknown as [string, unknown[]]
+    // The first query only locks the affected parents; this one computes every obligation flag.
+    const [sql] = query.mock.calls.find(([text]) => text.includes(' as terminal'))! as unknown as [string, unknown[]]
     expect(sql).toContain(CANCELED_INTERACTION_RETIRED_SQL)
     expect(sql).toContain('review_owner.id=j.interaction_id')
     expect(sql).toContain('review_owner.run_id=r.id')
