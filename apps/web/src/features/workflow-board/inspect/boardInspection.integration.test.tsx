@@ -12,6 +12,7 @@ import {
 } from '@graphql/contracts/wave25'
 import { routeTree } from '../../../app/router'
 import { server } from '../../../mocks/server'
+import { bindMockInstallation } from '../../../shared/mocks/handlers'
 import { useGraphDraftStore } from '../../graph/store'
 import { nextDraftKey } from '../../graph/nextDraft/state'
 import { inspectionBoardFixture } from './inspectionFixtures'
@@ -82,7 +83,7 @@ async function retainStop(status?: NonNullable<BoardStopJournal['receipt']>['sta
 beforeEach(async () => {
   unhandled.length = 0
   server.events.on('request:unhandled', recordUnhandled)
-  localStorage.clear(); sessionStorage.clear(); clearBoardStopStorage()
+  localStorage.clear(); bindMockInstallation(); sessionStorage.clear(); clearBoardStopStorage()
   useGraphDraftStore.setState({ nextDrafts: {} })
   useInspectionPresentation.setState({ open: {} })
   vi.stubGlobal('crypto', webcrypto)

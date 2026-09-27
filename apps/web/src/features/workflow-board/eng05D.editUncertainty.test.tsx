@@ -55,7 +55,8 @@ describe('ENG05-D meaningful edit versus layout and uncertain Stop-and-save', ()
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
     await waitFor(() => expect(advances).toHaveLength(1))
     await waitFor(() => expect(fixture.mock.record(scope.workflowId).intent?.state).toBe('waiting'))
-    await screen.findByText(/Stop-and-save reply was not observed/)
+    // A lost reply for a pending journal is shown as unconfirmed, not as a failed save.
+    await screen.findByText('Save not confirmed.')
     const retained = readEditOutbox(key)
     expect(retained).toBeDefined()
     expect(retained!.request).toMatchObject({ executionSemanticsVersion: 3,

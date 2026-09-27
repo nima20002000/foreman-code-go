@@ -15,6 +15,7 @@ import { routeTree } from '../app/router'
 import { queryKeys } from '../shared/api/query'
 import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
+import { bindMockInstallation } from '../shared/mocks/handlers'
 
 function readyWorkspace() {
   const fixture = getMockFixture('workspace-1')
@@ -68,7 +69,7 @@ async function renderWorkspace(initialEntry: string) {
 
 describe('WorkspaceRouteEntry integration', () => {
   beforeEach(() => {
-    useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear()
+    useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); bindMockInstallation(); sessionStorage.clear()
     server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json(readyWorkspace())))
     // JSDOM measurements only: the real mounted Board and React Flow stay intact.
     vi.stubGlobal('ResizeObserver', class {
@@ -139,7 +140,8 @@ describe('WorkspaceRouteEntry integration', () => {
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Draft workflow')
     await user.click(screen.getByRole('button', { name: 'Create workflow' }))
 
-    const newLink = await screen.findByRole('link', { name: 'Draft workflow' })
+    // The sidebar marks a never-published workflow with a "Draft" badge inside its link.
+    const newLink = await screen.findByRole('link', { name: /^Draft workflow/ })
     const createdId = new URL(newLink.getAttribute('href')!, 'http://localhost').searchParams.get('workflowId')
     expect(createdId).toBeTruthy()
     await waitFor(() => expect(router.state.location.search.workflowId).toBe(createdId))

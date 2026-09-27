@@ -103,13 +103,26 @@ describe('one mounted board across current route aliases', () => {
     expect(mounts.canvas).toBe(1)
     client.clear()
   })
-  it('still guards leaving a dirty board and cancellation keeps the same local document', async () => {
+  it('leaves a recoverable dirty board quietly and keeps its local document', async () => {
     const { router } = setup()
     await screen.findByTestId('retained-canvas')
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, nodes: graph.nodes.map((node) => ({ ...node, initialPrompt: 'Keep me' })) })))
     const kept = useGraphDraftStore.getState().nextDrafts[key]
+    await act(async () => { await router.navigate({ to: '/account' }) })
+    expect(router.state.location.pathname).toBe('/account')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(useGraphDraftStore.getState().nextDrafts[key]).toBe(kept)
+  })
+  it('still guards leaving a dirty board it cannot recover, and cancellation keeps the same local document', async () => {
+    const { router } = setup()
+    await screen.findByTestId('retained-canvas')
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, nodes: graph.nodes.map((node) => ({ ...node, initialPrompt: 'Keep me' })) })))
+    const kept = useGraphDraftStore.getState().nextDrafts[key]
+    // Without browser storage the edits cannot be resumed after leaving, so departure still asks.
+    const storage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage full') })
     act(() => { void router.navigate({ to: '/account' }) })
     expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
+    storage.mockRestore()
     fireEvent(screen.getByRole('alertdialog'), new Event('cancel', { cancelable: true }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(router.state.location.pathname).toBe('/workspaces/workspace')

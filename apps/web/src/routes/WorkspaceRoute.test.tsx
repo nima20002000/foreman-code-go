@@ -58,7 +58,9 @@ describe('WorkspaceRoute', () => {
     )
 
     expect(await screen.findByTestId('workspace-stale')).toHaveTextContent('agent-old')
-    expect(await screen.findByTitle('Workflows')).not.toHaveAttribute('href')
+    // Workflows is the workspace's workflow directory link; the graph route itself does not mark it current.
+    expect(await screen.findByTitle('Workflows')).toHaveAttribute('href', '/workspaces/workspace-1/workflows')
+    expect(screen.getByTitle('Workflows')).not.toHaveAttribute('aria-current')
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
 
