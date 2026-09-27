@@ -94,6 +94,8 @@ export interface OpenCodeNativeSessionManagerOptions {
   appMcpServerName?: string
   expectedAppMcpEndpoint?: string
   credentialEnvironmentVariable?: string
+  /** Agent chat has no App MCP authority; other consumers keep their scoped credential checks. */
+  appMcpAccess?: 'scoped' | 'none'
 }
 export interface OpenCodeMcpInspection {
   automaticEndpoint?: boolean
@@ -228,7 +230,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         await this.assertConfiguration(configuration, directory, combined)
         const response = object(await this.mutate(withDirectory(`/session/${encodeURIComponent(source.nativeSessionId)}/fork`, directory), {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-        }, combined))
+        }, combined, true, 'OPENCODE_SESSION_NOT_FOUND'))
         if (typeof response.id !== 'string' || !response.id || response.id === source.nativeSessionId) {
           throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_ID_MISSING', 'Session fork may have succeeded but did not return a new native identity.', 'uncertain')
         }
@@ -875,6 +877,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async bindEnvironment(environment: ChildProcessEnvironment | undefined, signal: AbortSignal): Promise<void> {
+    if (this.options.appMcpAccess === 'none' && Object.keys(environment?.variables ?? {}).length) {
+      throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
+    }
     // An explicitly configured owner-scoped controller is already a validated binding.
     if (!environment && this.boundEnvironmentFingerprint && this.options.server.credentialEnvironmentFingerprint === this.boundEnvironmentFingerprint) return
     const selected = environment ?? { agentId: this.options.ownerAgentId, variables: {} }
@@ -938,6 +943,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async assertConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<unknown> {
+    if (this.options.appMcpAccess === 'none') {
+      const name = this.options.appMcpServerName ?? APP_MCP_SERVER_NAME
+      const configured = object(object(await this.json('/config', directory, signal)).mcp)
+      if (Object.hasOwn(configured, name) && object(configured[name]).enabled !== false
+        || configuration.advanced?.mcp.serverEnabled[name] === true) {
+        throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Agent chat requires the App MCP entry to be disabled in the native configuration.')
+      }
+    }
     if (this.options.server instanceof ManagedOpenCodeServer && !isDeepStrictEqual(configuration.advanced, this.options.server.advancedConfiguration)) {
       throw new HarnessExecutionError('OPENCODE_SERVER_CONFIGURATION_MISMATCH', 'Process-level Advanced settings differ from the pinned session configuration.')
     }
@@ -1115,7 +1128,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return response.status === 204 ? undefined : this.sanitize(await readJson(response))
   }
 
-  private async mutate(path: string, init: RequestInit, signal: AbortSignal, requireReady = true): Promise<unknown> {
+  private async mutate(path: string, init: RequestInit, signal: AbortSignal, requireReady = true, notFoundCode?: string): Promise<unknown> {
     if (signal.aborted) throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_NOT_DISPATCHED', 'The native mutation was canceled before dispatch.', 'definite')
     let response: Response
     try { response = await this.options.server.request(path, init, signal, requireReady ? this.readyGeneration : this.generation) }
@@ -1123,7 +1136,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (error instanceof OpenCodeNativeDeliveryError) throw error
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native mutation may have been accepted before the connection failed.', 'uncertain', { cause: error })
     }
-    if (!response.ok) throw await responseError(response, 'OPENCODE_NATIVE_DELIVERY_REJECTED', response.status >= 500 ? 'uncertain' : 'definite')
+    if (!response.ok) throw await responseError(response, response.status === 404 && notFoundCode ? notFoundCode : 'OPENCODE_NATIVE_DELIVERY_REJECTED',
+      response.status >= 500 ? 'uncertain' : 'definite')
     try { return response.status === 204 ? undefined : this.sanitize(await readJson(response)) }
     catch (error) { throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native mutation was accepted but its response body could not be read.', 'uncertain', { cause: error }) }
   }

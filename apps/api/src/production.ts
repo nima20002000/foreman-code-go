@@ -272,13 +272,13 @@ export function buildProductionApp(
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
     const manager = harness.harness === 'codex'
-      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery)
+      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none')
       : new OpenCodeNativeSessionManager({
         server: new ManagedOpenCodeServer({
           binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId, processRecovery: recovery,
           ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
         }),
-        ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint,
+        ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint, appMcpAccess: 'none',
       })
     agentChatManagers.set(conversationId, manager)
     return manager

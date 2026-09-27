@@ -280,6 +280,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly expectedVersion?: string,
     private readonly appMcpServerName = APP_MCP_SERVER_NAME,
     private readonly processRecovery?: NativeProcessRecovery,
+    /** Chat has no App MCP authority; an enabled entry must fail before a thread is opened. */
+    private readonly appMcpAccess: 'scoped' | 'none' = 'scoped',
   ) {}
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
@@ -920,6 +922,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal.throwIfAborted()
     const input = structuredClone(source)
     validateEnvironmentOwner(input)
+    if (this.appMcpAccess === 'none' && Object.keys(input.environment?.variables ?? {}).length) {
+      throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
+    }
     const harnessConfiguration = configuration(input)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
     const environment = safeEnvironment(input.environment)
@@ -928,6 +933,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     let scopedCredentialVariable: string | undefined
     try {
       const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal)
+      if (mcp.configured.enabled && this.appMcpAccess === 'none') {
+        throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat requires the App MCP entry to be disabled in the native configuration.')
+      }
       if (mcp.configured.enabled) scopedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error

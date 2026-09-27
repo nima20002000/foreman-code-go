@@ -11,6 +11,7 @@ import {
   type AgentChatSessionState, type AgentChatState, type AgentChatStreamEvent, type AgentChatTurn, type SendAgentChatMessageRequest,
 } from '@graphql/contracts/agent-chat'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
+import { RepeatOccurrenceIdentityV1Schema } from '@graphql/contracts/wave25'
 
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
@@ -54,6 +55,8 @@ interface Runtime {
   manager: NativeHarnessSessionManager
   session?: NativeSessionReference
   configuration: AgentConfigurationVersion
+  retiring?: boolean
+  disposal?: Promise<void>
 }
 
 interface Resolution {
@@ -70,7 +73,7 @@ const OPENCODE_STEER_REASON = 'OpenCode cannot add input to a running turn with 
 
 function failure(error: unknown, code = 'AGENT_CHAT_TURN_FAILED'): ExecutionResult {
   const provider = error && typeof error === 'object' && 'result' in error ? (error as { result?: ExecutionResult }).result?.error : undefined
-  return { outcome: 'failed', error: { code: provider?.code ?? code,
+  return { outcome: 'failed', error: { code: nativeErrorCode(error) ?? code,
     message: provider?.message ?? (error instanceof Error ? error.message : 'The native turn failed.'), retryable: true } }
 }
 function definiteRejection(error: unknown): boolean {
@@ -78,9 +81,23 @@ function definiteRejection(error: unknown): boolean {
   if ('certainty' in error) return error.certainty === 'definite'
   return 'uncertain' in error && error.uncertain === false
 }
-function sessionMissing(error: unknown): boolean {
-  const code = error && typeof error === 'object' && 'result' in error ? (error as { result?: ExecutionResult }).result?.error?.code : undefined
-  return Boolean(code && /SESSION_NOT_FOUND|THREAD_NOT_FOUND|SESSION_ID_MISMATCH|SETTING_UNSUPPORTED|VERSION_MISMATCH/.test(code))
+const EPHEMERAL_SESSION_LOST = 'This ephemeral Codex session is no longer live and cannot be resumed after the API restarts. Start a separate conversation.'
+function nativeErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const nested = 'result' in error ? (error as { result?: ExecutionResult }).result?.error?.code : undefined
+  return nested ?? ('code' in error && typeof error.code === 'string' ? error.code : undefined)
+}
+function nativeUnavailable(error: unknown): { reason: 'native_session_missing' | 'harness_unavailable'; message: string } | undefined {
+  const code = nativeErrorCode(error)
+  if (code === 'CODEX_SCOPED_ENVIRONMENT_REQUIRED' || code === 'CODEX_APP_MCP_UNAVAILABLE' || code === 'OPENCODE_APP_MCP_UNAVAILABLE') {
+    return { reason: 'harness_unavailable', message: 'This conversation is unavailable because its native configuration requires App MCP authority. Agent chat never receives App MCP or workflow credentials.' }
+  }
+  if (code === 'AGENT_CHAT_EPHEMERAL_SESSION_LOST') return { reason: 'native_session_missing', message: EPHEMERAL_SESSION_LOST }
+  if (code && (/SESSION_NOT_FOUND|THREAD_NOT_FOUND|SESSION_ID_MISMATCH|SETTING_UNSUPPORTED|VERSION_MISMATCH/.test(code)
+    || code === 'AGENT_CHAT_FORK_UNAVAILABLE')) {
+    return { reason: 'native_session_missing', message: 'The native session or Run source no longer exists or cannot be continued. No replacement session was created.' }
+  }
+  return undefined
 }
 
 export class AgentChatService {
@@ -90,6 +107,9 @@ export class AgentChatService {
   private readonly wakeups = new Set<string>()
   private readonly controls = new Map<string, Promise<unknown>>()
   private readonly reconciliationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly commands = new Set<Promise<unknown>>()
+  private recovery: Promise<void> | undefined
+  private shutdownAttempt: Promise<void> | undefined
   private readonly activity: PostgresOperatorActivityRepository
   private readonly lifetime = new AbortController()
   private closing = false
@@ -107,10 +127,18 @@ export class AgentChatService {
     this.activity = new PostgresOperatorActivityRepository(pool)
   }
 
+  /** Publish command ownership before the first await so shutdown also drains admission/readback. */
+  private command<T>(operation: () => Promise<T>): Promise<T> {
+    const next = Promise.resolve().then(() => { this.assertOpen(); return operation() })
+    this.commands.add(next)
+    void next.finally(() => this.commands.delete(next)).catch(() => undefined)
+    return next
+  }
+
   /** Serialize native lifecycle decisions per conversation. */
   private control<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.controls.get(id) ?? Promise.resolve()
-    const next = previous.catch(() => undefined).then(operation)
+    const next = previous.catch(() => undefined).then(() => { this.assertOpen(); return operation() })
     this.controls.set(id, next)
     void next.finally(() => { if (this.controls.get(id) === next) this.controls.delete(id) }).catch(() => undefined)
     return next
@@ -144,19 +172,38 @@ export class AgentChatService {
       if (!TERMINAL_RUN_STATES.has(run.executionState)) {
         return blocked('run_active', 'This Agent belongs to a Run that is still working. Chat opens when the Run finishes.')
       }
-      let source: HarnessExecution | undefined
-      for await (const page of this.runs.executionPages(run.id)) {
-        for (const execution of page) {
-          if (execution.workflowNodeId === context.workflowNodeId && execution.agentId === context.agentId
-            && execution.nativeSessionId && (!source || execution.attempt > source.attempt)) source = execution
-        }
-      }
       if (row) {
         const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
-        return { context, row, ...(configuration ? { configuration } : {}),
-          ...(row.record.sessionUnavailable ? { blocked: { reason: 'native_session_missing' as const, message: row.record.sessionUnavailable } } : {}) }
+        const unavailable = this.sessionUnavailable(row, configuration)
+        return { context, row, ...(configuration ? { configuration } : {}), ...(unavailable ? { blocked: unavailable } : {}) }
       }
-      if (!source?.nativeSessionId || !source.workingDirectory) {
+      const block = version.definition.repeat?.blocks.find((entry) => entry.nodeIds.includes(context.workflowNodeId))
+      let source: HarnessExecution | undefined
+      let sourceOccurrence = 0
+      for await (const page of this.runs.executionPages(run.id)) {
+        for (const execution of page) {
+          if (execution.runId !== run.id || execution.workflowNodeId !== context.workflowNodeId || execution.agentId !== context.agentId) continue
+          let occurrenceIndex = 0
+          if (block) {
+            const input = execution.input
+            const occurrence = input && typeof input === 'object' && !Array.isArray(input) ? input.occurrence : undefined
+            const parsed = RepeatOccurrenceIdentityV1Schema.safeParse(
+              occurrence && typeof occurrence === 'object' && !Array.isArray(occurrence) ? occurrence.identity : undefined)
+            if (!parsed.success || parsed.data.blockId !== block.id || parsed.data.scope.runId !== run.id
+              || parsed.data.scope.workspaceId !== context.workspaceId || parsed.data.scope.workflowId !== context.workflowId
+              || parsed.data.scope.workflowVersionId !== run.workflowVersionId) {
+              return blocked('context_stale', 'The selected Run execution has no matching business occurrence identity.')
+            }
+            occurrenceIndex = parsed.data.occurrenceIndex
+          }
+          // Most recent executed business occurrence, then its last technical attempt. Never fall back
+          // to an older occurrence/attempt just because the selected one has no native session.
+          if (!source || occurrenceIndex > sourceOccurrence || occurrenceIndex === sourceOccurrence && execution.attempt > source.attempt) {
+            source = execution; sourceOccurrence = occurrenceIndex
+          }
+        }
+      }
+      if (!source?.nativeSessionId || !source.workingDirectory || source.state !== 'completed') {
         return blocked('native_session_missing', 'This Run has no stored native session for this Agent. Chat with the Agent outside the Run instead.')
       }
       const configuration = await this.workflows.getAgentConfiguration(source.agentConfigurationVersionId)
@@ -174,8 +221,8 @@ export class AgentChatService {
     }
     if (row) {
       const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
-      return { context, row, ...(configuration ? { configuration } : {}),
-        ...(row.record.sessionUnavailable ? { blocked: { reason: 'native_session_missing' as const, message: row.record.sessionUnavailable } } : {}) }
+      const unavailable = this.sessionUnavailable(row, configuration)
+      return { context, row, ...(configuration ? { configuration } : {}), ...(unavailable ? { blocked: unavailable } : {}) }
     }
     const agent = (await this.pool.query<{ current_configuration_version_id: string | null; archived_at: Date | null }>(
       'select current_configuration_version_id,archived_at from agents where workspace_id=$1 and id=$2', [context.workspaceId, context.agentId])).rows[0]
@@ -194,13 +241,33 @@ export class AgentChatService {
   private capabilities(configuration: AgentConfigurationVersion | undefined, row?: AgentConversationRow): AgentChatCapabilities {
     const harness = configuration?.harness.harness ?? row?.harness ?? 'codex'
     const providerVersion = row?.provider_version ?? null
-    const ephemeral = configuration?.harness.harness === 'codex' && configuration.harness.advanced?.sessionPersistence === 'ephemeral'
+    const unavailable = row ? this.sessionUnavailable(row, configuration) : undefined
     if (harness === 'codex') {
-      return { harness, providerVersion, steer: 'native_expected_turn', interruptAndSend: true, queueNextTurn: true, resume: !ephemeral,
-        unavailable: ephemeral ? { resume: 'This Agent uses ephemeral Codex sessions, which cannot continue after the API restarts.' } : {} }
+      return { harness, providerVersion, steer: 'native_expected_turn', interruptAndSend: true, queueNextTurn: true, resume: !unavailable,
+        unavailable: unavailable ? { resume: unavailable.message } : {} }
     }
-    return { harness, providerVersion, steer: 'unavailable', interruptAndSend: true, queueNextTurn: true, resume: true,
-      unavailable: { steer: OPENCODE_STEER_REASON } }
+    return { harness, providerVersion, steer: 'unavailable', interruptAndSend: true, queueNextTurn: true, resume: !unavailable,
+      unavailable: { steer: OPENCODE_STEER_REASON, ...(unavailable ? { resume: unavailable.message } : {}) } }
+  }
+
+  private sessionUnavailable(row: AgentConversationRow, configuration: AgentConfigurationVersion | undefined): Resolution['blocked'] {
+    if (row.record.sessionUnavailable) return { reason: row.record.sessionUnavailableReason ?? 'native_session_missing', message: row.record.sessionUnavailable }
+    const runtime = this.runtimes.get(row.id)
+    if (runtime?.retiring) return { reason: 'harness_unavailable', message: 'Native cleanup is unconfirmed. This conversation cannot start more work until its owner is safely disposed.' }
+    if (row.native_session_id && configuration?.harness.harness === 'codex'
+      && configuration.harness.advanced?.sessionPersistence === 'ephemeral'
+      && runtime?.session?.nativeSessionId !== row.native_session_id) {
+      return { reason: 'native_session_missing', message: EPHEMERAL_SESSION_LOST }
+    }
+    return undefined
+  }
+
+  private async markNativeUnavailable(id: string, error: unknown): Promise<boolean> {
+    const unavailable = nativeUnavailable(error)
+    if (!unavailable) return false
+    await this.repository.markSessionUnavailable(id, unavailable.message, unavailable.reason)
+    this.events.publish(id, 'state', { sessionState: 'unavailable', reason: unavailable.reason })
+    return true
   }
 
   private sessionState(row: AgentConversationRow | undefined): AgentChatSessionState {
@@ -229,7 +296,7 @@ export class AgentChatService {
     const { row } = loaded
     const activities = (await this.activity.page(row.id, { limit: 100 })).activities
     return AgentChatStateSchema.parse({
-      context, conversation: agentConversation(row), sessionState: this.sessionState(row), availability, capabilities,
+      context, conversation: agentConversation(row), sessionState: this.sessionUnavailable(row, resolution.configuration) ? 'unavailable' : this.sessionState(row), availability, capabilities,
       activeTurn: row.active_request_id ? { requestId: row.active_request_id,
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}), startedAt: row.updated_at.toISOString() } : null,
       turns: loaded.turns, messages: loaded.messages, hasEarlierMessages: loaded.hasEarlierMessages, activities,
@@ -260,7 +327,10 @@ export class AgentChatService {
 
   // ---------------------------------------------------------------- commands
 
-  async send(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest) {
+  send(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest) {
+    return this.command(() => this.sendMessage(principal, workspaceId, value))
+  }
+  private async sendMessage(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest) {
     this.assertOpen()
     const input = SendAgentChatMessageRequestSchema.parse(value)
     const context: AgentChatContext = { workspaceId, ...input.context }
@@ -326,7 +396,10 @@ export class AgentChatService {
     })
   }
 
-  async interrupt(principal: ManagementPrincipal, workspaceId: string, id: string, expectedNativeTurnId?: string): Promise<AgentChatState> {
+  interrupt(principal: ManagementPrincipal, workspaceId: string, id: string, expectedNativeTurnId?: string): Promise<AgentChatState> {
+    return this.command(() => this.interruptConversation(principal, workspaceId, id, expectedNativeTurnId))
+  }
+  private async interruptConversation(principal: ManagementPrincipal, workspaceId: string, id: string, expectedNativeTurnId?: string): Promise<AgentChatState> {
     this.assertOpen()
     await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
     // Stop cancels the queue and captures the active target in one transaction.
@@ -334,7 +407,10 @@ export class AgentChatService {
     await this.interruptActive(id, true, target)
     return this.readConversation(principal, workspaceId, id)
   }
-  async cancelQueued(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string): Promise<AgentChatState> {
+  cancelQueued(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string): Promise<AgentChatState> {
+    return this.command(() => this.cancelQueuedTurn(principal, workspaceId, id, turnRequestId))
+  }
+  private async cancelQueuedTurn(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string): Promise<AgentChatState> {
     await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
     if (!await this.repository.cancelQueued(id, turnRequestId)) {
       const turn = await this.repository.turn(id, turnRequestId)
@@ -345,7 +421,10 @@ export class AgentChatService {
     this.pump(id)
     return this.readConversation(principal, workspaceId, id)
   }
-  async respond(principal: ManagementPrincipal, workspaceId: string, id: string, nativeRequestId: string, optionId: string): Promise<AgentChatState> {
+  respond(principal: ManagementPrincipal, workspaceId: string, id: string, nativeRequestId: string, optionId: string): Promise<AgentChatState> {
+    return this.command(() => this.respondToInteraction(principal, workspaceId, id, nativeRequestId, optionId))
+  }
+  private async respondToInteraction(principal: ManagementPrincipal, workspaceId: string, id: string, nativeRequestId: string, optionId: string): Promise<AgentChatState> {
     this.assertOpen()
     await this.control(id, async () => {
       // Re-read after earlier controls: the displayed approval may already have been answered.
@@ -419,6 +498,7 @@ export class AgentChatService {
 
   private startInput(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, delivered: boolean): WorkflowNativeSessionStart {
     // Native adapter descriptor only. The chat conversation id stands in for execution/Run binding; no Run row exists for it.
+    // No environment/credential is borrowed from a workflow or issued for chat. Scoped App MCP fails closed.
     return {
       kind: 'workflow', correlationId, instructionsDelivered: delivered,
       ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
@@ -432,6 +512,10 @@ export class AgentChatService {
   private runtimeDirectory(id: string) { return join(resolve(this.runtimeRoot), 'agent-chat', id) }
 
   private async runtime(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, signal: AbortSignal): Promise<Runtime> {
+    this.assertOpen()
+    const unavailable = this.sessionUnavailable(row, configuration)
+    if (unavailable) throw new DomainError(unavailable.message === EPHEMERAL_SESSION_LOST ? 'AGENT_CHAT_EPHEMERAL_SESSION_LOST' : 'AGENT_CHAT_UNAVAILABLE',
+      unavailable.message, 409, { reason: unavailable.reason })
     const existing = this.runtimes.get(row.id)
     if (existing?.session) {
       if (existing.session.nativeSessionId !== row.native_session_id) {
@@ -440,6 +524,8 @@ export class AgentChatService {
       return existing
     }
     await mkdir(this.runtimeDirectory(row.id), { recursive: true })
+    this.assertOpen()
+    signal.throwIfAborted()
     const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory), configuration }
     this.runtimes.set(row.id, runtime)
     if (row.native_session_id && row.provider_version) {
@@ -495,20 +581,9 @@ export class AgentChatService {
       if (row.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
       const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
       if (!configuration) throw new DomainError('AGENT_CHAT_CONFIGURATION_MISSING', 'The pinned Agent configuration is unavailable.', 409)
-      try {
-        creatingSession = !row.native_session_id
-        runtime = await this.runtime(row, configuration, correlationId, signal)
-        creatingSession = false
-      } catch (error) {
-        if (row.native_session_id && sessionMissing(error)) {
-          const reason = 'The native session for this chat no longer exists or cannot be resumed.'
-          await this.repository.markSessionUnavailable(id, reason)
-          await this.release(id)
-          await this.settle(id, turn.requestId, failure(error, 'NATIVE_SESSION_MISSING'))
-          return
-        }
-        throw error
-      }
+      creatingSession = !row.native_session_id
+      runtime = await this.runtime(row, configuration, correlationId, signal)
+      creatingSession = false
       const session = runtime.session!
       const content = await this.repository.turnContent(id, turn.requestId)
       if (content === undefined) throw new Error('The accepted message content is missing.')
@@ -547,16 +622,18 @@ export class AgentChatService {
       await this.observe(id, turn.requestId, runtime!, correlationId)
     } catch (error) {
       if (this.closing) return // Restart recovery reconciles in-flight work.
-      if (creatingSession && (await this.repository.get(id))?.record.sessionCreation) {
+      const unavailable = await this.markNativeUnavailable(id, error)
+      if (!unavailable && creatingSession && (await this.repository.get(id))?.record.sessionCreation) {
         // No reliable identity/commit means read-only, not another create/fork attempt.
         await this.repository.markSessionUnavailable(id, 'Native session creation could not be confirmed. This conversation is read-only; no replacement session will be created automatically.')
         await this.repository.abandon(id, turn.requestId, 'Native session creation or binding is unconfirmed.')
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
         return
       }
-      if (!submitted && definiteRejection(error) || !submitted && error instanceof DomainError) {
+      if (!submitted && (unavailable || definiteRejection(error) || error instanceof DomainError)) {
         const current = await this.repository.get(id)
         await this.settle(id, turn.requestId, current?.cancel_requested ? { outcome: 'canceled' } : failure(error))
+        if (unavailable) await this.release(id)
       } else {
         await this.repository.abandon(id, turn.requestId, error instanceof Error ? error.message : 'Native delivery is unconfirmed.')
         // Retain the manager: it may still own a late acknowledgement or a live native turn.
@@ -646,9 +723,11 @@ export class AgentChatService {
         const runtime = await this.runtime(row, configuration, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(60_000)]))
         await this.observe(id, requestId, runtime, correlationId, true)
       } catch (error) {
+        const unavailable = await this.markNativeUnavailable(id, error)
         await this.repository.abandon(id, requestId,
           `Native delivery is not yet confirmed. ${error instanceof Error ? error.message : ''}`.trim())
-        this.scheduleReconcile(id)
+        if (unavailable) await this.release(id)
+        else this.scheduleReconcile(id)
         this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
       }
     })
@@ -658,30 +737,59 @@ export class AgentChatService {
 
   private async release(id: string): Promise<void> {
     const runtime = this.runtimes.get(id)
-    this.runtimes.delete(id)
-    try {
-      if (runtime?.manager.dispose) await runtime.manager.dispose()
-      else if (runtime?.session) await runtime.manager.close(runtime.session)
-    } finally { this.managers.release?.(id) }
+    if (!runtime) return
+    runtime.retiring = true
+    const disposal = runtime.disposal ??= Promise.resolve().then(async () => {
+      if (runtime.manager.dispose) await runtime.manager.dispose()
+      else if (runtime.session) await runtime.manager.close(runtime.session)
+      else throw new Error('The unbound Agent chat manager cannot prove native disposal.')
+      // Both maps retain ownership until cleanup positively succeeds.
+      this.managers.release?.(id)
+      this.runtimes.delete(id)
+    })
+    try { await disposal } catch (error) {
+      if (runtime.disposal === disposal) delete runtime.disposal
+      throw error
+    }
   }
 
   // ---------------------------------------------------------------- lifecycle
 
   /** Recover exact stored sessions; unresolved work remains fenced and is polled without resubmission. */
-  async recover(): Promise<void> {
+  recover(): Promise<void> {
+    if (this.closing) return Promise.resolve()
+    if (this.recovery) return this.recovery
+    const task = Promise.resolve().then(() => this.recoverConversations())
+    this.recovery = task
+    void task.finally(() => { if (this.recovery === task) this.recovery = undefined }).catch(() => undefined)
+    return task
+  }
+  private async recoverConversations(): Promise<void> {
+    if (this.closing) return
     for (const row of await this.repository.open()) {
       if (this.closing) return
       await this.repair(row.id)
     }
   }
 
-  async shutdown(): Promise<void> {
+  shutdown(): Promise<void> {
     this.closing = true
     for (const timer of this.reconciliationTimers.values()) clearTimeout(timer)
     this.reconciliationTimers.clear()
     this.lifetime.abort(new Error('Agent chat is shutting down.'))
-    await Promise.allSettled([...this.tasks.values()])
-    await Promise.allSettled([...this.controls.values()])
-    await Promise.allSettled([...this.runtimes.keys()].map((id) => this.release(id)))
+    if (this.shutdownAttempt) return this.shutdownAttempt
+    const attempt = Promise.resolve().then(async () => {
+      // An admitted command/recovery pass may still be awaiting SQL or publishing control work.
+      // Drain producers before disposing managers or allowing the production owner to unlock.
+      while (this.commands.size || this.tasks.size || this.controls.size || this.recovery) {
+        await Promise.allSettled([...this.commands, ...this.tasks.values(), ...this.controls.values(), ...(this.recovery ? [this.recovery] : [])])
+      }
+      const results = await Promise.allSettled([...this.runtimes.keys()].map((id) => this.release(id)))
+      const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+      if (errors.length) throw new AggregateError(errors, 'Agent chat native cleanup was incomplete; ownership is retained for retry.')
+    })
+    this.shutdownAttempt = attempt
+    void attempt.catch(() => { if (this.shutdownAttempt === attempt) this.shutdownAttempt = undefined })
+    return attempt
   }
 }

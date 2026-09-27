@@ -35,6 +35,7 @@ export interface AgentConversationRow {
   last_result: ExecutionResult | null
   record: {
     origin: AgentChatOrigin; workingDirectory: string; runtimeDirectory: string; startupDelivered?: boolean; sessionUnavailable?: string
+    sessionUnavailableReason?: 'native_session_missing' | 'harness_unavailable'
     /** Durable fence: an unbound native creation is never permission to create a replacement. */
     sessionCreation?: { requestId: string }
     startupReceipt?: { requestId: string; nativeSessionId: string }
@@ -321,9 +322,9 @@ export class PostgresAgentChatRepository {
   async markStartupDelivered(id: string): Promise<void> {
     await this.pool.query(`update operator_conversations set record=record || '{"startupDelivered":true}'::jsonb where id=$1 and kind='agent'`, [id])
   }
-  async markSessionUnavailable(id: string, reason: string): Promise<void> {
-    await this.pool.query(`update operator_conversations set record=record || jsonb_build_object('sessionUnavailable',$2::text),
-      revision=revision+1,updated_at=now() where id=$1 and kind='agent'`, [id, reason])
+  async markSessionUnavailable(id: string, reason: string, blockedReason: 'native_session_missing' | 'harness_unavailable' = 'native_session_missing'): Promise<void> {
+    await this.pool.query(`update operator_conversations set record=record || jsonb_build_object('sessionUnavailable',$2::text,'sessionUnavailableReason',$3::text),
+      revision=revision+1,updated_at=now() where id=$1 and kind='agent'`, [id, reason, blockedReason])
   }
 
   /** Provider acknowledged the turn. This is not evidence the model consumed it. */
