@@ -413,9 +413,15 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
           && item.notice.noticeId === denied.notice.noticeId)).toBe(true)
         if (stopBeforeDelivery) {
           await pool.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [run.id])
-          await expect(store.admitWorkActivation(denied.notice.continuationActivationId,
-            () => { throw new Error('Stop must fence B before native admission.') }))
-            .rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+          await owner.release()
+          const restartedOwner = await RunOwnership.acquire(pool, run.id, () => undefined)
+          assert.ok(restartedOwner)
+          try {
+            const restarted = new RepeatRunRepository(restartedOwner, host, version)
+            await expect(restarted.admitWorkActivation(denied.notice.continuationActivationId,
+              () => { throw new Error('Stop must fence B before native admission.') }))
+              .rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+          } finally { await restartedOwner.release() }
           expect((await pool.query<{ delivery_state: string }>(
             'select delivery_state from run_work_notices where notice_id=$1',
             [denied.notice.noticeId])).rows[0]?.delivery_state).toBe('queued')
@@ -483,31 +489,29 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect((await pool.query<{ delivery_state: string }>(
           'select delivery_state from run_work_notices where notice_id=$1',
           [notice.noticeId])).rows[0]?.delivery_state).toBe('unknown')
-        expect((await store.admitWorkActivation(notice.continuationActivationId,
-          () => { throw new Error('An uncertain notice must not allocate another native turn.') })).reused).toBe(true)
-        expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1', [run.id])).rows[0]?.used).toBe(3)
-        expect((await pool.query('select request_id from run_work_requests where run_id=$1', [run.id])).rowCount).toBe(3)
-        expect((await pool.query('select denial_id from run_work_denials where run_id=$1', [run.id])).rowCount).toBe(1)
-        const repeatedExhausted = await store.admitWorkRequest('source-execution-5')
-        expect(repeatedExhausted.kind).toBe('needs_direction')
-        expect((await store.admitWorkRequest('source-execution-5')).replayed).toBe(true)
-        expect((await pool.query('select unresolved_id from run_work_unresolved where run_id=$1',
-          [run.id])).rowCount).toBe(1)
-        expect((await pool.query('select denial_id from run_work_denials where run_id=$1', [run.id])).rowCount).toBe(1)
-        expect((await pool.query(`select 1 from run_work_activations where run_id=$1 and cause_kind='limit_denial'`,
-          [run.id])).rowCount).toBe(1)
-        await pool.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [run.id])
-        await expect(store.claimLaunch(returnTurn.execution.id, {
-          workingDirectory: '/tmp/nim2691-stopped', runtimeDirectory: '/tmp/nim2691-stopped/runtime',
-        })).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
-        await expect(store.admitWorkRequest('source-execution-5')).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
-        expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1',
-          [run.id])).rows[0]?.used).toBe(3)
         await owner.release()
         const recoveredOwner = await RunOwnership.acquire(pool, run.id, () => undefined)
         assert.ok(recoveredOwner)
         try {
           const recovered = new RepeatRunRepository(recoveredOwner, host, version)
+          expect((await recovered.admitWorkActivation(notice.continuationActivationId,
+            () => { throw new Error('An uncertain notice must not allocate another native turn.') })).reused).toBe(true)
+          expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1', [run.id])).rows[0]?.used).toBe(3)
+          expect((await pool.query('select request_id from run_work_requests where run_id=$1', [run.id])).rowCount).toBe(3)
+          expect((await pool.query('select denial_id from run_work_denials where run_id=$1', [run.id])).rowCount).toBe(1)
+          const repeatedExhausted = await recovered.admitWorkRequest('source-execution-5')
+          expect(repeatedExhausted.kind).toBe('needs_direction')
+          expect((await recovered.admitWorkRequest('source-execution-5')).replayed).toBe(true)
+          expect((await pool.query('select unresolved_id from run_work_unresolved where run_id=$1',
+            [run.id])).rowCount).toBe(1)
+          expect((await pool.query('select denial_id from run_work_denials where run_id=$1', [run.id])).rowCount).toBe(1)
+          expect((await pool.query(`select 1 from run_work_activations where run_id=$1 and cause_kind='limit_denial'`,
+            [run.id])).rowCount).toBe(1)
+          await pool.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [run.id])
+          await expect(recovered.claimLaunch(returnTurn.execution.id, {
+            workingDirectory: '/tmp/nim2691-stopped', runtimeDirectory: '/tmp/nim2691-stopped/runtime',
+          })).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+          await expect(recovered.admitWorkRequest('source-execution-5')).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
           expect((await recovered.admitWorkRequest('source-execution-3')).replayed).toBe(true)
           expect((await recovered.admitWorkRequest('source-execution-4')).replayed).toBe(true)
           expect(recovered.consumeLaunchPermit('review-execution-2')).toBe(false)
