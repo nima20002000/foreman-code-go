@@ -48,4 +48,13 @@ describe('GraphQL MCP tools in Agent settings', () => {
     expect(onSave.mock.calls[0]![0].graphqlTools).toEqual(['context_get', 'interaction_list'])
     expect(onSave.mock.calls[0]![3]).toBeUndefined()
   })
+
+  it('keeps an inherited Agent default when only this workflow changes', () => {
+    const { onSave, tools } = open('coder')
+    const group = within(tools).getByRole('group', { name: 'Read an interaction: this workflow' })
+    fireEvent.click(within(group).getByLabelText('Off'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    expect(onSave.mock.calls[0]![0].graphqlTools).toBeUndefined()
+    expect(onSave.mock.calls[0]![3]).toEqual({ add: [], remove: ['interaction_get'] })
+  })
 })

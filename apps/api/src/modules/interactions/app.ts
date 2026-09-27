@@ -70,6 +70,8 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const scope = workerScope(principal)
     const readAllowed = await this.canRead(principal)
     const responseAllowed = await this.canRespond(principal)
+    const access = await this.toolAccess(principal)
+    const enabled = (tool: string) => access.tools.includes(tool as never)
     return {
       principal: {
         id: principal.id,
@@ -77,13 +79,14 @@ export class PostgresAppInteractionService implements AppInteractionService {
         agentId: principal.agentId!,
         expiresAt: principal.expiresAt,
       },
-      ...await this.toolAccess(principal),
+      ...access,
       scope,
+      // Only tools enabled for this Agent and node are usable capabilities.
       capabilities: {
         contextGet: true,
-        interactionList: readAllowed,
-        interactionGet: readAllowed,
-        interactionRespond: responseAllowed,
+        interactionList: readAllowed && enabled('interaction_list'),
+        interactionGet: readAllowed && enabled('interaction_get'),
+        interactionRespond: responseAllowed && enabled('interaction_respond'),
       },
     }
   }

@@ -17,7 +17,8 @@ export function GraphqlToolsFields({ role, defaults, override, onChange }: {
   role: AgentProductRole
   defaults: readonly GraphqlAgentTool[] | undefined
   override: GraphqlToolOverride | undefined
-  onChange(defaults: GraphqlAgentTool[], override: GraphqlToolOverride | undefined): void
+  /** defaults stays undefined (inherit every role tool) until the Agent default itself is edited. */
+  onChange(defaults: GraphqlAgentTool[] | undefined, override: GraphqlToolOverride | undefined): void
 }) {
   const tools = graphqlRoleTools(role)
   const agentDefault = defaults ? tools.filter((tool) => defaults.includes(tool)) : tools
@@ -34,7 +35,8 @@ export function GraphqlToolsFields({ role, defaults, override, onChange }: {
     const remove = (override?.remove ?? []).filter((item) => item !== tool)
     if (value === 'on' && !agentDefault.includes(tool)) add.push(tool)
     if (value === 'off' && agentDefault.includes(tool)) remove.push(tool)
-    onChange(agentDefault, normalizeToolOverride({ add, remove }))
+    // A node-only change never rewrites the Agent's default.
+    onChange(defaults ? [...defaults] : undefined, normalizeToolOverride({ add, remove }))
   }
   const effective = effectiveGraphqlTools(role, agentDefault, override)
   return <fieldset className="agent-graphql-tools">
