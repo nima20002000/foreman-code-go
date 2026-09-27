@@ -100,6 +100,8 @@ describe.skipIf(!enabled)('NIM-2691 ambiguous admission COMMIT', () => {
         expect((await pool.query('select 1 from run_work_requests where run_id=$1', [run.id])).rowCount).toBe(1)
         expect((await pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2',
           [run.id, edge.target])).rowCount).toBe(0)
+        await expect(pool.query(`update run_work_requests set payload_digest=$2 where run_id=$1`,
+          [run.id, `sha256:${'f'.repeat(64)}`])).rejects.toThrow('WORK_EVIDENCE_IMMUTABLE')
       } finally {
         connected = false
         await connection.close()

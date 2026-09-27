@@ -5,7 +5,8 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { AgentConfigurationVersionSchema, AgentSchema, WorkspaceSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+  ListInteractionsResponseSchema, WorkspaceSchema } from '@graphql/contracts'
 import { ManagementActionSchema } from '@graphql/contracts/management'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   SavedManagedWorkflowCommandResultSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
@@ -33,13 +34,16 @@ async function taskPort(): Promise<number> {
 
 describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
   it.each([
-    { name: 'single Codex activation', form: 'single', providers: ['codex'], review: false },
-    { name: 'Codex to OpenCode handoff', form: 'sequential', providers: ['codex', 'opencode'], review: false },
+    { name: 'single Codex activation', form: 'single', providers: ['codex'], review: false, approval: false },
+    { name: 'Codex to OpenCode handoff', form: 'sequential', providers: ['codex', 'opencode'], review: false, approval: false },
     { name: 'Codex conditional final route to OpenCode', form: 'conditional',
-      providers: ['codex', 'opencode'], review: false },
-    { name: 'Codex to OpenCode accepted review return', form: 'sequential', providers: ['codex', 'opencode'], review: true },
+      providers: ['codex', 'opencode'], review: false, approval: false },
+    { name: 'Codex to OpenCode accepted review return', form: 'sequential', providers: ['codex', 'opencode'],
+      review: true, approval: false },
+    { name: 'OpenCode read-only approval before Codex handoff', form: 'sequential',
+      providers: ['opencode', 'codex'], review: false, approval: true },
     { name: 'unequal Codex and OpenCode branches into one all-required join', form: 'parallel',
-      providers: ['codex', 'opencode', 'codex', 'opencode'], review: false },
+      providers: ['codex', 'opencode', 'codex', 'opencode'], review: false, approval: false },
   ] as const)('finishes $name with exact accepted results and cleanup', async (scenario) => {
     await nim2691TaskDatabase(async (pool, directory, suppliedUrl) => {
       const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url))
@@ -92,11 +96,15 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           ...original,
           harness: scenario.providers[index] === 'opencode'
             ? { harness: 'opencode', model: 'opencode-go/gpt-5.6-luna', variant: 'high',
-              nativeAgent: 'build', thinking: false, autoApprove: false }
+              nativeAgent: 'build', thinking: false, autoApprove: false,
+              ...(scenario.approval && index === 0 ? { advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+                permissionRules: [{ permission: 'shell', pattern: 'pwd', effect: 'ask' }] } } : {}) }
             : { harness: 'codex', model: 'gpt-5.6-luna', reasoningEffort: 'high',
               sandbox: 'read-only', serviceTier: 'standard' },
           prompt: { system: index === 0
-            ? 'Follow the GraphQL work-handoff output contract. Do not use tools.'
+            ? scenario.approval
+              ? 'Use exactly one read-only shell command: pwd. Wait for the authorized response. Then follow the GraphQL work-handoff output contract.'
+              : 'Follow the GraphQL work-handoff output contract. Do not use tools.'
             : 'Summarize only the received work. Follow the GraphQL work-handoff output contract.' },
         }))
         const workspace = WorkspaceSchema.parse({ id: fixture.scope.workspaceId, name: 'NIM-2691 native qualification' })
@@ -138,7 +146,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           nodes: fixture.version.definition.nodes.map((node, index) => ({ ...node,
             ...(scenario.review && index === 0 ? { choice: { outcomes: [{ outcome: 'review',
               target: { kind: 'edge', relationshipId: fixture.version.definition.edges[0]!.id } }] } } : {}),
-            initialPrompt: scenario.review
+            initialPrompt: scenario.approval && index === 0
+              ? 'First call the shell tool with exactly pwd. After its approval and result, return a short greeting in latestDeliverable and finish.'
+              : scenario.review
               ? index === 0
                 ? 'Submit one review request using routing.kind request and routing.outcome review. Put a short greeting in latestDeliverable.'
                 : 'Return to the exact requestId in input.work.request using routing.kind return and routing.outcome accepted. Keep latestDeliverable non-null and remainingFindings empty.'
@@ -168,8 +178,37 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             expectedLocationRevision: 1, input: { task: 'Say hello once.' } } })
         expect(started.statusCode, started.body).toBe(202)
         const runId = started.json().run.id as string
+        const user = scenario.approval ? await access.issue({ name: 'NIM-2691 read-only approval tester',
+          audience: 'user', expiresAt: new Date(Date.now() + 10 * 60_000), grants: [{
+            actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: [workspace.id] },
+          }] }) : undefined
+        const approved = new Set<string>()
         let state: string | undefined, outcome: string | undefined
         for (let attempt = 0; attempt < 180; attempt++) {
+          if (user) {
+            const pendingResponse: { statusCode: number; body: string; json(): unknown } = await app.inject({ method: 'GET',
+              url: `/api/user/interactions?workspaceId=${encodeURIComponent(workspace.id)}&workflowId=${encodeURIComponent(managed.workflow.id)}&runId=${encodeURIComponent(runId)}&status=pending&limit=20`,
+              headers: { host: 'localhost', authorization: `Bearer ${user.token}` } })
+            expect(pendingResponse.statusCode, pendingResponse.body).toBe(200)
+            const pending: ReturnType<typeof ListInteractionsResponseSchema.parse>['items'] =
+              ListInteractionsResponseSchema.parse(pendingResponse.json()).items
+            for (const interaction of pending) {
+              if (approved.has(interaction.id)) continue
+              const request = interaction.request as { permission?: unknown; patterns?: unknown }
+              if (interaction.nativeRequestType !== 'permission.asked' || request.permission !== 'bash'
+                || !Array.isArray(request.patterns) || request.patterns.length !== 1 || request.patterns[0] !== 'pwd') {
+                throw new Error('The native provider asked for a permission other than the exact read-only pwd command.')
+              }
+              const choice = interaction.responseOptions.find((option) => option.semantic === 'approve_once')
+              assert.ok(choice)
+              const response = await app.inject({ method: 'POST',
+                url: `/api/user/interactions/${interaction.id}/respond`,
+                headers: { host: 'localhost', authorization: `Bearer ${user.token}` },
+                payload: { interactionId: interaction.id, optionId: choice.optionId, expectedRevision: interaction.revision } })
+              expect(response.statusCode, response.body).toBe(200)
+              approved.add(interaction.id)
+            }
+          }
           const row = (await pool.query<{ execution_state: string; record: { outcome?: string } }>(
             'select execution_state,record from runs where id=$1', [runId])).rows[0]
           state = row?.execution_state; outcome = row?.record.outcome
@@ -185,6 +224,12 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           'select kind from run_activity where run_id=$1 order by sequence', [runId])).rows.map((row) => row.kind)
         expect({ state, outcome }, JSON.stringify({ runError, executions, activityKinds, startupErrors }))
           .toEqual({ state: 'completed', outcome: 'succeeded' })
+        if (scenario.approval) {
+          const nativeTypes = (await pool.query<{ type: string }>(`select e.record->>'type' as type
+            from harness_native_events e join harness_executions x on x.id=e.execution_id
+            where x.run_id=$1 order by e.sequence`, [runId])).rows.map((row) => row.type)
+          expect(approved.size, JSON.stringify({ nativeTypes })).toBeGreaterThan(0)
+        }
         expect((await pool.query('select 1 from run_work_results where run_id=$1', [runId])).rowCount).toBe(configurations.length)
         expect((await pool.query('select 1 from run_repeat_executions where run_id=$1 and work_activation_id is not null',
           [runId])).rowCount).toBe(configurations.length)
