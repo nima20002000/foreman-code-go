@@ -199,7 +199,16 @@ export class PostgresAgentChatRepository {
         const prior = (await client.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
           where conversation_id=$1 and request_id=$2`, [row.id, input.request.requestId])).rows[0]
         if (prior) {
-          if (prior.input_hash !== hash) throw new DomainError('AGENT_CHAT_REQUEST_CONFLICT', 'This request ID was already used with a different message.', 409)
+          // Pre-F1 steers retained their native target, but omitted it from the hash. Only that
+          // durable target can establish a legacy replay; never infer it from the current owner.
+          // Pre-F1 urgent sends retained no target, so their targeted retries must stay fail-closed.
+          const sameSteerTarget = input.request.intent === 'steer' && input.request.expectedNativeTurnId !== undefined
+            && prior.target_native_turn_id === input.request.expectedNativeTurnId
+          const legacySteerReplay = sameSteerTarget && prior.intent === 'steer'
+            && prior.input_hash === agentChatInputHash({ content: input.request.content, intent: input.request.intent, context: input.request.context })
+          if (input.request.intent === 'steer' && !sameSteerTarget || prior.input_hash !== hash && !legacySteerReplay) {
+            throw new DomainError('AGENT_CHAT_REQUEST_CONFLICT', 'This request ID was already used with a different message.', 409)
+          }
           await client.query('commit')
           return { conversationId: row.id, turn: turn(prior), replayed: true, created: false }
         }

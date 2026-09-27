@@ -712,7 +712,8 @@ export class AgentChatService {
     if (this.closing || this.reconciliationTimers.has(id)) return
     const timer = setTimeout(() => {
       this.reconciliationTimers.delete(id)
-      void this.repair(id).catch((error: unknown) => {
+      // Own the complete repair, including its post-control SQL reads, until shutdown drains it.
+      void this.command(() => this.repair(id)).catch((error: unknown) => {
         this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Native reconciliation failed.' })
         this.scheduleReconcile(id)
       })
