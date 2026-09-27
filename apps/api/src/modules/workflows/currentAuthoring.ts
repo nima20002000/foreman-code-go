@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
-  CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema,
+  workflowSaveIssues, CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema,
   CurrentWorkflowSavedSchema, CurrentWorkflowReadInputSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowValidationSchema, WorkflowDefinitionV3Schema, WorkflowVersionV3Schema,
   ExecutableWorkflowV3Schema, canonicalGraphJson, sameExecutableWorkflow, sameWorkflowValue,
@@ -297,10 +297,10 @@ export class CurrentWorkflowAuthoring {
       workflowId: input.workflowId, version: number, executionSemanticsVersion: 3, entryNodeId: input.graph.entryNodeId,
       definition: { ...preserveWorkflowGeometry(input.graph, current), version: number, updatedAt: now }, approval: input.graph.approval,
       agentConfigurationVersionIds: configurationPins, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: now })
-    if (!parsedVersion.success) return fail('GRAPH_INVALID', parsedVersion.error.issues.map((issue) => issue.message).join('; '))
+    if (!parsedVersion.success) throw new DomainError('GRAPH_INVALID', 'Fix the workflow settings below.', 409, { issues: workflowSaveIssues(parsedVersion.error.issues) })
     const version = parsedVersion.data
     const executable = ExecutableWorkflowV3Schema.safeParse({ version, configurations })
-    if (!executable.success) return fail('GRAPH_INVALID', executable.error.issues.map((issue) => issue.message).join('; '))
+    if (!executable.success) throw new DomainError('GRAPH_INVALID', 'Fix the workflow settings below.', 409, { issues: workflowSaveIssues(executable.error.issues) })
     for (const config of configurations) {
       if (config.assignedSkills?.length) requireAuthorization(principal, 'skills:read', { workspaceId: input.workspaceId })
       if (config.harness.harness === 'codex' && config.harness.sandbox === 'danger-full-access') requireAuthorization(principal, 'harnesses:update', input)

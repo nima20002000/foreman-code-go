@@ -27,8 +27,10 @@ export function validateReviewerBootstrap(
   if (configuration?.harness === 'codex') {
     if (configuration.advanced?.approvalPolicy !== 'on-request'
       || configuration.advanced.approvalsReviewer !== 'auto_review') {
-      throw new DomainError('APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED',
-        'A Codex Orchestrator needs Ask when needed and Codex automatic review to respond to App MCP approval requests without a person.', 409)
+      const message = 'Choose “You, the Operator” for approvals, or set the reviewing agent to “Ask when needed” and “Codex automatic review”.'
+      throw new DomainError('APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED', message, 409, { issues: [{
+        code: 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED', path: ['approval', 'handler'], message,
+      }] })
     }
     return
   }

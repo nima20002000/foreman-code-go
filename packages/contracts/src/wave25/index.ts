@@ -32,3 +32,5 @@ export {
   type CurrentManagedWorkflow, type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse,
   type CurrentRunDetails,
 } from './currentRead.js'
+
+export * from './workflowSaveIssues.js'

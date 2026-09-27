@@ -34,7 +34,7 @@ export const AcceptedWorkflowApprovalConfigurationSchema = z
   .strict()
   .superRefine((value, context) => {
     if (value.handler === "orchestrator" && !value.designatedOrchestratorAgentId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "accepted orchestrator handling requires a designated Orchestrator" });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "Choose a reviewing orchestrator.", params: { issueCode: "ORCHESTRATOR_REQUIRED" } });
     }
     if (value.handler !== "orchestrator" && value.designatedOrchestratorAgentId) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["designatedOrchestratorAgentId"], message: "only orchestrator handling may designate an Orchestrator" });

@@ -175,7 +175,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const advance = vi.spyOn(nextDraftApi, 'editAdvance'), user = userEvent.setup()
     mount(); typeMeaning(); await requestSave(user)
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
-    await waitFor(() => expect(screen.getByText(/Your edits are still here/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/The workflow changed/)).toBeInTheDocument())
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(advance).not.toHaveBeenCalled()
     expect(readEditOutbox(key)).toBeUndefined(); expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')

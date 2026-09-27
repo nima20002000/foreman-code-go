@@ -35,7 +35,13 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
   const graph = version.definition
   if (graph.id !== version.workflowId || graph.workspaceId !== version.workspaceId || graph.version !== version.version) issue('immutable scope/version mismatch')
   if (graph.entryNodeId !== version.entryNodeId) issue('authored and immutable entry must match', ['entryNodeId'])
-  if (!graph.executionPolicy || graph.executionPolicy.maxNodeExecutions < graph.nodes.length) issue('an executable version requires a sufficient execution policy')
+  if (!graph.executionPolicy) context.addIssue({ code: 'custom', path: ['definition', 'executionPolicy'],
+    message: 'Set execution limits.', params: { issueCode: 'EXECUTION_LIMITS_REQUIRED' } })
+  else if (graph.executionPolicy.maxNodeExecutions < graph.nodes.length) context.addIssue({
+    code: 'custom', path: ['definition', 'executionPolicy', 'maxNodeExecutions'],
+    message: `Increase “Maximum node executions” to at least ${graph.nodes.length}.`,
+    params: { issueCode: 'EXECUTION_LIMIT_TOO_LOW', minimum: graph.nodes.length, actual: graph.executionPolicy.maxNodeExecutions },
+  })
   if (graph.requiredAgentCount !== undefined && graph.requiredAgentCount !== graph.nodes.length) issue('requiredAgentCount does not match the topology')
   if (canonicalGraphJson(graph.approval ?? null) !== canonicalGraphJson(version.approval)) issue('definition and immutable approval assignment must match')
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]))

@@ -17,7 +17,7 @@ export function EntryFields({ graph, context, change, agentEdits }: { graph: Wor
   const choices = entryChoices(graph, context, agentEdits), id = useId()
   return <section aria-labelledby={id} className="next-draft-section">
     <h3 id={id}>Starting agent</h3>
-    <Select label="Starts the workflow" value={graph.entryNodeId ?? ''} aria-invalid={!choices.valid}
+    <Select data-save-field="entry" label="Starts the workflow" value={graph.entryNodeId ?? ''} aria-invalid={!choices.valid}
       onChange={(event) => change((value) => ({ ...value, entryNodeId: event.target.value || null }))} options={[
         { value: '', label: 'Choose an agent' },
         ...graph.nodes.map((node) => ({ value: node.id, disabled: !choices.eligible.some((item) => item.id === node.id), label: nodeTitle(graph, node.id) })),
@@ -30,12 +30,12 @@ export function EntryFields({ graph, context, change, agentEdits }: { graph: Wor
 export function ApprovalFields({ graph, context, change, report, agentEdits }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void; agentEdits?: DraftAgentEdits }) {
   return <section className="next-draft-section" aria-label="Approval handling">
     <h3>Approvals</h3>
-    <Select label="Approval handler" value={graph.approval?.handler ?? ''} onChange={(event) => {
+    <Select data-save-field="approval" label="Approval handler" value={graph.approval?.handler ?? ''} onChange={(event) => {
       const handler = event.target.value
       if (handler !== 'user' && handler !== 'orchestrator') return
       try { change((value) => changeApprovalHandler(value, handler)) } catch (error) { report(error) }
     }} options={[{ value: '', label: 'Choose who approves', disabled: true }, { value: 'user', label: 'You, the Operator' }, { value: 'orchestrator', label: 'An orchestrator agent' }]} />
-    {graph.approval?.handler === 'orchestrator' ? <Select label="Reviewing orchestrator" value={graph.approval.designatedOrchestratorAgentId ?? ''}
+    {graph.approval?.handler === 'orchestrator' ? <Select data-save-field="orchestrator" label="Reviewing orchestrator" value={graph.approval.designatedOrchestratorAgentId ?? ''}
       onChange={(event) => change((value) => ({ ...value, approval: { handler: 'orchestrator', ...(event.target.value ? { designatedOrchestratorAgentId: event.target.value } : {}) } }))} options={[
         { value: '', label: 'Choose an orchestrator' },
         ...graph.nodes.filter((node) => roleEvidence(context, node.agentId, agentEdits).role === 'orchestrator').map((node) => ({ value: node.agentId, label: nodeTitle(graph, node.id) })),

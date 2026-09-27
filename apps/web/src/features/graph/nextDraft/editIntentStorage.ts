@@ -220,7 +220,8 @@ export function isDefinitiveStageRejection(error: unknown): boolean {
   if (!ApiError.is(error)) return false
   if (error.status === 404) return error.code === 'GRAPH_DRAFT_NOT_FOUND'
   return error.status === 409 && ['REVISION_CONFLICT', 'WORKFLOW_BASE_CONFLICT', 'GRAPH_INVALID',
-    'AGENT_ID_CONFLICT', 'AGENT_REVISION_CONFLICT', 'AGENT_SOURCE_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS'].includes(error.code)
+    'AGENT_ID_CONFLICT', 'AGENT_REVISION_CONFLICT', 'AGENT_SOURCE_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS',
+    'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED'].includes(error.code)
 }
 /** Call only for the exact editStage failure, under the same session/scope lock.
  * Releasing a rejected reservation never discards or rewrites the local form. */

@@ -160,7 +160,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     // A stale Stage rejects before any affected-set confirmation or Stop.
     await user.click(saveButton())
     await waitFor(() => expect(stage).toHaveBeenCalledOnce())
-    await screen.findByText('Changes were not saved.')
+    await screen.findByText('The workflow changed.')
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(stage.mock.calls[0]![0].expectedRevision).toBe(10)
     expect(advance).not.toHaveBeenCalled()

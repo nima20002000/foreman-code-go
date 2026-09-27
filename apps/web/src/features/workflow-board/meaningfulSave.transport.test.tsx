@@ -64,6 +64,32 @@ function expectRetained(f: Fixture, submitted: ReturnType<typeof change>) {
 // These cases mount the REGISTERED Board, not a mocked hook, writer, ApiClient,
 // or current-workflow count. Only HTTP and JSDOM infrastructure are synthetic.
 describe('meaningful Save through the real Board transport', () => {
+  it('opens and focuses the settings named by a rejected save without losing edits', async () => {
+    const f = await meaningfulSaveFixture(), user = userEvent.setup(), reply = f.reply
+    f.reply = async (request) => request.method === 'POST' && new URL(request.url).pathname === `${f.path}/definition/edits`
+      ? Response.json({ error: { code: 'GRAPH_INVALID', message: 'Fix the workflow settings below.', details: { issues: [
+        { code: 'ORCHESTRATOR_REQUIRED', path: ['approval', 'designatedOrchestratorAgentId'], message: 'Choose a reviewing orchestrator.' },
+        { code: 'EXECUTION_LIMITS_REQUIRED', path: ['executionPolicy'], message: 'Set execution limits.' },
+      ] } } }, { status: 409 }) : reply(request)
+    await mount(f)
+    change(f, 'graph-only')
+    act(() => useGraphDraftStore.getState().updateNextDraft(f.key, (current) => {
+      const graph = { ...current.graph, approval: { handler: 'orchestrator' as const } }
+      delete graph.executionPolicy
+      return { ...current, graph }
+    }))
+    await user.click(saveBar().getByRole('button', { name: 'Save changes' }))
+    await screen.findByText('Can’t save — fix 2 settings')
+    const fixes = screen.getAllByRole('button', { name: 'Fix setting' })
+    await user.click(fixes[0]!)
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Reviewing orchestrator' })).toHaveFocus())
+    await user.click(fixes[1]!)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Set limits' })).toHaveFocus())
+    expect(nextDraftDirty(draft(f))).toBe(true)
+    expect(readEditOutbox(f.key)).toBeUndefined()
+    expect(f.requests.publications).toBe(0)
+  }, 20000)
+
   it.each<EditKind>(['graph-only', 'update-agent', 'create-agent'])('%s: rejected publication leaves saved graph and Agents unchanged', async (kind) => {
     const f = await meaningfulSaveFixture(), user = userEvent.setup()
     f.controls.rejectPublish = true
@@ -125,12 +151,14 @@ describe('meaningful Save through the real Board transport', () => {
     const f = await meaningfulSaveFixture(), user = userEvent.setup(); f.controls.loseSaveReply = true
     const { cache, wire } = await mount(f), submitted = change(f)
     await user.click(saveBar().getByRole('button', { name: 'Save changes' }))
-    await screen.findByText('Changes were not saved.')
+    await screen.findByText('Save not confirmed.')
     expect(f.read().intent?.state).toBe('saved')
     expectRetained(f, submitted)
     await act(async () => { await cache.invalidateQueries() })
     await waitFor(() => expect(nextDraftDirty(draft(f))).toBe(false))
     expect(readEditOutbox(f.key)).toBeUndefined()
+    expect(screen.queryByText('Can’t save.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Save not confirmed.')).not.toBeInTheDocument()
     expect(f.requests.publications).toBe(1); expect(f.requests.advances).toHaveLength(1)
     expect(wire.writes().every((call) => call.path === `${f.path}/definition/edits`)).toBe(true)
     expect(f.mock.runs.size).toBe(0)

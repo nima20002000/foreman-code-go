@@ -241,7 +241,13 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     return data
   }), retry: false })
 
-  const { mutate, isPending } = mutation
+  const { mutate, isPending, isError, reset } = mutation
+  const dirty = nextDraftDirty(edit)
+  useEffect(() => {
+    // Receipt readback can confirm a lost reply without rerunning the mutation.
+    // Once no edits or unresolved command remain, its old error is obsolete.
+    if (isError && !dirty && !outboxPending && !activeEditIntent(query.data?.intent)) reset()
+  }, [dirty, isError, outboxPending, query.data?.intent, reset])
   useEffect(() => {
     const data = query.data, intent = data?.intent
     if (!intent || isPending || data.affectedSetChanged || storageError) return

@@ -2,6 +2,7 @@ import { useDraftLayout } from './useDraftLayout'
 import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Inbox, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV3Schema, staysOnWorkflowBoard, sameExecutableWorkflow, type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
@@ -17,6 +18,7 @@ import { nextDraftDirty, nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
 import { readEditOutbox, readEditSnapshot, storeEditSnapshot } from './editIntentStorage'
 import { useGraphEditIntent } from './useGraphEditIntent'
+import { WorkflowSaveError } from './WorkflowSaveError'
 import { EditIntentStatus } from './EditIntentStatus'
 import { draftFailure } from './writer'
 import { useInteractionsQuery, useManagedWorkspaceQuery } from '../../../shared/api/query'
@@ -98,6 +100,13 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const editIntent = useGraphEditIntent(draftKey, edit)
   const guard = useContext(UnsavedChangesContext)
   const [panel, setPanel] = useState<Panel>(null)
+  const settingsPanel = useRef<HTMLElement>(null)
+  const openSaveField = (path: (string | number)[]) => {
+    flushSync(() => setPanel('workflow'))
+    const field = path[0] === 'approval' ? (path[1] === 'designatedOrchestratorAgentId' ? 'orchestrator' : 'approval')
+      : path[0] === 'entryNodeId' ? 'entry' : path[1] === 'maxNodeExecutions' ? 'executions' : 'limits'
+    settingsPanel.current?.querySelector<HTMLElement>(`[data-save-field="${field}"]`)?.focus()
+  }
   const [openNode, setOpenNode] = useState<OpenAgentPanel>()
   const [confirm, setConfirm] = useState<'save' | 'discard' | 'reload'>()
   const runAfterSave = useRef(false)
@@ -247,6 +256,9 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       // or capabilities. A lost acknowledgement never becomes a second Start.
       if (!canStart) throw new Error('Start permission is unavailable for this exact workflow. No command was sent.')
       const existing = readBoardStart(draftKey)
+      if (!existing && !useGraphDraftStore.getState().nextDrafts[draftKey]?.graph.nodes.length) {
+        throw new Error('Add an agent before saving and running.')
+      }
       let saved = false
       if (!existing && options?.saveFirst) {
         runAfterSave.current = true
@@ -326,10 +338,10 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     if (!preflight.data) throw new Error('Checking saved workflow and runtime availability…')
     boardStartPins(context.draft, preflight.data)
   } catch (error) { preflightReason = error instanceof Error ? error.message : 'Saved Start pins are unavailable.' }
-  const startDisabled = !canStart || storageFailed || starting || reloading || (!pendingStart && ((!needsSave && !!preflightReason) || startReloadRequired || editIntent.locked
+  const startDisabled = !canStart || storageFailed || starting || reloading || (!pendingStart && (!graph.nodes.length || (!needsSave && !!preflightReason) || startReloadRequired || editIntent.locked
     || edit.busy || !!edit.pending))
   const startReason = !canStart ? 'Start permission is unavailable for this workflow' : pendingStart ? 'Reconcile the exact earlier Start command' : startReloadRequired ? 'Reload after the saved version was rejected'
-    : needsSave ? 'Save and run' : preflightReason ?? 'Run the saved workflow'
+    : !graph.nodes.length ? 'Add an agent before saving and running' : needsSave ? 'Save and run' : preflightReason ?? 'Run the saved workflow'
   const saveBusy = edit.busy || reloading || !!edit.pending || !!pendingStart || editIntent.mutation.isPending
   // Workflow-local Run summaries cannot describe blockers of a shared-Agent edit.
   // Stage/reconcile first; ask for Stop only for that exact authoritative set.
@@ -453,7 +465,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         {message ? <Alert tone="success" title={message} action={<IconButton size="sm" variant="ghost" label="Dismiss" onClick={() => setMessage(undefined)}><Icon name="close" size={14} /></IconButton>} /> : null}
         {editIntent.storageError ? <Alert tone="danger" live title="Changes can’t be kept in this browser.">{editIntent.storageError}</Alert> : null}
         {editIntent.query.error ? <Alert tone="warning" title="Couldn’t check the status of your last save.">Your changes are still here. {editIntent.query.error.message}</Alert> : null}
-        {editIntent.mutation.error ? <Alert tone="danger" live title="Changes were not saved.">{editIntent.mutation.error.message} Your edits are still here.</Alert> : null}
+        {editIntent.mutation.error ? <WorkflowSaveError error={editIntent.mutation.error} pending={editIntent.outboxPending || !!editIntent.intent && !['saved', 'discarded'].includes(editIntent.intent.state)} openField={openSaveField} /> : null}
         {editIntent.locked && !editIntent.sameDisplayedPayload ? <Alert tone="warning" title="You made more edits after saving started.">They stay here and won’t be overwritten.</Alert> : null}
         {editIntent.query.data?.intent && !['saved', 'discarded'].includes(editIntent.query.data.intent.state) ? <EditIntentStatus data={editIntent.query.data} /> : null}
         {errorText ? <Alert tone="danger" live title={edit.error?.uncertain ? 'We couldn’t confirm whether that worked.' : 'Something went wrong.'}
@@ -471,7 +483,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           <AttachAgentField graph={graph} context={context} change={change} report={report} />
         </fieldset>
       </AgentPickerPanel> : null}
-      {(panel && panel !== 'repeat' && panel !== 'agents') || (!panel && selectedEdge) ? <aside className="board-side-panel" aria-label={panelTitle || 'Board controls'}>
+      {(panel && panel !== 'repeat' && panel !== 'agents') || (!panel && selectedEdge) ? <aside ref={settingsPanel} className="board-side-panel" aria-label={panelTitle || 'Board controls'}>
         <header><h2>{panelTitle}</h2><IconButton variant="ghost" label="Close panel" onClick={() => openPanel(null)}><Icon name="close" size={16} /></IconButton></header>
         <fieldset disabled={edit.busy || reloading || editIntent.locked}>
           {selectedEdge && !panel ? <RelationshipFields graph={graph} relationship={selectedEdge} change={change} report={report} /> : null}
@@ -480,9 +492,9 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             <ApprovalFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} report={report} />
             <section className="next-draft-section" aria-label="Execution bounds"><h3>Limits</h3>
               {graph.executionPolicy ? <div className="next-draft-inline">
-                <TextField label="Maximum parallelism" hint="Agents running at once" type="number" min={1} max={100} value={Number.isFinite(graph.executionPolicy.maxParallelism) ? graph.executionPolicy.maxParallelism : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxParallelism: value } })) }} />
-                <TextField label="Maximum node executions" hint="Agent turns per run" type="number" min={1} max={10000} value={Number.isFinite(graph.executionPolicy.maxNodeExecutions) ? graph.executionPolicy.maxNodeExecutions : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxNodeExecutions: value } })) }} />
-              </div> : <Button size="sm" onClick={() => change((item) => ({ ...item, executionPolicy: { maxParallelism: Number.NaN, maxNodeExecutions: Number.NaN } }))}>Set limits</Button>}
+                <TextField data-save-field="limits" label="Maximum parallelism" hint="Agents running at once" type="number" min={1} max={100} value={Number.isFinite(graph.executionPolicy.maxParallelism) ? graph.executionPolicy.maxParallelism : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxParallelism: value } })) }} />
+                <TextField data-save-field="executions" label="Maximum node executions" hint="Agent turns per run" type="number" min={1} max={10000} value={Number.isFinite(graph.executionPolicy.maxNodeExecutions) ? graph.executionPolicy.maxNodeExecutions : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxNodeExecutions: value } })) }} />
+              </div> : <Button data-save-field="limits" size="sm" onClick={() => change((item) => ({ ...item, executionPolicy: { maxParallelism: Number.NaN, maxNodeExecutions: Number.NaN } }))}>Set limits</Button>}
               {graph.requiredAgentCount !== undefined ? <div className="next-draft-inline">
                 <TextField label="Required Agent count" type="number" min={1} max={10000} value={Number.isFinite(graph.requiredAgentCount) ? graph.requiredAgentCount : ''} onChange={(event) => { const requiredAgentCount = event.target.valueAsNumber; change((item) => ({ ...item, requiredAgentCount })) }} />
                 <Button size="sm" variant="ghost" onClick={() => change((item) => { const next = { ...item }; delete next.requiredAgentCount; return next })}>Remove fixed Agent count</Button>
