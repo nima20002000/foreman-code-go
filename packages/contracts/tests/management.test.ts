@@ -83,8 +83,8 @@ describe("management contracts", () => {
 
   it("supports truthful App MCP capability and scoped interaction tools", () => {
     expect(OperatorCapabilitiesSchema.parse({
-      endpoint: "/mcp/operator", audience: "operator", protocol: "2026-07-28", tools: [],
-      workerToolsMcp: { implemented: true, endpoint: "/mcp/tools" },
+      endpoint: "/mcp", audience: "operator", protocol: "2026-07-28", tools: [],
+      workerToolsMcp: { implemented: true, endpoint: "/mcp" },
     }).workerToolsMcp.implemented).toBe(true);
     expect(InteractionListInputSchema.parse({ workspaceId: "workspace-1", workflowId: "workflow-1", status: "pending" })).toMatchObject({ limit: 50 });
   });
