@@ -2,6 +2,7 @@
 export const workHandoffMigration = { version: 269301, sql: String.raw`
 create table run_work_activations (
   activation_id text primary key,
+  activation_sequence bigint generated always as identity,
   run_id text not null references runs(id) on delete cascade,
   workflow_version_id text not null references workflow_versions(id),
   workflow_node_id text not null,
@@ -13,6 +14,7 @@ create table run_work_activations (
   record jsonb not null,
   created_at timestamptz not null default clock_timestamp(),
   unique (run_id,activation_id),
+  unique (run_id,activation_sequence),
   unique (run_id,cause_kind,cause_id),
   check (record->>'activationId' is not distinct from activation_id),
   check (record #>> '{scope,runId}' is not distinct from run_id),
@@ -27,7 +29,7 @@ create table run_work_activations (
     when 'work_return' then cause_id=record #>> '{cause,returnId}'
     else cause_id=record #>> '{cause,denialId}' end)
 );
-create index run_work_activations_node_recent on run_work_activations(run_id,workflow_node_id,created_at desc,activation_id);
+create index run_work_activations_node_recent on run_work_activations(run_id,workflow_node_id,activation_sequence desc);
 
 create table run_work_results (
   execution_id text primary key references harness_executions(id) on delete cascade deferrable initially deferred,
@@ -177,6 +179,8 @@ alter table run_repeat_executions add constraint work_attempt_activation_fk
   deferrable initially deferred;
 alter table run_repeat_executions add constraint work_attempt_not_repeat
   check (work_activation_id is null or occurrence_id is null);
+create index run_repeat_executions_work_recent on run_repeat_executions(run_id,workflow_node_id,work_activation_id,technical_attempt desc)
+  where work_activation_id is not null;
 
 create function assert_work_slot_identity() returns trigger language plpgsql as $$
 declare pinned jsonb; activation run_work_activations%rowtype; request run_work_requests%rowtype;

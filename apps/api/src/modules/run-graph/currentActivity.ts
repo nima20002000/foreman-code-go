@@ -18,8 +18,10 @@ export const CURRENT_NATIVE_ACTIVITIES_SQL = `
   where a.run_id=$1 and a.work_kind='workflow'
     and a.execution_id=(select x.execution_id from run_repeat_executions x
       left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=x.run_id
+      left join run_work_activations w on w.activation_id=x.work_activation_id and w.run_id=x.run_id
       where x.run_id=a.run_id and x.workflow_node_id=a.workflow_node_id
-      order by coalesce(o.occurrence_index,0) desc,x.technical_attempt desc limit 1)
+      order by w.activation_sequence desc nulls last,coalesce(o.occurrence_index,0) desc,
+        x.technical_attempt desc,x.execution_id desc limit 1)
     and ($2::text[] is null or a.workflow_node_id=any($2))
   union all
   select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind,a.work_id,
@@ -67,8 +69,10 @@ export async function readCurrentActivityContext(sql: GraphTransactionSql, scope
        coalesce((select e.record->>'state'='completed' from harness_executions e
          join run_repeat_executions x on x.execution_id=e.id
          left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=x.run_id
+         left join run_work_activations w on w.activation_id=x.work_activation_id and w.run_id=x.run_id
          where e.run_id=r.id and e.workflow_node_id=$2
-         order by coalesce(o.occurrence_index,0) desc,x.technical_attempt desc limit 1),false) as workflow_closed,
+         order by w.activation_sequence desc nulls last,coalesce(o.occurrence_index,0) desc,
+           x.technical_attempt desc,x.execution_id desc limit 1),false) as workflow_closed,
        (select i.id from durable_interactions i join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
         where i.run_id=r.id and e.workflow_node_id=$2 and i.status='pending' order by i.id limit 1) as pending_id,
        exists(select 1 from durable_interactions i join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id

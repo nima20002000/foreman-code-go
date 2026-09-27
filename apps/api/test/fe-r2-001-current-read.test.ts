@@ -18,7 +18,7 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
     expect(f.db.calls.some((q) => q.startsWith('select first_sequence::text,source_digest,semantic_digest from run_graph_sources'))).toBe(true)
     expect(value).not.toHaveProperty('activity'); expect(value).not.toHaveProperty('liveActivity')
     const latest = f.db.calls.find((q) => q.startsWith('select distinct on (e.workflow_node_id) e.id'))!
-    expect(latest).toContain('order by e.workflow_node_id,coalesce(o.occurrence_index,0) desc,x.technical_attempt desc limit 1001')
+    expect(latest).toContain('order by e.workflow_node_id,w.activation_sequence desc nulls last, coalesce(o.occurrence_index,0) desc,x.technical_attempt desc,x.execution_id desc limit 1001')
     expect(latest).not.toContain("e.record->'input'")
     expect(latest).not.toContain("e.record->'result' as")
     expect(value.state.executions).toEqual([]); expect(value.state.occurrences).toEqual([])

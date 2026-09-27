@@ -12,8 +12,11 @@ import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflow
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'
 import { readRepeatGraphExecutionsLocked } from '../src/modules/run-graph/repeatProjectionRows.js'
+import { readCurrentActivityContext } from '../src/modules/run-graph/currentActivity.js'
+import { readPublicNodeProjection } from '../src/modules/run-graph/publicProjection.js'
 import { canonicalRepeatEffect } from '../src/modules/run-graph/repeatPublication.js'
 import { RepeatRepositoryFactory } from '../src/modules/runs/repeatRepositoryHost.js'
+import { repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'
 import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -76,6 +79,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
       const t = await graphFixture(db, { form: 'sequential', handoffs: true, qualifiedReads: true })
       const owner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
       assert.ok(owner)
+      let recoveredOwner: RunOwnership | undefined
       try {
         const locations = new WorkspaceLocationService(pool, t.commands, directory, 'runner-local', directory)
         const factory = new RepeatRepositoryFactory(locations, directory,
@@ -109,7 +113,32 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect(http.json().state.executions).toEqual(expect.arrayContaining([
           expect.objectContaining({ workActivationId: entry }),
         ]))
-      } finally { await owner.release(); await t.app.close() }
+        const paths = { workingDirectory: t.run.executionLocation.rootPath,
+          runtimeDirectory: repeatRuntimeDirectory(directory, t.scope, admitted.execution) }
+        const claim = await store.claimLaunch(admitted.execution.id, paths)
+        expect(claim?.state).toBe('starting')
+        expect(store.consumeLaunchPermit(admitted.execution.id)).toBe(true)
+        expect(store.consumeLaunchPermit(admitted.execution.id)).toBe(false)
+        await owner.release()
+        recoveredOwner = await RunOwnership.acquire(pool, t.run.id, () => undefined)
+        assert.ok(recoveredOwner)
+        const recovered = factory.forOwner(recoveredOwner, t.version)
+        expect(recovered.consumeLaunchPermit(admitted.execution.id)).toBe(false)
+        expect(await recovered.claimLaunch(admitted.execution.id, paths)).toBeUndefined()
+        expect((await recovered.recoverSession(admitted.execution.id)).state).toBe('starting')
+        const forged = { ...claim!, state: 'completed', finishedAt: new Date().toISOString(),
+          result: { outcome: 'succeeded', output: { routing: { kind: 'finish' },
+            data: { latestDeliverable: { id: 'forged-without-native-receipt' }, remainingFindings: [] } } } }
+        await pool.query('update harness_executions set record=$2::jsonb,accepted=true where id=$1',
+          [admitted.execution.id, text(forged)])
+        // The production G1 read rejects the unreceipted native state before
+        // the work-specific accepted-result receipt is even considered.
+        await expect(recovered.admitWorkRequest(admitted.execution.id, t.version.definition.edges[0]!.id))
+          .rejects.toMatchObject({ code: 'GRAPH_INVARIANT_VIOLATION' })
+        expect((await pool.query('select 1 from run_work_requests where run_id=$1', [t.run.id])).rowCount).toBe(0)
+        expect((await pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='execution.launch'",
+          [t.run.id])).rowCount).toBe(1)
+      } finally { await recoveredOwner?.release(); await owner.release(); await t.app.close() }
     })
   }, 120000)
 
@@ -282,7 +311,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
           values($1,$2,$3,1,$4,3,$5::jsonb)`, [version.id, run.workspaceId, run.workflowId, version.entryNodeId, text(version)])
         await sql.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
           values($1,$2,$3,$4,'running',$5::jsonb)`, [run.id, run.workspaceId, run.workflowId, version.id, text(run)])
-        for (let i = 1; i <= 4; i++) {
+        for (let i = 1; i <= 5; i++) {
           const activationId = `activation-requester-${i}`
           const activation = { scope: fixture.scope, activationId, workflowNodeId: requester!.id, lineageId: run.id,
             cause: i === 1 ? { kind: 'entry' } : { kind: 'dependency', resolutionId: `fixture-resolution-${i}` } }
@@ -362,7 +391,24 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect(returned.value.continuationActivationId).toBeTruthy()
         expect((await store.returnWork(review.id)).replayed).toBe(true)
         expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1', [run.id])).rows[0]?.used).toBe(1)
-        expect((await store.admitWorkRequest('source-execution-2')).kind).toBe('accepted')
+        const beforeNext = await owner.oneShotConnection().transaction((sql) =>
+          readCurrentActivityContext(sql, fixture.scope, destination!.id), true)
+        expect(beforeNext.workflowClosed).toBe(true)
+        const secondRequest = await store.admitWorkRequest('source-execution-2')
+        assert.equal(secondRequest.kind, 'accepted')
+        await store.admitWorkActivation(secondRequest.request.destinationActivationId, () => ({
+          id: 'review-execution-2', runId: run.id, workflowNodeId: destination!.id,
+          agentId: destination!.agentId,
+          agentConfigurationVersionId: version.agentConfigurationVersionIds[destination!.agentId]!,
+          attempt: 1, input: {}, state: 'queued', createdAt: fixture.createdAt,
+        }))
+        const afterNext = await owner.oneShotConnection().transaction((sql) =>
+          readCurrentActivityContext(sql, fixture.scope, destination!.id), true)
+        expect(afterNext.workflowClosed).toBe(false)
+        const current = await owner.oneShotConnection().transaction((sql) =>
+          readPublicNodeProjection(sql, fixture.scope, [destination!.id]), true)
+        expect(current[0]?.state.lifecycle).toBe('queued')
+        expect(current[0]?.state.execution?.executionId).toBe('review-execution-2')
         const last = await Promise.all([store.admitWorkRequest('source-execution-3'), store.admitWorkRequest('source-execution-4')])
         expect(last.map((item) => item.kind).sort()).toEqual(['accepted', 'limit_reached'])
         const accepted = last.find((item) => item.kind === 'accepted')!
@@ -374,7 +420,116 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1', [run.id])).rows[0]?.used).toBe(3)
         expect((await pool.query('select request_id from run_work_requests where run_id=$1', [run.id])).rowCount).toBe(3)
         expect((await pool.query('select denial_id from run_work_denials where run_id=$1', [run.id])).rowCount).toBe(1)
+        await pool.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [run.id])
+        await expect(store.admitWorkRequest('source-execution-5')).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+        expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1',
+          [run.id])).rows[0]?.used).toBe(3)
+        await owner.release()
+        const recoveredOwner = await RunOwnership.acquire(pool, run.id, () => undefined)
+        assert.ok(recoveredOwner)
+        try {
+          const recovered = new RepeatRunRepository(recoveredOwner, host, version)
+          expect((await recovered.admitWorkRequest('source-execution-3')).replayed).toBe(true)
+          expect((await recovered.admitWorkRequest('source-execution-4')).replayed).toBe(true)
+          expect(recovered.consumeLaunchPermit('review-execution-2')).toBe(false)
+          expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1',
+            [run.id])).rows[0]?.used).toBe(3)
+        } finally { await recoveredOwner.release() }
       } finally { await owner.release() }
+    })
+  }, 120000)
+
+  it('admits more than three uncapped exchanges and starts a fresh Run at one', async () => {
+    await taskDatabase(async (pool) => {
+      await applyApplicationMigrations(pool)
+      const fixture = makeCurrentWorkflowFixture('nim2691-unbounded')
+      const source = fixture.version.definition.nodes[0]!, edge = fixture.version.definition.edges[0]!
+      const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+        ...fixture.version.definition, handoffs: { contractVersion: 1 },
+        executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 },
+        nodes: [{ ...source, choice: { outcomes: [
+          { outcome: 'review', target: { kind: 'edge', relationshipId: edge.id } },
+        ] } }, fixture.version.definition.nodes[1]],
+      } })
+      await transaction(pool, async (sql) => {
+        await sql.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+          [version.workspaceId, text({ id: version.workspaceId })])
+        await sql.query('insert into workflows(id,workspace_id,record) values($1,$2,$3::jsonb)',
+          [version.workflowId, version.workspaceId, text({ id: version.workflowId, workspaceId: version.workspaceId })])
+        for (const config of fixture.configurations) {
+          await sql.query('insert into agents(id,workspace_id,record) values($1,$2,$3::jsonb)',
+            [config.agentId, version.workspaceId, text({ id: config.agentId, workspaceId: version.workspaceId })])
+          await sql.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
+            values($1,$2,$3,1,$4::jsonb)`, [config.id, version.workspaceId, config.agentId, text(config)])
+        }
+        await sql.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record)
+          values($1,$2,$3,1,$4,3,$5::jsonb)`,
+        [version.id, version.workspaceId, version.workflowId, version.entryNodeId, text(version)])
+      })
+      const host = (run: typeof fixture.run): RepeatRepositoryHost => ({ openLocked: async () => ({
+        run,
+        assertAuthorityLocked: async () => undefined,
+        assertAdmissionLocked: async () => undefined,
+        assertSettlementLocked: async () => undefined,
+        allowTechnicalRetryLocked: async () => false,
+        publishLocked: async () => { throw new Error('Unexpected native publication') },
+        assertPublicationReceiptLocked: async () => { throw new Error('Unexpected native receipt') },
+        completeRunLocked: async () => { throw new Error('Unexpected completion') },
+      }) })
+      const seed = async (runId: string, count: number) => {
+        const run = { ...fixture.run, id: runId, executionState: 'running' as const }
+        const scope = { ...fixture.scope, runId }
+        await transaction(pool, async (sql) => {
+          await sql.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
+            values($1,$2,$3,$4,'running',$5::jsonb)`,
+          [run.id, run.workspaceId, run.workflowId, version.id, text(run)])
+          for (let index = 1; index <= count; index++) {
+            const activationId = `${run.id}-source-${index}`, executionId = `${run.id}-execution-${index}`
+            const cause = index === 1 ? { kind: 'entry' } : { kind: 'dependency', resolutionId: `${run.id}-resolution-${index}` }
+            const activation = { scope, activationId, workflowNodeId: source.id, lineageId: run.id, cause }
+            await sql.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
+              cause_kind,cause_id,state,record) values($1,$2,$3,$4,$5,$6,'completed',$7::jsonb)`,
+            [activationId, run.id, version.id, source.id, cause.kind,
+              index === 1 ? run.id : `${run.id}-resolution-${index}`, text(activation)])
+            const result = { outcome: 'succeeded', output: { routing: { kind: 'request', outcome: 'review' },
+              data: { latestDeliverable: { revision: index }, remainingFindings: [] } } }
+            const execution = { id: executionId, runId: run.id, workflowNodeId: source.id, agentId: source.agentId,
+              agentConfigurationVersionId: version.agentConfigurationVersionIds[source.agentId],
+              attempt: 1, input: {}, state: 'completed', result,
+              createdAt: fixture.createdAt, finishedAt: fixture.createdAt }
+            await sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,accepted,record,work_activation_id)
+              values($1,$2,$3,$4,1,true,$5::jsonb,$6)`,
+            [executionId, run.id, source.id, source.agentId, text(execution), activationId])
+            await sql.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
+              values($1,$2,$3,$4,$5,clock_timestamp())`,
+            [executionId, run.id, activationId, text(result), digest(result)])
+          }
+        })
+        return run
+      }
+      const firstRun = await seed('nim2691-uncapped-run', 5)
+      const firstOwner = await RunOwnership.acquire(pool, firstRun.id, () => undefined)
+      assert.ok(firstOwner)
+      try {
+        const store = new RepeatRunRepository(firstOwner, host(firstRun), version)
+        for (let index = 1; index <= 5; index++) {
+          const admitted = await store.admitWorkRequest(`${firstRun.id}-execution-${index}`)
+          assert.equal(admitted.kind, 'accepted')
+          expect(admitted.request.ordinal).toBe(index)
+        }
+        expect((await pool.query<{ used: number; maximum: number | null }>(
+          'select used,maximum from run_work_connection_usage where run_id=$1', [firstRun.id])).rows[0])
+          .toEqual({ used: 5, maximum: null })
+      } finally { await firstOwner.release() }
+      const freshRun = await seed('nim2691-fresh-run', 1)
+      const freshOwner = await RunOwnership.acquire(pool, freshRun.id, () => undefined)
+      assert.ok(freshOwner)
+      try {
+        const admitted = await new RepeatRunRepository(freshOwner, host(freshRun), version)
+          .admitWorkRequest(`${freshRun.id}-execution-1`)
+        assert.equal(admitted.kind, 'accepted')
+        expect(admitted.request.ordinal).toBe(1)
+      } finally { await freshOwner.release() }
     })
   }, 120000)
 
