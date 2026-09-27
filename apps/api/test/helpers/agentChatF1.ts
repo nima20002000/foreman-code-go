@@ -79,6 +79,14 @@ export class F1Store {
       return result([...this.turns.values()].filter((entry) => entry.native_turn_id === values[1] && entry.intent !== 'steer'
         && ['completed', 'failed', 'canceled'].includes(entry.delivery)).slice(-1))
     }
+    if (sql.startsWith('select s.request_id as "requestId"')) {
+      return result([...this.turns.values()].filter((entry) => entry.intent === 'steer'
+        && (entry.delivery === 'submitting' || entry.delivery === 'unknown')).map((entry) => ({
+        requestId: entry.request_id, targetNativeTurnId: entry.target_native_turn_id, delivery: entry.delivery,
+        targetRequestId: [...this.turns.values()].reverse().find((target) => target.intent !== 'steer'
+          && target.native_turn_id === entry.target_native_turn_id)?.request_id ?? null,
+      })))
+    }
     if (sql.startsWith('select count(*)::text as count from operator_conversation_turns')) {
       const deliveries = values[1] as string[]
       return result([{ count: String([...this.turns.values()].filter((entry) => entry.intent !== null

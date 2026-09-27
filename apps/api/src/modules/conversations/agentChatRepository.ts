@@ -171,6 +171,17 @@ export class PostgresAgentChatRepository {
     return (await this.pool.query<{ content: string }>(`select payload->>'content' as content from operator_conversation_turns
       where conversation_id=$1 and request_id=$2`, [id, requestId])).rows[0]?.content
   }
+  /** Steers never own the session. Keep their original turn identity for cold evidence-only reads. */
+  async unconfirmedSteers(id: string): Promise<Array<{
+    requestId: string; targetNativeTurnId: string | null; targetRequestId: string | null; delivery: 'submitting' | 'unknown'
+  }>> {
+    return (await this.pool.query<{ requestId: string; targetNativeTurnId: string | null; targetRequestId: string | null; delivery: 'submitting' | 'unknown' }>(`
+      select s.request_id as "requestId",s.target_native_turn_id as "targetNativeTurnId",s.delivery,
+        (select t.request_id from operator_conversation_turns t where t.conversation_id=s.conversation_id
+          and t.intent <> 'steer' and t.native_turn_id=s.target_native_turn_id order by t.turn_sequence desc limit 1) as "targetRequestId"
+      from operator_conversation_turns s where s.conversation_id=$1 and s.intent='steer'
+        and s.delivery in ('submitting','unknown') order by s.turn_sequence`, [id])).rows
+  }
   /** Next queued turn. Interrupt-and-send goes ahead of ordinary queued turns. */
   async nextQueued(id: string): Promise<AgentChatTurn | undefined> {
     const row = (await this.pool.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
@@ -475,11 +486,20 @@ export class PostgresAgentChatRepository {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
-      await client.query(`update operator_conversation_turns set delivery='unknown',delivery_error=$3::jsonb,updated_at=now()
+      // Same lock order as append/finish: a late uncertainty write cannot undo terminal activity.
+      await client.query(`select id from operator_conversations where id=$1 and kind='agent' for update`, [id])
+      const receipt = await client.query(`update operator_conversation_turns set delivery='unknown',delivery_error=$3::jsonb,updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery in ('submitting','accepted')`,
       [id, requestId, JSON.stringify({ code: 'DELIVERY_UNCONFIRMED', message })])
-      await client.query(`update operator_conversations set turn_state='uncertain',last_error=$3,revision=revision+1,updated_at=now()
+      // Uncertainty ends the claim that a public activity is still running, not native ownership.
+      await client.query(`update operator_conversation_activity set revision=revision+1,
+        record=jsonb_set(record,'{status}','"unknown"'::jsonb)
+        where conversation_id=$1 and request_id=$2 and record->>'status' in ('pending','running')
+          and exists (select 1 from operator_conversation_turns t where t.conversation_id=$1
+            and t.request_id=$2 and t.delivery='unknown')`, [id, requestId])
+      const owner = await client.query(`update operator_conversations set turn_state='uncertain',last_error=$3,revision=revision+1,updated_at=now()
         where id=$1 and active_request_id=$2`, [id, requestId, message])
+      if (receipt.rowCount && !owner.rowCount) await this.bump(id, client) // A steer changes readback, not active ownership.
       await client.query('commit')
     } catch (error) {
       await client.query('rollback').catch(() => undefined)

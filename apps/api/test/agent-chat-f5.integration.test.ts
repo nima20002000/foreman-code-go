@@ -177,7 +177,11 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
       const state = await f.read()
       assert.equal(state.turns.length, 100)
       assert.equal(state.turns.some((turn) => turn.requestId === winner.requestId), true)
-      assert.deepEqual(new Set(state.turns.map((turn) => turn.delivery)), new Set(['queued', 'accepted', 'submitting', 'unknown']))
+      assert.deepEqual(new Set(state.turns.map((turn) => turn.delivery)), new Set(['queued', 'accepted', 'unknown']))
+      for (const index of [0, 1, 2, 3, 4, 10, 11, 12, 13, 14]) {
+        assert.equal(state.turns.find((turn) => turn.requestId === `older-${index}`)?.delivery, 'unknown',
+          'Unconfirmed steers must settle as unknown instead of remaining provisionally submitting.')
+      }
       assert.ok(state.turns.every((turn, index) => index === 0 || BigInt(state.turns[index - 1]!.sequence) < BigInt(turn.sequence)))
       const authoritative = (await pool.query<{ request_id: string }>(`select request_id from operator_conversation_turns
         where conversation_id=$1 and delivery in ('queued','submitting','accepted','unknown') order by turn_sequence`, [f.id])).rows

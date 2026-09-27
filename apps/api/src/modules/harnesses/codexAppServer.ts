@@ -16,7 +16,7 @@ import { qualifyNativeCodexModel } from './codexQualification.js'
 import { nativeQualification } from './nativeQualification.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
-import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeTurnInput } from './port.js'
+import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
 import {
   assertCodexUnchanged, canonical, isQualifiedCodexVersion, qualifyCodex, QUALIFIED_CODEX_VERSION,
@@ -556,6 +556,57 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!text(turnId)) throw new HarnessExecutionError('CODEX_TURN_STEER_INVALID', 'Codex accepted the steer without a turn identity.')
     this.record(runtime, 'turn.steered', { turnId, correlationId: input.clientCorrelationId })
     return { nativeTurnId: String(turnId) }
+  }
+
+  /** Inspect persisted user-message identities without synchronizing/retargeting the live owner. */
+  async reconcileSteers(session: NativeSessionReference,
+    inputs: readonly Pick<NativeSteerInput, 'clientCorrelationId' | 'expectedTurnId'>[],
+    signal?: AbortSignal): Promise<readonly NativeSteerReceipt[]> {
+    signal = AbortSignal.any([this.shutdownController.signal, signal ?? AbortSignal.timeout(RESPONSE_DEADLINE_MS)])
+    return this.exclusive(session.nativeSessionId, async () => {
+      signal.throwIfAborted()
+      const runtime = this.requireRuntime(session)
+      if (!inputs.length) return []
+      if (runtime.closed) await this.restart(runtime, signal)
+      const response = object(await runtime.transport.request('thread/read', {
+        threadId: session.nativeSessionId, includeTurns: false,
+      }, signal), 'CODEX_THREAD_READ_INVALID')
+      if (object(response.thread, 'CODEX_THREAD_READ_INVALID').id !== session.nativeSessionId) {
+        throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Steer reconciliation returned another thread.')
+      }
+      const wanted = new Map(inputs.map((input) => [input.clientCorrelationId, input.expectedTurnId]))
+      const found = new Map<string, NativeSteerReceipt>()
+      const seen = new Map<string, string>()
+      const cursors = new Set<string>()
+      let cursor: string | undefined
+      do {
+        signal.throwIfAborted()
+        const page = object(await runtime.transport.request('thread/turns/list', {
+          threadId: session.nativeSessionId, limit: 50, sortDirection: 'desc', itemsView: 'full',
+          ...(cursor ? { cursor } : {}),
+        }, signal), 'CODEX_THREAD_READ_INVALID')
+        if (!Array.isArray(page.data)) throw new HarnessExecutionError('CODEX_THREAD_READ_INVALID', 'Codex returned an invalid turn page.')
+        for (const turn of page.data.filter(isObject)) {
+          const nativeTurnId = text(turn.id)
+          if (!nativeTurnId || turn.itemsView !== 'full' || !Array.isArray(turn.items)) continue
+          for (const item of turn.items.filter(isObject)) {
+            const correlationId = text(item.id)
+            if (item.type !== 'userMessage' || !correlationId || !wanted.has(correlationId)) continue
+            if (seen.has(correlationId) && seen.get(correlationId) !== nativeTurnId) {
+              throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this steering correlation.')
+            }
+            seen.set(correlationId, nativeTurnId)
+            if (wanted.get(correlationId) === nativeTurnId) {
+              found.set(correlationId, { nativeSessionId: session.nativeSessionId, nativeTurnId, correlationId })
+            }
+          }
+        }
+        cursor = text(page.nextCursor)
+        if (cursor && cursors.has(cursor)) throw new HarnessExecutionError('CODEX_THREAD_READ_INVALID', 'Codex repeated a history cursor.')
+        if (cursor) cursors.add(cursor)
+      } while (cursor && found.size < wanted.size)
+      return [...found.values()]
+    })
   }
 
   /** `thread/fork` copies the source history into a new thread; the source thread is never written. */

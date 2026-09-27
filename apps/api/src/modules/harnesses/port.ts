@@ -68,6 +68,13 @@ export interface NativeSteerInput {
   expectedTurnId: string
 }
 
+/** Positive acceptance of one steering correlation in one exact native turn; not proof of consumption. */
+export interface NativeSteerReceipt {
+  nativeSessionId: string
+  nativeTurnId: string
+  correlationId: string
+}
+
 /** Response identity is not a model-turn correlation and must never be used to replay a prompt. */
 export interface NativeResponseIdentity {
   nativeRequestId: string
@@ -113,6 +120,10 @@ export interface NativeHarnessSessionManager {
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
   /** Add input to the exact active turn. Absent when the provider has no expected-turn precondition. */
   steerTurn?(session: NativeSessionReference, input: NativeSteerInput, signal?: AbortSignal): Promise<{ nativeTurnId: string }>
+  /** Read-only receipt lookup; must not replace the runtime's active turn/correlation or replay input. */
+  reconcileSteers?(session: NativeSessionReference,
+    inputs: readonly Pick<NativeSteerInput, 'clientCorrelationId' | 'expectedTurnId'>[],
+    signal?: AbortSignal): Promise<readonly NativeSteerReceipt[]>
   /** New native session copying a source session's history. The source session is never modified. */
   forkSession?(source: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
   pending(session: NativeSessionReference, signal?: AbortSignal): Promise<PendingNativeInteraction | undefined>

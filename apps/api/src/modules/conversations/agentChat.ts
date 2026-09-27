@@ -107,6 +107,8 @@ export class AgentChatService {
   readonly events = new AgentChatEvents()
   private readonly runtimes = new Map<string, Runtime>()
   private readonly tasks = new Map<string, Promise<void>>()
+  /** Live preparation is not orphan recovery, including the create-to-bind gap. */
+  private readonly preparations = new Map<string, { requestId: string; done: Promise<void> }>()
   private readonly wakeups = new Set<string>()
   private readonly controls = new Map<string, Promise<unknown>>()
   private readonly reconciliationTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -399,6 +401,7 @@ export class AgentChatService {
           throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'The turn finished before the steer arrived. Send it as the next turn instead.', 409)
         }
         await this.repository.unknown(row.id, input.requestId, error instanceof Error ? error.message : 'Steer delivery is unconfirmed.')
+        this.scheduleReconcile(row.id)
       }
       this.events.publish(row.id, 'turn', { requestId: input.requestId })
       const turn = (await this.repository.turn(row.id, input.requestId))!
@@ -462,22 +465,25 @@ export class AgentChatService {
     })
   }
 
-  private async interruptActive(id: string, explicit: boolean, target: AgentChatInterruptTarget | undefined): Promise<void> {
+  private async interruptActive(id: string, explicit: boolean, target: AgentChatInterruptTarget | undefined, controlled = false): Promise<void> {
     if (!target) return
-    await this.control(id, async () => {
+    const interrupt = async () => {
       const row = await this.repository.get(id)
       if (!row || row.active_request_id !== target.requestId || !row.cancel_requested
         || (target.nativeTurnId && row.active_native_turn_id !== target.nativeTurnId)) return
       this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId: target.requestId, sessionState: 'interrupting', explicit })
       const runtime = this.runtimes.get(id)
-      if (!runtime?.session || !row.active_native_turn_id) return // Submission path observes cancel_requested.
+      if (!runtime?.session || runtime.retiring || runtime.session.nativeSessionId !== row.native_session_id
+        || !row.active_native_turn_id) return // Submission or exact-history recovery will retry this durable intent.
       try {
-        await runtime.manager.cancel(runtime.session, AbortSignal.timeout(10_000), row.active_native_turn_id)
+        await runtime.manager.cancel(runtime.session, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(10_000)]), row.active_native_turn_id)
       } catch (error) {
         this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Interrupt delivery failed.' })
       }
-    })
+    }
+    if (controlled) await interrupt()
+    else await this.control(id, interrupt)
   }
 
   // ---------------------------------------------------------------- turn execution
@@ -591,6 +597,13 @@ export class AgentChatService {
     let submitted = false
     let creatingSession = false
     let runtime: Runtime | undefined
+    let prepared!: () => void
+    const preparation = { requestId: turn.requestId, done: new Promise<void>((resolve) => { prepared = resolve }) }
+    this.preparations.set(id, preparation)
+    const finishPreparation = () => {
+      if (this.preparations.get(id) === preparation) this.preparations.delete(id)
+      prepared()
+    }
     try {
       const row = await this.repository.get(id)
       if (!row || row.active_request_id !== turn.requestId) return
@@ -603,12 +616,17 @@ export class AgentChatService {
       const session = runtime.session!
       const content = await this.repository.turnContent(id, turn.requestId)
       if (content === undefined) throw new Error('The accepted message content is missing.')
-      const fresh = (await this.repository.get(id))!
+      const fresh = await this.repository.get(id)
+      if (!fresh || fresh.active_request_id !== turn.requestId) return
+      // Stop may have committed while the first session was being created/bound. No turn was sent.
+      if (fresh.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
+      signal.throwIfAborted()
       const prompt = this.prompt(fresh, configuration, content)
       const partKinds = new Map<string, string>()
       let nativeTurnId: string | null = null
       const currentEvent = openCodeTurnEvents(session.nativeSessionId, () => nativeTurnId)
       const redact = nativePersistenceRedactor([])
+      finishPreparation()
       for await (const event of runtime.manager.startTurn(session, {
         prompt: prompt.text, clientCorrelationId: correlationId,
         onSubmitted: async (id_) => {
@@ -616,10 +634,8 @@ export class AgentChatService {
           await this.repository.accepted(id, turn.requestId, id_)
           this.scheduleReconcile(id)
           this.events.publish(id, 'turn', { requestId: turn.requestId, delivery: 'accepted', nativeTurnId: id_ })
-          const current = await this.repository.get(id)
-          if (current?.cancel_requested) {
-            void this.control(id, () => runtime!.manager.cancel(session, AbortSignal.timeout(10_000), id_)).catch(() => undefined)
-          }
+          // Re-read the captured target under the control fence, also for a late callback.
+          void this.interruptActive(id, false, { requestId: turn.requestId, nativeTurnId: id_ }).catch(() => undefined)
         },
       }, signal)) {
         submitted = true
@@ -656,7 +672,7 @@ export class AgentChatService {
         this.scheduleReconcile(id)
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
       }
-    }
+    } finally { finishPreparation() }
   }
 
   private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>) {
@@ -695,6 +711,9 @@ export class AgentChatService {
       // Acknowledged but not terminal (including approvals) still owns the native session.
       if (controlled) await this.repository.pending(id, requestId, pending)
       else await this.control(id, () => this.repository.pending(id, requestId, pending))
+      // Acceptance can be learned without onSubmitted (lost ACK or restart after Stop's commit).
+      // A cancel acknowledgement is not terminal proof and never releases the queue.
+      await this.interruptActive(id, false, { requestId, nativeTurnId: history.nativeTurnId }, controlled)
       this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId, delivery: 'accepted' })
     }
@@ -725,27 +744,72 @@ export class AgentChatService {
   private async repair(id: string): Promise<void> {
     await this.control(id, async () => {
       const row = await this.repository.restoreUnsettled(id)
-      if (!row?.active_request_id || row.record.sessionUnavailable) return
+      if (!row || row.record.sessionUnavailable) return
+      if (row.active_request_id && this.preparations.get(id)?.requestId === row.active_request_id) {
+        this.scheduleReconcile(id)
+        return // The live owner must finish creation/binding; a temporarily null identity is not loss.
+      }
+      const steers = await this.repository.unconfirmedSteers(id)
       const requestId = row.active_request_id
-      const correlationId = agentChatCorrelation(id, requestId)
+      // A steer-only recovery attaches using its ORIGINAL turn, never the steer as an active turn.
+      const target = steers.find((entry) => entry.targetRequestId && entry.targetNativeTurnId)
+      const recoveryRequestId = requestId ?? target?.targetRequestId
+      if (!recoveryRequestId) {
+        for (const steer of steers) if (steer.delivery === 'submitting') {
+          await this.repository.unknown(id, steer.requestId, 'The original steering target is not established. No input was resent.')
+          this.events.publish(id, 'turn', { requestId: steer.requestId, delivery: 'unknown' })
+        }
+        if (steers.length) this.scheduleReconcile(id)
+        return
+      }
+      const correlationId = agentChatCorrelation(id, recoveryRequestId)
       try {
         if (!row.native_session_id) {
           await this.repository.markSessionUnavailable(id, 'No native session identity was stored before recovery. This conversation is read-only; no replacement session will be created automatically.')
-          await this.repository.abandon(id, requestId, 'Native session creation is unconfirmed.')
-          this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
+          if (requestId) await this.repository.abandon(id, requestId, 'Native session creation is unconfirmed.')
+          this.events.publish(id, 'state', { delivery: 'unknown' })
           return
         }
         const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
         if (!configuration) throw new Error('The pinned Agent configuration is unavailable.')
-        const runtime = await this.runtime(row, configuration, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(60_000)]))
-        await this.observe(id, requestId, runtime, correlationId, true)
+        const binding = requestId ? row : { ...row, active_native_turn_id: target!.targetNativeTurnId }
+        const runtime = await this.runtime(binding, configuration, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(60_000)]))
+        if (requestId) await this.observe(id, requestId, runtime, correlationId, true)
+        if (steers.length) {
+          const identities = steers.flatMap((entry) => entry.targetNativeTurnId
+            ? [{ clientCorrelationId: agentChatCorrelation(id, entry.requestId), expectedTurnId: entry.targetNativeTurnId }] : [])
+          // This read must not retarget the manager's active correlation, even when a later turn owns it.
+          const evidence = await runtime.manager.reconcileSteers?.(runtime.session!, identities,
+            AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])).catch((error: unknown) => {
+              // Failure to read an OLD steer is not loss of the independently proven active turn.
+              this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Steer receipt lookup failed.' })
+              return []
+            }) ?? []
+          let unresolved = false
+          for (const steer of steers) {
+            const proven = evidence.some((entry) => entry.nativeSessionId === row.native_session_id
+              && entry.correlationId === agentChatCorrelation(id, steer.requestId)
+              && entry.nativeTurnId === steer.targetNativeTurnId)
+            if (proven) {
+              await this.repository.steerAccepted(id, steer.requestId, steer.targetNativeTurnId!)
+              this.events.publish(id, 'turn', { requestId: steer.requestId })
+            } else {
+              unresolved = true
+              await this.repository.unknown(id, steer.requestId, 'The provider has not proven this steering input. It will not be resent automatically.')
+              if (steer.delivery === 'submitting') this.events.publish(id, 'turn', { requestId: steer.requestId, delivery: 'unknown' })
+            }
+          }
+          if (unresolved) this.scheduleReconcile(id)
+        }
       } catch (error) {
         const unavailable = await this.markNativeUnavailable(id, error)
-        await this.repository.abandon(id, requestId,
+        if (requestId) await this.repository.abandon(id, requestId,
           `Native delivery is not yet confirmed. ${error instanceof Error ? error.message : ''}`.trim())
+        // Also convert a crash-left provisional steer; missing evidence never means acceptance.
+        for (const steer of steers) await this.repository.unknown(id, steer.requestId, 'Steer delivery is not yet confirmed.')
         if (unavailable) await this.release(id)
         else this.scheduleReconcile(id)
-        this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
+        this.events.publish(id, 'state', { delivery: 'unknown' })
       }
     })
     const current = await this.repository.get(id)
@@ -798,8 +862,9 @@ export class AgentChatService {
     const attempt = Promise.resolve().then(async () => {
       // An admitted command/recovery pass may still be awaiting SQL or publishing control work.
       // Drain producers before disposing managers or allowing the production owner to unlock.
-      while (this.inflightCommands.size || this.tasks.size || this.controls.size || this.recovery) {
-        await Promise.allSettled([...this.inflightCommands, ...this.tasks.values(), ...this.controls.values(), ...(this.recovery ? [this.recovery] : [])])
+      while (this.inflightCommands.size || this.tasks.size || this.controls.size || this.preparations.size || this.recovery) {
+        await Promise.allSettled([...this.inflightCommands, ...this.tasks.values(), ...this.controls.values(),
+          ...[...this.preparations.values()].map((entry) => entry.done), ...(this.recovery ? [this.recovery] : [])])
       }
       await this.commands.drain()
       const results = await Promise.allSettled([...this.runtimes.keys()].map((id) => this.release(id)))

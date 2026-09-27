@@ -45,6 +45,7 @@ class MemoryConversations {
   async state() { return { row: this.row!, turns: this.turns, messages: [], hasEarlierMessages: false } }
   async open() { return this.openRead ? this.openRead() : this.row ? [this.row] : [] }
   async restoreUnsettled() { return this.row }
+  async unconfirmedSteers() { return [] }
   async nextQueued() { return undefined }
   async turn(_id: string, requestId: string) { return this.turns.find((turn) => turn.requestId === requestId) }
   async turnContent(_id: string, requestId: string) { return `content-${requestId}` }
