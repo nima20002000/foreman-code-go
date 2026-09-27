@@ -82,7 +82,7 @@ describe('workspace section routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Terminal' })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
-    expect(screen.getByRole('link', { name: 'Terminal' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
   })
 
   it('keeps the Workflows sidebar label on the current workspace settings page', async () => {

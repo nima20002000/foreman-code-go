@@ -7,7 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { ChevronLeft, ChevronRight, UserRound } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Settings, UserRound } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
 import { ThemeToggle } from '../../features/theme'
@@ -210,6 +210,15 @@ export function WorkspaceShell({
               title="Account">
               <UserRound aria-hidden="true" size={17} />
               <span className="sidebar-account-label">Account</span>
+            </Link>
+            <Link
+              to="/settings"
+              className={`sidebar-settings-link${activeGlobalSection === 'settings' ? ' sidebar-account-link-active' : ''}`}
+              aria-current={activeGlobalSection === 'settings' ? 'page' : undefined}
+              aria-label="Settings"
+              title="Settings"
+            >
+              <Settings aria-hidden="true" size={16} />
             </Link>
             <ThemeToggle />
           </div>

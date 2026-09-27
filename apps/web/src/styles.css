@@ -426,6 +426,10 @@ h1 {
   font-weight: 400; text-decoration: none; }
 .sidebar-account-link:hover, .sidebar-account-link:focus-visible { background: var(--surface-raised); color: var(--text); }
 .sidebar-account-link-active { border-color: var(--border-strong); background: var(--surface-selected); color: var(--text); font-weight: 500; }
+.sidebar-settings-link { display: inline-flex; flex: 0 0 2.75rem; width: 2.75rem; height: 2.75rem; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); text-decoration: none; }
+.sidebar-settings-link:hover, .sidebar-settings-link:focus-visible { background: var(--surface-raised); color: var(--text); }
+.sidebar-settings-link.sidebar-account-link-active { border-color: var(--border-strong); color: var(--text); }
 .sidebar-account-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .sidebar-footer .theme-toggle {

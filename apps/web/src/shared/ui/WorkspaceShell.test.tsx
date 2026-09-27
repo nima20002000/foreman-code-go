@@ -61,11 +61,13 @@ describe('WorkspaceShell', () => {
       expect(item).toHaveAttribute('href', expect.stringContaining('/workspaces/workspace-1/'))
       expect(item.querySelector('svg')).toBeInTheDocument()
     }
-    expect(screen.getByRole('link', { name: 'Terminal' })).toHaveAttribute('href', '/terminal')
+    expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
     const account = screen.getByRole('link', { name: 'Account' })
     expect(account).toHaveAttribute('href', '/account')
     expect(account.parentElement).toContainElement(screen.getByRole('button', { name: /Switch to .* theme/ }))
+    expect(account.parentElement).toContainElement(screen.getByRole('link', { name: 'Settings' }))
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveTextContent('')
     expect(screen.queryByRole('link', { name: 'Browsers' })).not.toBeInTheDocument()
     expect(screen.queryByText('Unavailable')).not.toBeInTheDocument()
   })
@@ -147,10 +149,11 @@ describe('WorkspaceShell', () => {
     expect(await screen.findByTitle('Workflows')).not.toHaveAttribute('aria-current')
   })
 
-  it('keeps Terminal top-level and active outside the workspace tree', async () => {
+  it('keeps Terminal hidden when its route is active', async () => {
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" activeGlobalSection="terminal" />)
+    await screen.findByTestId('workspace-shell')
 
-    expect(await screen.findByRole('link', { name: 'Terminal' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
     expect(await screen.findByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
   })

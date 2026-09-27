@@ -15,8 +15,6 @@ import {
   History,
   ListTodo,
   PanelsTopLeft,
-  Settings,
-  SquareTerminal,
   Workflow,
 } from 'lucide-react'
 import { WorkspaceFolderPicker } from '../settings/WorkspaceFolderPicker'
@@ -27,14 +25,13 @@ import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
 import { queryKeys, useCreateManagedWorkspaceMutation, useManagedWorkspaceQuery } from '../../shared/api/query'
-import { Button, Dialog, Divider, Icon, IconButton, TextField } from '../../shared/ui/nocturne'
+import { Button, Dialog, Icon, IconButton, TextField } from '../../shared/ui/nocturne'
 import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import { usePresence } from '../../shared/ui/usePresence'
 import { WorkflowNavigation } from '../workflows'
 import { useNavigationUiStore } from './navigationUiStore'
 import {
   WORKSPACES_ORDER_KEY,
-  GLOBAL_NAVIGATION_ORDER_KEY,
   useNavigationOrderStore,
   workspaceSectionsOrderKey,
 } from './navigationOrder'
@@ -89,11 +86,6 @@ const sectionLinks = [
   { section: 'files', label: 'Files', to: '/workspaces/$workspaceId/files', icon: Files },
   { section: 'tasks', label: 'Tasks', to: '/workspaces/$workspaceId/tasks', icon: ListTodo },
   { section: 'runs', label: 'Runs', to: '/workspaces/$workspaceId/runs', icon: History },
-] as const
-
-const globalLinks = [
-  { section: 'terminal', label: 'Terminal', to: '/terminal', icon: SquareTerminal },
-  { section: 'settings', label: 'Settings', to: '/settings', icon: Settings },
 ] as const
 
 const sectionLinkBySection = new Map<WorkspaceSection, (typeof sectionLinks)[number]>(
@@ -426,8 +418,8 @@ function WorkspaceTreeItem({
 /**
  * The workspace-first sidebar hierarchy. Workspaces is the collapsible parent,
  * every workspace entry opens its settings and expands into Workflows, Files,
- * Tasks, and Runs. Terminal and app Settings remain below the workspace
- * tree. The Agents destination remains routed but is temporarily hidden here.
+ * Tasks, and Runs. App Settings lives in the shell footer.
+ * The Agents destination remains routed but is temporarily hidden here.
  * Workspace and workflow lists are server-shaped query projections; selection
  * stays in the URL through router links.
  */
@@ -481,11 +473,6 @@ export function WorkspaceNavigation({
     [entries],
   )
   const entriesReorder = useReorderableNavigation(WORKSPACES_ORDER_KEY, entryItems)
-  const globalReorder = useReorderableNavigation(
-    GLOBAL_NAVIGATION_ORDER_KEY,
-    globalLinks.map((item) => ({ id: item.section, label: item.label })),
-  )
-  const globalLinkBySection = new Map(globalLinks.map((item) => [item.section, item]))
   const announcement = useNavigationOrderStore((state) => state.announcement)
 
   const toggleWorkspace = (id: string) => {
@@ -561,37 +548,6 @@ export function WorkspaceNavigation({
             </ul>
           ) : null}
         </li>
-      </ul>
-
-      <Divider />
-
-      <ul
-        className="workspace-global-navigation"
-        aria-label="Global navigation"
-        {...globalReorder.containerProps}
-      >
-        {globalReorder.orderedIds.map((section) => {
-          const item = globalLinkBySection.get(section as (typeof globalLinks)[number]['section'])
-          if (!item) return null
-          const active = activeGlobalSection === item.section
-          return (
-            <li key={item.section} {...globalReorder.getItemProps(item.section)}>
-              <Link
-                to={item.to}
-                className={`nav-item${active ? ' nav-item-active' : ''}`}
-                aria-current={active ? 'page' : undefined}
-                aria-label={navigationCollapsed ? item.label : undefined}
-                title={item.label}
-                {...globalReorder.getKeyboardProps(item.section)}
-              >
-                <span className="nav-item-primary">
-                  <item.icon aria-hidden="true" className="nav-item-icon" size={16} />
-                  <span className="nav-item-label">{item.label}</span>
-                </span>
-              </Link>
-            </li>
-          )
-        })}
       </ul>
 
       <p
