@@ -22,12 +22,23 @@ export function stateBelongsToContext(state: AgentChatState, context: AgentChatC
 /** Full server projections replace, not append. Completed native text cannot become partial again. */
 export function mergeChatMessages(...sources: readonly (readonly Message[])[]): Message[] {
   const messages = new Map<string, Message>()
-  for (const source of sources) for (const message of source) {
-    const previous = messages.get(message.id)
-    if (previous?.nativeMessageComplete === true && message.nativeMessageComplete === false) continue
-    messages.set(message.id, message)
+  const order: string[] = []
+  for (const source of sources) {
+    for (const message of source) {
+      const previous = messages.get(message.id)
+      if (previous?.nativeMessageComplete === true && message.nativeMessageComplete === false) continue
+      messages.set(message.id, message)
+    }
+    // Each source is an ordered server window. Anchor an unseen prefix before its overlap,
+    // rather than letting Map insertion order move a newer subset ahead of older messages.
+    let insertAt = order.length
+    for (const id of [...new Set(source.map((message) => message.id))].reverse()) {
+      const index = order.indexOf(id)
+      if (index < 0) order.splice(insertAt, 0, id)
+      else insertAt = index
+    }
   }
-  return [...messages.values()]
+  return order.map((id) => messages.get(id)!)
 }
 export function acceptAgentChatState(previous: AgentChatState | undefined, incoming: AgentChatState): AgentChatState {
   if (previous && sameAgentChatContext(previous.context, incoming.context)) {

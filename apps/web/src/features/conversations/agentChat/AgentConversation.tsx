@@ -51,10 +51,10 @@ export function AgentConversation({ context, name, onNewConversation }: {
   const busy = !!state && chatBusy(state), hasQueue = state?.turns.some((turn) => turn.delivery === 'queued')
   const empty = !draft.trim() || draft.length > 32_000
   const latest = chat.latestCommand
-  const error = latest?.status === 'error' ? latest.error : undefined
+  const receipt = chat.latestReceipt
+  const error = !receipt && latest?.status === 'error' ? latest.error : undefined
   const notActive = latest?.command?.kind === 'send' && ApiError.is(error) && error.code === 'AGENT_CHAT_TURN_NOT_ACTIVE'
   const stale = ApiError.is(error) && error.code === 'AGENT_CHAT_CONTEXT_STALE'
-  const receipt = latest?.result && 'turn' in latest.result ? latest.result.turn : undefined
   const unavailable = state ? [...new Set(Object.values(state.capabilities.unavailable).filter(Boolean))] : []
   const sessionMissing = state?.availability.reason === 'native_session_missing' || state?.sessionState === 'unavailable'
   const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.nativeMessageComplete !== false).at(-1)
@@ -79,7 +79,7 @@ export function AgentConversation({ context, name, onNewConversation }: {
       {context.runId ? 'Your first message forks this finished Run’s native session. It never restarts or changes the Run.'
         : 'Your first message starts a native conversation using this Agent’s accepted settings. Unsaved settings do not apply.'}
     </p> : null}
-    {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} commands={chat.commands}
+    {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} commands={chat.commands} history={chat.history}
       cancelReason={cancelReason} responseReason={responseReason} resendReason={nextReason}
       onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={setSendAgain} /> : null}
     {busy && !state?.messages.some((message) => message.role === 'assistant' && message.requestId === state.activeTurn?.requestId && message.nativeMessageComplete === false)

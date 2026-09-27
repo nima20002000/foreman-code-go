@@ -6,11 +6,13 @@ import './conversationHistory.css'
 export interface ConversationHistoryProps {
   messages: Message[]
   assistantName?: string
+  renderBefore?: (message: Message) => ReactNode
+  renderAfter?: (message: Message) => ReactNode
   renderStatus?: (message: Message) => ReactNode
   renderActions?: (message: Message) => ReactNode
 }
 
-export function ConversationHistory({ messages, assistantName = 'Assistant', renderStatus, renderActions }: ConversationHistoryProps) {
+export function ConversationHistory({ messages, assistantName = 'Assistant', renderBefore, renderAfter, renderStatus, renderActions }: ConversationHistoryProps) {
   if (messages.length === 0) {
     return <div data-testid="conversation-empty"><EmptyState icon="history" title="No conversation history yet" description="Messages will appear here after the conversation starts." /></div>
   }
@@ -19,6 +21,7 @@ export function ConversationHistory({ messages, assistantName = 'Assistant', ren
     <ol aria-label="Conversation history">
       {messages.map((message) => (
         <li key={message.id} data-message-role={message.role}>
+          {renderBefore?.(message)}
           <MessageBubble
             author={message.role === 'assistant' ? assistantName : message.role === 'user' ? 'You' : message.role}
             role={message.role === 'assistant' || message.role === 'user' ? message.role : 'system'}
@@ -27,6 +30,7 @@ export function ConversationHistory({ messages, assistantName = 'Assistant', ren
           >
             <p className="conversation-message-content">{message.content}</p>
           </MessageBubble>
+          {renderAfter?.(message)}
         </li>
       ))}
     </ol>

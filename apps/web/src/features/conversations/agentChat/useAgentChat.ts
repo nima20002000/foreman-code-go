@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { ManagementAction } from '@graphql/contracts/management'
 import type { AgentChatContext, AgentChatIntent, AgentChatState, SendAgentChatMessageRequest, SendAgentChatMessageResponse } from '@graphql/contracts/agent-chat'
 import { agentChatApi } from '../../../shared/api/agentChat'
@@ -7,9 +7,12 @@ import { ApiError } from '../../../shared/api/client'
 import { subscribeAgentChat, type AgentChatConnection } from '../../../shared/api/agentChatStream'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../../shared/api/sessionBoundary'
 import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
+import { isAuthAccessError } from '../../auth/accessError'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { useConversationDraftStore } from '../conversationDraftStore'
+import { readEarlierChatHistory } from './historyReadback'
+import { claimDraftReadback, receiptForCommand } from './receiptReadback'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, stateBelongsToContext } from './model'
 
 type Command =
@@ -21,6 +24,17 @@ type Result = SendAgentChatMessageResponse | { state: AgentChatState }
 export type AgentChatCommandRecord = {
   command: Command | undefined; result: Result | undefined; error: unknown
   status: 'idle' | 'pending' | 'success' | 'error'; submittedAt: number
+}
+
+function reconcileDraftReadback(state: AgentChatState | undefined, commands: AgentChatCommandRecord[], draftKey: string) {
+  let reconciled = false
+  for (const { command } of commands) {
+    if (claimDraftReadback(command, receiptForCommand(state, command)) && command?.kind === 'send') {
+      useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
+      reconciled = true
+    }
+  }
+  return reconciled
 }
 
 // A synchronous admission latch, NOT a second copy of server/request state. It covers the gap
@@ -71,12 +85,36 @@ export function useAgentChat(context: AgentChatContext) {
     },
     structuralSharing: (previous, incoming) => acceptAgentChatState(previous as AgentChatState | undefined, incoming as AgentChatState),
   })
-  const denial = useProtectedAccessError(query,
-    latestCommand && latestCommand.submittedAt > query.dataUpdatedAt ? latestCommand.error : undefined)
+  const historyId = query.data?.conversation?.id
+  const history = useInfiniteQuery({ queryKey: ['agent-chat', generation, context, historyId, 'history'],
+    queryFn: async ({ pageParam, signal }) => {
+      try {
+        return await readEarlierChatHistory((before) => agentChatApi.history(context.workspaceId, historyId!, before, { signal }),
+          pageParam, query.data?.messages[0]?.id)
+      } catch (error) {
+        // A state GET started before a known denial cannot clear it with a stale response.
+        if (isAuthAccessError(error)) await client.cancelQueries({ queryKey: key, exact: true })
+        throw error
+      }
+    },
+    initialPageParam: undefined as string | undefined, getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: false, retry: false,
+  })
+  const historyDenial = history.errorUpdatedAt >= query.dataUpdatedAt && isAuthAccessError(history.error) ? history.error : undefined
+  const denial = useProtectedAccessError(query, historyDenial
+    ?? (latestCommand && latestCommand.submittedAt > query.dataUpdatedAt ? latestCommand.error : undefined))
   const state = canRead && !denial && query.data && stateBelongsToContext(query.data, context) ? query.data : undefined
+  const latestReceipt = receiptForCommand(state, latestCommand?.command)
+    ?? (latestCommand?.result && 'turn' in latestCommand.result ? latestCommand.result.turn : undefined)
+  useEffect(() => {
+    if (generation === sessionGeneration() && !sessionIsSwitching() && reconcileDraftReadback(state, commands, draftKey)) setLocalError(undefined)
+  }, [state, commands, draftKey, generation])
   const accept = useCallback((incoming: AgentChatState) => {
     assertSession(generation)
     if (sessionIsSwitching() || !stateBelongsToContext(incoming, context)) return
+    const historyRead = client.getQueryState(['agent-chat', generation, incoming.context, incoming.conversation?.id, 'history'])
+    // A late SSE/command snapshot cannot undo a known denial; require a fresh state GET.
+    if (historyRead && isAuthAccessError(historyRead.error) && historyRead.errorUpdatedAt >= (client.getQueryState(key)?.dataUpdatedAt ?? 0)) return
     client.setQueryData<AgentChatState>(key, (previous) => acceptAgentChatState(previous, incoming))
   }, [client, generation, key, draftKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const refresh = useCallback(() => {
@@ -129,7 +167,8 @@ export function useAgentChat(context: AgentChatContext) {
     onSuccess: (result, command) => {
       if (generation !== sessionGeneration() || sessionIsSwitching()) return
       accept(result.state)
-      if (command.kind === 'send' && command.clearDraft && 'turn' in result && !['unknown', 'failed'].includes(result.turn.delivery)) {
+      if (command.kind === 'send' && 'turn' in result && claimDraftReadback(command, result.turn)) {
+        setLocalError(undefined)
         useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
       }
       refresh()
@@ -161,11 +200,15 @@ export function useAgentChat(context: AgentChatContext) {
     const reason = blocked('agent_chat:write') ?? (state ? intentUnavailable(state, intent) : undefined)
     // A completed send can clear the draft before React paints its empty value. Ignore an old
     // Enter/click handler in that gap; do not allocate another requestId for the cleared text.
+    reconcileDraftReadback(client.getQueryData<AgentChatState>(key), commands, draftKey)
     if (clearDraft && (useConversationDraftStore.getState().drafts[draftKey] ?? '').trim() !== text) return false
     if (reason || !state || !text || text.length > 32_000) { setLocalError(reason ?? 'Write a message of up to 32,000 characters.'); return false }
     const unconfirmed = state.turns.some((turn) => turn.delivery === 'unknown' && state.messages.some((message) => message.id === turn.messageId && message.content.trim() === text))
-      || commands.some((record) => record.command?.kind === 'send' && record.status === 'error' && commandMayHaveBeenAccepted(record.error)
-        && record.command.input.content === text && !state.turns.some((turn) => turn.requestId === (record.command?.kind === 'send' ? record.command.input.requestId : '')))
+      || commands.some((record) => {
+        if (record.command?.kind !== 'send' || record.command.input.content !== text) return false
+        const receipt = receiptForCommand(state, record.command) ?? (record.result && 'turn' in record.result ? record.result.turn : undefined)
+        return receipt ? receipt.delivery === 'unknown' : record.status === 'error' && commandMayHaveBeenAccepted(record.error)
+      })
     if (unconfirmed && !allowNewMessage) { setLocalError('Delivery is unknown. Use “Send again as new message” and review the warning.'); return false }
     return runCommand(() => {
       const target = { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId, agentId: context.agentId,
@@ -191,6 +234,6 @@ export function useAgentChat(context: AgentChatContext) {
     runCommand(() => ({ kind: 'respond', conversationId: state.conversation!.id, requestId: `agent-chat-response-${crypto.randomUUID()}`,
       nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId }))
   }
-  return { state, query, access, canRead, denial, online, pending, connection, commands, latestCommand, localError, blocked,
+  return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, localError, blocked,
     send, stop, cancelQueued, respond, refresh, draftKey }
 }
