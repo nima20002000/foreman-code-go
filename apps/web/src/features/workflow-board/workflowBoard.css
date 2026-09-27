@@ -50,9 +50,15 @@
   border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-raised); }
 .board-title h2 { margin: 0; overflow: hidden; color: var(--text-strong); font: var(--type-heading); text-overflow: ellipsis; white-space: nowrap; }
 .board-topbar .n-toolbar { padding: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-raised); }
-.board-notices { position: absolute; z-index: 6; top: 72px; left: 50%; transform: translateX(-50%); display: grid; width: min(34rem, calc(100% - 2rem)); gap: var(--space-2); }
+.board-notices { position: absolute; z-index: 6; top: 72px; left: 50%; transform: translateX(-50%); display: grid; width: min(26rem, calc(100% - 2rem)); gap: var(--space-2); }
 .board-notices:empty { display: none; }
-.board-notices .n-alert { box-shadow: var(--shadow-popover); }
+.board-notices .n-alert { gap: 7px; padding: 8px 10px; border-radius: var(--radius-sm); box-shadow: var(--shadow-popover); }
+.board-notices .n-alert > svg { width: 14px; height: 14px; flex-shrink: 0; }
+.board-notices .n-alert strong { font-size: 11px; line-height: 1.4; }
+.board-notices .n-alert-description { margin-top: 2px; font-size: 11px; line-height: 1.4; }
+.board-notices .n-alert-action { display: flex; align-items: center; gap: 4px; }
+.board-notices .n-button { min-height: 24px; padding: 2px 6px; font-size: 11px; }
+.board-notices .n-icon-button.n-button--sm { width: 24px; height: 24px; min-width: 24px; padding: 3px; }
 .board-notices ul { margin: var(--space-1) 0 0; padding-left: var(--space-4); }
 .board-empty { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .board-empty > * { pointer-events: auto; }
@@ -110,3 +116,17 @@
 .board-name-field { width: min(24rem, 40vw); min-width: 8rem; }
 .board-name-field > label { display: none; }
 .board-name-field .n-input { font: var(--type-heading); }
+
+.board-notice { animation: board-notice-enter 180ms ease-out both; }
+.board-notice[data-closing="true"] { animation: board-notice-exit 180ms ease-in both; pointer-events: none; }
+@keyframes board-notice-enter {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes board-notice-exit {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .board-notice, .board-notice[data-closing="true"] { animation: none; }
+}

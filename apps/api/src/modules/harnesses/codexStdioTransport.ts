@@ -70,13 +70,20 @@ export class CodexStdioTransport {
     private readonly onDisconnect: (error: Error) => void,
     private readonly timeoutMs = DEFAULT_TIMEOUT_MS,
     private readonly processRecovery?: NativeProcessRecovery,
+    /** Process-local only; never edits the native configuration file. */
+    private readonly disabledMcpServerName?: string,
   ) {}
 
   async start(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
     if (this.owned || this.stopped) throw new HarnessExecutionError('CODEX_TRANSPORT_REUSED', 'Create a new provider transport.')
+    if (this.disabledMcpServerName !== undefined && !/^[A-Za-z0-9_-]+$/.test(this.disabledMcpServerName)) {
+      throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'The App MCP name cannot be represented safely by a native dotted-key override.')
+    }
     this.owned = spawnOwnedStdioProcess({
-      binary: this.binary, args: ['app-server', '--stdio'], cwd: this.cwd, environment: this.environment,
+      binary: this.binary, args: ['app-server', '--stdio',
+        ...(this.disabledMcpServerName ? ['-c', `mcp_servers.${this.disabledMcpServerName}.enabled=false`] : []),
+      ], cwd: this.cwd, environment: this.environment,
       onError: (error) => this.fail(error),
       ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
     })

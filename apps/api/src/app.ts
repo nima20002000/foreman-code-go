@@ -26,6 +26,7 @@ import { registerRunGraphRoutes } from './routes/runGraph.js'
 import { registerManagementRoutes } from './routes/management.js'
 import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
+import { registerAgentChatRoutes } from './routes/agentChat.js'
 import { registerHarnessCompatibilityRoutes } from './routes/harnessCompatibility.js'
 import type { HarnessCompatibilityService } from './modules/harnesses/compatibility/service.js'
 
@@ -140,6 +141,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     (principalId, code, route) => options.operator!.services.commands.recordDenied(principalId, 'http', code, route))
   if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)
   if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
+  if (options.operator?.services.agentChat) registerAgentChatRoutes(app, options.operator.services.agentChat)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.operator.access, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator), options.operator?.services)
   if (options.operator || options.appMcp) registerGraphqlMcp(app, {

@@ -13,6 +13,7 @@ import { registerWorkflowTools } from './tools/workflows.js'
 import { registerWorkspaceTools } from './tools/workspaces.js'
 import { registerInteractionTools } from './tools/interactions.js'
 import { registerSettingsTools } from './tools/settings.js'
+import { registerAgentChatTools } from './tools/agentChat.js'
 import { registerWorkspaceDefaultsTools } from './tools/workspaceDefaults.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
@@ -26,6 +27,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerHarnessTools(server, context)
   registerHarnessMcpTools(server, context)
   registerSettingsTools(server, context)
+  registerAgentChatTools(server, context)
   registerWorkspaceDefaultsTools(server, context)
   registerWorkspaceTools(server, context)
   registerWorkflowTools(server, context)
