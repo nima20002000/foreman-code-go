@@ -60,6 +60,8 @@ interface Runtime {
   configuration: AgentConfigurationVersion
   retiring?: boolean
   disposal?: Promise<void>
+  /** Detach only this turn's observer after its durable terminal settlement. */
+  observer?: { requestId: string; controller: AbortController }
 }
 
 interface Resolution {
@@ -501,7 +503,10 @@ export class AgentChatService {
         // Claims cannot overtake a fenced native interrupt. A canceled selection is not a busy queue.
         if (!await this.control(id, () => this.repository.claim(id, next.requestId))) {
           const row = await this.repository.get(id)
-          if (!row || row.active_request_id) return
+          if (!row || row.active_request_id || row.record.sessionUnavailable) return
+          // Only a selection that left the queue warrants an immediate rescan. An unchanged
+          // queued receipt is fenced (for example by an orphan); let reconciliation repair it.
+          if ((await this.repository.turn(id, next.requestId))?.delivery === 'queued') return
           continue
         }
         this.events.publish(id, 'turn', { requestId: next.requestId, delivery: 'submitting' })
@@ -594,6 +599,7 @@ export class AgentChatService {
   private async runTurn(id: string, turn: AgentChatTurn): Promise<void> {
     const correlationId = agentChatCorrelation(id, turn.requestId)
     const signal = this.lifetime.signal
+    const observer = new AbortController()
     let submitted = false
     let creatingSession = false
     let runtime: Runtime | undefined
@@ -627,6 +633,7 @@ export class AgentChatService {
       const currentEvent = openCodeTurnEvents(session.nativeSessionId, () => nativeTurnId)
       const redact = nativePersistenceRedactor([])
       finishPreparation()
+      runtime.observer = { requestId: turn.requestId, controller: observer }
       for await (const event of runtime.manager.startTurn(session, {
         prompt: prompt.text, clientCorrelationId: correlationId,
         onSubmitted: async (id_) => {
@@ -637,7 +644,7 @@ export class AgentChatService {
           // Re-read the captured target under the control fence, also for a late callback.
           void this.interruptActive(id, false, { requestId: turn.requestId, nativeTurnId: id_ }).catch(() => undefined)
         },
-      }, signal)) {
+      }, AbortSignal.any([signal, observer.signal]))) {
         submitted = true
         if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
         await this.record(id, turn.requestId, runtime, event, redact)
@@ -653,7 +660,9 @@ export class AgentChatService {
       }
       await this.observe(id, turn.requestId, runtime!, correlationId)
     } catch (error) {
-      if (this.closing) return // Restart recovery reconciles in-flight work.
+      // Reconciliation can prove completion while OpenCode's SSE stays alive. Its observer
+      // is detached only after finish() commits; this is neither failed delivery nor cancel.
+      if (this.closing || observer.signal.aborted) return // Restart recovery reconciles in-flight work.
       const unavailable = await this.markNativeUnavailable(id, error)
       if (!unavailable && creatingSession && (await this.repository.get(id))?.record.sessionCreation) {
         // No reliable identity/commit means read-only, not another create/fork attempt.
@@ -672,7 +681,10 @@ export class AgentChatService {
         this.scheduleReconcile(id)
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
       }
-    } finally { finishPreparation() }
+    } finally {
+      finishPreparation()
+      if (runtime?.observer?.controller === observer) delete runtime.observer
+    }
   }
 
   private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>) {
@@ -721,6 +733,8 @@ export class AgentChatService {
 
   private async settle(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string): Promise<void> {
     if (await this.repository.finish(id, requestId, result, nativeMessageId)) {
+      const observer = this.runtimes.get(id)?.observer
+      if (observer?.requestId === requestId) observer.controller.abort(new Error('Agent chat turn settled.'))
       this.events.publish(id, 'message', { requestId })
       this.events.publish(id, 'state', { requestId, delivery: result.outcome === 'succeeded' ? 'completed' : result.outcome })
     }

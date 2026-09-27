@@ -289,6 +289,8 @@ export class PostgresAgentChatRepository {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
+      // Keep the conversation → receipt lock order used by acceptance and settlement.
+      await client.query(`select id from operator_conversations where id=$1 and kind='agent' for update`, [id])
       const removed = await client.query<{ message_id: string }>(`delete from operator_conversation_turns
         where conversation_id=$1 and request_id=$2 and delivery='submitting' returning message_id`, [id, requestId])
       if (removed.rows[0]) {
@@ -486,7 +488,7 @@ export class PostgresAgentChatRepository {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
-      // Same lock order as append/finish: a late uncertainty write cannot undo terminal activity.
+      // Match accepted()/finish(): never hold a receipt lock while waiting for its conversation.
       await client.query(`select id from operator_conversations where id=$1 and kind='agent' for update`, [id])
       const receipt = await client.query(`update operator_conversation_turns set delivery='unknown',delivery_error=$3::jsonb,updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery in ('submitting','accepted')`,
