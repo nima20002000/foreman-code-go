@@ -26,9 +26,10 @@ export function AgentConversation({ context, name, onNewConversation }: {
   const reasonId = useId()
   useEffect(() => {
     if (!state || focused.current || !composer.current) return
-    focused.current = true
     const active = document.activeElement, popover = composer.current.closest('.n-agent-popover')
-    if (!active || active === document.body || active.getAttribute('role') === 'tab' && popover?.contains(active)) {
+    if (!active || active === document.body || active.matches('.n-agent-action--chat[aria-expanded="true"]')
+      || active.getAttribute('role') === 'tab' && popover?.contains(active)) {
+      focused.current = true
       composer.current.focus({ preventScroll: true })
     }
   }, [state])
@@ -55,6 +56,7 @@ export function AgentConversation({ context, name, onNewConversation }: {
   const error = !receipt && latest?.status === 'error' ? latest.error : undefined
   const notActive = latest?.command?.kind === 'send' && ApiError.is(error) && error.code === 'AGENT_CHAT_TURN_NOT_ACTIVE'
   const stale = ApiError.is(error) && error.code === 'AGENT_CHAT_CONTEXT_STALE'
+  const currentReceipt = chat.currentReceipt
   const unavailable = state ? [...new Set(Object.values(state.capabilities.unavailable).filter(Boolean))] : []
   const sessionMissing = state?.availability.reason === 'native_session_missing' || state?.sessionState === 'unavailable'
   const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.nativeMessageComplete !== false).at(-1)
@@ -84,7 +86,7 @@ export function AgentConversation({ context, name, onNewConversation }: {
       onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={setSendAgain} /> : null}
     {busy && !state?.messages.some((message) => message.role === 'assistant' && message.requestId === state.activeTurn?.requestId && message.nativeMessageComplete === false)
       ? <p className="agent-chat-note">No partial assistant text has been received for this turn. A completed reply will appear when available.</p> : null}
-    {receipt ? <p className="agent-chat-note" role="status">Server recorded: {intentLabels[receipt.intent]} · {deliveryLabels[receipt.delivery]}</p> : null}
+    {receipt ? <p className="agent-chat-note" role="status">{currentReceipt ? 'Server recorded' : 'Initial acknowledgement'}: {intentLabels[receipt.intent]} · {deliveryLabels[currentReceipt?.delivery ?? receipt.delivery]}</p> : null}
     {error ? <Alert title={stale ? 'Chat context changed' : notActive ? 'The targeted turn has finished' : 'Command not confirmed'} tone="warning" live>
       <p>{error instanceof Error ? error.message : 'The command could not be confirmed.'}</p>
       {stale ? <p>The latest conversation is being fetched. Your draft is kept; review it before sending again.</p> : null}

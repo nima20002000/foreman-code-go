@@ -3,7 +3,7 @@ import {
   AgentChatContextSchema, AgentChatQuerySchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
   InterruptAgentChatRequestSchema, RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema,
   SendAgentChatMessageResponseSchema, agentChatFixtures, type AgentChatContext, type AgentChatState,
-  type AgentChatTurn, type SendAgentChatMessageResponse,
+  type AgentChatTurn,
 } from '@graphql/contracts/agent-chat'
 import type { ManagementAction } from '@graphql/contracts/management'
 import { agentChatContextKey } from '../../features/conversations/agentChat/model'
@@ -28,7 +28,7 @@ export function agentChatFixtureFor(state: AgentChatState, context: AgentChatCon
 
 /** Deterministic HTTP fixtures. This is a test server, never a native-session simulator. */
 export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.empty, actions: ManagementAction[] = agentChatTestActions) {
-  const states = new Map<string, AgentChatState>(), receipts = new Map<string, { input: string; response: SendAgentChatMessageResponse }>()
+  const states = new Map<string, AgentChatState>(), receipts = new Map<string, { input: string; conversationId: string }>()
   const calls: { method: string; path: string; body?: unknown }[] = []
   let serial = 0
   const setState = (state: AgentChatState) => { states.set(agentChatContextKey(state.context), AgentChatStateSchema.parse(structuredClone(state))) }
@@ -50,41 +50,64 @@ export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.
       const input = SendAgentChatMessageRequestSchema.parse(await request.json()); record(request, input)
       const context = AgentChatContextSchema.parse({ workspaceId: params.workspaceId, ...input.context })
       const key = `${agentChatContextKey(context)}:${input.requestId}`, previous = receipts.get(key)
-      if (previous) return previous.input === JSON.stringify(input)
-        ? HttpResponse.json({ ...previous.response, replayed: true }) : failure('AGENT_CHAT_REQUEST_CONFLICT', 'The requestId was used for different input.')
+      if (previous) {
+        if (previous.input !== JSON.stringify(input)) return failure('AGENT_CHAT_REQUEST_CONFLICT', 'The requestId was used for different input.')
+        const state = find(context.workspaceId, previous.conversationId)
+        const turn = state?.turns.find((entry) => entry.requestId === input.requestId)
+        if (!state || !turn) throw new Error('Replay receipt missing from the test fixture')
+        return HttpResponse.json(SendAgentChatMessageResponseSchema.parse({ state, turn, replayed: true }))
+      }
       const before = getState(context)
       if (input.expectedConversationId !== (before.conversation?.id ?? null)) return failure('AGENT_CHAT_CONTEXT_STALE', 'The conversation changed.')
       if (!before.availability.canSend) return failure('AGENT_CHAT_UNAVAILABLE', before.availability.message ?? 'Chat is unavailable.')
       if (input.intent === 'steer' && (!before.activeTurn || before.capabilities.steer === 'native_expected_turn' && input.expectedNativeTurnId !== before.activeTurn.nativeTurnId)) {
         return failure('AGENT_CHAT_TURN_NOT_ACTIVE', 'The targeted native turn finished.')
       }
-      const conversation = before.conversation ?? agentChatFixtureFor(agentChatFixtures.active, context, `conversation-created-${++serial}`).conversation!
+      if (input.intent === 'steer' && before.capabilities.steer === 'unavailable') {
+        return failure('AGENT_CHAT_STEER_UNAVAILABLE', before.capabilities.unavailable.steer ?? 'Steering is unavailable.')
+      }
+      if (input.intent === 'interrupt_and_send' && !before.conversation) return failure('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.')
+      const { runId, ...identity } = context
+      // Admission is not native acceptance. Tests explicitly publish later state; no timer pretends
+      // to start a harness. In particular a first OpenCode send must not acquire a Codex session.
+      const conversation = before.conversation ?? { ...identity, id: `conversation-created-${++serial}`,
+        agentConfigurationVersionId: `configuration-${context.agentId}`, harness: before.capabilities.harness,
+        origin: runId ? { kind: 'run_execution' as const, runId, executionId: `execution-${runId}`, sourceNativeSessionId: `source-${runId}` } : { kind: 'fresh' as const },
+        nativeSession: null, createdAt: at, updatedAt: at }
       const turn: AgentChatTurn = { requestId: input.requestId, messageId: `message-${input.requestId}`, intent: input.intent,
         sequence: String(before.turns.reduce((max, item) => Math.max(max, Number(item.sequence)), 0) + 1),
-        delivery: before.activeTurn && input.intent === 'next_turn' ? 'queued' : 'accepted',
+        delivery: input.intent === 'steer' ? 'accepted' : 'queued',
+        ...(input.intent === 'steer' && before.activeTurn?.nativeTurnId ? { nativeTurnId: before.activeTurn.nativeTurnId } : {}),
         ...(input.expectedNativeTurnId ? { targetNativeTurnId: input.expectedNativeTurnId } : {}), createdAt: at, updatedAt: at }
-      const activeTurn = turn.delivery === 'queued' || input.intent === 'steer' ? before.activeTurn
-        : { requestId: turn.requestId, nativeTurnId: `native-${turn.requestId}`, startedAt: at }
-      const state = AgentChatStateSchema.parse({ ...before, conversation, activeTurn, sessionState: 'active', revision: before.revision + 1,
+      const state = AgentChatStateSchema.parse({ ...before, conversation, activeTurn: before.activeTurn,
+        sessionState: input.intent === 'interrupt_and_send' && before.activeTurn ? 'interrupting' : before.conversation ? before.sessionState : 'idle',
+        revision: before.revision + 1,
         turns: [...before.turns, turn], messages: [...before.messages, { id: turn.messageId, conversationId: conversation.id, requestId: turn.requestId,
           role: 'user', content: input.content, createdAt: at }] })
       setState(state)
       const response = SendAgentChatMessageResponseSchema.parse({ state, turn, replayed: false })
-      receipts.set(key, { input: JSON.stringify(input), response })
+      receipts.set(key, { input: JSON.stringify(input), conversationId: conversation.id })
       return HttpResponse.json(response)
     }),
     http.post(`${root}/conversations/:id/interrupt`, async ({ request, params }) => {
       const input = InterruptAgentChatRequestSchema.parse(await request.json()); record(request, input)
       const state = find(String(params.workspaceId), String(params.id))
       if (!state) return failure('NOT_FOUND', 'Conversation not found.', 404)
-      return commandState({ ...state, revision: state.revision + 1, sessionState: 'idle', activeTurn: null,
-        turns: state.turns.map((turn) => ['queued', 'accepted', 'submitting'].includes(turn.delivery) ? { ...turn, delivery: 'canceled' } : turn) })
+      if (input.expectedNativeTurnId && state.activeTurn?.nativeTurnId && input.expectedNativeTurnId !== state.activeTurn.nativeTurnId) {
+        return failure('AGENT_CHAT_TURN_NOT_ACTIVE', 'That turn already finished.')
+      }
+      const next = { ...state, revision: state.revision + 1, sessionState: 'idle' as const, activeTurn: null,
+        turns: state.turns.map((turn) => ['queued', 'accepted', 'submitting'].includes(turn.delivery) ? { ...turn, delivery: 'canceled' as const } : turn) }
+      delete next.pendingInteraction
+      return commandState(next)
     }),
     http.post(`${root}/conversations/:id/turns/:turnRequestId/cancel`, async ({ request, params }) => {
       const input = CancelQueuedAgentChatTurnRequestSchema.parse(await request.json()); record(request, input)
       const state = find(String(params.workspaceId), String(params.id))
       if (!state) return failure('NOT_FOUND', 'Conversation not found.', 404)
-      if (state.turns.find((turn) => turn.requestId === params.turnRequestId)?.delivery !== 'queued') return failure('AGENT_CHAT_TURN_NOT_ACTIVE', 'The queued message already started.')
+      const turn = state.turns.find((turn) => turn.requestId === params.turnRequestId)
+      if (!turn) return failure('AGENT_CHAT_TURN_NOT_FOUND', 'That message was not found.', 404)
+      if (!['queued', 'canceled'].includes(turn.delivery)) return failure('AGENT_CHAT_TURN_STARTED', 'That message was already sent to the Agent.')
       return commandState({ ...state, revision: state.revision + 1, turns: state.turns.map((turn) => turn.requestId === params.turnRequestId ? { ...turn, delivery: 'canceled' } : turn) })
     }),
     http.post(`${root}/conversations/:id/responses`, async ({ request, params }) => {
@@ -92,8 +115,12 @@ export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.
       const state = find(String(params.workspaceId), String(params.id))
       if (!state) return failure('NOT_FOUND', 'Conversation not found.', 404)
       if (!actions.includes('agent_chat:respond')) return failure('FORBIDDEN', 'Approval access denied.', 403)
-      if (state.pendingInteraction?.turn.nativeRequestId !== input.nativeRequestId
-        || !state.pendingInteraction.responseOptions.some((option) => option.optionId === input.optionId)) return failure('AGENT_CHAT_CONTEXT_STALE', 'The native request changed.')
+      if (!state.activeTurn || !state.conversation?.nativeSession || state.pendingInteraction?.turn.nativeRequestId !== input.nativeRequestId) {
+        return failure('AGENT_CHAT_INTERACTION_NOT_PENDING', 'This approval is no longer pending.')
+      }
+      if (!state.pendingInteraction.responseOptions.some((option) => option.optionId === input.optionId)) {
+        return failure('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
+      }
       const next = { ...state, revision: state.revision + 1, sessionState: 'active' as const }
       delete next.pendingInteraction
       return commandState(next)

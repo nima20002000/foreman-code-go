@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useInfiniteQuery, useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { ManagementAction } from '@graphql/contracts/management'
-import type { AgentChatContext, AgentChatIntent, AgentChatState, SendAgentChatMessageRequest, SendAgentChatMessageResponse } from '@graphql/contracts/agent-chat'
+import type { AgentChatContext, AgentChatIntent, AgentChatState } from '@graphql/contracts/agent-chat'
 import { agentChatApi } from '../../../shared/api/agentChat'
 import { ApiError } from '../../../shared/api/client'
 import { subscribeAgentChat, type AgentChatConnection } from '../../../shared/api/agentChatStream'
@@ -15,16 +15,8 @@ import { readEarlierChatHistory } from './historyReadback'
 import { claimDraftReadback, receiptForCommand } from './receiptReadback'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, stateBelongsToContext } from './model'
 
-type Command =
-  | { kind: 'send'; input: SendAgentChatMessageRequest; clearDraft: boolean }
-  | { kind: 'stop'; conversationId: string; requestId: string; expectedNativeTurnId?: string }
-  | { kind: 'cancel'; conversationId: string; requestId: string; turnRequestId: string }
-  | { kind: 'respond'; conversationId: string; requestId: string; nativeRequestId: string; optionId: string }
-type Result = SendAgentChatMessageResponse | { state: AgentChatState }
-export type AgentChatCommandRecord = {
-  command: Command | undefined; result: Result | undefined; error: unknown
-  status: 'idle' | 'pending' | 'success' | 'error'; submittedAt: number
-}
+import { compactAgentChatResult, currentCommandReceipt, retireAgentChatAcknowledgements, type AgentChatCommand as Command, type AgentChatCommandResult as Result, type AgentChatCommandRecord } from './commandRecords'
+export type { AgentChatCommandRecord } from './commandRecords'
 
 function reconcileDraftReadback(state: AgentChatState | undefined, commands: AgentChatCommandRecord[], draftKey: string) {
   let reconciled = false
@@ -104,11 +96,14 @@ export function useAgentChat(context: AgentChatContext) {
   const denial = useProtectedAccessError(query, historyDenial
     ?? (latestCommand && latestCommand.submittedAt > query.dataUpdatedAt ? latestCommand.error : undefined))
   const state = canRead && !denial && query.data && stateBelongsToContext(query.data, context) ? query.data : undefined
-  const latestReceipt = receiptForCommand(state, latestCommand?.command)
-    ?? (latestCommand?.result && 'turn' in latestCommand.result ? latestCommand.result.turn : undefined)
+  const currentReceipt = latestCommand?.result
+    ? currentCommandReceipt(latestCommand.result, state)
+    : receiptForCommand(state, latestCommand?.command)
+  const latestReceipt = currentReceipt ?? latestCommand?.result?.turn
   useEffect(() => {
     if (generation === sessionGeneration() && !sessionIsSwitching() && reconcileDraftReadback(state, commands, draftKey)) setLocalError(undefined)
   }, [state, commands, draftKey, generation])
+  useEffect(() => { retireAgentChatAcknowledgements(client) }, [client, state])
   const accept = useCallback((incoming: AgentChatState) => {
     assertSession(generation)
     if (sessionIsSwitching() || !stateBelongsToContext(incoming, context)) return
@@ -162,12 +157,13 @@ export function useAgentChat(context: AgentChatContext) {
           || command.input.expectedConversationId !== null && result.state.conversation?.id !== command.input.expectedConversationId)) {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The response did not confirm this command in this conversation.' })
       }
-      return result
+      if (generation === sessionGeneration() && !sessionIsSwitching()) accept(result.state)
+      return compactAgentChatResult(result)
     },
     onSuccess: (result, command) => {
       if (generation !== sessionGeneration() || sessionIsSwitching()) return
-      accept(result.state)
-      if (command.kind === 'send' && 'turn' in result && claimDraftReadback(command, result.turn)) {
+      // State was accepted in mutationFn; the stored result is compact.
+      if (command.kind === 'send' && claimDraftReadback(command, result.turn)) {
         setLocalError(undefined)
         useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
       }
@@ -181,7 +177,7 @@ export function useAgentChat(context: AgentChatContext) {
     setLocalError(undefined)
     try {
       // Allocate exactly one requestId AFTER synchronous admission, not on each keystroke/click.
-      void mutation.mutateAsync(build()).catch(() => undefined).finally(release)
+      void mutation.mutateAsync(build()).catch(() => undefined).finally(() => { release(); retireAgentChatAcknowledgements(client) })
       return true
     } catch (error) { release(); setLocalError(error instanceof Error ? error.message : 'The command could not be prepared.'); return false }
   }
@@ -234,6 +230,6 @@ export function useAgentChat(context: AgentChatContext) {
     runCommand(() => ({ kind: 'respond', conversationId: state.conversation!.id, requestId: `agent-chat-response-${crypto.randomUUID()}`,
       nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId }))
   }
-  return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, localError, blocked,
+  return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, localError, blocked,
     send, stop, cancelQueued, respond, refresh, draftKey }
 }
