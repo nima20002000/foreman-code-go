@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { interrupt, isGraphInterrupt } from '@langchain/langgraph'
 import { HarnessExecutionSchema, HarnessExecutionRequestSchema, type HarnessExecution } from '@graphql/contracts'
-import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema,
+import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema, WorkActivationInputSchema,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { REPEAT_NATIVE_PENDING_MESSAGE } from '../interactions/repeatNativeEvidence.js'
@@ -23,6 +23,7 @@ import { assertRepeatExecution, repeatConflict, type RepeatNodeRef, type RepeatS
 import type { RepeatRunRepository } from './repeatPostgres.js'
 import { buildWorkHandoffGraph } from './workHandoffGraph.js'
 import { workHandoffNodeAction } from './workHandoffNode.js'
+import { trustedWorkNoticePrompt } from './workHandoffNotice.js'
 import { ExecutionLimiter } from './limiter.js'
 
 /** Adapt the existing exact-session native driver, not a second native runtime.
@@ -248,9 +249,12 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       const initialPrompt = currentInitialPrompt(node,
         context.version.definition.repeat?.blocks.some((block) => block.exitNodeId === node.id) ?? false,
         context.version.definition.handoffs !== undefined)
+      const noticePrompt = context.version.definition.handoffs
+        ? trustedWorkNoticePrompt(WorkActivationInputSchema.parse(execution.input)) : undefined
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: run.id,
         workspaceId: run.workspaceId, workflowNodeId: node.id, ...paths,
-        ...(initialPrompt ? { initialPrompt } : {}), configuration, input: execution.input })
+        ...(initialPrompt || noticePrompt ? { initialPrompt: [initialPrompt, noticePrompt].filter(Boolean).join('\n\n') } : {}),
+        configuration, input: execution.input })
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
         execution = observation.execution
@@ -292,6 +296,7 @@ export interface RepeatRuntimeLifecycle {
   markRunning(): Promise<void>
   currentState(): Promise<{ executionState: string; stopRequested: boolean }>
   persistWait(snapshot: import('./repeatGraph.js').RepeatCheckpoint): Promise<boolean>
+  persistDirectionWait?(): Promise<void>
   /** Persist cleanup intent BEFORE native cancellation; false retains uncertainty. */
   cancelNativeAndRequestCleanup(): Promise<boolean>
   settleRun(stopped: boolean, interrupted: boolean): Promise<void>
@@ -310,7 +315,7 @@ export async function executeRepeatRuntime(input: {
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'
     | 'resolveExcluded' | 'completeRun' | 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
-    | 'admitWorkRequest' | 'returnWork' | 'completeWorkRun'>
+    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'completeWorkRun'>
   driver: RepeatExecutionDriver; lifecycle: RepeatRuntimeLifecycle
   checkpointer: import('@langchain/langgraph-checkpoint').BaseCheckpointSaver
   configuredParallelism?: number
@@ -392,7 +397,14 @@ export async function executeRepeatRuntime(input: {
         signal.throwIfAborted()
         if (firstFailure) throw firstFailure
         if (await input.lifecycle.persistWait(await readCheckpoint())) return
-        if (work) await input.store.completeWorkRun()
+        if (work) {
+          if (await input.store.completeWorkRun() === 'needs_direction') {
+            if (!input.lifecycle.persistDirectionWait) throw new DomainError('WORK_DIRECTION_WAIT_WRITER_REQUIRED',
+              'Unresolved work requires the durable workflow direction-wait writer.', 409)
+            await input.lifecycle.persistDirectionWait()
+            return
+          }
+        }
         else await input.store.completeRun()
         await input.lifecycle.requestCleanup()
         await input.lifecycle.finishNative()

@@ -159,7 +159,8 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
   const lifecycle = input.lifecycle
   if (!lifecycle || ['preflight', 'markRunning', 'currentState', 'persistWait', 'cancelNativeAndRequestCleanup',
     'settleRun', 'requestCleanup', 'finishNative', 'finishCleanup'].some((key) =>
-    typeof lifecycle[key as keyof RepeatRuntimeLifecycle] !== 'function')) {
+    typeof lifecycle[key as keyof RepeatRuntimeLifecycle] !== 'function')
+    || snapshot.version.definition.handoffs && typeof lifecycle.persistDirectionWait !== 'function') {
     throw new DomainError('REPEAT_NATIVE_HOST_REQUIRED', 'Repeat lifecycle proof writers are required.', 409)
   }
   await executeRepeatRuntime({ runId: snapshot.run.id, version: snapshot.version, owner: input.owner,
@@ -168,6 +169,7 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
       markRunning: () => lifecycle.markRunning(),
       currentState: () => lifecycle.currentState(),
       persistWait: (checkpoint) => lifecycle.persistWait(checkpoint),
+      ...(lifecycle.persistDirectionWait ? { persistDirectionWait: () => lifecycle.persistDirectionWait!() } : {}),
       cancelNativeAndRequestCleanup: () => lifecycle.cancelNativeAndRequestCleanup(),
       settleRun: (stopped, interrupted) => lifecycle.settleRun(stopped, interrupted),
       requestCleanup: () => lifecycle.requestCleanup(),

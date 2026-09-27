@@ -3,7 +3,8 @@ import { makeCurrentWorkflowFixture } from './currentFixture.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import {
   WorkHandoffResultSchema, WorkHandoffUsageSchema, WorkNoticeSchema, WorkReturnSchema,
-  canAdmitWorkHandoff, consumesWorkHandoffSlot, parseWorkHandoffResult, workConnectionForRequest,
+  canAdmitWorkHandoff, consumesWorkHandoffSlot, parseWorkHandoffResult,
+  workConnectionForRequest, workLimitNoticeText,
 } from './handoffs.js'
 
 const fixture = makeCurrentWorkflowFixture('handoffs-contract')
@@ -114,8 +115,16 @@ describe('FLOW-01 versioned work handoff contract', () => {
     expect(WorkReturnSchema.safeParse({ ...returned, outcome: 'accepted' }).success).toBe(false)
     void _unused
     const notice = { scope: fixture.scope, noticeId: 'notice-3', requesterActivationId: 'activation-b-3',
-      cause: { kind: 'last_return', returnId: 'return-3' }, continuationActivationId: 'activation-b-4', delivery: 'pending' }
+      cause: { kind: 'last_return', returnId: 'return-3' }, continuationActivationId: 'activation-b-4',
+      relationshipId: 'bc', destinationNodeId: 'node-c', destinationAgentId: 'agent-c', destinationName: 'C',
+      used: 3, maxWorkHandoffsPerRun: 3,
+      latestDeliverable: returned.latestDeliverable, remainingFindings: returned.remainingFindings,
+      alternatives: [{ relationshipId: 'bd', destinationNodeId: 'node-d', destinationAgentId: 'agent-d',
+        destinationName: 'D', outcomes: ['review_d'], used: 0, maxWorkHandoffsPerRun: null }],
+      message: workLimitNoticeText('C', 3, 3), delivery: 'pending',
+      createdAt: fixture.createdAt, updatedAt: fixture.createdAt }
     expect(WorkNoticeSchema.parse(notice)).toEqual(notice)
+    expect(WorkNoticeSchema.safeParse({ ...notice, message: 'The limit is reached.' }).success).toBe(false)
     expect(WorkNoticeSchema.safeParse({ ...notice, delivery: 'delivered' }).success).toBe(false)
     expect(WorkNoticeSchema.safeParse({ ...notice, delivery: 'delivered', acknowledgementId: 'ack-3' }).success).toBe(true)
   })

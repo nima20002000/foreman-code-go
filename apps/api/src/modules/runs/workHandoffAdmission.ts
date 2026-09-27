@@ -3,11 +3,12 @@ import {
   AcceptedCurrentNodeResultSchema, WorkActivationIdentitySchema, WorkHandoffResultSchema,
   WorkActivationInputSchema, WorkLimitDenialSchema, WorkRequestSchema, WorkReturnSchema,
   canonicalGraphJson, parseWorkHandoffResult, workConnectionForRequest,
-  type WorkActivationInput, type WorkLimitDenial, type WorkRequest, type WorkReturn, type WorkflowVersionV3,
+  type WorkActivationInput, type WorkLimitDenial, type WorkNotice, type WorkRequest, type WorkReturn, type WorkflowVersionV3,
 } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { RepeatLockedHooks } from './repeatPostgres.js'
 import { repeatConflict, repeatDigest, repeatId, sameRepeatValue, type RepeatScope } from './repeatResolution.js'
+import { frozenWorkNotice, persistWorkLimitNoticeLocked, readWorkLimitNoticeLocked } from './workHandoffNotice.js'
 
 async function assertAcceptedWorkResult(sql: GraphTransactionSql, scope: RepeatScope,
   execution: ReturnType<typeof HarnessExecutionSchema.parse>, activationId: string): Promise<void> {
@@ -21,7 +22,8 @@ async function assertAcceptedWorkResult(sql: GraphTransactionSql, scope: RepeatS
 }
 
 export type WorkRequestAdmission = { kind: 'accepted'; request: WorkRequest; replayed: boolean; destinationReady: boolean }
-  | { kind: 'limit_reached'; denial: WorkLimitDenial; replayed: boolean }
+  | { kind: 'limit_reached'; denial: WorkLimitDenial; notice: WorkNotice; replayed: boolean }
+  | { kind: 'needs_direction'; unresolvedId: string; replayed: boolean }
 export interface WorkReturnReceipt { value: WorkReturn; replayed: boolean }
 
 /** Reconstruct only from the exact saved cause and accepted result receipt. */
@@ -80,7 +82,33 @@ export async function readWorkActivationInputLocked(context: AdmissionContext, a
       || !sameRepeatValue(response.data.remainingFindings, returned.remainingFindings)) {
       return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
     }
-    return WorkActivationInputSchema.parse({ ...base, work: { kind: 'work_return', activation, returned, acceptedSourceResult } })
+    const noticeExists = (await sql.query('select 1 from run_work_notices where run_id=$1 and cause_kind=$2 and cause_id=$3',
+      [scope.runId, 'last_return', returned.returnId])).rowCount === 1
+    const notice = noticeExists ? frozenWorkNotice(await readWorkLimitNoticeLocked(context,
+      { kind: 'last_return', returnId: returned.returnId })) : undefined
+    return WorkActivationInputSchema.parse({ ...base, work: { kind: 'work_return', activation, returned,
+      acceptedSourceResult, ...(notice ? { notice } : {}) } })
+  }
+  if (activation.cause.kind === 'limit_denial') {
+    const denialRow = (await sql.query<{ record: unknown }>(
+      'select record from run_work_denials where run_id=$1 and denial_id=$2 for share',
+      [scope.runId, row.cause_id])).rows[0]
+    if (!denialRow) return repeatConflict('WORK_DENIAL_MISSING')
+    const denial = WorkLimitDenialSchema.parse(denialRow.record)
+    if (!sameRepeatValue(denial.scope, scope) || denial.requesterActivationId === activationId) {
+      return repeatConflict('WORK_DENIAL_ANCESTRY_CONFLICT')
+    }
+    const notice = frozenWorkNotice(await readWorkLimitNoticeLocked(context,
+      { kind: 'limit_denial', denialId: denial.denialId }))
+    if (notice.continuationActivationId !== activationId) return repeatConflict('WORK_NOTICE_PIN_CONFLICT')
+    const accepted = (await sql.query<{ result_json: string; result_digest: string }>(
+      'select result_json,result_digest from run_work_results where run_id=$1 and execution_id=$2 for share',
+      [scope.runId, denial.requesterExecutionId])).rows[0]
+    if (!accepted || accepted.result_digest !== denial.payloadDigest) return repeatConflict('WORK_SOURCE_RESULT_CONFLICT')
+    const acceptedSourceResult = AcceptedCurrentNodeResultSchema.parse(JSON.parse(accepted.result_json))
+    if (repeatDigest(acceptedSourceResult, 64 * 1024) !== accepted.result_digest) return repeatConflict('WORK_SOURCE_RESULT_CONFLICT')
+    return WorkActivationInputSchema.parse({ ...base, work: { kind: 'limit_denial', activation,
+      denial, acceptedSourceResult, notice } })
   }
   if (activation.cause.kind === 'join') {
     const incoming = version.definition.edges.filter((edge) => edge.kind === 'execution'
@@ -115,6 +143,67 @@ interface AdmissionContext {
   sql: GraphTransactionSql; scope: RepeatScope; version: WorkflowVersionV3
   hooks: RepeatLockedHooks; now: string
   assertActive(): void
+}
+
+/** Preserve the accepted native decision when no lawful continuation remains.
+ * Independent graph branches still finish; Run settlement reports this work as
+ * unresolved instead of silently approving it or waking the same Agent again. */
+export async function recordUnresolvedWorkLocked(context: AdmissionContext,
+  sourceExecutionId: string, reason: 'finish_with_findings' | 'repeated_exhausted_route',
+  relationshipId?: string): Promise<{ unresolvedId: string; replayed: boolean }> {
+  const { sql, scope, version } = context
+  await context.hooks.assertAuthorityLocked(sql)
+  const row = (await sql.query<{ record: unknown; accepted: boolean; work_activation_id: string | null }>(
+    'select record,accepted,work_activation_id from harness_executions where id=$1 and run_id=$2 for share',
+    [sourceExecutionId, scope.runId])).rows[0]
+  if (!row?.accepted || !row.work_activation_id) return repeatConflict('WORK_SOURCE_NOT_ACCEPTED')
+  const execution = HarnessExecutionSchema.parse(row.record)
+  await assertAcceptedWorkResult(sql, scope, execution, row.work_activation_id)
+  const result = parseWorkHandoffResult(execution.result)
+  const node = version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
+  if (!node) return repeatConflict('WORKFLOW_NODE_NOT_FOUND')
+  if (reason === 'finish_with_findings') {
+    if (relationshipId || result.routing.kind !== 'finish' || !result.data.remainingFindings.length) {
+      return repeatConflict('WORK_UNRESOLVED_CAUSE_CONFLICT')
+    }
+    const route = node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target
+    if (route?.kind === 'edge') return repeatConflict('WORK_UNRESOLVED_ROUTE_EXISTS')
+  } else {
+    const selected = result.routing.kind === 'request'
+      ? node.choice?.outcomes.find((item) => item.outcome === result.routing.outcome)?.target : undefined
+    if (!relationshipId || selected?.kind !== 'edge' || selected.relationshipId !== relationshipId) {
+      return repeatConflict('WORK_UNRESOLVED_CAUSE_CONFLICT')
+    }
+    const activation = (await sql.query<{ lineage_id: string }>(
+      'select lineage_id from run_work_activations where run_id=$1 and activation_id=$2 for share',
+      [scope.runId, row.work_activation_id])).rows[0]
+    if (!activation || !(await sql.query(`select 1 from run_work_denials d
+      join run_work_activations a on a.run_id=d.run_id and a.activation_id=d.requester_activation_id
+      where d.run_id=$1 and d.relationship_id=$2 and a.lineage_id=$3 limit 1`,
+    [scope.runId, relationshipId, activation.lineage_id])).rowCount) return repeatConflict('WORK_UNRESOLVED_DENIAL_MISSING')
+  }
+  const unresolvedId = repeatId('work-unresolved', scope.runId, sourceExecutionId)
+  const prior = (await sql.query<{ reason: string; relationship_id: string | null; result_digest: string }>(
+    'select reason,relationship_id,result_digest from run_work_unresolved where unresolved_id=$1 and run_id=$2',
+    [unresolvedId, scope.runId])).rows[0]
+  const resultDigest = repeatDigest(execution.result, 64 * 1024)
+  if (prior) {
+    if (prior.reason !== reason || prior.relationship_id !== (relationshipId ?? null)
+      || prior.result_digest !== resultDigest) return repeatConflict('WORK_UNRESOLVED_REPLAY_CONFLICT')
+    return { unresolvedId, replayed: true }
+  }
+  context.assertActive()
+  await context.hooks.assertSettlementLocked(sql, [sourceExecutionId])
+  await sql.query(`insert into run_work_unresolved(unresolved_id,run_id,activation_id,execution_id,
+    result_digest,reason,relationship_id,created_at) values($1,$2,$3,$4,$5,$6,$7,$8)`,
+  [unresolvedId, scope.runId, row.work_activation_id, sourceExecutionId,
+    resultDigest, reason, relationshipId ?? null, context.now])
+  await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+    values($1,'backend','work_needs_direction',$2,$3,$4::jsonb)`,
+  [scope.runId, sourceExecutionId, context.now, canonicalGraphJson({ unresolvedId,
+    activationId: row.work_activation_id, workflowNodeId: node.id, reason,
+    relationshipId: relationshipId ?? null })])
+  return { unresolvedId, replayed: false }
 }
 
 export async function ensureWorkEntryLocked(context: AdmissionContext): Promise<string> {
@@ -221,7 +310,9 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
     const denial = WorkLimitDenialSchema.parse(denied.record)
     if (denied.payload_digest !== payloadDigest || denial.relationshipId !== relationship.id
       || !sameRepeatValue(denial.scope, scope)) return repeatConflict('WORK_REQUEST_REPLAY_CONFLICT')
-    return { kind: 'limit_reached', denial, replayed: true }
+    const notice = await readWorkLimitNoticeLocked(context, { kind: 'limit_denial', denialId: denial.denialId })
+    if (notice.requesterActivationId !== activation.activationId) return repeatConflict('WORK_NOTICE_PIN_CONFLICT')
+    return { kind: 'limit_reached', denial, notice, replayed: true }
   }
   context.assertActive()
   await hooks.assertSettlementLocked(sql, [sourceExecutionId])
@@ -239,6 +330,15 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
   [scope.runId, scope.workflowVersionId, relationship.id])).rows[0]
   if (!usage || usage.maximum !== maximum) return repeatConflict('WORK_COUNTER_PIN_CONFLICT')
   if (maximum !== null && usage.used >= maximum) {
+    const alreadyNotified = (await sql.query(`select 1 from run_work_denials d
+      join run_work_activations a on a.run_id=d.run_id and a.activation_id=d.requester_activation_id
+      where d.run_id=$1 and d.relationship_id=$2 and a.lineage_id=$3 limit 1`,
+    [scope.runId, relationship.id, activation.lineageId])).rowCount === 1
+    if (alreadyNotified) {
+      const unresolved = await recordUnresolvedWorkLocked(context, sourceExecutionId,
+        'repeated_exhausted_route', relationship.id)
+      return { kind: 'needs_direction', ...unresolved }
+    }
     const denial = WorkLimitDenialSchema.parse({ scope, denialId: repeatId('work-denial', requestId), requestId,
       relationshipId: relationship.id, requesterActivationId: activation.activationId,
       requesterExecutionId: sourceExecutionId,
@@ -248,11 +348,24 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
       values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
     [denial.denialId, scope.runId, requestId, scope.workflowVersionId, relationship.id,
       activation.activationId, sourceExecutionId, payloadDigest, canonicalGraphJson(denial), context.now])
+    const continuationActivationId = repeatId('work-activation', denial.denialId)
+    const continuation = WorkActivationIdentitySchema.parse({ scope, activationId: continuationActivationId,
+      workflowNodeId: node.id, lineageId: activation.lineageId,
+      cause: { kind: 'limit_denial', denialId: denial.denialId } })
+    await sql.query(`insert into run_work_activations(activation_id,run_id,workflow_version_id,workflow_node_id,
+      cause_kind,cause_id,state,record) values($1,$2,$3,$4,'limit_denial',$5,'queued',$6::jsonb)`,
+    [continuationActivationId, scope.runId, scope.workflowVersionId, node.id,
+      denial.denialId, canonicalGraphJson(continuation)])
+    const notice = await persistWorkLimitNoticeLocked(context, { cause: { kind: 'limit_denial', denialId: denial.denialId },
+      requesterActivationId: activation.activationId, requesterNodeId: node.id,
+      continuationActivationId, relationshipId: relationship.id, destinationNodeId,
+      used: usage.used, maximum, latestDeliverable: result.data.latestDeliverable,
+      remainingFindings: result.data.remainingFindings })
     await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
       values($1,'backend','work_handoff_denied',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
       context.now, canonicalGraphJson({ denialId: denial.denialId, relationshipId: relationship.id,
         requesterNodeId: node.id, destinationNodeId, used: usage.used, maximum })])
-    return { kind: 'limit_reached', denial, replayed: false }
+    return { kind: 'limit_reached', denial, notice, replayed: false }
   }
   const incoming = version.definition.edges.filter((edge) => edge.kind === 'execution' && edge.target === destinationNodeId)
   const join = relationship.target === destinationNodeId && destination.join?.mode === 'all' && incoming.length > 1
@@ -401,5 +514,19 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
     values($1,'backend','work_handoff_returned',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
     context.now, canonicalGraphJson({ returnId, requestId: request.requestId,
       relationshipId: request.relationshipId, outcome: value.outcome, continuationActivationId: continuationActivationId ?? null })])
+  if (value.outcome === 'needs_changes') {
+    const usage = (await sql.query<{ used: number; maximum: number | null }>(
+      `select used,maximum from run_work_connection_usage
+        where run_id=$1 and workflow_version_id=$2 and relationship_id=$3 for update`,
+      [scope.runId, scope.workflowVersionId, request.relationshipId])).rows[0]
+    if (!usage) return repeatConflict('WORK_COUNTER_PIN_CONFLICT')
+    if (usage.maximum !== null && usage.used === usage.maximum) {
+      await persistWorkLimitNoticeLocked(context, { cause: { kind: 'last_return', returnId },
+        requesterActivationId: request.requesterActivationId, requesterNodeId: request.requesterNodeId,
+        continuationActivationId: continuationActivationId!, relationshipId: request.relationshipId,
+        destinationNodeId: request.destinationNodeId, used: usage.used, maximum: usage.maximum,
+        latestDeliverable: value.latestDeliverable, remainingFindings: value.remainingFindings })
+    }
+  }
   return { value, replayed: false }
 }

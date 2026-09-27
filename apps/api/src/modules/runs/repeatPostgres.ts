@@ -25,8 +25,11 @@ import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissio
   type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeChange,
   type RepeatNativeEvidence, type RepeatNativeLockedHooks } from './repeatNativeRepository.js'
 import { inactiveRepeatResolution, prepareRepeatNativeUpdate, repeatTerminalResolution, type RepeatAcceptance, type RepeatAdmission } from './repeatNode.js'
-import { admitWorkHandoffLocked, ensureWorkEntryLocked, readWorkActivationInputLocked, returnWorkHandoffLocked,
+import { admitWorkHandoffLocked, ensureWorkEntryLocked, readWorkActivationInputLocked,
+  recordUnresolvedWorkLocked, returnWorkHandoffLocked,
   type WorkRequestAdmission, type WorkReturnReceipt } from './workHandoffAdmission.js'
+import { markWorkNoticeDeliveredLocked, markWorkNoticePendingLocked,
+  markWorkNoticeUnknownLocked } from './workHandoffNotice.js'
 import {
   assertRepeatBodyComplete, assertRepeatExecution, assertRepeatRef, assertRepeatSource,
   bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
@@ -197,6 +200,11 @@ export class RepeatRunRepository {
       assertActive: () => this.active(context),
     }, sourceExecutionId))
   }
+  recordWorkUnresolved(sourceExecutionId: string): Promise<{ unresolvedId: string; replayed: boolean }> {
+    return this.transaction((context) => recordUnresolvedWorkLocked({ ...context,
+      assertActive: () => this.active(context),
+    }, sourceExecutionId, 'finish_with_findings'))
+  }
   ensureWorkEntry(): Promise<string> {
     return this.transaction((context) => ensureWorkEntryLocked({ ...context,
       assertActive: () => this.active(context),
@@ -239,6 +247,7 @@ export class RepeatRunRepository {
             workflow_node_id,input_json,input_digest) values($1,$2,null,$3,$4,$5,$6)`,
           [slotId, context.scope.runId, activationId, ref.nodeId, canonicalGraphJson(input, 4 * 1024 * 1024), inputDigest])
           await this.insertExecution(context, ref, queued, slotId, inputDigest, [], null, activationId)
+          await markWorkNoticePendingLocked(context, activationId, queued.id)
         })
       return { execution: queued, reused: false }
     })
@@ -307,6 +316,7 @@ export class RepeatRunRepository {
             [executionId, context.scope.runId])
           await context.sql.query(`update run_work_activations set state='completed'
             where run_id=$1 and activation_id=$2`, [context.scope.runId, stored.workActivationId])
+          await markWorkNoticeDeliveredLocked(context, stored.workActivationId!, executionId)
           await context.sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
             values($1,'backend','work_result_accepted',$2,$3,$4::jsonb)`, [context.scope.runId, executionId,
             context.now, canonicalGraphJson({ activationId: stored.workActivationId,
@@ -568,6 +578,8 @@ export class RepeatRunRepository {
           'select reference from execution_native_sessions where execution_id=$1 for share', [executionId])).rows[0]
         if (!native) return repeatConflict('NATIVE_SESSION_IDENTITY_MISMATCH')
         await this.assertSession(context, stored.execution, NativeSessionReferenceSchema.parse(native.reference))
+      } else if (stored.workActivationId) {
+        await markWorkNoticeUnknownLocked(context, stored.workActivationId, executionId)
       }
       // No session means possibly dispatched; the runtime never submits again.
       return stored.execution
@@ -1017,19 +1029,40 @@ export class RepeatRunRepository {
         () => context.hooks.completeRunLocked(context.sql, terminals))
     })
   }
-  async completeWorkRun(): Promise<void> {
-    await this.transaction(async (context) => {
+  async completeWorkRun(): Promise<'completed' | 'needs_direction'> {
+    return this.transaction(async (context) => {
       if (!context.version.definition.handoffs || context.version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
       const activations = await context.sql.query<{ state: string }>(
         'select state from run_work_activations where run_id=$1 order by activation_id', [context.scope.runId])
       if (!activations.rows.length || activations.rows.some((row) => row.state !== 'completed')) {
         return repeatConflict('WORK_ACTIVATIONS_UNRESOLVED')
       }
-      const denied = await context.sql.query('select 1 from run_work_denials where run_id=$1 limit 1', [context.scope.runId])
-      if (denied.rowCount) return repeatConflict('WORK_DENIAL_CONTINUATION_UNRESOLVED')
+      const denied = await context.sql.query<{ denial_id: string; notice_id: string | null;
+        delivery_state: string | null; continuation_activation_id: string | null;
+        activation_state: string | null; accepted: boolean }>(`
+        select d.denial_id,n.notice_id,n.delivery_state,n.continuation_activation_id,
+          a.state as activation_state,exists(select 1 from run_work_results x
+            where x.run_id=d.run_id and x.activation_id=n.continuation_activation_id) as accepted
+        from run_work_denials d left join run_work_notices n on n.run_id=d.run_id
+          and n.cause_kind='limit_denial' and n.cause_id=d.denial_id
+          left join run_work_activations a on a.run_id=d.run_id
+            and a.activation_id=n.continuation_activation_id
+        where d.run_id=$1 order by d.denial_id`, [context.scope.runId])
+      if (denied.rows.some((row) => !row.notice_id || row.delivery_state !== 'delivered'
+        || !row.continuation_activation_id || row.activation_state !== 'completed' || !row.accepted)) {
+        return repeatConflict('WORK_DENIAL_CONTINUATION_UNRESOLVED')
+      }
+      const unresolved = (await context.sql.query<{ unresolved_id: string; execution_id: string;
+        result_digest: string }>(`select unresolved_id,execution_id,result_digest
+          from run_work_unresolved where run_id=$1 order by unresolved_id`,
+      [context.scope.runId])).rows
+      const unresolvedByExecution = new Map(unresolved.map((item) => [item.execution_id, item]))
+      if (unresolvedByExecution.size !== unresolved.length) return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
       const accepted = await context.sql.query<{ record: unknown; result_json: string; result_digest: string;
-        execution_id: string; source_requests: string; needs_changes_return: string }>(`select e.record,x.result_json,x.result_digest,x.execution_id,
+        execution_id: string; source_requests: string; source_denials: string;
+        needs_changes_return: string }>(`select e.record,x.result_json,x.result_digest,x.execution_id,
           (select count(*)::text from run_work_requests q where q.run_id=x.run_id and q.requester_execution_id=x.execution_id) as source_requests,
+          (select count(*)::text from run_work_denials d where d.run_id=x.run_id and d.requester_execution_id=x.execution_id) as source_denials,
           (select count(*)::text from run_work_returns t where t.run_id=x.run_id and t.source_execution_id=x.execution_id
             and t.outcome='needs_changes') as needs_changes_return
         from run_work_results x join harness_executions e on e.id=x.execution_id
@@ -1041,23 +1074,40 @@ export class RepeatRunRepository {
         if (execution.state !== 'completed' || !sameRepeatValue(execution.result, result)
           || row.result_digest !== repeatDigest(result, 64 * 1024)) return repeatConflict('WORK_RESULT_RECEIPT_MISSING')
         const workResult = parseWorkHandoffResult(result), routing = workResult.routing
+        const unresolvedItem = unresolvedByExecution.get(row.execution_id)
+        if (unresolvedItem) {
+          if (unresolvedItem.result_digest !== row.result_digest
+            || routing.kind !== 'request' && (routing.kind !== 'finish' || !workResult.data.remainingFindings.length)) {
+            return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
+          }
+          unresolvedByExecution.delete(row.execution_id)
+          continue
+        }
         if (routing.kind === 'return' && routing.outcome === 'needs_changes') continue
-        if (Number(row.source_requests)>0 || Number(row.needs_changes_return)>0) continue
+        if (Number(row.source_requests)>0 || Number(row.source_denials)>0
+          || Number(row.needs_changes_return)>0) continue
         if (routing.kind === 'request') return repeatConflict('WORK_REQUEST_UNRESOLVED')
         if (workResult.data.remainingFindings.length) return repeatConflict('WORK_NEEDS_DIRECTION')
         terminals.push({ relationshipId: 'terminal', execution: repeatExecutionIdentity(execution),
           occurrence: null, acceptedResultDigest: row.result_digest, acceptedResult: result })
       }
-      if (!terminals.length || terminals.length>context.version.definition.nodes.length) return repeatConflict('WORKFLOW_UNRESOLVED')
+      if (unresolvedByExecution.size || !terminals.length && !unresolved.length
+        || terminals.length>context.version.definition.nodes.length) return repeatConflict('WORKFLOW_UNRESOLVED')
+      if (unresolved.length) {
+        this.active(context)
+        await this.settleAttempts(context, { kind: 'run' })
+        return 'needs_direction'
+      }
       if (context.hooks.run.executionState === 'completed' && !context.stopped) {
         const effect: RepeatEffect = { kind: 'run.complete', entityId: context.scope.runId, digest: repeatDigest(terminals) }
         await context.hooks.assertPublicationReceiptLocked(context.sql, effect)
-        return
+        return 'completed'
       }
       this.active(context)
       await this.settleAttempts(context, { kind: 'run' })
       await this.effect(context, 'run.complete', context.scope.runId, terminals, [],
         () => context.hooks.completeRunLocked(context.sql, terminals))
+      return 'completed'
     })
   }
 }

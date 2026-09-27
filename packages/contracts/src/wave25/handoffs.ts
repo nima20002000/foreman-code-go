@@ -86,6 +86,18 @@ export const WorkLimitDenialSchema = z.object({
 }).strict().refine((value) => value.used === value.maxWorkHandoffsPerRun, 'HANDOFF_DENIAL_NOT_EXHAUSTED')
 export type WorkLimitDenial = z.infer<typeof WorkLimitDenialSchema>
 
+export const WorkAlternativeSchema = z.object({
+  relationshipId: GraphIdSchema, destinationNodeId: GraphIdSchema,
+  destinationAgentId: GraphIdSchema, destinationName: z.string().trim().min(1).max(200),
+  outcomes: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)).min(1).max(16),
+  used: Count, maxWorkHandoffsPerRun: z.number().int().min(1).max(2147483647).nullable(),
+}).strict().refine((value) => value.maxWorkHandoffsPerRun === null
+  || value.used < value.maxWorkHandoffsPerRun, 'WORK_ALTERNATIVE_EXHAUSTED')
+export type WorkAlternative = z.infer<typeof WorkAlternativeSchema>
+
+export function workLimitNoticeText(destinationName: string, used: number, maximum: number): string {
+  return `The maximum number of work handoffs to agent ${destinationName} has been reached (${used} of ${maximum} for this Run). Choose another available agent or finish with the remaining findings.`
+}
 export const WorkNoticeSchema = z.object({
   scope: WorkHandoffScopeSchema, noticeId: GraphIdSchema, requesterActivationId: GraphIdSchema,
   cause: z.discriminatedUnion('kind', [
@@ -93,10 +105,30 @@ export const WorkNoticeSchema = z.object({
     z.object({ kind: z.literal('limit_denial'), denialId: GraphIdSchema }).strict(),
   ]),
   continuationActivationId: GraphIdSchema,
+  relationshipId: GraphIdSchema, destinationNodeId: GraphIdSchema,
+  destinationAgentId: GraphIdSchema, destinationName: z.string().trim().min(1).max(200),
+  used: z.number().int().min(1).max(2147483647),
+  maxWorkHandoffsPerRun: z.number().int().min(1).max(2147483647),
+  latestDeliverable: z.json(), remainingFindings: z.array(z.json()).max(1000),
+  alternatives: z.array(WorkAlternativeSchema).max(1000), message: z.string().min(1).max(1024),
   delivery: z.enum(['queued', 'pending', 'delivered', 'unknown', 'failed']),
   acknowledgementId: GraphIdSchema.optional(),
-}).strict().refine((value) => (value.delivery === 'delivered') === (value.acknowledgementId !== undefined),
-  'HANDOFF_NOTICE_ACKNOWLEDGEMENT_CONFLICT')
+  createdAt: TimestampSchema, updatedAt: TimestampSchema,
+}).strict().superRefine((value, context) => {
+  const fail = (message: string) => context.addIssue({ code: 'custom', message })
+  if ((value.delivery === 'delivered') !== (value.acknowledgementId !== undefined)) fail('HANDOFF_NOTICE_ACKNOWLEDGEMENT_CONFLICT')
+  if (value.used !== value.maxWorkHandoffsPerRun || value.latestDeliverable === null
+    || value.message !== workLimitNoticeText(value.destinationName, value.used, value.maxWorkHandoffsPerRun)) {
+    fail('HANDOFF_NOTICE_CONTENT_CONFLICT')
+  }
+  const seen = new Set<string>()
+  for (const alternative of value.alternatives) {
+    if (alternative.relationshipId === value.relationshipId || alternative.destinationNodeId === value.destinationNodeId
+      || seen.has(alternative.relationshipId)) fail('HANDOFF_NOTICE_ALTERNATIVE_CONFLICT')
+    seen.add(alternative.relationshipId)
+  }
+  try { canonicalGraphJson(value, 64 * 1024) } catch { fail('HANDOFF_NOTICE_TOO_LARGE') }
+})
 export type WorkNotice = z.infer<typeof WorkNoticeSchema>
 
 /** Frozen private native input for one logical activation. Public projections
@@ -109,7 +141,11 @@ export const WorkActivationInputSchema = z.object({
     z.object({ kind: z.literal('work_request'), activation: WorkActivationIdentitySchema,
       request: WorkRequestSchema, acceptedSourceResult: ExecutionResultSchema }).strict(),
     z.object({ kind: z.literal('work_return'), activation: WorkActivationIdentitySchema,
-      returned: WorkReturnSchema, acceptedSourceResult: ExecutionResultSchema }).strict(),
+      returned: WorkReturnSchema, acceptedSourceResult: ExecutionResultSchema,
+      notice: WorkNoticeSchema.optional() }).strict(),
+    z.object({ kind: z.literal('limit_denial'), activation: WorkActivationIdentitySchema,
+      denial: WorkLimitDenialSchema, acceptedSourceResult: ExecutionResultSchema,
+      notice: WorkNoticeSchema }).strict(),
     z.object({ kind: z.literal('join'), activation: WorkActivationIdentitySchema,
       sources: z.array(z.object({ request: WorkRequestSchema,
         acceptedSourceResult: ExecutionResultSchema }).strict()).min(2).max(1000) }).strict(),
@@ -122,7 +158,15 @@ export const WorkActivationInputSchema = z.object({
       || work.activation.activationId !== work.request.destinationActivationId)
     || work.kind === 'work_return' && (work.activation.cause.kind !== 'work_return'
       || work.activation.cause.returnId !== work.returned.returnId
-      || work.activation.activationId !== work.returned.continuationActivationId)
+      || work.activation.activationId !== work.returned.continuationActivationId
+      || work.notice !== undefined && (work.notice.cause.kind !== 'last_return'
+        || work.notice.cause.returnId !== work.returned.returnId
+        || work.notice.continuationActivationId !== work.activation.activationId))
+    || work.kind === 'limit_denial' && (work.activation.cause.kind !== 'limit_denial'
+      || work.activation.cause.denialId !== work.denial.denialId
+      || work.notice.cause.kind !== 'limit_denial'
+      || work.notice.cause.denialId !== work.denial.denialId
+      || work.notice.continuationActivationId !== work.activation.activationId)
     || work.kind === 'join' && (work.activation.cause.kind !== 'join'
       || work.activation.cause.joinId !== work.activation.activationId
       || new Set(work.sources.map((item) => item.request.relationshipId)).size !== work.sources.length

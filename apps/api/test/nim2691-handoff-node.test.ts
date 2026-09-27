@@ -95,4 +95,41 @@ describe('NIM-2691 workflow activation routing', () => {
     expect(attempts).toEqual([2])
     expect(requests).toEqual([second.id])
   })
+
+  it('preserves findings as unresolved when a requester finishes without choosing a route', async () => {
+    const fixture = makeCurrentWorkflowFixture('work-node-needs-direction')
+    const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+      ...fixture.version.definition, handoffs: { contractVersion: 1 },
+      nodes: fixture.version.definition.nodes.map((node, index) => index === 0 ? { ...node,
+        choice: { outcomes: [{ outcome: 'review', target: { kind: 'edge' as const,
+          relationshipId: fixture.version.definition.edges[0]!.id } }] } } : node),
+    } })
+    const node = version.definition.nodes[0]!
+    const execution = HarnessExecutionSchema.parse({ id: 'execution-with-findings', runId: fixture.run.id,
+      workflowNodeId: node.id, agentId: node.agentId,
+      agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
+      attempt: 1, input: {}, state: 'completed', createdAt: fixture.createdAt,
+      finishedAt: fixture.createdAt, result: { outcome: 'succeeded', output: {
+        routing: { kind: 'finish' },
+        data: { latestDeliverable: { revision: 3 }, remainingFindings: [{ id: 'open-review' }] },
+      } },
+    })
+    const unresolved: string[] = []
+    const store = {
+      admitWorkActivation: async () => ({ execution, reused: true }),
+      acceptWorkTerminal: async () => ({ kind: 'accepted' as const, execution, replayed: true }),
+      admitWorkRequest: async () => { throw new Error('Finishing with findings must not launch another destination.') },
+      returnWork: async () => { throw new Error('A finish cannot return work.') },
+      recordWorkUnresolved: async (executionId: string) => {
+        unresolved.push(executionId)
+        return { unresolvedId: 'open-work', replayed: false }
+      },
+    }
+    const action = workHandoffNodeAction({ version, store: store as never,
+      driver: { candidate: () => { throw new Error('Replay allocated a native attempt') },
+        observe: async () => undefined },
+      limiter: new ExecutionLimiter(1, 10), signal: new AbortController().signal })
+    expect(await action('activation-entry')).toEqual([])
+    expect(unresolved).toEqual([execution.id])
+  })
 })

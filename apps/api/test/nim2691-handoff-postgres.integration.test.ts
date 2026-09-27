@@ -3,8 +3,10 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { workHandoffMigration } from '../src/infrastructure/workHandoffMigration.js'
+import { RunActivitySchema } from '@graphql/contracts'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
-  CurrentWorkflowReadResultSchema, makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
+  CurrentWorkflowReadResultSchema, WorkActivationInputSchema, WorkNoticeSchema,
+  makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'
 import { readRepeatGraphExecutionsLocked } from '../src/modules/run-graph/repeatProjectionRows.js'
@@ -15,6 +17,7 @@ import { RepeatRepositoryFactory } from '../src/modules/runs/repeatRepositoryHos
 import { repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'
 import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import { markWorkNoticeUnknownLocked, trustedWorkNoticePrompt } from '../src/modules/runs/workHandoffNotice.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { writerFixture } from './eng04-writer-fixtures.js'
 import { graphFixture, graphHeaders, graphRpcValue, graphUrl } from './eng04-graph-composition-fixture.js'
@@ -51,6 +54,18 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         const store = factory.forOwner(owner, t.version)
         const entry = await store.ensureWorkEntry()
         expect(await store.ensureWorkEntry()).toBe(entry)
+        const activityRows = (await pool.query<{ sequence: string; source: string; kind: string;
+          harness_execution_id: string | null; occurred_at: Date; payload: Record<string, unknown> }>(
+          'select sequence::text,source,kind,harness_execution_id,occurred_at,payload from run_activity where run_id=$1 order by sequence',
+          [t.run.id])).rows
+        for (const row of activityRows) {
+          const parsed = RunActivitySchema.safeParse({ id: `activity-${t.run.id}-${row.sequence}`,
+            runId: t.run.id, sequence: Number(row.sequence), source: row.source, kind: row.kind,
+            ...(row.harness_execution_id ? { harnessExecutionId: row.harness_execution_id } : {}),
+            occurredAt: row.occurred_at.toISOString(), payload: row.payload })
+          expect(parsed.success, JSON.stringify({ kind: row.kind, issues: parsed.error?.issues })).toBe(true)
+        }
+        expect(activityRows.some((row) => row.kind === 'work_activation_queued')).toBe(true)
         const node = t.version.definition.nodes[0]!
         const admitted = await store.admitWorkActivation(entry, () => ({
           id: `nim2691-entry-execution-${randomUUID()}`, runId: t.run.id,
@@ -245,7 +260,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
     })
   }, 120000)
 
-  it('admits at most one racer for the last slot through the owner transaction and replays exact receipts', async () => {
+  it.each([false, true])('admits one racer and fences notice delivery at Stop (before delivery: %s)', async (stopBeforeDelivery) => {
     await taskDatabase(async (pool) => {
       await applyApplicationMigrations(pool)
       const fixture = makeCurrentWorkflowFixture('nim2691-owner')
@@ -379,12 +394,112 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         const denied = last.find((item) => item.kind === 'limit_reached')!
         expect(accepted.kind === 'accepted' && accepted.request.ordinal).toBe(3)
         expect(denied.kind === 'limit_reached' && denied.denial.used).toBe(3)
+        assert.equal(denied.kind, 'limit_reached')
+        expect(denied.notice.cause).toEqual({ kind: 'limit_denial', denialId: denied.denial.denialId })
+        expect(denied.notice.message).toContain('(3 of 3 for this Run)')
+        expect(denied.notice.delivery).toBe('queued')
+        const savedNotice = (await pool.query<{ record: unknown; delivery_state: string }>(
+          'select record,delivery_state from run_work_notices where run_id=$1', [run.id])).rows[0]
+        expect(savedNotice?.delivery_state).toBe('queued')
+        expect(WorkNoticeSchema.parse(savedNotice?.record).noticeId).toBe(denied.notice.noticeId)
+        expect((await pool.query(`select 1 from run_work_activations
+          where run_id=$1 and cause_kind='limit_denial' and cause_id=$2`,
+          [run.id, denied.denial.denialId])).rowCount).toBe(1)
         expect((await store.admitWorkRequest('source-execution-3')).replayed).toBe(true)
-        expect((await store.admitWorkRequest('source-execution-4')).replayed).toBe(true)
+        const deniedReplays = await Promise.all([
+          store.admitWorkRequest('source-execution-4'), store.admitWorkRequest('source-execution-4'),
+        ])
+        expect(deniedReplays.every((item) => item.replayed && item.kind === 'limit_reached'
+          && item.notice.noticeId === denied.notice.noticeId)).toBe(true)
+        if (stopBeforeDelivery) {
+          await pool.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [run.id])
+          await expect(store.admitWorkActivation(denied.notice.continuationActivationId,
+            () => { throw new Error('Stop must fence B before native admission.') }))
+            .rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+          expect((await pool.query<{ delivery_state: string }>(
+            'select delivery_state from run_work_notices where notice_id=$1',
+            [denied.notice.noticeId])).rows[0]?.delivery_state).toBe('queued')
+          expect((await pool.query(`select 1 from harness_executions
+            where run_id=$1 and work_activation_id=$2`,
+          [run.id, denied.notice.continuationActivationId])).rowCount).toBe(0)
+          return
+        }
+        const denialTurn = await store.admitWorkActivation(denied.notice.continuationActivationId, () => ({
+          id: 'denial-continuation-execution', runId: run.id,
+          workflowNodeId: requester!.id, agentId: requester!.agentId,
+          agentConfigurationVersionId: version.agentConfigurationVersionIds[requester!.agentId]!,
+          attempt: 1, input: {}, state: 'queued', createdAt: fixture.createdAt,
+        }))
+        const deniedInput = WorkActivationInputSchema.parse(denialTurn.execution.input)
+        expect(deniedInput.work.kind).toBe('limit_denial')
+        expect(trustedWorkNoticePrompt(deniedInput)).toContain(denied.notice.message)
+        expect((await pool.query<{ delivery_state: string }>(
+          'select delivery_state from run_work_notices where notice_id=$1',
+          [denied.notice.noticeId])).rows[0]?.delivery_state).toBe('pending')
+        assert.equal(accepted.kind, 'accepted')
+        const thirdReview = await store.admitWorkActivation(accepted.request.destinationActivationId, () => ({
+          id: 'review-execution-3', runId: run.id, workflowNodeId: destination!.id,
+          agentId: destination!.agentId,
+          agentConfigurationVersionId: version.agentConfigurationVersionIds[destination!.agentId]!,
+          attempt: 1, input: {}, state: 'queued', createdAt: fixture.createdAt,
+        }))
+        const thirdResult = { outcome: 'succeeded', output: {
+          routing: { kind: 'return', requestId: accepted.request.requestId, outcome: 'needs_changes' },
+          data: { latestDeliverable: { revision: 3 }, remainingFindings: [{ id: 'finding-3' }] },
+        } }
+        await pool.query('update harness_executions set record=$2::jsonb,accepted=true where id=$1',
+          [thirdReview.execution.id, text({ ...thirdReview.execution, state: 'completed',
+            result: thirdResult, finishedAt: fixture.createdAt })])
+        await pool.query(`insert into run_work_results(execution_id,run_id,activation_id,result_json,result_digest,accepted_at)
+          values($1,$2,$3,$4,$5,clock_timestamp())`,
+        [thirdReview.execution.id, run.id, accepted.request.destinationActivationId, text(thirdResult), digest(thirdResult)])
+        const lastReturn = await store.returnWork(thirdReview.execution.id)
+        expect(lastReturn.value.outcome).toBe('needs_changes')
+        const lastNotice = (await pool.query<{ record: unknown }>(
+          `select record from run_work_notices where run_id=$1 and cause_kind='last_return'`, [run.id])).rows
+        expect(lastNotice).toHaveLength(1)
+        const notice = WorkNoticeSchema.parse(lastNotice[0]!.record)
+        expect(notice.cause).toEqual({ kind: 'last_return', returnId: lastReturn.value.returnId })
+        expect(notice.continuationActivationId).toBe(lastReturn.value.continuationActivationId)
+        expect(notice.message).toContain('(3 of 3 for this Run)')
+        expect((await pool.query(`select 1 from run_work_activations
+          where run_id=$1 and cause_kind='work_return' and cause_id=$2`,
+          [run.id, lastReturn.value.returnId])).rowCount).toBe(1)
+        const returnTurn = await store.admitWorkActivation(notice.continuationActivationId, () => ({
+          id: 'last-return-continuation-execution', runId: run.id,
+          workflowNodeId: requester!.id, agentId: requester!.agentId,
+          agentConfigurationVersionId: version.agentConfigurationVersionIds[requester!.agentId]!,
+          attempt: 1, input: {}, state: 'queued', createdAt: fixture.createdAt,
+        }))
+        const returnInput = WorkActivationInputSchema.parse(returnTurn.execution.input)
+        expect(returnInput.work.kind).toBe('work_return')
+        expect(trustedWorkNoticePrompt(returnInput)).toContain(notice.message)
+        expect((await pool.query<{ delivery_state: string }>(
+          'select delivery_state from run_work_notices where notice_id=$1',
+          [notice.noticeId])).rows[0]?.delivery_state).toBe('pending')
+        await owner.oneShotConnection().transaction((sql) => markWorkNoticeUnknownLocked({
+          sql, scope: fixture.scope, version, now: new Date().toISOString(),
+        }, notice.continuationActivationId, returnTurn.execution.id))
+        expect((await pool.query<{ delivery_state: string }>(
+          'select delivery_state from run_work_notices where notice_id=$1',
+          [notice.noticeId])).rows[0]?.delivery_state).toBe('unknown')
+        expect((await store.admitWorkActivation(notice.continuationActivationId,
+          () => { throw new Error('An uncertain notice must not allocate another native turn.') })).reused).toBe(true)
         expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1', [run.id])).rows[0]?.used).toBe(3)
         expect((await pool.query('select request_id from run_work_requests where run_id=$1', [run.id])).rowCount).toBe(3)
         expect((await pool.query('select denial_id from run_work_denials where run_id=$1', [run.id])).rowCount).toBe(1)
+        const repeatedExhausted = await store.admitWorkRequest('source-execution-5')
+        expect(repeatedExhausted.kind).toBe('needs_direction')
+        expect((await store.admitWorkRequest('source-execution-5')).replayed).toBe(true)
+        expect((await pool.query('select unresolved_id from run_work_unresolved where run_id=$1',
+          [run.id])).rowCount).toBe(1)
+        expect((await pool.query('select denial_id from run_work_denials where run_id=$1', [run.id])).rowCount).toBe(1)
+        expect((await pool.query(`select 1 from run_work_activations where run_id=$1 and cause_kind='limit_denial'`,
+          [run.id])).rowCount).toBe(1)
         await pool.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [run.id])
+        await expect(store.claimLaunch(returnTurn.execution.id, {
+          workingDirectory: '/tmp/nim2691-stopped', runtimeDirectory: '/tmp/nim2691-stopped/runtime',
+        })).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
         await expect(store.admitWorkRequest('source-execution-5')).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
         expect((await pool.query<{ used: number }>('select used from run_work_connection_usage where run_id=$1',
           [run.id])).rows[0]?.used).toBe(3)

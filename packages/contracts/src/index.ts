@@ -949,6 +949,17 @@ export const ActivityKindSchema = z.enum([
   "interaction_delivery_state",
   "interaction_resolved",
   "review_job_state",
+  "work_activation_queued",
+  "work_result_accepted",
+  "work_handoff_accepted",
+  "work_handoff_returned",
+  "work_handoff_denied",
+  "work_limit_notice_queued",
+  "work_limit_notice_pending",
+  "work_limit_notice_delivered",
+  "work_limit_notice_unknown",
+  "work_needs_direction",
+  "work_direction_wait",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 
