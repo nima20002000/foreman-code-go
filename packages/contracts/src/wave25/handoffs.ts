@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ExecutionResultSchema } from '../index.js'
 import { TimestampSchema } from '../schemaPrimitives.js'
 import { GraphDigestSchema, GraphIdSchema, RunGraphScopeSchema } from './graphPrimitives.js'
 import type { WorkflowDefinitionV3 } from './workflowShape.js'
@@ -39,6 +40,7 @@ export const WorkActivationIdentitySchema = z.object({
   /** The exact accepted request, return or denial that caused this activation. */
   cause: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('entry') }).strict(),
+    z.object({ kind: z.literal('dependency'), resolutionId: GraphIdSchema }).strict(),
     z.object({ kind: z.literal('work_request'), requestId: GraphIdSchema }).strict(),
     z.object({ kind: z.literal('work_return'), returnId: GraphIdSchema }).strict(),
     z.object({ kind: z.literal('limit_denial'), denialId: GraphIdSchema }).strict(),
@@ -48,7 +50,9 @@ export type WorkActivationIdentity = z.infer<typeof WorkActivationIdentitySchema
 
 export const WorkRequestSchema = z.object({
   scope: WorkHandoffScopeSchema, requestId: GraphIdSchema, relationshipId: GraphIdSchema,
-  requesterActivationId: GraphIdSchema, requesterNodeId: GraphIdSchema, destinationNodeId: GraphIdSchema,
+  requesterActivationId: GraphIdSchema, requesterExecutionId: GraphIdSchema,
+  destinationActivationId: GraphIdSchema,
+  requesterNodeId: GraphIdSchema, destinationNodeId: GraphIdSchema,
   payloadDigest: GraphDigestSchema, acceptedAt: TimestampSchema,
   /** One accepted request reserves exactly one slot, regardless of delivery outcome. */
   ordinal: z.number().int().min(1).max(2147483647),
@@ -57,10 +61,14 @@ export type WorkRequest = z.infer<typeof WorkRequestSchema>
 
 export const WorkReturnSchema = z.object({
   scope: WorkHandoffScopeSchema, returnId: GraphIdSchema, requestId: GraphIdSchema,
-  sourceActivationId: GraphIdSchema, requesterActivationId: GraphIdSchema,
+  sourceActivationId: GraphIdSchema, sourceExecutionId: GraphIdSchema, requesterActivationId: GraphIdSchema,
+  continuationActivationId: GraphIdSchema.optional(),
   acceptedResultDigest: GraphDigestSchema, outcome: z.enum(['accepted', 'needs_changes']),
   latestDeliverable: z.json(), remainingFindings: z.array(z.json()).max(1000), returnedAt: TimestampSchema,
 }).strict().superRefine((value, context) => {
+  if ((value.outcome === 'needs_changes') !== (value.continuationActivationId !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['continuationActivationId'], message: 'HANDOFF_RETURN_CONTINUATION_CONFLICT' })
+  }
   if (value.latestDeliverable === null) context.addIssue({ code: 'custom', path: ['latestDeliverable'], message: 'HANDOFF_DELIVERABLE_REQUIRED' })
   try { canonicalGraphJson(value, 64 * 1024) } catch { context.addIssue({ code: 'custom', message: 'HANDOFF_RETURN_TOO_LARGE' }) }
 })
@@ -100,6 +108,20 @@ export const WorkHandoffResultSchema = z.object({
   try { canonicalGraphJson(value, 64 * 1024) } catch { context.addIssue({ code: 'custom', message: 'HANDOFF_RESULT_TOO_LARGE' }) }
 })
 export type WorkHandoffResult = z.infer<typeof WorkHandoffResultSchema>
+
+/** Parse only the exact native result carrier; route IDs are resolved server-side. */
+export function parseWorkHandoffResult(result: unknown): WorkHandoffResult {
+  const accepted = ExecutionResultSchema.parse(result)
+  if (accepted.outcome !== 'succeeded') throw new Error('HANDOFF_RESULT_NOT_SUCCESSFUL')
+  let output: unknown = accepted.output
+  if (output !== null && typeof output === 'object' && !Array.isArray(output)
+    && Object.keys(output).length === 1 && 'text' in output && typeof output.text === 'string') output = output.text
+  if (typeof output === 'string') {
+    if (new TextEncoder().encode(output).byteLength > 64 * 1024) throw new Error('HANDOFF_RESULT_TOO_LARGE')
+    output = JSON.parse(output)
+  }
+  return WorkHandoffResultSchema.parse(output)
+}
 
 export const WorkHandoffOperationKindSchema = z.enum([
   'work_request', 'work_return', 'permission_exchange', 'approval_exchange',

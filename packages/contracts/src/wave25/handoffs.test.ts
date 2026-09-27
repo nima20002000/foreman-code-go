@@ -3,7 +3,7 @@ import { makeCurrentWorkflowFixture } from './currentFixture.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import {
   WorkHandoffResultSchema, WorkHandoffUsageSchema, WorkNoticeSchema, WorkReturnSchema,
-  canAdmitWorkHandoff, consumesWorkHandoffSlot, workConnectionForRequest,
+  canAdmitWorkHandoff, consumesWorkHandoffSlot, parseWorkHandoffResult, workConnectionForRequest,
 } from './handoffs.js'
 
 const fixture = makeCurrentWorkflowFixture('handoffs-contract')
@@ -78,6 +78,14 @@ describe('FLOW-01 versioned work handoff contract', () => {
       { ...edge('bc', b!.id, c.id, 3), workRequestDirection: 'both' },
     ]))
     expect(workConnectionForRequest(definition, c.id, b!.id)?.id).toBe('bc')
+    const reverse = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+      ...fixture.version.definition, handoffs: { contractVersion: 1 },
+      edges: [{ ...original, workRequestDirection: 'both', maxWorkHandoffsPerRun: 3 }],
+      nodes: [a, { ...b!, choice: { outcomes: [
+        { outcome: 'send_back', target: { kind: 'edge', relationshipId: original.id } },
+      ] } }],
+    } })
+    expect(reverse.definition.nodes[1]?.choice?.outcomes[0]?.outcome).toBe('send_back')
   })
 
   it('charges only a new business work request and requires truthful return and notice shapes', () => {
@@ -88,15 +96,22 @@ describe('FLOW-01 versioned work handoff contract', () => {
     const result = { routing: { kind: 'return', requestId: 'request-3', outcome: 'needs_changes' },
       data: { latestDeliverable: { id: 'artifact-3' }, remainingFindings: [{ id: 'finding-1' }] } }
     expect(WorkHandoffResultSchema.parse(result)).toEqual(result)
+    expect(parseWorkHandoffResult({ outcome: 'succeeded', output: { text: JSON.stringify(result) } })).toEqual(result)
+    expect(() => parseWorkHandoffResult({ outcome: 'succeeded', output: `feedback: ${JSON.stringify(result)}` })).toThrow()
     expect(WorkHandoffResultSchema.safeParse({ ...result, routing: { kind: 'return', outcome: 'needs_changes' } }).success).toBe(false)
     expect(WorkHandoffResultSchema.safeParse({ ...result, data: { ...result.data, latestDeliverable: 'x'.repeat(65536) } }).success).toBe(false)
     const returned = { scope: fixture.scope, returnId: 'return-3', requestId: 'request-3',
-      sourceActivationId: 'activation-c-3', requesterActivationId: 'activation-b-3',
+      sourceActivationId: 'activation-c-3', sourceExecutionId: 'execution-c-3', requesterActivationId: 'activation-b-3',
+      continuationActivationId: 'activation-b-4',
       acceptedResultDigest: `sha256:${'0'.repeat(64)}`, outcome: 'needs_changes',
       latestDeliverable: result.data.latestDeliverable, remainingFindings: result.data.remainingFindings,
       returnedAt: fixture.createdAt }
     expect(WorkReturnSchema.parse(returned)).toEqual(returned)
     expect(WorkReturnSchema.safeParse({ ...returned, latestDeliverable: null }).success).toBe(false)
+    const { continuationActivationId: _unused, ...withoutContinuation } = returned
+    expect(WorkReturnSchema.safeParse({ ...withoutContinuation, outcome: 'accepted', remainingFindings: [] }).success).toBe(true)
+    expect(WorkReturnSchema.safeParse({ ...returned, outcome: 'accepted' }).success).toBe(false)
+    void _unused
     const notice = { scope: fixture.scope, noticeId: 'notice-3', requesterActivationId: 'activation-b-3',
       cause: { kind: 'last_return', returnId: 'return-3' }, continuationActivationId: 'activation-b-4', delivery: 'pending' }
     expect(WorkNoticeSchema.parse(notice)).toEqual(notice)

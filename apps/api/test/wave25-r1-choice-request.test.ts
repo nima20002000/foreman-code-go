@@ -82,6 +82,13 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
   it('leaves ordinary node prompts unchanged', () => {
     expect(currentInitialPrompt({})).toBeUndefined()
     expect(currentInitialPrompt({ initialPrompt: 'Do the accepted task.' })).toBe('Do the accepted task.')
+    const handoff = currentInitialPrompt({ initialPrompt: 'Review.', choice: { outcomes: [
+      { outcome: 'send_to_d', target: { kind: 'edge', relationshipId: 'bd' } },
+    ] } }, false, true)!
+    expect(handoff).toContain('GraphQL work-handoff result contract (version 1)')
+    expect(handoff).toContain('"send_to_d"')
+    expect(handoff).toContain('the exact request ID in your received work')
+    expect(handoff.startsWith('Review.\n\n')).toBe(true)
   })
   it('preserves the authored task and never mutates the declaration', () => {
     const declaration = choice(), before = structuredClone(declaration)

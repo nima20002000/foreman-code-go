@@ -18,7 +18,24 @@ export function parseCurrentChoiceResult(result: ExecutionResult, choice: Workfl
 
 /** Request-only instructions derived from the immutable node. Never mutate the
  * saved configuration, accepted input, model settings, or routing authority. */
-export function currentInitialPrompt(node: { initialPrompt?: string | undefined; choice?: WorkflowChoice | undefined }, repeatExit = false): string | undefined {
+export function currentInitialPrompt(node: { initialPrompt?: string | undefined; choice?: WorkflowChoice | undefined }, repeatExit = false,
+  handoff = false): string | undefined {
+  if (handoff) {
+    const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(({ outcome }) => outcome) : []
+    const contract = [
+      'GraphQL work-handoff result contract (version 1)',
+      'On successful completion, return exactly one complete JSON object with exactly routing and data.',
+      'routing.kind is request, return, or finish.',
+      `For a NEW work request, use {"kind":"request","outcome":<one of ${JSON.stringify(outcomes)}>}; only saved named outcomes are permitted.`,
+      'For correlated feedback, use {"kind":"return","requestId":<the exact request ID in your received work>,"outcome":"accepted" or "needs_changes"}.',
+      'To finish without another work request, use {"kind":"finish"}. Include unresolved findings honestly.',
+      'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
+      'Do not invent request IDs, connection IDs, destinations, approval outcomes or permissions. The backend validates saved routes.',
+      'Do not wrap JSON in Markdown, commentary or partial output. The complete result must be at most 65536 UTF-8 bytes.',
+      'End GraphQL work-handoff result contract.',
+    ].join('\n')
+    return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
+  }
   if (!node.choice) return node.initialPrompt
   const choice = WorkflowChoiceSchema.parse(node.choice)
   // The schema bounds this list to 16 unique, injection-free names of <=48 chars.

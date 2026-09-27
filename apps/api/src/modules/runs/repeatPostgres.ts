@@ -24,6 +24,7 @@ import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissio
   type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeChange,
   type RepeatNativeEvidence, type RepeatNativeLockedHooks } from './repeatNativeRepository.js'
 import { inactiveRepeatResolution, prepareRepeatNativeUpdate, repeatTerminalResolution, type RepeatAcceptance, type RepeatAdmission } from './repeatNode.js'
+import { admitWorkHandoffLocked, returnWorkHandoffLocked, type WorkRequestAdmission, type WorkReturnReceipt } from './workHandoffAdmission.js'
 import {
   assertRepeatBodyComplete, assertRepeatExecution, assertRepeatRef, assertRepeatSource,
   bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
@@ -178,6 +179,17 @@ export class RepeatRunRepository {
   private active(context: Context): void {
     if (context.stopped || context.cleanup) repeatConflict('GRAPH_STOP_CONFLICT')
     if (['completed', 'interrupted'].includes(context.hooks.run.executionState)) repeatConflict('GRAPH_TERMINAL_CONFLICT')
+  }
+  /** One business request on the already-owned Run; replay returns its first receipt. */
+  admitWorkRequest(sourceExecutionId: string): Promise<WorkRequestAdmission> {
+    return this.transaction((context) => admitWorkHandoffLocked({ ...context,
+      assertActive: () => this.active(context),
+    }, sourceExecutionId))
+  }
+  returnWork(sourceExecutionId: string): Promise<WorkReturnReceipt> {
+    return this.transaction((context) => returnWorkHandoffLocked({ ...context,
+      assertActive: () => this.active(context),
+    }, sourceExecutionId))
   }
   private async effect(context: Context, kind: RepeatEffect['kind'], entityId: string, value: unknown,
     facts: RepeatFact[], mutate: () => Promise<void>): Promise<void> {
