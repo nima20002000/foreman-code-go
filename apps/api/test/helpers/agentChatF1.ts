@@ -1,0 +1,250 @@
+import assert from 'node:assert/strict'
+import type pg from 'pg'
+import type { AgentConfigurationVersion, ExecutionResult, Message, NativeSessionReference } from '@graphql/contracts'
+import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
+import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
+import type { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
+import { NativeTurnNotActiveError } from '../../src/modules/harnesses/errors.js'
+import type { NativeHarnessSessionManager, NativeHistory, NativeSteerInput, NativeTurnInput } from '../../src/modules/harnesses/port.js'
+import type { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
+
+export function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => { resolve = done })
+  return { promise, resolve }
+}
+export async function eventually(check: () => boolean | Promise<boolean>) {
+  for (let i = 0; i < 200; i++) {
+    if (await check()) return
+    await new Promise<void>((done) => setImmediate(done))
+  }
+  assert.fail('The gated lifecycle transition did not occur.')
+}
+
+export const context: AgentChatContext = { workspaceId: 'workspace', workflowId: 'workflow', workflowNodeId: 'node', agentId: 'agent' }
+const configuration: AgentConfigurationVersion = {
+  id: 'configuration', workspaceId: context.workspaceId, agentId: context.agentId, version: 1,
+  prompt: {}, assignedSkills: [], contentHash: 'fixture', createdAt: new Date().toISOString(),
+  harness: { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
+}
+const principal: ManagementPrincipal = {
+  id: 'caller', name: 'F1 unit-test caller', audience: 'operator', revokedAt: null,
+  expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  grants: [{ scope: { workspaceIds: [context.workspaceId], workflowIds: [context.workflowId] },
+    actions: ['agent_chat:read', 'agent_chat:write', 'agent_chat:cancel'] }],
+}
+interface Receipt {
+  request_id: string; turn_sequence: string; intent: AgentChatTurn['intent']; delivery: AgentChatTurn['delivery']
+  message_id: string; native_turn_id: string | null; target_native_turn_id: string | null
+  delivery_error: { code: string; message: string } | null; input_hash: string
+  payload: { content: string; interruptRequestId?: string }; result?: ExecutionResult
+  created_at: Date; updated_at: Date
+}
+
+/** Executes the production repository against a strict scripted SQL store. This is NOT PostgreSQL:
+ * it checks query fences/order and durable-state transitions, not SQL validity or lock isolation. */
+export class F1Store {
+  readonly row: AgentConversationRow = {
+    id: 'conversation', agent_key: agentChatKey(context), workspace_id: context.workspaceId, workflow_id: context.workflowId,
+    workflow_node_id: context.workflowNodeId, agent_id: context.agentId, agent_configuration_version_id: configuration.id,
+    origin_run_id: null, origin_execution_id: null, harness: 'codex', provider_version: 'fixture', native_session_id: 'session',
+    active_request_id: null, active_native_turn_id: null, cancel_requested: false, turn_state: 'idle', last_error: null,
+    revision: 0, pending_interaction: null, last_result: null,
+    record: { origin: { kind: 'fresh' }, workingDirectory: '/unused', runtimeDirectory: '/unused', startupDelivered: true },
+    created_at: new Date(), updated_at: new Date(),
+  }
+  readonly turns = new Map<string, Receipt>()
+  readonly messages = new Map<string, Message>()
+  readonly statements: Array<{ sql: string; values: unknown[]; connection: number }> = []
+  private connections = 0
+  readonly pool = {
+    query: (sql: string, values: unknown[] = []) => this.query(sql, values, 0),
+    connect: async () => {
+      const connection = ++this.connections
+      return { query: (sql: string, values: unknown[] = []) => this.query(sql, values, connection), release() {} }
+    },
+  } as unknown as pg.Pool
+
+  private async query(text: string, values: unknown[], connection: number) {
+    const sql = text.replace(/\s+/g, ' ').trim()
+    this.statements.push({ sql, values: structuredClone(values), connection })
+    const result = (rows: unknown[] = [], rowCount = rows.length) => ({ rows: structuredClone(rows), rowCount })
+    const id = String(values[1])
+    const receipt = this.turns.get(id)
+    if (['begin', 'commit', 'rollback'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql.startsWith('select * from operator_conversations') || sql.startsWith('select id from operator_conversations')) return result([this.row])
+    if (sql.startsWith('select delivery from operator_conversation_turns')) {
+      return result([...this.turns.values()].filter((entry) => entry.native_turn_id === values[1] && entry.intent !== 'steer'
+        && ['completed', 'failed', 'canceled'].includes(entry.delivery)).slice(-1))
+    }
+    if (sql.startsWith('select payload')) return result(receipt ? [{ content: receipt.payload.content }] : [])
+    if (sql.startsWith('select * from (')) return result([...this.turns.values()])
+    if (sql.startsWith('select request_id')) {
+      if (sql.includes("delivery='queued'")) return result([...this.turns.values()].filter((entry) => entry.delivery === 'queued')
+        .sort((a, b) => Number(b.intent === 'interrupt_and_send') - Number(a.intent === 'interrupt_and_send')
+          || Number(a.turn_sequence) - Number(b.turn_sequence)).slice(0, 1))
+      return result(receipt ? [receipt] : [])
+    }
+    if (sql.startsWith('select record,sequence::text from operator_conversation_messages')) {
+      return result([...this.messages.values()].reverse().map((record, index) => ({ record, sequence: String(index + 1) })))
+    }
+    if (sql.startsWith('select record,sequence::text,revision::text from operator_conversation_activity')) return result()
+    if (sql.startsWith('insert into operator_conversation_messages')) {
+      this.messages.set(String(values[0]), JSON.parse(String(values[4])) as Message)
+      return result([], 1)
+    }
+    if (sql.startsWith('insert into operator_conversation_turns')) {
+      assert(!receipt, 'A request receipt must never be inserted twice.')
+      const inserted: Receipt = { request_id: id, turn_sequence: String(this.turns.size + 1), payload: JSON.parse(String(values[2])) as Receipt['payload'],
+        input_hash: String(values[3]), intent: values[4] as Receipt['intent'], delivery: values[5] as Receipt['delivery'],
+        message_id: String(values[6]), target_native_turn_id: values[7] as string | null, native_turn_id: null,
+        delivery_error: null, created_at: new Date(), updated_at: new Date() }
+      this.turns.set(id, inserted); return result([inserted])
+    }
+    if (sql.startsWith('delete from operator_conversation_turns')) {
+      if (receipt?.delivery !== 'submitting') return result()
+      this.turns.delete(id); return result([{ message_id: receipt.message_id }])
+    }
+    if (sql.startsWith('delete from operator_conversation_messages')) { this.messages.delete(id); return result([], 1) }
+    if (sql.startsWith('update operator_conversation_turns')) {
+      if (sql.includes("set delivery='canceled'")) {
+        const queued = [...this.turns.values()].filter((entry) => entry.delivery === 'queued' && (values[1] === null || entry.request_id === values[1]))
+        for (const entry of queued) entry.delivery = 'canceled'
+        return result([], queued.length)
+      }
+      if (sql.includes("and intent='steer' and native_turn_id=$2")) {
+        const steers = [...this.turns.values()].filter((entry) => entry.intent === 'steer' && entry.native_turn_id === values[1] && entry.delivery === 'accepted')
+        for (const entry of steers) entry.delivery = values[2] as Receipt['delivery']
+        return result([], steers.length)
+      }
+      if (!receipt) return result()
+      if (sql.includes("set delivery='submitting'")) {
+        if (receipt.delivery !== 'queued') return result()
+        receipt.delivery = 'submitting'
+      } else if (sql.includes("set delivery='accepted'") || sql.includes('set delivery=$4')) {
+        if (!['submitting', 'unknown'].includes(receipt.delivery)) return result()
+        if (sql.includes('target_native_turn_id=$3') && receipt.target_native_turn_id !== values[2]) return result()
+        receipt.delivery = sql.includes('set delivery=$4') ? values[3] as Receipt['delivery'] : 'accepted'
+        receipt.native_turn_id = String(values[2])
+        if (sql.includes('delivery_error=null')) receipt.delivery_error = null
+      } else if (sql.includes("set delivery='unknown'")) {
+        if (!['submitting', 'accepted'].includes(receipt.delivery)) return result()
+        receipt.delivery = 'unknown'; receipt.delivery_error = JSON.parse(String(values[2])) as Receipt['delivery_error']
+      } else if (sql.includes('set delivery=$3,delivery_error=')) {
+        if (!['submitting', 'accepted', 'unknown'].includes(receipt.delivery)) return result()
+        receipt.delivery = values[2] as Receipt['delivery']; receipt.result = JSON.parse(String(values[4])) as ExecutionResult
+        receipt.delivery_error = values[3] === null ? null : JSON.parse(String(values[3])) as Receipt['delivery_error']
+      } else throw new Error(`Unhandled turn update: ${sql}`)
+      return result([], 1)
+    }
+    if (sql.startsWith('update operator_conversation_activity')) return result()
+    if (sql.startsWith('update operator_conversations')) {
+      if (sql.includes('and active_request_id=$2') && this.row.active_request_id !== values[1]) return result()
+      if (sql.includes('set active_request_id=$2')) {
+        Object.assign(this.row, { active_request_id: id, active_native_turn_id: null, cancel_requested: false, turn_state: 'starting', last_result: null })
+      } else if (sql.includes('set active_native_turn_id=$3')) {
+        this.row.active_native_turn_id = String(values[2]); this.row.turn_state = this.row.cancel_requested ? 'canceling' : 'active'
+      } else if (sql.includes('set cancel_requested=true')) {
+        this.row.cancel_requested = true; this.row.turn_state = 'canceling'
+      } else if (sql.includes('set active_request_id=null')) {
+        Object.assign(this.row, { active_request_id: null, active_native_turn_id: null, cancel_requested: false, pending_interaction: null })
+        if (sql.includes('last_result=$4')) {
+          this.row.turn_state = values[1] as AgentConversationRow['turn_state']; this.row.last_result = JSON.parse(String(values[3])) as ExecutionResult
+        }
+      } else if (sql.includes("set turn_state='uncertain'")) this.row.turn_state = 'uncertain'
+      else if (!sql.startsWith('update operator_conversations set revision=')) throw new Error(`Unhandled conversation update: ${sql}`)
+      this.row.revision = Number(this.row.revision) + 1
+      return result([], 1)
+    }
+    throw new Error(`Unhandled F1 SQL: ${sql}`)
+  }
+}
+
+export class F1Native implements NativeHarnessSessionManager {
+  readonly harness = 'codex' as const
+  readonly session: NativeSessionReference = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session' }
+  readonly starts: string[] = []
+  readonly cancels: string[] = []
+  readonly steers: NativeSteerInput[] = []
+  readonly holds = new Map<string, ReturnType<typeof deferred>>()
+  readonly histories = new Map<string, NativeHistory>()
+  active: string | undefined
+  steerReply: ((input: NativeSteerInput) => Promise<{ nativeTurnId: string }>) | undefined
+  capabilities(): ReturnType<NativeHarnessSessionManager['capabilities']> { throw new Error('Unused: no native discovery.') }
+  inspectMcp(): ReturnType<NativeHarnessSessionManager['inspectMcp']> { throw new Error('Unused: no MCP environment.') }
+  async createSession(): Promise<NativeSessionReference> { throw new Error('Unused: fixture session is already resident.') }
+  async attachSession(): Promise<NativeSessionReference> { throw new Error('Unused: fixture session is already resident.') }
+  async *startTurn(_session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
+    const requestId = input.clientCorrelationId.split(':').at(-1)!
+    this.starts.push(requestId); this.active = requestId
+    const history: NativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: `turn-${requestId}`, events: [], pendingInteractions: [] }
+    this.histories.set(input.clientCorrelationId, history)
+    await input.onSubmitted?.(history.nativeTurnId!)
+    const hold = this.holds.get(requestId)
+    if (hold) {
+      signal?.addEventListener('abort', hold.resolve, { once: true })
+      try { if (!signal?.aborted) await hold.promise } finally { signal?.removeEventListener('abort', hold.resolve) }
+    }
+    signal?.throwIfAborted()
+    history.terminalResult ??= { outcome: 'succeeded' }
+    if (this.active === requestId) this.active = undefined
+    yield* []
+  }
+  finish(requestId: string, result: ExecutionResult = { outcome: 'succeeded' }) {
+    const history = [...this.histories.values()].find((entry) => entry.nativeTurnId === `turn-${requestId}`)
+    assert(history, `No native history for ${requestId}`)
+    history.terminalResult = result; this.holds.get(requestId)?.resolve()
+  }
+  async steerTurn(_session: NativeSessionReference, input: NativeSteerInput) {
+    if (`turn-${this.active}` !== input.expectedTurnId) throw new NativeTurnNotActiveError()
+    this.steers.push(input)
+    return this.steerReply ? this.steerReply(input) : { nativeTurnId: input.expectedTurnId }
+  }
+  async cancel(_session: NativeSessionReference, _signal?: AbortSignal, nativeTurnId?: string) {
+    assert(nativeTurnId, 'A native interrupt must always be fenced.')
+    this.cancels.push(nativeTurnId)
+    if (!this.active || `turn-${this.active}` !== nativeTurnId) return false
+    this.finish(this.active, { outcome: 'canceled' }); return true
+  }
+  async reconcile(_session: NativeSessionReference, correlation: string) { return structuredClone(this.histories.get(correlation) ?? { events: [], pendingInteractions: [] }) }
+  async history() { return { events: [], pendingInteractions: [] } }
+  async pending() { return undefined }
+  async respond() { throw new Error('Unused: no approvals in F1 tests.') }
+  async close() {}
+}
+
+export function fixture(store = new F1Store()) {
+  const repository = new PostgresAgentChatRepository(store.pool)
+  const manager = new F1Native()
+  const workflows = {
+    getAgentConfiguration: async () => configuration,
+    getCurrentSavedVersion: async () => ({ definition: { nodes: [{ id: context.workflowNodeId, agentId: context.agentId }] } }),
+    getSavedVersion: async () => { throw new Error('Unused: no Run-origin selection.') },
+  } as unknown as Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'getCurrentSavedVersion' | 'getSavedVersion'>
+  const service = new AgentChatService(store.pool, repository, {} as PostgresOperatorConversationRepository,
+    workflows, { getForWorkspace: () => { throw new Error('No Run access in F1 tests.') },
+      executionPages: () => { throw new Error('No execution access in F1 tests.') } }, () => manager, '/unused')
+  // Keep the service/pump/observation code real; only the already-resident native owner is injected.
+  const internals = service as unknown as {
+    runtimes: Map<string, { manager: NativeHarnessSessionManager; session: NativeSessionReference; configuration: AgentConfigurationVersion }>
+    tasks: Map<string, Promise<void>>
+    control<T>(id: string, operation: () => Promise<T>): Promise<T>
+    pump(id: string): void
+  }
+  internals.runtimes.set(store.row.id, { manager, session: manager.session, configuration })
+  const request = (requestId: string, extra: Partial<SendAgentChatMessageRequest> = {}): SendAgentChatMessageRequest => ({
+    requestId, content: requestId, intent: 'next_turn', expectedConversationId: store.row.id,
+    context: { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId, agentId: context.agentId }, ...extra,
+  })
+  const send = (requestId: string, extra: Partial<SendAgentChatMessageRequest> = {}) => service.send(principal, context.workspaceId, request(requestId, extra))
+  return { store, repository, manager, service, internals, principal, request, send,
+    read: () => service.readConversation(principal, context.workspaceId, store.row.id),
+    async active(requestId = 'A') {
+      manager.holds.set(requestId, deferred()); await send(requestId)
+      await eventually(() => store.row.active_native_turn_id === `turn-${requestId}`)
+    },
+    async idle() { await eventually(() => !store.row.active_request_id && !internals.tasks.has(store.row.id)) },
+  }
+}

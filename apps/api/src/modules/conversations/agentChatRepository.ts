@@ -48,7 +48,7 @@ interface TurnRow {
   target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null
   input_hash: string
-  payload: { content: string }
+  payload: { content: string; interruptRequestId?: string }
   created_at: Date
   updated_at: Date
 }
@@ -64,8 +64,10 @@ export function agentChatKey(context: AgentChatContext): string {
 export function agentChatCorrelation(conversationId: string, requestId: string): string {
   return `agent-chat:${conversationId}:${requestId}`
 }
-export function agentChatInputHash(input: Pick<SendAgentChatMessageRequest, 'content' | 'intent' | 'context'>): string {
-  return createHash('sha256').update(JSON.stringify([input.content, input.intent, input.context])).digest('hex')
+export function agentChatInputHash(input: Pick<SendAgentChatMessageRequest, 'content' | 'intent' | 'context' | 'expectedNativeTurnId'>): string {
+  // Keep untargeted receipt identities stable; a supplied native precondition is part of the command.
+  return createHash('sha256').update(JSON.stringify([input.content, input.intent, input.context,
+    ...(input.expectedNativeTurnId === undefined ? [] : [input.expectedNativeTurnId])])).digest('hex')
 }
 
 export function agentConversation(row: AgentConversationRow): AgentConversation {
@@ -89,6 +91,12 @@ function turn(row: TurnRow): AgentChatTurn {
 }
 const TURN_COLUMNS = `request_id,turn_sequence::text,intent,delivery,message_id,native_turn_id,target_native_turn_id,
   delivery_error,input_hash,payload,created_at,updated_at`
+
+/** Captured while holding the conversation row lock, never resolved from a later active request. */
+export interface AgentChatInterruptTarget {
+  requestId: string
+  nativeTurnId: string | null
+}
 
 export interface NewAgentConversation {
   context: AgentChatContext
@@ -142,7 +150,7 @@ export class PostgresAgentChatRepository {
   async admit(input: {
     key: string; request: SendAgentChatMessageRequest; context: AgentChatContext; create?: NewAgentConversation
     delivery: 'queued' | 'submitting'; targetNativeTurnId?: string
-  }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean }> {
+  }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget }> {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
@@ -150,6 +158,8 @@ export class PostgresAgentChatRepository {
       let row = await this.byKey(input.key, client)
       const hash = agentChatInputHash(input.request)
       if (row) {
+        // Claim/finish/interrupt use this same lock: admission cannot retarget a later queued turn.
+        row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [row.id])).rows[0]!
         const prior = (await client.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
           where conversation_id=$1 and request_id=$2`, [row.id, input.request.requestId])).rows[0]
         if (prior) {
@@ -176,6 +186,15 @@ export class PostgresAgentChatRepository {
         row = (await this.get(id, client))!
         created = true
       }
+      if (input.request.intent === 'steer' && (!row.active_request_id || !input.request.expectedNativeTurnId
+        || input.request.expectedNativeTurnId !== row.active_native_turn_id)) {
+        throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'The expected turn is not active. Send it as the next turn instead.', 409)
+      }
+      const interruptTarget = input.request.intent === 'interrupt_and_send' && row.active_request_id
+        && (!input.request.expectedNativeTurnId || input.request.expectedNativeTurnId === row.active_native_turn_id)
+        ? { requestId: row.active_request_id, nativeTurnId: row.active_native_turn_id } : undefined
+      const targetNativeTurnId = input.request.intent === 'interrupt_and_send'
+        ? input.request.expectedNativeTurnId ?? interruptTarget?.nativeTurnId : input.targetNativeTurnId
       const now = new Date().toISOString()
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: row.id, role: 'user', requestId: input.request.requestId,
         content: input.request.content, createdAt: now, updatedAt: now })
@@ -184,11 +203,14 @@ export class PostgresAgentChatRepository {
       const inserted = (await client.query<TurnRow>(`insert into operator_conversation_turns
           (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,target_native_turn_id)
         values ($1,$2,$3::jsonb,$4,$5,$6,$7,$8) returning ${TURN_COLUMNS}`,
-      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content }), hash, input.request.intent,
-        input.delivery, message.id, input.targetNativeTurnId ?? null])).rows[0]!
+      [row.id, input.request.requestId, JSON.stringify({ content: input.request.content,
+          ...(interruptTarget ? { interruptRequestId: interruptTarget.requestId } : {}) }), hash, input.request.intent,
+        input.delivery, message.id, targetNativeTurnId ?? null])).rows[0]!
+      // Durable cancel belongs to the pre-admission owner, not to the newly queued urgent input.
+      if (interruptTarget) await this.requestCancel(row.id, interruptTarget.requestId, client)
       await this.bump(row.id, client)
       await client.query('commit')
-      return { conversationId: row.id, turn: turn(inserted), replayed: false, created }
+      return { conversationId: row.id, turn: turn(inserted), replayed: false, created, ...(interruptTarget ? { interruptTarget } : {}) }
     } catch (error) {
       await client.query('rollback').catch(() => undefined)
       throw error
@@ -265,11 +287,26 @@ export class PostgresAgentChatRepository {
   }
   /** A steer receipt accepted into the active turn. */
   async steerAccepted(id: string, requestId: string, nativeTurnId: string): Promise<void> {
-    await this.pool.query(`update operator_conversation_turns set delivery='accepted',native_turn_id=$3,updated_at=now()
-      where conversation_id=$1 and request_id=$2 and delivery in ('submitting','unknown')`, [id, requestId, nativeTurnId])
-    await this.bump(id)
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      // Serialize with finish(), including when its terminal pass won before the steer ACK arrived.
+      await client.query(`select id from operator_conversations where id=$1 and kind='agent' for update`, [id])
+      const terminal = (await client.query<{ delivery: 'completed' | 'failed' | 'canceled' }>(`select delivery from operator_conversation_turns
+        where conversation_id=$1 and native_turn_id=$2 and intent <> 'steer' and delivery in ('completed','failed','canceled')
+        order by turn_sequence desc limit 1`, [id, nativeTurnId])).rows[0]
+      await client.query(`update operator_conversation_turns set delivery=$4,native_turn_id=$3,delivery_error=null,updated_at=now()
+        where conversation_id=$1 and request_id=$2 and intent='steer' and target_native_turn_id=$3
+          and delivery in ('submitting','unknown')`, [id, requestId, nativeTurnId, terminal?.delivery ?? 'accepted'])
+      await this.bump(id, client)
+      await client.query('commit')
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined)
+      throw error
+    } finally { client.release() }
   }
-  /** Steers into the active turn settle with it. */
+  /** Accepted steers settle with their target. Unconfirmed steers require ACK/history evidence first;
+   * steerAccepted reads the target's durable receipt even after restart or a subsequent turn. */
   async settleSteers(id: string, nativeTurnId: string, delivery: 'completed' | 'failed' | 'canceled', query: Queryable = this.pool): Promise<void> {
     await query.query(`update operator_conversation_turns set delivery=$3,updated_at=now()
       where conversation_id=$1 and intent='steer' and native_turn_id=$2 and delivery='accepted'`, [id, nativeTurnId, delivery])
@@ -279,9 +316,30 @@ export class PostgresAgentChatRepository {
     await this.pool.query(`update operator_conversations set pending_interaction=$3::jsonb,revision=revision+1,updated_at=now()
       where id=$1 and active_request_id=$2`, [id, requestId, pending ? JSON.stringify(PendingNativeInteractionSchema.parse(pending)) : null])
   }
-  async requestCancel(id: string, requestId: string): Promise<boolean> {
-    return (await this.pool.query(`update operator_conversations set cancel_requested=true,turn_state='canceling',revision=revision+1,updated_at=now()
+  async requestCancel(id: string, requestId: string, query: Queryable = this.pool): Promise<boolean> {
+    return (await query.query(`update operator_conversations set cancel_requested=true,turn_state='canceling',revision=revision+1,updated_at=now()
       where id=$1 and active_request_id=$2`, [id, requestId])).rowCount === 1
+  }
+
+  /** Plain Stop linearizes its expected-turn check, queue cancellation and active cancel intent. */
+  async interrupt(id: string, expectedNativeTurnId?: string): Promise<AgentChatInterruptTarget | undefined> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
+      if (!row) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+      if (expectedNativeTurnId && row.active_native_turn_id !== expectedNativeTurnId) {
+        throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'That turn already finished.', 409)
+      }
+      const target = row.active_request_id ? { requestId: row.active_request_id, nativeTurnId: row.active_native_turn_id } : undefined
+      await this.cancelQueued(id, undefined, client)
+      if (target) await this.requestCancel(id, target.requestId, client)
+      await client.query('commit')
+      return target
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined)
+      throw error
+    } finally { client.release() }
   }
 
   /** Terminal settlement of the active turn; clears the conversation's active identity. */
@@ -335,10 +393,10 @@ export class PostgresAgentChatRepository {
       cancel_requested=false,pending_interaction=null,revision=revision+1,updated_at=now() where id=$1 and active_request_id=$2`, [id, requestId])
   }
 
-  async cancelQueued(id: string, requestId?: string): Promise<number> {
-    const result = await this.pool.query(`update operator_conversation_turns set delivery='canceled',updated_at=now()
+  async cancelQueued(id: string, requestId?: string, query: Queryable = this.pool): Promise<number> {
+    const result = await query.query(`update operator_conversation_turns set delivery='canceled',updated_at=now()
       where conversation_id=$1 and delivery='queued' and ($2::text is null or request_id=$2)`, [id, requestId ?? null])
-    if (result.rowCount) await this.bump(id)
+    if (result.rowCount) await this.bump(id, query)
     return result.rowCount ?? 0
   }
 

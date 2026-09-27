@@ -25,7 +25,7 @@ import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
 import {
-  agentChatCorrelation, agentChatKey, agentConversation, type AgentConversationRow, type NewAgentConversation, PostgresAgentChatRepository,
+  agentChatCorrelation, agentChatKey, agentConversation, type AgentConversationRow, type AgentChatInterruptTarget, type NewAgentConversation, PostgresAgentChatRepository,
 } from './agentChatRepository.js'
 
 /** One native manager per conversation; its process is owned by this service, never by a UI connection. */
@@ -87,6 +87,7 @@ export class AgentChatService {
   readonly events = new AgentChatEvents()
   private readonly runtimes = new Map<string, Runtime>()
   private readonly tasks = new Map<string, Promise<void>>()
+  private readonly wakeups = new Set<string>()
   private readonly controls = new Map<string, Promise<unknown>>()
   private readonly activity: PostgresOperatorActivityRepository
   private readonly lifetime = new AbortController()
@@ -284,7 +285,7 @@ export class AgentChatService {
     const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ...(create ? { create } : {}) })
     if (admitted.replayed) return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true }
     this.events.publish(admitted.conversationId, 'turn', { requestId: input.requestId, delivery: admitted.turn.delivery })
-    if (input.intent === 'interrupt_and_send') await this.interruptActive(admitted.conversationId, false)
+    if (input.intent === 'interrupt_and_send') await this.interruptActive(admitted.conversationId, false, admitted.interruptTarget)
     this.pump(admitted.conversationId)
     return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: false }
   }
@@ -298,10 +299,10 @@ export class AgentChatService {
     if (!runtime.manager.steerTurn) {
       throw new DomainError('AGENT_CHAT_STEER_UNAVAILABLE', OPENCODE_STEER_REASON, 409)
     }
-    if (input.expectedNativeTurnId && input.expectedNativeTurnId !== row.active_native_turn_id) {
+    if (input.expectedNativeTurnId !== row.active_native_turn_id) {
       throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'The turn you steered already finished. Send it as the next turn instead.', 409)
     }
-    const target = row.active_native_turn_id
+    const target = input.expectedNativeTurnId
     return this.control(row.id, async () => {
       const admitted = await this.repository.admit({ key, request: input, context, delivery: 'submitting', targetNativeTurnId: target })
       if (admitted.replayed) return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true }
@@ -309,6 +310,7 @@ export class AgentChatService {
         const steered = await runtime.manager.steerTurn!(runtime.session!, {
           prompt: input.content, clientCorrelationId: agentChatCorrelation(row.id, input.requestId), expectedTurnId: target,
         }, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]))
+        if (steered.nativeTurnId !== target) throw new Error('The provider acknowledged a different steer target.')
         await this.repository.steerAccepted(row.id, input.requestId, steered.nativeTurnId)
       } catch (error) {
         if (error instanceof NativeTurnNotActiveError || definiteRejection(error)) {
@@ -325,13 +327,10 @@ export class AgentChatService {
 
   async interrupt(principal: ManagementPrincipal, workspaceId: string, id: string, expectedNativeTurnId?: string): Promise<AgentChatState> {
     this.assertOpen()
-    const row = await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
-    if (expectedNativeTurnId && row.active_native_turn_id && row.active_native_turn_id !== expectedNativeTurnId) {
-      throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'That turn already finished.', 409)
-    }
-    // Stop means stop everything: the active turn and every queued turn.
-    await this.repository.cancelQueued(id)
-    await this.interruptActive(id, true)
+    await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
+    // Stop cancels the queue and captures the active target in one transaction.
+    const target = await this.repository.interrupt(id, expectedNativeTurnId)
+    await this.interruptActive(id, true, target)
     return this.readConversation(principal, workspaceId, id)
   }
   async cancelQueued(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string): Promise<AgentChatState> {
@@ -342,6 +341,7 @@ export class AgentChatService {
       if (turn.delivery !== 'canceled') throw new DomainError('AGENT_CHAT_TURN_STARTED', 'That message was already sent to the Agent.', 409)
     }
     this.events.publish(id, 'turn', { requestId: turnRequestId, delivery: 'canceled' })
+    this.pump(id)
     return this.readConversation(principal, workspaceId, id)
   }
   async respond(principal: ManagementPrincipal, workspaceId: string, id: string, nativeRequestId: string, optionId: string): Promise<AgentChatState> {
@@ -362,37 +362,51 @@ export class AgentChatService {
     return this.readConversation(principal, workspaceId, id)
   }
 
-  private async interruptActive(id: string, explicit: boolean): Promise<void> {
-    const row = await this.repository.get(id)
-    if (!row?.active_request_id) return
-    await this.repository.requestCancel(id, row.active_request_id)
-    this.events.publish(id, 'state', { requestId: row.active_request_id, sessionState: 'interrupting', explicit })
-    const runtime = this.runtimes.get(id)
-    if (!runtime?.session || !row.active_native_turn_id) return // Submission path observes cancel_requested.
-    try {
-      await runtime.manager.cancel(runtime.session, AbortSignal.timeout(10_000), row.active_native_turn_id)
-    } catch (error) {
-      this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Interrupt delivery failed.' })
-    }
+  private async interruptActive(id: string, explicit: boolean, target: AgentChatInterruptTarget | undefined): Promise<void> {
+    if (!target) return
+    await this.control(id, async () => {
+      const row = await this.repository.get(id)
+      if (!row || row.active_request_id !== target.requestId || !row.cancel_requested
+        || (target.nativeTurnId && row.active_native_turn_id !== target.nativeTurnId)) return
+      this.events.publish(id, 'state', { requestId: target.requestId, sessionState: 'interrupting', explicit })
+      const runtime = this.runtimes.get(id)
+      if (!runtime?.session || !row.active_native_turn_id) return // Submission path observes cancel_requested.
+      try {
+        await runtime.manager.cancel(runtime.session, AbortSignal.timeout(10_000), row.active_native_turn_id)
+      } catch (error) {
+        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Interrupt delivery failed.' })
+      }
+    })
   }
 
   // ---------------------------------------------------------------- turn execution
 
   /** Start the next queued turn when the conversation is idle. Safe to call repeatedly. */
   private pump(id: string): void {
-    if (this.closing || this.tasks.has(id)) return
+    if (this.closing) return
+    if (this.tasks.has(id)) { this.wakeups.add(id); return }
     const task = (async () => {
       for (;;) {
         if (this.closing) return
+        this.wakeups.delete(id) // This queue scan services admissions already observed.
         const next = await this.repository.nextQueued(id)
         if (!next) return
-        if (!await this.repository.claim(id, next.requestId)) return
+        // Claims cannot overtake a fenced native interrupt. A canceled selection is not a busy queue.
+        if (!await this.control(id, () => this.repository.claim(id, next.requestId))) {
+          const row = await this.repository.get(id)
+          if (!row || row.active_request_id) return
+          continue
+        }
         this.events.publish(id, 'turn', { requestId: next.requestId, delivery: 'submitting' })
         await this.runTurn(id, next)
       }
     })().catch((error: unknown) => {
       this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Agent chat delivery failed.' })
-    }).finally(() => { this.tasks.delete(id) })
+    }).finally(() => {
+      this.tasks.delete(id)
+      // An admission may have seen this task after its empty-queue read but before teardown.
+      if (this.wakeups.delete(id)) this.pump(id)
+    })
     this.tasks.set(id, task)
   }
 
