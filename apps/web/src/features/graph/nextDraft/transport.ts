@@ -114,6 +114,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         const configure = operations.find((item) => item.type === 'agent.configure' && item.agentId === operation.agentId)
         const content = configure?.type === 'agent.configure' ? {
           prompt: configure.prompt, assignedSkills: configure.assignedSkills,
+          ...(configure.graphqlTools ? { graphqlTools: configure.graphqlTools } : {}),
           ...(configure.description ? { description: configure.description } : {}), ...(configure.role ? { role: configure.role } : {}),
         } : { prompt: {}, assignedSkills: [] }
         const pending = structuredClone({ path: agentsPath, method: 'POST' as const, body: {
@@ -130,6 +131,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
           ...(edit.rename ? { name: edit.rename.name } : {}),
           ...(edit.configure ? { configuration: edit.configure.configuration, prompt: edit.configure.prompt,
             assignedSkills: edit.configure.assignedSkills, description: edit.configure.description ?? null,
+            ...(edit.configure.graphqlTools ? { graphqlTools: edit.configure.graphqlTools } : {}),
             role: edit.configure.role ?? null } : {}),
         }
         const pending = structuredClone({ path: `${agentsPath}/${part(operation.agentId)}`, method: 'PATCH' as const, body: {

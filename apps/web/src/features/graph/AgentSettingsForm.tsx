@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, legacyEffortForHarness,
   validateHarnessWorkflowCompatibility, withAdvancedDefaults,
-  type Agent, type ApprovalHandler, type HarnessDefaults, type WorkflowExecutionPolicy,
+  type Agent, type ApprovalHandler, type GraphqlToolOverride, type HarnessDefaults, type WorkflowExecutionPolicy,
 } from '@graphql/contracts'
 
 import { Alert, Button, Icon, IconButton, Select, Textarea, TextField } from '../../shared/ui/nocturne'
@@ -15,9 +15,10 @@ import { HarnessConfigurationFields } from '../settings/HarnessConfigurationFiel
 import { HarnessBasicFields } from '../settings/HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from '../settings/harnessEditor'
 import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, validationIssues, type FieldIssue } from '../settings/fieldValidation'
+import { GraphqlToolsFields } from './GraphqlToolsFields'
 import './agentSettingsPanel.css'
 
-export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
+export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
   executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
 }: {
   /** Inside an agent popover: the popover owns the title and close button. */
@@ -28,10 +29,12 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
   canResume?(): boolean
   agent: Agent
   initialPrompt?: string
+  /** This workflow node's change to the Agent's default GraphQL MCP tools. */
+  nodeGraphqlTools?: GraphqlToolOverride
   creationDefaults?: HarnessDefaults
   onClose(): void
   onRemove?(): void
-  onSave(agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy): void
+  onSave(agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy, nodeGraphqlTools: GraphqlToolOverride | undefined): void
   executionPolicy?: WorkflowExecutionPolicy
   workflowNodeCount?: number
   workspaceId?: string
@@ -40,6 +43,8 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
 }) {
   const [localName, setLocalName] = useState(agent.name)
   const [localPrompt, setLocalPrompt] = useState(initialPrompt ?? '')
+  const [localGraphqlTools, setLocalGraphqlTools] = useState<NonNullable<AgentForm['graphqlTools']>>(() => ({
+    ...(agent.graphqlTools ? { defaults: agent.graphqlTools } : {}), ...(nodeGraphqlTools ? { override: nodeGraphqlTools } : {}) }))
   const [error, setError] = useState<string>()
   const [issues, setIssues] = useState<FieldIssue[]>([])
   const [view, setView] = useState<'general' | 'advanced'>('general')
@@ -50,22 +55,24 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
     return createHarnessEditor(agent.harnessConfiguration ?? configuredHarness(agent, harness,
       initialModel(agent, harness), agent.effort ?? 'medium', agent.fastMode ?? false, 'read-only', creationDefaults))
   })
-  const base = JSON.stringify({ agent, initialPrompt })
+  const base = JSON.stringify({ agent, initialPrompt, nodeGraphqlTools })
   const retained = retainedForm && sameWorkflowValue(JSON.parse(retainedForm.base), JSON.parse(base)) ? retainedForm : undefined
   const name = retained?.name ?? localName, prompt = retained?.prompt ?? localPrompt, editor = retained?.editor ?? localEditor
-  const changeForm = (patch: Partial<AgentForm>) => onFormChange?.({ base, name, prompt, editor, ...patch })
+  const graphqlTools = retained?.graphqlTools ?? localGraphqlTools
+  const changeForm = (patch: Partial<AgentForm>) => onFormChange?.({ base, name, prompt, editor, graphqlTools, ...patch })
   const setName = (value: string) => { if (onFormChange) changeForm({ name: value }); else setLocalName(value) }
   const setPrompt = (value: string) => { if (onFormChange) changeForm({ prompt: value }); else setLocalPrompt(value) }
+  const setGraphqlTools = (value: NonNullable<AgentForm['graphqlTools']>) => { if (onFormChange) changeForm({ graphqlTools: value }); else setLocalGraphqlTools(value) }
   const setEditor = (update: typeof editor | ((current: typeof editor) => typeof editor)) => {
     const value = typeof update === 'function' ? update(editor) : update
     if (onFormChange) changeForm({ editor: value }); else setLocalEditor(value)
   }
   const initialSnapshot = useRef<string | undefined>(undefined)
-  if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor: localEditor })
+  if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor: localEditor, graphqlTools: localGraphqlTools })
   const defaultsQuery = useHarnessDefaultsQuery({ enabled: !creationDefaults })
   const providerDefaults = creationDefaults ?? defaultsQuery.data?.defaults
   const configuration = withAdvancedDefaults(editor.configuration)
-  const currentSnapshot = JSON.stringify({ name, prompt, editor })
+  const currentSnapshot = JSON.stringify({ name, prompt, editor, graphqlTools })
   const isDirty = currentSnapshot !== initialSnapshot.current
   const nameError = fieldMessage(issues, 'name')
   const clearErrors = () => { setError(undefined); setIssues([]) }
@@ -94,7 +101,8 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
       onSave({ ...agent, name: name.trim(), harness: nextConfiguration.harness, model: nextConfiguration.model,
         effort: legacyEffortForHarness(nextConfiguration), fastMode: nextConfiguration.harness === 'codex' ? nextConfiguration.serviceTier === 'priority' : undefined,
         harnessConfiguration: nextConfiguration,
-      }, prompt.trim() || undefined, executionPolicy)
+        ...(graphqlTools.defaults ? { graphqlTools: graphqlTools.defaults } : {}),
+      }, prompt.trim() || undefined, executionPolicy, graphqlTools.override)
     } catch (failure) {
       initialSnapshot.current = previousSnapshot
       const nextIssues = validationIssues(failure)
@@ -136,6 +144,8 @@ export function AgentSettingsForm({ agent, initialPrompt, creationDefaults, onCl
       </div>
     </div> : <div className="agent-settings-advanced-view">
       <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
+      <GraphqlToolsFields role={agent.productRole ?? 'coder'} defaults={graphqlTools.defaults} override={graphqlTools.override}
+        onChange={(defaults, override) => { setGraphqlTools({ ...(defaults ? { defaults } : {}), ...(override ? { override } : {}) }); clearErrors() }} />
       <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} allowHarnessChange={false} harnessDefaults={providerDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} allowAutoReview={workflowApprovalHandler === 'orchestrator'} compact advancedOnly />
       {embedded ? null : <p className="settings-help">Save updates this graph draft. Use Save graph to persist it.</p>}
     </div>}

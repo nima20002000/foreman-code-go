@@ -22,6 +22,7 @@ export type {
 import type { ApprovalHandler } from "./wave25/workflowShape.js";
 import { RunLiveActivitySchema } from "./runLiveActivity.js";
 import { RunStopCauseSchema } from "./runStopCause.js";
+import { GraphqlToolDefaultsSchema } from "./graphqlMcpTools.js";
 export * from "./runStopCause.js";
 export * from "./runState.js";
 export * from "./runLiveActivity.js";
@@ -29,6 +30,7 @@ export * from "./runLiveActivity.js";
 export * from "./harnessEditing.js";
 export * from "./harnessCompatibility.js";
 export * from "./approvalTopology.js";
+export * from "./graphqlMcpTools.js";
 
 /** Runner-owned directory inherited by every workflow and Agent in a workspace. */
 export const ExecutionLocationSchema = z
@@ -667,6 +669,8 @@ export const AgentSchema = z
     configurationVersionId: IdSchema.optional(),
     prompt: AgentPromptSchema.optional(),
     assignedSkills: z.array(AssignedSkillSchema).optional(),
+    /** Default GraphQL MCP tools; absent means every tool the product role allows. */
+    graphqlTools: GraphqlToolDefaultsSchema.optional(),
     ...OptionalTimestampFields,
   })
   .strict();
@@ -693,6 +697,7 @@ export const AgentConfigurationVersionSchema = z
     prompt: AgentPromptSchema,
     assignedSkills: z.array(AssignedSkillSchema),
     resolvedSkills: z.array(ResolvedSkillSchema).max(100).optional(),
+    graphqlTools: GraphqlToolDefaultsSchema.optional(),
     harness: HarnessConfigurationSchema,
     contentHash: z.string().trim().min(1),
     createdAt: TimestampSchema,

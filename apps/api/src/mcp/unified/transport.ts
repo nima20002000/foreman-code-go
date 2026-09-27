@@ -32,7 +32,8 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
   app.post(GRAPHQL_MCP_PATH, { bodyLimit: 1_000_000 }, async (request, reply) => {
     requireLocalRequest(request)
     const principal = await services.access.authenticate(bearerToken(request.headers.authorization), audiences)
-    const role: McpRole = principal.audience === 'operator' ? 'operator' : await services.interactions!.role(principal)
+    const access = principal.audience === 'operator' ? undefined : await services.interactions!.toolAccess(principal)
+    const role: McpRole = access?.role ?? 'operator'
     if (role === 'operator' && services.operator) {
       const context = { principal, services: services.operator }
       // Retired execution tools and unlisted current writes still need authenticated denial audit,
@@ -44,7 +45,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableRunInspectionToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
-    const context = { role, principal,
+    const context = { role, principal, ...(access ? { tools: access.tools } : {}),
       ...(services.operator ? { operator: services.operator } : {}),
       ...(services.interactions ? { interactions: services.interactions } : {}) }
     const denied = await roleDeniedToolCall(context, request.body)

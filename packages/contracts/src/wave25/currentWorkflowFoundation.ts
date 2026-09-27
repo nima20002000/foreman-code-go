@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { graphqlToolsOutsideRole } from '../graphqlMcpTools.js'
 import {
   AgentConfigurationVersionSchema, AcceptedWorkflowApprovalConfigurationSchema,
   HarnessWorkflowCompatibilitySchema,
@@ -108,6 +109,9 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
   for (const node of nodes) {
     const configuration = configs.get(version.agentConfigurationVersionIds[node.agentId]!)
     if (!configuration || configuration.workspaceId !== version.workspaceId || configuration.agentId !== node.agentId || !configuration.productRole) fail('an exact scoped configuration with a pinned product role is required')
+    const outside = configuration?.productRole && node.graphqlTools
+      ? graphqlToolsOutsideRole(configuration.productRole, [...node.graphqlTools.add, ...node.graphqlTools.remove]) : []
+    if (outside.length) fail(`node ${node.id} GraphQL MCP tools are outside its Agent role: ${outside.join(', ')}`)
   }
   const role = (nodeId: string) => {
     const node = nodes.find((candidate) => candidate.id === nodeId)

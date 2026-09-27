@@ -15,6 +15,8 @@ export interface GraphqlMcpContext {
   principal: ManagementPrincipal
   operator?: OperatorServices
   interactions?: AppInteractionService
+  /** Worker roles only: the tools enabled for this Agent's configuration and workflow node. */
+  tools?: readonly string[]
 }
 
 interface ToolDefinition { name: string; description: string }
@@ -54,29 +56,43 @@ function agentCatalog(): Promise<ToolDefinition[]> {
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.string() }).passthrough() }).passthrough()
 
-/** Tools outside the caller's role are not listed. A direct call to one still gets an audited,
- * explicit ROLE_NOT_ALLOWED instead of the SDK's generic unknown-tool response. */
+/** Tools outside the caller's role, or not enabled for its Agent, are not listed. A direct call to one
+ * still gets an audited, explicit ROLE_NOT_ALLOWED or TOOL_NOT_ENABLED instead of the SDK's unknown-tool response. */
 export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unknown) {
   const call = ToolCall.safeParse(body)
   if (!call.success) return undefined
   const name = call.data.params.name
   const allowed = toolRoles(name)
-  if (allowed.includes(context.role)) return undefined
+  const enabled = !context.tools || context.tools.includes(name)
+  if (allowed.includes(context.role) && enabled) return undefined
   const catalog = [...(context.operator ? await operatorCatalog(context.operator) : []), ...(context.interactions ? await agentCatalog() : [])]
   if (!catalog.some((tool) => tool.name === name)) return undefined
   await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`).catch(() => undefined)
+  if (allowed.includes(context.role)) {
+    return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('TOOL_NOT_ENABLED',
+      `This Agent does not have ${name} enabled in its GraphQL MCP tools. Enabled: ${context.tools!.join(', ') || 'none'}.`, 403,
+      { enabledTools: [...context.tools!] })) }
+  }
   return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(new DomainError('ROLE_NOT_ALLOWED',
     `Your ${MCP_ROLE_LABELS[context.role]} role cannot use ${name}. Allowed roles: ${roleList(allowed)}.`, 403,
     { role: context.role, allowedRoles: [...allowed] })) }
 }
 
-/** One server for every role. Each role lists only its own tools: the existing, grant-checked implementations. */
+/** One server for every role. Each caller lists only its enabled tools: the existing, grant-checked implementations. */
 export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promise<McpServer> {
   const server = new McpServer({ name: 'graphql', version: '1.0.0' }, { instructions: roleInstructions(context.role) })
   if (context.role === 'operator') {
     if (context.operator) registerOperatorTools(server, { principal: context.principal, services: context.operator })
   } else if (context.interactions) {
-    await registerAppTools(server, { principal: context.principal, interactions: context.interactions })
+    const tools = context.tools
+    // Registers only the tools enabled for this Agent; the rest are never listed.
+    const enabled = tools ? new Proxy(server, { get(target, key) {
+      if (key === 'registerTool') return (name: string, ...rest: unknown[]) => tools.includes(name)
+        ? (target.registerTool as (...args: unknown[]) => unknown).call(target, name, ...rest) : undefined
+      const value: unknown = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    } }) : server
+    await registerAppTools(enabled, { principal: context.principal, interactions: context.interactions })
   }
   return server
 }
