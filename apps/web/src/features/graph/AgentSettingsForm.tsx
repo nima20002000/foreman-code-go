@@ -144,7 +144,7 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
       </div>
     </div> : <div className="agent-settings-advanced-view">
       <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
-      <GraphqlToolsFields role={agent.productRole ?? 'coder'} defaults={graphqlTools.defaults} override={graphqlTools.override}
+      <GraphqlToolsFields role={agent.productRole === 'orchestrator' ? 'orchestrator' : 'coder'} defaults={graphqlTools.defaults} override={graphqlTools.override}
         onChange={(defaults, override) => { setGraphqlTools({ ...(defaults ? { defaults } : {}), ...(override ? { override } : {}) }); clearErrors() }} />
       <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} allowHarnessChange={false} harnessDefaults={providerDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} allowAutoReview={workflowApprovalHandler === 'orchestrator'} compact advancedOnly />
       {embedded ? null : <p className="settings-help">Save updates this graph draft. Use Save graph to persist it.</p>}
