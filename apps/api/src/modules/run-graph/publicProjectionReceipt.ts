@@ -44,17 +44,19 @@ export function publicProjectionDelta(previous: PublicGraphProjection | undefine
   })
 }
 async function stored(sql: GraphTransactionSql, scope: RunGraphScope) {
-  const row = (await sql.query<{ record: unknown; source_digest: string; semantic_digest: string; sequence: string }>(
-    `select record,source_digest,semantic_digest,sequence::text from run_graph_public_projection where run_id=$1`, [scope.runId])).rows[0]
+  const row = (await sql.query<{ record: unknown; source_digest: string; semantic_digest: string; sequence: string;
+    proof_sequence: string | null; proof_source_digest: string | null; proof_semantic_digest: string | null }>(`
+    select p.record,p.source_digest,p.semantic_digest,p.sequence::text,
+      s.first_sequence::text as proof_sequence,s.source_digest as proof_source_digest,
+      s.semantic_digest as proof_semantic_digest
+    from run_graph_public_projection p left join run_graph_sources s on s.run_id=p.run_id
+      and s.source_kind='run' and s.source_id=$2 and s.source_revision=p.sequence
+    where p.run_id=$1`, [scope.runId, sourceId(scope.runId)])).rows[0]
   if (!row) return undefined
   const projection = PublicGraphProjectionSchema.parse(row.record)
   if (graphSourceDigest({ scope, projection }) !== row.source_digest) return fail()
-  const proof = (await sql.query<{ first_sequence: string; source_digest: string; semantic_digest: string }>(
-    `select first_sequence::text,source_digest,semantic_digest from run_graph_sources
-      where run_id=$1 and source_kind='run' and source_id=$2 and source_revision=$3::bigint`,
-    [scope.runId, sourceId(scope.runId), row.sequence])).rows[0]
-  if (!proof || proof.first_sequence !== row.sequence || proof.source_digest !== row.source_digest
-    || proof.semantic_digest !== row.semantic_digest) return fail()
+  if (row.proof_sequence !== row.sequence || row.proof_source_digest !== row.source_digest
+    || row.proof_semantic_digest !== row.semantic_digest) return fail()
   return { ...row, projection }
 }
 

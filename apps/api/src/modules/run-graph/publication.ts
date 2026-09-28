@@ -60,12 +60,18 @@ export async function readRepeatRunSourceLocked(sql: GraphTransactionSql, input:
   const fact = RepeatGraphFactV3Schema.parse({ type: 'repeat.run.state', state })
   const semanticDigest = graphSourceDigest([fact])
   const sourceDigest = graphSourceDigest({ scope, record: run, state })
-  const head = (await sql.query<{ head_sequence: string }>('select head_sequence::text from run_graph_heads where run_id=$1', [scope.runId])).rows[0]
+  const head = (await sql.query<{ head_sequence: string; source_revision: string | null;
+    source_digest: string | null; semantic_digest: string | null; first_sequence: string | null }>(`
+    select h.head_sequence::text,latest.source_revision,latest.source_digest,latest.semantic_digest,latest.first_sequence
+    from run_graph_heads h left join lateral (
+      select s.source_revision::text,s.source_digest,s.semantic_digest,s.first_sequence::text
+      from run_graph_sources s where s.run_id=h.run_id and s.source_kind='run' and s.source_id=h.run_id
+      order by s.source_revision desc limit 1
+    ) latest on true where h.run_id=$1`, [scope.runId])).rows[0]
   if (!head) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
   GraphSequenceSchema.parse(head.head_sequence)
-  const latest = (await sql.query<{ source_revision: string; source_digest: string; semantic_digest: string; first_sequence: string }>(
-    `select s.source_revision::text,s.source_digest,s.semantic_digest,s.first_sequence::text from run_graph_sources s
-     where s.run_id=$1 and s.source_kind='run' and s.source_id=$1 order by s.source_revision desc limit 1`, [scope.runId])).rows[0]
+  const latest = head.source_revision === null ? undefined : { source_revision: head.source_revision,
+    source_digest: head.source_digest!, semantic_digest: head.semantic_digest!, first_sequence: head.first_sequence! }
   if (!latest && head.head_sequence !== '0') throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
   if (latest && (!GraphSequenceSchema.safeParse(latest.source_revision).success
     || !GraphSequenceSchema.safeParse(latest.first_sequence).success || BigInt(latest.first_sequence) < 1n

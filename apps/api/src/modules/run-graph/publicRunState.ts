@@ -1,9 +1,10 @@
 import { GraphRunStateSchema, type RunGraphScope } from '@graphql/contracts/wave25'
 import { assertGraphTransaction, type GraphTransactionSql } from './connection.js'
-import { publicAttentionTotals, readPublicAttentionCounts } from './currentAttention.js'
+import { publicAttentionTotals, readPublicAttentionCounts, type PublicAttentionCount } from './currentAttention.js'
 import { RunGraphError } from './errors.js'
 
-export async function readPublicRunStateLocked(sql: GraphTransactionSql, scope: RunGraphScope) {
+export async function readPublicRunStateLocked(sql: GraphTransactionSql, scope: RunGraphScope,
+  attention?: ReadonlyMap<string, PublicAttentionCount>) {
   assertGraphTransaction(sql)
   const row = (await sql.query<{ execution_state: string; outcome: string; stopped: boolean; cleanup_pending: boolean }>(
     `select r.execution_state,r.record->>'outcome' as outcome,r.stop_requested_at is not null as stopped,
@@ -11,7 +12,7 @@ export async function readPublicRunStateLocked(sql: GraphTransactionSql, scope: 
       from runs r where r.id=$1 and r.workspace_id=$2 and r.workflow_id=$3 and r.workflow_version_id=$4`,
     [scope.runId, scope.workspaceId, scope.workflowId, scope.workflowVersionId])).rows[0]
   if (!row) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
-  const totals = publicAttentionTotals(await readPublicAttentionCounts(sql, scope.runId))
+  const totals = publicAttentionTotals(attention ?? await readPublicAttentionCounts(sql, scope.runId))
   return GraphRunStateSchema.parse({ executionState: row.execution_state, outcome: row.outcome, stopRequested: row.stopped,
     ...totals, cleanupPending: row.cleanup_pending || totals.cleanupPending })
 }
