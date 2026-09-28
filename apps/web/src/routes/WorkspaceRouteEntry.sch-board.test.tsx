@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
+import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
 import { routeTree } from '../app/router'
 import { useGraphDraftStore } from '../features/graph/store'
 import { nextDraftKey } from '../features/graph/nextDraft/state'
@@ -18,7 +19,9 @@ const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeli
 const key = nextDraftKey(scope.workspaceId, scope.workflowId)
 const runsRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs'
 const clients: QueryClient[] = []
+const unhandled: string[] = []
 const writes: string[] = [], scheduleReads: string[] = []
+const recordUnhandled = ({ request }: { request: Request }) => unhandled.push(`${request.method} ${request.url}`)
 const recordWrite = ({ request }: { request: Request }) => {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) writes.push(`${request.method} ${new URL(request.url).pathname}`)
 }
@@ -51,6 +54,7 @@ async function choose(runId: string | null) {
 const savedY = () => screen.findByRole('img', { name: 'Y, saved agent, read only' })
 
 beforeEach(() => {
+  unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   useGraphDraftStore.getState().clearAllDrafts()
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation()
   writes.length = 0; scheduleReads.length = 0
@@ -67,6 +71,11 @@ beforeEach(() => {
     http.get(`${runsRoute}/:runId/snapshot`, ({ params }) => HttpResponse.json(reply(String(params.runId), {
       workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
     }))),
+    http.get('*/api/workspaces/:workspaceId/agent-chat/workflows/:workflowId/runs/:runId/nodes/:workflowNodeId',
+      ({ params }) => HttpResponse.json(ReadSelectedRunChatResponseSchema.parse({ kind: 'unavailable',
+        target: { workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
+          runId: String(params.runId), workflowNodeId: String(params.workflowNodeId) }, reason: 'execution_missing',
+      }))),
     http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/schedule', ({ request }) => {
       scheduleReads.push(new URL(request.url).pathname)
       return HttpResponse.json({ schedule: null })
@@ -75,6 +84,8 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear())
+  server.events.removeListener('request:unhandled', recordUnhandled)
+  expect(unhandled, 'No selected Board request may bypass MSW').toEqual([])
   server.events.removeListener('request:start', recordWrite)
   useGraphDraftStore.getState().clearAllDrafts()
   localStorage.clear(); sessionStorage.clear(); setMockScenario('normal')
@@ -95,6 +106,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     await choose('run-a'); await savedY()
     expect(router.state.location.search.selectedRunId).toBe('run-a')
     expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveTextContent('Read only')
+    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
     expect(editor.closest('.run-board-current')).toHaveAttribute('hidden')
     expect(editor.closest('.run-board-current')).toHaveAttribute('inert')
     expect(editor).not.toBeVisible()

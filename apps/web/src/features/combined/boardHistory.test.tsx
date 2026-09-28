@@ -8,6 +8,7 @@ import { http, HttpResponse } from 'msw'
 import { DEFAULT_FILE_RETENTION_SECONDS, FileWithRevisionSchema, temporaryFileExpiresAt,
   type FileWithRevision } from '@graphql/contracts/files'
 import { AgentChatStateSchema, type AgentChatState } from '@graphql/contracts/agent-chat'
+import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
@@ -33,7 +34,13 @@ import { admitted, context, envelope, execution, historicalState, installSelecte
 
 const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline' }
 const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'
+const selectedChatUnavailable = http.get(selectedRoute, ({ params }) => HttpResponse.json(ReadSelectedRunChatResponseSchema.parse({
+  kind: 'unavailable', target: { workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
+    runId: String(params.runId), workflowNodeId: String(params.workflowNodeId) }, reason: 'execution_missing',
+})))
 const clients: QueryClient[] = []
+const unhandled: string[] = []
+const recordUnhandled = ({ request }: { request: Request }) => unhandled.push(`${request.method} ${request.url}`)
 let selected: SelectedRunState
 
 async function mountBoard(entry = runsUrl('run-a', scope)) {
@@ -87,11 +94,15 @@ function fileRow(state: AgentChatState, id: string, filename = 'shared.md', crea
 }
 
 beforeEach(() => {
+  unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation(); useGraphDraftStore.getState().clearAllDrafts()
   installFlowLayout(320, 480); installChatSource()
+  server.use(selectedChatUnavailable)
 })
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear())
+  server.events.removeListener('request:unhandled', recordUnhandled)
+  expect(unhandled, 'No selected Board request may bypass MSW').toEqual([])
   useGraphDraftStore.getState().clearAllDrafts(); setMockScenario('normal')
   vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs()
 })
@@ -106,9 +117,14 @@ describe('FIL-17 + SCH selected Board', () => {
         locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),
       http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries', () => HttpResponse.json(page([runA, runB]))),
       http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), scope))),
+      http.get('*/api/workspaces/:workspaceId/workflows/:workflowId/reference-files', () =>
+        HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
+      http.get('*/api/workspaces/:workspaceId/reference-files', () =>
+        HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
     )
     await mountBoard()
     expect(await screen.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const clock = within(controls).getByRole('button', { name: 'Schedule workflow' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
@@ -123,9 +139,11 @@ describe('FIL-17 + SCH selected Board', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close files' }))
     await choose('run-b')
     expect(await screen.findByRole('img', { name: 'X in B, saved agent, read only' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
     expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
     await choose('run-a')
     expect(await screen.findByRole('img', { name: 'Y, saved agent, read only' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
   })
 
   it('keeps same-named Operator file cards bound to chats A and B while a Board is open', async () => {

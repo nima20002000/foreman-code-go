@@ -145,6 +145,15 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     mounted.unmount(); mounted.client.clear(); latest = undefined
     await mount(refreshUrl)
     await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-b')))
+    const trigger = screen.getByRole('button', { name: /^Runs$/ })
+    expect(trigger).toBeEnabled()
+    const menu = await openMenu()
+    await userEvent.click(within(menu).getByRole('menuitemradio', { name: 'Current workflow' }))
+    await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity(null)))
+    trigger.focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(await screen.findByRole('menu', { name: 'Runs' })).toBeInTheDocument()
+    expect(within(screen.getByRole('menu', { name: 'Runs' })).getByRole('menuitemradio', { name: 'Current workflow' })).toHaveFocus()
     expect(localStorage.getItem('selectedRunId')).toBeNull()
   })
 

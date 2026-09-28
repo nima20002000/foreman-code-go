@@ -9,6 +9,7 @@ import { RunBoardSlot } from '../run-board'
 import { RunsSelector, useSelectedRun } from '../runs-selector'
 import { ScheduleClockButton } from '../schedules'
 import { WorkflowFilesButton } from '../workflow-files'
+import { AgentChatPanel } from '../graph/AgentPanels'
 import { CurrentRunObserver } from './CurrentRunObserver'
 import { nextDraftApi } from '../graph/nextDraft/transport'
 import { boardDraftContextKey } from './keys'
@@ -119,6 +120,11 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
           </Dialog>
         </div>
       </RunBoardSlot>
+      {selectedRun.active && (selectedRun.invalid || selectedRun.identity.runId !== null)
+        ? <aside className="board-side-panel board-historical-chat" aria-label="Agent chat">
+          <header><h2>Agent chat</h2></header>
+          <div className="board-historical-chat-content"><AgentChatPanel name="Agent chat" selectedRun={selectedRun} /></div>
+        </aside> : null}
     </div>
   </WorkflowBoardContext.Provider>
 }

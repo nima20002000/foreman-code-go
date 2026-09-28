@@ -14,7 +14,7 @@ import { needsRunRefresh, type ActionRun } from './policy'
 import { Approvals } from './Approvals'
 import { FailureDetails, SavedRepeatPolicy } from './FailureDetails'
 import { StartControls } from './StartControls'
-import { StopControl } from './StopControl'
+import { StopControl, StopReceipt } from './StopControl'
 import './actions.css'
 
 function SelectedRunActions({ selection, access }: {
@@ -53,7 +53,7 @@ function SelectedRunActions({ selection, access }: {
     staleTime: 30_000, refetchOnWindowFocus: false, refetchOnReconnect: false })
   const run = !allowed('runs:read') || status.isError ? undefined : status.data
   const { workspaceId, workflowId, runId } = selection
-  const workflowVersionId = run?.workflowVersionId
+  const workflowVersionId = allowed('runs:read') ? status.data?.workflowVersionId : undefined
   const scope = useMemo(() => workflowVersionId ? RepeatGraphScopeV3Schema.parse({
     workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion: 3,
   }) : undefined, [workspaceId, workflowId, runId, workflowVersionId])
@@ -81,6 +81,7 @@ function SelectedRunActions({ selection, access }: {
     {!allowed('runs:read') ? <p role="status">Run read permission is unavailable or still being checked. No cached private details authorize actions.</p>
       : status.isPending ? <p role="status">Reading the exact Run’s bounded current state…</p> : null}
     {status.isError ? <p role="alert">Current Run state is unavailable: {status.error.message} Cached state is not shown as current evidence.</p> : null}
+    {status.isError && scope ? <StopReceipt scope={scope} /> : null}
     {scope && run ? <>
       <p role="status">Recorded {run.executionState} · {run.outcome} · saved version <code>{scope.workflowVersionId}</code>.
         {run.stopCause ? ` Recorded Stop cause: ${run.stopCause}.` : ''}</p>
