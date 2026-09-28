@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import type { FileWithRevision, MessageAttachmentRef } from '@graphql/contracts/files'
-import type { FileToolName } from '../../files/tools/types.js'
+import type { FileToolOperation } from '../../files/tools/types.js'
 import { assertRegisteredCodexCopy, collectCodexFileBytes, fail, sha256 } from './bytes.js'
 import type {
   AcceptedCodexFileTurn, CodexAttachmentSource, CodexFileCall, CodexFileCallResult,
@@ -14,8 +14,10 @@ export const CODEX_FILE_TOOL_ALIASES = Object.freeze({
   files_read: 'files.read',
   files_create_working_copy: 'files.create_working_copy',
   files_publish_result: 'files.publish_result',
+  files_write_working_copy: 'files.write_working_copy',
+  files_apply_format_edit: 'files.apply_format_edit',
 } as const)
-const mutation = (name: FileToolName) => name === 'files.create_working_copy' || name === 'files.publish_result'
+const mutation = (name: FileToolOperation) => name !== 'files.list' && name !== 'files.read'
 const pins = (ref: MessageAttachmentRef): string => JSON.stringify([ref.fileId, ref.revisionId])
 const sameScope = (left: unknown, right: unknown): boolean => {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
@@ -30,7 +32,7 @@ const refused = (): CodexFileCallResult => ({ success: false,
   contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }],
 })
 interface Delivery { ref: MessageAttachmentRef; revision: FileWithRevision['revision']; filename: string; copy: RegisteredCodexCopy; image?: RegisteredCodexCopy; firstFrameOnly: boolean }
-interface WorkingCopy { copy: RegisteredCodexCopy; writeId: string; completed: boolean; busy: boolean }
+interface WorkingCopy { copy?: RegisteredCodexCopy; writeId: string; completed: boolean; busy: boolean }
 
 export interface CodexFileTurnDependencies {
   files: CodexFileServices
@@ -41,8 +43,9 @@ export interface CodexFileTurnDependencies {
   /** Must parse and bind FIL-05 read results to the requested immutable range. */
   parseRead: (request: unknown, result: unknown) => Awaited<ReturnType<CodexFileServices['read']>>
   /** Frozen strict input validation MUST precede sealing or any runner mutation. */
-  parseCall: (tool: FileToolName, arguments_: unknown) => unknown
+  parseCall: (tool: FileToolOperation, arguments_: unknown) => unknown
   clock?: () => Date
+  editsOnly?: boolean
 }
 
 /** A per-admission bridge for the EXISTING app-server transport. Does not spawn a
@@ -121,8 +124,7 @@ export class CodexFileTurn {
       || value.allowedTools.some((name) => !Object.values(CODEX_FILE_TOOL_ALIASES).includes(name))) fail('CODEX_FILE_ADMISSION_INVALID')
     if (value.scope.kind !== 'temporary'
       || (value.scope.chat.kind === 'operator' && value.scope.chat.ownerPrincipalId !== value.ownerPrincipalId)) fail('CODEX_FILE_SCOPE_INVALID')
-    // FIL-05 has no byte-edit tool for a read-only harness. Do not invent a write
-    // grant, mutable project path, or tool to work around that contract gap.
+    // Read-only harnesses cannot receive mutation tools.
     if (value.projectMode === 'read' && value.allowMutation) fail('CODEX_READ_MODE_FILE_EDIT_UNSUPPORTED')
   }
 
@@ -155,7 +157,7 @@ export class CodexFileTurn {
     return copy
   }
 
-  allowedTools(): readonly FileToolName[] {
+  allowedTools(): readonly FileToolOperation[] {
     return [...new Set(this.#accepted.allowedTools)].filter((name) => !mutation(name) || this.#accepted.allowMutation)
   }
 
@@ -200,7 +202,7 @@ export class CodexFileTurn {
     return this.#activation
   }
 
-  /** The adapter routes only this four-tool allowlist. No shell, path-read, edit,
+  /** The adapter routes only this file-tool allowlist. No shell or path-read,
    * Operator, worker, or workflow GraphQL entry points are accepted here. */
   call(request: CodexFileCall): Promise<CodexFileCallResult> {
     if (this.#closing) return Promise.resolve(refused())
@@ -220,12 +222,26 @@ export class CodexFileTurn {
     await this.#dependencies.files.sessions.authenticate(token, tool)
     const files = this.#dependencies.files
     const arguments_ = this.#dependencies.parseCall(tool, request.arguments)
-    if (mutation(tool) && (!arguments_ || typeof arguments_ !== 'object'
+    if ((tool === 'files.create_working_copy' || tool === 'files.publish_result') && (!arguments_ || typeof arguments_ !== 'object'
       || !sameScope(Reflect.get(arguments_, tool === 'files.create_working_copy' ? 'destination' : 'scope'),
         this.#accepted.scope))) return refused()
     switch (tool) {
       case 'files.list': return textResult(await files.list(token, arguments_))
       case 'files.read': return textResult(await files.read(token, arguments_))
+      case 'files.write_working_copy':
+      case 'files.apply_format_edit': {
+        const id = arguments_ && typeof arguments_ === 'object' ? Reflect.get(arguments_, 'artifactId') as unknown : undefined
+        if (typeof id !== 'string') return refused()
+        const working = this.#working.get(id)
+        if (!working || working.busy) return refused()
+        working.busy = true
+        try {
+          await this.completeWorking(token, id, working)
+          const result = tool === 'files.write_working_copy'
+            ? await files.writeWorkingCopy(token, arguments_) : await files.applyFormatEdit(token, arguments_)
+          return textResult(result)
+        } finally { working.busy = false }
+      }
       case 'files.create_working_copy': {
         const result = await files.createWorkingCopy(token, arguments_)
         const id = result.value.artifactId
@@ -233,13 +249,19 @@ export class CodexFileTurn {
           const data = await this.readPinned(token, result.value.source)
           const writeId = await files.artifacts.beginWrite(token, id)
           try {
-            const copy = await this.materialize(result.value.filename, data.mediaType, data.bytes, true)
-            await files.sessions.authenticate(token, 'files.create_working_copy')
-            this.#working.set(id, { copy, writeId, completed: false, busy: false })
+            if (this.#dependencies.editsOnly) {
+              await files.artifacts.completeWrite(token, id, writeId, Readable.from([data.bytes]))
+              this.#working.set(id, { writeId, completed: true, busy: false })
+            } else {
+              const copy = await this.materialize(result.value.filename, data.mediaType, data.bytes, true)
+              await files.sessions.authenticate(token, 'files.create_working_copy')
+              this.#working.set(id, { copy, writeId, completed: false, busy: false })
+            }
           } catch (error) { await files.artifacts.abortWrite(token, id, writeId); throw error }
         }
         const working = this.#working.get(id)!
-        return textResult(result, `Working copy: ${JSON.stringify({ artifactId: id, path: working.copy.executionPath })}`)
+        return textResult(result, `Working copy: ${JSON.stringify({ artifactId: id,
+          ...(working.copy ? { path: working.copy.executionPath } : {}) })}`)
       }
       case 'files.publish_result': {
         // This is only a lookup. Artifact IDs never become paths, filenames, or URLs.
@@ -250,15 +272,19 @@ export class CodexFileTurn {
         if (!working || working.busy) return refused()
         working.busy = true
         try {
-          if (!working.completed) {
-            const snapshot = await this.#dependencies.host.sealCompleted(working.copy.registrationId)
-            await files.artifacts.completeWrite(token, id, working.writeId, snapshot)
-            working.completed = true
-          }
+          await this.completeWorking(token, id, working)
           return textResult(await files.publish(token, arguments_))
         } finally { working.busy = false }
       }
     }
+  }
+
+  private async completeWorking(token: string, id: string, working: WorkingCopy): Promise<void> {
+    if (working.completed) return
+    if (!working.copy) throw new Error('CODEX_WORKING_COPY_MISSING')
+    const snapshot = await this.#dependencies.host.sealCompleted(working.copy.registrationId)
+    await this.#dependencies.files.artifacts.completeWrite(token, id, working.writeId, snapshot)
+    working.completed = true
   }
 
   private async readPinned(token: string, ref: MessageAttachmentRef): Promise<{ bytes: Buffer; mediaType: FileWithRevision['revision']['mediaType'] }> {

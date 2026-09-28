@@ -78,6 +78,18 @@ function fixture(options: { mode?: 'read' | 'write'; allowMutation?: boolean; by
       return { value: { artifactId, source: clone(ref), destination: clone(scope), filename: value.revision.filename,
         createdAt: now.toISOString() }, replayed: calls.filter((call) => call === 'copy').length > 1 }
     },
+    writeWorkingCopy: async (given: string, raw: unknown) => {
+      await authenticate(given, 'files.write_working_copy')
+      completed = Buffer.from((raw as { contentBase64: string }).contentBase64, 'base64')
+      calls.push('writeWorkingCopy')
+      return { artifactId, revisionId: 'edited-revision', byteSize: completed.length, sha256: sha256(completed) }
+    },
+    applyFormatEdit: async (given: string, raw: unknown) => {
+      await authenticate(given, 'files.apply_format_edit')
+      completed = Buffer.concat([completed!, Buffer.from((raw as { edit: { text: string } }).edit.text)])
+      calls.push('applyFormatEdit')
+      return { artifactId, revisionId: 'formatted-revision', byteSize: completed.length, sha256: sha256(completed) }
+    },
     publish: async (given: string) => {
       await authenticate(given, 'files.publish_result')
       if (busy || !completed) throw new Error('incomplete')
@@ -117,7 +129,9 @@ function fixture(options: { mode?: 'read' | 'write'; allowMutation?: boolean; by
     const input = raw as Record<string, unknown>
     const keys = name === 'files.list' ? ['scope', 'limit', 'cursor'] : name === 'files.read'
       ? ['fileId', 'revisionId', 'offset', 'length'] : name === 'files.create_working_copy'
-        ? ['commandId', 'source', 'destination'] : ['commandId', 'artifactId', 'scope', 'filename', 'mediaType']
+        ? ['commandId', 'source', 'destination'] : name === 'files.write_working_copy'
+          ? ['artifactId', 'contentBase64', 'baseRevisionId'] : name === 'files.apply_format_edit'
+            ? ['artifactId', 'edit', 'baseRevisionId'] : ['commandId', 'artifactId', 'scope', 'filename', 'mediaType']
     if (Object.keys(input).some((key) => !keys.includes(key))) throw new Error('extra field')
     if (name === 'files.publish_result' && (typeof input.artifactId !== 'string' || input.mediaType !== value.revision.mediaType)) throw new Error('invalid')
     return clone(input)
@@ -306,6 +320,30 @@ test('Write-mode direct edits are sealed then completed through FIL-05 before pu
   assert.ok(f.calls.indexOf('completeWrite') < f.calls.indexOf('publish'))
   assert.deepEqual(await f.turn.publications(), [{ fileId: 'result-file', revisionId: 'result-revision' }])
   assert.ok(!JSON.stringify(result).includes(token)); await f.turn.close()
+})
+
+test('production-style FIL-05b edits publish a snapshot without a writable host path', async () => {
+  const f = fixture()
+  f.accepted.allowedTools = [...tools, 'files.write_working_copy', 'files.apply_format_edit']
+  f.dependencies.editsOnly = true
+  const turn = await f.prepare()
+  await turn.activate('turn-a')
+  const copy = await turn.call(f.copyRequest())
+  assert.equal(copy.success, true)
+  assert.ok(!JSON.stringify(copy).includes('/execution-only/'))
+  assert.equal([...f.registrations.values()].filter((registration) => registration.writable).length, 0)
+  const write = await turn.call(f.request('files_write_working_copy', {
+    artifactId, contentBase64: Buffer.from('# rewritten').toString('base64'),
+  }))
+  assert.equal(write.success, true)
+  const edit = await turn.call(f.request('files_apply_format_edit', { artifactId,
+    edit: { kind: 'append_text', text: '\nend' } }))
+  assert.equal(edit.success, true)
+  const published = await turn.call(f.publishRequest())
+  assert.equal(published.success, true)
+  assert.equal(f.completed()?.toString(), '# rewritten\nend')
+  assert.equal(f.sealCalls(), 0)
+  await turn.close()
 })
 
 test('unchanged copy retains byte identity and publish retries do not resnapshot', async () => {

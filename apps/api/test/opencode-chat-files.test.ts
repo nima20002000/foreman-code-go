@@ -8,7 +8,7 @@ import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtoc
 import { FixtureServer, configuration, json, request } from './opencode-fixtures.js'
 import { createChatFileBackend, fileContext, fileScope, hasFileCode } from './support/opencodeChatFileFixture.js'
 
-async function fixture(mode: 'read' | 'write' = 'write') {
+async function fixture(mode: 'read' | 'write' = 'write', editTools = false) {
   const backend = createChatFileBackend()
   const server = new FixtureServer()
   server.config = { mcp: { graphql: { enabled: false } } }
@@ -44,7 +44,8 @@ async function fixture(mode: 'read' | 'write' = 'write') {
       resolutions++
       if (noAttachments) return undefined
       const context = fileContext({ nativeSessionId: identity.nativeSessionId,
-        turnId: foreign ? 'a-foreign-native-turn' : identity.nativeTurnId, allowMutation: mode === 'write' })
+        turnId: foreign ? 'a-foreign-native-turn' : identity.nativeTurnId, allowMutation: mode === 'write',
+        ...(editTools ? { allowedTools: [...fileContext().allowedTools, 'files.write_working_copy', 'files.apply_format_edit'] } : {}) })
       const binding: OpenCodeChatFileBinding = {
         admission: { context, attachments: [attachment], expiresAt: new Date(Date.now() + 60_000),
           executionHostId: 'execution-b', directory: identity.directory, mode },
@@ -98,6 +99,38 @@ async function publish(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('FIL-09a production OpenCodeNativeSessionManager with existing fake server', () => {
+  it('dispatches FIL-05b edits only through the owned file credential', async () => {
+    const f = await fixture('write', true)
+    try {
+      const calls: string[] = []
+      Object.assign(f.backend.service, {
+        writeWorkingCopy: async (token: string, input: { artifactId: string }) => {
+          await f.backend.service.sessions.authenticate(token, 'files.write_working_copy')
+          calls.push(`write:${input.artifactId}`)
+          return { artifactId: input.artifactId }
+        },
+        applyFormatEdit: async (token: string, input: { artifactId: string }) => {
+          await f.backend.service.sessions.authenticate(token, 'files.apply_format_edit')
+          calls.push(`format:${input.artifactId}`)
+          return { artifactId: input.artifactId }
+        },
+      })
+      const iterator = f.start(); await iterator.next()
+      const artifactId = (await f.facade.createWorkingCopy(f.backend.token, {
+        commandId: randomUUID(), source: f.attachment, destination: fileScope,
+      })).value.artifactId
+      await f.facade.writeWorkingCopy!(f.backend.token, { artifactId, contentBase64: Buffer.from('new').toString('base64') })
+      await f.facade.applyFormatEdit!(f.backend.token, { artifactId, edit: { kind: 'append_text', text: 'more' } })
+      await assert.rejects(() => f.facade.writeWorkingCopy!(`gql_file_${'X'.repeat(43)}`,
+        { artifactId, contentBase64: Buffer.from('new').toString('base64') }), hasFileCode('FILE_SESSION_INVALID'))
+      assert.deepEqual(calls, [`write:${artifactId}`, `format:${artifactId}`])
+      f.backend.hostFiles.get(artifactId)!.bytes = Buffer.from('changed on host')
+      await assert.rejects(() => f.facade.publish(f.backend.token, {
+        commandId: randomUUID(), artifactId, filename: 'result.md', mediaType: 'text/markdown', scope: fileScope,
+      }), hasFileCode('FILE_ARTIFACT_CONFLICT'))
+      f.server.complete(f.correlationId); await drain(iterator)
+    } finally { await f.close() }
+  })
   it('sends prepared image parts, then issues tools only after positive native acknowledgement', async () => {
     const f = await fixture()
     try {

@@ -69,6 +69,8 @@ export function productionCodexChatFiles(app: () => FastifyInstance, conversatio
         list: (...args) => service.list(...args),
         read: (...args) => service.read(...args),
         createWorkingCopy: (...args) => service.createWorkingCopy(...args),
+        writeWorkingCopy: (...args) => service.writeWorkingCopy(...args),
+        applyFormatEdit: (...args) => service.applyFormatEdit(...args),
         publishedForTurn: (...args) => service.publishedForTurn(...args),
         publish: async (...args) => {
           const result = await service.publish(...args)
@@ -79,7 +81,7 @@ export function productionCodexChatFiles(app: () => FastifyInstance, conversatio
           return result
         },
       }
-      return prepareCodexFileTurn(accepted, { ...admission.dependencies, files }, input.signal)
+      return prepareCodexFileTurn(accepted, { ...admission.dependencies, editsOnly: true, files }, input.signal)
     },
   }
 }

@@ -33,6 +33,7 @@ export interface OpenCodeServerController {
   readonly credentialEnvironmentFingerprint?: string | undefined
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
+  readonly nativePid?: number | undefined
   /** Provenance from unexpanded configuration, never from resolved secret values. */
   readonly mcpCredentialReferences?: Readonly<Record<string, string>>
   inspectMcpConfiguration?(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined>
@@ -106,6 +107,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
+  get nativePid(): number | undefined { return this.child?.pid }
   get disabledAppMcpServerName(): string | undefined {
     return this.options.appMcpAccess === 'none' ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
   }

@@ -52,6 +52,7 @@ import { productionCodexChatFiles, type ProductionCodexChatFiles } from './modul
 import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './modules/harnesses/opencodeServer.js'
+import { productionOpenCodeChatFiles } from './modules/harnesses/opencodeFiles/production.js'
 import { openCodeMcpInspectorAdapter } from './modules/harnesses/opencodeMcpInspectorAdapter.js'
 import { ExecutionReadinessService } from './modules/harnesses/executionReadiness.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
@@ -276,16 +277,22 @@ export function buildProductionApp(
     // Chat processes have their own owner scope; they never share a workflow execution's manager.
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
-    const manager = harness.harness === 'codex'
-      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none',
+    let manager: NativeHarnessSessionManager
+    if (harness.harness === 'codex') {
+      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none',
         codexChatFiles ? productionCodexChatFiles(() => app, conversationId, codexChatFiles) : undefined)
-      : new OpenCodeNativeSessionManager({
-        server: new ManagedOpenCodeServer({
-          binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId, processRecovery: recovery, appMcpAccess: 'none',
-          ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
-        }),
-        ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint, appMcpAccess: 'none',
+    } else {
+      const server = new ManagedOpenCodeServer({
+        binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId,
+        processRecovery: recovery, appMcpAccess: 'none',
+        ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
       })
+      manager = new OpenCodeNativeSessionManager({
+        server,
+        ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint, appMcpAccess: 'none',
+        chatFiles: productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost),
+      })
+    }
     agentChatManagers.set(conversationId, manager)
     return manager
   }

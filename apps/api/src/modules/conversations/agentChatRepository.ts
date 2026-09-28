@@ -58,7 +58,7 @@ interface TurnRow {
   target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null
   input_hash: string
-  payload: { content: string; interruptRequestId?: string; requestIdentityVersion?: 1 }
+  payload: { content: string; interruptRequestId?: string; requestIdentityVersion?: 1; ownerPrincipalId?: string }
   created_at: Date
   updated_at: Date
 }
@@ -211,7 +211,7 @@ export class PostgresAgentChatRepository {
    * A replay of the same request ID with the same input returns the stored receipt.
    */
   async admit(input: {
-    key: string; request: SendAgentChatMessageRequest; context: AgentChatContext; create?: NewAgentConversation
+    key: string; request: SendAgentChatMessageRequest; context: AgentChatContext; create?: NewAgentConversation; ownerPrincipalId?: string
     delivery: 'queued' | 'submitting'; targetNativeTurnId?: string
   }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget; replayWarning?: AgentChatReplayWarning }> {
     const client = await this.pool.connect()
@@ -301,6 +301,7 @@ export class PostgresAgentChatRepository {
           (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,target_native_turn_id)
         values ($1,$2,$3::jsonb,$4,$5,$6,$7,$8) returning ${TURN_COLUMNS}`,
       [row.id, input.request.requestId, JSON.stringify({ content: input.request.content, requestIdentityVersion: 1,
+          ...(input.ownerPrincipalId ? { ownerPrincipalId: input.ownerPrincipalId } : {}),
           ...(interruptTarget ? { interruptRequestId: interruptTarget.requestId } : {}) }), hash, input.request.intent,
         input.delivery, message.id, targetNativeTurnId ?? null])).rows[0]!
       // Durable cancel belongs to the pre-admission owner, not to the newly queued urgent input.

@@ -13,7 +13,7 @@ import { digest, targetOf, type FileToolSessions } from './context.js'
 import type { FileToolArtifacts } from './artifacts.js'
 import { byteRange, completedBytes } from './transfers.js'
 import { FileWorkingCopyEditor } from './workingCopyEdits.js'
-import type { AuthorizedFileCaller, FileReferenceResolver, FileToolRepository } from './types.js'
+import type { AuthorizedFileCaller, FileReferenceResolver, FileToolContext, FileToolRepository } from './types.js'
 
 class Unavailable extends DomainError {
   constructor(readonly reason: 'pending' | 'expired' | 'removed' | 'not_found' | 'forbidden') {
@@ -92,6 +92,17 @@ export class AgentFileToolService {
 
   async read(token: string, raw: unknown) {
     const caller = await this.sessions.authenticate(token, 'files.read')
+    return this.readAuthorized(caller, raw, () => this.sessions.authenticate(token, 'files.read'))
+  }
+
+  /** Trusted admission-bound range reader. Rechecks grants and exact scope on every range. */
+  async readAccepted(context: FileToolContext, raw: unknown) {
+    const caller = await this.sessions.authorizeAccepted(context)
+    return this.readAuthorized(caller, raw, () => this.sessions.authorizeAccepted(context))
+  }
+
+  private async readAuthorized(caller: AuthorizedFileCaller, raw: unknown,
+    reauthorize: () => Promise<AuthorizedFileCaller>) {
     const input = AgentFileReadInputSchema.parse(raw)
     const ref = { fileId: input.fileId, revisionId: input.revisionId }
     try {
@@ -99,7 +110,7 @@ export class AgentFileToolService {
       if (stored && stored.value.file.scope.kind !== 'temporary') {
         if (!this.references) throw new DomainError('FILE_REFERENCE_RESOLVER_REQUIRED', 'Reference reads require the FIL-37 resolver.', 409)
         const result = await this.references.read(caller, input)
-        await this.sessions.authenticate(token, 'files.read')
+        await reauthorize()
         return parseAgentFileReadResult(input, result)
       }
       const opened = await this.open(caller, ref)
@@ -108,7 +119,7 @@ export class AgentFileToolService {
         if (input.offset > opened.value.revision.byteSize) throw new DomainError('FILE_RANGE_INVALID', 'The offset exceeds the pinned revision length.', 416)
         data = await byteRange(opened.stream, input.offset, input.length)
       } finally { opened.stream.destroy() }
-      const current = await this.sessions.authenticate(token, 'files.read')
+      const current = await reauthorize()
       // Re-read lifecycle metadata: removal/apply-to-existing retention may have changed during I/O.
       const value = await this.metadata(current, ref)
       if (data.length !== Math.min(input.length, opened.value.revision.byteSize - input.offset)) {

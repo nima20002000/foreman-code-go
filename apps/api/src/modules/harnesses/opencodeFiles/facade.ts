@@ -1,4 +1,5 @@
-import { AgentFileCreateWorkingCopyInputSchema, AgentFilePublishInputSchema } from '@graphql/contracts/files'
+import { AgentFileApplyFormatEditInputSchema, AgentFileCreateWorkingCopyInputSchema,
+  AgentFilePublishInputSchema, AgentFileWriteWorkingCopyInputSchema } from '@graphql/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { FileMcpService } from '../../files/tools/mcp.js'
 import { OpenCodeFileError, type OpenCodeFileService } from './types.js'
@@ -38,6 +39,14 @@ export function createOpenCodeFileMcpFacade(service: OpenCodeFileService, turn: 
       owned(token)
       return turn().publish(token, AgentFilePublishInputSchema.parse(input), AbortSignal.timeout(120_000))
     }),
+    ...(service.writeWorkingCopy ? { writeWorkingCopy: (token: string, input: unknown) => invoke(async () => {
+      owned(token)
+      return turn().writeWorkingCopy(token, AgentFileWriteWorkingCopyInputSchema.parse(input))
+    }) } : {}),
+    ...(service.applyFormatEdit ? { applyFormatEdit: (token: string, input: unknown) => invoke(async () => {
+      owned(token)
+      return turn().applyFormatEdit(token, AgentFileApplyFormatEditInputSchema.parse(input))
+    }) } : {}),
     workingCopyLocation: (token, artifactId) => invoke(() => turn().workingCopyLocation(token, artifactId)),
   }
 }

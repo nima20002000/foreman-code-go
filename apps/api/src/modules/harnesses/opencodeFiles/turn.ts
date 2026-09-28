@@ -1,7 +1,8 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
-import type { AgentFileCreateWorkingCopyInput, AgentFilePublishInput } from '@graphql/contracts/files'
+import type { AgentFileApplyFormatEditInput, AgentFileCreateWorkingCopyInput,
+  AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@graphql/contracts/files'
 import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, readPinnedInput, sha256, type DeliveredAttachment } from './attachments.js'
 import { checkFileCondition, OpenCodeFileError, type AcceptedOpenCodeFileTurn,
   type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileTurnOptions } from './types.js'
@@ -31,6 +32,7 @@ export class OpenCodeFileTurn {
   private serverName: string | undefined
   private result: PreparedOpenCodeFiles | undefined
   private copies = new Map<string, WorkingCopy>()
+  private serverEdited = new Set<string>()
   private handles = new Set<string>()
   private lifecycle: Promise<unknown> = Promise.resolve()
   private submission: 'not_submitted' | 'uncertain' | 'submitted' | 'terminal' = 'not_submitted'
@@ -51,7 +53,8 @@ export class OpenCodeFileTurn {
     'FILE_LIMIT_INVALID', 'Contract file and attachment limits are required.')
     const endpoint = new URL(options.endpoint)
     checkFileCondition(!endpoint.username && !endpoint.password && !endpoint.hash && !endpoint.search
-      && endpoint.pathname === '/mcp/files'
+      && (endpoint.pathname === '/mcp/files'
+        || /^\/mcp\/files\/opencode\/[0-9a-f-]{36}$/.test(endpoint.pathname))
       && (endpoint.protocol === 'https:' || (endpoint.protocol === 'http:'
         && ['127.0.0.1', '[::1]', 'localhost'].includes(endpoint.hostname))),
     'FILE_MCP_ENDPOINT_INVALID', 'Use the trusted file-only endpoint over TLS or loopback.')
@@ -138,8 +141,8 @@ export class OpenCodeFileTurn {
       owners.set(this.options.server, this)
       try {
         signal.throwIfAborted()
-        await this.options.host.assertSourceIsolation(signal)
         await this.options.server.ensure(signal)
+        await this.options.host.assertSourceIsolation(signal)
         this.generation = this.options.server.generation ?? 0
         await this.assertChat(signal)
         const delivered: DeliveredAttachment[] = []
@@ -339,7 +342,8 @@ export class OpenCodeFileTurn {
     if (this.copies.has(copy.value.artifactId)) return copy
     const source = pinned ?? await readPinnedAttachment(this.options.service, token, input.source, this.options.maxFileBytes, signal)
     const handle = copy.value.artifactId
-    const writeId = await this.options.service.artifacts.beginWrite(token, handle)
+    const writeId = this.preparation === 'legacy'
+      ? await this.options.service.artifacts.beginWrite(token, handle) : undefined
     this.handles.add(handle)
     try {
       const registered = await this.options.host.materialize({ handle, ...source, writable: true }, signal)
@@ -347,13 +351,35 @@ export class OpenCodeFileTurn {
       this.copies.set(handle, { writeId, file: { ref: input.source, revision: source.revision, registered, artifactId: handle } })
       return copy
     } catch (error) {
-      await this.options.service.artifacts.abortWrite(token, handle, writeId)
+      if (writeId) await this.options.service.artifacts.abortWrite(token, handle, writeId)
       throw error
     }
   }
 
   createWorkingCopy(token: string, input: AgentFileCreateWorkingCopyInput, signal: AbortSignal) {
     return this.exclusive(() => this.copyReady(token, input, signal))
+  }
+
+  writeWorkingCopy(token: string, input: AgentFileWriteWorkingCopyInput) {
+    return this.exclusive(async () => {
+      await this.authorize(token, true)
+      checkFileCondition(this.copies.has(input.artifactId), 'FILE_ARTIFACT_NOT_FOUND', 'Edit a registered working copy.')
+      checkFileCondition(this.options.service.writeWorkingCopy, 'FILE_TOOL_DENIED', 'Working-copy writes are unavailable.')
+      const result = await this.options.service.writeWorkingCopy(token, input)
+      this.serverEdited.add(input.artifactId)
+      return result
+    })
+  }
+
+  applyFormatEdit(token: string, input: AgentFileApplyFormatEditInput) {
+    return this.exclusive(async () => {
+      await this.authorize(token, true)
+      checkFileCondition(this.copies.has(input.artifactId), 'FILE_ARTIFACT_NOT_FOUND', 'Edit a registered working copy.')
+      checkFileCondition(this.options.service.applyFormatEdit, 'FILE_TOOL_DENIED', 'Format edits are unavailable.')
+      const result = await this.options.service.applyFormatEdit(token, input)
+      this.serverEdited.add(input.artifactId)
+      return result
+    })
   }
 
   async workingCopyLocation(token: string, artifactId: string): Promise<string> {
@@ -370,6 +396,15 @@ export class OpenCodeFileTurn {
         'FILE_CONTEXT_DENIED', 'Publish only to the originating temporary conversation.')
       const copy = this.copies.get(input.artifactId)
       checkFileCondition(copy, 'FILE_ARTIFACT_NOT_FOUND', 'Publish a registered working copy, not an arbitrary host path.')
+      if (this.serverEdited.has(input.artifactId)) {
+        const hostBytes = await this.options.host.snapshot(input.artifactId, signal)
+        checkFileCondition(sha256(hostBytes) === copy.file.revision.sha256,
+          'FILE_ARTIFACT_CONFLICT', 'The host copy also changed after a file-tool edit.')
+        this.publicationsAdopted = false
+        const result = await this.options.service.publish(token, input)
+        await this.adoptReady()
+        return result
+      }
       const artifact = await this.options.service.artifacts.get(caller, input.artifactId)
       if (artifact.state === 'writing') checkFileCondition(copy.writeId === artifact.writeId,
         'FILE_ARTIFACT_BUSY', 'Another trusted runner owns the artifact write lease.')

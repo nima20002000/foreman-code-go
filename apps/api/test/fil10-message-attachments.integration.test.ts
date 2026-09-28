@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -19,14 +18,18 @@ import { registerOperatorHttpSecurity } from '../src/modules/access/http.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
-import { agentChatInputHash, agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
+import { agentChatCorrelation, agentChatInputHash, agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { commandHash, PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { validateMessageAttachments } from '../src/modules/conversations/messageAttachments.js'
+import { bindingIdentity } from '../src/modules/files/tools/context.js'
+import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from '../src/modules/harnesses/opencodeFiles/postgres.js'
+import { nativeMessageId } from '../src/modules/harnesses/opencodeProtocol.js'
 import { DomainError } from '../src/modules/errors.js'
 import { PostgresFileConversationAuthorization } from '../src/modules/files/authorization.js'
 import { PostgresFileRepository } from '../src/modules/files/postgres.js'
 import { TemporaryFileService } from '../src/modules/files/service.js'
+import { postgresCodexChatFiles } from '../src/modules/harnesses/codexFiles/chatAdmission.js'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
@@ -91,6 +94,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
   let reader: Awaited<ReturnType<PostgresAccessService['issue']>>
   let operator: OperatorChatService, agent: AgentChatService
   let operatorRepo: PostgresOperatorConversationRepository, agentRepo: PostgresAgentChatRepository
+  let fileStorage: TemporaryFileService
   let fixture: ReturnType<typeof makeCurrentWorkflowFixture>
   const managers = new Map<string, AttachmentNative>()
   const runs = new Map<string, NonNullable<Awaited<ReturnType<PostgresRunRepository['getForWorkspace']>>>>(), executions = new Map<string, HarnessExecution[]>()
@@ -130,7 +134,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
         await client.query('insert into application_migrations(version) values($1)', [fileStorageMigration.version]); await client.query('commit')
       } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
     }
-    root = await mkdtemp(join(homedir(), '.fil10-test-'))
+    root = await mkdtemp(join(process.cwd(), '.fil10-test-'))
     fixture = await seedAgent3(database.pool, root, makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential'))
     access = new PostgresAccessService(database.pool)
     owner = await access.issue({ name: 'FIL-10 owner', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
@@ -162,8 +166,9 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
     app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : error instanceof z.ZodError ? 400 : 500)
       .send({ error: { code: error instanceof DomainError ? error.code : 'INVALID_REQUEST' } }))
     registerOperatorChatRoutes(app, operator); registerAgentChatRoutes(app, agent)
-    registerFileRoutes(app, new TemporaryFileService(new PostgresFileRepository(database.pool),
-      new FileByteStorage(join(root, 'files'), MAX_FILE_BYTES), new PostgresFileConversationAuthorization(database.pool)))
+    fileStorage = new TemporaryFileService(new PostgresFileRepository(database.pool),
+      new FileByteStorage(join(root, 'files'), MAX_FILE_BYTES), new PostgresFileConversationAuthorization(database.pool))
+    registerFileRoutes(app, fileStorage)
     await app.ready()
   })
   afterAll(async () => {
@@ -196,6 +201,56 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
   async function ensureAgent() {
     return (await agent.read(owner.principal, fixture.scope.workspaceId, query())).conversation?.id ?? startAgent()
   }
+
+  it('resolves the persisted Codex sender, message, session and pinned attachment', async () => {
+    const id = await ensureAgent()
+    const file = await upload(id, Buffer.from('# admitted'), 'agent')
+    const input = request(id, { attachments: [pin(file)] })
+    expect((await agentSend(input)).statusCode).toBe(202)
+    await settleAgent(id)
+    const conversation = await agentRepo.get(id)
+    const session = { harness: 'codex' as const, providerVersion: conversation!.provider_version!,
+      nativeSessionId: conversation!.native_session_id! }
+    const resolver = postgresCodexChatFiles(database.pool, () => fileStorage, async () => ({
+      executionHostId: 'test-host', pathStyle: 'posix',
+      materialize: async () => { throw new Error('unused') }, sealCompleted: async () => { throw new Error('unused') },
+      close: async () => {},
+    }), '/tmp')
+    const admission = await resolver.resolve({ conversationId: id, session,
+      clientCorrelationId: `agent-chat:${id}:${input.requestId}`, signal: new AbortController().signal })
+    expect(admission?.accepted).toMatchObject({ ownerPrincipalId: owner.principal.id,
+      messageId: (await agentRepo.turn(id, input.requestId))!.messageId, attachments: [pin(file)] })
+    const opened = await admission!.dependencies.source.open(pin(file))
+    const chunks: Buffer[] = []
+    for await (const chunk of opened.stream) chunks.push(Buffer.from(chunk as Uint8Array))
+    expect(Buffer.concat(chunks).toString()).toBe('# admitted')
+    const publication = await upload(id, Buffer.from('# published'), 'agent')
+    const allocation = (await database.pool.query<{ request_id: string }>(
+      'select request_id from file_allocations where file_id=$1', [publication.file.fileId])).rows[0]!
+    const nativeTurnId = (await agentRepo.turn(id, input.requestId))!.nativeTurnId!
+    const accepted = admission!.accepted
+    const binding = bindingIdentity({ ownerPrincipalId: accepted.ownerPrincipalId, scope: accepted.scope,
+      nativeSessionId: accepted.nativeSessionId, turnId: nativeTurnId, messageId: accepted.messageId,
+      allowMutation: accepted.allowMutation, allowedTools: [...accepted.allowedTools] })
+    await database.pool.query(`insert into file_tool_publications
+      (owner_principal_id,request_id,binding,file_id,revision_id,record) values ($1,$2,$3,$4,$5,$6::jsonb)`,
+    [owner.principal.id, allocation.request_id, binding, publication.file.fileId, publication.revision.revisionId,
+      JSON.stringify({ ownerPrincipalId: owner.principal.id, requestId: allocation.request_id, binding,
+        context: { ownerPrincipalId: accepted.ownerPrincipalId, scope: accepted.scope, nativeSessionId: accepted.nativeSessionId,
+          turnId: nativeTurnId, messageId: accepted.messageId, allowMutation: accepted.allowMutation,
+          allowedTools: accepted.allowedTools }, ref: pin(publication), createdAt: new Date().toISOString() })])
+    await admission!.adoptPublished(nativeTurnId, [pin(publication)])
+    await admission!.adoptPublished(nativeTurnId, [pin(publication)])
+    const stored = (await database.pool.query<{ record: { attachmentRefs: MessageAttachmentRef[] } }>(
+      'select record from operator_conversation_messages where id=$1', [accepted.messageId])).rows[0]!
+    expect(stored.record.attachmentRefs).toEqual([pin(file), pin(publication)])
+    await expect(admission!.adoptPublished('foreign-turn', [pin(publication)]))
+      .rejects.toMatchObject({ code: 'CODEX_FILE_PUBLICATION_MISMATCH' })
+    await expect(resolver.resolve({ conversationId: id, session: { ...session, nativeSessionId: 'foreign' },
+      clientCorrelationId: `agent-chat:${id}:${input.requestId}`, signal: new AbortController().signal }))
+      .rejects.toMatchObject({ code: 'CODEX_FILE_ADMISSION_MISMATCH' })
+    await admission!.dependencies.host.close()
+  })
 
   it('keeps two Operator chats with identical filenames and different bytes distinct; Board context is not file scope', async () => {
     const a = (await operator.create(owner.principal)).id, b = (await operator.create(owner.principal)).id
@@ -447,5 +502,57 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
       await expect(agentRepo.admit({ key: agentChatKey(context), context, request: { ...replay, attachments: [pin(file)] }, delivery: 'queued' }))
         .rejects.toMatchObject({ code: 'AGENT_CHAT_REQUEST_CONFLICT' })
     }
+  })
+
+  it('resolves the exact persisted OpenCode attachment turn and idempotently adopts its publications', async () => {
+    const id = await ensureAgent()
+    const source = await upload(id, Buffer.from('# source'), 'agent')
+    const output = await upload(id, Buffer.from('# output'), 'agent')
+    const current = (await database.pool.query<{ record: Record<string, unknown>; agent_id: string;
+      native_session_id: string; directory: string }>(`select v.record,c.agent_id,c.native_session_id,
+        c.record->>'workingDirectory' as directory from operator_conversations c
+        join agent_configuration_versions v on v.id=c.agent_configuration_version_id where c.id=$1`, [id])).rows[0]!
+    const harness = { harness: 'opencode' as const, model: 'openrouter/test', variant: '', nativeAgent: 'build',
+      thinking: false, autoApprove: false }
+    const versionId = randomUUID()
+    const version = Number((await database.pool.query<{ version: string }>(
+      'select coalesce(max(version),0)+1::int as version from agent_configuration_versions where agent_id=$1',
+      [current.agent_id])).rows[0]!.version)
+    await database.pool.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
+      values($1,$2,$3,$4,$5::jsonb)`, [versionId, fixture.scope.workspaceId, current.agent_id, version,
+      JSON.stringify({ ...current.record, id: versionId, version, harness })])
+    await database.pool.query(`update operator_conversations set harness='opencode',agent_configuration_version_id=$2 where id=$1`,
+      [id, versionId])
+    const requestId = randomUUID(), messageId = randomUUID(), correlation = agentChatCorrelation(id, requestId)
+    const nativeTurnId = nativeMessageId(correlation), now = new Date().toISOString()
+    await database.pool.query(`insert into operator_conversation_messages(id,conversation_id,role,content,client_request_id,record)
+      values($1,$2,'user','attached',$3,$4::jsonb)`, [messageId, id, requestId, JSON.stringify({
+        id: messageId, conversationId: id, role: 'user', content: 'attached', requestId,
+        createdAt: now, updatedAt: now, attachmentRefs: [pin(source)],
+      })])
+    await database.pool.query(`insert into operator_conversation_turns
+      (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,native_turn_id)
+      values($1,$2,'{}'::jsonb,'test','next_turn','submitting',$3,$4)`, [id, requestId, messageId, nativeTurnId])
+    const identity = { ownerAgentId: current.agent_id, nativeSessionId: current.native_session_id,
+      nativeTurnId, clientCorrelationId: correlation, directory: current.directory, configuration: harness }
+    const admitted = await resolveOpenCodeFileAdmission(database.pool, id, identity)
+    expect(admitted?.attachments).toEqual([pin(source)])
+    expect(admitted?.context).toMatchObject({ ownerPrincipalId: owner.principal.id, messageId,
+      nativeSessionId: current.native_session_id, turnId: nativeTurnId })
+    await expect(resolveOpenCodeFileAdmission(database.pool, id, { ...identity, nativeTurnId: 'foreign' }))
+      .rejects.toMatchObject({ code: 'FILE_CONTEXT_DENIED' })
+    const allocation = (await database.pool.query<{ request_id: string }>(
+      'select request_id from file_allocations where file_id=$1', [output.file.fileId])).rows[0]!
+    await database.pool.query(`insert into file_tool_publications
+      (owner_principal_id,request_id,binding,file_id,revision_id,record) values($1,$2,$3,$4,$5,$6::jsonb)`,
+    [owner.principal.id, allocation.request_id, bindingIdentity(admitted!.context), output.file.fileId,
+      output.revision.revisionId, JSON.stringify({ context: admitted!.context, ref: pin(output) })])
+    await adoptOpenCodePublications(database.pool, admitted!.context)
+    await adoptOpenCodePublications(database.pool, admitted!.context)
+    const stored = (await database.pool.query<{ record: { attachmentRefs: MessageAttachmentRef[] } }>(
+      'select record from operator_conversation_messages where id=$1', [messageId])).rows[0]!
+    expect(stored.record.attachmentRefs).toEqual([pin(source), pin(output)])
+    await expect(adoptOpenCodePublications(database.pool, { ...admitted!.context, ownerPrincipalId: 'foreign' }))
+      .rejects.toMatchObject({ code: 'FILE_ADOPTION_MISMATCH' })
   })
 })

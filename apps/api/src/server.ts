@@ -9,6 +9,9 @@ import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
 import { registerProductionFileStorage } from './modules/files/production.js'
+import type { TemporaryFileService } from './modules/files/service.js'
+import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
+import { localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
 import { buildProductionApp } from './production.js'
 
 const lifecycle = componentLogger('lifecycle')
@@ -34,7 +37,13 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints, componentLogger('http'))
+  let fileStorage: TemporaryFileService | undefined
+  const codexFiles = postgresCodexChatFiles(database.pool, () => {
+    if (!fileStorage) throw new Error('File storage is not registered.')
+    return fileStorage
+  }, () => localCodexChatHost(config.harnesses.workspaceRoot), config.harnesses.workspaceRoot)
+  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints,
+    componentLogger('http'), undefined, codexFiles)
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
@@ -69,7 +78,7 @@ async function main() {
   const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
 
   try {
-    registerProductionFileStorage(app, database.pool, config)
+    fileStorage = registerProductionFileStorage(app, database.pool, config)
     await database.ping()
     stopIfClosing()
     await database.migrate()
