@@ -46,6 +46,12 @@ import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
+import { HarnessQualificationRepository } from './modules/harnesses/qualification/repository.js'
+import { HarnessQualificationRegistry } from './modules/harnesses/qualification/registry.js'
+import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
+import { clearQualificationGate, installQualificationGate } from './modules/harnesses/qualification/gate.js'
+import type { QualificationSuite } from './modules/harnesses/qualification/types.js'
+import type { CompatibilityHarness } from '@graphql/contracts'
 import { CodexAppServerSessionManager } from './modules/harnesses/codexAppServer.js'
 import { productionCodexChatFiles, type ProductionCodexChatFiles } from './modules/harnesses/codexFiles/production.js'
 import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorAdapter.js'
@@ -102,6 +108,7 @@ export function buildProductionApp(
   createCurrentProduction?: CurrentRunProductionFactory,
   // Trusted FIL-10 admission + execution-host ports; never populated from HTTP fields.
   codexChatFiles?: ProductionCodexChatFiles,
+  qualificationSuites?: Record<CompatibilityHarness, QualificationSuite>,
 ) {
   const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
   const processRegistry = new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
@@ -125,7 +132,17 @@ export function buildProductionApp(
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
-  const harnessCompatibility = createHarnessCompatibility(config.harnesses)
+  const qualificationRepository = new HarnessQualificationRepository(database.pool)
+  const qualificationRegistry = qualificationSuites ? new HarnessQualificationRegistry(qualificationRepository, {
+    codex: qualificationSuites.codex.revision, opencode: qualificationSuites.opencode.revision,
+  }) : undefined
+  const harnessQualifications = qualificationSuites && qualificationRegistry ? new HarnessQualificationService(
+    qualificationRepository, qualificationRegistry, qualificationSuites,
+    { codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary }, commands,
+  ) : undefined
+  const harnessCompatibility = createHarnessCompatibility(config.harnesses, harnessQualifications
+    ? (harness) => { void harnessQualifications.begin(harness).catch(() => undefined) }
+    : undefined)
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
   const nativeConfigurations = new NativeConfigurationService(
@@ -321,6 +338,7 @@ export function buildProductionApp(
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
+    ...(harnessQualifications ? { harnessQualifications } : {}),
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
     commands,
@@ -389,6 +407,7 @@ export function buildProductionApp(
   const lifecycle = new RuntimeShutdown({
     stop: [
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
+      { name: 'harness qualification gate', run: async () => { if (qualificationRegistry) clearQualificationGate() } },
       { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
       { name: 'Codex plugin settings', run: () => harnessSettings.plugins.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
@@ -469,6 +488,10 @@ export function buildProductionApp(
       // Optional discovery warmups used to block startup on native auth/network.
       // Qualification still runs at every existing on-demand configuration/execution gate.
       // The bounded compatibility diagnostic creates no native session or model turn.
+      if (qualificationRegistry && harnessQualifications) {
+        await qualificationRegistry.load()
+        installQualificationGate(qualificationRegistry, harnessQualifications)
+      }
       harnessCompatibility.start()
       assertOpen()
       initialized = true

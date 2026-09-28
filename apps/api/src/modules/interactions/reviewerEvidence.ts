@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
+import { harnessProfile } from '../harnesses/qualification/profiles.js'
 
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -42,7 +43,9 @@ export class ReviewEvidenceTracker {
   ) {
     this.providerId = knownProviderId
     this.acknowledged = Boolean(knownProviderId)
-    this.messageId = session.harness === 'opencode' && session.providerVersion === '1.18.31'
+    const profile = harnessProfile(session.harness, session.providerVersion)
+    if (profile === null) this.identityConflict = true
+    this.messageId = session.harness === 'opencode' && profile === 'opencode-1.18.31'
       ? `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}` : undefined
     if (knownProviderId && this.messageId && knownProviderId !== this.messageId) this.identityConflict = true
   }

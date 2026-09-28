@@ -17,6 +17,7 @@ import {
 } from '@graphql/contracts'
 
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../modules/harnesses/port.js'
+import { harnessProfile } from '../modules/harnesses/qualification/profiles.js'
 
 interface FixtureTurn {
   events: NativeHarnessEvent[]
@@ -36,11 +37,16 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   private readonly sessions = new Map<string, FixtureSession>()
   private nextSession = 0
 
-  constructor(readonly harness: AgentHarness) {}
+  readonly providerVersion: string
+
+  constructor(readonly harness: AgentHarness, providerVersion = harness === 'codex' ? '0.154.0' : '1.18.31') {
+    if (harnessProfile(harness, providerVersion) === null) throw new Error('FIXTURE_PROVIDER_UNQUALIFIED')
+    this.providerVersion = providerVersion
+  }
 
   async capabilities(): Promise<NativeHarnessCapabilities> {
     return NativeHarnessCapabilitiesSchema.parse({
-      provider: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31',
+      provider: this.harness, providerVersion: this.providerVersion,
       persistentSessions: true, reconnect: true, sameRequestResponses: true, cancellation: true,
       history: true, configurationInspection: true, mcpDetection: true, supportedInteractionKinds: ['approval'],
     })
@@ -83,7 +89,7 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
     let id: string
     do { id = `${this.harness}-fixture-session-${++this.nextSession}` } while (this.sessions.has(id))
     const reference = NativeSessionReferenceSchema.parse({
-      harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: id,
+      harness: this.harness, providerVersion: this.providerVersion, nativeSessionId: id,
     })
     this.register(reference)
     this.counters.sessions += 1

@@ -2,6 +2,7 @@ import type { CodexHarnessConfiguration } from '@graphql/contracts'
 import { HarnessExecutionError } from '../errors.js'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { codexFileDynamicTools } from './index.js'
+import { harnessProfile } from '../qualification/profiles.js'
 
 export function codexChatFileTools(configuration: CodexHarnessConfiguration): FileToolOperation[] {
   // A declaration is not a grant. The bridge checks the narrower accepted
@@ -12,10 +13,10 @@ export function codexChatFileTools(configuration: CodexHarnessConfiguration): Fi
       'files.write_working_copy', 'files.apply_format_edit']
 }
 
-/** The pinned 0.154.0 and 0.156.1 upstream schemas both use type: 'function'.
- * Reuse FIL-08's emitter unchanged; native qualification is not broadened. */
+/** Both Codex profiles use type: 'function' for dynamic tools. */
 export function codexChatFileDeclarations(configuration: CodexHarnessConfiguration, providerVersion: string) {
-  if (!['codex-cli 0.154.0', 'codex-cli 0.156.1'].includes(providerVersion)) {
+  const profile = harnessProfile('codex', providerVersion)
+  if (profile !== 'codex-0.154' && profile !== 'codex-0.156') {
     throw new HarnessExecutionError('CODEX_FILE_PROTOCOL_UNQUALIFIED', 'File tools require a qualified native dynamic-tool schema.')
   }
   return codexFileDynamicTools({ allowedTools: () => codexChatFileTools(configuration) })

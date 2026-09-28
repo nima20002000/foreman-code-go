@@ -67,6 +67,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'harness_list', action: 'harnesses:read' },
   { name: 'harness_get', action: 'harnesses:read' },
   { name: 'harness_defaults_update', action: 'harnesses:update' },
+  { name: 'harness_qualifications_list', action: 'harnesses:read' },
+  { name: 'harness_qualification_run', action: 'harnesses:update' },
   { name: 'agent_defaults_get', action: 'settings:read' },
   { name: 'agent_defaults_update', action: 'settings:update' },
   { name: 'workflow_defaults_get', action: 'settings:read' },

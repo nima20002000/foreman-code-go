@@ -6,8 +6,8 @@ import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../access/workerCredentials.
 import { HarnessExecutionError } from './errors.js'
 import type { NativeMcpEntryEvidence, NativeMcpInspector } from './mcpDetection.js'
 import { runCommand } from './process.js'
+import { harnessProfile } from './qualification/profiles.js'
 
-export const QUALIFIED_OPENCODE_MCP_VERSION = '1.18.31'
 type JsonObject = Record<string, unknown>
 
 function object(value: unknown): JsonObject | undefined {
@@ -41,12 +41,15 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   signal?: AbortSignal
   pure?: boolean
   credentialEnvironmentVariable?: string
+  onVersion?: (version: string) => void
 }): Promise<NativeMcpEntryEvidence | undefined> {
   const credentialVariable = input.credentialEnvironmentVariable ?? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
   const version = await runCommand(input.binary, ['--version'], input.workingDirectory, input.signal)
-  if (version.exitCode !== 0 || (version.stdout || version.stderr).trim() !== QUALIFIED_OPENCODE_MCP_VERSION) {
-    throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode MCP inspection requires the qualified 1.18.31 binary.')
+  const providerVersion = (version.stdout || version.stderr).trim()
+  if (version.exitCode !== 0 || harnessProfile('opencode', providerVersion) === null) {
+    throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode MCP inspection requires a qualified binary.')
   }
+  input.onVersion?.(providerVersion)
   const args = ['debug', 'config', ...(input.pure ? ['--pure'] : [])]
   const baseline = await runCommand(input.binary, args, input.workingDirectory, input.signal)
   const parseEntry = (result: typeof baseline): JsonObject | undefined => {
@@ -104,12 +107,14 @@ export async function inspectOpenCodeMcpConfiguration(input: {
 export function openCodeConfigurationInspector(binary: string): NativeMcpInspector {
   return {
     async inspect(input) {
+      let providerVersion: string | undefined
       const entry = await inspectOpenCodeMcpConfiguration({
         binary, workingDirectory: input.workingDirectory, serverName: input.serverName,
         ...(input.signal ? { signal: input.signal } : {}),
+        onVersion: (version) => { providerVersion = version },
       })
       return {
-        harness: 'opencode', providerVersion: QUALIFIED_OPENCODE_MCP_VERSION,
+        harness: 'opencode', providerVersion: providerVersion!,
         runnerId: input.runnerId, workingDirectory: input.workingDirectory,
         inspectedAt: new Date().toISOString(), ...(entry ? { entry } : {}),
       }

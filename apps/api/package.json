@@ -13,6 +13,7 @@
     "test:acceptance": "node ../../scripts/heavy-job.mjs -- sh -c \"RUN_ENG03_C_NATIVE_TESTS=1 vitest run test/eng03-c-native.acceptance.test.ts\"",
     "credential": "node --import tsx src/cli/operatorCredentials.ts",
     "harness:check": "node --import tsx src/cli/harnessCompatibility.ts",
+    "qualify:harness": "node ../../scripts/qualify-harness.mjs",
     "build": "node ../../scripts/heavy-job.mjs --build api -- sh -c \"tsc -p tsconfig.build.json && node dist/cli/harnessCompatibility.js\""
   },
   "dependencies": {

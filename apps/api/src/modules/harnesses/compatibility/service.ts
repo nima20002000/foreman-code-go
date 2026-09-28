@@ -15,6 +15,7 @@ export interface CompatibilityOptions {
   now?: () => number
   checkerRevision?: string
   timeoutMs?: number
+  onUnknownInstalled?: (harness: CompatibilityHarness) => void
 }
 export function compatibilityCacheKey(harness: CompatibilityHarness, installation: HarnessInstallation, revision: string): string {
   return createHash('sha256').update(JSON.stringify([
@@ -122,6 +123,7 @@ export class HarnessCompatibilityService {
         }
         return
       }
+      this.options.onUnknownInstalled?.(harness)
       const key = compatibilityCacheKey(harness, installation, this.revision)
       let cached: CompatibilityCacheEntry | null = null
       if (!force) {
@@ -174,9 +176,10 @@ export class HarnessCompatibilityService {
     }
   }
 }
-export function createHarnessCompatibility(config: { codexBinary: string; openCodeBinary: string; workspaceRoot: string }): HarnessCompatibilityService {
+export function createHarnessCompatibility(config: { codexBinary: string; openCodeBinary: string; workspaceRoot: string }, onUnknownInstalled?: (harness: CompatibilityHarness) => void): HarnessCompatibilityService {
   return new HarnessCompatibilityService({
     probe: nativeCompatibilityProbe({ codex: config.codexBinary, opencode: config.openCodeBinary }, config.workspaceRoot),
     cache: new FileCompatibilityCache(),
+    ...(onUnknownInstalled ? { onUnknownInstalled } : {}),
   })
 }

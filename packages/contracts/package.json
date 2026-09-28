@@ -28,6 +28,10 @@
       "types": "./dist/wave25/index.d.ts",
       "import": "./dist/wave25/index.js"
     },
+    "./harness-qualification": {
+      "types": "./dist/harnessQualification.d.ts",
+      "import": "./dist/harnessQualification.js"
+    },
     "./management": {
       "types": "./dist/management/index.d.ts",
       "import": "./dist/management/index.js"

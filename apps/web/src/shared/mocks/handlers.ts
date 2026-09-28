@@ -3,7 +3,8 @@ import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
-import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, } from '@graphql/contracts'
+import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@graphql/contracts'
+import type { z } from 'zod'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@graphql/contracts/wave25'
 import {
   AgentDefaultsUpdateInputSchema,
@@ -98,6 +99,10 @@ function fixtureNotFound(kind: string, id: string) {
 }
 
 const operatorConversations: Array<Record<string, unknown>> = []
+const mockQualification = (harness: 'codex' | 'opencode'): z.infer<typeof HarnessQualificationListSchema>['qualifications'][number] => ({
+  harness, version: 'mock', binarySha256: null, status: 'unqualified', profile: null,
+  suiteRevision: 'mock', checks: [], failureReason: null, startedAt: null, checkedAt: null,
+})
 const operatorMessages = new Map<string, Array<Record<string, unknown>>>()
 
 function isFailureMode(value: string | null): value is MockFailureMode {
@@ -263,6 +268,14 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/interactions', () => HttpResponse.json({
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
+  http.get('/api/management/harnesses/qualifications', () => HttpResponse.json({
+    qualifications: [mockQualification('codex'), mockQualification('opencode')],
+  })),
+  http.post('/api/management/harnesses/:harness/qualification', ({ params }) => {
+    const harness = String(params.harness)
+    if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
+    return HttpResponse.json({ ...mockQualification(harness), status: 'qualifying', startedAt: new Date().toISOString() }, { status: 202 })
+  }),
   http.get('/api/management/harnesses/:harness/execution-readiness', ({ params }) => HttpResponse.json({
     harness: params.harness, scope: 'saved-harness-defaults', status: 'unverified', rolloutEnabled: false,
     defaultsRevision: null, checkedAt: new Date().toISOString(),

@@ -35,6 +35,7 @@ export interface OperatorServices {
   workflows: WorkflowManagementService
   agents: AgentManagementService
   harnesses: HarnessCatalogService
+  harnessQualifications?: import('../../modules/harnesses/qualification/service.js').HarnessQualificationService
   settings?: FoundationSettingsManagementService
   runs: RunManagementService
   commands: PostgresCommandCoordinator

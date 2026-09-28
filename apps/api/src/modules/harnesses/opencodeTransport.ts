@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import type { OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { requireHarnessQualification } from './qualification/gate.js'
 import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
 import type { ChildProcessEnvironment } from './port.js'
@@ -78,7 +79,7 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 
 /** One process and one serialized lifecycle for one logical Agent credential owner. */
 export class ManagedOpenCodeServer implements OpenCodeServerController {
-  readonly expectedVersion = QUALIFIED_OPENCODE_VERSION
+  expectedVersion = QUALIFIED_OPENCODE_VERSION
   readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   generation = 0
   private desiredEnvironment: ChildProcessEnvironment | undefined
@@ -284,7 +285,11 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       const version = await runCommand(this.options.binary, ['--version'], this.options.workingDirectory, abort.signal)
       abort.signal.throwIfAborted()
       const installed = (version.stdout || version.stderr).trim()
-      if (version.exitCode !== 0 || installed !== this.expectedVersion) {
+      if (version.exitCode === 0) {
+        await requireHarnessQualification('opencode', installed, this.options.binary)
+        this.expectedVersion = installed
+      }
+      if (version.exitCode !== 0) {
         throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', `OpenCode server mode requires exactly ${this.expectedVersion}; found ${installed || 'unavailable'}.`)
       }
       this.password = randomBytes(32).toString('hex')

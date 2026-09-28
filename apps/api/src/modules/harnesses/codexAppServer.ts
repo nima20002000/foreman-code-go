@@ -22,9 +22,10 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import { runCommand } from './process.js'
 import { agentInstructionBundle } from '../skills/instructions.js'
 import {
-  assertCodexUnchanged, canonical, isQualifiedCodexVersion, qualifyCodex, QUALIFIED_CODEX_VERSION,
+  assertCodexUnchanged, canonical, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
 } from './codexProtocol.js'
+import { harnessProfile } from './qualification/profiles.js'
 import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
 
 export { QUALIFIED_CODEX_VERSION, QUALIFIED_CODEX_SCHEMA_SHA256 }
@@ -1021,7 +1022,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private assertSessionVersion(session: NativeSessionReference): void {
-    if (session.harness !== 'codex' || !isQualifiedCodexVersion(session.providerVersion)
+    if (session.harness !== 'codex' || harnessProfile('codex', session.providerVersion) === null
       || (this.expectedVersion !== undefined && session.providerVersion !== this.expectedVersion)) {
       throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The session does not match this qualified Codex provider.')
     }

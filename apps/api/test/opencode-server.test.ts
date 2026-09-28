@@ -7,6 +7,7 @@ import { nativeMessageId, nativePolicy, normalizedHistory, object, OPENCODE_EVEN
 import type { NativeHarnessEvent } from '@graphql/contracts'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation,
   matchesOpenCodeHistorySource } from '../src/modules/harnesses/opencodeReconciliation.js'
+import { forgetQualifiedProfile, rememberQualifiedProfile } from '../src/modules/harnesses/qualification/profiles.js'
 
 import { advanced, brokenBody, configuration, environment, errorCode, FixtureServer, json, manager, permission, request, sessionFor } from './opencode-fixtures.js'
 
@@ -53,6 +54,27 @@ it('qualifies the pinned live API and submits one prompt after opening its event
   assert(server.calls.findIndex((call) => call.path.startsWith('/event')) < server.calls.indexOf(prompt))
   assert.equal((await native.capabilities()).sameRequestResponses, true)
   await native.close(session)
+})
+
+it('reports the live health version for a qualified non-baseline server', async () => {
+  const version = '1.18.33'
+  rememberQualifiedProfile('opencode', version, 'opencode-1.18.31')
+  const server = new FixtureServer()
+  server.expectedVersion = version
+  server.providers = { ...server.providers as object, connected: ['opencode-go'] }
+  server.beforeRequest = (path) => path === '/global/health' ? json({ healthy: true, version }) : undefined
+  const native = manager(server)
+  try {
+    const session = await sessionFor(native)
+    assert.equal(session.providerVersion, version)
+    assert.equal((await native.capabilities()).providerVersion, version)
+    assert.equal((await native.discoverOptions('/workspace/project')).providerVersion, version)
+    assert.equal((await native.inspectNativeMcp('/workspace/project', undefined, 'configuration')).providerVersion, version)
+    await native.close(session)
+  } finally {
+    await native.dispose()
+    forgetQualifiedProfile('opencode', version)
+  }
 })
 
 it('[F04] never promotes tool-call narration while a later assistant is unfinished', async () => {
