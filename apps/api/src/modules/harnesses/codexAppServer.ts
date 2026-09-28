@@ -1,4 +1,4 @@
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, isAppLauncher } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
@@ -110,7 +110,7 @@ interface Prepared {
   scopedCredentialVariable: string | undefined
   environment: NodeJS.ProcessEnv
   qualified: QualifiedCodex
-  disabledAppMcpServerName?: string
+  disabledAppMcpServerNames: readonly string[]
 }
 interface Creation {
   identity: string
@@ -227,7 +227,7 @@ function configOverrides(value: CodexHarnessConfiguration): JsonObject {
   }
   return config
 }
-function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledAppMcpServerName'>, resume = false): JsonObject {
+function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledAppMcpServerNames'>, resume = false): JsonObject {
   const value = prepared.harnessConfiguration
   const draft = advanced(value)
   return {
@@ -238,7 +238,7 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
     runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
     approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
     sandbox: value.sandbox, config: { ...configOverrides(value),
-      ...(prepared.disabledAppMcpServerName ? { [`mcp_servers.${prepared.disabledAppMcpServerName}.enabled`]: false } : {}),
+      ...Object.fromEntries(prepared.disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
       ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
     },
     // A resumed or forked thread already carries its accepted developer instructions.
@@ -1068,12 +1068,22 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal)
     let scopedCredentialVariable: string | undefined
     let excludedCredentialVariable: string | undefined
-    let disabledAppMcpServerName: string | undefined
+    let disabledAppMcpServerNames: readonly string[] = []
+    if (this.appMcpAccess === 'none') {
+      const listed = await runCommand(qualified.binary, ['mcp', 'list', '--json'], workingDirectory, signal, environment)
+      let entries: unknown
+      try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
+      if (listed.exitCode !== 0 || !Array.isArray(entries) || entries.length > 500
+        || !entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')) {
+        throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED', 'Codex MCP configuration inspection failed; absence was not established.')
+      }
+      const configuredNames = new Set(entries.map((entry: JsonObject) => entry.name))
+      disabledAppMcpServerNames = chatExcludedAppMcpServerNames(this.appMcpServerName).filter((name) => configuredNames.has(name))
+    }
     try {
       const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal)
       excludedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
-      if (this.appMcpAccess === 'none') disabledAppMcpServerName = this.appMcpServerName
-      else if (mcp.configured.enabled) scopedCredentialVariable = excludedCredentialVariable
+      if (this.appMcpAccess !== 'none' && mcp.configured.enabled) scopedCredentialVariable = excludedCredentialVariable
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
@@ -1082,7 +1092,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const scopedEnvironment = safeEnvironment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     await qualifyNativeCodexModel(harnessConfiguration, qualified.binary, workingDirectory, scopedEnvironment, signal)
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified,
-      ...(disabledAppMcpServerName ? { disabledAppMcpServerName } : {}),
+      disabledAppMcpServerNames,
     }
   }
 
@@ -1229,7 +1239,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         disconnected = true
         if (runtime?.generation === generation && runtime.transport === transport && !runtime.disposed) this.handleDisconnect(runtime)
       },
-      undefined, this.processRecovery, prepared.disabledAppMcpServerName,
+      undefined, this.processRecovery, prepared.disabledAppMcpServerNames,
     )
     // Also own cold-attachment candidates before a Runtime has been published.
     this.transports.add(transport)
@@ -1242,9 +1252,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         const response = object(await transport.request('config/read', { includeLayers: false, cwd: prepared.workingDirectory }, signal))
         const config = object(response.config, 'CODEX_APP_MCP_UNAVAILABLE')
         const servers = config.mcp_servers === undefined ? {} : object(config.mcp_servers, 'CODEX_APP_MCP_UNAVAILABLE')
-        const entry = servers[this.appMcpServerName]
-        if ((prepared.disabledAppMcpServerName && !Object.hasOwn(servers, this.appMcpServerName))
-          || (Object.hasOwn(servers, this.appMcpServerName) && (!isObject(entry) || entry.enabled !== false))) {
+        if (chatExcludedAppMcpServerNames(this.appMcpServerName).some((name) => {
+          const entry = servers[name]
+          return prepared.disabledAppMcpServerNames.includes(name)
+            ? !Object.hasOwn(servers, name) || !isObject(entry) || entry.enabled !== false
+            : Object.hasOwn(servers, name)
+        })) {
           throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'GraphQL workflow tools are not available in chat; native launch did not confirm the App MCP entry was disabled.')
         }
       }
