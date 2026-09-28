@@ -8,6 +8,7 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
+import { registerProductionFileStorage } from './modules/files/production.js'
 import { buildProductionApp } from './production.js'
 
 const lifecycle = componentLogger('lifecycle')
@@ -34,6 +35,7 @@ async function main() {
     config.database,
   )
   const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints, componentLogger('http'))
+  registerProductionFileStorage(app, database.pool, config)
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
