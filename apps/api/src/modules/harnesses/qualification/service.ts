@@ -23,7 +23,8 @@ export class HarnessQualificationService {
     private readonly suites: Record<CompatibilityHarness, QualificationSuite>, private readonly binaries: Record<CompatibilityHarness, string>,
     private readonly commands: PostgresCommandCoordinator,
     private readonly settings: Pick<PostgresSettingsRepository, 'getManagedHarnessDefaults'>,
-    private readonly staticCheck: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt?: number) => Promise<string> = checkStaticCompatibility) {}
+    private readonly staticCheck: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt?: number) => Promise<string> = checkStaticCompatibility,
+    private readonly onFinished?: (harness: CompatibilityHarness) => void) {}
 
   async list(principal: ManagementPrincipal): Promise<{ qualifications: HarnessQualification[] }> {
     requireAuthorization(principal, 'harnesses:read')
@@ -53,7 +54,7 @@ export class HarnessQualificationService {
     if (!this.flights.has(harness)) {
       const task = this.execute(harness, suite, binary, sha256, version)
       this.flights.set(harness, task)
-      void task.finally(() => this.flights.delete(harness)).catch(() => undefined)
+      void task.finally(() => { this.flights.delete(harness); this.onFinished?.(harness) }).catch(() => undefined)
     }
     return {
       harness, version, binarySha256: sha256, suiteRevision: suite.revision, profile: QUALIFICATION_TARGET_PROFILE[harness],

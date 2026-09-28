@@ -11,7 +11,7 @@ import { CompatibilityCheckError } from './errors.js'
 
 export interface HarnessInstallation { executable: string; identity: string; version: string }
 export interface CompatibilityProbe {
-  inspect(harness: CompatibilityHarness, signal: AbortSignal): Promise<HarnessInstallation>
+  inspect(harness: CompatibilityHarness, signal: AbortSignal, attempt?: number): Promise<HarnessInstallation>
   probe(harness: CompatibilityHarness, installation: HarnessInstallation, signal: AbortSignal): Promise<string>
   assertUnchanged(installation: HarnessInstallation, signal: AbortSignal): Promise<void>
   close?(): Promise<void>
@@ -156,12 +156,12 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
   const processes = new Set<DiagnosticProcess>()
   const directories = new Set<string>()
   return {
-    async inspect(harness, signal) {
+    async inspect(harness, signal, attempt = 1) {
       const resolved = await executable(binaries[harness], workingDirectory, source)
       const identity = await fingerprint(resolved, signal)
       const version = await isolated(source, directories, async (directory, environment) => {
         const output = await command(resolved, ['--version'], directory, environment,
-          AbortSignal.any([signal, AbortSignal.timeout(inspectTimeoutMs)]), 4096, processes)
+          AbortSignal.any([signal, AbortSignal.timeout(attempt === 1 ? inspectTimeoutMs : 10_000)]), 4096, processes)
         return parseInstalledVersion(harness, output.stdout, output.stderr)
       })
       return { executable: resolved, identity, version }

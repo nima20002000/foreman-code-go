@@ -139,6 +139,7 @@ export function buildProductionApp(
   const harnessQualifications = qualificationSuites && qualificationRegistry ? new HarnessQualificationService(
     qualificationRepository, qualificationRegistry, qualificationSuites,
     { codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary }, commands, settings,
+    undefined, (harness) => harnessCompatibility.refreshAfterQualification(harness),
   ) : undefined
   const harnessCompatibility = createHarnessCompatibility(config.harnesses, harnessQualifications
     ? (harness) => { void harnessQualifications.begin(harness).catch(() => undefined) }

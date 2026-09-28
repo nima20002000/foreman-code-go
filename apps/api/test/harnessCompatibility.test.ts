@@ -117,15 +117,40 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     expect(JSON.stringify(result)).not.toContain('secret-token')
     expect(options.probe.probe).not.toHaveBeenCalled()
   })
-  it('times out and never persists a partial success', async () => {
+  it('retries a timed-out probe with a fresh deadline and caches only the success', async () => {
+    const options = fixture()
+    vi.mocked(options.probe.probe).mockImplementationOnce((_harness, _installation, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }))
+    const result = await create({ ...options, timeoutMs: 20 }).checkAll()
+    expect(result[0]).toMatchObject({ status: 'probe-passed', reason: null, schemaSha256: sha })
+    expect(options.probe.probe).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(options.probe.probe).mock.calls[1]?.[2]).not.toBe(vi.mocked(options.probe.probe).mock.calls[0]?.[2])
+    expect(options.cache.entries.get('codex')?.status).toBe('probe-passed')
+  })
+  it('reports repeated timeouts as unavailable and never persists a partial success', async () => {
     const options = fixture()
     vi.mocked(options.probe.probe).mockImplementation((_harness, _installation, signal) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true })
       if (signal.aborted) reject(signal.reason)
     }))
     const result = await create({ ...options, timeoutMs: 20 }).checkAll()
-    expect(result[0]).toMatchObject({ status: 'probe-failed', reason: { code: 'CHECK_TIMEOUT' } })
+    expect(result[0]).toMatchObject({ status: 'unavailable', reason: { code: 'CHECK_TIMEOUT' } })
+    expect(options.probe.probe).toHaveBeenCalledTimes(2)
     expect(options.cache.entries.size).toBe(0)
+  })
+  it('refreshes after qualification even when the initial diagnostic is still active', async () => {
+    const options = fixture()
+    let finish: (value: string) => void = () => undefined
+    vi.mocked(options.probe.probe).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+      .mockResolvedValueOnce('b'.repeat(64))
+    const service = create(options)
+    service.start()
+    await vi.waitFor(() => expect(options.probe.probe).toHaveBeenCalledTimes(1))
+    service.refreshAfterQualification('codex')
+    finish(sha)
+    await vi.waitFor(() => expect(service.get('codex')).toMatchObject({ status: 'probe-passed', schemaSha256: 'b'.repeat(64) }))
+    expect(options.probe.probe).toHaveBeenCalledTimes(2)
   })
   it('does not reuse a successful probe if the executable changes during it', async () => {
     const options = fixture()
@@ -144,7 +169,7 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     service.start()
     await vi.waitFor(() => expect(options.probe.probe).toHaveBeenCalled())
     await service.close()
-    expect(service.get('codex').status).toBe('probe-failed')
+    expect(service.get('codex').status).toBe('unavailable')
     expect(() => service.retry('codex')).toThrow('closed')
   })
   it('does not launch another probe after unconfirmed process cleanup', async () => {
