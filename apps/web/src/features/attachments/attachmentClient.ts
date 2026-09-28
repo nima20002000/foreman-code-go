@@ -44,31 +44,26 @@ export function parseAttachmentUpload(input: AttachmentUploadInput, value: unkno
   return parsed.data
 }
 
-export interface AttachmentHttpPaths {
-  upload: string
-  finalize: string
-  cancel: string
+const UploadResultSchema = z.object({ value: FileWithRevisionSchema, replayed: z.boolean() })
+
+function uploadRoot(scope: TemporaryFileScope): string {
+  const chat = TemporaryFileScopeSchema.parse(scope).chat
+  const conversation = encodeURIComponent(chat.conversationId)
+  return chat.kind === 'operator' ? `/api/operator/conversations/${conversation}/files`
+    : `/api/workspaces/${encodeURIComponent(chat.workspaceId)}/agent-chat/conversations/${conversation}/files`
 }
 
-function sameOriginApiPath(path: string): string {
-  const origin = globalThis.location?.origin ?? 'http://localhost'
-  const url = new URL(path, origin)
-  if (!path.startsWith('/api/') || !url.pathname.startsWith('/api/') || url.origin !== origin || url.username || url.password || url.hash) {
-    throw new Error('Attachment endpoints must be same-origin /api/ paths.')
-  }
-  return `${url.pathname}${url.search}`
+function fileBytes(file: File): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as ArrayBuffer)
+    reader.onerror = () => reject(reader.error)
+    reader.readAsArrayBuffer(file)
+  })
 }
 
-/**
- * Opt-in transport adapter, NOT a claim that these routes exist at the base SHA.
- * See README.md for the required FIL-03 wire agreement. No guessed route defaults.
- * JSON calls use apiClient. Its JSON-only body handling cannot carry a File, so
- * this one binary boundary mirrors its cookie, auth-event and session fences.
- */
-export function createAttachmentHttpClient(paths: AttachmentHttpPaths): AttachmentClient {
-  const uploadPath = sameOriginApiPath(paths.upload)
-  const finalizePath = sameOriginApiPath(paths.finalize)
-  const cancelPath = sameOriginApiPath(paths.cancel)
+/** JSON commands use apiClient; XHR carries raw bytes and reports upload progress. */
+export function createAttachmentHttpClient(): AttachmentClient {
   return {
     async upload(input) {
       const generation = sessionGeneration()
@@ -79,36 +74,44 @@ export function createAttachmentHttpClient(paths: AttachmentHttpPaths): Attachme
       if (!inspected.ok || inspected.filename !== input.filename || inspected.mediaType !== input.mediaType) {
         throw new ApiError({ code: 'INVALID_REQUEST', message: 'The selected file is not an allowed attachment.' })
       }
-      const scope = TemporaryFileScopeSchema.parse(input.scope)
-      const body = new FormData()
-      body.append('metadata', JSON.stringify({ requestId: input.requestId, scope, filename: input.filename, mediaType: input.mediaType, byteSize: input.file.size }))
-      // Blob slicing supplies the canonical Content-Type without reading/base64-expanding the bytes.
-      body.append('file', input.file.slice(0, input.file.size, input.mediaType), input.filename)
-      const value = await uploadMultipart(uploadPath, body, signal, input.onProgress)
+      const root = uploadRoot(input.scope)
+      const digest = await crypto.subtle.digest('SHA-256', await fileBytes(input.file))
       assertSession(generation)
       signal.throwIfAborted()
-      const staged = parseAttachmentUpload(input, value, false)
-      if (staged.file.state === 'ready') return staged
-      input.onProgress({ phase: 'finalizing', percent: 100 })
-      const finalized = await apiClient.request(finalizePath, FileWithRevisionSchema, {
+      const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+      const path = `${root}/uploads/${encodeURIComponent(input.requestId)}`
+      const allocated = await apiClient.request(`${root}/uploads`, UploadResultSchema, {
         method: 'POST', signal,
-        body: { requestId: input.requestId, scope, fileId: staged.revision.fileId, revisionId: staged.revision.revisionId },
+        body: { requestId: input.requestId, filename: input.filename, mediaType: input.mediaType, byteSize: input.file.size, sha256 },
       })
       assertSession(generation)
       signal.throwIfAborted()
-      const result = parseAttachmentUpload(input, finalized)
+      const allocation = parseAttachmentUpload(input, allocated.value, false)
+      if (allocation.revision.sha256 !== sha256) throw invalidResponse()
+      const uploaded = await uploadBytes(path, input.file, signal, input.onProgress)
+      assertSession(generation)
+      signal.throwIfAborted()
+      const staged = parseAttachmentUpload(input, UploadResultSchema.parse(uploaded).value, false)
+      if (staged.revision.fileId !== allocation.revision.fileId || staged.revision.revisionId !== allocation.revision.revisionId
+        || staged.revision.sha256 !== sha256) throw invalidResponse()
+      if (staged.file.state === 'ready') return staged
+      input.onProgress({ phase: 'finalizing', percent: 100 })
+      const finalized = await apiClient.request(`${path}/finalize`, UploadResultSchema, { method: 'POST', signal, body: {} })
+      assertSession(generation)
+      signal.throwIfAborted()
+      const result = parseAttachmentUpload(input, finalized.value)
       if (result.revision.fileId !== staged.revision.fileId || result.revision.revisionId !== staged.revision.revisionId) throw invalidResponse()
       return result
     },
     async cancel(input) {
-      await apiClient.request(cancelPath, z.undefined(), {
-        method: 'POST', body: { requestId: input.requestId, scope: TemporaryFileScopeSchema.parse(input.scope) },
+      await apiClient.request(`${uploadRoot(input.scope)}/uploads/${encodeURIComponent(input.requestId)}`, UploadResultSchema, {
+        method: 'DELETE', body: {},
       })
     },
   }
 }
 
-function uploadMultipart(path: string, body: FormData, signal: AbortSignal,
+function uploadBytes(path: string, body: File, signal: AbortSignal,
   onProgress: AttachmentUploadInput['onProgress']): Promise<unknown> {
   signal.throwIfAborted()
   const generation = sessionGeneration()
@@ -128,11 +131,12 @@ function uploadMultipart(path: string, body: FormData, signal: AbortSignal,
       finish(new DOMException('Attachment upload canceled.', 'AbortError'))
       xhr.abort()
     }
-    xhr.open('POST', new URL(path, globalThis.location?.origin ?? 'http://localhost').toString())
+    xhr.open('PUT', new URL(path, globalThis.location?.origin ?? 'http://localhost').toString())
     // XHR sends same-origin cookies without enabling cross-origin credentials.
     xhr.withCredentials = false
     xhr.timeout = 120_000
     xhr.setRequestHeader('Accept', 'application/json')
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
     xhr.upload.onprogress = (event) => {
       if (!settled && !signal.aborted) onProgress({
         phase: 'uploading',

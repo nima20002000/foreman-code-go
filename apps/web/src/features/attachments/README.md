@@ -10,7 +10,7 @@ No new dependency is needed.
 
 ## Mount lines
 
-Create **one stable client** after agreeing the FIL-03 transport below. Mount
+Create **one stable client**. Mount
 one provider inside the existing QueryClientProvider and authenticated app
 boundary, above conversation-keyed panels. Do not put the provider inside a
 component keyed by conversationId. Keep the client object stable; replacing it
@@ -26,8 +26,7 @@ import {
   createAttachmentHttpClient,
 } from '../attachments' // From features/conversations; adjust for other parents.
 
-// Integration-owned, agreed same-origin /api/ paths, NOT routes defined by FIL-11.
-const attachmentClient = createAttachmentHttpClient(fileUploadPaths)
+const attachmentClient = createAttachmentHttpClient()
 
 // Inside the existing QueryClientProvider + authenticated application boundary:
 <AttachmentDraftProvider client={attachmentClient}>
@@ -97,50 +96,24 @@ workflowId }`. Include `runId` and `executionId` together when applicable. Use
 verified conversation context from the host; these IDs are not authorization.
 Operator scope never acquires workspace/workflow/run fields.
 
-## Contract/integration gaps — not silently filled in
+## HTTP transport
 
-The frozen files contract provides scopes, immutable metadata, references,
-limits and file lifecycle validation. It does **not** specify browser upload,
-finalize or cancel request/response envelopes or HTTP routes. The existing
-`apiClient.request` always JSON-stringifies bodies, so it cannot send multipart
-file bytes without a shared-client change (outside this lane).
+The client derives its route from the validated temporary conversation scope.
+Operator conversations use `/api/operator/conversations/:conversationId/files`;
+Agent conversations use
+`/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/files`.
+It sends JSON metadata (`requestId`, `filename`, `mediaType`, `byteSize`,
+`sha256`) to `POST :root/uploads`, raw `application/octet-stream` bytes to
+`PUT :root/uploads/:requestId`, `{}` to `POST :root/uploads/:requestId/finalize`,
+and `{}` to `DELETE :root/uploads/:requestId` for cancellation. The responses
+carry `{ value, replayed }`; `value` is a shared `FileWithRevision`.
 
-`AttachmentClient` is the narrow injection seam. It may be implemented by the
-FIL-03 owner using their agreed wire contract. Its `upload` must return a
-`FileWithRevision` only after the file is durably ready; its `cancel` targets the
-original unsent upload request. Both methods use shared domain types. The hook
-validates ready data again even for an injected implementation.
-
-The optional `createAttachmentHttpClient(paths)` supplies a concrete,
-MSW-interceptable adapter with **no default/guessed route names**. It is usable
-only after FIL-03 agrees this explicit transport convention:
-
-| Operation | Wire convention required by this opt-in adapter |
-| --- | --- |
-| Upload | POST multipart: `metadata` JSON string containing `{ requestId, scope, filename, mediaType }`, and one `file` part with the canonical MIME and filename. Respond with shared `FileWithRevision`, pending or ready. |
-| Finalize | POST JSON `{ requestId, scope, fileId, revisionId }`; respond with shared `FileWithRevision`, ready, with the same exact pins. |
-| Cancel unsent allocation | POST JSON `{ requestId, scope }`; respond with 204 and no body. |
-
-JSON operations use the existing shared client. The only new raw transport is
-multipart XHR, encapsulated here because shared JSON body handling cannot
-carry File/FormData. It mirrors same-origin cookies, Accept headers, the shared
-401 notification and session-generation/abort guards. It emits actual browser
-progress when available and an indeterminate state otherwise. Upload timeout
-is 120 seconds. No file is read into base64 or an application ArrayBuffer.
-
-FIL-03 must verify actual bytes, MIME, size, SHA-256, scope ownership and lineage;
-canonical picker hints are not security validation. A retry uses the **same**
-upload requestId, including after uncertain upload/finalization outcomes.
-FIL-03 must make that idempotent and fence upload/finalize/cancel races. There is
-no attempt to invent server readback, request tombstones or authorization here.
-
-Removing a chip aborts its local operation and attempts remote cleanup. Remote
-cleanup failure does not resurrect the chip or imply confirmed server deletion;
-the failure remains in a TanStack mutation (60-second cache lifetime). Backend
-retention/reconciliation must collect any unsent remnants. Provider disposal or
-principal change only aborts/purges locally, avoiding cleanup under another
-principal's credentials. Integrators needing a cleanup-error notification can
-observe the `['chat-attachments', providerId, 'cancel', requestId]` mutations.
+JSON requests use the shared client. Raw bytes use XHR for browser upload
+progress, with the same session and authentication fences. The selected file
+is hashed before allocation; retries keep the original request identity.
+Backend validation remains authoritative for bytes, metadata, and ownership.
+Removing a chip aborts its local operation and attempts remote cleanup.
+Cleanup failure remains visible in the TanStack mutation state.
 
 The frozen document also delegates both chat send schemas and receipt hash
 integration to their owners. Those must accept `MessageAttachmentFields`, use

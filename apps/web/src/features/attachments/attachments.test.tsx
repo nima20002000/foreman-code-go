@@ -1,4 +1,5 @@
 import { StrictMode, useEffect } from 'react'
+import { createHash, webcrypto } from 'node:crypto'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -18,7 +19,8 @@ import { ATTACHMENT_ACCEPT, attachmentDraftKey, inspectAttachment } from './atta
 import { useConversationAttachments, type ConversationAttachments } from './useConversationAttachments'
 
 const paths = {
-  upload: '/api/fil11-test/uploads', finalize: '/api/fil11-test/finalize', cancel: '/api/fil11-test/cancel',
+  upload: '*/files/uploads', bytes: '*/files/uploads/:requestId',
+  finalize: '*/files/uploads/:requestId/finalize', cancel: '*/files/uploads/:requestId',
 }
 const scopeA: TemporaryFileScope = {
   kind: 'temporary', chat: { kind: 'operator', ownerPrincipalId: 'owner-a', operatorId: 'operator-a', conversationId: 'conversation-a' },
@@ -30,10 +32,11 @@ const agentScope: TemporaryFileScope = {
   kind: 'temporary', chat: { kind: 'agent', workspaceId: 'workspace-a', workflowId: 'workflow-a', agentId: 'agent-a',
     conversationId: 'conversation-a', runId: 'run-a', executionId: 'execution-a' },
 }
-interface Metadata { requestId: string; scope: TemporaryFileScope; filename: string; mediaType: FileMediaType; byteSize: number }
-interface UploadRequest extends Metadata { byteSize: number; partType: string; partName: string }
+interface Metadata { requestId: string; filename: string; mediaType: FileMediaType; byteSize: number; sha256: string }
+interface UploadRequest extends Metadata { scope: TemporaryFileScope }
 let uploads: UploadRequest[]
-let finalizations: (Metadata & { fileId: string; revisionId: string })[]
+let byteUploads: string[]
+let finalizations: { requestId: string; scope: TemporaryFileScope }[]
 let cancellations: { scope: TemporaryFileScope; requestId: string }[]
 let staged: Map<string, FileWithRevision>
 let clients: QueryClient[]
@@ -51,20 +54,23 @@ function row(input: UploadRequest, state: 'pending' | 'ready' = 'pending'): File
     file: { fileId: `file-${input.requestId}`, currentRevisionId: `revision-${input.requestId}`, scope: input.scope, state, createdAt,
       retentionDurationSeconds: DEFAULT_FILE_RETENTION_SECONDS, expiresAt: temporaryFileExpiresAt(createdAt, DEFAULT_FILE_RETENTION_SECONDS) },
     revision: { fileId: `file-${input.requestId}`, revisionId: `revision-${input.requestId}`, filename: input.filename,
-      mediaType: input.mediaType, byteSize: input.byteSize, sha256: 'a'.repeat(64), origin: 'upload', createdAt },
+      mediaType: input.mediaType, byteSize: input.byteSize, sha256: input.sha256, origin: 'upload', createdAt },
   })
 }
 async function receiveUpload(request: Request): Promise<UploadRequest> {
   expect(request.headers.get('accept')).toBe('application/json')
-  expect(request.headers.get('content-type')).toMatch(/^multipart\/form-data; boundary=/)
-  const form = await request.formData()
-  const metadata = JSON.parse(String(form.get('metadata'))) as Metadata
-  const file = form.get('file')
-  if (!file || typeof file === 'string') throw new Error('Missing file part.')
-  TemporaryFileScopeSchema.parse(metadata.scope)
-  // jsdom's XHR interceptor cannot carry Blob bytes or part names; the declared size is
-  // what FIL-03 re-verifies against the stored bytes. Wire bytes are covered server-side.
-  const value = { ...metadata, partType: file.type, partName: metadata.filename }
+  expect(request.headers.get('content-type')).toMatch(/^application\/json/)
+  const metadata = await request.json() as Metadata
+  expect(Object.keys(metadata).sort()).toEqual(['byteSize', 'filename', 'mediaType', 'requestId', 'sha256'])
+  expect(metadata.sha256).toMatch(/^[a-f0-9]{64}$/)
+  const url = new URL(request.url)
+  const operator = url.pathname.match(/^\/api\/operator\/conversations\/([^/]+)\/files\/uploads$/)
+  const agent = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/agent-chat\/conversations\/([^/]+)\/files\/uploads$/)
+  const scope = operator ? [scopeA, scopeB].find((item) => item.chat.conversationId === decodeURIComponent(operator[1]))
+    : agent && agentScope.chat.kind === 'agent' && agentScope.chat.workspaceId === decodeURIComponent(agent[1])
+      && agentScope.chat.conversationId === decodeURIComponent(agent[2]) ? agentScope : undefined
+  if (!scope) throw new Error(`Unexpected allocation path: ${url.pathname}`)
+  const value = { ...metadata, scope }
   uploads.push(value)
   return value
 }
@@ -72,17 +78,15 @@ async function stageUpload(request: Request) {
   const input = await receiveUpload(request)
   const value = staged.get(input.requestId) ?? row(input)
   staged.set(input.requestId, value)
-  return HttpResponse.json(value)
+  return HttpResponse.json({ value, replayed: false })
 }
 async function finalizeUpload(request: Request) {
-  const input = await request.json() as Metadata & { fileId: string; revisionId: string }
-  finalizations.push(input)
-  const value = staged.get(input.requestId)
+  expect(await request.json()).toEqual({})
+  const requestId = new URL(request.url).pathname.split('/').at(-2)!
+  const value = staged.get(requestId)
   if (!value) return HttpResponse.json({ error: { code: 'NOT_FOUND', message: 'No allocation.' } }, { status: 404 })
-  expect(input.scope).toEqual(value.file.scope)
-  expect(input.fileId).toBe(value.revision.fileId)
-  expect(input.revisionId).toBe(value.revision.revisionId)
-  return HttpResponse.json({ ...value, file: { ...value.file, state: 'ready' } })
+  finalizations.push({ requestId, scope: value.file.scope as TemporaryFileScope })
+  return HttpResponse.json({ value: { ...value, file: { ...value.file, state: 'ready' } }, replayed: false })
 }
 
 function Probe({ scope, capture }: { scope: TemporaryFileScope | null; capture: (draft: ConversationAttachments) => void }) {
@@ -90,7 +94,7 @@ function Probe({ scope, capture }: { scope: TemporaryFileScope | null; capture: 
   useEffect(() => capture(draft), [capture, draft])
   return <div style={{ width: 320 }}><ChatAttachmentControl draft={draft} /></div>
 }
-function mount(scope: TemporaryFileScope | null = scopeA, client: AttachmentClient = createAttachmentHttpClient(paths), strict = false) {
+function mount(scope: TemporaryFileScope | null = scopeA, client: AttachmentClient = createAttachmentHttpClient(), strict = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } })
   clients.push(queryClient)
   let draft!: ConversationAttachments
@@ -112,7 +116,7 @@ async function ready(view: ReturnType<typeof mount>, count = 1) {
 }
 
 beforeEach(() => {
-  uploads = []; finalizations = []; cancellations = []; staged = new Map(); clients = []
+  uploads = []; byteUploads = []; finalizations = []; cancellations = []; staged = new Map(); clients = []
   createUrl = vi.fn((blob: Blob) => `blob:attachment-${blob.size}-${crypto.randomUUID()}`)
   revokeUrl = vi.fn()
   const OriginalURL = globalThis.URL
@@ -120,12 +124,24 @@ beforeEach(() => {
     static createObjectURL = createUrl
     static revokeObjectURL = revokeUrl
   })
+  vi.stubGlobal('crypto', { ...crypto, subtle: webcrypto.subtle, randomUUID: crypto.randomUUID.bind(crypto) })
   server.use(
-    http.post(`*${paths.upload}`, ({ request }) => stageUpload(request)),
-    http.post(`*${paths.finalize}`, ({ request }) => finalizeUpload(request)),
-    http.post(`*${paths.cancel}`, async ({ request }) => {
-      cancellations.push(await request.json() as { scope: TemporaryFileScope; requestId: string })
-      return new HttpResponse(null, { status: 204 })
+    http.post(paths.upload, ({ request }) => stageUpload(request)),
+    http.put(paths.bytes, ({ request, params }) => {
+      expect(request.headers.get('content-type')).toBe('application/octet-stream')
+      const requestId = String(params.requestId)
+      const value = staged.get(requestId)
+      if (!value) return HttpResponse.json({ error: { code: 'NOT_FOUND', message: 'No allocation.' } }, { status: 404 })
+      byteUploads.push(requestId)
+      return HttpResponse.json({ value, replayed: false })
+    }),
+    http.post(paths.finalize, ({ request }) => finalizeUpload(request)),
+    http.delete(paths.cancel, async ({ request, params }) => {
+      expect(await request.json()).toEqual({})
+      const requestId = String(params.requestId)
+      const value = staged.get(requestId)!
+      cancellations.push({ requestId, scope: value.file.scope as TemporaryFileScope })
+      return HttpResponse.json({ value, replayed: false })
     }),
   )
 })
@@ -147,7 +163,9 @@ describe('shared attachment picker and real HTTP boundary', () => {
     await userEvent.setup().upload(picker(), file(name, type))
     await ready(view)
     expect(uploads).toHaveLength(1)
-    expect(uploads[0]).toMatchObject({ filename: name, mediaType: type, partName: name, partType: type, scope: scopeA })
+    expect(uploads[0]).toMatchObject({ filename: name, mediaType: type, byteSize: file(name, type).size, scope: scopeA })
+    expect(uploads[0].sha256).toBe(createHash('sha256').update('# marker').digest('hex'))
+    expect(byteUploads).toEqual([uploads[0].requestId])
     expect(finalizations).toHaveLength(1)
     expect(view.draft.items[0].statusLabel).toBe('Ready')
     expect(view.draft.hasAttachments).toBe(true)
@@ -172,11 +190,11 @@ describe('shared attachment picker and real HTTP boundary', () => {
 
   it('uploads multiple files independently and preserves picker order after out-of-order responses', async () => {
     const first = deferred()
-    server.use(http.post(`*${paths.upload}`, async ({ request }) => {
+    server.use(http.post(paths.upload, async ({ request }) => {
       const value = await receiveUpload(request)
       if (value.filename === 'first.md') await first.promise
       const result = row(value); staged.set(value.requestId, result)
-      return HttpResponse.json(result)
+      return HttpResponse.json({ value: result, replayed: false })
     }))
     const view = mount()
     await userEvent.setup().upload(picker(), [file('first.md'), file('second.md')])
@@ -191,7 +209,7 @@ describe('shared attachment picker and real HTTP boundary', () => {
 
   it('keeps bytes-complete/finalization-pending files out of readyRefs', async () => {
     const finalization = deferred()
-    server.use(http.post(`*${paths.finalize}`, async ({ request }) => { await finalization.promise; return finalizeUpload(request) }))
+    server.use(http.post(paths.finalize, async ({ request }) => { await finalization.promise; return finalizeUpload(request) }))
     const view = mount()
     await userEvent.setup().upload(picker(), file())
     await waitFor(() => expect(view.draft.items[0]?.statusLabel).toBe('Checking'))
@@ -204,7 +222,7 @@ describe('shared attachment picker and real HTTP boundary', () => {
   it('shows real progress without fabricating a percentage before telemetry arrives', async () => {
     const gate = deferred()
     let input!: AttachmentUploadInput
-    const real = createAttachmentHttpClient(paths)
+    const real = createAttachmentHttpClient()
     const client: AttachmentClient = { ...real, async upload(value) { input = value; await gate.promise; return real.upload(value) } }
     const view = mount(scopeA, client)
     await userEvent.setup().upload(picker(), file())
@@ -253,11 +271,15 @@ describe('shared attachment picker and real HTTP boundary', () => {
 describe('failure, retry, removal and response validation', () => {
   it.each(['upload', 'finalize'] as const)('retries a failed %s using the original request identity', async (operation) => {
     let fail = true
-    server.use(http.post(`*${paths[operation]}`, async ({ request }) => {
+    server.use(http.post(paths[operation], async ({ request }) => {
       if (fail) {
         fail = false
         if (operation === 'upload') await receiveUpload(request)
-        else finalizations.push(await request.json() as Metadata & { fileId: string; revisionId: string })
+        else {
+          expect(await request.json()).toEqual({})
+          const requestId = new URL(request.url).pathname.split('/').at(-2)!
+          finalizations.push({ requestId, scope: staged.get(requestId)!.file.scope as TemporaryFileScope })
+        }
         return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Try again.' } }, { status: 503 })
       }
       return operation === 'upload' ? stageUpload(request) : finalizeUpload(request)
@@ -276,7 +298,7 @@ describe('failure, retry, removal and response validation', () => {
   })
 
   it('normalizes network failures and exposes retry', async () => {
-    server.use(http.post(`*${paths.upload}`, () => HttpResponse.error()))
+    server.use(http.post(paths.upload, () => HttpResponse.error()))
     const view = mount()
     await userEvent.setup().upload(picker(), file())
     await screen.findByRole('button', { name: 'Retry upload notes.md' })
@@ -286,10 +308,12 @@ describe('failure, retry, removal and response validation', () => {
 
   it('removes an in-flight upload, aborts it and cancels its original unsent allocation', async () => {
     const gate = deferred()
-    server.use(http.post(`*${paths.upload}`, async ({ request }) => {
+    server.use(http.post(paths.upload, async ({ request }) => {
       const input = await receiveUpload(request)
+      const value = row(input)
+      staged.set(input.requestId, value)
       await gate.promise
-      return HttpResponse.json(row(input, 'ready'))
+      return HttpResponse.json({ value, replayed: false })
     }))
     const view = mount()
     await userEvent.setup().upload(picker(), file())
@@ -307,7 +331,7 @@ describe('failure, retry, removal and response validation', () => {
     const gate = deferred()
     let input!: AttachmentUploadInput
     let completed = false
-    const real = createAttachmentHttpClient(paths)
+    const real = createAttachmentHttpClient()
     const client: AttachmentClient = { ...real, async upload(value) {
       input = value
       const result = await real.upload(value)
@@ -328,7 +352,7 @@ describe('failure, retry, removal and response validation', () => {
   })
 
   it('keeps local removal honest even if remote cleanup fails', async () => {
-    server.use(http.post(`*${paths.cancel}`, () => HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Cleanup failed.' } }, { status: 503 })))
+    server.use(http.delete(paths.cancel, () => HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Cleanup failed.' } }, { status: 503 })))
     const view = mount()
     await userEvent.setup().upload(picker(), file())
     await ready(view)
@@ -339,9 +363,9 @@ describe('failure, retry, removal and response validation', () => {
 
   it.each(['foreign scope', 'wrong revision', 'still pending', 'wrong filename', 'malformed'])(
     'rejects %s finalization responses', async (problem) => {
-      server.use(http.post(`*${paths.finalize}`, async ({ request }) => {
-        const input = await request.json() as { requestId: string }
-        const value = staged.get(input.requestId)!
+      server.use(http.post(paths.finalize, async ({ request }) => {
+        expect(await request.json()).toEqual({})
+        const value = staged.get(new URL(request.url).pathname.split('/').at(-2)!)!
         const changed = { file: { ...value.file, state: 'ready' }, revision: { ...value.revision } }
         if (problem === 'foreign scope') changed.file.scope = scopeB
         if (problem === 'wrong revision') {
@@ -349,7 +373,7 @@ describe('failure, retry, removal and response validation', () => {
         }
         if (problem === 'still pending') changed.file.state = 'pending'
         if (problem === 'wrong filename') changed.revision.filename = 'different.md'
-        return HttpResponse.json(problem === 'malformed' ? { fileId: 'bare-id' } : changed)
+        return HttpResponse.json({ value: problem === 'malformed' ? { fileId: 'bare-id' } : changed, replayed: false })
       }))
       const view = mount()
       await userEvent.setup().upload(picker(), file())
@@ -358,21 +382,22 @@ describe('failure, retry, removal and response validation', () => {
     },
   )
 
-  it('forbids cross-origin and normalized non-API endpoint paths', () => {
-    for (const path of ['https://example.com/api/upload', '//example.com/api/upload', '/api/../outside']) {
-      expect(() => createAttachmentHttpClient({ ...paths, upload: path })).toThrow(/same-origin/)
-    }
+  it('derives upload roots from the conversation scope', async () => {
+    const view = mount()
+    await userEvent.setup().upload(picker(), file())
+    await ready(view)
+    expect(uploads[0].scope).toEqual(scopeA)
   })
 })
 
 describe('conversation, send and preview lifetimes', () => {
   it('keeps a mid-upload conversation switch bound to its original scope', async () => {
     const gate = deferred()
-    server.use(http.post(`*${paths.upload}`, async ({ request }) => {
+    server.use(http.post(paths.upload, async ({ request }) => {
       const input = await receiveUpload(request)
       if (input.scope.chat.conversationId === scopeA.chat.conversationId) await gate.promise
       const value = row(input); staged.set(input.requestId, value)
-      return HttpResponse.json(value)
+      return HttpResponse.json({ value, replayed: false })
     }))
     const view = mount()
     await userEvent.setup().upload(picker(), file('a.md'))
@@ -467,7 +492,7 @@ describe('conversation, send and preview lifetimes', () => {
   })
 
   it('survives StrictMode effect replay and releases all previews on final unmount', async () => {
-    const view = mount(scopeA, createAttachmentHttpClient(paths), true)
+    const view = mount(scopeA, createAttachmentHttpClient(), true)
     await userEvent.setup().upload(picker(), file('strict.png', 'image/png'))
     await ready(view)
     view.unmount()
@@ -479,7 +504,7 @@ describe('conversation, send and preview lifetimes', () => {
   it('drops protected files and aborts uploads at the existing session boundary', async () => {
     const gate = deferred()
     let input!: AttachmentUploadInput
-    const real = createAttachmentHttpClient(paths)
+    const real = createAttachmentHttpClient()
     const client: AttachmentClient = { ...real, async upload(value) { input = value; await gate.promise; return real.upload(value) } }
     const view = mount(scopeA, client)
     await userEvent.setup().upload(picker(), file('private.png', 'image/png'))
@@ -498,7 +523,7 @@ describe('conversation, send and preview lifetimes', () => {
 
   it('retains an image preview across failure/retry and revokes it on send acknowledgement', async () => {
     let fail = true
-    server.use(http.post(`*${paths.upload}`, async ({ request }) => {
+    server.use(http.post(paths.upload, async ({ request }) => {
       if (fail) {
         fail = false
         await receiveUpload(request)
@@ -532,7 +557,7 @@ describe('conversation, send and preview lifetimes', () => {
   it('aborts and drops an in-flight upload when its provider is actually unmounted', async () => {
     const gate = deferred()
     let input!: AttachmentUploadInput
-    const real = createAttachmentHttpClient(paths)
+    const real = createAttachmentHttpClient()
     const client: AttachmentClient = { ...real, async upload(value) { input = value; await gate.promise; return real.upload(value) } }
     const view = mount(scopeA, client)
     await userEvent.setup().upload(picker(), file('closing.png', 'image/png'))
