@@ -69,3 +69,19 @@ it('F28: generated-schema references validate payloads rather than merely report
 it('F28: incomplete generated bundles fail qualification before execution', () => {
   assert.throws(() => protocolFromBundle({ definitions: {} }))
 })
+
+it('accepts dynamic tool responses when real bundles keep DynamicToolCallResponse at the top level beside v2', () => {
+  // codex-cli 0.156.1/0.158.0 generate exactly this layout; a v2-only lookup rejected every real file-tool reply.
+  const value = bundle()
+  const definitions = value.definitions as JsonObject
+  const serverRequest = definitions.ServerRequest as { oneOf: JsonObject[] }
+  serverRequest.oneOf.push({ type: 'object', required: ['id', 'method'], properties: {
+    method: { enum: ['item/tool/call'] }, id: { anyOf: [{ type: 'integer' }, { type: 'string' }] }, params: { type: 'object' } } })
+  definitions.DynamicToolCallResponse = { type: 'object', required: ['contentItems', 'success'], properties: {
+    success: { type: 'boolean' },
+    contentItems: { type: 'array', items: { type: 'object', required: ['type', 'text'], properties: {
+      type: { enum: ['inputText'] }, text: { type: 'string' } } } } } }
+  const protocol = protocolFromBundle(value)
+  protocol.serverResponse('item/tool/call', { success: true, contentItems: [{ type: 'inputText', text: '{}' }] })
+  assert.throws(() => protocol.serverResponse('item/tool/call', { success: true }))
+})

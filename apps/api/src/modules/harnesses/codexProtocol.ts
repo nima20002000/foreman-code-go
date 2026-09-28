@@ -164,7 +164,8 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
   // Older schema fixtures and native releases without dynamic tools keep their
   // existing protocol. A bundle that advertises the response must also carry
   // the matching request branch before file calls can be accepted.
-  const dynamicToolResponse = isObject(definitions.v2) ? definitions.v2.DynamicToolCallResponse : definitions.DynamicToolCallResponse
+  // Real Codex bundles keep this type at the top level even when a v2 namespace exists.
+  const dynamicToolResponse = (isObject(definitions.v2) ? definitions.v2.DynamicToolCallResponse : undefined) ?? definitions.DynamicToolCallResponse
   if (dynamicToolResponse) {
     compile('ServerRequest:item/tool/call', branch('ServerRequest', 'item/tool/call'))
     compile('DynamicToolCallResponse', definition('DynamicToolCallResponse'))
