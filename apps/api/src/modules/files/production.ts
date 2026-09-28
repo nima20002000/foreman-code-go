@@ -19,6 +19,9 @@ import { readFileRetentionSnapshot } from './retentionSnapshot.js'
 import { defaultFileStorageRoot, FileByteStorage } from './storage.js'
 import { registerProductionFileTools } from './tools/production.js'
 import type { FileReferenceResolver } from './tools/types.js'
+import { ManagedFileCleanupBytes } from './cleanup/bytes.js'
+import { PostgresFileCleanupRepository } from './cleanup/postgres.js'
+import { TemporaryFileCleanupSweeper } from './cleanup/sweeper.js'
 
 // referenceResolver is FIL-37's agent read seam; FIL-36's human reference service is composed below.
 export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Pool, config: ApiConfig,
@@ -39,6 +42,10 @@ export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Poo
   registerFileRoutes(app, service)
   registerFileReferenceRoutes(app, references)
   registerProductionFileTools(app, pool, service, referenceResolver)
-  app.addHook('onReady', () => bytes.initialize())
+  const cleanup = new TemporaryFileCleanupSweeper(new PostgresFileCleanupRepository(pool),
+    new ManagedFileCleanupBytes(bytes), (error, context) => app.log.warn({ err: error, ...context }, 'temporary file cleanup failed'))
+  app.addHook('onReady', async () => { await bytes.initialize(); cleanup.start() })
+  // Drain the sweeper before server.ts's onClose hooks dispose the shared pool.
+  app.addHook('preClose', () => cleanup.stop())
   return service
 }
