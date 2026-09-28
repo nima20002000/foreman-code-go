@@ -66,9 +66,6 @@ export class FileStorageService<Target> {
     const request = FileUploadRequestSchema.parse(input)
     const inputHash = createHash('sha256').update(JSON.stringify([fileScopeIdentity(scope), request.filename,
       request.mediaType, request.byteSize, request.sha256])).digest('hex')
-    // Preference read is outside the allocation lock; a replay always uses its persisted snapshot.
-    const duration = scope.kind === 'temporary'
-      ? FileRetentionDurationSchema.parse(await this.retentionForOwner(principal.id)) : undefined
     return this.repository.withAllocation(principal.id, request.requestId, async (session) => {
       const existing = await session.read()
       if (existing) {
@@ -76,14 +73,23 @@ export class FileStorageService<Target> {
         this.matches(existing.stored, scope)
         return this.result(existing, true)
       }
-      const now = this.now(), fileId = randomUUID(), revisionId = randomUUID()
-      const value = FileWithRevisionSchema.parse({ file: { fileId, currentRevisionId: revisionId, scope,
-        state: 'pending', createdAt: now, ...(duration === undefined ? {} : {
-          retentionDurationSeconds: duration, expiresAt: temporaryFileExpiresAt(now, duration) }) },
-      revision: { fileId, revisionId, filename: request.filename, mediaType: request.mediaType,
-        byteSize: request.byteSize, sha256: request.sha256, origin: 'upload', createdAt: now } })
-      const allocation: FileAllocation = { allocationId: randomUUID(), requestId: request.requestId, inputHash,
-        state: 'allocated', stored: { value, ownerPrincipalId: principal.id, storageKey: randomUUID() } }
+      const build = (durationSeconds: number | undefined): FileAllocation => {
+        const duration = durationSeconds === undefined ? undefined : FileRetentionDurationSchema.parse(durationSeconds)
+        const now = this.now(), fileId = randomUUID(), revisionId = randomUUID()
+        const value = FileWithRevisionSchema.parse({ file: { fileId, currentRevisionId: revisionId, scope,
+          state: 'pending', createdAt: now, ...(duration === undefined ? {} : {
+            retentionDurationSeconds: duration, expiresAt: temporaryFileExpiresAt(now, duration) }) },
+        revision: { fileId, revisionId, filename: request.filename, mediaType: request.mediaType,
+          byteSize: request.byteSize, sha256: request.sha256, origin: 'upload', createdAt: now } })
+        return { allocationId: randomUUID(), requestId: request.requestId, inputHash,
+          state: 'allocated', stored: { value, ownerPrincipalId: principal.id, storageKey: randomUUID() } }
+      }
+      // Permanent references never carry retention. Temporary replays never consult today's
+      // preference; production samples it under the owner lock through this allocation's commit.
+      if (scope.kind === 'temporary' && session.createWithRetention) {
+        return this.result(await session.createWithRetention(build), false)
+      }
+      const allocation = build(scope.kind === 'temporary' ? await this.retentionForOwner(principal.id) : undefined)
       await session.create(allocation)
       return this.result(allocation, false)
     }, this.mutation(principal, target, scope, source))
@@ -147,10 +153,15 @@ export class FileStorageService<Target> {
     if (state === 'pending') throw new DomainError('FILE_NOT_READY', 'The upload has not been finalized.', 409)
     if (state !== 'ready') throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are no longer available.', 410)
     const stream = await this.bytes.download(stored.storageKey, stored.value.revision)
-    // Verification can take time; expiry remains absolute rather than a sliding lease.
-    if (fileStateAt(stored.value.file, this.now()) !== 'ready') {
-      stream.destroy(); throw new DomainError('FILE_EXPIRED', 'The file has expired.', 410)
-    }
+    // Retention can be shortened while bytes are being verified. Re-read metadata
+    // before returning a stream; do not authorize it using a stale expiry snapshot.
+    try {
+      const current = await this.repository.read(stored.value.file.fileId, stored.value.revision.revisionId)
+      if (!current || fileStateAt(current.value.file, this.now()) !== 'ready') {
+        throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are no longer available.', 410)
+      }
+      this.matches(current, stored.value.file.scope)
+    } catch (error) { stream.destroy(); throw error }
     return { revision: stored.value.revision, stream }
   }
 

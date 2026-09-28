@@ -12,10 +12,11 @@ import { workspaceStorageRoot } from '../workspaces/storage.js'
 import { PostgresFileConversationAuthorization } from './authorization.js'
 import { PostgresFileRepository } from './postgres.js'
 import { TemporaryFileService } from './service.js'
+import { readFileRetentionSnapshot } from './retentionSnapshot.js'
 import { defaultFileStorageRoot, FileByteStorage } from './storage.js'
 
 export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Pool, config: ApiConfig): TemporaryFileService {
-  const repository = new PostgresFileRepository(pool)
+  const repository = new PostgresFileRepository(pool, readFileRetentionSnapshot)
   const bytes = new FileByteStorage(config.fileStorageRoot ?? defaultFileStorageRoot(), MAX_FILE_BYTES,
     [config.harnesses.workspaceRoot, config.workspaceStorageRoot ?? workspaceStorageRoot()])
   const service = new TemporaryFileService(repository, bytes, new PostgresFileConversationAuthorization(pool))

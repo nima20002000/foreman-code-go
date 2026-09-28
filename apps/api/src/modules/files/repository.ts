@@ -37,6 +37,8 @@ export interface FileAllocation {
 export interface AllocationSession {
   read(): Promise<FileAllocation | undefined>
   create(allocation: FileAllocation): Promise<void>
+  /** Optional transactional preference snapshot + creation. Production FIL-40 installs this adapter. */
+  createWithRetention?(build: (durationSeconds: number) => FileAllocation): Promise<FileAllocation>
   /** Atomic allocation/file lifecycle update. The immutable revision is never rewritten. */
   setState(state: AllocationState): Promise<FileAllocation>
 }

@@ -16,6 +16,7 @@ import { registerInteractionTools } from './tools/interactions.js'
 import { registerSettingsTools } from './tools/settings.js'
 import { registerAgentChatTools } from './tools/agentChat.js'
 import { registerWorkspaceDefaultsTools } from './tools/workspaceDefaults.js'
+import { registerFileRetentionTools } from './tools/fileRetention.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
   const server = new McpServer({ name: 'graphql', version: '1.0.0' })
@@ -31,6 +32,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerSettingsTools(server, context)
   registerAgentChatTools(server, context)
   registerWorkspaceDefaultsTools(server, context)
+  registerFileRetentionTools(server, context)
   registerWorkspaceTools(server, context)
   registerWorkflowTools(server, context)
   registerAgentTools(server, context)

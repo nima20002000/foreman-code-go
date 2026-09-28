@@ -13,6 +13,7 @@ import { unavailableCurrentWorkflowToolCall } from '../operator/tools/currentWor
 import { unavailableRunGraphToolCall } from '../operator/tools/runGraph.js'
 import { unavailableRunInspectionToolCall } from '../operator/tools/runInspection.js'
 import { unavailableRunToolCall } from '../operator/tools/runs.js'
+import { unavailableFileRetentionToolCall } from '../operator/tools/fileRetention.js'
 import type { OperatorServices } from '../operator/types.js'
 import type { McpRole } from './roles.js'
 import { createGraphqlMcpServer, roleDeniedToolCall } from './server.js'
@@ -54,7 +55,8 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       const context = { principal, services: services.operator }
       // Retired execution tools and unlisted current writes still need authenticated denial audit,
       // rather than disappearing into the SDK's generic unknown-tool response.
-      const unavailable = await retiredExecutionToolCall(context, request.body)
+      const unavailable = await unavailableFileRetentionToolCall(context, request.body)
+        ?? await retiredExecutionToolCall(context, request.body)
         ?? await unavailableRunToolCall(context, request.body)
         ?? await unavailableCurrentWorkflowToolCall(context, request.body)
         ?? await unavailableRunGraphToolCall(context, request.body)

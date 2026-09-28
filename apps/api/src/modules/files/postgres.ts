@@ -84,7 +84,8 @@ async function transaction<T>(client: pg.PoolClient, work: () => Promise<T>): Pr
 
 /** Bytes live only in FileByteStorage. This repository also serves FIL-04/05/36. */
 export class PostgresFileRepository implements FileReferenceRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly pool: pg.Pool,
+    private readonly retentionSnapshot?: (client: pg.PoolClient, ownerPrincipalId: string) => Promise<number>) {}
 
   private async insert(query: Query, input: NewStoredFile): Promise<void> {
     const value = FileWithRevisionSchema.parse(input.value)
@@ -203,20 +204,28 @@ export class PostgresFileRepository implements FileReferenceRepository {
       locked = result.rows[0]?.locked === true
       if (!locked) throw new DomainError('FILE_UPLOAD_BUSY', 'This upload is being committed. Retry the same request.', 409)
       await mutation?.authorize(client)
+      const insertAllocation = async (value: FileAllocation) => {
+        check()
+        if (value.stored.ownerPrincipalId !== ownerPrincipalId || value.requestId !== requestId) throw new Error('Allocation identity mismatch.')
+        await mutation?.authorize(client)
+        await this.insert(client, value.stored)
+        await client.query(`insert into file_allocations (allocation_id,owner_principal_id,request_id,input_hash,file_id,revision_id,state,created_at)
+          values ($1,$2,$3,$4,$5,$6,$7,$8)`, [value.allocationId, ownerPrincipalId, requestId, value.inputHash,
+          value.stored.value.file.fileId, value.stored.value.revision.revisionId, value.state, value.stored.value.file.createdAt])
+        await auditReference(value, 'reference_file.allocate')
+      }
+      const retentionSnapshot = this.retentionSnapshot
       const session: AllocationSession = {
         read,
-        create: async (value) => {
-          check()
-          if (value.stored.ownerPrincipalId !== ownerPrincipalId || value.requestId !== requestId) throw new Error('Allocation identity mismatch.')
-          await transaction(client, async () => {
-            await mutation?.authorize(client)
-            await this.insert(client, value.stored)
-            await client.query(`insert into file_allocations (allocation_id,owner_principal_id,request_id,input_hash,file_id,revision_id,state,created_at)
-              values ($1,$2,$3,$4,$5,$6,$7,$8)`, [value.allocationId, ownerPrincipalId, requestId, value.inputHash,
-              value.stored.value.file.fileId, value.stored.value.revision.revisionId, value.state, value.stored.value.file.createdAt])
-            await auditReference(value, 'reference_file.allocate')
-          })
-        },
+        create: (value) => transaction(client, () => insertAllocation(value)),
+        ...(retentionSnapshot ? { createWithRetention: (build: (durationSeconds: number) => FileAllocation) =>
+          transaction(client, async () => {
+            check()
+            const duration = await retentionSnapshot(client, ownerPrincipalId)
+            const value = build(duration)
+            await insertAllocation(value)
+            return value
+          }) } : {}),
         setState: async (state) => {
           check()
           await transaction(client, async () => {

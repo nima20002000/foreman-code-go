@@ -15,6 +15,8 @@ import { resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
+import { FileRetentionService } from './modules/files/retention.js'
+import { registerFileRetentionRoutes } from './routes/fileRetention.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
 import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
 import { HarnessMcpSettingsService } from './modules/harnesses/mcpSettings.js'
@@ -323,6 +325,7 @@ export function buildProductionApp(
   })
 
   const operatorServices = {
+    fileRetention: new FileRetentionService(database.pool, commands),
     executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
     operatorChat: chat,
     agentChat,
@@ -382,6 +385,7 @@ export function buildProductionApp(
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
+  registerFileRetentionRoutes(app, operatorServices.fileRetention)
   let httpClosing = false
   let initialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
