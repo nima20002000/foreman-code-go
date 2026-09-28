@@ -22,7 +22,7 @@ import {
 } from '@graphql/contracts/selected-run-chat'
 import {
   assertRunChatConversation, findRunChatConversation, resolveRunChatSelection, runChatStorageKey,
-  staleRunChat, withRunChatAuthority,
+  staleRunChat, withRunChatAuthority, type RunChatAuthorityCheck,
 } from './selectedRunChat.js'
 import { AgentChatCommands } from './agentChatCommands.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -499,7 +499,7 @@ export class AgentChatService {
   send(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest) {
     return this.command(() => this.sendMessage(principal, workspaceId, value))
   }
-  private async sendMessage(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest, executionId?: string, assertCurrent: () => Promise<void> = async () => {}) {
+  private async sendMessage(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest, executionId?: string, assertCurrent: RunChatAuthorityCheck = async () => {}) {
     this.assertOpen()
     const input = SendAgentChatMessageRequestSchema.parse(value)
     const context: AgentChatContext = { workspaceId, ...input.context }
@@ -523,7 +523,7 @@ export class AgentChatService {
       const prior = await this.repository.turn(resolution.row.id, input.requestId)
       if (prior) {
         // Same key and input returns the stored receipt; a different input is a conflict. Never re-sends.
-        const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued' })
+        const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', assertCurrent })
         return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true,
           ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
       }
@@ -533,10 +533,10 @@ export class AgentChatService {
         resolution.blocked.message, 409, { reason: resolution.blocked.reason })
     }
     const row = resolution.row
-    if (input.intent === 'steer') return this.steer(principal, context, key, input, resolution, assertCurrent)
+    if (input.intent === 'steer') return this.steer(principal, context, key, input, resolution, selectedRun, assertCurrent)
     if (input.intent === 'interrupt_and_send' && !row) throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.', 409)
     const create = resolution.create ? { ...resolution.create, context } : undefined
-    const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id,
+    const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id, assertCurrent,
       ...(create ? { create } : {}) })
     if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true,
       ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
@@ -546,7 +546,7 @@ export class AgentChatService {
     return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: false }
   }
 
-  private async steer(_principal: ManagementPrincipal, context: AgentChatContext, key: string, input: SendAgentChatMessageRequest, resolution: Resolution, assertCurrent: () => Promise<void> = async () => {}) {
+  private async steer(_principal: ManagementPrincipal, context: AgentChatContext, key: string, input: SendAgentChatMessageRequest, resolution: Resolution, selectedRun: boolean, assertCurrent: RunChatAuthorityCheck = async () => {}) {
     const row = resolution.row
     const runtime = row ? this.runtimes.get(row.id) : undefined
     if (!row || !row.active_request_id || !row.active_native_turn_id || !runtime?.session) {
@@ -561,8 +561,8 @@ export class AgentChatService {
     const target = input.expectedNativeTurnId
     return this.control(row.id, async () => {
       await assertCurrent()
-      const admitted = await this.repository.admit({ key, request: input, context, delivery: 'submitting', targetNativeTurnId: target })
-      if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId)), turn: admitted.turn, replayed: true }
+      const admitted = await this.repository.admit({ key, request: input, context, delivery: 'submitting', targetNativeTurnId: target, assertCurrent })
+      if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true }
       try {
         const steered = await runtime.manager.steerTurn!(runtime.session!, {
           prompt: input.content, clientCorrelationId: agentChatCorrelation(row.id, input.requestId), expectedTurnId: target,
@@ -579,7 +579,7 @@ export class AgentChatService {
       }
       this.events.publish(row.id, 'turn', { requestId: input.requestId })
       const turn = (await this.repository.turn(row.id, input.requestId))!
-      return { state: await this.state(await this.resolve(context, resolution.executionId)), turn, replayed: false }
+      return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn, replayed: false }
     })
   }
 

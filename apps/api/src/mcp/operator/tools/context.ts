@@ -47,6 +47,14 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
       ? Object.values(CANONICAL_RUN_GRAPH_MCP_TOOLS).filter((name) => runGraphToolAvailable(context, name)) : []
     const inspection = Object.values(RUN_INSPECTION_TOOLS).filter((name) => runInspectionToolAvailable(context, name, resource))
     const schedules = workflowScheduleCapabilities(context, resource)
+    const scheduleRuntime = context.services.runs?.scheduleAvailability?.()
+    const runtimeLimits = OPERATOR_RUNTIME_LIMITS.map((limit) =>
+      limit.feature === 'schedule_delivery' && scheduleRuntime?.configured
+        ? { feature: limit.feature, state: 'limited' as const,
+          detail: 'The API dispatcher uses the same pinned Start and engine as manual Runs. It admits only the latest due occurrence within five minutes, skips overlapping scheduled Runs, and pins the latest saved workflow. Live owner grants and native runtime readiness are rechecked. Retired unpinned triggers and event Start remain unavailable. '
+            + (scheduleRuntime.runtimeAdmission ? 'Timed Run admission is available.'
+              : 'Timed Run admission is paused until native runtime readiness returns.') }
+        : limit)
     const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection, ...schedules.map((entry) => entry.name)]
     return {endpoint:'/mcp',audience:'operator',protocol:'2026-07-28',tools,
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
@@ -59,8 +67,11 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' })),
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
           detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' })), ...schedules],
-      runtimeLimits:[...OPERATOR_RUNTIME_LIMITS, runHistoryCapabilityLimit(context), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
-        detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. No dispatcher or timed Run admission is included. Clear/paging/discovery compositions await shared-contract follow-up.' }] : []), ...(context.services.fileReferences ? [{
+      runtimeLimits:[...runtimeLimits, runHistoryCapabilityLimit(context), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
+        detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. '
+          + (scheduleRuntime?.configured ? 'Timed Run admission is composed; see schedule_delivery for policy and readiness. '
+            : 'This persistence-only composition has no dispatcher or timed Run admission. ')
+          + 'Clear/paging/discovery compositions await shared-contract follow-up.' }] : []), ...(context.services.fileReferences ? [{
         feature: 'permanent_reference_files', state: 'limited' as const,
         detail: 'Permanent references support reference_files_list, reference_file_read, reference_file_add and reference_file_remove through tools/list. Read requires the scope-specific workspaces:read or workflows:read grant; add/remove additionally require the matching update grant. Worker access is not granted. These backend extension names are not in this frozen capability tools enum; use tools/list for caller-filtered schemas. Agent access resolution is separate.',
       }] : [])],

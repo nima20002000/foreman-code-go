@@ -191,7 +191,7 @@ describe('Board workflow reference files (real client + MSW)', () => {
     expect(parseFloat(dialog.style.width)).toBeLessThanOrEqual(296)
     act(() => { dialog.focus() })
     await view.user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: 'Files' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Files' })).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'Files' })).toHaveFocus()
   })
 

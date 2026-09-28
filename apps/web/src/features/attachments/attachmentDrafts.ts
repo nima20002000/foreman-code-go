@@ -2,11 +2,12 @@ import { type Mutation, type QueryClient } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
 import {
   MAX_MESSAGE_ATTACHMENTS, MessageAttachmentRefsSchema, TemporaryFileScopeSchema, fileStateAt,
-  type FileMediaType, type FileWithRevision, type MessageAttachmentRef, type TemporaryFileScope,
+  type File as FileMetadata, type FileMediaType, type FileWithRevision, type MessageAttachmentRef, type TemporaryFileScope,
 } from '@graphql/contracts/files'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { sessionControllerSignal } from '../../shared/api/sessionController'
 import { attachmentDraftKey, inspectAttachment, type SelectionIssue } from './attachmentFiles'
+import { attachmentLifecycleQueryKey, readAttachmentLifecycle } from './attachmentLifecycle'
 import { parseAttachmentUpload, type AttachmentClient, type AttachmentProgress, type AttachmentUploadInput } from './attachmentClient'
 
 export interface AttachmentSelection {
@@ -55,6 +56,8 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
   const cachePrefix = ['chat-attachments', id] as const
   const uploadKey = [...cachePrefix, 'upload'] as const
   const progressKey = (key: string) => [...cachePrefix, 'progress', key] as const
+  const lifecyclePrefix = [...attachmentLifecycleQueryKey, id] as const
+  const lifecycleKey = (key: string, selectionId: string) => [...lifecyclePrefix, key, selectionId] as const
   const generation = sessionGeneration()
   const boundarySignal = sessionControllerSignal()
   const store = createStore<AttachmentDraftState>(() => ({ available: !sessionIsSwitching(), drafts: {} }))
@@ -67,6 +70,34 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
   function assertAvailable() {
     assertSession(generation)
     if (disposed || boundarySignal.aborted || !store.getState().available || sessionIsSwitching()) throw new SessionChangedError()
+  }
+
+  function lifecycleOptions(key: string, selectionId: string, upload: FileWithRevision) {
+    return {
+      queryKey: lifecycleKey(key, selectionId),
+      initialData: upload.file,
+      initialDataUpdatedAt: Date.parse(upload.file.createdAt),
+      staleTime: Infinity, gcTime: Infinity, retry: false as const,
+      queryFn: async ({ signal }: { signal: AbortSignal }) => {
+        assertAvailable()
+        const scope = upload.file.scope
+        if (scope.kind !== 'temporary' || attachmentDraftKey(scope) !== key) throw new SessionChangedError()
+        const file = await readAttachmentLifecycle(scope, upload.file, AbortSignal.any([signal, boundarySignal]))
+        assertAvailable()
+        return file
+      },
+    }
+  }
+
+  // Recheck the elapsed deadline once, including drafts reopened after it passed.
+  // A server-confirmed tombstone is never locally extended or re-uploaded.
+  function refreshExpired(key: string, selectionId: string, upload: FileWithRevision) {
+    if (!selected(key, selectionId) || !store.getState().available) return
+    const state = queryClient.getQueryState<FileMetadata>(lifecycleKey(key, selectionId))
+    const file = state?.data ?? upload.file
+    if (file.state !== 'ready' || !('expiresAt' in file) || Date.parse(file.expiresAt) > Date.now()
+      || (state?.dataUpdatedAt ?? 0) >= Date.parse(file.expiresAt) || state?.status === 'error') return
+    void queryClient.fetchQuery({ ...lifecycleOptions(key, selectionId, upload), staleTime: 0 }).catch(() => undefined)
   }
 
   function selected(key: string, selectionId: string): AttachmentSelection | undefined {
@@ -164,6 +195,7 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
     active.delete(selectionId)
     running?.controller.abort()
     if (running) queryClient.getMutationCache().remove(running.mutation)
+    queryClient.removeQueries({ queryKey: lifecycleKey(key, selectionId), exact: true })
     clearProgress(key, selectionId)
     if (!selections.length) queryClient.removeQueries({ queryKey: progressKey(key), exact: true })
     if (cancel && running && !disposed && !boundarySignal.aborted && sessionGeneration() === generation && !sessionIsSwitching()) {
@@ -185,8 +217,9 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
     const pins: SnapshotPins['pins'][number][] = []
     for (const selection of selections) {
       const state = active.get(selection.id)?.mutation.state
-      if (selection.issue || state?.status !== 'success' || !state.data
-        || fileStateAt(state.data.file, new Date().toISOString()) !== 'ready') return null
+      if (selection.issue || state?.status !== 'success' || !state.data) return null
+      const file = queryClient.getQueryData<FileMetadata>(lifecycleKey(key, selection.id)) ?? state.data.file
+      if (fileStateAt(file, new Date().toISOString()) !== 'ready') return null
       pins.push({ selectionId: selection.id, fileId: state.data.revision.fileId, revisionId: state.data.revision.revisionId })
     }
     const parsed = MessageAttachmentRefsSchema.safeParse(pins.map(({ fileId, revisionId }) => ({ fileId, revisionId })))
@@ -219,6 +252,7 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
     }
     active.clear()
     queryClient.removeQueries({ queryKey: cachePrefix })
+    queryClient.removeQueries({ queryKey: lifecyclePrefix })
     for (const mutation of queryClient.getMutationCache().findAll({ mutationKey: cachePrefix })) {
       queryClient.getMutationCache().remove(mutation)
     }
@@ -243,11 +277,14 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
   }
 
   return {
-    store, uploadKey, progressKey, retain, add, prepareSend, acknowledgeSent,
+    store, uploadKey, progressKey, lifecycleOptions, refreshExpired, retain, add, prepareSend, acknowledgeSent,
     remove: (key: string, selectionId: string) => forget(key, selectionId, true),
     retry(key: string, selectionId: string) {
       const selection = selected(key, selectionId)
-      if (selection) start(key, selection)
+      const upload = active.get(selectionId)?.mutation.state
+      if (selection && upload?.status === 'success' && upload.data) {
+        void queryClient.fetchQuery({ ...lifecycleOptions(key, selectionId, upload.data), staleTime: 0 }).catch(() => undefined)
+      } else if (selection) start(key, selection)
     },
   }
 }

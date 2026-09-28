@@ -67,7 +67,10 @@ export class PostgresScheduleDispatcher {
         return
       } catch (error) {
         const reason = scheduleRejectionReason(error)
-        if (reason) { await this.prepare(candidate, reason); return }
+        if (reason) {
+          await this.prepare(candidate, { dueAt: prepared.dueAt, reason })
+          continue // a newer occurrence needs its own latest-saved admission
+        }
         if (error instanceof DomainError && ['SCHEDULE_DISPATCH_RETRY', 'WORKFLOW_BASE_CONFLICT',
           'LOCATION_REVISION_CONFLICT'].includes(error.code)) continue
         throw error
@@ -110,7 +113,8 @@ export class PostgresScheduleDispatcher {
     return ScheduleOccurrenceSchema.parse({ workspaceId: schedule.workspaceId, workflowId: schedule.workflowId,
       id: scheduleOccurrenceId(schedule.workflowId, dueAt), dueAt, scheduleRevision: schedule.revision, ...outcome })
   }
-  private async prepare(observed: WorkflowSchedule, rejection?: string): Promise<PreparedStart | undefined> {
+  private async prepare(observed: WorkflowSchedule,
+    rejection?: { dueAt: string; reason: string }): Promise<PreparedStart | undefined> {
     return this.transaction(async (client) => {
       // Principal locks precede workspace locks, matching schedule writes and
       // manual admission. Revisions below fence a concurrently replaced binding.
@@ -135,6 +139,9 @@ export class PostgresScheduleDispatcher {
       }
       if (current.revision !== observed.revision) return // changed configuration: rescan, never use stale pins
       for (const step of planDueSchedule(current, now)) {
+        // A delayed Start failure belongs only to the attempted occurrence.
+        // A clock/peer cursor advance must not apply it to a newer due instant.
+        if (rejection && step.dueAt !== rejection.dueAt) return
         const previous = await this.existing(client, current, step.dueAt)
         if (!previous) {
           // Refresh after each awaited read: draining older facts must not
@@ -146,7 +153,7 @@ export class PostgresScheduleDispatcher {
           }
           if (decision.status === 'not_due') return
           if (decision.status === 'eligible') {
-            const reason = authorityFailure ?? rejection
+            const reason = authorityFailure ?? rejection?.reason
             if (!reason) {
               if (!principal) throw new Error('Schedule authority was not resolved.')
               try {
@@ -196,8 +203,9 @@ export class PostgresScheduleDispatcher {
       if (!slot?.value?.enabled || slot.value.revision !== schedule.revision) throw retry()
       if (exceptRunId === undefined && slot.value.nextOccurrenceAt !== dueAt) throw retry()
       if (exceptRunId === undefined && await this.existing(client, schedule, dueAt)) throw retry()
-      const decision = decideDueSchedule(schedule, dueAt, this.clock().toISOString(), true,
-        await this.overlapping(client, schedule, exceptRunId))
+      const overlap = await this.overlapping(client, schedule, exceptRunId)
+      // Sample time after the final awaited read, including in beforeGraphCommit.
+      const decision = decideDueSchedule(schedule, dueAt, this.clock().toISOString(), true, overlap)
       if (decision.status !== 'eligible') throw retry()
     }
     return {

@@ -213,6 +213,7 @@ export class PostgresAgentChatRepository {
   async admit(input: {
     key: string; request: SendAgentChatMessageRequest; context: AgentChatContext; create?: NewAgentConversation; ownerPrincipalId?: string
     delivery: 'queued' | 'submitting'; targetNativeTurnId?: string
+    assertCurrent?: (transaction: pg.PoolClient) => Promise<void>
   }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget; replayWarning?: AgentChatReplayWarning }> {
     const client = await this.pool.connect()
     try {
@@ -223,6 +224,11 @@ export class PostgresAgentChatRepository {
       if (row) {
         // Claim/finish/interrupt use this same lock: admission cannot retarget a later queued turn.
         row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [row.id])).rows[0]!
+      }
+      // Revalidate after both admission locks, before replay or any durable write.
+      // The principal/delegation share locks remain held until this transaction ends.
+      await input.assertCurrent?.(client)
+      if (row) {
         const prior = (await client.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
           where conversation_id=$1 and request_id=$2`, [row.id, input.request.requestId])).rows[0]
         if (prior) {

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import type {
   FileRetentionGetResult, FileRetentionPreviewInput, FileRetentionSaveResult,
 } from '@graphql/contracts/files'
+import { attachmentLifecycleQueryKey } from '../attachments/attachmentLifecycle'
 import { ApiError } from '../../shared/api/client'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { retentionClient } from './retentionClient'
@@ -102,6 +103,10 @@ export function useRetentionSaveMutation() {
       assertSession(generation)
       if (receipt.value.preference.ownerPrincipalId !== ownerPrincipalId) {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Could not verify the retention owner.' })
+      }
+      if (input.applyToExisting) {
+        // Refresh file truth, not a locally computed expiry based on the preference.
+        void client.invalidateQueries({ queryKey: attachmentLifecycleQueryKey }).catch(() => undefined)
       }
       try {
         const current = await readRetentionPreference(client, generation)

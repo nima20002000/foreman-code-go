@@ -13,6 +13,7 @@ import type { PostgresRunRepository } from '../runs/postgres.js'
 import { agentChatKey, type AgentConversationRow } from './agentChatRepository.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
+export type RunChatAuthorityCheck = (transaction?: pg.PoolClient) => Promise<void>
 export type RunChatSelection = Exclude<ReadSelectedRunChatResponse, { kind: 'selected' }> | {
   kind: 'selected'; selection: SelectedRunChatExecution; context: AgentChatContext
 }
@@ -120,15 +121,22 @@ export async function resolveRunChatSelection(query: Queryable, runs: Pick<Postg
 
 /** Revalidate through the existing delegation reader. Do not hold a pool connection while
  * calling chat/Run services: those services acquire their own connections. A held outer
- * transaction would deadlock a saturated pool. Reads recheck before returning; mutations
- * recheck at their existing admission boundary, not after an accepted native side effect. */
+ * transaction would deadlock a saturated pool. Reads recheck before returning; message
+ * admissions recheck on their transaction so authority locks survive its durable writes.
+ * No authorization transaction spans native I/O. */
 export async function withRunChatAuthority<T>(pool: pg.Pool, principal: ManagementPrincipal, target: SelectedRunChatTarget,
-  actions: readonly ManagementAction[], work: (query: Queryable, assertCurrent: () => Promise<void>) => Promise<T>): Promise<T> {
+  actions: readonly ManagementAction[], work: (query: Queryable, assertCurrent: RunChatAuthorityCheck) => Promise<T>): Promise<T> {
   const authorize = (candidate: ManagementPrincipal) => {
     for (const action of actions) requireAuthorization(candidate, action, target)
   }
-  const assertCurrent = async () => {
+  const assertCurrent: RunChatAuthorityCheck = async (transaction) => {
     authorize(principal)
+    if (transaction) {
+      // The admission owner commits/releases this connection and its authority locks.
+      const live = await readLiveManagementPrincipal(transaction, principal.id)
+      authorize(principal); authorize(live)
+      return
+    }
     const client = await pool.connect()
     try {
       await client.query('begin')

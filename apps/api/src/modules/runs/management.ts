@@ -53,6 +53,12 @@ export class RunManagementService {
     await this.scheduleDispatcher?.stop()
   }
 
+  /** Report the actual schedule composition separately from native readiness. */
+  scheduleAvailability(): { configured: boolean; runtimeAdmission: boolean } {
+    return { configured: this.currentProduction !== undefined,
+      runtimeAdmission: this.scheduleDispatcher !== undefined && this.availability().runtimeAdmission }
+  }
+
   private visibleRun(principal: ManagementPrincipal, run: ReturnType<typeof SavedWorkflowRunSchema.parse>) {
     const visible = { ...run }
     delete visible.authorizationPrincipalId

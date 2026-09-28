@@ -7,7 +7,7 @@ import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
 import { useConversationDraftStore } from '../conversations'
 import { ChatAttachmentControl, useConversationAttachments } from '../attachments'
 import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
-import { messageAttachmentRefs, prepareChatAttachments, sameAttachmentRefs, type ChatAttachmentAttempt } from '../conversations/chatAttachmentAttempt'
+import { messageAttachmentRefs, prepareChatAttachments, sameAttachmentRefs } from '../conversations/chatAttachmentAttempt'
 import { settingsExperienceKeys } from '../../shared/api/settingsExperience'
 import { apiClient, cancelOperatorTurn, createOperatorConversation, getOperatorConversation,
   sendOperatorMessage, respondOperatorInteraction } from '../../shared/api/client'
@@ -31,6 +31,7 @@ import { acknowledgeOperatorMessage, assertOperatorMessageReserved, beginOperato
   readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorActivity, projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
+import { useOperatorAttachmentReceipts } from './useOperatorAttachmentReceipts'
 import { OperatorTranscript } from './OperatorTranscript'
 import { OperatorApprovalCard } from './OperatorApprovalCard'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
@@ -62,7 +63,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const browserAccess = useQuery({ queryKey: settingsExperienceKeys.access(), enabled: false,
     queryFn: ({ signal }) => apiClient.request('/api/auth/session', BrowserAccessSessionSchema, { signal }),
   })
-  const attachmentAttempts = useRef(new Map<string, ChatAttachmentAttempt>())
+  const attachmentReceipts = useOperatorAttachmentReceipts()
   const { panelRef, size, grip, moveGrip } = useOperatorChatResize()
   const historyLimit = useRef(10)
   const creating = useRef(false)
@@ -117,6 +118,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     && Date.parse(owner.expiresAt) > Date.now() ? { kind: 'temporary', chat: { kind: 'operator',
       conversationId: fileConversation.id, operatorId: fileConversation.agentId, ownerPrincipalId: owner.id,
     } } : null)
+  const attachmentReceiptPending = Boolean(selectedId && attachmentReceipts.blocksSend(selectedId, attachments.readyRefs))
   const pending = selectedId && !accessDenied && enabled && !sessionIsSwitching() ? readPendingOperatorMessage(selectedId) : {}
   const setup = useOperatorChatSetup(enabled && open && !pending.command, preferences.query.data?.revision,
     { ...(selectedId ? { conversationId: selectedId } : {}), ...(preferences.settings ? { harness: preferences.settings.harness } : {}) })
@@ -191,14 +193,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     onSuccess: async (result, input) => {
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
       const targetId = result.state.conversation.id
+      // Acceptance, not winning the cross-tab outbox deletion, consumes the snapshot.
+      attachmentReceipts.confirm(input.command.requestId, result.state)
       let acknowledged = false
       try {
         acknowledged = await acknowledgeOperatorMessage(input.id, input.command.requestId)
         if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
         if (acknowledged) {
           clearDraft(input.id, input.command.content)
-          attachmentAttempts.current.get(input.command.requestId)?.acknowledge?.()
-          attachmentAttempts.current.delete(input.command.requestId)
         }
       } catch (error) {
         if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
@@ -393,11 +395,12 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
       await createConversation()
       return
     }
-    if (!setupReady || !settingsReady || !selectedId || archived || active || accessDenied || pending.command || pending.error
+    if (!setupReady || !settingsReady || !selectedId || archived || active || accessDenied || pending.command || pending.error || attachmentReceiptPending
       || reservations.current.has(selectedId) || (send.isPending && send.variables?.id === selectedId)) return
     if ((useConversationDraftStore.getState().drafts[selectedId] ?? '').trim() !== content.trim()) return
     const attachmentAttempt = prepareChatAttachments(attachments)
-    if (!attachmentAttempt || (!content.trim() && !attachmentAttempt.attachments.length)) return
+    if (!attachmentAttempt || (!content.trim() && !attachmentAttempt.attachments.length)
+      || attachmentReceipts.blocksSend(selectedId, attachmentAttempt.attachments)) return
     if (attachmentAttempt.attachments.length && pendingHandoff) {
       setPreparationError({ id: selectedId, message: 'Start the new chat before attaching files.' })
       return
@@ -413,7 +416,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         { configurationVersionId: conversation?.conversation.operatorConfigurationVersionId,
           defaultsRevision: preferences.query.data?.revision }, attachmentAttempt.attachments)
       if (!currentSession(generation) || epoch !== identityEpoch()) return
-      if (attachmentAttempt.attachments.length && !attachmentAttempts.current.has(command.requestId)) attachmentAttempts.current.set(command.requestId, attachmentAttempt)
+      attachmentReceipts.remember(id, command, attachmentAttempt)
       setPreparationError(undefined)
       send.mutate({ id, command, generation, epoch, navigationGeneration })
     } catch (error) {
@@ -511,12 +514,13 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               }}>Retry pending message</Button> : null}
               {pending.command && pending.definitiveFailure ? <Button variant="ghost" disabled={pending.inFlight || (send.isPending && send.variables?.id === selectedId)} onClick={() => {
                 void discardDefinitivelyRejectedOperatorMessage(conversation.conversation.id, pending.command!.requestId).then((discarded) => {
-                  if (discarded) { attachmentAttempts.current.delete(pending.command!.requestId); send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
+                  if (discarded) { attachmentReceipts.forget(pending.command!.requestId); send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
                 }).catch((error: unknown) => setPreparationError({ id: conversation.conversation.id,
                   message: error instanceof Error ? error.message : 'The saved attempt could not be cleared.' }))
               }}>Clear rejected attempt and keep draft</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
+              {attachmentReceiptPending && !pending.command ? <Button size="sm" onClick={attachmentReceipts.reconcile}>Check previous message</Button> : null}
               <p className="operator-chat-handoff">Access edits apply to new chats and harness handoffs. This chat keeps its pinned access policy.</p>
               {pendingHandoff ? <p className="operator-chat-handoff" role="status">{attachments.hasAttachments ? 'Files stay in this chat. Start a new chat to attach files.' : <>Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</>}</p> : null}
               {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
@@ -540,7 +544,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
                 hasAttachments={attachments.hasAttachments}
                 attachmentControl={<ChatAttachmentControl draft={attachments} disabled={Boolean(archived || active || pending.command) || preparingId === selectedId} />}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
-                sendDisabled={attachments.hasBlockingAttachments || (attachments.hasAttachments && pendingHandoff) || !setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
+                sendDisabled={attachmentReceiptPending || attachments.hasBlockingAttachments || (attachments.hasAttachments && pendingHandoff) || !setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
                 onCancel={requestId && conversation.turnState !== 'canceling' ? () => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() }) : undefined} />
             </footer>

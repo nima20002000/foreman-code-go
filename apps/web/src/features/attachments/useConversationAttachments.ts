@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useMemo, useReducer } from 'react'
-import { skipToken, useMutationState, useQuery, type MutationState } from '@tanstack/react-query'
+import { skipToken, useMutationState, useQueries, useQuery, type MutationState } from '@tanstack/react-query'
 import { useStore } from 'zustand'
 import {
   MAX_MESSAGE_ATTACHMENTS, MessageAttachmentRefsSchema, TemporaryFileScopeSchema, fileStateAt,
@@ -56,9 +56,19 @@ export function useConversationAttachments(scope: TemporaryFileScope | null): Co
   const [clockTick, refreshClock] = useReducer((tick: number) => tick + 1, 0)
   const states = new Map(uploads.filter((upload) => upload.variables?.draftKey === key)
     .map((upload) => [upload.variables?.selectionId, upload]))
-  // Keep an idle ready chip honest when its retention deadline passes.
+  const completed = (draft?.selections ?? []).flatMap((selection) => {
+    const state = states.get(selection.id)
+    return state?.status === 'success' && state.data ? [{ selectionId: selection.id, upload: state.data }] : []
+  })
+  const lifecycle = useQueries({ queries: completed.map(({ selectionId, upload }) =>
+    drafts.lifecycleOptions(key!, selectionId, upload)) })
+  const metadata = new Map(completed.map(({ selectionId }, index) => [selectionId, lifecycle[index]]))
+  useEffect(() => {
+    if (key !== null) for (const { selectionId, upload } of completed) drafts.refreshExpired(key, selectionId, upload)
+  }, [completed, drafts, key, clockTick])
+  // Keep an idle ready chip honest using current lifecycle metadata, not the upload receipt.
   const nextExpiry = Math.min(...(draft?.selections ?? []).flatMap((selection) => {
-    const file = states.get(selection.id)?.data?.file
+    const file = metadata.get(selection.id)?.data ?? states.get(selection.id)?.data?.file
     return file && 'expiresAt' in file && Date.parse(file.expiresAt) > now ? [Date.parse(file.expiresAt)] : []
   }))
   useEffect(() => {
@@ -76,8 +86,14 @@ export function useConversationAttachments(scope: TemporaryFileScope | null): Co
       error: state.error instanceof Error ? state.error.message : 'The attachment could not be uploaded.',
     }
     if (state?.status === 'success' && state.data) {
-      if (fileStateAt(state.data.file, new Date(now).toISOString()) !== 'ready') {
-        return { ...base, status: 'error', statusLabel: 'Expired', error: 'Remove this file and select it again.' }
+      const current = metadata.get(selection.id)
+      const effective = fileStateAt(current?.data ?? state.data.file, new Date(now).toISOString())
+      if (effective !== 'ready') {
+        if (current?.isFetching) return { ...base, status: 'uploading', statusLabel: 'Checking' }
+        if (current?.isError) return { ...base, status: 'error', statusLabel: 'Check failed', canRetry: available,
+          error: 'The attachment could not be checked. Retry to check the same file.' }
+        return { ...base, status: 'error', statusLabel: effective === 'removed' ? 'Removed' : 'Expired',
+          error: 'Remove this file and select it again.' }
       }
       return { ...base, status: 'ready', statusLabel: 'Ready', ref: {
         fileId: state.data.revision.fileId, revisionId: state.data.revision.revisionId,
