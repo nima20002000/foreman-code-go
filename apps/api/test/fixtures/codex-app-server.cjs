@@ -28,6 +28,10 @@ if (args[0] === 'mcp') {
     if (args[1] === 'list') { console.log('[]'); process.exit(0) }
     process.exit(1)
   }
+  if (args[1] === 'list') {
+    console.log(JSON.stringify([{ name: read('mcp.json', { name: 'graphql' }).name || 'graphql' }]))
+    process.exit(0)
+  }
   console.log(JSON.stringify(read('mcp.json', {
     name: args[2], enabled: true, required: true,
     transport: { type: 'streamable_http', url: 'http://127.0.0.1:3000/mcp/app', bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' },
