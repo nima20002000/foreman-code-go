@@ -27,6 +27,7 @@ import { registerManagementRoutes } from './routes/management.js'
 import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
 import { registerAgentChatRoutes } from './routes/agentChat.js'
+import { registerWorkflowScheduleRoutes } from './routes/workflowSchedules.js'
 import { registerHarnessCompatibilityRoutes } from './routes/harnessCompatibility.js'
 import type { HarnessCompatibilityService } from './modules/harnesses/compatibility/service.js'
 
@@ -137,6 +138,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth, options.localDevBrowserAccess)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
+  if (options.operator?.services.workflows?.schedules) registerWorkflowScheduleRoutes(app, options.operator.services.workflows.schedules)
   if (options.operator?.services.runGraph) registerRunGraphRoutes(app, options.operator.services.runGraph,
     (principalId, code, route) => options.operator!.services.commands.recordDenied(principalId, 'http', code, route))
   if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)

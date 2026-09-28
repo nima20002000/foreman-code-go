@@ -10,6 +10,7 @@ import { registerRunGraphTools } from './tools/runGraph.js'
 import { registerRunInspectionTools } from './tools/runInspection.js'
 import { registerRunTools } from './tools/runs.js'
 import { registerWorkflowTools } from './tools/workflows.js'
+import { registerWorkflowScheduleTools } from './tools/workflowSchedules.js'
 import { registerWorkspaceTools } from './tools/workspaces.js'
 import { registerInteractionTools } from './tools/interactions.js'
 import { registerSettingsTools } from './tools/settings.js'
@@ -31,6 +32,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerWorkspaceDefaultsTools(server, context)
   registerWorkspaceTools(server, context)
   registerWorkflowTools(server, context)
+  registerWorkflowScheduleTools(server, context)
   registerAgentTools(server, context)
   registerRunTools(server, context)
   registerRunInspectionTools(server, context)

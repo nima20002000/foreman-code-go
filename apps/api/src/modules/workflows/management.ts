@@ -14,6 +14,7 @@ import type pg from 'pg'
 import { hasAction, requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { WorkflowScheduleService } from '../schedules/service.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { readSavedWorkflowDefinition } from './immutableRead.js'
@@ -31,8 +32,10 @@ function managed(row: WorkflowRow): ManagedWorkflow {
 
 export class WorkflowManagementService {
   readonly current: CurrentWorkflowAuthoring
+  readonly schedules: WorkflowScheduleService
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {
     this.current = new CurrentWorkflowAuthoring(pool, commands)
+    this.schedules = new WorkflowScheduleService(pool, commands)
   }
 
   async list(principal: ManagementPrincipal, input: {
