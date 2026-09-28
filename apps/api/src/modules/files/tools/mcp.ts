@@ -15,13 +15,20 @@ import type { AgentFileToolService } from './service.js'
 import { FileTransferError } from './transfers.js'
 import { FILE_TOOL_NAMES, type FileToolName } from './types.js'
 
+/** A native facade may wrap these operations without changing any frozen tool schema. */
+export type FileMcpService = Pick<AgentFileToolService, 'list' | 'read' | 'createWorkingCopy' | 'publish'> & {
+  sessions: Pick<AgentFileToolService['sessions'], 'authenticate'>
+  /** Trusted runner annotation only; never a tool input or an immutable source path. */
+  workingCopyLocation?(token: string, artifactId: string): Promise<string>
+}
+
 export const FILE_TOOLS_MCP_PATH = '/mcp/files'
 const bearer = (header: string | undefined) => /^Bearer (gql_file_[A-Za-z0-9_-]{43})$/i.exec(header ?? '')?.[1]
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.string() }).passthrough() }).passthrough()
 const annotations = (write: boolean) => ({ readOnlyHint: !write, destructiveHint: false, idempotentHint: true, openWorldHint: false })
 
-export async function createFileMcpServer(service: AgentFileToolService, token: string): Promise<McpServer> {
+export async function createFileMcpServer(service: FileMcpService, token: string): Promise<McpServer> {
   const caller = await service.sessions.authenticate(token)
   const enabled = new Set<FileToolName>()
   for (const name of FILE_TOOL_NAMES) {
@@ -34,8 +41,13 @@ export async function createFileMcpServer(service: AgentFileToolService, token: 
     `File-only tools for this authenticated native turn. No workflow GraphQL tools, worker authority, or Operator credentials. `
     + `Scope/destination fields are assertions, not selectors; use ${JSON.stringify(caller.context.scope)}. `
     + 'Permanent references are read-only. Writes require the accepted harness to permit mutation. Publish only completed runner artifact handles.' })
-  const invoke = async (operation: () => Promise<unknown>) => {
-    try { return toolResult(await operation()) }
+  const invoke = async <T>(operation: () => Promise<T>, describe?: (value: T) => Promise<string | undefined>) => {
+    try {
+      const value = await operation()
+      const result = toolResult(value)
+      const detail = await describe?.(value)
+      return detail ? { ...result, content: [...result.content, { type: 'text' as const, text: detail }] } : result
+    }
     catch (error) {
       const publicError = error instanceof ZodError ? new DomainError('INVALID_REQUEST', 'The input does not match the frozen file contract.', 400)
         : error instanceof FileTransferError ? new DomainError(error.code, error.message, 409) : error
@@ -53,7 +65,10 @@ export async function createFileMcpServer(service: AgentFileToolService, token: 
   if (allowed('files.create_working_copy')) server.registerTool('files.create_working_copy', {
     description: 'Copy authorized pinned bytes to an isolated runner artifact handle in this authenticated turn. No host path or permanent write target is accepted.',
     inputSchema: AgentFileCreateWorkingCopyInputSchema, outputSchema: AgentFileCreateWorkingCopyResultSchema, annotations: annotations(true),
-  }, async (input) => invoke(() => service.createWorkingCopy(token, input)))
+  }, async (input) => invoke(() => service.createWorkingCopy(token, input), async (result) => {
+    const path = await service.workingCopyLocation?.(token, result.value.artifactId)
+    return path ? JSON.stringify({ artifactId: result.value.artifactId, path }) : undefined
+  }))
   if (allowed('files.publish_result')) server.registerTool('files.publish_result', {
     description: 'Publish a completed artifact as new immutable temporary file/revision IDs in its originating conversation, linked to this turn. commandId is the retry key; changed bytes conflict.',
     inputSchema: AgentFilePublishInputSchema, outputSchema: AgentFilePublishResultSchema, annotations: annotations(true),
@@ -62,7 +77,7 @@ export async function createFileMcpServer(service: AgentFileToolService, token: 
 }
 
 /** Separate authenticated surface, not the workflow /mcp server or an Operator credential exchange. */
-export function registerFileToolsMcp(app: FastifyInstance, service: AgentFileToolService): void {
+export function registerFileToolsMcp(app: FastifyInstance, service: FileMcpService): void {
   app.post(FILE_TOOLS_MCP_PATH, { bodyLimit: 64 * 1024 }, async (request, reply) => {
     requireLocalRequest(request)
     const token = bearer(request.headers.authorization)
