@@ -61,6 +61,13 @@ export function integrationLogPath(base, file) {
   return join(base, `${file.slice('apps/api/test/'.length)}.log`)
 }
 
+export function adminDatabaseUrl(testDatabaseUrl) {
+  if (!testDatabaseUrl) return 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
+  const url = new URL(testDatabaseUrl)
+  url.pathname = '/postgres'
+  return url.toString()
+}
+
 /** Failing case names from a Vitest log, so failures can be acted on while the run continues. */
 export function failedCasesFromLog(output) {
   const names = output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)
@@ -84,8 +91,8 @@ export function failForSkippedCases(summary, startAt) {
   return !startAt && Boolean(summary?.skipped)
 }
 
-export function autoRetestFiles(failedFiles, { diagnostic, explicit, interrupted }) {
-  return diagnostic || explicit || interrupted ? [] : [...new Set(failedFiles)].sort()
+export function autoRetestFiles(failedFiles, { diagnostic, interrupted }) {
+  return diagnostic || interrupted ? [] : [...new Set(failedFiles)].sort()
 }
 
 export function fullRunExitCode(failed, interrupted) {
@@ -198,11 +205,12 @@ async function main() {
   const allFiles = discoverFiles()
   const selected = failedFrom ? failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles) : selectFiles(allFiles, startAt)
   const diagnostic = Boolean(startAt || failedFrom)
-  const explicit = Boolean(process.env.TEST_DATABASE_URL)
-  if (explicit) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
-  const shardCount = explicit ? 1 : Math.min(integrationShardLimit(process.env.GRAPHQL_INTEGRATION_SHARDS), selected.length)
-  const adminUrl = 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
-  const admin = explicit ? null : new Pool({ connectionString: adminUrl, max: 1 })
+  // TEST_DATABASE_URL only selects the loopback server; every slot still gets
+  // its own disposable database there, so the run stays fully parallel.
+  if (process.env.TEST_DATABASE_URL) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
+  const shardCount = Math.min(integrationShardLimit(process.env.GRAPHQL_INTEGRATION_SHARDS), selected.length)
+  const adminUrl = adminDatabaseUrl(process.env.TEST_DATABASE_URL)
+  const admin = new Pool({ connectionString: adminUrl, max: 1 })
   const slots = []
   const active = new Map()
   const killTimers = new Map()
@@ -230,16 +238,11 @@ async function main() {
       if (interrupted) throw new Error(`Interrupted during database setup (${interrupted})`)
       const directory = join(tempRoot, `slot-${index + 1}`)
       mkdirSync(directory)
-      let name = null
-      let databaseUrl = process.env.TEST_DATABASE_URL
-      if (admin) {
-        name = `graphql_test_${randomUUID().replaceAll('-', '')}`
-        await admin.query(`create database "${name}"`)
-        const connection = new URL(adminUrl)
-        connection.pathname = `/${name}`
-        databaseUrl = connection.toString()
-      }
-      slots.push({ index: index + 1, directory, name, databaseUrl })
+      const name = `graphql_test_${randomUUID().replaceAll('-', '')}`
+      await admin.query(`create database "${name}"`)
+      const connection = new URL(adminUrl)
+      connection.pathname = `/${name}`
+      slots.push({ index: index + 1, directory, name, databaseUrl: connection.toString() })
     }
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
     if (startAt) console.log(`[integration] RESUME at ${startAt}: partial run only; a clean full run is required for suite proof.`)
@@ -330,7 +333,7 @@ async function main() {
       console.error(`[integration] FAIL ${outcome.file} (slot ${outcome.slot.index}, exit 1); log: unavailable`)
       if (outcome.error) console.error(`[integration] runner error: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`)
     }
-    const toRetest = autoRetestFiles(failedFiles, { diagnostic, explicit, interrupted })
+    const toRetest = autoRetestFiles(failedFiles, { diagnostic, interrupted })
     if (toRetest.length) {
       retest.skipped = toRetest.length
       console.log(`[integration] RETEST ${toRetest.length} first-pass failed files on fresh disposable databases.`)
@@ -366,14 +369,14 @@ async function main() {
     process.off('SIGINT', onSigint)
     process.off('SIGTERM', onSigterm)
     try {
-      if (admin && !cleanupError) {
+      if (!cleanupError) {
         for (const slot of slots) if (slot.name) {
           try { await admin.query(`drop database "${slot.name}" with (force)`) }
           catch (error) { cleanupError ??= error }
         }
       }
     } finally {
-      if (admin) await admin.end()
+      await admin.end()
       if (!active.size) rmSync(tempRoot, { recursive: true, force: true })
       console.log(`[integration] files: ${passed} passed, ${failed} failed, ${skipped} skipped; cases: ${cases.passed} passed, ${cases.failed} failed, ${cases.skipped} skipped${unreported ? `; ${unreported} files without case totals` : ''}${diagnostic ? '; partial run is not full-suite proof' : ''}.`)
       if (retest.passed || retest.failed || retest.skipped) console.log(`[integration] retest files: ${retest.passed} passed, ${retest.failed} failed, ${retest.skipped} skipped; first-pass failures still fail this run.`)

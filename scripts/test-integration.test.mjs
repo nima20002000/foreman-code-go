@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, integrationLogPath, integrationShardLimit, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
+import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, integrationLogPath, integrationShardLimit, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -90,10 +90,9 @@ test('skipped cases fail a clean full run while a diagnostic resume reports them
 
 test('only a default full run queues each first-pass failure for one retest', () => {
   const failed = ['b', 'a', 'b']
-  assert.deepEqual(autoRetestFiles(failed, { diagnostic: false, explicit: false, interrupted: null }), ['a', 'b'])
-  assert.deepEqual(autoRetestFiles(failed, { diagnostic: true, explicit: false, interrupted: null }), [])
-  assert.deepEqual(autoRetestFiles(failed, { diagnostic: false, explicit: true, interrupted: null }), [])
-  assert.deepEqual(autoRetestFiles(failed, { diagnostic: false, explicit: false, interrupted: 'SIGINT' }), [])
+  assert.deepEqual(autoRetestFiles(failed, { diagnostic: false, interrupted: null }), ['a', 'b'])
+  assert.deepEqual(autoRetestFiles(failed, { diagnostic: true, interrupted: null }), [])
+  assert.deepEqual(autoRetestFiles(failed, { diagnostic: false, interrupted: 'SIGINT' }), [])
 })
 
 test('a successful retest cannot make a failed first pass green', () => {
@@ -182,4 +181,9 @@ test('interrupt escalates a TERM-ignoring owned process group without awaiting i
 test('lists failing case names from a Vitest log', () => {
   const log = '\x1b[31m FAIL \x1b[39m test/a.integration.test.ts > suite > breaks\n FAIL  test/a.integration.test.ts > suite > breaks\n FAIL  test/b.integration.test.ts [ test/b.integration.test.ts ]\n ✓ passes'
   assert.deepEqual(failedCasesFromLog(log), ['suite > breaks'])
+})
+
+test('TEST_DATABASE_URL selects the server; slots get their own databases there', () => {
+  assert.equal(adminDatabaseUrl(undefined), 'postgresql://graphql:graphql@127.0.0.1:5432/postgres')
+  assert.equal(adminDatabaseUrl('postgresql://u:p@127.0.0.1:5433/my_test'), 'postgresql://u:p@127.0.0.1:5433/postgres')
 })
