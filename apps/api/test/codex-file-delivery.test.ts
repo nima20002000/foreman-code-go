@@ -179,6 +179,23 @@ test('delivery contains only execution-host paths, exact pins and unchanged user
   await turn.close()
 })
 
+test('attached file instructions provide the accepted scope needed by file tools', async () => {
+  const f = fixture(), turn = await f.prepare()
+  const input = await turn.nativeInput('Edit the attachment')
+  assert.equal(input[0]?.type, 'text')
+  const prompt = input[0].text
+  const match = prompt.match(/File tool scope \(use this exact value for scope or destination\): (\{[^\n]+\})/)
+  assert.ok(match)
+  const suppliedScope = JSON.parse(match[1]!)
+  assert.deepEqual(suppliedScope, scope)
+  await turn.activate('turn-a')
+  assert.equal((await turn.call(f.request('files_create_working_copy', {
+    commandId: 'from-instructions', source: ref, destination: suppliedScope,
+  }))).success, true)
+  assert.ok(f.calls.includes('copy'))
+  await turn.close()
+})
+
 test('image delivered by native localImage path, with first-frame notice rather than inline binary', async () => {
   const f = fixture({ mediaType: 'image/gif', filename: 'animation.gif', bytes: Buffer.from('fake-gif-bytes') })
   f.dependencies.prepareImage = async () => ({ bytes: Buffer.from('fake-png-preview'), mediaType: 'image/png', firstFrameOnly: true })

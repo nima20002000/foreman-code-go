@@ -2,6 +2,7 @@ import { Readable } from 'node:stream'
 import type { FileWithRevision, MessageAttachmentRef } from '@graphql/contracts/files'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { assertRegisteredCodexCopy, collectCodexFileBytes, fail, sha256 } from './bytes.js'
+import { warnCodexFileError } from './runtime.js'
 import type {
   AcceptedCodexFileTurn, CodexAttachmentSource, CodexFileCall, CodexFileCallResult,
   CodexFileHostLease, CodexFileInput, CodexFileLimits, CodexFileServices,
@@ -173,7 +174,7 @@ export class CodexFileTurn {
       filename, path: copy.executionPath, ...ref, ...(firstFrameOnly ? { image: 'first frame' } : {}),
     }))
     const copyHint = this.allowedTools().includes('files.create_working_copy') ? '; use files_create_working_copy to edit' : ''
-    const note = lines.length ? `\n\nAttached files (read-only copies${copyHint}):\n${lines.join('\n')}` : ''
+    const note = lines.length ? `\n\nAttached files (read-only copies${copyHint}):\n${lines.join('\n')}\nFile tool scope (use this exact value for scope or destination): ${JSON.stringify(this.#accepted.scope)}` : ''
     return [{ type: 'text', text: prompt + note, text_elements: [] },
       ...this.#deliveries.flatMap((delivery): CodexFileInput[] => delivery.image
         ? [{ type: 'localImage', path: delivery.image.executionPath }] : [])]
@@ -206,7 +207,7 @@ export class CodexFileTurn {
    * Operator, worker, or workflow GraphQL entry points are accepted here. */
   call(request: CodexFileCall): Promise<CodexFileCallResult> {
     if (this.#closing) return Promise.resolve(refused())
-    const operation = this.dispatch(request).catch(() => refused())
+    const operation = this.dispatch(request).catch((error: unknown) => { warnCodexFileError(error); return refused() })
     this.#pending.add(operation)
     void operation.finally(() => this.#pending.delete(operation))
     return operation

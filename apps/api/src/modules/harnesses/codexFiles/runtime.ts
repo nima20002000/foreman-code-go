@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { NativeSessionReference } from '@graphql/contracts'
+import { componentLogger } from '../../../infrastructure/logger.js'
 import type { CodexFileCall, CodexFileCallResult } from './port.js'
 import type { CodexFileTurn } from './turn.js'
 
@@ -21,6 +22,16 @@ const MAX_RETAINED_BYTES = 8 * 1024 * 1024
 const refused = (): CodexFileCallResult => ({ success: false,
   contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }],
 })
+const log = componentLogger('harness')
+function errorIdentity(error: unknown): { code?: string; class?: string } {
+  const value = error && typeof error === 'object' ? error as { code?: unknown; constructor?: { name?: unknown } } : undefined
+  const safe = (part: unknown) => typeof part === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(part) ? part : undefined
+  const code = safe(value?.code), className = safe(value?.constructor?.name)
+  return { ...(code ? { code } : {}), ...(className ? { class: className } : {}) }
+}
+export function warnCodexFileError(error: unknown): void {
+  log.warn(errorIdentity(error), 'Codex file operation failed')
+}
 function identity(value: unknown): string {
   const sorted = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(sorted)
     : entry && typeof entry === 'object' ? Object.fromEntries(Object.entries(entry)
@@ -70,7 +81,7 @@ export class CodexRuntimeFileTurn {
         if (bytes > MAX_RESPONSE_BYTES || this.retainedBytes + bytes > MAX_RETAINED_BYTES) return refused()
         this.retainedBytes += bytes
         return value
-      }, () => refused())
+      }, (error: unknown) => { warnCodexFileError(error); return refused() })
     this.calls.set(request.callId, { signature, result })
     return result
   }
