@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MessageAttachmentFields } from "./files.js";
 import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
 
 import {
@@ -191,6 +192,7 @@ export type AgentChatQuery = z.infer<typeof AgentChatQuerySchema>;
 export const SendAgentChatMessageRequestSchema = z.object({
   /** Idempotency key. A replay with the same key and input returns the stored receipt; never re-sends. */
   requestId: IdSchema,
+  ...MessageAttachmentFields,
   context: AgentChatQuerySchema,
   content: z.string().trim().min(1).max(32000),
   intent: AgentChatIntentSchema.default("next_turn"),
@@ -199,7 +201,8 @@ export const SendAgentChatMessageRequestSchema = z.object({
   /** Required for steer when capabilities.steer is "native_expected_turn". */
   expectedNativeTurnId: IdSchema.optional(),
 }).strict();
-export type SendAgentChatMessageRequest = z.infer<typeof SendAgentChatMessageRequestSchema>;
+export type SendAgentChatMessageRequest = Omit<z.infer<typeof SendAgentChatMessageRequestSchema>, "attachments">
+  & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };
 /** Legacy urgent receipts did not retain the original target. This is readback, not target verification. */
 export const AgentChatReplayWarningSchema = z.object({
   code: z.literal("AGENT_CHAT_LEGACY_TARGET_UNVERIFIABLE"),

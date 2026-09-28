@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
+import { messageAttachmentIdentity } from '@graphql/contracts/files'
+
+import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
 import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type Message, type PendingNativeInteraction } from '@graphql/contracts'
 import {
@@ -73,10 +76,12 @@ export function agentChatKey(context: AgentChatContext): string {
 export function agentChatCorrelation(conversationId: string, requestId: string): string {
   return `agent-chat:${conversationId}:${requestId}`
 }
-export function agentChatInputHash(input: Pick<SendAgentChatMessageRequest, 'content' | 'intent' | 'context' | 'expectedNativeTurnId'>): string {
+export function agentChatInputHash(input: Pick<SendAgentChatMessageRequest, 'content' | 'intent' | 'context' | 'expectedNativeTurnId'>
+  & Partial<Pick<SendAgentChatMessageRequest, 'requestId' | 'attachments'>>): string {
   // Keep untargeted receipt identities stable; a supplied native precondition is part of the command.
   return createHash('sha256').update(JSON.stringify([input.content, input.intent, input.context,
-    ...(input.expectedNativeTurnId === undefined ? [] : [input.expectedNativeTurnId])])).digest('hex')
+    ...(input.expectedNativeTurnId === undefined ? [] : [input.expectedNativeTurnId]),
+    ...(input.attachments?.length ? [{ attachmentIdentity: messageAttachmentIdentity({ requestId: input.requestId!, attachments: input.attachments }) }] : [])])).digest('hex')
 }
 
 export function agentConversation(row: AgentConversationRow): AgentConversation {
@@ -225,12 +230,12 @@ export class PostgresAgentChatRepository {
           // durable target can establish a legacy replay; never infer it from the current owner.
           const sameSteerTarget = input.request.intent === 'steer' && input.request.expectedNativeTurnId !== undefined
             && prior.target_native_turn_id === input.request.expectedNativeTurnId
-          const legacySteerReplay = sameSteerTarget && prior.intent === 'steer'
+          const legacySteerReplay = !input.request.attachments?.length && sameSteerTarget && prior.intent === 'steer'
             && prior.input_hash === agentChatInputHash({ content: input.request.content, intent: input.request.intent, context: input.request.context })
           // Unversioned urgent receipts with no retained target cannot prove the old precondition.
           // Return READBACK ONLY, explicitly marked unverifiable for every claimed target (or none).
           // Never adopt the retry's target, consult the current owner, or rewrite the legacy identity.
-          const legacyUrgentReadback = prior.intent === 'interrupt_and_send' && input.request.intent === prior.intent
+          const legacyUrgentReadback = !input.request.attachments?.length && prior.intent === 'interrupt_and_send' && input.request.intent === prior.intent
             && prior.target_native_turn_id === null && prior.payload.requestIdentityVersion === undefined
             && prior.input_hash === agentChatInputHash({ content: input.request.content, intent: input.request.intent, context: input.request.context })
           if (input.request.intent === 'steer' && !sameSteerTarget || prior.input_hash !== hash && !legacySteerReplay && !legacyUrgentReadback) {
@@ -258,6 +263,10 @@ export class PostgresAgentChatRepository {
             409, { limit: AGENT_CHAT_OPEN_TURN_LIMIT })
         }
       }
+      // Uploads require an existing conversation. Never adopt pre-Run/other-Run files
+      // while creating a new chat, even when its Agent or filename matches.
+      if (!row && input.request.attachments?.length) throw new DomainError(
+        'MESSAGE_ATTACHMENT_CONVERSATION_REQUIRED', 'Upload files to an existing conversation before attaching them.', 409)
       let created = false
       if (!row) {
         if (!input.create) throw new DomainError('AGENT_CHAT_CONTEXT_STALE', 'The conversation for this Agent changed. Reload it before sending.', 409)
@@ -282,11 +291,12 @@ export class PostgresAgentChatRepository {
         ? { requestId: row.active_request_id, nativeTurnId: row.active_native_turn_id } : undefined
       const targetNativeTurnId = input.request.intent === 'interrupt_and_send'
         ? input.request.expectedNativeTurnId ?? interruptTarget?.nativeTurnId : input.targetNativeTurnId
+      await validateMessageAttachments(client, row.id, input.request.attachments)
       const now = new Date().toISOString()
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: row.id, role: 'user', requestId: input.request.requestId,
         content: input.request.content, createdAt: now, updatedAt: now })
       await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)
-        values ($1,$2,'user',$3,$4,$5::jsonb)`, [message.id, row.id, message.content, message.requestId, JSON.stringify(message)])
+        values ($1,$2,'user',$3,$4,$5::jsonb)`, [message.id, row.id, message.content, message.requestId, JSON.stringify(withMessageAttachmentRefs(message, input.request.attachments))])
       const inserted = (await client.query<TurnRow>(`insert into operator_conversation_turns
           (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,target_native_turn_id)
         values ($1,$2,$3::jsonb,$4,$5,$6,$7,$8) returning ${TURN_COLUMNS}`,
@@ -596,7 +606,7 @@ export class PostgresAgentChatRepository {
     select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
       (select count(*) from candidates)>(select count(*) from selected) as has_earlier`,
     [id, AGENT_CHAT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])).rows[0]!
-    return { row, turns, messages: recent.messages.map((entry) => MessageSchema.parse(entry)), hasEarlierMessages: recent.has_earlier,
+    return { row, turns, messages: await hydrateMessageAttachments(this.pool, id, recent.messages), hasEarlierMessages: recent.has_earlier,
       ...(overflow ? { hasMoreTurns: true as const } : {}) }
   }
   async receipts(id: string, before: string | undefined, limit: number) {
@@ -621,7 +631,7 @@ export class PostgresAgentChatRepository {
     [id, before ?? null, limit, OPERATOR_HISTORY_PAGE_BYTES])).rows[0]!
     // One oversized message is allowed over HTTP/MCP readback, ensuring cursor progress
     // without truncating native content or putting it back in a live snapshot.
-    return { messages: page.messages.map((entry) => MessageSchema.parse(entry)), nextCursor: page.next_cursor }
+    return { messages: await hydrateMessageAttachments(this.pool, id, page.messages), nextCursor: page.next_cursor }
   }
 
   private async bump(id: string, query: Queryable = this.pool): Promise<void> {

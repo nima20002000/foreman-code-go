@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import type { FileRevision, MessageAttachmentRef } from '@graphql/contracts/files'
 import type { FileToolContext } from '../../src/modules/files/tools/types.js'
 import { OpenCodeFileTurn } from '../../src/modules/harnesses/opencodeFiles/turn.js'
-import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, sha256 } from '../../src/modules/harnesses/opencodeFiles/attachments.js'
+import { fileDeliveryPrompt, nativeImagePart, sha256 } from '../../src/modules/harnesses/opencodeFiles/attachments.js'
 import { LocalOpenCodeExecutionFiles, assertProtectedSourcePaths } from '../../src/modules/harnesses/opencodeFiles/host.js'
 import type { AcceptedOpenCodeFileTurn, OpenCodeExecutionFiles, OpenCodeFileService } from '../../src/modules/harnesses/opencodeFiles/types.js'
 

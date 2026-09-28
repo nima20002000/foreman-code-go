@@ -73,6 +73,7 @@ export class LocalOpenCodeExecutionFiles implements OpenCodeExecutionFiles {
     return this.exclusive(async () => {
       signal.throwIfAborted()
       checkFileCondition(opaque(input.handle) && input.revision.filename === basename(input.revision.filename)
+  // eslint-disable-next-line no-control-regex -- control characters in file names are rejected on purpose
         && !['.', '..', ''].includes(input.revision.filename) && !/[\\\u0000-\u001f\u007f]/u.test(input.revision.filename),
       'FILE_HOST_INPUT_INVALID', 'Materialize a registered handle and a validated filename, never a host path.')
       checkFileCondition(input.bytes.byteLength <= this.options.maxFileBytes

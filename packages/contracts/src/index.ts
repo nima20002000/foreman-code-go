@@ -1,5 +1,6 @@
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { z } from "zod";
+import { FileWithRevisionSchema, MAX_MESSAGE_ATTACHMENTS, MessageAttachmentFields } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 export type { Id, Timestamp } from "./schemaPrimitives.js";
@@ -792,6 +793,8 @@ export const MessageSchema = z
     afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),
+    /** Pinned metadata readback; lifecycle state is resolved at read time, not frozen on send. */
+    attachments: z.array(FileWithRevisionSchema).max(MAX_MESSAGE_ATTACHMENTS).optional(),
     ...OptionalTimestampFields,
   })
   .strict();
@@ -1488,6 +1491,7 @@ export const ListOperatorConversationsResponseSchema = z.object({ conversations:
 export const GetOperatorConversationResponseSchema = OperatorConversationStateSchema;
 export const SendOperatorMessageRequestSchema = z.object({
   requestId: IdSchema,
+  ...MessageAttachmentFields,
   content: z.string().trim().min(1),
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
@@ -1504,7 +1508,8 @@ export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema })
 export const RespondOperatorInteractionRequestSchema = z.object({
   requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
 }).strict();
-export type SendOperatorMessageRequest = z.infer<typeof SendOperatorMessageRequestSchema>;
+export type SendOperatorMessageRequest = Omit<z.infer<typeof SendOperatorMessageRequestSchema>, "attachments">
+  & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };
 export type RespondOperatorInteractionRequest = z.infer<typeof RespondOperatorInteractionRequestSchema>;
 export const CancelOperatorTurnResponseSchema = z.object({ state: OperatorConversationStateSchema }).strict();
 export const OperatorConversationStreamEventSchema = z.object({

@@ -1,3 +1,4 @@
+import process from 'node:process'
 // Deterministic fake app-server for the FIL-08 bridge orchestration test only.
 // This is not an upstream schema fixture and never launches a model or a shell.
 import assert from 'node:assert/strict'

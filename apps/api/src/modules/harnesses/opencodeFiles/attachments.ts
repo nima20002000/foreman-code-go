@@ -58,6 +58,7 @@ export function nativeImagePart(file: OpenCodeRegisteredFile, revision: FileRevi
   checkFileCondition(file.executionHostId === executionHostId, 'FILE_EXECUTION_HOST_MISMATCH',
     'The registered file is not on the accepted execution host.')
   checkFileCondition(posix.isAbsolute(file.path) && posix.normalize(file.path) === file.path && !file.path.startsWith('//')
+  // eslint-disable-next-line no-control-regex -- control characters in file names are rejected on purpose
     && !/[\u0000-\u001f\u007f]/u.test(file.path), 'FILE_EXECUTION_PATH_INVALID',
   'A canonical absolute execution-host path is required.')
   if (!imageTypes.has(revision.mediaType)) return undefined
