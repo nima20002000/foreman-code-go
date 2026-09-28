@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileWithRevisionSchema, fileStateAt, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { Button, Icon } from '../../shared/ui/nocturne'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
+import { attachmentLifecycleQueryKey, readAttachmentLifecycle } from '../attachments/attachmentLifecycle'
 import type { FileCardClient } from './fileCardClient'
 import { fileCardKey, fileTypeLabel, formatFileSize, isRasterImage, MAX_THUMBNAIL_BYTES } from './fileCardPresentation'
 import { fileErrorStatus, saveBlob, useAborted, useEffectiveFileState, useObjectUrl, type FileCardStatus } from './fileCardResources'
@@ -129,14 +130,45 @@ function ReadyFileCard({ file, client, generation }: FileCardProps & { generatio
 }
 
 function ValidatedFileCard({ file, client }: FileCardProps) {
-  const state = useEffectiveFileState(file.file)
   // Bind this mounted view to its original session, not the next principal's new signal.
   const [session] = useState(() => ({ generation: sessionGeneration(), signal: sessionSignal() }))
   const aborted = useAborted(session.signal)
   const unavailable = aborted || sessionIsSwitching() || session.generation !== sessionGeneration()
+  const viewId = useId()
+  const scope = file.file.scope
+  const { data: metadata, dataUpdatedAt, errorUpdatedAt, isFetching, refetch } = useQuery({
+    // Share retention-save invalidation with drafts, not their cache or mutable discovery heads.
+    queryKey: [...attachmentLifecycleQueryKey, 'message', clientId(client), session.generation, viewId],
+    initialData: file.file, initialDataUpdatedAt: Date.parse(file.file.createdAt),
+    staleTime: Infinity, gcTime: 0, retry: false, meta: { persist: false },
+    enabled: (query) => !unavailable && scope.kind === 'temporary'
+      && (query.state.data ?? file.file).state === 'ready',
+    queryFn: async ({ signal }) => {
+      assertSession(session.generation)
+      if (scope.kind !== 'temporary') throw new SessionChangedError()
+      const requestSignal = AbortSignal.any([signal, session.signal])
+      requestSignal.throwIfAborted()
+      const current = await readAttachmentLifecycle(scope, file.file, requestSignal)
+      assertSession(session.generation)
+      requestSignal.throwIfAborted()
+      return current
+    },
+  })
+  const state = useEffectiveFileState(metadata)
+  useEffect(() => {
+    // History pages need not refetch when retention changes in MCP/another tab. Check each
+    // elapsed deadline once; a failed check must not spin, nor may a tombstone be revived.
+    if (!unavailable && !isFetching && metadata.state === 'ready' && state === 'expired'
+      && 'expiresAt' in metadata && Math.max(dataUpdatedAt, errorUpdatedAt) < Date.parse(metadata.expiresAt)) {
+      void refetch()
+    }
+  }, [unavailable, isFetching, metadata, state, dataUpdatedAt, errorUpdatedAt, refetch])
+  // Refresh only lifecycle metadata. The filename, digest and downloaded revision stay pinned.
+  const current = { ...file, file: metadata }
   return state === 'ready' && !unavailable
-    ? <ReadyFileCard file={file} client={client} generation={session.generation} />
-    : <CardLayout file={file} status={unavailable ? 'unavailable' : state} />
+    ? <ReadyFileCard key={'expiresAt' in metadata ? metadata.expiresAt : undefined}
+      file={current} client={client} generation={session.generation} />
+    : <CardLayout file={current} status={unavailable ? 'unavailable' : state} />
 }
 
 export function FileCard({ file, client, attachment }: FileCardProps) {

@@ -5,7 +5,7 @@ import type { MessageAttachmentRef } from '@graphql/contracts/files'
 import { ApiError, sendOperatorMessage } from '../../shared/api/client'
 import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChatStorage'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
-import { messageAttachmentRefs, sameAttachmentRefs, type ChatAttachmentAttempt } from '../conversations/chatAttachmentAttempt'
+import { containsAttachmentRefs, messageAttachmentRefs, sameAttachmentRefs, type ChatAttachmentAttempt } from '../conversations/chatAttachmentAttempt'
 import { readPendingOperatorMessage } from './operatorOutbox'
 
 interface Attempt {
@@ -23,7 +23,7 @@ function matches(attempt: Attempt, state: OperatorConversationState) {
   const message = state.messages.find((entry) => entry.role === 'user' && entry.requestId === command.requestId)
   return state.conversation.id === id && message?.conversationId === id
     && message.content.trim() === command.content.trim()
-    && sameAttachmentRefs(messageAttachmentRefs(message), command.attachments)
+    && containsAttachmentRefs(messageAttachmentRefs(message), command.attachments)
     && sameAttachmentRefs(attachment.attachments, command.attachments)
     && !(state.turnState === 'uncertain' && (!state.activeRequestId || state.activeRequestId === command.requestId))
 }

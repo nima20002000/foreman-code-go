@@ -113,9 +113,15 @@ export class FileRetentionService {
             throw new DomainError('REVISION_CONFLICT', 'File retention changed. Read the current preference before saving.', 409,
               { expectedRevision: request.expectedRevision, actualRevision: current.revision })
           }
-          const asOfUtc = await this.now(client)
           let updatedFileCount = 0, expiredNowCount = 0
           if (payload.applyToExisting) {
+            // Lock candidate rows before sampling eligibility; FOR SHARE admission can
+            // otherwise hold an UPDATE past a file's original expiry deadline.
+            const candidatesAt = await this.now(client)
+            await client.query(`select file_id from files where owner_principal_id=$1 and scope_kind='temporary'
+              and state in ('pending','ready') and expires_at>$2::timestamptz for update`,
+            [principal.id, candidatesAt])
+            const asOfUtc = await this.now(client)
             const changed = await client.query<{ updated: string; expired: string }>(`with changed as (
               update files set retention_duration_seconds=$2,
                 expires_at=${PROPOSED_FILE_EXPIRY_SQL},

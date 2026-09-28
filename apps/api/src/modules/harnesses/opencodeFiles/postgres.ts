@@ -44,7 +44,7 @@ export async function resolveOpenCodeFileAdmission(pool: pg.Pool, conversationId
     attachmentRefs: MessageAttachmentRefsSchema.optional(), publicationRefs: MessagePublicationRefsSchema.optional(),
   }).parse(row.message_record)
   const attachments = message.attachmentRefs ?? []
-  if (!attachments.length) return undefined
+  // Inherited references use the same scoped tools even without temporary inputs.
   const configuration = AgentConfigurationVersionSchema.parse(row.configuration_record)
   const acceptedHarness = OpenCodeHarnessConfigurationSchema.parse(configuration.harness)
   if (message.id !== row.message_id || message.requestId !== requestId || message.conversationId !== conversationId
@@ -116,7 +116,7 @@ export async function adoptOpenCodePublications(pool: pg.Pool, context: FileTool
       join file_revisions r on r.file_id=f.file_id and r.revision_id=pin."revisionId"`,
     [JSON.stringify(originals), chat.conversationId, chat.agentId,
       chat.workspaceId, chat.workflowId, chat.runId ?? null, chat.executionId ?? null])).rows[0]
-    if (!originals.length || Number(pins?.count) !== originals.length) {
+    if (Number(pins?.count) !== originals.length) {
       throw new DomainError('FILE_ADOPTION_MISMATCH', 'The originating attachments have another scope or revision.', 409)
     }
     const published = (await client.query<{ file_id: string; revision_id: string }>(`select p.file_id,p.revision_id

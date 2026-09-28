@@ -34,3 +34,9 @@ export function sameAttachmentRefs(left: readonly MessageAttachmentRef[] = [], r
   return left.length === right.length && left.every((pin, index) =>
     pin.fileId === right[index].fileId && pin.revisionId === right[index].revisionId)
 }
+
+/** Receipt readback includes published outputs as well as the original input pins. */
+export function containsAttachmentRefs(received: readonly MessageAttachmentRef[] = [], expected: readonly MessageAttachmentRef[] = []): boolean {
+  return expected.every((input) => received.some((pin) =>
+    pin.fileId === input.fileId && pin.revisionId === input.revisionId))
+}

@@ -111,12 +111,11 @@ export async function hydrateMessageAttachments(query: Queryable, conversationId
   }
   const pins = (message: typeof messages[number]) => mergeMessagePins(message.attachmentRefs ?? [], message.publicationRefs ?? [])
   const rows = await readPins(query, conversationId, messages.flatMap(pins))
-  // Text-only and Operator readback retain their existing no-ledger path. Agent
-  // inputs identify candidate messages; the recovery query verifies exact Codex
-  // receipt/session/sender bindings, independent of current token authority.
+  // Input pins identify candidate messages; the recovery query verifies exact
+  // Codex receipt/session/sender bindings, independent of current token authority.
   const candidates = messages.filter((message) => message.role === 'user' && message.attachmentRefs?.some((ref) => {
     const scope = rows.get(identity(ref))?.file.scope
-    return scope?.kind === 'temporary' && scope.chat.kind === 'agent'
+    return scope?.kind === 'temporary'
   })).map((message) => message.id)
   const recovered = await readCodexMessagePublications(query, conversationId, candidates)
   const missing = [...recovered.values()].flat().filter((ref) => !rows.has(identity(ref)))

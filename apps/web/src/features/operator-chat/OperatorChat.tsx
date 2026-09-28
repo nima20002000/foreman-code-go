@@ -7,7 +7,7 @@ import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
 import { useConversationDraftStore } from '../conversations'
 import { ChatAttachmentControl, useConversationAttachments } from '../attachments'
 import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
-import { messageAttachmentRefs, prepareChatAttachments, sameAttachmentRefs } from '../conversations/chatAttachmentAttempt'
+import { containsAttachmentRefs, messageAttachmentRefs, prepareChatAttachments } from '../conversations/chatAttachmentAttempt'
 import { settingsExperienceKeys } from '../../shared/api/settingsExperience'
 import { apiClient, cancelOperatorTurn, createOperatorConversation, getOperatorConversation,
   sendOperatorMessage, respondOperatorInteraction } from '../../shared/api/client'
@@ -169,7 +169,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         if (command.attachments?.length) {
           const message = result.state.messages.find((entry) => entry.role === 'user' && entry.requestId === command.requestId)
           if (result.state.conversation.id !== id || !message || message.conversationId !== id
-            || message.content.trim() !== command.content.trim() || !sameAttachmentRefs(messageAttachmentRefs(message), command.attachments)) {
+            || message.content.trim() !== command.content.trim() || !containsAttachmentRefs(messageAttachmentRefs(message), command.attachments)) {
             throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The file message receipt was not confirmed. Retry the pending message.' })
           }
           if (result.state.turnState === 'uncertain' && (!result.state.activeRequestId || result.state.activeRequestId === command.requestId)) {

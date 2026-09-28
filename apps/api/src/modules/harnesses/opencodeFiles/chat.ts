@@ -37,8 +37,9 @@ export interface OpenCodeChatFileBinding {
 }
 
 export interface OpenCodeChatFiles {
-  /** Return undefined only when the accepted message has no attachments.
-   * An unavailable reader/host/listener for an attachment turn must THROW.
+  /** Return undefined only when the accepted turn has no file-tool context.
+   * Agent turns need a context for inherited references even without attachments.
+   * An unavailable reader/host/listener for a file-enabled turn must THROW.
    */
   resolve(identity: OpenCodeChatFileIdentity, signal: AbortSignal): Promise<OpenCodeChatFileBinding | undefined>
 }
@@ -87,8 +88,6 @@ export async function prepareOpenCodeChatFiles(runtime: OpenCodeChatFiles,
     && (chat.kind === 'agent' ? chat.agentId === identity.ownerAgentId
       : chat.operatorId === identity.ownerAgentId && chat.ownerPrincipalId === context.ownerPrincipalId),
   'FILE_CONTEXT_DENIED', 'The file admission belongs to another chat owner.')
-  checkFileCondition(admission.attachments.length > 0, 'FILE_ATTACHMENT_LIMIT',
-    'Do not create a file session for an attachment-free turn.')
   // Do not override native permission/agent policy to make working copies possible.
   // The admission resolver must additionally validate the full accepted security configuration.
   checkFileCondition(identity.configuration.nativeAgent !== 'plan' || admission.mode === 'read',

@@ -120,7 +120,8 @@ export class OpenCodeFileTurn {
     signal: AbortSignal): Promise<PreparedOpenCodeFiles> {
     return this.exclusive(async () => {
       checkFileCondition(!this.closed && !this.toolAdmissionClosed, 'FILE_TURN_CLOSED', 'This file turn is closed.')
-      checkFileCondition(admission.attachments.length > 0 && admission.attachments.length <= this.options.maxAttachments,
+      // An empty input set still needs post-ACK tools for inherited reference reads.
+      checkFileCondition(admission.attachments.length <= this.options.maxAttachments,
         'FILE_ATTACHMENT_LIMIT', 'A bounded attachment set is required.')
       checkFileCondition(admission.executionHostId === this.options.host.executionHostId,
         'FILE_EXECUTION_HOST_MISMATCH', 'File delivery requires the accepted execution host.')

@@ -4,6 +4,7 @@ import { MessageSchema, OperatorConfigurationVersionSchema, type OperatorConfigu
 import { MessageAttachmentRefsSchema, messageAttachmentIdentity, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { PostgresAccessService } from '../../access/postgres.js'
 import { nativeCorrelation } from '../../conversations/operatorChatRepository.js'
+import { MessagePublicationRefsSchema } from '../../conversations/messagePublications.js'
 import { DomainError } from '../../errors.js'
 import { PostgresFileConversationAuthorization } from '../../files/authorization.js'
 import { bindingIdentity } from '../../files/tools/context.js'
@@ -32,7 +33,7 @@ interface ReceiptRow {
   configuration_record: unknown
 }
 const StoredMessage = MessageSchema.omit({ attachments: true }).extend({
-  attachmentRefs: MessageAttachmentRefsSchema.optional(),
+  attachmentRefs: MessageAttachmentRefsSchema.optional(), publicationRefs: MessagePublicationRefsSchema.optional(),
 })
 
 /** Operator receipts predate t.message_id. Join their immutable user message by
@@ -195,17 +196,19 @@ export async function adoptOperatorFilePublications(pool: pg.Pool, context: File
       if (!published.some((item) => item.file_id === ref.fileId && item.revision_id === ref.revisionId)) throw new DomainError(
         'OPERATOR_FILE_ADOPTION_MISMATCH', 'The publication is not finalized for this Operator turn.', 409)
     }
-    const refs = new Map((message.attachmentRefs ?? []).map((ref) => [ref.fileId, ref]))
+    const inputs = message.attachmentRefs ?? []
+    const refs = new Map([...inputs, ...(message.publicationRefs ?? [])].map((ref) => [ref.fileId, ref]))
     for (const item of published) {
       const prior = refs.get(item.file_id)
       if (prior && prior.revisionId !== item.revision_id) throw new DomainError(
         'OPERATOR_FILE_PUBLICATION_CONFLICT', 'Another revision is already pinned to this Operator message.', 409)
       refs.set(item.file_id, { fileId: item.file_id, revisionId: item.revision_id })
     }
-    const combined = MessageAttachmentRefsSchema.parse([...refs.values()])
-    if (combined.length !== (message.attachmentRefs ?? []).length) {
-      await client.query(`update operator_conversation_messages set record=jsonb_set(record,'{attachmentRefs}',$2::jsonb) where id=$1`,
-        [context.messageId, JSON.stringify(combined)])
+    const outputs = MessagePublicationRefsSchema.parse([...refs.values()]
+      .filter((ref) => !inputs.some((input) => input.fileId === ref.fileId)))
+    if (!isDeepStrictEqual(outputs, message.publicationRefs ?? [])) {
+      await client.query(`update operator_conversation_messages set record=jsonb_set(record,'{publicationRefs}',$2::jsonb) where id=$1`,
+        [context.messageId, JSON.stringify(outputs)])
     }
     await client.query('commit')
   } catch (error) { await client.query('rollback').catch(() => undefined); throw error }

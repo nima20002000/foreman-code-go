@@ -108,7 +108,10 @@ beforeEach(() => {
     }
     if (gateReceipt) await gate
     return HttpResponse.json({ replayed: true, state: malformedReceipt ? {
-      ...accepted, messages: accepted.messages.map((message) => ({ ...message, attachments: [] })),
+      ...accepted, messages: accepted.messages.map((message) => ({ ...message,
+        // A publication alone must not confirm the missing input revision.
+        attachments: message.attachments?.slice(1) ?? [],
+      })),
     } : accepted })
   }))
 })
@@ -138,16 +141,31 @@ async function recoverInOtherTab(tab: () => Tab) {
   expect(await acknowledgeOperatorMessage('chat-a', command.requestId)).toBe(true)
   return result
 }
+function publishOutput() {
+  const source = accepted.messages[0].attachments![0]
+  const output = FileWithRevisionSchema.parse({
+    file: { ...source.file, fileId: 'published-output', currentRevisionId: 'published-revision' },
+    revision: { ...source.revision, fileId: 'published-output', revisionId: 'published-revision',
+      filename: 'result.md', origin: 'agent_output' },
+  })
+  accepted = { ...accepted, revision: accepted.revision + 1,
+    messages: accepted.messages.map((message) => ({ ...message, attachments: [...(message.attachments ?? []), output] })),
+  }
+}
 function storageEvent() {
   window.dispatchEvent(new StorageEvent('storage', { key: protectedKey('outbox', 'chat-a'), newValue: null }))
 }
 
 describe('ATT-02: separate attachment providers sharing an Operator outbox', () => {
-  it.each(['storage', 'storage-and-late', 'late-only'] as const)(
-    'clears only A’s accepted selections after recovery in B (%s)', async (delivery) => {
+  it.each([
+    ['storage', false], ['storage-and-late', false], ['late-only', false],
+    ['storage', true], ['storage-and-late', true], ['late-only', true],
+  ] as const)(
+    'clears only A’s accepted selections after recovery in B (%s; R2-6 published output: %s)', async (delivery, published) => {
       const a = mountTab('A')
       const b = mountTab('B')
       const command = await loseSend(a)
+      if (published) publishOutput()
       await add(a, 'keep.md') // Added after the accepted snapshot: must not be consumed.
       await add(a, 'other.md', true)
       await add(b, 'tab-b.md')
@@ -191,10 +209,11 @@ describe('ATT-02: separate attachment providers sharing an Operator outbox', () 
     },
   )
 
-  it('does not treat outbox deletion or a mismatched receipt as attachment acceptance', async () => {
+  it.each([false, true])('keeps the draft when the receipt lacks its input (R2-6 published output: %s)', async (published) => {
     const a = mountTab('A')
     const b = mountTab('B')
     const command = await loseSend(a)
+    if (published) publishOutput()
     await recoverInOtherTab(b)
     malformedReceipt = true
     act(storageEvent)
@@ -206,5 +225,6 @@ describe('ATT-02: separate attachment providers sharing an Operator outbox', () 
     await waitFor(() => expect(a().draft.hasAttachments).toBe(false))
     expect(upload).toHaveBeenCalledTimes(1)
     expect(cancel).not.toHaveBeenCalled()
+    expect(requests.filter((request) => !request.recovery)).toHaveLength(1)
   })
 })

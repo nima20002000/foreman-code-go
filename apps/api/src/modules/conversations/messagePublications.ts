@@ -30,23 +30,33 @@ export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'q
   if (!messageIds.length) return result
   const turns = (await query.query<{
     message_id: string; native_turn_id: string; owner_principal_id: string; native_session_id: string
-    workspace_id: string; workflow_id: string; agent_id: string
+    kind: 'agent' | 'operator'; operator_id: string | null
+    workspace_id: string | null; workflow_id: string | null; agent_id: string | null
     origin_run_id: string | null; origin_execution_id: string | null
-  }>(`select t.message_id,t.native_turn_id,t.payload->>'ownerPrincipalId' as owner_principal_id,
-      c.native_session_id,c.workspace_id,c.workflow_id,c.agent_id,c.origin_run_id,c.origin_execution_id
+  }>(`select t.message_id,t.native_turn_id,
+      case when c.kind='operator' then c.owner_principal_id else t.payload->>'ownerPrincipalId' end as owner_principal_id,
+      c.kind,c.operator_id,c.native_session_id,c.workspace_id,c.workflow_id,c.agent_id,c.origin_run_id,c.origin_execution_id
     from operator_conversations c join operator_conversation_turns t on t.conversation_id=c.id
-    join operator_conversation_messages m on m.id=t.message_id and m.conversation_id=c.id and m.role='user'
-    where c.id=$1 and c.kind='agent' and c.harness='codex' and c.deleted_at is null
-      and t.intent<>'steer' and t.message_id=any($2::text[]) and t.native_turn_id is not null
-      and c.native_session_id is not null and t.payload->>'ownerPrincipalId' is not null`,
+    join operator_conversation_messages m on m.id=t.message_id and m.conversation_id=c.id
+      and m.client_request_id=t.request_id and m.role='user'
+    where c.id=$1 and c.kind in ('agent','operator') and c.harness='codex' and c.deleted_at is null
+      and (c.kind='operator' or t.intent<>'steer') and t.message_id=any($2::text[]) and t.native_turn_id is not null
+      and c.native_session_id is not null
+      and ((c.kind='agent' and t.payload->>'ownerPrincipalId' is not null)
+        or (c.kind='operator' and c.owner_principal_id is not null and c.operator_id is not null
+          and c.workspace_id is null and c.workflow_id is null and c.agent_id is null
+          and c.origin_run_id is null and c.origin_execution_id is null
+          and t.payload->>'attachmentIdentity' is not null))`,
   [conversationId, messageIds])).rows
   const bindings = new Map(turns.map((turn) => [bindingIdentity({
     ownerPrincipalId: turn.owner_principal_id, nativeSessionId: turn.native_session_id,
     turnId: turn.native_turn_id, messageId: turn.message_id, allowMutation: false, allowedTools: [],
-    scope: { kind: 'temporary', chat: { kind: 'agent', conversationId, agentId: turn.agent_id,
-      workspaceId: turn.workspace_id, workflowId: turn.workflow_id,
-      ...(turn.origin_run_id !== null && turn.origin_execution_id !== null
-        ? { runId: turn.origin_run_id, executionId: turn.origin_execution_id } : {}) } },
+    scope: { kind: 'temporary', chat: turn.kind === 'operator'
+      ? { kind: 'operator', conversationId, ownerPrincipalId: turn.owner_principal_id, operatorId: turn.operator_id! }
+      : { kind: 'agent', conversationId, agentId: turn.agent_id!,
+        workspaceId: turn.workspace_id!, workflowId: turn.workflow_id!,
+        ...(turn.origin_run_id !== null && turn.origin_execution_id !== null
+          ? { runId: turn.origin_run_id, executionId: turn.origin_execution_id } : {}) } },
   }), turn]))
   if (!bindings.size) return result
   const published = (await query.query<{ binding: string; owner_principal_id: string; file_id: string; revision_id: string }>(`

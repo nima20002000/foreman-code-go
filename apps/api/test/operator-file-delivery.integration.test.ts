@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -9,11 +10,14 @@ import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { FileMediaType, MessageAttachmentRef } from '@graphql/contracts/files'
+import { AgentFileCreateWorkingCopyResultSchema, AgentFileWriteWorkingCopyResultSchema,
+  AgentFilePublishResultSchema } from '@graphql/contracts/files'
+import type { CodexFileCallResult } from '../src/modules/harnesses/codexFiles/port.js'
 import type { ApiConfig } from '../src/config.js'
 import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { FixtureServer, configuration as openCodeConfiguration, json } from './opencode-fixtures.js'
-import { calls, finish, fixtureQualification, input, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import { calls, emit, finish, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
 import { fileRuntimeFixture } from './fixtures/codex-file-runtime-helpers.js'
 
 // Provider qualification/transport and the native OS attestation are fixtures.
@@ -67,6 +71,7 @@ const { NativeRollout } = await import('../src/modules/harnesses/nativeRollout.j
 const { NativeProcessRegistry } = await import('../src/modules/harnesses/recovery/processRegistry.js')
 const { NativeResponseJournal } = await import('../src/modules/harnesses/recovery/responseJournal.js')
 const { productionOperatorManagers } = await import('../src/modules/harnesses/operatorFiles/managers.js')
+const { adoptOperatorFilePublications } = await import('../src/modules/harnesses/operatorFiles/postgres.js')
 
 const connectionString = process.env.TEST_DATABASE_URL
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
@@ -81,10 +86,43 @@ async function paths(directory: string): Promise<string[]> {
   return (await Promise.all(entries.map((entry) => entry.isDirectory() ? paths(join(directory, entry.name)) : [join(directory, entry.name)]))).flat()
 }
 
+/** Model Codex's durable declaration set, not a callback that can invent tools.
+ * Resume reloads this field from the fixture's on-disk thread; it never replaces
+ * it from resume parameters. The provider refuses to emit undeclared calls. */
+async function retainCodexDeclarations(f: Fixture): Promise<void> {
+  let binary = await readFile(f.binary, 'utf8')
+  const replace = (before: string, after: string) => {
+    assert.equal(binary.split(before).length, 2, `missing/ambiguous fixture seam: ${before}`)
+    binary = binary.replace(before, after)
+  }
+  replace('ephemeral: !!params.ephemeral, turns: [], settings: settings(params)',
+    'ephemeral: !!params.ephemeral, turns: [], dynamicTools: params.dynamicTools || [], settings: settings(params)')
+  replace('if (message.id !== undefined && message.method) outstanding.set', `
+    if (message.method === 'item/tool/call' && !(current.dynamicTools || []).some((tool) =>
+      tool.type === 'function' && tool.name === message.params.tool)) {
+      log({ undeclaredFileTool: message.params.tool })
+      continue
+    }
+    if (message.id !== undefined && message.method) outstanding.set`)
+  await writeFile(f.binary, binary)
+}
+async function retainedCodexDeclarations(f: Fixture, sessionId: string) {
+  const persisted = JSON.parse(await readFile(join(f.directory, `state-${sessionId}.json`), 'utf8')) as {
+    dynamicTools?: Array<{ type: string; name: string; inputSchema: unknown }>
+  }
+  return persisted.dynamicTools ?? []
+}
+function fileCallValue(result: CodexFileCallResult): unknown {
+  expect(result.success).toBe(true)
+  const content = result.contentItems[0]
+  assert(content?.type === 'inputText')
+  return JSON.parse(content.text) as unknown
+}
+
 // Same constructor used by buildProductionApp; no alternate manager resolver or
 // fake attachment admission is supplied by these sends.
 describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 production Operator native file delivery', () => {
-  let schema: string, admin: pg.Pool, pool: pg.Pool, f: Fixture, config: ApiConfig, vault: string
+  let schema: string, admin: pg.Pool, pool: pg.Pool, f: Fixture, config: ApiConfig, vault: string, runtimeHome: string
   let app: ReturnType<typeof Fastify>
   let files: ReturnType<typeof registerProductionFileStorage>
   let tools: ReturnType<typeof productionFileTools>
@@ -109,7 +147,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     pool = new pg.Pool({ connectionString, max: 4, options: `-c search_path=${schema}` })
     await applyApplicationMigrations(pool)
     f = await fileRuntimeFixture()
-    vault = await mkdtemp(join(process.cwd(), '.af02-vault-'))
+    // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
+    vault = await mkdtemp(join(homedir(), '.af02-vault-'))
+    runtimeHome = await mkdtemp(join(homedir(), '.af02-runtime-'))
     await writeFile(join(f.directory, 'file-turn'), '')
     // Audit key presence only, not credential values. The fixture's worker
     // default is absent because the actual Operator service supplies its input.
@@ -121,7 +161,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     config = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
       database: { connectionString: connectionString!, maxConnections: 4, connectionTimeoutMs: 2000, queryTimeoutMs: 5000 },
       checkpoints: { schema: 'langgraph' }, workspaceStorageRoot: join(f.directory, 'projects'), fileStorageRoot: vault,
-      harnesses: { workspaceRoot: join(f.directory, 'runtime'), codexBinary: f.binary, openCodeBinary: 'protocol-fixture', timeoutMs: 10000 } }
+      harnesses: { workspaceRoot: join(runtimeHome, 'runtime'), codexBinary: f.binary, openCodeBinary: 'protocol-fixture', timeoutMs: 10000 } }
     const cwd = join(config.harnesses.workspaceRoot, 'operator')
     await mkdir(cwd, { recursive: true })
     await mkdir(config.workspaceStorageRoot!, { recursive: true })
@@ -165,11 +205,152 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
         await admin?.end()
         if (f) await rm(f.directory, { recursive: true, force: true })
         if (vault) await rm(vault, { recursive: true, force: true })
+        if (runtimeHome) await rm(runtimeHome, { recursive: true, force: true })
         managers.clear(); servers.length = 0; serverOptions.length = 0; issued.length = 0
         vi.restoreAllMocks()
       }
     }
   })
+
+  it.each(['codex-cli 0.154.0', 'codex-cli 0.156.1'])(
+    'R2-1 %s: a completed text-first Operator thread retains callable file tools on attachment resume', async (version) => {
+      await retainCodexDeclarations(f)
+      await writeFile(join(f.directory, 'version.json'), JSON.stringify(version))
+      // Exercise the real text-mode setup/credential path, not a mocked authority.
+      await writeFile(join(f.directory, 'mcp.json'), JSON.stringify({ name: 'graphql', enabled: true, required: true,
+        transport: { type: 'streamable_http', url: 'http://127.0.0.1:4100/mcp', bearer_token_env_var: 'GRAPHQL_MCP_TOKEN' } }))
+      const current = await operators.ensure()
+      const native = input(f.directory).request.configuration.harness
+      assert(native.harness === 'codex')
+      // Mutation tools require an explicitly accepted Write configuration. This
+      // regression must not weaken the separate read-only declaration policy.
+      await operators.update({ ...native, sandbox: 'workspace-write' }, current.operator.currentConfigurationVersionId)
+      const conversation = await chat.create(owner)
+      const target = { kind: 'operator' as const, conversationId: conversation.id }
+      const scope = { kind: 'temporary' as const, chat: { ...target,
+        ownerPrincipalId: owner.id, operatorId: current.operator.id } }
+      const list = vi.spyOn(tools, 'list')
+      await chat.send(conversation.id, { requestId: randomUUID(), content: 'Remember this conversation.' }, owner)
+      const first = await until(async () => {
+        const row = await repository.active(conversation.id)
+        return row?.active_native_turn_id ? row : undefined
+      }, 10000)
+      const nativeSessionId = first.native_session_id!
+      const textManager = managers.get(conversation.id)
+      expect(textManager).toBeDefined()
+      const declarations = await retainedCodexDeclarations(f, nativeSessionId)
+      expect(declarations.map((tool) => tool.name)).toEqual([
+        'files_list', 'files_read', 'files_create_working_copy', 'files_publish_result',
+        'files_write_working_copy', 'files_apply_format_edit',
+      ])
+      expect(declarations.every((tool) => tool.type === 'function')).toBe(true)
+
+      const call = async (turnId: string, tool: string, arguments_: unknown): Promise<CodexFileCallResult> => {
+        const id = `r2-1-${randomUUID()}`
+        // Sent through the executable provider and its stored-declaration gate,
+        // not injected into the manager or the production bridge directly.
+        await emit(f.directory, { id, method: 'item/tool/call', params: {
+          threadId: nativeSessionId, turnId, callId: id, tool, arguments: arguments_,
+        } })
+        return until(async () => {
+          const wire = (await calls(f.directory)).map((entry) => entry.wire as {
+            id?: string; result?: CodexFileCallResult; error?: unknown
+          } | undefined).find((entry) => entry?.id === id)
+          if (wire?.error) throw new Error(`Native file callback failed: ${JSON.stringify(wire.error)}`)
+          return wire?.result
+        }, 10000)
+      }
+      // Declarations alone must not create file authority in the credentialed
+      // text-mode child, even when Codex attempts one of the advertised tools.
+      expect((await call(first.active_native_turn_id!, 'files_list', { scope })).success).toBe(false)
+      expect(issued).toHaveLength(0)
+      expect(list).not.toHaveBeenCalled()
+      expect(prepare).toHaveBeenCalledTimes(1)
+      expect(setup).toHaveBeenCalledTimes(1)
+      expect((await calls(f.directory)).some((entry) =>
+        (entry.af02CredentialKeys as string[] | undefined)?.includes('GRAPHQL_MCP_TOKEN'))).toBe(true)
+      await finish(f.directory, nativeSessionId, 'Text-only turn completed.')
+      await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
+      await until(async () => managers.size === 0, 10000)
+      const textHistory = structuredClone((await state(f.directory, nativeSessionId)).turns)
+      expect(textHistory).toHaveLength(1)
+      expect(textHistory[0]!.status).toBe('completed')
+      const fileAuditOffset = (await calls(f.directory)).length
+
+      // Only after that text turn has completed does the first attachment exist.
+      const bytes = Buffer.from('# Original Operator document\n')
+      const uploadId = randomUUID()
+      await files.allocate(owner, target, { requestId: uploadId, filename: 'notes.md', mediaType: 'text/markdown',
+        byteSize: bytes.length, sha256: digest(bytes) })
+      await files.upload(owner, target, uploadId, Readable.from([bytes]))
+      const ready = await files.finalize(owner, target, uploadId)
+      const ref = { fileId: ready.value.file.fileId, revisionId: ready.value.revision.revisionId }
+      const command = { requestId: randomUUID(), content: 'Edit and publish the attached document.', attachments: [ref] }
+      await chat.send(conversation.id, command, owner)
+      await until(async () => issued.length === 1, 10000)
+      const { context, token } = issued[0]!
+      expect(context.nativeSessionId).toBe(nativeSessionId)
+      expect(context.scope).toEqual(scope)
+      expect(context.ownerPrincipalId).toBe(owner.id)
+      expect(managers.get(conversation.id)).not.toBe(textManager)
+      expect(await retainedCodexDeclarations(f, nativeSessionId)).toEqual(declarations)
+      expect((await state(f.directory, nativeSessionId)).turns[0]).toEqual(textHistory[0])
+      expect(prepare).toHaveBeenCalledTimes(1)
+      expect(setup).toHaveBeenCalledTimes(1)
+      const wire = (await calls(f.directory)).map((entry) => entry.wire as {
+        method?: string; params?: Record<string, unknown>
+      } | undefined)
+      const starts = wire.filter((entry) => entry?.method === 'thread/start')
+      expect(starts).toHaveLength(1)
+      expect(starts[0]!.params!.dynamicTools).toEqual(declarations)
+      const resumes = wire.filter((entry) => entry?.method === 'thread/resume')
+      expect(resumes).toHaveLength(1)
+      expect(resumes[0]!.params!.threadId).toBe(nativeSessionId)
+      expect(resumes[0]!.params).not.toHaveProperty('dynamicTools')
+      const fileEnvironment = (await calls(f.directory)).slice(fileAuditOffset)
+        .filter((entry) => 'af02CredentialKeys' in entry)
+      expect(fileEnvironment.length).toBeGreaterThan(0)
+      expect(fileEnvironment.every((entry) => (entry.af02CredentialKeys as string[]).length === 0)).toBe(true)
+      expect((await pool.query(`select count(*)::int as count from operator_chat_credentials c
+        join management_principals p on p.id=c.principal_id
+        where c.conversation_id=$1 and p.revoked_at is null`, [conversation.id])).rows[0].count).toBe(0)
+
+      const copy = AgentFileCreateWorkingCopyResultSchema.parse(fileCallValue(await call(context.turnId,
+        'files_create_working_copy', { commandId: randomUUID(), source: ref, destination: scope })))
+      const edited = Buffer.from('# Edited by the resumed Operator\n')
+      const write = AgentFileWriteWorkingCopyResultSchema.parse(fileCallValue(await call(context.turnId,
+        'files_write_working_copy', { artifactId: copy.value.artifactId, contentBase64: edited.toString('base64') })))
+      expect(write.sha256).toBe(digest(edited))
+      const published = AgentFilePublishResultSchema.parse(fileCallValue(await call(context.turnId,
+        'files_publish_result', { commandId: randomUUID(), artifactId: copy.value.artifactId,
+          scope, filename: 'edited.md', mediaType: 'text/markdown' })))
+      const publishedRef = { fileId: published.value.file.fileId, revisionId: published.value.revision.revisionId }
+      expect(publishedRef.fileId).not.toBe(ref.fileId)
+      expect(published.value.revision.sha256).toBe(digest(edited))
+      const last = (await state(f.directory, nativeSessionId)).turns.at(-1)!
+      assert(Array.isArray(last.items))
+      await emit(f.directory, { method: 'turn/completed', params: { threadId: nativeSessionId, turn: {
+        ...last, status: 'completed', completedAt: 2, items: [...last.items,
+          { type: 'agentMessage', id: `published-${context.turnId}`, text: 'Published edited.md.', phase: 'final_answer' }],
+      } } })
+      await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
+      await until(async () => managers.size === 0, 10000)
+      await expect(tools.sessions.authenticate(token)).rejects.toThrow()
+      const transcript = await chat.get(conversation.id, owner)
+      expect(transcript.messages.filter((message) => message.role === 'user')).toHaveLength(2)
+      expect(transcript.messages.flatMap((message) => message.attachments ?? [])
+        .filter((attachment) => attachment.file.fileId === publishedRef.fileId)
+        .map(({ revision }) => ({ fileId: revision.fileId, revisionId: revision.revisionId }))).toEqual([publishedRef])
+      const downloaded = await files.download(owner, target, publishedRef)
+      const chunks: Buffer[] = []
+      for await (const chunk of downloaded.stream) chunks.push(Buffer.from(chunk))
+      expect(Buffer.concat(chunks)).toEqual(edited)
+      expect((await chat.send(conversation.id, command, owner)).replayed).toBe(true)
+      expect(issued).toHaveLength(1)
+      expect((await calls(f.directory)).filter((entry) =>
+        (entry.wire as { method?: string } | undefined)?.method === 'turn/start')).toHaveLength(2)
+      expect((await calls(f.directory)).some((entry) => 'undeclaredFileTool' in entry)).toBe(false)
+    }, 30000)
 
   for (const harness of ['codex', 'opencode'] as const) for (const item of cases) {
     it(`${harness}: ${item.name} reaches the native request exactly once with Operator-only authority`, async () => {
@@ -264,6 +445,65 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       else expect(servers.flatMap((server) => server.calls).filter((call) => call.path.includes('/prompt_async'))).toHaveLength(1)
       expect((await chat.get(conversation.id, owner)).messages.filter((message) => message.role === 'user')).toHaveLength(1)
     }, 30000)
+  }
+  for (const harness of ['codex', 'opencode'] as const) {
+    it(`${harness}: ten input pins and a publication remain distinct across adoption and readback`, async () => {
+      const current = await operators.ensure()
+      const native = harness === 'codex'
+        ? { ...input(f.directory).request.configuration.harness, sandbox: 'workspace-write' as const }
+        : openCodeConfiguration()
+      await operators.update(native, current.operator.currentConfigurationVersionId)
+      const conversation = await chat.create(owner)
+      const target = { kind: 'operator' as const, conversationId: conversation.id }
+      const attachments: MessageAttachmentRef[] = []
+      for (let index = 0; index < 10; index++) {
+        const bytes = Buffer.from(`# Operator input ${index}\n`), uploadId = randomUUID()
+        await files.allocate(owner, target, { requestId: uploadId, filename: `input-${index}.md`,
+          mediaType: 'text/markdown', byteSize: bytes.length, sha256: digest(bytes) })
+        await files.upload(owner, target, uploadId, Readable.from([bytes]))
+        const ready = await files.finalize(owner, target, uploadId)
+        attachments.push({ fileId: ready.value.file.fileId, revisionId: ready.value.revision.revisionId })
+      }
+      const command = { requestId: randomUUID(), content: '', attachments }
+      expect((await chat.send(conversation.id, command, owner)).replayed).toBe(false)
+      await until(async () => issued.length === 1, 10000)
+      const { context, token } = issued[0]!
+      const receipt = async () => (await pool.query<{ input_hash: string; payload: unknown; message_id: string }>(
+        'select input_hash,payload,message_id from operator_conversation_turns where conversation_id=$1 and request_id=$2',
+        [conversation.id, command.requestId])).rows[0]!
+      const acceptedReceipt = await receipt()
+      const copy = await tools.createWorkingCopy(token, { commandId: randomUUID(), source: attachments[0], destination: context.scope })
+      const published = await tools.publish(token, { commandId: randomUUID(), artifactId: copy.value.artifactId,
+        scope: context.scope, filename: 'result.md', mediaType: 'text/markdown' })
+      const output = { fileId: published.value.file.fileId, revisionId: published.value.revision.revisionId }
+      const stored = async () => (await pool.query<{ record: { attachmentRefs: MessageAttachmentRef[]; publicationRefs?: MessageAttachmentRef[] } }>(
+        'select record from operator_conversation_messages where id=$1', [context.messageId])).rows[0]!.record
+      const readback = async () => {
+        const fresh = new PostgresOperatorConversationRepository(pool)
+        const page = await fresh.history(conversation.id)
+        return page!.entries.find((entry) => entry.message.id === context.messageId)!.message.attachments!
+          .map((value) => ({ fileId: value.file.fileId, revisionId: value.revision.revisionId }))
+      }
+      // A fresh repository has no bridge state. Codex recovers this finalized
+      // publication from the ledger even before a close callback can adopt it.
+      if (harness === 'codex') expect(await readback()).toEqual([...attachments, output])
+      expect((await stored()).attachmentRefs).toEqual(attachments)
+      await adoptOperatorFilePublications(pool, context, [output])
+      await adoptOperatorFilePublications(pool, context, [output])
+      expect((await stored()).attachmentRefs).toEqual(attachments)
+      expect((await stored()).publicationRefs).toEqual([output])
+      expect(await receipt()).toEqual(acceptedReceipt)
+      expect(await readback()).toEqual([...attachments, output])
+      expect(await readback()).toEqual([...attachments, output])
+      expect((await chat.send(conversation.id, command, owner)).replayed).toBe(true)
+      if (harness === 'codex') await finish(f.directory, context.nativeSessionId)
+      else servers[0]!.complete(nativeCorrelation(conversation.id, command.requestId), 'done', context.nativeSessionId)
+      await until(async () => (await chat.get(conversation.id, owner)).turnState === 'idle', 10000)
+      expect(issued).toHaveLength(1)
+      expect(await receipt()).toEqual(acceptedReceipt)
+      expect(await readback()).toEqual([...attachments, output])
+      expect((await stored()).attachmentRefs).toEqual(attachments)
+    }, 90000)
   }
   it('preserves the management MCP setup requirement for text-only Operator turns', async () => {
     const current = await operators.ensure()

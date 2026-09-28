@@ -412,9 +412,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
       const result = await candidate.transport.request('thread/start', {
         ...threadParameters(prepared), ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
-        // Native schemas are persisted at thread creation; executable handlers
-        // and file authority are installed separately after each turn's ACK.
-        ...(this.chatFiles ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
+        // Codex persists declarations at thread/start; thread/resume cannot add
+        // them when a text-first Operator later switches to a file-only manager.
+        // Declarations grant no access: handlers still require an admitted file
+        // turn and its durable ACK, never the credentialed text-mode process.
+        ...(this.chatFiles || prepared.input.kind === 'operator'
+          ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
       }, signal, (value, error) => {
         void (async () => {
           if (error) {

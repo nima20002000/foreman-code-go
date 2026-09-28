@@ -205,7 +205,8 @@ beforeEach(() => {
       const id = String(params.id), before = operatorStates.get(id)!
       const previous = before.messages.find((message) => message.requestId === input.requestId)
       if (previous) {
-        expect(messageAttachmentRefs(previous)).toEqual(input.attachments)
+        // Display pins may grow after publication; the retry must keep the original command pins.
+        expect(input.attachments).toEqual(sendCalls.find((command) => command.requestId === input.requestId)!.attachments)
         expect(previous.content).toBe(input.content)
         return HttpResponse.json({ state: before, replayed: true })
       }
@@ -301,7 +302,7 @@ describe('FIL-13 real chat mounts', () => {
     expect(agentCalls).toHaveLength(0)
   })
 
-  it('keeps an unknown Operator send and recovers the original request, without new pins or a new identity', async () => {
+  it.each([false, true])('recovers an unknown Operator send without resending (R2-6 published output: %s)', async (published) => {
     loseOperatorAck = true
     render(operatorTree())
     await upload(); await uploaded()
@@ -314,12 +315,35 @@ describe('FIL-13 real chat mounts', () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Original file message')
     expect(screen.getByRole('list', { name: 'Attachments' })).toHaveTextContent('notes.md')
     expect(readPendingOperatorMessage('conversation-one').command).toMatchObject(sendCalls[0])
+    if (published) {
+      // Native publication finishes after durable admission but before receipt recovery.
+      // Hydration exposes both input and output pins on the accepted user message.
+      const before = operatorStates.get('conversation-one')!
+      const source = before.messages[0].attachments![0]
+      const output = FileWithRevisionSchema.parse({
+        file: { ...source.file, fileId: 'published-output', currentRevisionId: 'published-revision' },
+        revision: { ...source.revision, fileId: 'published-output', revisionId: 'published-revision',
+          filename: 'result.md', origin: 'agent_output' },
+      })
+      operatorStates.set('conversation-one', { ...before, revision: before.revision + 1,
+        messages: before.messages.map((message) => ({ ...message, attachments: [...(message.attachments ?? []), output] })),
+      })
+    }
     loseOperatorAck = false
     fireEvent.click(retry)
     await waitFor(() => expect(sendCalls).toHaveLength(2))
     expect(sendCalls[1]).toEqual({ ...sendCalls[0], recovery: 'receipt' })
-    await waitFor(() => expect(screen.queryByRole('list', { name: 'Attachments' })).not.toBeInTheDocument())
+    await waitFor(() => {
+      expect(screen.queryByRole('list', { name: 'Attachments' })).not.toBeInTheDocument()
+      expect(readPendingOperatorMessage('conversation-one').command).toBeUndefined()
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+      expect(screen.queryByRole('button', { name: 'Retry pending message' })).not.toBeInTheDocument()
+    })
+    const article = within(await screen.findByRole('article', { name: 'Message from You' }))
+    expect(await article.findByText('notes.md')).toBeVisible()
+    if (published) expect(await article.findByText('result.md')).toBeVisible()
     expect(operatorStates.get('conversation-one')!.messages).toHaveLength(1)
+    expect(sendCalls.filter((command) => !command.recovery)).toHaveLength(1)
     expect(uploadPaths).toHaveLength(1)
   })
 

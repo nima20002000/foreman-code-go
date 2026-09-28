@@ -121,8 +121,9 @@ describe.skipIf(!postgresEnabled)('AF-01 OpenCode file authority follows the acc
   }
 
   async function messageRefs(messageId: string) {
-    return (await database.pool.query<{ refs: MessageAttachmentRef[] }>(
-      `select record->'attachmentRefs' as refs from operator_conversation_messages where id=$1`, [messageId])).rows[0]!.refs
+    return (await database.pool.query<{ attachments: MessageAttachmentRef[]; publications: MessageAttachmentRef[] | null }>(
+      `select record->'attachmentRefs' as attachments,record->'publicationRefs' as publications
+       from operator_conversation_messages where id=$1`, [messageId])).rows[0]!
   }
 
   it.each([false, true])('binds the session to B and denies reads after B is revoked (mixed uploaders: %s)', async (mixed) => {
@@ -158,7 +159,7 @@ describe.skipIf(!postgresEnabled)('AF-01 OpenCode file authority follows the acc
     await expect(adoptOpenCodePublications(database.pool, { ...context, ownerPrincipalId: f.uploader.principal.id }))
       .rejects.toMatchObject({ code: 'FILE_ADOPTION_MISMATCH' })
     await adoptOpenCodePublications(database.pool, context)
-    const expected = [...f.attachments, pin(published.value)]
+    const expected = { attachments: f.attachments, publications: [pin(published.value)] }
     expect(await messageRefs(f.accepted.turn.messageId)).toEqual(expected)
     await adoptOpenCodePublications(database.pool, context)
     expect(await messageRefs(f.accepted.turn.messageId)).toEqual(expected)

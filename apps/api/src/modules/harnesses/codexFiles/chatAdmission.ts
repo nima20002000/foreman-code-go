@@ -52,7 +52,7 @@ export function postgresCodexChatFiles(pool: pg.Pool, files: () => TemporaryFile
       || row.provider_version !== input.session.providerVersion) throw new DomainError(
       'CODEX_FILE_ADMISSION_MISMATCH', 'The native turn has no matching persisted chat admission.', 409)
     const attachments = MessageAttachmentRefsSchema.parse(row.record.attachmentRefs ?? [])
-    if (!attachments.length) return undefined
+    // Inherited references use the same scoped tools even without temporary inputs.
     if (!row.payload.ownerPrincipalId) throw new DomainError(
       'CODEX_FILE_ADMISSION_OWNER_MISSING', 'The persisted file turn has no authenticated sender.', 409)
     const ownerPrincipalId = row.payload.ownerPrincipalId

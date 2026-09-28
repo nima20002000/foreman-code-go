@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import Fastify, { type FastifyInstance } from 'fastify'
@@ -74,7 +74,7 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     retention = new FileRetentionService(database.pool, commands)
     files = new PostgresFileRepository(database.pool, readFileRetentionSnapshot)
     authorization = new PostgresFileConversationAuthorization(database.pool)
-    storageRoot = await mkdtemp(join(homedir(), '.fil40-test-'))
+    storageRoot = await mkdtemp(join(tmpdir(), 'fil40-test-'))
     bytes = new FileByteStorage(storageRoot, MAX_FILE_BYTES)
     operator = await new PostgresOperatorRepository(database.pool).ensure()
     conversations = new PostgresOperatorConversationRepository(database.pool)
@@ -237,6 +237,44 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     assert.equal(extended.createdAt, original.value.file.createdAt)
     assert.equal(extended.expiresAt, temporaryFileExpiresAt(original.value.file.createdAt, 604800))
   })
+
+  it('does not extend a file that expires while the save waits for its row lock', async () => {
+    const owner = await newOwner()
+    const original = await seed(owner, { ageHours: 1 - 3 / 3600, seconds: 3600 })
+    const blocker = await database.pool.connect()
+    let saving: ReturnType<FileRetentionService['save']> | undefined
+    try {
+      await blocker.query('begin')
+      await blocker.query('select file_id from files where file_id=$1 for share', [original.value.file.fileId])
+      const blockerPid = (await blocker.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      saving = retention.save(owner.principal, 'http', payload(7200, 0, true))
+      void saving.catch(() => undefined)
+      let waiting = false
+      for (let attempt = 0; attempt < 100 && !waiting; attempt++) {
+        waiting = (await database.pool.query<{ waiting: boolean }>(`select exists(select 1 from pg_stat_activity
+          where $1::int=any(pg_blocking_pids(pid)) and query like '%for update%'
+            and wait_event_type='Lock') as waiting`, [blockerPid])).rows[0]!.waiting
+        if (!waiting) await delay(10)
+      }
+      assert.equal(waiting, true, 'Save must wait on the file row, not the retention-owner lock')
+      await database.pool.query("select pg_sleep(greatest(0,extract(epoch from $1::timestamptz-clock_timestamp()))+0.02)",
+        [TemporaryFileSchema.parse(original.value.file).expiresAt])
+      const unavailable = await app.inject({ method: 'GET', headers: headers(owner),
+        url: `${root(owner)}/${original.value.file.fileId}/revisions/${original.value.revision.revisionId}/content` })
+      assert.equal(unavailable.statusCode, 410, unavailable.body)
+      await blocker.query('commit')
+      const saved = await saving
+      assert.equal(saved.value.updatedFileCount, 0)
+      assert.deepEqual(await reread(original), original)
+      const stillUnavailable = await app.inject({ method: 'GET', headers: headers(owner),
+        url: `${root(owner)}/${original.value.file.fileId}/revisions/${original.value.revision.revisionId}/content` })
+      assert.equal(stillUnavailable.statusCode, 410, stillUnavailable.body)
+    } finally {
+      await blocker.query('rollback')
+      blocker.release()
+      if (saving) await Promise.allSettled([saving])
+    }
+  }, 12_000)
 
   it('replays across HTTP/MCP, normalizes omitted false, rejects changed command identity and stale revisions', async () => {
     const owner = await newOwner(), input = payload(7200)

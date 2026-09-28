@@ -26,8 +26,9 @@ function row(ref = first) {
     read_at: new Date('2026-09-26T00:00:00.000Z') }
 }
 function queryable(rows = [row()]) {
-  const query = vi.fn(async (sql: string) => ({ rows: sql.includes('for share of f')
-    ? rows.map((entry) => ({ file_id: entry.file_id })) : rows }))
+  // Operator pins are now publication-recovery candidates; this fake has no Codex turns.
+  const query = vi.fn(async (sql: string) => ({ rows: sql.includes('operator_conversation_turns') ? []
+    : sql.includes('for share of f') ? rows.map((entry) => ({ file_id: entry.file_id })) : rows }))
   return { query, db: { query } as unknown as Pick<pg.PoolClient, 'query'> }
 }
 function message(id = 'message', refs?: MessageAttachmentRef[]) {
@@ -108,7 +109,8 @@ describe('FIL-10 message metadata and lifecycle adapter', () => {
       file: { state: 'ready', expiresAt: '2026-09-27T00:00:00.000Z', currentRevisionId: 'newer-revision' },
       revision: { ...first, filename: 'same.md', mediaType: 'text/markdown', byteSize: 5 },
     })
-    expect(query).toHaveBeenCalledTimes(1)
+    // One batched pin lookup plus one batched Codex publication-recovery lookup.
+    expect(query).toHaveBeenCalledTimes(2)
     expect(query.mock.calls[0]![0]).not.toContain('storage_key')
   })
   it('deduplicates page lookups by both IDs while retaining message order and historical revisions', async () => {
@@ -116,7 +118,7 @@ describe('FIL-10 message metadata and lifecycle adapter', () => {
     const { db, query } = queryable([row(first), row(historical)])
     const loaded = await hydrateMessageAttachments(db, 'chat', [message('a', [first]), message('b', [historical]), message('c', [first])])
     expect(loaded.map((entry) => entry.attachments![0]!.revision.revisionId)).toEqual(['revision-1', 'older', 'revision-1'])
-    expect(query).toHaveBeenCalledTimes(1)
+    expect(query).toHaveBeenCalledTimes(2)
   })
   for (const state of ['pending', 'expired', 'removed'] as const) {
     it(`rejects ${state} at admission, but retains its metadata on old messages`, async () => {

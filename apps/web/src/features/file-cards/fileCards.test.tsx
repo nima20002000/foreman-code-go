@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HttpResponse, http } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FileWithRevision } from '@graphql/contracts/files'
+import { fileStateAt, type FileWithRevision } from '@graphql/contracts/files'
 import { server } from '../../mocks/server'
 import { beginSessionChange, finishSessionChange } from '../../shared/api/sessionBoundary'
 import { FileCard } from './FileCard'
@@ -31,6 +31,11 @@ function mount(node: ReactNode, strict = false) {
 }
 
 function serve(file: FileWithRevision, onRequest?: (revisionId: string) => void) {
+  server.use(http.get('*/api/operator/conversations/conversation-a/files', () => HttpResponse.json({
+    items: [{ file: { ...file.file, state: fileStateAt(file.file, new Date().toISOString()) },
+      revision: { ...file.revision, revisionId: file.file.currentRevisionId } }],
+    pageInfo: { nextCursor: null },
+  })))
   server.use(http.get(TEST_HANDLER_PATH, ({ params }) => {
     onRequest?.(String(params.revisionId))
     return new HttpResponse(fixtureBytes(file.revision.mediaType).buffer, { headers: { 'Content-Type': file.revision.mediaType } })
@@ -120,9 +125,10 @@ describe('message file cards', () => {
     expect(screen.getByRole('button', { name: /Download/ })).toBeEnabled()
   })
 
-  it('expires a mounted ready card at its real deadline without a refetch', async () => {
+  it('expires a mounted ready card at its real deadline without a history refetch', async () => {
     vi.useFakeTimers()
     const file = fixture({ createdAt: new Date(Date.now() - 3_599_000).toISOString(), retentionDurationSeconds: 3600 })
+    serve(file)
     mount(<FileCard file={file} client={client} />)
     expect(screen.getByRole('button', { name: /Download/ })).toBeEnabled()
     await act(async () => { await vi.advanceTimersByTimeAsync(1001) })
@@ -133,6 +139,7 @@ describe('message file cards', () => {
   it('rechecks overdue files after a background tab resumes', () => {
     vi.useFakeTimers()
     const file = fixture({ createdAt: new Date(Date.now() - 3_599_000).toISOString(), retentionDurationSeconds: 3600 })
+    serve(file)
     mount(<FileCard file={file} client={client} />)
     vi.setSystemTime(Date.now() + 2000)
     act(() => window.dispatchEvent(new Event('focus')))
@@ -304,7 +311,7 @@ describe('browser resource ownership', () => {
   it('never allocates an object URL for a disallowed preview response', async () => {
     server.use(http.get(TEST_HANDLER_PATH, () => new HttpResponse('<svg onload="alert(1)"/>', { headers: { 'Content-Type': 'image/svg+xml' } })))
     const view = mount(<FileCard file={fixture({ mediaType: 'image/png' })} client={client} />)
-    await waitFor(() => expect(view.queryClient.getQueryCache().getAll()[0]?.state.status).toBe('error'))
+    await waitFor(() => expect(view.queryClient.getQueryCache().find({ queryKey: ['message-file-preview'], exact: false })?.state.status).toBe('error'))
     expect(view.container.querySelector('img')).toBeNull()
     expect(createUrl).not.toHaveBeenCalled()
   })
