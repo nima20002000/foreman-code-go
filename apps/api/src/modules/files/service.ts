@@ -62,10 +62,29 @@ export class FileStorageService<Target> {
   }
 
   async allocate(principal: ManagementPrincipal, target: Target, input: unknown, source: FileMutationSource = 'http') {
+    return this.allocateWithOrigin(principal, target, input, 'upload', undefined, source)
+  }
+
+  /** Trusted FIL-05 seam, never bound to an HTTP input. Origin and identity are server-derived. */
+  async allocateAgentResult(principal: ManagementPrincipal, target: Target, input: unknown,
+    origin: 'agent_copy' | 'agent_output', publicationIdentity: string) {
+    if (!publicationIdentity || !['agent_copy', 'agent_output'].includes(origin)) {
+      throw new DomainError('FILE_PUBLICATION_INVALID', 'A bound agent publication is required.', 400)
+    }
+    return this.allocateWithOrigin(principal, target, input, origin, publicationIdentity)
+  }
+
+  private async allocateWithOrigin(principal: ManagementPrincipal, target: Target, input: unknown,
+    origin: 'upload' | 'agent_copy' | 'agent_output', publicationIdentity?: string, source: FileMutationSource = 'http') {
     const scope = await this.authorization.resolve(principal, target, 'write')
+    if (origin !== 'upload' && scope.kind !== 'temporary') {
+      throw new DomainError('FILE_REFERENCE_READ_ONLY', 'Agent results cannot be written to permanent reference files.', 403)
+    }
     const request = FileUploadRequestSchema.parse(input)
     const inputHash = createHash('sha256').update(JSON.stringify([fileScopeIdentity(scope), request.filename,
-      request.mediaType, request.byteSize, request.sha256])).digest('hex')
+      request.mediaType, request.byteSize, request.sha256,
+      // Keep existing human upload receipts byte-for-byte compatible.
+      ...(origin === 'upload' ? [] : [origin, publicationIdentity])])).digest('hex')
     return this.repository.withAllocation(principal.id, request.requestId, async (session) => {
       const existing = await session.read()
       if (existing) {
@@ -80,7 +99,7 @@ export class FileStorageService<Target> {
           state: 'pending', createdAt: now, ...(duration === undefined ? {} : {
             retentionDurationSeconds: duration, expiresAt: temporaryFileExpiresAt(now, duration) }) },
         revision: { fileId, revisionId, filename: request.filename, mediaType: request.mediaType,
-          byteSize: request.byteSize, sha256: request.sha256, origin: 'upload', createdAt: now } })
+          byteSize: request.byteSize, sha256: request.sha256, origin, createdAt: now } })
         return { allocationId: randomUUID(), requestId: request.requestId, inputHash,
           state: 'allocated', stored: { value, ownerPrincipalId: principal.id, storageKey: randomUUID() } }
       }

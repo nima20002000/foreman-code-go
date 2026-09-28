@@ -1,0 +1,73 @@
+import { createHash, randomBytes } from 'node:crypto'
+import { z } from 'zod'
+import { TemporaryFileScopeSchema } from '@graphql/contracts/files'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+
+import { DomainError } from '../../errors.js'
+import type { FileAccess, FileConversation, FileConversationAuthorization } from '../authorization.js'
+import { fileScopeIdentity } from '../requests.js'
+import { FILE_TOOL_NAMES, type AuthorizedFileCaller, type FileToolContext, type FileToolName, type FileToolRepository } from './types.js'
+
+const ContextSchema = z.object({
+  ownerPrincipalId: z.string().min(1), scope: TemporaryFileScopeSchema,
+  nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500),
+  messageId: z.string().min(1).max(500).optional(), allowMutation: z.boolean(),
+  allowedTools: z.array(z.enum(FILE_TOOL_NAMES)).max(FILE_TOOL_NAMES.length),
+}).strict()
+export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
+export function bindingIdentity(context: FileToolContext): string {
+  return digest(JSON.stringify([context.ownerPrincipalId, fileScopeIdentity(context.scope),
+    context.nativeSessionId, context.turnId, context.messageId ?? null]))
+}
+export function targetOf(context: FileToolContext): FileConversation {
+  const chat = context.scope.chat
+  return chat.kind === 'operator' ? { kind: 'operator', conversationId: chat.conversationId }
+    : { kind: 'agent', workspaceId: chat.workspaceId, conversationId: chat.conversationId }
+}
+export function isMutation(tool: FileToolName): boolean {
+  return tool === 'files.create_working_copy' || tool === 'files.publish_result'
+}
+
+export class FileToolSessions {
+  constructor(private readonly repository: FileToolRepository,
+    private readonly currentOwner: (id: string) => Promise<ManagementPrincipal>,
+    private readonly authorization: FileConversationAuthorization,
+    private readonly clock: () => Date = () => new Date()) {}
+
+  private async current(context: FileToolContext, access: FileAccess): Promise<AuthorizedFileCaller> {
+    const principal = await this.currentOwner(context.ownerPrincipalId)
+    if (principal.id !== context.ownerPrincipalId || principal.revokedAt || Date.parse(principal.expiresAt) <= this.clock().getTime()) {
+      throw new DomainError('FILE_SESSION_REVOKED', 'The file session owner is no longer authorized.', 401)
+    }
+    const scope = await this.authorization.resolve(principal, targetOf(context), access)
+    if (fileScopeIdentity(scope) !== fileScopeIdentity(context.scope)) {
+      throw new DomainError('FILE_CONTEXT_DENIED', 'The file session no longer matches its conversation lineage.', 403)
+    }
+    return { context, principal, binding: bindingIdentity(context) }
+  }
+
+  /** Internal issuer only. Call from the already authenticated native-session/turn admission.
+   * No HTTP/MCP issuance route exists. The adapter must supply accepted harness write restrictions. */
+  async issueForAcceptedSession(binding: FileToolContext, expiresAt: Date): Promise<string> {
+    const context = ContextSchema.parse(binding)
+    const caller = await this.current(context, context.allowMutation && context.allowedTools.some(isMutation) ? 'write' : 'read')
+    const expiry = Math.min(expiresAt.getTime(), Date.parse(caller.principal.expiresAt), this.clock().getTime() + 60 * 60 * 1_000)
+    if (!Number.isFinite(expiry) || expiry <= this.clock().getTime()) throw new DomainError('FILE_SESSION_INVALID', 'A live file session expiry is required.', 400)
+    const token = `gql_file_${randomBytes(32).toString('base64url')}`
+    await this.repository.putSession(digest(token), { context, expiresAt: new Date(expiry).toISOString() })
+    return token
+  }
+
+  async authenticate(token: string | undefined, tool?: FileToolName): Promise<AuthorizedFileCaller> {
+    // Operator, worker, browser and workflow App MCP credentials are not accepted or exchanged here.
+    if (!token || !/^gql_file_[A-Za-z0-9_-]{43}$/.test(token)) throw new DomainError('FILE_SESSION_REQUIRED', 'A scoped file-session credential is required.', 401)
+    const session = await this.repository.session(digest(token), this.clock().toISOString())
+    if (!session || Date.parse(session.expiresAt) <= this.clock().getTime()) throw new DomainError('FILE_SESSION_EXPIRED', 'The file session is expired or revoked.', 401)
+    const context = ContextSchema.parse(session.context)
+    if (tool && (!context.allowedTools.includes(tool) || (isMutation(tool) && !context.allowMutation))) {
+      throw new DomainError('FILE_TOOL_DENIED', 'This session does not allow that file operation.', 403)
+    }
+    return this.current(context, tool && isMutation(tool) ? 'write' : 'read')
+  }
+  async revoke(token: string): Promise<void> { await this.repository.revokeSession(digest(token)) }
+}
