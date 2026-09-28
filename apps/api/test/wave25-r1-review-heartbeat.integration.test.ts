@@ -6,7 +6,7 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!() })
 async function fixture() {
-  const url = new URL(process.env.WAVE25_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? '')
+  const url = new URL(process.env.TEST_DATABASE_URL ?? '')
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   }

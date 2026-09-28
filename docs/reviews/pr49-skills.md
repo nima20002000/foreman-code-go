@@ -86,11 +86,11 @@ Corrective source and feature-specific acceptance are complete and published as 
 The documented integration-suite comparison and merge decision remain pending. No merge or post-merge smoke is
 claimed by this report.
 
-## Later integration repair (uncommitted)
+## V3 repair checkpoint (`0932e11`)
 
 Three GPT-6 Sol agents at medium effort split the stale API test suites. The
 starting check had 234 API test type errors and eight lint errors (seven API,
-one web). Current root `typecheck`, `lint`, `test`, and `build` pass. Root test
+one web). At that checkpoint, root `typecheck`, `lint`, `test`, and `build` passed. Root test
 counts are 306 contracts, 2,386 API (15 skipped), and 1,162 web. Two long
 Board interactions use a 15-second test timeout because they exceeded the
 default five seconds only under the full parallel web run.
@@ -125,3 +125,69 @@ confirmed the MCP preflight blocker. No paid native acceptance result is
 claimed. The retired acceptance suite's exact Codex → OpenCode → Codex chain
 has not been re-established on V3. This repair is on the PR #49 branch;
 the PR remains open and unmerged.
+
+## Default PostgreSQL integration enablement
+
+The ordinary root `corepack pnpm test:integration` now discovers every API
+`*.integration.test.ts` file, provisions disposable loopback PostgreSQL test
+databases, and supplies each file with `TEST_DATABASE_URL`. Database-only
+Wave 25/ENG04 phase gates and alternate database URL requirements were removed.
+Two ENG04 migration/repeat suites formerly named as unit tests were moved into
+the integration set; their 13 current semantics-3 cases use fresh child test
+databases derived only from the validated runner URL. Real provider and
+host-specific acceptance still require their own qualification.
+
+The runner uses up to eight isolated database slots by default, one Vitest
+worker per slot, and continues after file failures while reporting file and
+case totals. A failed-file rerun can wait behind the active suite in the same
+project-wide heavy-job queue. The queue also serializes ordinary tests, lint,
+typecheck, and builds across worktrees; it owns each run's temporary directory
+and terminates its process group on cancellation. Build freshness is checked
+for contracts and web; API builds still perform harness compatibility checks.
+The commands and limits are documented in `docs/test-integration-runner.md`.
+
+Ten read-only Sol auditors examined all 87 originally discovered API integration
+files against current V3 behavior without running them; no compatibility-only
+V1/V2 suite was restored. The first complete default sweep (before the two
+ENG04 renames) processed all 87 files: 84 passed, three failed, zero skipped;
+562 cases passed and five failed. It continued past each failure. The three
+failed ENG07 files then passed in an automatically queued fresh-database retest
+(20/20 cases, zero skipped). The newly enabled ENG04 pair passed a focused
+fresh-database run (13/13 cases, zero skipped). These focused results do not
+stand in for the subsequent clean 89-file sweep.
+
+One app-source defect surfaced in V3 review cleanup proof: a sealed
+`not_submitted` review carries a cleanup graph receipt, but the proof check and
+deferred database trigger required a review receipt. The service now checks the
+cleanup source kind, and additive migration `267203` updates the trigger for
+installed databases. No saved WorkflowVersion or Run facts were rewritten.
+An independent Sol review found no concrete defect in the source/runner diff.
+
+The owner then stopped the clean 89-file sweep and asked to run only files missed
+or failed by the completed 87-file sweep. The interrupted run is not a full-suite
+result: it exited 143, leaving 54 files unassigned; signal-terminated files are
+not counted as product failures. Before interruption, the newly enabled ENG04
+pair passed 13/13 under eight slots. The sole observed non-signal failure was
+ENG07 settlement with one native credential still closing at its 25-second
+test deadline. That test now allows 60 seconds for the same cleanup writer,
+without changing terminal intent, graph parity, native-count, or error checks.
+The requested focused rerun passed all three previously failed ENG07 files
+(20/20 cases, zero skipped) after that adjustment. The separate ENG04 pair
+passed 13/13 in its earlier focused run. No all-green 89-file run is claimed.
+
+The runner now automatically retests first-pass failures once at the end of a
+default full run on fresh disposable databases, while preserving a nonzero exit
+for any original failure. Partial runs and explicit `TEST_DATABASE_URL` runs
+do not auto-retry. Independent review found and fixed a cancellation escape:
+the startup test's `pnpm dev` child now stays in the runner-owned process group.
+That changed startup case passed 1/1 in a fresh disposable database, and the
+runner's focused unit tests passed 16/16. The database was removed and verified
+absent. This auto-retest path has unit and review evidence, not a subsequent
+full-suite runtime exercise, because the owner stopped broad reruns.
+
+Before rebasing onto the newer main branch, root `typecheck`, `lint`, and
+`build` passed on the repaired Skills branch. The owner explicitly stopped
+further broad test runs; the current root unit suite and a clean 89-file
+integration suite were not rerun after the final edits. The active Codex
+profile still has `graphql-app` and `graphql-operator` but no `graphql` MCP
+entry, so the paid ENG-03 C acceptance preflight remains unqualified.

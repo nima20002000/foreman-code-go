@@ -293,5 +293,5 @@ describe('PR17 F10 migration 1702', () => {
       expect((await pool.query('select version from application_migrations where version=1702')).rowCount).toBe(1)
       expect(await counts(pool)).toEqual({ events: 3, activity: 3 })
     }, true)
-  })
+  }, 20_000)
 })

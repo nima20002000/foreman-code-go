@@ -237,9 +237,25 @@ export async function scenarioHarness(scenario: Scenario) {
         { cause: error })
       }
     }
-    async function settled(scope: RepeatGraphScopeV3) {
-      const record = await waitForSuccessfulRunCleanup({ pool: base.db.pool, runId: scope.runId,
-        readRecord: async () => RunRecordDetailSchema.parse(await http('GET', `${runPath(scope)}/record`)) })
+    async function settled(scope: RepeatGraphScopeV3, timeoutMs?: number) {
+      let record: Awaited<ReturnType<typeof waitForSuccessfulRunCleanup>>
+      try {
+        record = await waitForSuccessfulRunCleanup({ pool: base.db.pool, runId: scope.runId,
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
+          readRecord: async () => RunRecordDetailSchema.parse(await http('GET', `${runPath(scope)}/record`)) })
+      } catch (error) {
+        const progress = (await base.db.pool.query(`select
+          (select count(*)::int from run_repeat_occurrences where run_id=$1) as occurrences,
+          (select count(*)::int from run_repeat_decisions d join run_repeat_occurrences o
+            on o.occurrence_id=d.occurrence_id where o.run_id=$1) as decisions,
+          (select count(*)::int from harness_executions where run_id=$1) as executions,
+          (select count(*)::int from harness_executions where run_id=$1 and record->>'state'='completed') as completed`,
+        [scope.runId])).rows[0]
+        const codes = base.dispatchErrors.map((item) => typeof item === 'string' && /^[A-Z0-9_]+$/.test(item)
+          ? item : 'UNCLASSIFIED_DISPATCH_ERROR')
+        throw new Error(`ENG07 Run did not settle: ${JSON.stringify({ runId: scope.runId, progress,
+          starts: base.provider.counts.starts, parked: [...parked.keys()], codes })}`, { cause: error })
+      }
       expect(base.dispatchErrors).toEqual([])
       return record
     }

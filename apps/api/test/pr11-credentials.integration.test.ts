@@ -10,10 +10,16 @@ import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { WorkerCredentialService, type IssuedWorkerCredential } from '../src/modules/access/workerCredentials.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+const connectionString = process.env.TEST_DATABASE_URL
 const token = (credential: IssuedWorkerCredential) => credential.environment.variables.GRAPHQL_MCP_TOKEN!
 
 async function database(perform: (pool: pg.Pool) => Promise<void>) {
+  let database: URL
+  try { database = new URL(connectionString!) } catch { throw new Error('Use a loopback PostgreSQL database explicitly named for tests') }
+  if (!['postgres:', 'postgresql:'].includes(database.protocol)
+    || !['localhost', '127.0.0.1', '[::1]'].includes(database.hostname)
+    || !/(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(decodeURIComponent(database.pathname.slice(1)))
+    || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   const schema = `pr11_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
   await admin.query(`create schema "${schema}"`)
@@ -54,7 +60,7 @@ async function identities(pool: pg.Pool) {
   }))
   const access = new PostgresAccessService(pool)
   const credentials = new WorkerCredentialService(pool, access)
-  return { run, coder: executions[0]!, reviewer: executions[1]!, access, credentials }
+  return { run, coder: executions[0]!, otherExecution: executions[1]!, access, credentials }
 }
 
 async function assertNoActiveCredentials(pool: pg.Pool, runId: string) {
@@ -62,7 +68,7 @@ async function assertNoActiveCredentials(pool: pg.Pool, runId: string) {
   assert.equal(result.rows[0]!.count, 0)
 }
 
-describe('PR #11 real PostgreSQL lifecycle and decisions', () => {
+describe.skipIf(!connectionString)('PR #11 real PostgreSQL lifecycle and decisions', () => {
   it('serializes issuance versus Stop and prevents all later issuance', async () => {
     await database(async (pool) => {
       const f = await identities(pool)
@@ -73,7 +79,7 @@ describe('PR #11 real PostgreSQL lifecycle and decisions', () => {
         await blocker.query('select id from runs where id=$1 for update', [f.run.id])
         const attempts = Promise.allSettled([
           f.credentials.issueForExecution(f.coder.id), f.credentials.revokeForRun(f.run.id),
-          f.credentials.issueForExecution(f.reviewer.id),
+          f.credentials.issueForExecution(f.otherExecution.id),
         ])
         await blocker.query('commit')
         await attempts
@@ -110,7 +116,7 @@ describe('PR #11 real PostgreSQL lifecycle and decisions', () => {
       await assertNoActiveCredentials(pool, f.run.id)
       const completedRun = WorkflowRunSchema.parse({ ...f.run, executionState: 'completed', outcome: 'canceled', result: { outcome: 'canceled' }, finishedAt: new Date().toISOString() })
       await pool.query("update runs set execution_state='completed',record=$2::jsonb where id=$1", [f.run.id, JSON.stringify(completedRun)])
-      await assert.rejects(f.credentials.issueForExecution(f.reviewer.id), { code: 'WORKER_EXECUTION_INACTIVE' })
+      await assert.rejects(f.credentials.issueForExecution(f.otherExecution.id), { code: 'WORKER_EXECUTION_INACTIVE' })
     })
   }, 30_000)
 

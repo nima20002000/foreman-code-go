@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
+import { NativeSessionReferenceSchema } from '@graphql/contracts'
 import { CURRENT_WORKFLOW_TOOLS, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled, readCurrentExecutions } from './helpers/wave25Agent3.js'
@@ -41,11 +42,13 @@ async function recoveredFixture(form: 'single' | 'repeat') {
     expect(executions).toHaveLength(1)
     const execution = executions[0]!
     expect(execution.nativeSessionId).toBeDefined()
+    const session = NativeSessionReferenceSchema.parse((await f.db.pool.query<{ reference: unknown }>(
+      'select reference from execution_native_sessions where execution_id=$1', [execution.id])).rows[0]?.reference)
     const counts = { ...f.provider.counts }
     await f.engine.shutdown()
     // A positive close acknowledgement from this exact deterministic provider
     // lifetime, NOT absence in a new resolver/registry. No create/attach/replay.
-    await f.provider.close()
+    await f.provider.close(session)
     disposed.add(execution.id)
     const cold = f.compose()
     await cold.engine.start(f.f.run.id)

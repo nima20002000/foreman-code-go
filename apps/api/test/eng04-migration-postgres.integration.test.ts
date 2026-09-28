@@ -10,11 +10,7 @@ import {
   type JsonObject,
 } from './eng04-migration-fixtures.js'
 
-// Neither DATABASE_URL nor TEST_DATABASE_URL is an opt-in or a fallback. Every
-// test uses a fresh random database; no schema or data is modified in the admin DB.
-const enabled = process.env.ENG04_MIGRATION_POSTGRES === '1'
 const timeout = 120_000
-const postgresDescribe = describe.skipIf(!enabled)
 
 async function rejectsTransaction(pool: pg.Pool, work: (sql: pg.PoolClient) => Promise<unknown>,
   codes: readonly string[], message?: RegExp): Promise<void> {
@@ -77,7 +73,7 @@ async function schemaState(pool: pg.Pool) {
     versions: versions.rows, repeat: repeat.rows, functions: functions.rows }
 }
 
-postgresDescribe('ENG04 migration successor — real PostgreSQL 17 V3 constraint gate', () => {
+describe('ENG04 migration successor — real PostgreSQL 17 V3 constraint gate', () => {
   it('installs the current registry idempotently and retains the exact execution identity FK target', async () => {
     await migrated(async (pool) => {
       const installed = await schemaState(pool)

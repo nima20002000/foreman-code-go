@@ -36,14 +36,19 @@ async function candidate(f: SaveFixture, kind: ReviewerScopeCase) {
 }
 async function rejected(f: SaveFixture, transport: Transport, tool: string, url: string,
   method: 'POST' | 'PUT', input: Record<string, unknown>) {
+  const start = tool === 'run_start'
+  const errorCode = start ? 'INVALID_REQUEST' : 'GRAPH_INVALID'
   if (transport === 'http') {
     const reply = await f.app.inject({ method, url, headers: graphHeaders(f.writer.token), payload: input })
-    expect(reply.statusCode, reply.body).toBe(400)
-    expect(reply.body).toContain(code)
+    expect(reply.statusCode, reply.body).toBe(start ? 400 : 409)
+    expect(reply.json()).toMatchObject({ error: { code: errorCode } })
+    expect(JSON.stringify(reply.json().error.details)).toContain(code)
   } else {
     const reply = await rpc(f, tool, input)
     expect(reply.result?.isError, JSON.stringify(reply)).toBe(true)
-    expect(JSON.stringify(graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0]))).toContain(code)
+    const value = graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0])
+    expect(value).toMatchObject({ error: { code: errorCode } })
+    expect(JSON.stringify(value)).toContain(code)
   }
 }
 
@@ -97,7 +102,7 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`ENG07 rev
       // Setup ONLY: emulate the old validator's single omission while retaining
       // every other executable check and the REAL typed Save/publication writer.
       // No SQL evidence/receipt forging. Restore BEFORE either Start transport.
-      const oldValidator = vi.spyOn(ExecutableWorkflowV3Schema, 'parse').mockImplementation((raw) => {
+      const legacyValue = (raw: unknown) => {
         const result = safeParse(raw)
         if (result.success) return result.data
         expect(result.error.issues).toHaveLength(1)
@@ -106,9 +111,13 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`ENG07 rev
         expect(value.version.workspaceId).toBe(historical.scope.workspaceId)
         legacyParses++
         return value
-      })
+      }
+      const oldValidator = vi.spyOn(ExecutableWorkflowV3Schema, 'parse').mockImplementation(legacyValue)
+      const oldSafeValidator = vi.spyOn(ExecutableWorkflowV3Schema, 'safeParse').mockImplementation((raw) => ({
+        success: true, data: legacyValue(raw),
+      }))
       try { await seedAgent3(f.db.pool, f.db.directory, historical, { run: false }) }
-      finally { oldValidator.mockRestore() }
+      finally { oldSafeValidator.mockRestore(); oldValidator.mockRestore() }
       expect(legacyParses).toBeGreaterThan(0)
       expect(ExecutableWorkflowV3Schema.safeParse({ version: historical.version, configurations: historical.configurations }).success).toBe(false)
       const row = (await f.db.pool.query('select revision::text from workflows where id=$1', [historical.scope.workflowId])).rows[0]!

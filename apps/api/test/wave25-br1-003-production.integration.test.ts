@@ -1,21 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DurableInteraction } from '@graphql/contracts'
-import { ApprovalPostgresSaver } from '../src/infrastructure/approvalCheckpointSaver.js'
-import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 
 type Fixture = Awaited<ReturnType<typeof checkpointRuntimeFixture>>
 const fixtures: Fixture[] = []
-const currentRuntimes = new WeakMap<Fixture, ReturnType<Fixture['compose']>>()
 afterEach(async () => {
   try { while (fixtures.length) await fixtures.pop()!.close() } finally { vi.restoreAllMocks() }
 })
 async function fixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1) {
-  const f = await checkpointRuntimeFixture(branches, pendingPerExecution)
+  const original = { closedSessions: new Set<string>() }
+  const f = await checkpointRuntimeFixture(branches, pendingPerExecution, {
+    // The deterministic provider records the original manager's physical
+    // close during shutdown; cold recovery may use only that exact receipt.
+    recoverNativeProcesses: async (executionId, signal) => {
+      signal.throwIfAborted()
+      return original.closedSessions.has(`native-${executionId}`)
+    },
+  })
+  original.closedSessions = f.provider.closedSessions
   fixtures.push(f)
-  currentRuntimes.set(f, f)
   return f
 }
 function response(interaction: DurableInteraction) {
@@ -29,20 +34,14 @@ async function expireAbandonedClaims(f: Fixture) {
   await f.db.pool.query(`update interaction_graph_resumes set lease_expires_at=clock_timestamp()-interval '1 microsecond'
     where run_id=$1 and state='resuming'`, [f.f.run.id])
 }
-async function restart(f: Fixture, checkpointer?: ApprovalPostgresSaver) {
-  // A replacement composition is a real restart only after the original native
-  // lifetime has produced its durable closure, with the Run owner still held.
-  await currentRuntimes.get(f)!.engine.shutdown()
-  const runtime = f.compose(checkpointer)
-  currentRuntimes.set(f, runtime)
-  return runtime
+async function restart(f: Fixture) {
+  // Shutdown records the original manager's native closure before the new
+  // composition acquires Run ownership.
+  await f.engine.shutdown()
+  return f.compose()
 }
-async function recover(f: Fixture, supplied?: ReturnType<Fixture['compose']>) {
-  const runtime = supplied ?? await restart(f)
-  // Reconciliation schedules work; exact Run resume waits for this drive and
-  // its durable checkpoint/receipt outcome before assertions inspect it.
-  await runtime.engine.resume(f.f.run.id)
-  return runtime
+async function recover(f: Fixture) {
+  await f.engine.resume(f.f.run.id)
 }
 
 async function stageDelivered(f: Fixture) {
@@ -64,16 +63,16 @@ async function checkpointCut(f: Fixture) {
 }
 
 function crashAfterCommitSaver(f: Fixture) {
-  return new class extends ApprovalPostgresSaver {
-    crashed = false
-    override async getTuple(config: Parameters<ApprovalPostgresSaver['getTuple']>[0]) {
-      if (!this.crashed && (await f.receipts()).length) {
-        this.crashed = true
-        throw new Error('crash-after-commit-before-graph-dispatch')
-      }
-      return super.getTuple(config)
+  const getTuple = f.saver.getTuple.bind(f.saver)
+  let crashed = false
+  const spy = vi.spyOn(f.saver, 'getTuple').mockImplementation(async (config) => {
+    if (!crashed && (await f.receipts()).length) {
+      crashed = true
+      throw new Error('crash-after-commit-before-graph-dispatch')
     }
-  }(f.db.pool, undefined, { schema: f.db.schema })
+    return getTuple(config)
+  })
+  return { get crashed() { return crashed }, restore: () => spy.mockRestore() }
 }
 
 describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery', () => {
@@ -117,9 +116,25 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
       expect(f.provider.counts.responses).toBe(1)
       expect(await f.receipts()).toEqual([])
     } finally { crash.mockRestore() }
-    await recover(f)
+    await f.engine.resume(f.f.run.id)
     expect(await f.receipts()).toHaveLength(1)
     expect(f.provider.counts.responses).toBe(1)
+  }, 60000)
+
+  it('a cold restart closes the delivered native lifetime and cannot create a graph receipt', async () => {
+    const f = await fixture()
+    await f.engine.start(f.f.run.id)
+    await stageDelivered(f)
+    const [interaction] = await f.pending(), cut = await checkpointCut(f)
+    const before = { ...f.provider.counts }
+    const successor = await restart(f)
+    expect(f.provider.closedSessions.has(interaction!.nativeSessionId)).toBe(true)
+    await successor.engine.resume(f.f.run.id)
+    expect(await f.receipts()).toEqual([])
+    expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(cut.pendingWrites)
+    expect(f.provider.counts).toMatchObject({ sessions: before.sessions, starts: before.starts, responses: 1 })
+    expect((await successor.runs.get(f.f.run.id))?.outcome).toBe('failed')
+    expect((await successor.repository.get(interaction!.id))?.status).toBe('canceled')
   }, 60000)
 
   it('rolls back real task writes, outbox completion and receipt when the SQL consumer fails', async () => {
@@ -127,40 +142,37 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     await f.engine.start(f.f.run.id)
     await stageDelivered(f)
     const cut = await checkpointCut(f)
-    class FailingSaver extends ApprovalPostgresSaver {
-      writes = 0
-      override async consumeApprovalInterrupt(sql: GraphTransactionSql, i: DurableInteraction) {
-        await super.consumeApprovalInterrupt(sql, i)
-        this.writes++
-        throw new Error('rollback-real-checkpoint')
-      }
-    }
-    const failure = new FailingSaver(f.db.pool, undefined, { schema: f.db.schema })
-    const failed = await restart(f, failure)
+    const consume = f.saver.consumeApprovalInterrupt.bind(f.saver)
+    let writes = 0
+    const failure = vi.spyOn(f.saver, 'consumeApprovalInterrupt').mockImplementation(async (sql, interaction) => {
+      await consume(sql, interaction)
+      writes++
+      throw new Error('rollback-real-checkpoint')
+    })
     const errors: unknown[] = []
-    await failed.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
+    await f.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(errors).toHaveLength(1)
-    expect(failure.writes).toBe(1)
+    expect(writes).toBe(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' }) // Publication sanitizes callback errors.
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(cut.pendingWrites)
     expect(await f.receipts()).toEqual([])
     expect((await f.db.pool.query("select state from interaction_graph_resumes where run_id=$1", [f.f.run.id])).rows)
       .not.toContainEqual({ state: 'resumed' })
     expect(f.provider.counts.responses).toBe(1)
+    failure.mockRestore()
     await expireAbandonedClaims(f)
-    await recover(f)
+    await f.engine.resume(f.f.run.id)
     expect(await f.receipts()).toHaveLength(1)
     expect(f.provider.counts).toMatchObject({ sessions: 2, starts: 2, responses: 1 })
   }, 60000)
 
-  it('restarts after COMMIT before graph acknowledgement, without another native response or resume value', async () => {
+  it('retries after COMMIT before graph acknowledgement, without another native response or resume value', async () => {
     const f = await fixture()
     await f.engine.start(f.f.run.id)
     const cut = await checkpointCut(f)
     const failingSaver = crashAfterCommitSaver(f)
-    const failed = await restart(f, failingSaver)
     const [interaction] = await f.pending()
-    const result = await failed.service.respond({ kind: 'user', principal: f.principal }, response(interaction!))
+    const result = await f.service.respond({ kind: 'user', principal: f.principal }, response(interaction!))
     expect(result.interaction.deliveryState).toBe('delivered')
     expect(failingSaver.crashed).toBe(true)
     const receipts = await f.receipts()
@@ -169,10 +181,9 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     expect(committed?.filter((write) => write[1] === '__resume__')).toHaveLength(1)
     expect((await f.db.pool.query('select state,approval_native_ack_id from interaction_graph_resumes where interaction_id=$1', [interaction!.id])).rows[0])
       .toEqual({ state: 'resumed', approval_native_ack_id: null })
-    // A new API composition takes a new PostgreSQL owner connection. The
-    // provider's external history survives; no old in-memory graph is reused.
-    const successor = await recover(f)
-    for (let n = 0; n < 3; n++) await successor.engine.resumeInteraction(result.interaction)
+    failingSaver.restore()
+    await f.engine.resume(f.f.run.id)
+    for (let n = 0; n < 3; n++) await f.engine.resumeInteraction(result.interaction)
     expect(await f.receipts()).toEqual(receipts)
     expect((await f.saver.getTuple(cut.config))?.pendingWrites?.filter((write) => write[1] === '__resume__'))
       .toEqual(committed?.filter((write) => write[1] === '__resume__'))
@@ -184,17 +195,19 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     'a committed receipt is not continuation authority after %s', async (race) => {
       const f = await fixture()
       await f.engine.start(f.f.run.id)
-      const cut = await checkpointCut(f), saver = crashAfterCommitSaver(f), failed = await restart(f, saver)
+      const cut = await checkpointCut(f), saver = crashAfterCommitSaver(f)
       const [interaction] = await f.pending()
-      const result = await failed.service.respond({ kind: 'user', principal: f.principal }, response(interaction!))
+      const result = await f.service.respond({ kind: 'user', principal: f.principal }, response(interaction!))
       expect(saver.crashed).toBe(true)
       const receipts = await f.receipts(), committed = (await f.saver.getTuple(cut.config))?.pendingWrites
       expect(receipts).toHaveLength(1)
       if (race === 'stop') await f.stop()
       if (race === 'revoked_authority') await f.db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [f.authorizationPrincipalId])
       if (race === 'closed_execution') await f.db.pool.query('update harness_executions set worker_credentials_closed_at=clock_timestamp() where id=$1', [interaction!.executionId])
-      const successor = await restart(f), observe = vi.spyOn(successor.native, 'observeExact')
-      await expect(successor.engine.resumeInteraction(result.interaction)).rejects.toMatchObject({
+      saver.restore()
+      const observe = vi.spyOn(f.native, 'observeExact')
+      if (race === 'stop') await f.engine.resumeInteraction(result.interaction)
+      else await expect(f.engine.resumeInteraction(result.interaction)).rejects.toMatchObject({
         code: race === 'revoked_authority' ? 'RUN_AUTHORIZATION_REVOKED' : 'EXECUTION_STOPPED',
       })
       expect(observe).not.toHaveBeenCalled()
@@ -256,11 +269,11 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     const held = await RunOwnership.acquire(f.db.pool, f.f.run.id, () => undefined)
     if (!held) throw new Error('Expected independent database ownership')
     try {
-      const competitor = await recover(f)
+      await expect(f.engine.resume(f.f.run.id)).rejects.toMatchObject({ code: 'RUN_ALREADY_OWNED' })
       expect(await f.receipts()).toEqual([])
       expect(f.provider.counts.responses).toBe(1)
       await held.release()
-      await recover(f, competitor)
+      await recover(f)
     } finally { await held.release() }
     await recover(f)
     expect(await f.receipts()).toHaveLength(1)
@@ -276,22 +289,21 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     expect(new Set(interactions.map((item) => item.graphInterruptId)).size).toBe(2)
     await stageDelivered(f)
     const cut = await checkpointCut(f)
-    class FailSecondBranch extends ApprovalPostgresSaver {
-      writes = 0
-      override async consumeApprovalInterrupt(sql: GraphTransactionSql, i: DurableInteraction) {
-        await super.consumeApprovalInterrupt(sql, i)
-        if (++this.writes === 2) throw new Error('rollback-second-branch')
-      }
-    }
-    const failure = new FailSecondBranch(f.db.pool, undefined, { schema: f.db.schema })
+    const consume = f.saver.consumeApprovalInterrupt.bind(f.saver)
+    let writes = 0
+    const failure = vi.spyOn(f.saver, 'consumeApprovalInterrupt').mockImplementation(async (sql, interaction) => {
+      await consume(sql, interaction)
+      if (++writes === 2) throw new Error('rollback-second-branch')
+    })
     const errors: unknown[] = []
-    await (await restart(f, failure)).engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
-    expect(failure.writes).toBe(2)
+    await f.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
+    expect(writes).toBe(2)
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' })
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(cut.pendingWrites)
     expect(await f.receipts()).toEqual([]) // Includes the FIRST branch's receipt.
     expect(f.provider.counts.responses).toBe(2)
+    failure.mockRestore()
     await expireAbandonedClaims(f)
     await recover(f)
     const stored = (await f.saver.getTuple(cut.config))?.pendingWrites?.filter((write) => write[1] === '__resume__') ?? []
@@ -329,7 +341,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     await f.saver.putWrites(cut.config, [['__resume__', [{ interactionId: interaction!.id }]]], interrupted[0])
     const invalid = (await f.saver.getTuple(cut.config))?.pendingWrites
     const errors: unknown[] = []
-    await (await restart(f)).engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
+    await f.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' }) // The public publication error is sanitized.
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(invalid)

@@ -110,6 +110,11 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       br3002Notify(f.server, message, true)
       await br1002At(cuts.assistant.promise, dispatch)
       cuts.continueAssistant.resolve()
+      await br1002At(cuts.beforeMarker.promise, dispatch)
+      expect(f.counts().responses).toBe(0)
+      cuts.enterMarker.resolve()
+      await br1002At(cuts.afterMarker.promise, dispatch)
+      cuts.finishMarker.resolve()
       await dispatch
       expect((await f.service.recover({ limit: 10 })).errors).toEqual([])
       expect(await f.repository.get(input.interactionId)).toMatchObject({ deliveryState: 'delivered' })

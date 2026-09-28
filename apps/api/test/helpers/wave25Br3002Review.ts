@@ -70,7 +70,7 @@ export function br3002Cuts(f: Br1002Runtime, deferAssistant = false) {
       sawAssistant = true; assistant.resolve(args); await continueAssistant.promise
       return
     }
-    if (!sawMarker && event.type === OPENCODE_RECONCILIATION_EVENT && projection?.terminalReady) {
+    if (!sawMarker && event.type === OPENCODE_RECONCILIATION_EVENT && projection?.live === false && projection.nativeCapture) {
       sawMarker = true; beforeMarker.resolve(args); await enterMarker.promise
       await original(...args)
       afterMarker.resolve(args); await finishMarker.promise

@@ -23,7 +23,8 @@ describe.skipIf(!postgresEnabled)('Wave 2.5 production compact graph composition
     ])
 
     const reader = await fixture.access.issue({ name: 'graph-reader', audience: 'operator', expiresAt: new Date(Date.now() + 60_000),
-      grants: [{ actions: ['capabilities:read', 'runs:read'], scope: { workspaceIds: [fixture.run.workspaceId], workflowIds: [fixture.run.workflowId], runIds: [fixture.run.id] } }] })
+      grants: [{ actions: ['capabilities:read'], scope: {} },
+        { actions: ['runs:read'], scope: { workspaceIds: [fixture.run.workspaceId], workflowIds: [fixture.run.workflowId], runIds: [fixture.run.id] } }] })
     const service = new RunGraphReadService(fixture.pool, { qualifiedReads: true })
     expect(service.capabilities(reader.principal)).toMatchObject({ protocolVersions: [1], readSemanticsVersions: [3], semantics3: { persistedReads: true, runtimeAdmission: false } })
     const snapshot = await service.snapshot(reader.principal, { protocolVersion: 1, scope: fixture.scope })

@@ -65,12 +65,12 @@ async function assertActivityPages(f: InspectionHarness, r: InspectionReader, ru
 // Actual application migrations, Save-backed pinned versions, HTTP Start,
 // coordinator/engine/repository/receipts, live SQL authorization and SDK MCP.
 // This inherits the existing provider-port double and filesystem qualification
-// boundary. It is NOT a live native-model/browser gate. A loopback test DB and
-// explicit RUN_WAVE25_POSTGRES_TESTS=1 are mandatory.
+// boundary. It is NOT a live native-model/browser gate. The integration runner
+// supplies a disposable loopback test database.
 describe.skipIf(!postgresEnabled)('ENG05-D production Start and bounded inspection parity', () => {
   it.each([
     { exit: 'early', maxOccurrences: 3, expectedOccurrences: 2 },
-    { exit: 'limit', maxOccurrences: 27, expectedOccurrences: 27 },
+    { exit: 'limit', maxOccurrences: 14, expectedOccurrences: 14 },
   ] as const)('reads $exit exit through bounded pages, keeps the old pin, and removes repeat for a later ordinary Run', async ({ exit, maxOccurrences, expectedOccurrences }) => {
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'repeat')
     fixture.version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: { ...fixture.version.definition,
@@ -79,10 +79,11 @@ describe.skipIf(!postgresEnabled)('ENG05-D production Start and bounded inspecti
     } })
     const exitId = fixture.version.definition.nodes[1]!.id
     let exits = 0
+    let seeding = true
     const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [], outputFor: (nodeId) => {
       if (nodeId !== exitId) return { nodeId }
       exits++
-      const outcome = exit === 'early' && exits === 2 ? 'pass' : 'issues'
+      const outcome = seeding || (exit === 'early' && exits === 2) ? 'pass' : 'issues'
       return { text: JSON.stringify({ routing: { outcome }, data: {
         latestDeliverable: { task: 'ENG05-D', occurrence: exits },
         remainingFindings: outcome === 'pass' ? [] : [{ id: 'task-owned-finding' }],
@@ -92,10 +93,11 @@ describe.skipIf(!postgresEnabled)('ENG05-D production Start and bounded inspecti
     try {
       // Settle the helper's initial Run before changing its synthetic location.
       await f.engine.start(f.f.run.id); await terminal(f, f.f.run.id)
-      exits = 0
+      seeding = false; exits = 0
       const { started, locationRevision } = await startThroughHttp(f, { task: 'ENG05-D', exit })
       const runId = started.run.id, args = { workspaceId: f.f.scope.workspaceId, runId }
-      await terminal(f, runId)
+      // Fourteen real occurrences produce 28 executions and cross the 25-item page boundary.
+      await terminal(f, runId, exit === 'limit' ? 600000 : 60000)
       expect(exits).toBe(expectedOccurrences)
       const r = await reader(f, runId)
       const providerCounts = { ...f.provider.counts }
@@ -172,7 +174,7 @@ describe.skipIf(!postgresEnabled)('ENG05-D production Start and bounded inspecti
       console.info(`ENG05-D_INSPECTION ${JSON.stringify({ exit, expectedOccurrences, httpRequests: measurements.length,
         mcpCalls: measurements.length, samples: measurements })}`)
     } finally { await f.close() }
-  }, 240000)
+  }, 720000)
 
   it('denies hidden inspection calls on both transports and rejects HTTP pagination/scope ambiguity', async () => {
     const f = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [] })

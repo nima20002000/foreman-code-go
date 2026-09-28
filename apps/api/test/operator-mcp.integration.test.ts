@@ -54,6 +54,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
 
   it('creates independent workspaces, persists and conflicts on location revisions, and reports unavailable paths', async () => {
     const f = await currentOperatorIntegration()
+    vi.spyOn(f.locations, 'revalidateSnapshot').mockRestore()
     try {
       const ids: string[] = []
       for (const index of [0, 1]) {
@@ -71,6 +72,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       }
       expect(ids[0]).not.toBe(ids[1])
       const rootPath = join(f.db.directory, 'project-1'); await rm(rootPath, { recursive: true })
+      await expect(stat(rootPath)).rejects.toMatchObject({ code: 'ENOENT' })
       expect(value(await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId: ids[1] } })))
         .toMatchObject({ executionLocation: { rootPath }, locationValidation: { status: 'unavailable' } })
       const listed = value(await f.client.callTool({ name: 'workspace_list', arguments: { limit: 100 } }))
@@ -100,7 +102,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       const started = value(await f.client.callTool({ name: 'run_start', arguments: start }))
       const run = started.run as { id: string }
       expect(value(await f.client.callTool({ name: 'run_start', arguments: start }))).toMatchObject({ run: { id: run.id }, replayed: true })
-      await expect.poll(async () => (await f.runs.get(run.id))?.executionState, { timeout: 20000 }).toBe('waiting')
+      await expect.poll(async () => (await f.runs.get(run.id))?.executionState, { timeout: 45000 }).toBe('waiting')
       expect(f.provider.counts).toMatchObject({ starts: 2, sessions: 2 })
       const persisted = value(await f.client.callTool({ name: 'run_get', arguments: { workspaceId: input.workspaceId, runId: run.id } }))
       expect(persisted.run).toMatchObject({ workflowVersionId: saved.value.currentVersionId, executionSemanticsVersion: 3 })

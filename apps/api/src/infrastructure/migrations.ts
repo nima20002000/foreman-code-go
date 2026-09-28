@@ -2,7 +2,7 @@ import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMig
 import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
 import { runInspectionMigration } from './runInspectionMigration.js'
 import { currentApprovalAckMigration } from './currentApprovalAckMigration.js'
-import { workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
+import { reviewCleanupEntryReceiptMigration, workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
 import { installationIdentityMigration } from './runtimeIdentity.js'
 import type pg from 'pg'
 import { currentWorkflowWriterMigration } from './currentWorkflowWriterMigration.js'
@@ -724,6 +724,7 @@ export const migrations = [
   unifiedMcpMigration,
   skillsLibraryMigration,
   currentApprovalPublicationMigration,
+  reviewCleanupEntryReceiptMigration,
   agentChatMigration,
 ] as const
 

@@ -90,22 +90,30 @@ describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durabi
       expect(await graphHead(t.db.pool, t.f.run.id)).toBe(current.asOfSequence)
     } finally { await t.close() }
   }, 60000)
-  it('a new engine reads the persisted approval checkpoint without replaying the completed predecessor', async () => {
-    const t = await checkpointRuntimeFixture()
+  it('a cold engine closes the waiting native lifetime without replaying the completed predecessor', async () => {
+    const t = await checkpointRuntimeFixture(1, 1, { recoverNativeProcesses: async (executionId, signal) => {
+      signal.throwIfAborted()
+      return t.provider.closedSessions.has(`native-${executionId}`)
+    } })
     try {
       await t.engine.start(t.f.run.id)
-      const before = { ...t.provider.counts }, head = await graphHead(t.db.pool, t.f.run.id)
+      const pending = (await t.pending())[0]!
+      const before = { ...t.provider.counts }
+      const acceptedBefore = (await t.db.pool.query<{ count: string }>(
+        "select count(*)::text as count from run_graph_effects where run_id=$1 and effect_kind='result.accept'",
+        [t.f.run.id])).rows[0]!.count
       await t.engine.shutdown()
       const recovered = t.compose()
       await recovered.engine.resume(t.f.run.id)
       expect(t.provider.counts.starts).toBe(before.starts)
       expect(t.provider.counts.sessions).toBe(before.sessions)
-      expect(await graphHead(t.db.pool, t.f.run.id)).toBe(head)
-      await recovered.service.respond({ kind: 'user', principal: t.principal }, br1002Response((await t.pending())[0]!))
-      expect((await recovered.runs.get(t.f.run.id))?.outcome).toBe('succeeded')
-      expect(t.provider.counts.starts).toBe(before.starts)
-      expect(t.provider.counts.sessions).toBe(before.sessions)
-      expect((await t.db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='result.accept'", [t.f.run.id])).rowCount).toBe(2)
+      expect(t.provider.closedSessions.has(pending.nativeSessionId)).toBe(true)
+      expect((await t.db.pool.query<{ count: string }>(
+        "select count(*)::text as count from run_graph_effects where run_id=$1 and effect_kind='result.accept'",
+        [t.f.run.id])).rows[0]!.count).toBe(acceptedBefore)
+      expect(await recovered.runs.get(t.f.run.id)).toMatchObject({ executionState: 'completed', outcome: 'failed' })
+      expect((await recovered.repository.get(pending.id))?.status).toBe('canceled')
+      expect(t.provider.counts.responses).toBe(0)
     } finally { await t.close() }
   }, 60000)
   it('a committed result survives a lost acceptance acknowledgement without another native launch', async () => {

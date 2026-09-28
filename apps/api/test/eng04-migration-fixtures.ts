@@ -15,19 +15,21 @@ export const now = '2026-09-25T00:00:00.000Z'
 export function text(value: unknown): string { return canonicalGraphJson(value, 4 * 1024 * 1024) }
 export function digest(value: unknown): string { return `sha256:${createHash('sha256').update(text(value)).digest('hex')}` }
 
-/** Double opt-in. The supplied connection is used ONLY to create/drop a random
- * database and inspect server_version_num. Never apply SQL to the admin database,
- * reuse the app database, relax permissions, terminate other sessions, or log URLs.
- * A role without CREATEDB fails; the helper never grants it that capability.
+/** Create a fresh database from the integration runner's validated test URL.
+ * The parent connection is used only for creation, deletion, and version inspection.
  */
 export async function disposableDatabase<T>(work: (pool: pg.Pool) => Promise<T>): Promise<T> {
-  assert.equal(process.env.ENG04_MIGRATION_POSTGRES, '1', 'Explicit PostgreSQL opt-in is required')
-  const configured = process.env.ENG04_MIGRATION_ADMIN_DATABASE_URL
-  assert.ok(configured, 'ENG04_MIGRATION_ADMIN_DATABASE_URL must be explicitly supplied')
+  const configured = process.env.TEST_DATABASE_URL
+  assert.ok(configured, 'TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const url = new URL(configured)
-  assert.ok(['postgres:', 'postgresql:'].includes(url.protocol), 'A PostgreSQL connection URL is required')
-  const database = `eng04_migration_${randomBytes(12).toString('hex')}`
-  assert.match(database, /^eng04_migration_[a-f0-9]{24}$/)
+  const parentDatabase = decodeURIComponent(url.pathname.slice(1))
+  assert.ok(['postgres:', 'postgresql:'].includes(url.protocol)
+    && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    && /(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(parentDatabase)
+    && !url.search && !url.hash,
+  'Use a loopback PostgreSQL database explicitly named for tests')
+  const database = `eng04_test_migration_${randomBytes(12).toString('hex')}`
+  assert.match(database, /^eng04_test_migration_[a-f0-9]{24}$/)
   const admin = new pg.Client({ connectionString: configured, connectionTimeoutMillis: 10_000 })
   let pool: pg.Pool | undefined
   let created = false

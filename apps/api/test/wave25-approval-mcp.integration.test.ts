@@ -21,7 +21,7 @@ async function setup() {
   return { ...f, app, connect, writes: () => f.counts().responses }
 }
 
-describe.skipIf(!postgresEnabled)('A4 authenticated App and Operator MCP with persisted PostgreSQL readback', { timeout: 60000 }, () => {
+describe.skipIf(!postgresEnabled)('A4 authenticated App MCP with persisted PostgreSQL readback', { timeout: 60000 }, () => {
   it('App response records one scoped decision; exact replay is safe and no native delivery is inferred', async () => {
     const f = await setup()
     const client = await f.connect('/mcp', f.credential.environment.variables.GRAPHQL_MCP_TOKEN!)

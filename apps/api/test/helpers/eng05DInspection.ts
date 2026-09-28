@@ -60,8 +60,8 @@ export async function pairedDenial(f: InspectionHarness, r: InspectionReader, na
   expect(response.json()).toMatchObject({ error: { code } })
   expect(errorCode(await r.client.callTool({ name, arguments: input }))).toBe(code)
 }
-export async function terminal(f: InspectionHarness, runId: string) {
-  await expect.poll(async () => (await f.runs.get(runId))?.executionState, { timeout: 60000 }).toBe('completed')
+export async function terminal(f: InspectionHarness, runId: string, timeout = 60000) {
+  await expect.poll(async () => (await f.runs.get(runId))?.executionState, { timeout }).toBe('completed')
   await expect.poll(async () => (await f.db.pool.query<{ pending: boolean }>(
     'select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as pending', [runId])).rows[0]?.pending,
   { timeout: 20000 }).toBe(false)

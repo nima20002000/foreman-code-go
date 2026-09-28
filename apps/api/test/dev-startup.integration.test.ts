@@ -44,7 +44,7 @@ it('rejects reuse of a matching API that still trusts a different browser port',
     await writeFile(file, `DATABASE_URL=${connectionString}\nPORT=${address.port}\nHOST=127.0.0.1\nGRAPHQL_BROWSER_ORIGIN=${browserOrigin}\nGRAPHQL_WEB_PORT=${frontendAddress.port}\n`, { mode: 0o600 })
     const environment = { ...process.env }
     for (const key of ['DATABASE_URL', 'PORT', 'HOST', 'GRAPHQL_BROWSER_ORIGIN', 'GRAPHQL_WEB_PORT']) delete environment[key]
-    coordinator = spawn('corepack', ['pnpm', 'dev'], { cwd: root, detached: true,
+    coordinator = spawn('corepack', ['pnpm', 'dev'], { cwd: root,
       env: { ...environment, GRAPHQL_API_ENV_FILE: file }, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     coordinator.stdout?.on('data', (data: Buffer) => { output += data.toString() })
@@ -60,7 +60,7 @@ it('rejects reuse of a matching API that still trusts a different browser port',
     expect(observed).toContain(browserOrigin)
     expect(api.listening).toBe(true)
   } finally {
-    if (coordinator?.pid) { try { process.kill(-coordinator.pid, 'SIGTERM') } catch { /* Already exited. */ } }
+    if (coordinator?.pid) { try { coordinator.kill('SIGTERM') } catch { /* Already exited. */ } }
     await new Promise<void>((resolve) => api.close(() => resolve()))
     await database.close()
     await rm(directory, { recursive: true, force: true })

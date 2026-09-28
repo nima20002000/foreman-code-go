@@ -114,7 +114,7 @@ async function runCase(variant: Br3002Case, mode: 'live' | 'lost' | 'reordered',
     if (permitted) {
       expect(delivered.deliveryState).toBe('delivered')
       await f.engine.resumeInteraction(delivered)
-      expect((await br1002Ack(f, interaction.id))?.approval_native_ack_id).toMatch(/^continuation-ack-/)
+      expect((await br1002Ack(f, interaction.id))?.approval_native_ack_id).toMatch(/^native-approval-ack-/)
       expect(await f.receipts()).toHaveLength(1)
       // Replay cannot deliver twice, resume twice or schedule another review.
       await deliverApproval({ repository: f.repository, nativeRuntime: f.native }, interaction.id)
@@ -137,8 +137,8 @@ async function runCase(variant: Br3002Case, mode: 'live' | 'lost' | 'reordered',
     settlements: settlements.length, approvalReplies: br3002ApprovalReplies(f), resumeReceipts: (await f.receipts()).length }
   } finally {
     cuts?.release(); cuts?.restore()
-    await f.close()
     await dispatch?.catch(() => undefined)
+    await f.close()
   }
 }
 
@@ -175,24 +175,26 @@ describe.skipIf(!postgresEnabled)('BR3-002 actual OpenCode / ReviewerDispatcher 
       cuts.enterMarker.resolve(); await br1002At(cuts.afterMarker.promise, dispatch)
       const first = await br3002Evidence(f, job.id), published = await compare()
       expect(first.approval_native_evidence).toMatchObject({ kind: 'terminal', terminal: { outcome: 'failed' } })
-      // Negative-only corruption injection: another actual provider-shaped raw
+      // Negative-only corruption injection: another provider-shaped raw
       // assistant and a contradictory, well-shaped marker. The real manager's
-      // cache does NOT emit this competing marker; this exercises the SQL fence.
+      // cache does NOT emit these sources; the captured-original fence rejects
+      // both before a competing terminal can reach the graph.
       const other = br3002Assistant(server, job.correlationId, job.nativeSessionId, br3002Cases[0]!)
       const raw = normalizedHistory([other], false)[0]!
-      await cuts.original(args[0], raw, { ...args[2]!, live: false })
+      await expect(cuts.original(args[0], raw, { ...args[2]!, live: false }))
+        .rejects.toMatchObject({ code: 'REVIEW_ORIGINAL_SOURCE_CONFLICT' })
       const payload = openCodeReconciliationPayload({ harness: job.provider, nativeSessionId: job.nativeSessionId,
         providerVersion: server.expectedVersion }, job.reviewerAgentId, job.correlationId, started[0].providerTurnOrMessageId!, raw, 'succeeded')!
       expect(payload).toBeDefined()
       await expect(cuts.original(args[0], { ...args[1], sequence: args[1].sequence + 1000, payload }, args[2]))
-        .rejects.toMatchObject({ code: 'GRAPH_TERMINAL_CONFLICT' })
+        .rejects.toMatchObject({ code: 'REVIEW_ORIGINAL_SOURCE_CONFLICT' })
       expect(await br3002Evidence(f, job.id)).toEqual(first)
       expect((await compare()).asOfSequence).toBe(published.asOfSequence)
       expect((await deliverApproval({ repository: f.repository, nativeRuntime: f.native }, interaction.id)).deliveryState).not.toBe('delivered')
       expect(br3002ApprovalReplies(f)).toBe(0)
       cuts.finishMarker.resolve(); await dispatch
       expect((await br3002Effects(f, job.id)).filter((effect) => effect.effect_kind === 'review.settle')).toHaveLength(1)
-    } finally { cuts?.release(); cuts?.restore(); await f.close(); await dispatch?.catch(() => undefined) }
+    } finally { cuts?.release(); cuts?.restore(); await dispatch?.catch(() => undefined); await f.close() }
   }, 60000)
 
   for (const fault of ['job-owner', 'writer-owner', 'expired-job', 'expired-writer', 'old-generation',
@@ -231,7 +233,8 @@ describe.skipIf(!postgresEnabled)('BR3-002 actual OpenCode / ReviewerDispatcher 
             to_jsonb((record->>'connectionGeneration')::integer+1)) where id=$1`, [projection.writer.id])
           await expect(cuts.original(...args)).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
         } else if (fault === 'old-connection') {
-          await cuts.original(args[0], { ...args[1], connectionId: 'old-connection-not-current' }, projection)
+          await expect(cuts.original(args[0], { ...args[1], connectionId: 'old-connection-not-current' }, projection))
+            .rejects.toMatchObject({ code: 'REVIEW_ORIGINAL_SOURCE_CONFLICT' })
         } else if (fault === 'native-session' || fault === 'correlation') {
           const fields = fault === 'native-session' ? { nativeSessionId: 'ses_not_owned' } : { correlationId: 'not-this-review' }
           await expect(cuts.original({ ...args[0], ...fields }, args[1], projection)).rejects.toMatchObject({ code: 'REVIEW_JOB_LEASE_LOST' })

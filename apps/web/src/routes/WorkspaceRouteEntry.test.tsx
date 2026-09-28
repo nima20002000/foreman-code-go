@@ -41,7 +41,7 @@ async function researcherButton() {
   return within(canvas).findByRole('button', { name: (name) => name.startsWith(`${title},`) })
 }
 async function workflowBoard(name: string) {
-  const board = await screen.findByRole('region', { name: 'Workflow authoring' })
+  const board = await screen.findByRole('region', { name: 'Workflow authoring' }, { timeout: 3000 })
   expect(await within(board).findByRole('heading', { name })).toBeVisible()
   return board
 }

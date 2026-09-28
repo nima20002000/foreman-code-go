@@ -14,7 +14,7 @@ import { OperatorLifecycleService } from '../src/modules/workspaces/operatorLife
 import { SkillCatalogService } from '../src/modules/skills/catalog.js'
 import { VersionHistoryService } from '../src/modules/workflows/historyManagement.js'
 
-describe.skipIf(!postgresEnabled)('comprehensive MCP persistence on isolated PostgreSQL schema',()=>{
+describe.skipIf(!postgresEnabled)('Operator domain-service persistence on isolated PostgreSQL schema',()=>{
   let database: Awaited<ReturnType<typeof currentDatabase>>
   const directories:string[]=[]
   beforeAll(async()=>{ database = await currentDatabase() }, 60000)

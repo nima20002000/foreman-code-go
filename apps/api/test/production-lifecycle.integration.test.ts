@@ -27,7 +27,7 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { FixtureServer } from './opencode-fixtures.js'
 import { buildProductionApp } from '../src/production.js'
 
-const connectionString = process.env.WAVE25_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let schema: string, root: string, project: string, address: string
 let admin: pg.Pool, database: ReturnType<typeof createDatabase>, checkpoints: ReturnType<typeof createCheckpointStore>
 let production: ReturnType<typeof buildProductionApp>
@@ -37,7 +37,7 @@ const success: ExecutionResult = { outcome: 'succeeded', output: { text: 'workfl
 type ProviderSession = { input: WorkflowNativeSessionStart; pending: PendingNativeInteraction[]; turns: Map<string, ExecutionResult | undefined>; asks: number }
 type Connection = { id: string; events: NativeHarnessEvent[]; token: string; sessionId: string }
 let sessions: Map<string, ProviderSession>, connections: WeakMap<object, Connection>
-vi.setConfig({ testTimeout: 60_000, hookTimeout: 30_000 })
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 30_000 })
 let repeatedApproval = false
 let reviewNoDecision = false
 let native: { starts: string[]; attaches: number; responses: number; inspections: number; closes: number }
@@ -295,7 +295,7 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
   })
   expect(accepted.statusCode, accepted.body).toBe(202)
   const run = accepted.json().run as NonNullable<Awaited<ReturnType<PostgresRunRepository['get']>>>
-  try { await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('waiting'), { timeout: 20000 }) }
+  try { await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('waiting'), { timeout: 60_000 }) }
   catch (error) {
     const facts = await database.pool.query('select record from harness_executions where run_id=$1', [run.id])
     throw new Error(JSON.stringify({ executions: facts.rows, activity: await runs.listActivity(run.id) }), { cause: error })
@@ -324,7 +324,7 @@ it('answers a production User approval through its own authenticated API while e
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')
   await production.engine.resume(run.id)
-  await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 20_000 })
+  await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 60_000 })
   expect(native.responses).toBe(1)
 })
 

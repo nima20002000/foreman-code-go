@@ -23,7 +23,7 @@ async function within<T>(promise: Promise<T>): Promise<T> {
 }
 
 describe.skipIf(!postgresEnabled)('BR1-005/006: current PostgreSQL cleanup and delivery boundaries', () => {
-  it('cleanup without user Stop fences authority and actual cancellation settles the Run', async () => {
+  it('cleanup without user Stop fences authority and actual cancellation settles the Run as failed', async () => {
     const f = await fixture()
     const owner = await f.runs.acquireOwnership(f.f.run.id, () => undefined)
     if (!owner) throw new Error('Expected Run owner')
@@ -31,24 +31,29 @@ describe.skipIf(!postgresEnabled)('BR1-005/006: current PostgreSQL cleanup and d
     await expect(f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(f.interaction))).rejects.toBeDefined()
     await f.engine.cancel(f.f.run.id)
     expect((await f.repository.get(f.interaction.id))?.status).toBe('canceled')
-    expect((await f.runs.get(f.f.run.id))?.outcome).toBe('canceled')
+    expect((await f.runs.get(f.f.run.id))?.outcome).toBe('failed')
     expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(false)
     expect(await f.runs.hasRequestedStop(f.f.run.id)).toBe(false)
+    expect(await f.receipts()).toEqual([])
     expect(f.provider.counts.starts).toBe(2)
   }, 60000)
 
-  it('unconfirmed provider cancellation retains cleanup without manufacturing closure or Stop', async () => {
+  it('unconfirmed provider closure retains cleanup without manufacturing closure or Stop', async () => {
     const f = await fixture()
-    const refuse = vi.spyOn(f.provider, 'cancel').mockResolvedValue(false)
+    f.provider.beforeClose = async () => { throw new Error('Native closure unconfirmed') }
     const owner = await f.runs.acquireOwnership(f.f.run.id, () => undefined)
     if (!owner) throw new Error('Expected Run owner')
     try { await f.runs.requestCleanup(f.f.run.id, owner) } finally { await owner.release() }
     try {
-      await f.engine.cancel(f.f.run.id).catch(() => undefined)
+      await expect(f.engine.cancel(f.f.run.id)).rejects.toBeDefined()
       expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(true)
       expect(await f.runs.hasRequestedStop(f.f.run.id)).toBe(false)
       expect(await f.receipts()).toEqual([])
-    } finally { refuse.mockRestore(); await f.engine.cancel(f.f.run.id) }
+      expect(f.provider.closedSessions.has(f.interaction.nativeSessionId)).toBe(false)
+    } finally { delete f.provider.beforeClose; await f.engine.cancel(f.f.run.id) }
+    expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(false)
+    expect(await f.runs.hasRequestedStop(f.f.run.id)).toBe(false)
+    expect(f.provider.counts.starts).toBe(2)
   }, 60000)
 
   it('Stop commits independently while the actual provider response remains unresolved', async () => {

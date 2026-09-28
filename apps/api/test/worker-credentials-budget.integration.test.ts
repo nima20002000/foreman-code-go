@@ -48,7 +48,7 @@ beforeEach(async () => {
   )
   execution = HarnessExecutionSchema.parse({
     id: 'execution-renewal', runId: run.id, workflowNodeId: 'node-developer', agentId: 'agent-developer',
-    agentConfigurationVersionId: 'agent-developer-config-v1', attempt: 1, input: {}, state: 'starting', createdAt,
+    agentConfigurationVersionId: 'agent-developer-config-v1', attempt: 1, input: {}, state: 'waiting', createdAt,
   })
   await pool.query(
     `insert into harness_executions (id,run_id,workflow_node_id,agent_id,attempt,accepted,record)
@@ -57,7 +57,7 @@ beforeEach(async () => {
   )
   await budgets.ensure(execution.id, 'thread-renewal', 60_000)
   await budgets.beginWait(execution.id)
-})
+}, 60_000)
 
 afterEach(async () => {
   await pool?.end()
@@ -65,10 +65,17 @@ afterEach(async () => {
   await admin?.end()
 })
 
-it('does not revive an expired scoped token', async () => {
+it('renews an expired scoped token while its exact execution lease is still owned', async () => {
   const issued = await credentials.issueForExecution(execution.id)
   await pool.query("update management_principals set expires_at=now()-interval '1 second' where id=$1", [issued.principalId])
-  await expect(credentials.renewForExecution(execution.id, issued)).rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
+  await expect(access.authenticate(issued.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')).rejects.toMatchObject({ code: 'AUTH_EXPIRED' })
+  const before = (await pool.query('select token_hash from management_principals where id=$1', [issued.principalId])).rows[0]
+  const renewedAt = await credentials.renewForExecution(execution.id, issued)
+  expect(Date.parse(renewedAt)).toBeGreaterThan(Date.now())
+  const after = (await pool.query('select token_hash,expires_at,revoked_at from management_principals where id=$1', [issued.principalId])).rows[0]
+  expect(after.token_hash).toEqual(before.token_hash)
+  expect(after.expires_at.toISOString()).toBe(renewedAt)
+  expect(after.revoked_at).toBe(null)
 })
 
 for (const revokedTable of ['management_principals', 'worker_credential_bindings'] as const) {
@@ -110,6 +117,8 @@ it('cannot issue or renew credentials for a completed execution before cleanup c
 })
 
 it('revokes a superseded token when a new process credential is prepared', async () => {
+  const starting = HarnessExecutionSchema.parse({ ...execution, state: 'starting' })
+  await pool.query('update harness_executions set record=$2::jsonb where id=$1', [execution.id, JSON.stringify(starting)])
   const issued = await credentials.issueForExecution(execution.id)
   const launch = new WorkerLaunchCredentialService({ preflight: async () => ({}) } as never, credentials, 'runner-1', 30_000)
   const fresh = await launch.prepare({ executionId: execution.id, harness: 'opencode', workingDirectory: '/project' })
