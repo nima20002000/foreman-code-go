@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:17-alpine
+    # Parallel integration slots each run full migrations; stock limits exhaust the lock table.
+    command: ["postgres", "-c", "max_connections=300", "-c", "max_locks_per_transaction=512"]
     environment:
       POSTGRES_DB: graphql
       POSTGRES_USER: graphql
