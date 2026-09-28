@@ -8,6 +8,9 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DomainError } from '../src/modules/errors.js'
 import type { FileQuery, StoredFile } from '../src/modules/files/repository.js'
 import { AgentReferenceAccess, type AgentReferenceDependencies } from '../src/modules/files/references/agentAccess.js'
+import { AgentReferenceService } from '../src/modules/files/references/agentService.js'
+import { agentFileReferenceResolver } from '../src/modules/files/tools/referenceResolver.js'
+import type { AuthorizedFileCaller } from '../src/modules/files/tools/types.js'
 import { conversationReferenceContext, decodeReferenceCursor, encodeReferenceCursor, effectiveReference,
   referenceCursorKey, type ReferenceConversationIdentity, type ReferenceExecutionIdentity } from '../src/modules/files/references/agentLineage.js'
 import type { AgentReferenceContext } from '../src/modules/files/references/agentTypes.js'
@@ -113,6 +116,33 @@ function fixture() {
 }
 
 describe('FIL-37 effective reference access', () => {
+  it('adapts the authenticated conversation to scoped file-tool list and bounded read', async () => {
+    const f = fixture()
+    const resolver = agentFileReferenceResolver(new AgentReferenceService(f.dependencies), {
+      read: async (fileId, revisionId) => f.records.get(key(fileId, revisionId)),
+    })
+    const caller: AuthorizedFileCaller = { principal: callerA, binding: 'binding', context: {
+      ownerPrincipalId: callerA.id, nativeSessionId: 'native', turnId: 'turn', allowMutation: false,
+      allowedTools: ['files.list', 'files.read'], scope: { kind: 'temporary', chat: {
+        kind: 'agent', conversationId: 'chat-A', agentId: 'same-agent', workspaceId: 'W', workflowId: 'A',
+        runId: 'run-A', executionId: 'execution-A',
+      } },
+    } }
+    const workflow = await resolver.list(caller, { kind: 'workflow_reference', workspaceId: 'W', workflowId: 'A' }, { limit: 100 })
+    const workspace = await resolver.list(caller, { kind: 'workspace_reference', workspaceId: 'W' }, { limit: 100 })
+    assert.deepEqual(workflow.items.map((row) => row.file.fileId), ['file-A'])
+    assert.deepEqual(workspace.items.map((row) => row.file.fileId), ['file-W'])
+    const result = await resolver.read(caller, input('file-A', 'rev-file-A', 0, 5))
+    assert.equal(result.status, 'ready')
+    if (result.status === 'ready') assert.equal(Buffer.from(result.contentBase64, 'base64').toString(), 'bytes')
+    assert.equal(f.facts.size, 1)
+    assert.deepEqual(await resolver.read(caller, input('file-B')), {
+      status: 'unavailable', ref: { fileId: 'file-B', revisionId: 'rev-file-B' }, reason: 'not_found',
+    })
+    f.contexts.delete(callerA.id)
+    await assert.rejects(resolver.list(caller, { kind: 'workspace_reference', workspaceId: 'W' }, { limit: 100 }), { code: 'AUTH_REVOKED' })
+  })
+
   it('A and B inherit W only; same Agent IDs and filenames do not grant sibling or Z access', async () => {
     const f = fixture()
     assert.deepEqual((await f.access.list(callerA, subject, { limit: 100 })).items.map((row) => row.fileId), ['file-A', 'file-W'])

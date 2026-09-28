@@ -1,6 +1,6 @@
 import type { Readable } from 'node:stream'
 import type {
-  AgentFileCreateWorkingCopyResult, FilePage, FileRevision, FileWithRevision,
+  AgentFileCreateWorkingCopyResult, AgentFileReadResult, FilePage, FileRevision, FileWithRevision,
   MessageAttachmentRef, PermanentFileScope, RunFileProvenance, TemporaryFileScope,
 } from '@graphql/contracts/files'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -78,5 +78,6 @@ export interface FileToolRepository {
 export interface FileReferenceResolver {
   list(caller: AuthorizedFileCaller, scope: PermanentFileScope,
     page: { limit: number; cursor?: string }): Promise<FilePage>
-  open(caller: AuthorizedFileCaller, ref: MessageAttachmentRef): Promise<{ value: FileWithRevision; stream: Readable }>
+  read(caller: AuthorizedFileCaller, input: { fileId: string; revisionId: string; offset: number; length: number }): Promise<AgentFileReadResult>
+  open?(caller: AuthorizedFileCaller, ref: MessageAttachmentRef): Promise<{ value: FileWithRevision; stream: Readable }>
 }

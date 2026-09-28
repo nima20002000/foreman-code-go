@@ -54,7 +54,7 @@ export class AgentFileToolService {
       const { stream } = await this.files.download(caller.principal, targetOf(caller.context), ref)
       return { value, stream }
     }
-    if (!this.references) throw new DomainError('FILE_REFERENCE_RESOLVER_REQUIRED', 'Reference reads require the FIL-37 resolver.', 409)
+    if (!this.references?.open) throw new DomainError('FILE_REFERENCE_RESOLVER_REQUIRED', 'Reference copies require a streaming resolver.', 409)
     const opened = await this.references.open(caller, ref)
     try {
       if (!samePins(opened.value, ref) || opened.value.file.scope.kind === 'temporary') throw new Unavailable('not_found')
@@ -94,6 +94,13 @@ export class AgentFileToolService {
     const input = AgentFileReadInputSchema.parse(raw)
     const ref = { fileId: input.fileId, revisionId: input.revisionId }
     try {
+      const stored = await this.files.repository.read(ref.fileId, ref.revisionId)
+      if (stored && stored.value.file.scope.kind !== 'temporary') {
+        if (!this.references) throw new DomainError('FILE_REFERENCE_RESOLVER_REQUIRED', 'Reference reads require the FIL-37 resolver.', 409)
+        const result = await this.references.read(caller, input)
+        await this.sessions.authenticate(token, 'files.read')
+        return parseAgentFileReadResult(input, result)
+      }
       const opened = await this.open(caller, ref)
       let data: Buffer
       try {

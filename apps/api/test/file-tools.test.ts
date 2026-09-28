@@ -21,13 +21,13 @@ const text = (result: Awaited<ReturnType<Fixture['service']['read']>>) => result
   ? Buffer.from(result.contentBase64, 'base64').toString('utf8') : result.reason
 
 // Test transport uses the real Fastify + pinned MCP SDK, but in-memory persistence/byte boundaries.
-async function endpoint(f: Fixture) {
+async function endpoint(f: Fixture, service = f.service) {
   const app = Fastify()
   app.setErrorHandler((error, _request, reply) => {
     const status = error instanceof DomainError ? error.status : 500
     void reply.code(status).send({ error: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' })
   })
-  registerFileToolsMcp(app, f.service)
+  registerFileToolsMcp(app, service)
   await app.ready()
   async function rpc(method: string, params: unknown, token = f.token) {
     const response = await app.inject({ method: 'POST', url: FILE_TOOLS_MCP_PATH,
@@ -44,6 +44,33 @@ async function endpoint(f: Fixture) {
 }
 
 describe('FIL-05 authenticated file tools over FIL-03', () => {
+  it('routes permitted reference list/read through the read-only resolver', async () => {
+    const f = await fileToolFixture(), ref = await f.upload('reference bytes')
+    const stored = f.repository.values.get(ref.fileId)!
+    const scope = { kind: 'workflow_reference' as const, workspaceId: 'workspace-a', workflowId: 'workflow-a' }
+    stored.value.file = { fileId: ref.fileId, currentRevisionId: ref.revisionId,
+      createdAt: stored.value.file.createdAt, state: 'ready', scope }
+    const read = vi.fn(async () => ({ status: 'ready' as const, ...stored.value, readAt: f.clock().toISOString(),
+      offset: 0, byteLength: 5, contentBase64: Buffer.from('refer').toString('base64'), eof: false }))
+    const list = vi.fn(async () => ({ items: [stored.value], pageInfo: { nextCursor: null } }))
+    const service = new AgentFileToolService(f.files, f.sessions, f.artifacts, f.tools, { list, read }, f.clock)
+    const token = await f.issue({ allowMutation: false })
+    expect((await service.list(token, { scope })).items.map((row) => row.file.fileId)).toEqual([ref.fileId])
+    expect(text(await service.read(token, { ...ref, offset: 0, length: 5 }))).toBe('refer')
+    expect(read).toHaveBeenCalledOnce()
+    expect(f.tools.reads).toHaveLength(0)
+    const { app, rpc } = await endpoint(f, service)
+    try {
+      expect((await rpc('tools/call', { name: 'files.list', arguments: { scope } }, token))
+        .body.result?.structuredContent).toMatchObject({ items: [{ file: { fileId: ref.fileId } }] })
+      expect((await rpc('tools/call', { name: 'files.read', arguments: { ...ref, offset: 0, length: 5 } }, token))
+        .body.result?.structuredContent).toMatchObject({ status: 'ready', byteLength: 5 })
+      expect((await rpc('tools/call', { name: 'files.read', arguments: ref }, 'invalid')).status).toBe(401)
+    } finally { await app.close() }
+    await expect(service.createWorkingCopy(token, { commandId: randomUUID(), source: ref, destination: f.scope }))
+      .rejects.toMatchObject({ code: 'FILE_TOOL_DENIED' })
+  })
+
   it('reads pinned bounded ranges and never substitutes the current head', async () => {
     const f = await fileToolFixture(), ref = await f.upload('abcdefgh')
     expect(text(await f.service.read(f.token, { ...ref, offset: 2, length: 3 }))).toBe('cde')

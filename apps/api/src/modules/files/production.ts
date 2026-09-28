@@ -18,6 +18,7 @@ import { TemporaryFileService } from './service.js'
 import { readFileRetentionSnapshot } from './retentionSnapshot.js'
 import { defaultFileStorageRoot, FileByteStorage } from './storage.js'
 import { registerProductionFileTools } from './tools/production.js'
+import { agentFileReferenceResolver } from './tools/referenceResolver.js'
 import type { FileReferenceResolver } from './tools/types.js'
 import { ManagedFileCleanupBytes } from './cleanup/bytes.js'
 import { PostgresFileCleanupRepository } from './cleanup/postgres.js'
@@ -35,13 +36,14 @@ export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Poo
   // The MCP endpoint is composed before this helper. Its onReady hook binds this same service.
   app.decorate('fileReferenceService', references)
   // FIL-37: authenticated agent-tool/conversation adapters bind this read-only service, not FIL-36 writes.
-  app.decorate('agentReferenceService', new AgentReferenceService({
+  const agentReferences = new AgentReferenceService({
     files: repository, bytes, authorization: new PostgresAgentReferenceAuthorization(pool),
     reads: new PostgresReferenceReadRepository(pool),
-  }))
+  })
+  app.decorate('agentReferenceService', agentReferences)
   registerFileRoutes(app, service)
   registerFileReferenceRoutes(app, references)
-  registerProductionFileTools(app, pool, service, referenceResolver)
+  registerProductionFileTools(app, pool, service, referenceResolver ?? agentFileReferenceResolver(agentReferences, repository))
   const cleanup = new TemporaryFileCleanupSweeper(new PostgresFileCleanupRepository(pool),
     new ManagedFileCleanupBytes(bytes), (error, context) => app.log.warn({ err: error, ...context }, 'temporary file cleanup failed'))
   app.addHook('onReady', async () => { await bytes.initialize(); cleanup.start() })
