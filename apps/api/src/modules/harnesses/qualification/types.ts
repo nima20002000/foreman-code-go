@@ -14,6 +14,8 @@ export interface QualificationSuiteInput {
   binarySha256: string
   /** Behavior profile the candidate must satisfy. */
   profile: HarnessProfileId
+  /** Model for the live turn (global harness default); null means the harness's own default. */
+  model: string | null
   /** Disposable directory owned by this run; deleted afterwards by the caller. */
   workDirectory: string
   signal: AbortSignal
