@@ -8,6 +8,9 @@ import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { PostgresFileReferenceAuthorization } from './references/authorization.js'
 import { registerFileReferenceRoutes } from './references/routes.js'
 import { FileReferenceService } from './references/service.js'
+import { PostgresAgentReferenceAuthorization } from './references/agentAuthorization.js'
+import { PostgresReferenceReadRepository } from './references/agentProvenance.js'
+import { AgentReferenceService } from './references/agentService.js'
 import { workspaceStorageRoot } from '../workspaces/storage.js'
 import { PostgresFileConversationAuthorization } from './authorization.js'
 import { PostgresFileRepository } from './postgres.js'
@@ -28,6 +31,11 @@ export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Poo
     new PostgresCommandCoordinator(pool))
   // The MCP endpoint is composed before this helper. Its onReady hook binds this same service.
   app.decorate('fileReferenceService', references)
+  // FIL-37: authenticated agent-tool/conversation adapters bind this read-only service, not FIL-36 writes.
+  app.decorate('agentReferenceService', new AgentReferenceService({
+    files: repository, bytes, authorization: new PostgresAgentReferenceAuthorization(pool),
+    reads: new PostgresReferenceReadRepository(pool),
+  }))
   registerFileRoutes(app, service)
   registerFileReferenceRoutes(app, references)
   registerProductionFileTools(app, pool, service, referenceResolver)

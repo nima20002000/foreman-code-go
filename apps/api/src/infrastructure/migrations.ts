@@ -38,6 +38,7 @@ import { runActivitiesMigration } from './runActivitiesMigration.js'
 import { fileStorageMigration } from './fileStorageMigration.js'
 import { fileReferenceMigration } from './fileReferenceMigration.js'
 import { fileRetentionMigration } from './fileRetentionMigration.js'
+import { fileReferenceAccessMigration } from './fileReferenceAccessMigration.js'
 import { fileToolsMigration } from '../modules/files/tools/migration.js'
 
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
@@ -740,6 +741,7 @@ export const migrations = [
   fileReferenceMigration,
   fileRetentionMigration,
   fileToolsMigration,
+  fileReferenceAccessMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
