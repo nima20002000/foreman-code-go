@@ -7,7 +7,7 @@ import { DomainError } from '../errors.js'
 import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresFoundationSettingsRepository } from './foundation.js'
-import type { PostgresOperatorRepository } from '../operators/postgres.js'
+import { operatorSkillContent, type PostgresOperatorRepository } from '../operators/postgres.js'
 
 export class FoundationSettingsManagementService {
   constructor(
@@ -78,14 +78,22 @@ export class FoundationSettingsManagementService {
           }
         }
         const operators = this.operators
-        const operatorChanged = !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
+        const skills = value.operator.assignedSkills ?? []
+        const skillsChanged = !isDeepStrictEqual(previous.value.operator.assignedSkills ?? [], skills)
+        const operatorChanged = skillsChanged || !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
           || (previous.value.operator.showThinking ?? false) !== (value.operator.showThinking ?? false)
+        if (operatorChanged) {
+          // Republishing unchanged references still requires authority over their source workspaces.
+          for (const reference of skills) requireAuthorization(principal, 'skills:read', { workspaceId: reference.workspaceId })
+          await operatorSkillContent(client, skills, previous.value.operator.assignedSkills)
+        }
         const current = operatorChanged ? await operators?.ensureWithClient(client) : undefined
         const result = await this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
         if (operators && current && (!isDeepStrictEqual(current.configuration.harness, value.operator.harness)
-          || (current.configuration.showThinking ?? false) !== (value.operator.showThinking ?? false))) {
+          || (current.configuration.showThinking ?? false) !== (value.operator.showThinking ?? false)
+          || !isDeepStrictEqual(current.configuration.assignedSkills ?? [], skills))) {
           await operators.updateWithClient(
-            client, value.operator.harness, current.operator.currentConfigurationVersionId, value.operator.showThinking ?? false,
+            client, value.operator.harness, current.operator.currentConfigurationVersionId, value.operator.showThinking ?? false, skills,
           )
         }
         return result

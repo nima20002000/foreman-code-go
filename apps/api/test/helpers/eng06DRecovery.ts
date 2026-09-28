@@ -48,7 +48,7 @@ export type Transport = Pick<Base, 'app' | 'client' | 'connect'> & { close(): Pr
  * recovery port. Only the external provider/registry and filesystem inspector
  * are synthetic. All owners, captures, migrations, lifecycle writers, grants,
  * original-source checks and generation/receipt fences remain real. */
-function composeRuntime(base: Base, provider: RecoveryProvider, errors: unknown[]): Runtime {
+function composeRuntime(base: Base, provider: RecoveryProvider, errors: unknown[], activeStarts: Set<Promise<void>>): Runtime {
   const { pool, directory, schema } = base.db
   const commands = new PostgresCommandCoordinator(pool)
   const workflows = new PostgresWorkflowRepository(pool)
@@ -84,6 +84,8 @@ function composeRuntime(base: Base, provider: RecoveryProvider, errors: unknown[
   const drive = engine.start.bind(engine)
   vi.spyOn(engine, 'start').mockImplementation((runId) => {
     const task = drive(runId)
+    activeStarts.add(task)
+    void task.then(() => { activeStarts.delete(task) }, () => { activeStarts.delete(task) })
     void task.catch((error: unknown) => errors.push(error))
     return task
   })
@@ -144,7 +146,8 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
   // recovery registry port, so it must never run this fixture's native work.
   await base.client.close(); await base.app.close(); await base.engine.shutdown()
   const errors: unknown[] = [], shutdownErrors: unknown[] = []
-  let runtime = composeRuntime(base, provider, errors)
+  const activeStarts = new Set<Promise<void>>()
+  let runtime = composeRuntime(base, provider, errors, activeStarts)
   const runtimes = [runtime]
   let transport: Transport
   try { transport = await openTransport(base, runtime, errors) }
@@ -166,7 +169,7 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
       // Continue through a reported shutdown failure so a separate Stop/readback
       // assertion still exercises the recovery path. Tests assert this array too.
       try { await runtime.engine.shutdown() } catch (error) { shutdownErrors.push(error) }
-      runtime = composeRuntime(base, provider, errors); runtimes.push(runtime)
+      runtime = composeRuntime(base, provider, errors, activeStarts); runtimes.push(runtime)
       transport = await openTransport(base, runtime, errors)
     },
     async settled(runId = base.f.run.id) {
@@ -176,7 +179,8 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
           const snapshot = await runtime.runs.getRepeatSnapshot(runId)
           const executions = (await base.db.pool.query<{ id: string; state: string; accepted: boolean }>(
             "select id,record->>'state' as state,accepted from harness_executions where run_id=$1 order by id", [runId])).rows
-          return { state: snapshot.run.executionState, cleanupPending: snapshot.cleanupPending, executions }
+          return { state: snapshot.run.executionState, cleanupPending: snapshot.cleanupPending,
+            activeStarts: activeStarts.size, executions }
         })
       } catch (error) {
         // Preserve the real error behind HTTP INTERNAL_ERROR / a generic timeout.

@@ -13,7 +13,7 @@ import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure
 // REAL migrated PostgreSQL and current typed Save/canonical Start publication
 // fixtures. This is deliberately NOT a real native/provider or public Start
 // qualification: no native proof, successful cleanup or receipt is fabricated.
-const enabled = postgresEnabled && process.env.RUN_ENG04_A2_POSTGRES_TESTS === '1'
+const enabled = postgresEnabled
 describe.skipIf(!enabled)('A2 current lifecycle SQL boundaries', () => {
   let db: Awaited<ReturnType<typeof currentDatabase>>
   const fixtures: GraphFixture[] = []

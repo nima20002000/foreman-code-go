@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { assertOrchestratorGraphAuthority } from '../src/modules/interactions/graphAuthority.js'
+import { resolveImmutableApprovalRoute } from '../src/modules/workflows/approvalRoutes.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 const cleanup: Array<() => Promise<void>> = []
@@ -57,17 +58,17 @@ describe.skipIf(!postgresEnabled)('Wave 2.5 approval authority SQL consumer', { 
     }
   })
 
-  it('does not promote persisted execution adjacency into an approval assignment', async () => {
+  it('rejects changes to a pinned version and does not infer approval from execution adjacency', async () => {
     const f = await setup()
     const changed = structuredClone(f.version)
     changed.definition.edges = changed.definition.edges.filter((edge) => edge.kind === 'execution')
-    // Deliberately corrupt only this isolated fixture; never migrate an active Run this way.
-    await f.pool.query('update workflow_versions set record=$2::jsonb where id=$1', [changed.id, JSON.stringify(changed)])
-    try {
-      await expect(assertOrchestratorGraphAuthority(f.pool, f.interaction, f.bound))
-        .rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
-    } finally {
-      await f.pool.query('update workflow_versions set record=$2::jsonb where id=$1', [f.version.id, JSON.stringify(f.version)])
-    }
+    expect(resolveImmutableApprovalRoute(changed, f.requester.workflowNodeId, f.requester.agentId)).toBeUndefined()
+    await expect(f.pool.query('update workflow_versions set record=$2::jsonb where id=$1', [changed.id, JSON.stringify(changed)]))
+      .rejects.toMatchObject({ code: 'P0001', message: 'REPEAT_VERSION_IMMUTABLE' })
+    const stored = await f.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [f.version.id])
+    expect(stored.rows[0]!.record).toEqual(f.version)
+    await expect(assertOrchestratorGraphAuthority(f.pool, f.interaction, f.bound)).resolves.toMatchObject({
+      requestingNodeId: f.requester.workflowNodeId, orchestratorNodeId: f.reviewer.workflowNodeId,
+    })
   })
 })

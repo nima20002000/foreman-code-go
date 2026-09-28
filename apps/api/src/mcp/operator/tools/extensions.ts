@@ -42,11 +42,11 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'harness_mcp_detection_get', () => extension.workspace.diagnostics(context.principal,input)))
   if (operatorToolAvailable(context, 'agent_create')) server.registerTool('agent_create', {
-    description: "Create a standalone workspace Agent from an explicit native configuration or a role template. Existing credentials do not gain new grants automatically. graphqlTools sets its default GraphQL MCP tools (absent = every tool its role allows); a workflow node can add/remove tools via its graphqlTools field.", inputSchema: contracts.AgentCreateInputSchema, outputSchema: contracts.AgentMutationResultSchema,
+    description: "Create a standalone workspace Agent from an explicit native configuration or a role template. prompt.system holds persistent Agent instructions; assignedSkills lists exact {skillId, version} references from this workspace (skill_list/skill_get), delivered in order after the instructions. Assigning skills needs skills:read; archived, missing or other-workspace skills are rejected. Existing credentials do not gain new grants automatically. graphqlTools sets its default GraphQL MCP tools (absent = every tool its role allows); a workflow node can add/remove tools via its graphqlTools field.", inputSchema: contracts.AgentCreateInputSchema, outputSchema: contracts.AgentMutationResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'agent_create', () => extension.agents.create(context.principal,input)))
   if (operatorToolAvailable(context, 'agent_update')) server.registerTool('agent_update', {
-    description: "Revision-check Agent metadata/configuration. graphqlTools replaces its default GraphQL MCP tools, within its role. Requires authority across every referencing workflow and rejects busy Agents. Publish a new workflow version before running changed settings.", inputSchema: contracts.AgentUpdateInputSchema, outputSchema: contracts.AgentMutationResultSchema,
+    description: "Revision-check Agent metadata/configuration. graphqlTools replaces its default GraphQL MCP tools, within its role. Requires authority across every referencing workflow and rejects busy Agents. assignedSkills replaces the ordered exact skill versions; a newer skill version is used only when you set it here. Publish a new workflow version before running changed settings.", inputSchema: contracts.AgentUpdateInputSchema, outputSchema: contracts.AgentMutationResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'agent_update', () => extension.agents.update(context.principal,input)))
   if (operatorToolAvailable(context, 'agent_clone')) server.registerTool('agent_clone', {
@@ -101,16 +101,32 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     description: "Discover the available local runner and whether controlled provisioning is configured. Remote dispatch is not supported.", inputSchema: contracts.RunnerListInputSchema, outputSchema: contracts.RunnerListResultSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'runner_list', () => extension.workspace.runners(context.principal,input.workspaceId)))
-  if (operatorToolAvailable(context, 'skill_list')) server.registerTool('skill_list', {
-    description: "List workspace skill versions and hashes without downloading every instruction body.", inputSchema: contracts.SkillListInputSchema, outputSchema: contracts.SkillPageSchema,
+  // Skill tools stay listed for every Operator credential: the service checks grants and
+  // workspace scope on each call, so a forbidden call returns an audited ACCESS_DENIED
+  // instead of an unknown-tool error.
+  const skillTools = Boolean(extension.skills)
+  if (skillTools) server.registerTool('skill_list', {
+    description: "List logical skills, one row per skill with its current version, name, description and archive state. Omit workspaceId to list every workspace you may read. Never returns instruction bodies; use skill_get.", inputSchema: contracts.SkillListInputSchema, outputSchema: contracts.SkillPageSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_list', () => extension.skills.list(context.principal,input)))
-  if (operatorToolAvailable(context, 'skill_get')) server.registerTool('skill_get', {
-    description: "Read one immutable skill version and its instructions.", inputSchema: contracts.SkillReferenceInputSchema, outputSchema: contracts.SkillGetResultSchema,
+  if (skillTools) server.registerTool('skill_get', {
+    description: "Read a skill's current head and the instructions of its current version, or of one exact immutable version.", inputSchema: contracts.SkillGetInputSchema, outputSchema: contracts.SkillGetResultSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_get', () => extension.skills.get(context.principal,input)))
-  if (operatorToolAvailable(context, 'skill_publish')) server.registerTool('skill_publish', {
-    description: "Publish a new immutable workspace skill version from supplied text. This does not install packages or rewrite existing versions.", inputSchema: contracts.SkillPublishInputSchema, outputSchema: contracts.SkillPublishResultSchema,
-    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
-  }, async (input) => invokeOperatorTool(context, 'skill_publish', () => extension.skills.publish(context.principal,input)))
+  if (skillTools) server.registerTool('skill_versions_list', {
+    description: "List a skill's immutable versions, newest first, without instruction bodies.", inputSchema: contracts.SkillVersionListInputSchema, outputSchema: contracts.SkillVersionPageSchema,
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+  }, async (input) => invokeOperatorTool(context, 'skill_versions_list', () => extension.skills.versions(context.principal,input)))
+  if (skillTools) server.registerTool('skill_create', {
+    description: "Create a workspace skill from Markdown instruction text. The server assigns the skill ID and version 1. Text is stored literally: no packages, scripts, URLs or includes. Retry the same commandId after an uncertain reply. Assign it to an Agent by exact version through agent_create/agent_update or the board.", inputSchema: contracts.SkillCreateInputSchema, outputSchema: contracts.SkillMutationResultSchema,
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+  }, async (input) => invokeOperatorTool(context, 'skill_create', () => extension.skills.create(context.principal,input,'mcp')))
+  if (skillTools) server.registerTool('skill_update', {
+    description: "Save a skill's name, description and instructions as a new immutable version. Requires expectedRevision from skill_get/skill_list; a stale revision returns SKILL_REVISION_CONFLICT. An identical save creates no version (changed=false). Existing Agent assignments stay pinned to their versions until explicitly updated.", inputSchema: contracts.SkillUpdateInputSchema, outputSchema: contracts.SkillMutationResultSchema,
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+  }, async (input) => invokeOperatorTool(context, 'skill_update', () => extension.skills.update(context.principal,input,'mcp')))
+  if (skillTools) server.registerTool('skill_archive', {
+    description: "Archive (archived=true) or restore a skill. Requires skills:publish and skills:read in its workspace because the result includes the current version. Archived skills are hidden from default lists and cannot be newly assigned; versions and pinned Agent snapshots are kept.", inputSchema: contracts.SkillArchiveInputSchema, outputSchema: contracts.SkillMutationResultSchema,
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+  }, async (input) => invokeOperatorTool(context, 'skill_archive', () => extension.skills.archive(context.principal,input,'mcp')))
 }

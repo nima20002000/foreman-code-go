@@ -17,9 +17,9 @@ import { assertWorkflowRunSettlementLocked } from './workflowRepositoryServices.
  * optional fields and the exact accepted input/configuration/location/authority
  * values. There is no request normalization, retagging or draft substitution. */
 export function immutableWorkflowRunPins(run: CurrentStopContext['run']): Record<string, unknown> {
-  const { executionState: _state, outcome: _outcome, result: _result,
-    startedAt: _startedAt, finishedAt: _finishedAt, stopCause: _stopCause, ...pins } = run
-  return structuredClone(pins)
+  const pins: Record<string, unknown> = structuredClone(run)
+  for (const key of ['executionState', 'outcome', 'result', 'startedAt', 'finishedAt', 'stopCause']) delete pins[key]
+  return pins
 }
 interface StopIntent {
   principalId: string

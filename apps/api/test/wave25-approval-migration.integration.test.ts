@@ -53,7 +53,11 @@ describe.skipIf(!postgresEnabled)('Current persisted approval writer protection'
     const { f, save, read } = await setup(), before = await read()
     const configurations = (await db.pool.query('select record from agent_configuration_versions where workspace_id=$1 order by id', [f.scope.workspaceId])).rows
     const edges = f.version.definition.edges.filter((edge) => edge.kind === 'execution')
-    await expect(save({ ...f.version.definition, approval: { handler: 'user' }, edges })).rejects.toThrow('pinned native configuration conflicts with approval authority')
+    await expect(save({ ...f.version.definition, approval: { handler: 'user' }, edges })).rejects.toMatchObject({
+      code: 'GRAPH_INVALID', details: { issues: expect.arrayContaining([
+        expect.objectContaining({ message: 'pinned native configuration conflicts with approval authority' }),
+      ]) },
+    })
     expect(await read()).toEqual(before)
     expect((await db.pool.query('select record from agent_configuration_versions where workspace_id=$1 order by id', [f.scope.workspaceId])).rows).toEqual(configurations)
   })

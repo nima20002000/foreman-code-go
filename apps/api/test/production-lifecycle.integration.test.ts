@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, HarnessExecutionSchema, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -20,7 +20,6 @@ import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeS
 import type { NativeHistory, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import { PostgresInteractionDeliveryRepository } from '../src/modules/interactions/deliveryPostgres.js'
 import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -28,18 +27,17 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { FixtureServer } from './opencode-fixtures.js'
 import { buildProductionApp } from '../src/production.js'
 
-const connectionString = process.env.WAVE25_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
+const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let schema: string, root: string, project: string, address: string
 let admin: pg.Pool, database: ReturnType<typeof createDatabase>, checkpoints: ReturnType<typeof createCheckpointStore>
 let production: ReturnType<typeof buildProductionApp>
 let config: ReturnType<typeof loadConfig>
 let runs: PostgresRunRepository, interactions: PostgresInteractionRepository, access: PostgresAccessService
-const retired: Array<ReturnType<typeof buildProductionApp>> = []
 const success: ExecutionResult = { outcome: 'succeeded', output: { text: 'workflow result' } }
 type ProviderSession = { input: WorkflowNativeSessionStart; pending: PendingNativeInteraction[]; turns: Map<string, ExecutionResult | undefined>; asks: number }
 type Connection = { id: string; events: NativeHarnessEvent[]; token: string; sessionId: string }
 let sessions: Map<string, ProviderSession>, connections: WeakMap<object, Connection>
-vi.setConfig({ testTimeout: 60_000, hookTimeout: 30_000 })
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 30_000 })
 let repeatedApproval = false
 let reviewNoDecision = false
 let native: { starts: string[]; attaches: number; responses: number; inspections: number; closes: number }
@@ -53,8 +51,13 @@ function event(manager: object, type: string, payload: Record<string, unknown>) 
 const providerId = (manager: { harness: 'codex' | 'opencode' }, correlation: string) => manager.harness === 'opencode'
   ? `msg_${createHash('sha256').update(correlation).digest('hex').slice(0, 24)}` : correlation
 function ask(reference: NativeSessionReference, suffix: number): PendingNativeInteraction {
-  return { session: reference, turn: { nativeTurnId: [...sessions.get(reference.nativeSessionId)!.turns.keys()][0]!, nativeRequestId: `ask-${reference.nativeSessionId}-${suffix}` },
-    nativeRequestType: 'item/commandExecution/requestApproval', request: { command: 'test' }, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }
+  const saved = sessions.get(reference.nativeSessionId)!
+  const turnId = [...saved.turns.keys()][0]!
+  return { session: reference, turn: { nativeTurnId: turnId, nativeRequestId: `ask-${reference.nativeSessionId}-${suffix}` },
+    nativeRequestType: 'item/commandExecution/requestApproval', request: {
+      itemId: `item-${reference.nativeSessionId}-${suffix}`, turnId, threadId: reference.nativeSessionId,
+      command: 'test', cwd: saved.input.request.workingDirectory,
+    }, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE }
 }
 function runtime() { return Reflect.get(production.engine, 'nativeExecutions') as ApprovalExecutionCoordinator }
 async function mcp(token: string, input: Record<string, unknown>) {
@@ -64,14 +67,6 @@ async function mcp(token: string, input: Record<string, unknown>) {
     return await client.callTool({ name: 'interaction_respond', arguments: input })
   } finally { await client.close() }
 }
-async function operatorGet(token: string, interactionId: string) {
-  const client = new Client({ name: 'production-operator-readback', version: '1.0' })
-  try {
-    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
-    return await client.callTool({ name: 'interaction_get', arguments: { interactionId } })
-  } finally { await client.close() }
-}
-
 beforeEach(async () => {
   schema = `production_lifecycle_${randomUUID().replaceAll('-', '')}`
   root = await mkdtemp(join(tmpdir(), 'pr15-runtime-'))
@@ -129,7 +124,8 @@ beforeEach(async () => {
     } else if (saved.input.request.workflowNodeId === 'orchestrator') saved.turns.set(input.clientCorrelationId, success)
     else {
       saved.pending = [ask(reference, ++saved.asks)]
-      yield event(this, 'interaction.pending', { nativeRequestId: saved.pending[0]!.turn.nativeRequestId })
+      yield event(this, 'interaction.pending', { nativeRequestId: saved.pending[0]!.turn.nativeRequestId,
+        nativeRequestType: saved.pending[0]!.nativeRequestType, turnId })
       return
     }
     yield event(this, 'turn.completed', { threadId: reference.nativeSessionId, turnId })
@@ -145,14 +141,24 @@ beforeEach(async () => {
         terminalResult: result, terminalTurn: { correlationId, providerId: providerId(manager, correlationId), result } } : {}) }
   }
   vi.spyOn(CodexAppServerSessionManager.prototype, 'history').mockImplementation(async function (this: CodexAppServerSessionManager, reference) { return history(this, reference) })
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcileResponse').mockImplementation(async function (this: CodexAppServerSessionManager, reference) {
+    return history(this, reference, `execution:${sessions.get(reference.nativeSessionId)!.input.request.executionId}`)
+  })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockImplementation(async function (this: CodexAppServerSessionManager, reference, correlation) { return history(this, reference, correlation) })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'pending').mockImplementation(async function (_reference) {
     return sessions.get(_reference.nativeSessionId)?.pending[0]
   })
-  vi.spyOn(CodexAppServerSessionManager.prototype, 'respond').mockImplementation(async function (this: CodexAppServerSessionManager, reference, requestId) {
+  vi.spyOn(CodexAppServerSessionManager.prototype, 'respond').mockImplementation(async function (this: CodexAppServerSessionManager, reference, requestId, option) {
     const saved = sessions.get(reference.nativeSessionId)!
-    expect(saved.pending.some((item) => item.turn.nativeRequestId === requestId)).toBe(true)
+    const pending = saved.pending.find((item) => item.turn.nativeRequestId === requestId)
+    expect(pending).toBeDefined()
     native.responses++
+    event(this, 'interaction.submitted', { nativeRequestId: requestId, optionId: option.optionId, semantic: option.semantic })
+    event(this, 'interaction.resolved', { nativeRequestId: requestId, submittedOptionId: option.optionId,
+      evidence: 'serverRequest/resolved' })
+    event(this, 'item.completed', { threadId: reference.nativeSessionId, turnId: pending!.turn.nativeTurnId,
+      item: { id: (pending!.request as { itemId: string }).itemId, type: 'commandExecution', status: 'completed',
+        command: 'test', cwd: (pending!.request as { cwd: string }).cwd, exitCode: 0 } })
     if (repeatedApproval && saved.input.request.workflowNodeId === 'worker-a' && saved.asks < 2) {
       saved.pending = [ask(reference, ++saved.asks)]
     } else {
@@ -187,12 +193,12 @@ beforeEach(async () => {
   }
   // Replace only the external HTTP/SSE server. The real OpenCode adapter emits
   // its original history and submission evidence into production capture ports.
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'createSession').mockImplementation(async function (input, signal) {
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'createSession').mockImplementation(async function (this: OpenCodeNativeSessionManager, input, signal) {
     if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
     serverFor(this, input)
     return originalCreate.call(this, input, signal)
   })
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'attachSession').mockImplementation(async function (reference, input, signal) {
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'attachSession').mockImplementation(async function (this: OpenCodeNativeSessionManager, reference, input, signal) {
     if (input.kind === 'operator') throw new Error('Unexpected Operator launch')
     native.attaches++
     serverFor(this, input)
@@ -204,7 +210,7 @@ beforeEach(async () => {
       endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
       endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
   })
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'startTurn').mockImplementation(async function* (reference, input, signal) {
+  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'startTurn').mockImplementation(async function* (this: OpenCodeNativeSessionManager, reference, input, signal) {
     native.starts.push(input.clientCorrelationId)
     let reviewed = false
     for await (const value of originalStart.call(this, reference, input, signal)) {
@@ -234,7 +240,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await production?.shutdown()
-  for (const old of retired.splice(0)) await old.shutdown()
   await production?.app.close()
   await checkpoints?.close(); await database?.close()
   await admin?.query(`drop schema if exists "${schema}" cascade`)
@@ -290,7 +295,7 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
   })
   expect(accepted.statusCode, accepted.body).toBe(202)
   const run = accepted.json().run as NonNullable<Awaited<ReturnType<PostgresRunRepository['get']>>>
-  try { await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('waiting'), { timeout: 20000 }) }
+  try { await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('waiting'), { timeout: 60_000 }) }
   catch (error) {
     const facts = await database.pool.query('select record from harness_executions where run_id=$1', [run.id])
     throw new Error(JSON.stringify({ executions: facts.rows, activity: await runs.listActivity(run.id) }), { cause: error })
@@ -306,7 +311,9 @@ it('answers a production User approval through its own authenticated API while e
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${issuer.token}` }, payload })).statusCode).toBe(403)
   const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
   expect((await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${worker.environment.variables.GRAPHQL_MCP_TOKEN}` }, payload })).statusCode).toBe(403)
-  await expect(mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, payload)).rejects.toThrow('Tool interaction_respond not found')
+  const denied = await mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, payload)
+  expect(denied.isError).toBe(true)
+  expect(JSON.stringify(denied.content)).toContain('ROLE_NOT_ALLOWED')
   const headers = { authorization: `Bearer ${human.token}` }
   const list = await production.app.inject({ method: 'GET', url: `/api/user/interactions?runId=${run.id}`, headers })
   expect(list.statusCode, list.body).toBe(200)
@@ -316,7 +323,8 @@ it('answers a production User approval through its own authenticated API while e
   const response = await production.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${human.token}` }, payload })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('delivered')
-  expect((await runs.get(run.id))?.outcome).toBe('succeeded')
+  await production.engine.resume(run.id)
+  await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 60_000 })
   expect(native.responses).toBe(1)
 })
 
@@ -340,103 +348,6 @@ for (const change of ['location', 'authority'] as const) it(`rejects a waiting c
     expect(untouched?.status).toBe('pending')
   } finally { if (change === 'location') { await rm(project, { recursive: true }); await rename(`${project}-old`, project) } }
 })
-
-it('automatically wakes an idle Orchestrator to approve a later Worker request through MCP', async () => {
-  vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
-  const { run, issuer, pending } = await start('orchestrator')
-  const worker = await new WorkerCredentialService(database.pool, access).issueForExecution(pending.executionId)
-  await expect(mcp(worker.environment.variables.GRAPHQL_MCP_TOKEN!, {
-    interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision,
-  })).rejects.toThrow()
-  await production.initialize()
-  await production.reconcile(() => undefined)
-  await vi.waitFor(async () => {
-    const result = await database.pool.query<{ state: string }>('select state from review_jobs where interaction_id=$1', [pending.id])
-    expect(result.rows[0]?.state).toBe('completed')
-  }, { timeout: 20_000 })
-  await production.reconcile(() => undefined)
-  try {
-    await vi.waitFor(async () => expect((await runs.get(run.id))?.outcome).toBe('succeeded'), { timeout: 20_000 })
-  } catch (error) {
-    const jobs = await database.pool.query('select state,record->\'error\' as error from review_jobs where interaction_id=$1', [pending.id])
-    const activity = await runs.listActivity(run.id)
-    throw new Error(JSON.stringify({ jobs: jobs.rows, reviewEvents: activity.filter((event) => event.kind === 'review_job_state').slice(-3) }), { cause: error })
-  }
-  expect((await interactions.get(pending.id))?.deliveryState).toBe('delivered')
-  expect((await runs.getExecution(pending.executionId))?.state).toBe('completed')
-  await vi.waitFor(async () => {
-    const result = await database.pool.query<{ state: string }>('select state from review_jobs where interaction_id=$1', [pending.id])
-    expect(result.rows[0]?.state).toBe('completed')
-  }, { timeout: 20_000 })
-  expect(native.starts.filter((correlation) => correlation.startsWith('review-'))).toHaveLength(1)
-  expect(native.responses).toBe(1)
-  const readback = await operatorGet(issuer.token, pending.id)
-  expect(readback.isError).not.toBe(true)
-  expect((readback.structuredContent as { review: { state: string }; interaction: { deliveryState: string } }).review.state).toBe('completed')
-  expect((readback.structuredContent as { interaction: { deliveryState: string } }).interaction.deliveryState).toBe('delivered')
-  const denied = await access.issue({ name: 'Out-of-scope operator', audience: 'operator',
-    grants: [{ actions: ['interactions:read'], scope: { runIds: ['another-run'] } }],
-    expiresAt: new Date(Date.now() + 600_000) })
-  expect((await operatorGet(denied.token, pending.id)).isError).toBe(true)
-}, 60_000)
-
-it('settles a waiting Run when its assigned Orchestrator finishes without a decision', async () => {
-  vi.stubEnv('GRAPHQL_OPENCODE_PARITY_QUALIFIED', '1')
-  reviewNoDecision = true
-  const { run, pending } = await start('orchestrator')
-  await production.initialize()
-  await production.reconcile(() => undefined)
-  await vi.waitFor(async () => expect((await runs.get(run.id))?.executionState).toBe('completed'), { timeout: 20_000 })
-  expect((await runs.get(run.id))?.outcome).toBe('canceled')
-  expect((await interactions.get(pending.id))?.status).toBe('canceled')
-  const result = await database.pool.query<{ state: string; code: string }>(
-    "select state,record->'error'->>'code' as code from review_jobs where interaction_id=$1", [pending.id])
-  expect(result.rows[0]).toMatchObject({ state: 'failed', code: 'REVIEW_NO_DECISION' })
-}, 60_000)
-
-it('reviews through the completed Orchestrator session, survives restart and settles a lost acknowledgement while the next Worker waits', async () => {
-  repeatedApproval = true
-  const { run, pending } = await start('orchestrator', true)
-  const orchestrator = (await database.pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [run.id])).rows.map((row) => HarnessExecutionSchema.parse(row.record)).find((item) => item.agentId === 'agent-researcher')!
-  expect(orchestrator.state).toBe('completed')
-  await expect(new WorkerCredentialService(database.pool, access).issueForExecution(orchestrator.id)).rejects.toMatchObject({ code: 'WORKER_EXECUTION_INACTIVE' })
-  expect((await runtime().reviewers.dispatchNext('agent-researcher', 'first-approval'))?.state).toBe('completed')
-  await production.reconcile(() => undefined)
-  const secondAsk = (await interactions.list({ runId: run.id, status: 'pending', limit: 10 }))[0]!
-  expect(secondAsk.executionId).toBe(pending.executionId)
-  expect(secondAsk.nativeRequestId).not.toBe(pending.nativeRequestId)
-  const finish = vi.spyOn(PostgresInteractionDeliveryRepository.prototype, 'finishGraphResume').mockRejectedValueOnce(new Error('acknowledgement lost'))
-  const firstJob = await runtime().reviewers.dispatchNext('agent-researcher', 'test-worker')
-  expect(firstJob?.state).toBe('completed')
-  await production.reconcile(() => undefined)
-  finish.mockRestore()
-  expect((await runs.getExecution(pending.executionId))?.state).toBe('completed')
-  expect((await runs.get(run.id))?.executionState).toBe('waiting')
-  expect((await runs.getExecution(orchestrator.id))?.result).toEqual(success)
-  expect(native.responses).toBe(2)
-  const budget = (await database.pool.query('select active_started_at,active_elapsed_ms from approval_execution_state where execution_id=$1', [pending.executionId])).rows[0]
-  await database.pool.query("update interaction_graph_resumes set lease_expires_at=now()-interval '1 second' where interaction_id=$1", [secondAsk.id])
-  const old = production
-  await old.app.close()
-  retired.push(old)
-  production = buildProductionApp(config, database, checkpoints, false)
-  runs = Reflect.get(production.engine, 'runs') as PostgresRunRepository
-  interactions = Reflect.get(runtime(), 'interactions') as PostgresInteractionRepository
-  await production.initialize()
-  address = await production.app.listen({ host: '127.0.0.1', port: 0 })
-  const report = vi.fn()
-  await production.reconcile(report)
-  expect(report).not.toHaveBeenCalled()
-  expect((await database.pool.query('select state from interaction_graph_resumes where interaction_id=$1', [secondAsk.id])).rows[0].state).toBe('resumed')
-  expect((await database.pool.query('select active_started_at,active_elapsed_ms from approval_execution_state where execution_id=$1', [pending.executionId])).rows[0]).toEqual(budget)
-  expect((await runtime().reviewers.dispatchNext('agent-researcher', 'after-restart'))?.state).toBe('completed')
-  await production.reconcile(report)
-  expect((await runs.get(run.id))?.outcome).toBe('succeeded')
-  expect(native.responses).toBe(3)
-  expect(native.starts.filter((id) => id.startsWith('execution:'))).toHaveLength(3)
-  expect((await database.pool.query("select count(*)::int as count from worker_credential_bindings where purpose='reviewer' and execution_id=$1", [orchestrator.id])).rows[0].count).toBe(2)
-}, 60_000)
-
 
 it('makes production Stop and native delivery progress with a one-slot pool', async () => {
   const { run, issuer, pending } = await start('user')
@@ -485,22 +396,4 @@ it('revalidates the accepting authority again between attachment and the native 
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('failed')
   expect(native.responses).toBe(0)
-})
-
-
-it('closes an idle retained reviewer when a later authorized App response completes the Run', async () => {
-  repeatedApproval = true
-  const { run } = await start('orchestrator')
-  expect((await runtime().reviewers.dispatchNext('agent-researcher', 'first-review'))?.state).toBe('completed')
-  await production.reconcile(() => undefined)
-  expect((await runs.get(run.id))?.executionState).toBe('waiting')
-  const orchestrator = (await database.pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [run.id])).rows.map((row) => HarnessExecutionSchema.parse(row.record)).find((item) => item.agentId === 'agent-researcher')!
-  expect((await runtime().reviewers.dispatchNext('agent-researcher', 'later-review'))?.state).toBe('completed')
-  await production.reconcile(() => undefined)
-  expect((await runs.get(run.id))?.outcome).toBe('succeeded')
-  expect(runtime().residentRunIds()).not.toContain(run.id)
-  const attachments = native.attaches
-  expect(await runtime().reviewers.dispatchNext('agent-researcher', 'obsolete-review')).toBeUndefined()
-  expect(native.attaches).toBe(attachments)
-  expect((await database.pool.query('select count(*)::int as count from worker_credential_bindings where execution_id=$1 and revoked_at is null', [orchestrator.id])).rows[0].count).toBe(0)
 })

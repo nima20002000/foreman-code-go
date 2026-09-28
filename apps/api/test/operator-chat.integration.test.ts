@@ -22,7 +22,7 @@ import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2603'
+const connectionString = process.env.TEST_DATABASE_URL
 
 /** Only provider I/O is fake: these tests exercise real migrations, SQL, grants and service transitions. */
 class ChatManager implements NativeHarnessSessionManager {
@@ -109,6 +109,12 @@ let authority: OperatorChatAuthority
 let chat: OperatorChatService
 
 beforeEach(async () => {
+  let database: URL
+  try { database = new URL(connectionString!) } catch { throw new Error('Use a loopback PostgreSQL database explicitly named for tests') }
+  if (!['postgres:', 'postgresql:'].includes(database.protocol)
+    || !['localhost', '127.0.0.1', '[::1]'].includes(database.hostname)
+    || !/(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(decodeURIComponent(database.pathname.slice(1)))
+    || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   schema = `chat_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
   await admin.query(`create schema "${schema}"`)
@@ -135,7 +141,7 @@ afterEach(async () => {
   await admin?.end()
 })
 
-describe('Operator chat persistence and native binding', () => {
+describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
   it('changes harness in an empty conversation without a fork or inherited context', async () => {
     const openCode = new ChatManager('opencode')
     chat = new OperatorChatService(repository, operators,

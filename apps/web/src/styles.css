@@ -126,6 +126,8 @@ h1 {
 .workspace-shell {
   display: grid;
   width: 100vw;
+  /* 100vw includes a document scrollbar; never overflow sideways on tall pages. */
+  max-width: 100%;
   min-height: 100vh;
   grid-template-columns: var(--navigation-width, 13.5rem) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);

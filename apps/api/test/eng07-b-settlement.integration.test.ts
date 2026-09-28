@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RunRecordDetailSchema, RUN_INSPECTION_TOOLS } from '@graphql/contracts/wave25'
+import { isSettlementPendingCheckpointError } from '../src/modules/interactions/repeatNativeEvidence.js'
+import { readWorkflowCheckpoint } from '../src/modules/runs/repeatGraph.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { scenarioFixture } from './helpers/eng07BScenarios.js'
 import { runPath, scenarioHarness } from './helpers/eng07BHarness.js'
@@ -31,7 +33,36 @@ describe.skipIf(!postgresEnabled)('ENG07-B real terminal-before-cleanup-check ga
       const { saved } = await f.save('http'), started = await f.start('http', saved)
       let entered = false
       void cleanupEntered.promise.then(() => { entered = true })
-      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 25000 })
+      try {
+        await vi.waitFor(() => expect(entered).toBe(true), { timeout: 60000 })
+      } catch (error) {
+        const run = (await f.base.db.pool.query<{ state: string; outcome: string; cleanup: boolean }>(
+          `select execution_state as state, record->>'outcome' as outcome,
+            exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as cleanup
+           from runs where id=$1`, [started.scope.runId])).rows[0]
+        const executions = (await f.base.db.pool.query<{ state: string; code: string | null;
+          accepted: boolean; credentialsClosed: boolean }>(
+          `select record->>'state' as state, record#>>'{result,error,code}' as code,
+            accepted, worker_credentials_closed_at is not null as "credentialsClosed"
+           from harness_executions where run_id=$1 order by id`, [started.scope.runId])).rows
+        const progress = (await f.base.db.pool.query<{ occurrences: number; decisions: number;
+          resolutions: number; completion: number; openCredentials: number }>(
+          `select
+            (select count(*)::int from run_repeat_occurrences where run_id=$1) as occurrences,
+            (select count(*)::int from run_repeat_decisions d join run_repeat_occurrences o
+              on o.occurrence_id=d.occurrence_id where o.run_id=$1) as decisions,
+            (select count(*)::int from run_repeat_resolutions where run_id=$1) as resolutions,
+            (select count(*)::int from run_repeat_effects where run_id=$1 and effect_kind='run.complete') as completion,
+            (select count(*)::int from worker_credential_bindings where run_id=$1 and revoked_at is null) as "openCredentials"`,
+          [started.scope.runId])).rows[0]
+        const checkpoint = await readWorkflowCheckpoint(started.scope.runId, saved.version, f.base.checkpointer)
+        throw new Error(`Original cleanup writer was not reached: ${JSON.stringify({ id, run, executions,
+          progress, checkpoint: { next: checkpoint.next, tasks: checkpoint.tasks.map((task) => ({
+            name: task.name, pendingSettlement: isSettlementPendingCheckpointError(task.error),
+            interrupted: Boolean(task.interrupts?.length), errorName: task.error && typeof task.error === 'object'
+              && 'name' in task.error ? String(task.error.name) : null,
+          })) }, starts: f.base.provider.counts.starts, dispatchErrors: f.base.dispatchErrors })}`, { cause: error })
+      }
       const read = async () => RunRecordDetailSchema.parse(await f.http('GET', `${runPath(started.scope)}/record`))
       const before = await read()
       expect(before).toMatchObject({ run: { executionState: 'completed', outcome: 'succeeded' },

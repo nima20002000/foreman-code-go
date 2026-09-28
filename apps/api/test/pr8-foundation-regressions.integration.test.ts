@@ -20,7 +20,7 @@ async function database<T>(perform: (pool: pg.Pool) => Promise<T>, beforeMigrati
     const db = await agent3Database()
     try { return await perform(db.pool) } finally { await db.close() }
   }
-  const connectionString = process.env.WAVE25_TEST_DATABASE_URL!
+  const connectionString = process.env.TEST_DATABASE_URL!
   const schema = `pr8_upgrade_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
   await admin.query(`create schema "${schema}"`)
@@ -37,16 +37,17 @@ describe.skipIf(!postgresEnabled)('PR8 current PostgreSQL atomicity, recovery an
       const owner = (await f.repository.acquireOwnership(f.f.run.id, () => undefined))!
       try {
         await db.pool.query(`create function reject_schedule() returns trigger language plpgsql as $$
-          begin if NEW.kind='node_scheduled' then raise exception 'injected activity failure'; end if; return NEW; end $$;
-          create trigger fail_schedule before insert on run_activity for each row execute function reject_schedule()`)
+          begin if NEW.effect_kind='input.bind' then raise exception 'injected graph publication failure'; end if; return NEW; end $$;
+          create trigger fail_schedule before insert on run_graph_effects for each row execute function reject_schedule()`)
         const admit = () => f.repository.admitRepeatExecution({ nodeId: f.f.version.entryNodeId, occurrence: null }, () => candidateFor(f.f), owner)
-        await expect(admit()).rejects.toThrow('injected activity failure')
+        await expect(admit()).rejects.toThrow('injected graph publication failure')
         expect((await db.pool.query('select id from harness_executions where run_id=$1', [f.f.run.id])).rows).toHaveLength(0)
-        await db.pool.query('drop trigger fail_schedule on run_activity')
+        expect((await db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='input.bind'", [f.f.run.id])).rows).toHaveLength(0)
+        await db.pool.query('drop trigger fail_schedule on run_graph_effects')
         const first = await admit(), replay = await admit()
-        expect(replay).toEqual(first)
+        expect(replay).toEqual({ ...first, reused: true })
         expect((await db.pool.query('select id from harness_executions where run_id=$1', [f.f.run.id])).rows).toHaveLength(1)
-        expect((await db.pool.query("select 1 from run_activity where run_id=$1 and kind='node_scheduled'", [f.f.run.id])).rows).toHaveLength(1)
+        expect((await db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='input.bind'", [f.f.run.id])).rows).toHaveLength(1)
       } finally { await owner.release() }
     } finally { await db.close() }
   }, 60000)
@@ -149,7 +150,10 @@ describe.skipIf(!postgresEnabled).each(['http', 'mcp'] as const)('PR8 current ma
   it('validates approval on Save, pins it on real Start and preserves persisted configuration versions', async () => {
     const f = await currentOperatorIntegration()
     try {
-      const input = await f.create()
+      const location = await f.locations.set(f.writer.principal, source, { workspaceId: f.f.scope.workspaceId,
+        runnerId: f.f.run.executionLocation!.runnerId, rootPath: f.db.directory,
+        expectedLocationRevision: 1, commandId: randomUUID() })
+      const input = { ...await f.create(), expectedLocationRevision: location.value.locationRevision }
       async function save(value: typeof input) {
         if (source === 'mcp') {
           const response = await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: value })
@@ -165,7 +169,8 @@ describe.skipIf(!postgresEnabled).each(['http', 'mcp'] as const)('PR8 current ma
       expect((await f.db.pool.query('select id from workflow_versions where workflow_id=$1', [input.workflowId])).rows).toHaveLength(0)
       const saved = await save({ ...input, commandId: randomUUID() })
       const start = { workspaceId: input.workspaceId, workflowId: input.workflowId, workflowVersionId: saved.value.currentVersionId,
-        executionSemanticsVersion: 3, expectedWorkflowRevision: saved.value.revision, expectedLocationRevision: 1,
+        executionSemanticsVersion: 3, expectedWorkflowRevision: saved.value.revision,
+        expectedLocationRevision: location.value.locationRevision,
         expectedAgentConfigurationVersionIds: saved.value.version.agentConfigurationVersionIds, commandId: randomUUID(), input: {} }
       let run: { id: string }
       if (source === 'mcp') {

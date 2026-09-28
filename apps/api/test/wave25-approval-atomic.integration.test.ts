@@ -59,6 +59,8 @@ describe.skipIf(!postgresEnabled)('A4 actual G1/PostgreSQL approval transactions
     const f = await setup()
     await expect(f.pool.query(`update durable_interactions set revision=revision+1,
       record=jsonb_set(record,'{revision}',to_jsonb(revision+1)) where id=$1`, [f.interaction.id])).rejects.toMatchObject({ code: 'PGA03' })
+    await expect(f.pool.query('update durable_interactions set revision=revision+1 where id=$1',
+      [f.interaction.id])).rejects.toMatchObject({ code: 'PGA03' })
     expect((await f.repository.get(f.interaction.id))?.revision).toBe(f.interaction.revision)
   })
   it('decision, native review settlement, delivery and continuation remain separate', async () => {
@@ -79,7 +81,7 @@ describe.skipIf(!postgresEnabled)('A4 actual G1/PostgreSQL approval transactions
     expect((await f.runs.get(f.run.id))?.outcome).toBe('succeeded')
     expect(await f.repository.delivery.claim(f.interaction.id, 'duplicate')).toBeUndefined()
     expect(await f.receipts()).toHaveLength(1)
-    expect((await br1002Ack(f, f.interaction.id))?.approval_native_ack_id).toMatch(/^continuation-ack-/)
+    expect((await br1002Ack(f, f.interaction.id))?.approval_native_ack_id).toMatch(/^native-approval-ack-/)
     expect((await br1002Batches(f)).flatMap((batch) => batch.facts).filter((fact) => fact.type === 'worker.resumed')).toHaveLength(1)
     await compare()
   })

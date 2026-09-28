@@ -8,7 +8,7 @@ const nodes = [
   { id: 'middle', agentId: 'helper' },
   { id: 'other-occurrence', agentId: 'coder' },
 ]
-const edge = (source: string, target: string) => ({ id: `${source}-${target}`, source, target })
+const edge = (source: string, target: string) => ({ id: `${source}-${target}`, source, target, kind: 'approval' as const })
 const check = (edges: ReturnType<typeof edge>[], requestingNode = 'worker', graphNodes = nodes) =>
   directApprovalConnection({ nodes: graphNodes, edges }, requestingNode, 'coder', 'orchestrator')
 

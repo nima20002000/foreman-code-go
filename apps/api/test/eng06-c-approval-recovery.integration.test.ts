@@ -167,7 +167,7 @@ for (const form of ['ordinary', 'repeat'] as const) {
       } finally { gate.release(); await response }
     }, 90000)
 
-    it('deduplicates responses while open, isolates the next occurrence, and rejects terminal post-restart writes', async () => {
+    it('deduplicates open and terminal responses without replaying native work or another occurrence', async () => {
       const t = await setup(form), first = await startWaiting(t), input = approvalResponse(first)
       const entered = deferred(), release = deferred()
       t.f.provider.beforeRespond = async () => { entered.resolve(); await release.promise }
@@ -202,7 +202,7 @@ for (const form of ['ordinary', 'repeat'] as const) {
       await t.finishApprovals()
       await t.restart()
       const receipts = await t.f.receipts(), head = (await t.compare()).asOfSequence
-      await expect(t.runtime.service.respond(t.responder, input)).rejects.toMatchObject({ code: 'EXECUTION_STOPPED' })
+      expect((await t.runtime.service.respond(t.responder, input)).replayed).toBe(true)
       expect(await t.f.receipts()).toEqual(receipts)
       expect((await t.compare()).asOfSequence).toBe(head)
       expect(t.f.provider.counts).toMatchObject({ starts: form === 'repeat' ? 4 : 2, responses: form === 'repeat' ? 2 : 1 })

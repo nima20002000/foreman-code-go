@@ -39,8 +39,9 @@ describe('workflow submenu route integration', () => {
   it('mounts the nested workflow submenu on workspace section routes', async () => {
     renderRoute('/workspaces/workspace-1/agents')
 
-    expect(await screen.findByRole('button', { name: 'New workflow' })).toBeVisible()
-    const link = await screen.findByRole('link', { name: 'Research to review' })
+    const submenu = await screen.findByRole('region', { name: 'Workspace workflows' }, { timeout: 5000 })
+    expect(within(submenu).getByRole('button', { name: 'New workflow' })).toBeVisible()
+    const link = await within(submenu).findByRole('link', { name: 'Research to review' }, { timeout: 5000 })
     expect(link).toHaveAttribute('href', expect.stringContaining('workflowId=workflow-content-pipeline'))
   })
 

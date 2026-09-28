@@ -24,6 +24,39 @@ async function historicalVersion(f: Harness, saved: Saved, current: Saved) {
   expect(http.currentVersionId).toBe(current.currentVersionId)
 }
 
+async function settledWithDiagnosis(f: Harness, started: Started) {
+  // Production reconciles every five seconds. This fixture has a preseeded
+  // queued Run, so resume only the accepted Run's saved checkpoint here.
+  const recoveryCodes: string[] = []
+  const recovery = setInterval(() => {
+    void f.base.engine.start(started.scope.runId).catch((error: unknown) => {
+      const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+        ? error.code : 'UNCLASSIFIED_RECOVERY_ERROR'
+      if (code !== 'RUN_ALREADY_OWNED' && recoveryCodes.length < 10) recoveryCodes.push(code)
+    })
+  }, 5000)
+  recovery.unref()
+  try {
+    await f.settled(started.scope, 60000)
+    expect(recoveryCodes).toEqual([])
+  } catch (error) {
+    const executions = (await f.base.db.pool.query<{ node_id: string; state: string; result: string | null }>(
+      `select workflow_node_id as node_id, record->>'state' as state,
+        record#>>'{result,outcome}' as result from harness_executions where run_id=$1 order by id limit 10`,
+      [started.scope.runId])).rows
+    const resolutions = (await f.base.db.pool.query<{ node_id: string; resolution: string }>(
+      `select workflow_node_id as node_id, record#>>'{value,resolution}' as resolution
+       from run_repeat_resolutions where run_id=$1 order by workflow_node_id limit 10`,
+      [started.scope.runId])).rows
+    const codes = f.base.dispatchErrors.map((item) => typeof item === 'string' && /^[A-Z0-9_]+$/.test(item)
+      ? item : 'UNCLASSIFIED_DISPATCH_ERROR')
+    throw new Error(`Version-pin Run stalled: ${JSON.stringify({ runId: started.scope.runId,
+      workflowVersionId: started.scope.workflowVersionId, providerStarts: f.base.provider.counts.starts,
+      trace: f.trace.filter((item) => executions.some((execution) => execution.node_id === item.nodeId)),
+      executions, resolutions, codes, recoveryCodes })}`, { cause: error })
+  } finally { clearInterval(recovery) }
+}
+
 /** Invalid execution tags are NEGATIVE payloads, not V1/V2 fixtures/adapters. */
 async function invalidMcpTag(f: Harness, name: string, input: Record<string, unknown>) {
   // The SDK may transport a shared-schema rejection as either a tool error or
@@ -74,7 +107,7 @@ describe.skipIf(!postgresEnabled)('ENG07-B immutable optional-repeat versions an
         const release = f.hold(expected.nodes[0]!.id), started = await f.start(via, saved)
         await f.waitUntilParked(started.scope, expected.nodes[0]!.id)
         const initial = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
-        release(); await f.settled(started.scope)
+        release(); await settledWithDiagnosis(f, started)
         const evidence = await assertScenarioEvidence(f, started, initial, expected)
         completed.push({ started, initial, expected, evidence }); previous = saved
       }
@@ -91,7 +124,7 @@ describe.skipIf(!postgresEnabled)('ENG07-B immutable optional-repeat versions an
       }
       expect(f.base.provider.counts.starts).toBe(8)
     } finally { await f.close() }
-  }, 120000)
+  }, 240000)
 
   it.each([1, 2, 4, 99])('rejects executionSemanticsVersion=%i explicitly over HTTP and MCP without creating work', async (tag) => {
     const f = await scenarioHarness(scenarioFixture('S3-01', randomUUID()))

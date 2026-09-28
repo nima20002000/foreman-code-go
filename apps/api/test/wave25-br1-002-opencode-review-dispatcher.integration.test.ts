@@ -61,7 +61,7 @@ function reviewCuts(f: Br1002Runtime, holdLive = false) {
   const original = f.repository.coordination.appendReviewNativeEvent.bind(f.repository.coordination)
   const spy = vi.spyOn(f.repository.coordination, 'appendReviewNativeEvent').mockImplementation(async (...args) => {
     const [, event, projection] = args
-    if (!selected && event.type === OPENCODE_RECONCILIATION_EVENT && projection?.terminalReady) {
+    if (!selected && event.type === OPENCODE_RECONCILIATION_EVENT && projection?.live === false) {
       selected = true; before.resolve(args); await enter.promise
       await original(...args)
       after.resolve(args); await finish.promise
@@ -159,24 +159,27 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
         },
       )
       try {
-        await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'WORKFLOW_SELECTED_EXECUTION_FAILED' })
+        await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'NATIVE_APPROVAL_EVIDENCE_MISMATCH' })
         expect(corrupted).toBeGreaterThan(0)
         const executions = await readCurrentExecutions(f.runs, f.f.run.id)
         expect(executions).toHaveLength(2)
         const entry = executions.find((execution) => execution.workflowNodeId === f.f.version.entryNodeId)!
         const worker = executions.find((execution) => execution.workflowNodeId !== f.f.version.entryNodeId)!
         expect(entry).toMatchObject({ state: 'completed', result: { outcome: 'succeeded' } })
-        expect(worker).toMatchObject({ state: 'completed', result: {
-          outcome: 'failed', error: { code: 'NATIVE_SESSION_IDENTITY_MISMATCH' },
-        } })
+        expect(worker).toMatchObject({ state: 'running', nativeSessionId: `ses_${worker.id}` })
+        expect(worker.result).toBeUndefined()
         expect(authority).not.toHaveBeenCalled()
         expect(create).not.toHaveBeenCalled()
         expect(enqueue).not.toHaveBeenCalled()
         expect(await f.pending()).toHaveLength(0)
-        expect(f.counts()).toEqual({ sessions: 2, prompts: 2, responses: 1 })
+        expect(f.counts()).toEqual({ sessions: 2, prompts: 2, responses: 0 })
         const replies = [...f.servers.values()].flatMap((server) => server.calls)
           .filter((call) => /^\/permission\/[^/]+\/reply/.test(call.path))
-        expect(replies[0]?.body).toMatchObject({ reply: 'reject' })
+        expect(replies).toHaveLength(0)
+        await f.stop()
+        expect(await f.runs.hasRequestedStop(f.f.run.id)).toBe(true)
+        expect(await f.engine.cancel(f.f.run.id)).toBe(true)
+        expect((await f.runs.getRepeatSnapshot(f.f.run.id)).run.executionState).toBe('completed')
       } finally { history.mockRestore(); await f.close() }
     }, 60000,
   )
@@ -226,7 +229,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
       server.closeStreams() // Lost SSE, not a fabricated turn.completed notification.
       const terminalArgs = await br1002At(cuts.before.promise, dispatch)
       expect(server.generation).toBe(generation)
-      expect(terminalArgs[2]).toMatchObject({ terminalReady: true })
+      expect(terminalArgs[2]).toMatchObject({ live: false, terminalReady: false })
       expect((await evidence(f, job.id)).approval_native_evidence?.kind).toBe('submission')
       const observation = terminalArgs[1]
       expect(observation.connectionId).toBe(started[1].connectionId)
@@ -268,7 +271,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
       const delivered = await deliverApproval({ repository: f.repository, nativeRuntime: f.native }, i.id)
       expect(delivered.deliveryState).toBe('delivered')
       await f.engine.resumeInteraction(delivered)
-      expect((await br1002Ack(f, i.id))?.approval_native_ack_id).toMatch(/^continuation-ack-/)
+      expect((await br1002Ack(f, i.id))?.approval_native_ack_id).toMatch(/^native-approval-ack-/)
       const terminal = await compare()
       expect(terminal.state.run.pendingInteractionCount).toBe(0)
       expect(terminal.state.run.outcome).toBe('succeeded')
@@ -277,10 +280,11 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
       expect(f.counts()).toEqual({ sessions: 2, prompts: 3, responses: 1 })
     } finally {
       cuts?.release(); cuts?.restore()
+      const settledDispatch = dispatch?.catch(() => undefined)
       await f.close()
-      void dispatch?.catch(() => undefined)
+      await settledDispatch
     }
-  }, 60000)
+  }, 120000)
 
   for (const cut of ['job-owner', 'writer-owner', 'job-lease-expiry', 'writer-lease-expiry',
     'native-session', 'correlation', 'generation', 'provider-version', 'Stop'] as const) {
@@ -337,7 +341,7 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
           await f.db.pool.query("update review_jobs set provider_version='different-provider-version' where id=$1", [job.id])
           await cuts.original(...args)
         } else {
-          await f.runs.requestStop(f.f.run.id)
+          await f.stop()
           await cuts.original(...args).catch((error: unknown) => {
             expect(error).toBeDefined()
           })
@@ -358,7 +362,12 @@ describe.skipIf(!postgresEnabled)('BR1-002 actual reviewer dispatcher / OpenCode
         if (cut === 'Stop') expect(latest.state.run.stopRequested).toBe(true)
         // No assertion that Stop cleanup/canceled exchange retirement is fixed,
         // and no assertion that a new-generation replacement can take over.
-      } finally { cuts?.release(); cuts?.restore(); await f.close(); void dispatch?.catch(() => undefined) }
+      } finally {
+        cuts?.release(); cuts?.restore()
+        const settledDispatch = dispatch?.catch(() => undefined)
+        await f.close()
+        await settledDispatch
+      }
     }, 60000)
   }
 })

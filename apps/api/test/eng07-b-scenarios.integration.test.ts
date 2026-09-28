@@ -92,12 +92,11 @@ async function approveThroughHttp(f: Harness, started: Started) {
   expect(decision).toMatchObject({ replayed: false,
     interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
   await f.settled(started.scope)
-  // Terminal replay is a separate fail-closed case, not an open-Run replay.
-  // It must neither redeliver the native response nor change accepted evidence.
+  // An exact terminal replay remains idempotent and cannot redeliver the native response.
   const counts = { ...f.base.provider.counts }
-  const terminalReplay = await f.rawHttp('POST', path, input, user.token)
-  expect(terminalReplay.status).toBe(409)
-  expect(terminalReplay.body).toMatchObject({ error: { code: 'EXECUTION_STOPPED' } })
+  const terminalReplay = RespondToInteractionResponseSchema.parse(await f.http('POST', path, input, user.token))
+  expect(terminalReplay).toMatchObject({ replayed: true,
+    interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
   expect(f.base.provider.counts).toEqual(counts)
   const final = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token))
   expect(final.interaction).toEqual(decision.interaction)
@@ -105,10 +104,32 @@ async function approveThroughHttp(f: Harness, started: Started) {
   expect(finalMonitor.items).toEqual(ListInteractionsResponseSchema.parse(await list()).items)
 }
 
+async function settleRepeatWithRecovery(f: Harness, started: Started) {
+  // Production reconciles every five seconds. Resume only this publicly
+  // accepted Run's saved checkpoint; the fixture's preseeded Run stays queued.
+  const recoveryCodes: string[] = []
+  const recovery = setInterval(() => {
+    void f.base.engine.start(started.scope.runId).catch((error: unknown) => {
+      const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+        ? error.code : 'UNCLASSIFIED_RECOVERY_ERROR'
+      if (code !== 'RUN_ALREADY_OWNED' && recoveryCodes.length < 10) recoveryCodes.push(code)
+    })
+  }, 5000)
+  recovery.unref()
+  try {
+    await f.settled(started.scope, 75000)
+    expect(recoveryCodes).toEqual([])
+  } catch (error) {
+    throw new Error(`ENG07 repeat recovery did not settle: ${JSON.stringify({
+      runId: started.scope.runId, recoveryCodes })}`, { cause: error })
+  } finally { clearInterval(recovery) }
+}
+
 describe.skipIf(!postgresEnabled)('ENG07-B S3-01..05 / real PostgreSQL + HTTP + authenticated Operator MCP', () => {
   describe.each(['http', 'mcp'] as const)('%s admission with cross-transport replay', (via) => {
-    it.each(scenarioIds)('%s preserves exact routing, history, input/result and graph evidence', async (id) => {
+    for (const id of scenarioIds) it(`${id} preserves exact routing, history, input/result and graph evidence`, async () => {
       const scenario = scenarioFixture(id, randomUUID()), f = await scenarioHarness(scenario)
+      let primaryFailure: unknown, failed = false
       try {
         const { saved } = await f.save(via)
         const releaseEntry = f.hold(scenario.nodes[0]!.id)
@@ -146,7 +167,8 @@ describe.skipIf(!postgresEnabled)('ENG07-B S3-01..05 / real PostgreSQL + HTTP + 
           releaseSlow()
         }
         if (id === 'S3-04') await approveThroughHttp(f, started)
-        await f.settled(started.scope)
+        if (scenario.repeat) await settleRepeatWithRecovery(f, started)
+        else await f.settled(started.scope)
         const view = await assertScenarioEvidence(f, started, initial)
         if (id === 'S3-04') expect(view.events.some((event) => event.fact.type === 'worker.resumed'
           && event.evidence.sourceKind === 'native_event')).toBe(true)
@@ -171,7 +193,16 @@ describe.skipIf(!postgresEnabled)('ENG07-B S3-01..05 / real PostgreSQL + HTTP + 
           expect(view.snapshot.state.resolutions.find((item) => item.ref.nodeId === scenario.nodes[4]!.id)?.value)
             .toMatchObject({ resolution: 'skipped', selectedRelationshipIds: [], unselectedRelationshipIds: [scenario.edges[6]!.id] })
         }
-      } finally { await f.close() }
-    }, 90000)
+      } catch (error) {
+        primaryFailure = error
+        failed = true
+      }
+      let closeFailure: unknown, closeFailed = false
+      try { await f.close() } catch (error) { closeFailure = error; closeFailed = true }
+      if (failed && closeFailed) throw new AggregateError([primaryFailure, closeFailure],
+        `ENG07 scenario failed before teardown: ${primaryFailure instanceof Error ? primaryFailure.message : 'unknown error'}`)
+      if (failed) throw primaryFailure
+      if (closeFailed) throw closeFailure
+    }, id.startsWith('S3-05') ? 130000 : 90000)
   })
 })

@@ -271,3 +271,27 @@ create constraint trigger a2_public_projection_receipt after insert or update on
 -- These are application transaction guards, not privilege escalation. Keep
 -- invoker rights/search path and every existing authority/typed-writer guard.
 ` } as const
+
+/** A sealed, unsubmitted review records its native-entry transition in the
+ * cleanup graph source. Keep the original migration immutable for installed DBs. */
+export const reviewCleanupEntryReceiptMigration = { version: 267203, sql: String.raw`
+create or replace function a2_entry_committed() returns trigger language plpgsql as $$
+declare item record; kind text;
+begin
+  if TG_TABLE_NAME='workflow_native_entries' then
+    select e.phase,e.run_id,e.source_id,1::bigint as source_revision,e.source_digest into item
+      from workflow_native_entries e where e.execution_id=NEW.execution_id;
+    kind:='execution';
+  else
+    select e.phase,e.run_id,e.source_id,e.source_revision,e.source_digest into item
+      from review_native_entries e where e.job_id=NEW.job_id;
+    kind:=case when item.phase='not_submitted' then 'cleanup' else 'review' end;
+  end if;
+  if item.phase<>'reserved' and not exists(select 1 from run_graph_sources s join run_graph_heads h on h.run_id=s.run_id
+    where s.run_id=item.run_id and s.source_kind=kind and s.source_id=item.source_id and s.source_revision=item.source_revision
+      and s.source_digest=item.source_digest and s.first_sequence between 1 and h.head_sequence) then
+    raise exception 'CURRENT_NATIVE_ENTRY_RECEIPT_REQUIRED' using errcode='P2602';
+  end if;
+  return NEW;
+end $$;
+` } as const

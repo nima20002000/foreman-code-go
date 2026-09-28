@@ -45,6 +45,7 @@ describe('current Board endpoints in the shared MSW stack', () => {
     expect(capabilities.runtimeAdmission).toBe(false)
     const input = await savedInput('definition-roundtrip')
     const { commandId: _commandId, ...validation } = input
+    void _commandId
     const checked = CurrentWorkflowValidationSchema.parse(await request(`${workflowPath}/definition/validate`, 'POST', validation))
     expect(checked.expectedAgentConfigurationVersionIds).toEqual(input.expectedAgentConfigurationVersionIds)
     expect(checked.expectedLocationRevision).toBe(input.expectedLocationRevision)

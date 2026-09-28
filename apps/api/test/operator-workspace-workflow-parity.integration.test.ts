@@ -21,9 +21,9 @@ import { HarnessDirectoryBrowser } from '../src/modules/harnesses/directoryBrows
 import { OperatorAgentMutationService } from '../src/modules/workspaces/operatorAgents.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
-it.skipIf(process.env.RUN_WAVE25_POSTGRES_TESTS !== '1')('provides authenticated Operator MCP parity for creation, defaults and workspace/workflow settings', async () => {
-  const connectionString = process.env.WAVE25_TEST_DATABASE_URL
-  if (!connectionString) throw new Error('WAVE25_TEST_DATABASE_URL is required')
+it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP parity for creation, defaults and workspace/workflow settings', async () => {
+  const connectionString = process.env.TEST_DATABASE_URL
+  if (!connectionString) throw new Error('TEST_DATABASE_URL is required')
   const parsed = new URL(connectionString)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.includes('test')) throw new Error('Use a disposable loopback test database')
   const schema = 'mcp_parity_' + randomUUID().replaceAll('-', '')

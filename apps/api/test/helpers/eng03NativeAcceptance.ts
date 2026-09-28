@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -50,7 +51,7 @@ import { seedAgent3 } from './wave25Agent3.js'
 const runCommand = promisify(execFile)
 type Harness = 'codex' | 'opencode'
 type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
-const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? '/home/nima/.local/bin/codex'
+const codexBinary = process.env.ENG03_A_CODEX_BINARY ?? fileURLToPath(new URL('../../node_modules/.bin/codex', import.meta.url))
 const openCodeBinary = process.env.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode'
 
 export interface Eng03NativeRuntime {
@@ -290,7 +291,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     engine = activeRuntime.engine
     stopRun = () => engine!.cancel(run.id, authorizeStop)
     const startTask = engine.start(run.id)
-    if (options.control) void startTask.catch(() => undefined)
+    if (options.control) void startTask.catch((error: unknown) => {
+      evidence.startError = error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null }
+        : { name: typeof error }
+    })
     const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
       if (kind === 'waiting') await startTask
       else await startTask.catch(() => undefined)

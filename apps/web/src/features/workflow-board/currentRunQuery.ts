@@ -29,7 +29,6 @@ export function useCurrentRunQuery(scope?: RepeatGraphScopeV3, live = true, clie
     },
   })
 }
-export function CurrentRunObserver({ scope }: { scope: RepeatGraphScopeV3 }) { useCurrentRunQuery(scope); return null }
 export function clearCurrentRunAccess(client: QueryClient) {
   client.removeQueries({ queryKey: ['workbench', 'current-v3-run'] })
   client.removeQueries({ queryKey: ['workbench', 'pinned-v3-run-details'] })

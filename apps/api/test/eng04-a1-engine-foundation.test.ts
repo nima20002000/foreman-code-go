@@ -206,8 +206,7 @@ describe('ENG04 A1 common graph progression', () => {
   })
   it('Stop after an accepted repeat decision cannot admit the next business occurrence', async () => {
     const f = a1Scenario('repeat', 'a1-stop-boundary')
-    let h!: ReturnType<typeof graphHarness>
-    h = graphHarness(f, { outcome: () => 'issues', beforeTransition: () => {
+    const h: ReturnType<typeof graphHarness> = graphHarness(f, { outcome: () => 'issues', beforeTransition: () => {
       h.controller.abort(new DomainError('GRAPH_STOP_CONFLICT', 'Synthetic committed Stop', 409))
     } })
     await assert.rejects(h.run())

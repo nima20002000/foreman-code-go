@@ -241,7 +241,9 @@ export class FixtureServer implements OpenCodeServerController {
       if (segments[2] === 'prompt_async') {
         assert(body)
         const messageID = String(body.messageID)
-        const message: OpenCodeMessage = { info: { id: messageID, sessionID: id, role: 'user', agent: body.agent, model: body.model, time: { created: this.clock++ } },
+        // Native OpenCode stores a turn's system text on its user message.
+        const message: OpenCodeMessage = { info: { id: messageID, sessionID: id, role: 'user', agent: body.agent, model: body.model,
+          ...(typeof body.system === 'string' ? { system: body.system } : {}), time: { created: this.clock++ } },
           parts: (body.parts as JsonObject[]).map((part) => ({ ...part, id: `prt_${this.clock++}`, sessionID: id, messageID })) }
         this.append(message)
         this.statuses.set(id, { type: 'busy' })

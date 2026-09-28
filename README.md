@@ -41,6 +41,18 @@ corepack pnpm build
 corepack pnpm lines
 ```
 
+Test, typecheck, lint, and build scripts share one visible FIFO slot across
+linked worktrees. Waiting commands print their ticket; dev servers do not hold
+the slot. Builds skip only when tracked and untracked inputs plus local outputs
+match a successful build in that same worktree. Vitest's coordinator setup also
+queues direct `pnpm exec vitest` runs that load a package config. A direct
+compiler invocation bypasses the script queue; use the package scripts when
+running these jobs alongside other worktrees. The API build always runs its
+harness compatibility check. Integration has a 150-minute
+limit and stops its process group before releasing the slot. Each job owns a
+temporary directory and removes it on exit; only marked, unused directories
+older than ten minutes are eligible for stale cleanup.
+
 `corepack pnpm lines` counts physical lines in tracked code files, including
 blank lines and comments. It reports source code, default/integration/acceptance/
 smoke test files, test helpers and fixtures, and tooling separately. Test types
@@ -135,8 +147,10 @@ the application PostgreSQL pool and the LangGraph checkpoint saver. The API
 fails startup if either dependency cannot initialize.
 
 `corepack pnpm test:integration` requires the PostgreSQL service. By default it creates
-and removes a disposable database, keeping the running app's settings and data intact.
-Set `TEST_DATABASE_URL` to explicitly supply a dedicated test database. It writes a real
+and removes disposable databases for parallel API suites, keeping the running app's settings
+and data intact. See [the integration runner guide](docs/test-integration-runner.md) for
+shard limits and failed-file retests. Set `TEST_DATABASE_URL` to explicitly supply a dedicated
+test database and run serially. The startup suite writes a real
 LangGraph checkpoint, closes the saver, reopens it, and proves the checkpoint
 is durable. `corepack pnpm db:down` stops the local service without deleting its named
 volume.

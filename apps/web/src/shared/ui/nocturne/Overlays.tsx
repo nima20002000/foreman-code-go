@@ -46,6 +46,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
   useEffect(() => {
     const dialog = ref.current
     if (!dialog || !open) return
+    const returnFocus = returnFocusRef?.current
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const unlock = lockBody()
     if (!dialog.open) dialog.showModal()
@@ -56,7 +57,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
       if (dialog.open) dialog.close()
       unlock()
       if (previous?.isConnected) previous.focus()
-      else returnFocusRef?.current?.focus()
+      else returnFocus?.focus()
     }
   }, [open, initialFocusRef, returnFocusRef])
   if (typeof document === 'undefined') return null

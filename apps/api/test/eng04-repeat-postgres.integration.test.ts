@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict'
-import { randomBytes } from 'node:crypto'
-
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 
@@ -13,6 +11,7 @@ import {
   acceptResult,
   decision,
   digest,
+  disposableDatabase,
   evidenceTables,
   execution,
   finishOccurrence,
@@ -29,9 +28,7 @@ import {
   type RunFixture,
 } from './eng04-migration-fixtures.js'
 
-const enabled = process.env.RUN_ENG04_REPEAT_POSTGRES === '1'
 const timeout = 120_000
-const postgresDescribe = describe.skipIf(!enabled)
 
 function repeatScope(run: RunFixture) {
   return {
@@ -60,67 +57,11 @@ async function rejectsTransaction(
   if (message) expect((failure as Error).message).toMatch(message)
 }
 
-/**
- * D uses its own cluster-global random role and database. The configured admin
- * connection is used only to create/drop those task-owned objects and inspect
- * PostgreSQL's major version. No application database, schema, or retained data
- * is used as a fallback. Cleanup never terminates unrelated sessions or uses
- * DROP DATABASE ... WITH (FORCE).
- */
 async function disposableRepeatDatabase<T>(work: (pool: pg.Pool) => Promise<T>): Promise<T> {
-  assert.equal(process.env.RUN_ENG04_REPEAT_POSTGRES, '1', 'Explicit ENG04-D PostgreSQL opt-in is required')
-  const configured = process.env.ENG04_REPEAT_POSTGRES_ADMIN_DATABASE_URL
-    ?? process.env.ENG04_MIGRATION_ADMIN_DATABASE_URL
-  assert.ok(configured, 'ENG04_REPEAT_POSTGRES_ADMIN_DATABASE_URL (or ENG04_MIGRATION_ADMIN_DATABASE_URL) must be explicitly supplied')
-
-  const adminUrl = new URL(configured)
-  assert.ok(['postgres:', 'postgresql:'].includes(adminUrl.protocol), 'A PostgreSQL connection URL is required')
-  const suffix = randomBytes(12).toString('hex')
-  const database = `eng04_d_${suffix}`
-  const role = `eng04_d_role_${suffix}`
-  const password = randomBytes(24).toString('hex')
-  assert.match(database, /^eng04_d_[a-f0-9]{24}$/)
-  assert.match(role, /^eng04_d_role_[a-f0-9]{24}$/)
-
-  const admin = new pg.Client({ connectionString: configured, connectionTimeoutMillis: 10_000 })
-  let pool: pg.Pool | undefined
-  let roleCreated = false
-  let databaseCreated = false
-  try {
-    await admin.connect()
-    const version = await admin.query<{ server_version_num: string }>('show server_version_num')
-    const number = Number(version.rows[0]?.server_version_num)
-    assert.ok(number >= 170000 && number < 180000, 'Run ENG04-D PostgreSQL qualification on PostgreSQL 17')
-
-    await admin.query(`create role "${role}" login password '${password}' nosuperuser nocreatedb nocreaterole`)
-    roleCreated = true
-    await admin.query(`create database "${database}" owner "${role}" template template0 encoding 'UTF8'`)
-    databaseCreated = true
-
-    const taskUrl = new URL(configured)
-    taskUrl.pathname = `/${database}`
-    taskUrl.username = role
-    taskUrl.password = password
-    pool = new pg.Pool({ connectionString: taskUrl.toString(), max: 4, connectionTimeoutMillis: 10_000 })
-    const identity = await pool.query<{ database: string; role: string }>(
-      'select current_database() as database,current_user as role',
-    )
-    expect(identity.rows[0]).toEqual({ database, role })
-
+  return disposableDatabase(async (pool) => {
     await applyApplicationMigrations(pool)
-    return await work(pool)
-  } finally {
-    if (pool) await pool.end()
-    try {
-      if (databaseCreated) await admin.query(`drop database "${database}"`)
-    } finally {
-      try {
-        if (roleCreated) await admin.query(`drop role "${role}"`)
-      } finally {
-        await admin.end()
-      }
-    }
-  }
+    return work(pool)
+  })
 }
 
 async function counts(pool: pg.Pool, runId: string): Promise<Record<string, number>> {
@@ -149,7 +90,7 @@ async function completeTwoOccurrences(pool: pg.Pool, id: string) {
   })
 }
 
-postgresDescribe('NIM-2648 ENG04-D real PostgreSQL repeat regression', () => {
+describe('NIM-2648 ENG04-D real PostgreSQL repeat regression', () => {
   it('persists an ordinary semantics-3 Run with repeat absent and creates no repeat-specific rows', async () => {
     await disposableRepeatDatabase(async (pool) => {
       const run = await transaction(pool, (sql) => seedRun(sql, 'eng04-d-v3-no-repeat', 3, { versionPatch(version) {

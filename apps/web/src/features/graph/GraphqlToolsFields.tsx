@@ -8,7 +8,7 @@ import { Checkbox, SegmentedControl } from '../../shared/ui/nocturne'
 type NodeChoice = 'default' | 'on' | 'off'
 
 /** An empty override is stored as none, so the node follows the Agent default. */
-export function normalizeToolOverride(override: GraphqlToolOverride | undefined): GraphqlToolOverride | undefined {
+function normalizeToolOverride(override: GraphqlToolOverride | undefined): GraphqlToolOverride | undefined {
   return override && (override.add.length || override.remove.length) ? override : undefined
 }
 

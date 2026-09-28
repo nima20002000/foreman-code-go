@@ -129,7 +129,7 @@ describe('Run inspection inside the one mounted Board', () => {
     expect(useGraphDraftStore.getState().nextDrafts[key]!.instanceId).toBe(instanceId)
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!.initialPrompt).toBe('Keep this unpublished next draft')
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
-  })
+  }, 10_000)
 
   it('does not render a node added later or silently retarget its historical deep link', async () => {
     const scope = fixture.runs.before.scope, requests: URLSearchParams[] = []

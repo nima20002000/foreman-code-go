@@ -18,6 +18,7 @@ import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
+import { agentInstructionBundle } from '../skills/instructions.js'
 import {
   assertCodexUnchanged, canonical, isQualifiedCodexVersion, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
@@ -150,8 +151,13 @@ function binding(input: NativeSessionStart): string {
     : canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
       runId: input.request.runId, workflowNodeId: input.request.workflowNodeId, cwd: input.request.workingDirectory })
 }
+/** App-owned developer instructions: the accepted configuration's pinned bundle, never the live catalog.
+ * Native base instructions stay Codex's own. Earlier accepted configurations keep their system prompt only. */
 function instructions(input: NativeSessionStart): string | null {
-  return input.kind === 'operator' ? null : input.request.configuration.prompt.system ?? null
+  if (input.kind === 'operator') return agentInstructionBundle(input.configuration)?.text ?? null
+  const configuration = input.request.configuration
+  if (configuration.instructionDelivery !== 'native-v1') return configuration.prompt.system ?? null
+  return agentInstructionBundle(configuration)?.text ?? null
 }
 function credentialIdentity(input: NativeSessionStart): string {
   return canonical(input.environment ?? null)

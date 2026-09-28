@@ -171,7 +171,7 @@ export async function assertReviewCleanupProofLocked(sql: GraphTransactionSql, j
       'select run_id from harness_executions where id=$1', [executionId])).rows[0]!.run_id)
     requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: { workspaceId: snapshot.run.workspaceId,
       workflowId: snapshot.run.workflowId, workflowVersionId: snapshot.run.workflowVersionId, runId: snapshot.run.id, executionSemanticsVersion: 3 },
-    evidence: { sourceKind: 'review', sourceId: entry.source_id, sourceRevision: entry.source_revision! }, sourceDigest: entry.source_digest, effect: null })
+    evidence: { sourceKind: 'cleanup', sourceId: entry.source_id, sourceRevision: entry.source_revision! }, sourceDigest: entry.source_digest, effect: null })
     return
   }
   if (entry.phase !== 'entered') return fail('REVIEW_SUBMISSION_UNCERTAIN')

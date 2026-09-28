@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { it } from 'vitest'
-import { HarnessNativeEventSchema, type NativeHarnessEvent } from '@graphql/contracts'
+import { HarnessExecutionSchema, HarnessNativeEventSchema, WorkflowRunSchema, type NativeHarnessEvent } from '@graphql/contracts'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
 import { normalizedHistory } from '../src/modules/harnesses/opencodeProtocol.js'
 import { openCodeFixture, start } from './fixtures/pr17-native-runtime.js'
@@ -19,15 +20,22 @@ it('F1: appends real OpenCode manager events after durable-execution reattachmen
     await admin.query(`create schema "${schema}"`)
     created = true
     await applyApplicationMigrations(pool)
-    await pool.query("insert into workspaces(id,record) values('workspace','{}')")
-    await pool.query("insert into agents(id,workspace_id,record) values('agent','workspace','{}')")
-    await pool.query("insert into workflows(id,workspace_id,record) values('workflow','workspace','{}')")
-    await pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record)
-      values('version','workspace','workflow',1,'node','{}')`)
+    await ensureAcceptanceSeed(pool)
+    const run = WorkflowRunSchema.parse({ id: 'run', workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline',
+      workflowVersionId: 'workflow-content-pipeline-v1', executionSemanticsVersion: 3,
+      agentConfigurationVersionIds: { 'agent-researcher': 'agent-researcher-config-v1',
+        'agent-developer': 'agent-developer-config-v1', 'agent-reviewer': 'agent-reviewer-config-v1' },
+      approval: { handler: 'user' }, executionCondition: { kind: 'manual' }, executionState: 'running',
+      outcome: 'pending', input: {}, createdAt: new Date().toISOString() })
+    const execution = HarnessExecutionSchema.parse({ id: 'execution', runId: run.id, workflowNodeId: 'node-developer',
+      agentId: 'agent-developer', agentConfigurationVersionId: 'agent-developer-config-v1', attempt: 1,
+      input: {}, state: 'running', createdAt: run.createdAt })
     await pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
-      values('run','workspace','workflow','version','running','{}')`)
+      values($1,$2,$3,$4,$5,$6::jsonb)`, [run.id, run.workspaceId, run.workflowId, run.workflowVersionId,
+      run.executionState, JSON.stringify(run)])
     await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-      values('execution','run','node','agent',1,'{}')`)
+      values($1,$2,$3,$4,1,$5::jsonb)`, [execution.id, run.id, execution.workflowNodeId,
+      execution.agentId, JSON.stringify(execution)])
 
     const first = openCodeFixture()
     const session = await first.manager.createSession(start)

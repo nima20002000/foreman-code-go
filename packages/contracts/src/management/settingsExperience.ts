@@ -16,6 +16,12 @@ export const HarnessSettingsSearchSchema = z.object({
   pluginOffset: z.coerce.number().int().min(0).optional().catch(undefined),
   pluginId: z.string().max(240).optional().catch(undefined),
 });
+/** Settings → Skills list filters. Selection is part of the route path. */
+export const SkillSettingsSearchSchema = z.object({
+  workspace: z.string().trim().min(1).max(200).optional().catch(undefined),
+  q: z.string().max(200).optional().catch(undefined),
+  archived: z.boolean().optional().catch(undefined),
+});
 
 /** Creation suggestions only. A template never grants filesystem or runner access. */
 export const WorkspaceDefaultsSchema = z.object({

@@ -46,6 +46,7 @@ function graph(predecessorCount: number) {
   const count = predecessorCount + 1
   version.definition.nodes = version.definition.nodes.slice(0, count).map((node) => {
     const { join: _join, ...rest } = node
+    void _join
     return rest
   })
   const [a, b, c] = version.definition.nodes

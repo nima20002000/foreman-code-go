@@ -76,7 +76,7 @@ describe('FE-R2-001 current V3 HTTP/MCP shared read boundaries', () => {
     } finally { await app.close() }
   })
   it('keeps discovery parity and audits hidden/direct MCP denials before protected metadata reads', async () => {
-    const f = await currentGraphReadUnit(), recordDenied = vi.fn(async (..._args: unknown[]) => undefined)
+    const f = await currentGraphReadUnit(), recordDenied = vi.fn(async (...args: unknown[]) => { void args; return undefined })
     const services = { runGraph: f.reads, commands: { recordDenied } } as unknown as OperatorServices
     const denied = { principal: currentGraphPrincipal(false), services }
     expect(tools(denied, f.reads).has(CANONICAL_RUN_GRAPH_MCP_TOOLS.current)).toBe(false)

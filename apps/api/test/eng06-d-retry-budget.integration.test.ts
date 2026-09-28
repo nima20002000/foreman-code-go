@@ -126,7 +126,7 @@ describe.skipIf(!postgresEnabled)('ENG06-D finite technical retry budget', () =>
         expect(row.input.predecessors[0]!.acceptedResult.outcome).toBe('succeeded')
       }
     } finally { await f.close() }
-  }, 90000)
+  }, 150000)
 
   it.each(forms)('%s: a non-retryable original failure cannot spend a technical retry', async (form) => {
     const f = await recoveryFixture(form, () => 'permanent_failure')

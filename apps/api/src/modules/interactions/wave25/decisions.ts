@@ -77,7 +77,7 @@ export async function decide(pool: pg.Pool, runId: string, input: {
     const initial = (await sql.query<{ record: unknown }>('select record from durable_interactions where id=$1', [input.id])).rows[0]
     const view = DurableInteractionSchema.parse(initial?.record)
     const replay = view.status !== 'pending' && view.status !== 'canceled' && view.selectedOptionId === input.optionId
-    const context = await readContext(sql, view, true, replay)
+    const context = await readContext(sql, view, !replay, replay)
     const principal = await lockPrincipal(sql, input.principal, view, context, replay)
     const current = await lockInteraction(sql, input.id)
     if (current.status === 'canceled') return fail('INTERACTION_CANCELED')
