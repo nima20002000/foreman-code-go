@@ -23,6 +23,11 @@
   overflow-wrap: anywhere;
 }
 .pinned-run-flow { position: relative; flex: 1; min-height: 120px; }
+.pinned-work-limit-object { overflow: visible; pointer-events: none; }
+.pinned-work-limit-control { display: grid; justify-items: center; gap: 3px; pointer-events: auto; }
+.pinned-work-limit-pill { min-width: 44px; min-height: 32px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-strong); font: var(--type-control); cursor: pointer; }
+.pinned-work-limit-pill:hover, .pinned-work-limit-pill:focus-visible { border-color: var(--accent); outline: 2px solid var(--focus); outline-offset: 2px; }
+.pinned-work-limit-usage { padding: 2px 6px; border-radius: 5px; background: var(--surface-raised); color: var(--text-muted); font: var(--type-caption); text-align: center; }
 .pinned-run-footnote { padding: 8px 16px; font-size: 12px; margin: 0; border-top: 1px solid var(--border); }
 .run-execution-inspector { display: grid; gap: 12px; min-width: 0; }
 .run-execution-inspector header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
