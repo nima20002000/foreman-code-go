@@ -34,9 +34,9 @@ let failAt: 'allocate' | 'put' | 'finalize' | 'remove' | undefined
 let loseFinalizeAck: boolean
 let clients: QueryClient[]
 let gates: (() => void)[]
-let createUrl: ReturnType<typeof vi.fn>
-let revokeUrl: ReturnType<typeof vi.fn>
-let anchorClick: ReturnType<typeof vi.fn>
+let createUrl: ReturnType<typeof vi.fn<typeof URL.createObjectURL>>
+let revokeUrl: ReturnType<typeof vi.fn<typeof URL.revokeObjectURL>>
+let anchorClick: ReturnType<typeof vi.fn<() => void>>
 
 function deferred() {
   let release!: () => void
@@ -132,12 +132,12 @@ beforeEach(() => {
   seed(inheritedReferenceScope(A), 'shared')
   seed(workflowReferenceScope(OtherWorkspace), 'other')
   seed(inheritedReferenceScope(OtherWorkspace), 'other-shared')
-  createUrl = vi.fn(() => 'blob:reference-file')
-  revokeUrl = vi.fn()
+  createUrl = vi.fn<typeof URL.createObjectURL>(() => 'blob:reference-file')
+  revokeUrl = vi.fn<typeof URL.revokeObjectURL>()
   const OriginalURL = globalThis.URL
   vi.stubGlobal('URL', class extends OriginalURL { static createObjectURL = createUrl; static revokeObjectURL = revokeUrl })
   vi.stubGlobal('crypto', { subtle: webcrypto.subtle, randomUUID: crypto.randomUUID.bind(crypto) })
-  anchorClick = vi.fn()
+  anchorClick = vi.fn<() => void>()
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(anchorClick)
   server.use(
     ...[workflowPath, workspacePath].map((path) => http.get(path, ({ request }) => {

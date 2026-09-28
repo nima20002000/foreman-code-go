@@ -108,7 +108,7 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
         }))
       },
     }
-    const mutation = queryClient.getMutationCache().build<FileWithRevision, Error, UploadVariables>(queryClient, {
+    const mutation = queryClient.getMutationCache().build<FileWithRevision, Error, UploadVariables, unknown>(queryClient, {
       mutationKey: uploadKey,
       gcTime: Infinity,
       retry: false,
@@ -170,7 +170,7 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
       // Best-effort remote cleanup, NOT proof of remote deletion. Failures remain
       // inspectable in MutationCache. FIL-03 must fence cancel/upload races by requestId.
       const cancelInput = { scope: draft.scope, requestId: selection.requestId }
-      const cleanup = queryClient.getMutationCache().build<void, Error, void>(queryClient, {
+      const cleanup = queryClient.getMutationCache().build<void, Error, void, unknown>(queryClient, {
         mutationKey: [...cachePrefix, 'cancel', selection.requestId], gcTime: 60_000,
         retry: false, networkMode: 'always',
         mutationFn: () => client.cancel(cancelInput),

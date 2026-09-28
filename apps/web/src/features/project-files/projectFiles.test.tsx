@@ -27,8 +27,8 @@ let allocations: Map<string, Allocation>
 let calls: { phase: string; workspaceId: string; requestId?: string; body?: unknown }[]
 let commandIds: string[]
 let clients: QueryClient[]
-let createUrl: ReturnType<typeof vi.fn>
-let revokeUrl: ReturnType<typeof vi.fn>
+let createUrl: ReturnType<typeof vi.fn<typeof URL.createObjectURL>>
+let revokeUrl: ReturnType<typeof vi.fn<typeof URL.revokeObjectURL>>
 let clicked: { href: string; filename: string }[]
 let gates: (() => void)[]
 
@@ -114,7 +114,7 @@ function file(name = 'notes.md', value = '# marker\n') { return new File([value]
 function picker() { return screen.getByLabelText('Choose project file') as HTMLInputElement }
 function mount(workspaceId = A) {
   const queryClient = new QueryClient({ defaultOptions: {
-    queries: { retry: false, gcTime: Infinity, placeholderData: (previous) => previous },
+    queries: { retry: false, gcTime: Infinity, placeholderData: (previous: unknown) => previous },
     mutations: { retry: false },
   } })
   clients.push(queryClient)
@@ -128,8 +128,8 @@ function mount(workspaceId = A) {
 beforeEach(() => {
   rows = new Map([[A, []], [B, []]])
   allocations = new Map(); calls = []; commandIds = []; clients = []; clicked = []; gates = []
-  createUrl = vi.fn(() => `blob:project-${randomUUID()}`)
-  revokeUrl = vi.fn()
+  createUrl = vi.fn<typeof URL.createObjectURL>(() => `blob:project-${randomUUID()}`)
+  revokeUrl = vi.fn<typeof URL.revokeObjectURL>()
   const NativeURL = globalThis.URL
   vi.stubGlobal('URL', class extends NativeURL { static createObjectURL = createUrl; static revokeObjectURL = revokeUrl })
   vi.stubGlobal('crypto', { subtle: webcrypto.subtle, randomUUID,
@@ -213,12 +213,12 @@ describe('Project files section through the real HTTP client and MSW', () => {
     fireEvent.click(dialog)
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     await userEvent.click(trigger)
-    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Remove', exact: true }))
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /^Remove$/ }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(await screen.findByText('No files.')).toBeVisible()
     expect(rows.get(A)![0].file.state).toBe('removed')
     expect(commandIds).toHaveLength(1)
-    expect(screen.getByRole('button', { name: 'Upload', exact: true })).toHaveFocus()
+    expect(screen.getByRole('button', { name: /^Upload$/ })).toHaveFocus()
   })
 
   it('locks the removal dialog while its request is pending', async () => {
@@ -231,7 +231,7 @@ describe('Project files section through the real HTTP client and MSW', () => {
     mount()
     await userEvent.click(await screen.findByRole('button', { name: 'Remove ready.md' }))
     const dialog = screen.getByRole('alertdialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove', exact: true }))
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Remove$/ }))
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
     fireEvent.pointerDown(dialog); fireEvent.click(dialog)
     expect(dialog).toBeVisible()
@@ -249,8 +249,11 @@ describe('Project files section through the real HTTP client and MSW', () => {
     expect(clicked[0].href).toMatch(/^blob:/)
     expect(calls.find((call) => call.phase === 'download')).toEqual({ phase: 'download', workspaceId: A,
       body: { fileId: row.file.fileId, revisionId: row.revision.revisionId } })
-    expect(createUrl.mock.calls[0][0].size).toBe(contents.byteLength)
-    expect(createUrl.mock.calls[0][0].type).toBe('application/octet-stream')
+    const downloaded = createUrl.mock.calls[0][0]
+    expect(downloaded).toBeInstanceOf(Blob)
+    if (!(downloaded instanceof Blob)) throw new Error('Expected downloaded Blob')
+    expect(downloaded.size).toBe(contents.byteLength)
+    expect(downloaded.type).toBe('application/octet-stream')
     await waitFor(() => expect(revokeUrl).toHaveBeenCalledWith(clicked[0].href))
     expect(document.querySelector('a[download]')).toBeNull()
   })
@@ -276,7 +279,7 @@ describe('Project files section through the real HTTP client and MSW', () => {
     await screen.findByRole('button', { name: 'Download b-only.md' })
     expect(screen.queryByText('a-upload.md')).not.toBeInTheDocument()
     expect(screen.queryByText('Uploading…')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Upload', exact: true })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Upload$/ })).toBeEnabled()
     await act(async () => gate.resolve())
     await waitFor(() => expect(view.queryClient.isMutating()).toBe(0))
     expect(rows.get(A)![0].file.state).toBe('ready')
@@ -303,7 +306,7 @@ describe('Project files section through the real HTTP client and MSW', () => {
     await screen.findByText('No files.')
     view.switchTo(A)
     expect(await screen.findByRole('status', { name: 'Uploading notes.md' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Upload', exact: true })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^Upload$/ })).toBeDisabled()
     await act(async () => gate.resolve())
     await screen.findByRole('button', { name: 'Download notes.md' })
     expect(allocations.size).toBe(1)
@@ -335,7 +338,7 @@ describe('Project files section through the real HTTP client and MSW', () => {
     const view = mount()
     await screen.findByText('No files.')
     const oldInput = picker()
-    await userEvent.click(screen.getByRole('button', { name: 'Upload', exact: true }))
+    await userEvent.click(screen.getByRole('button', { name: /^Upload$/ }))
     view.switchTo(B)
     await screen.findByText('No files.')
     fireEvent.change(oldInput, { target: { files: [file('old-picker.md')] } })
@@ -412,7 +415,7 @@ describe('Project files section through the real HTTP client and MSW', () => {
     }))
     mount()
     await userEvent.click(await screen.findByRole('button', { name: 'Remove ready.md' }))
-    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Remove', exact: true }))
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /^Remove$/ }))
     await screen.findByText('Couldn’t remove file.')
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Retry removal' }))
@@ -433,7 +436,7 @@ describe('Project files section through the real HTTP client and MSW', () => {
     }))
     const view = mount()
     await userEvent.click(await screen.findByRole('button', { name: 'Remove shared.md' }))
-    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Remove', exact: true }))
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /^Remove$/ }))
     await waitFor(() => expect(entered).toBe(true))
     view.switchTo(B)
     await screen.findByRole('button', { name: 'Download shared.md' })

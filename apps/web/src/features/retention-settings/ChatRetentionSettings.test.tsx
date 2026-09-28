@@ -63,7 +63,7 @@ async function setDuration(amount: string, unit: 'hours' | 'days' = 'days') {
   return user
 }
 async function save(user: ReturnType<typeof userEvent.setup>) {
-  const button = screen.getByRole('button', { name: 'Save', exact: true })
+  const button = screen.getByRole('button', { name: /^Save$/ })
   await waitFor(() => expect(button).toBeEnabled())
   await user.click(button)
 }
@@ -122,7 +122,7 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     expect(await duration()).toHaveValue(7)
     expect(screen.getByRole('combobox', { name: 'Unit' })).toHaveValue('days')
     expect(screen.getByRole('checkbox', { name: 'Apply to existing' })).not.toBeChecked()
-    expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled()
     expect(saves).toHaveLength(0)
   })
 
@@ -157,7 +157,7 @@ describe('Chat retention through the real HTTP client and MSW', () => {
       await setDuration(amount, unit)
       expect(screen.getByRole('spinbutton', { name: 'Duration' })).toHaveAttribute('aria-invalid', 'true')
       expect(screen.getByText('Use 1 hour–365 days.')).toBeVisible()
-      expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeDisabled()
+      expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled()
       expect(saves).toHaveLength(0)
       expect(previews).toHaveLength(0)
     },
@@ -181,7 +181,7 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     await save(user)
     expect(await screen.findByText(/Changed elsewhere. Your edit is kept./)).toBeVisible()
     expect(await duration()).toHaveValue(2)
-    expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled()
     expect(saves).toHaveLength(1)
     await user.click(screen.getByRole('button', { name: 'Use my value' }))
     await save(user)
@@ -224,7 +224,7 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     await save(user)
     expect(await screen.findByText('1 file would expire now.')).toBeVisible()
     expect(previews).toEqual([3_600, 7_200])
-    await user.click(screen.getByRole('button', { name: 'Cancel', exact: true }))
+    await user.click(screen.getByRole('button', { name: /^Cancel$/ }))
     expect(saves).toHaveLength(0)
   })
 
@@ -321,7 +321,7 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     }))
     mount()
     await setDuration('2')
-    const button = screen.getByRole('button', { name: 'Save', exact: true })
+    const button = screen.getByRole('button', { name: /^Save$/ })
     fireEvent.click(button)
     fireEvent.click(button)
     await waitFor(() => expect(saves).toHaveLength(1))
@@ -423,7 +423,7 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     expect(await screen.findByText('Chat retention is unavailable.')).toBeVisible()
     expect(saves).toHaveLength(1)
     failReadback = false
-    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await user.click(screen.getByRole('button', { name: /^Retry$/ }))
     expect(await screen.findByText('Save unconfirmed. Retry safely.')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Retry save' }))
     expect(await screen.findByText('Saved.')).toBeVisible()
@@ -456,7 +456,7 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     expect(await screen.findByText('Chat retention is unavailable.')).toBeVisible()
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
     failing = false
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await userEvent.setup().click(screen.getByRole('button', { name: /^Retry$/ }))
     expect(await duration()).toHaveValue(7)
   })
 
@@ -507,10 +507,10 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     window.sessionStorage.setItem(key, '{broken')
     mount()
     expect(await screen.findByText('Save recovery is unavailable.')).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Save', exact: true })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Save$/ })).not.toBeInTheDocument()
     expect(saves).toHaveLength(0)
     window.sessionStorage.removeItem(key)
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await userEvent.setup().click(screen.getByRole('button', { name: /^Retry$/ }))
     expect(await duration()).toHaveValue(7)
   })
 
@@ -526,9 +526,9 @@ describe('Chat retention through the real HTTP client and MSW', () => {
     expect(await screen.findByText('Save recovery is unavailable.')).toBeVisible()
     expect(saves).toHaveLength(0)
     write.mockRestore()
-    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await user.click(screen.getByRole('button', { name: /^Retry$/ }))
     expect(await duration()).toHaveValue(2)
-    expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeEnabled()
   })
 
   it('does not carry an old owner draft into a new authenticated session', async () => {

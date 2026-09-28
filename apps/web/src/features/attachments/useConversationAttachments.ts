@@ -83,7 +83,7 @@ export function useConversationAttachments(scope: TemporaryFileScope | null): Co
         fileId: state.data.revision.fileId, revisionId: state.data.revision.revisionId,
       } }
     }
-    const telemetry = progress[selection.id]
+    const telemetry = progress?.[selection.id]
     const percent = telemetry?.percent ?? null
     return {
       ...base, status: 'uploading', progress: percent,

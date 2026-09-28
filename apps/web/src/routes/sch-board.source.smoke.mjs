@@ -33,7 +33,7 @@ test('explicit legacy/current writes strip the history parameter; unrelated agen
   assert.match(agent, /search: \(previous\) =>/)
   assert.match(agent, /boardSearchForRun\(withoutRunsSelectorSearch\(board.search\)/)
   assert.match(agent, /selectedRunId: previous.selectedRunId/)
-  assert.match(agent, /hash: \(previous\) => previous/)
+  assert.match(agent, /hash: true/)
 })
 test('departure predicates receive two validated, projected searches', () => {
   const projection = section(route, 'function projectBoardDeparture', '/** Adapt')

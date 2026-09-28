@@ -40,8 +40,8 @@ let finalizations: { requestId: string; scope: TemporaryFileScope }[]
 let cancellations: { scope: TemporaryFileScope; requestId: string }[]
 let staged: Map<string, FileWithRevision>
 let clients: QueryClient[]
-let createUrl: ReturnType<typeof vi.fn>
-let revokeUrl: ReturnType<typeof vi.fn>
+let createUrl: ReturnType<typeof vi.fn<typeof URL.createObjectURL>>
+let revokeUrl: ReturnType<typeof vi.fn<typeof URL.revokeObjectURL>>
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -117,8 +117,11 @@ async function ready(view: ReturnType<typeof mount>, count = 1) {
 
 beforeEach(() => {
   uploads = []; byteUploads = []; finalizations = []; cancellations = []; staged = new Map(); clients = []
-  createUrl = vi.fn((blob: Blob) => `blob:attachment-${blob.size}-${crypto.randomUUID()}`)
-  revokeUrl = vi.fn()
+  createUrl = vi.fn<typeof URL.createObjectURL>((blob) => {
+    if (!(blob instanceof Blob)) throw new Error('Expected attachment Blob')
+    return `blob:attachment-${blob.size}-${crypto.randomUUID()}`
+  })
+  revokeUrl = vi.fn<typeof URL.revokeObjectURL>()
   const OriginalURL = globalThis.URL
   vi.stubGlobal('URL', class extends OriginalURL {
     static createObjectURL = createUrl

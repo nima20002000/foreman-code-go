@@ -38,7 +38,7 @@ async function authoring() {
 }
 async function choose(runId: string | null) {
   const controls = screen.getByRole('group', { name: 'Schedule and runs' })
-  await userEvent.click(within(controls).getByRole('button', { name: 'Runs', exact: true }))
+  await userEvent.click(within(controls).getByRole('button', { name: /^Runs$/ }))
   const menu = await screen.findByRole('menu', { name: 'Runs' })
   const item = runId === null ? within(menu).getByRole('menuitemradio', { name: 'Current workflow' })
     : await waitFor(() => {
@@ -89,7 +89,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, name: 'Unsaved board name' })))
     await within(editor).findByRole('heading', { name: 'Unsaved board name' })
     const graph = useGraphDraftStore.getState().nextDrafts[key]!.graph
-    const save = within(editor).getByRole('button', { name: 'Save changes', exact: true })
+    const save = within(editor).getByRole('button', { name: /^Save changes$/ })
     const writesBefore = [...writes]
 
     await choose('run-a'); await savedY()
@@ -137,11 +137,11 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     await choose('run-a'); await savedY()
     expect(scheduleReads).toEqual([])
     await userEvent.click(await screen.findByRole('button', { name: 'Schedule workflow' }))
-    const modal = await screen.findByRole('dialog', { name: 'Schedule', exact: true })
+    const modal = await screen.findByRole('dialog', { name: /^Schedule$/ })
     await within(modal).findByRole('tab', { name: 'Weekly' })
     expect(scheduleReads.length).toBeGreaterThan(0)
     expect(new Set(scheduleReads)).toEqual(new Set(['/api/management/workspaces/workspace-1/workflows/workflow-content-pipeline/schedule']))
-    expect(within(modal).getByRole('button', { name: 'Save', exact: true })).toBeEnabled()
+    expect(within(modal).getByRole('button', { name: /^Save$/ })).toBeEnabled()
     await userEvent.click(within(modal).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(modal).not.toBeVisible())
     expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-run-id', 'run-a')
@@ -197,7 +197,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     await savedY()
     const group = screen.getByRole('group', { name: 'Schedule and runs' })
     const clock = await within(group).findByRole('button', { name: 'Schedule workflow' })
-    const selector = within(group).getByRole('button', { name: 'Runs', exact: true })
+    const selector = within(group).getByRole('button', { name: /^Runs$/ })
     const reserved = group.querySelector('[data-board-slot="files"]')!
     expect(clock.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(reserved).toHaveAttribute('aria-hidden', 'true')

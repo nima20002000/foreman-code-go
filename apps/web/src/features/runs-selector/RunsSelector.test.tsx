@@ -53,7 +53,7 @@ async function mount(entry = runsUrl(null)) {
 }
 async function select(runId: string | null) { await act(async () => { await latest!.selectRun(runId) }) }
 async function openMenu() {
-  await userEvent.click(screen.getByRole('button', { name: 'Runs', exact: true }))
+  await userEvent.click(screen.getByRole('button', { name: /^Runs$/ }))
   return screen.findByRole('menu', { name: 'Runs' })
 }
 const selectedIdentity = (id: string | null, target = scope) => `${target.workspaceId}/${target.workflowId}/${id ?? 'current'}`
@@ -91,7 +91,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     await userEvent.click(rows[2]!)
     await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-b')))
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Runs', exact: true })).toHaveFocus()
+    expect(screen.getByRole('button', { name: /^Runs$/ })).toHaveFocus()
   })
 
   it('renders null startedAt honestly', async () => {
@@ -113,7 +113,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     await act(async () => { await clients.at(-1)!.invalidateQueries({ queryKey: runsSelectorKeys.list(scope) }) })
     await within(menu).findByText('Load failed')
     server.use(http.get(listRoute, () => HttpResponse.json(page([runA]))))
-    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Retry', exact: true }))
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /^Retry$/ }))
     await within(menu).findByRole('menuitemradio', { name: labelRuns([runA])[0]!.label })
   })
 
@@ -229,7 +229,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     await within(menu).findByRole('menuitemradio', { name: labelRuns([runA])[0]!.label })
     expect(calls).toHaveLength(1)
     expect(calls[0]!.searchParams.get('limit')).toBe(String(RUNS_PAGE_SIZE))
-    await userEvent.click(within(menu).getByRole('menuitem', { name: 'More', exact: true }))
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /^More$/ }))
     await within(menu).findByRole('menuitemradio', { name: labelRuns([runA, runB])[1]!.label })
     expect(calls).toHaveLength(2)
     expect(calls[1]!.searchParams.get('cursor')).toBe('opaque:/+?=&')
@@ -246,7 +246,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     }))
     await mount(); const menu = await openMenu()
     for (let index = 1; index < RUNS_MAX_PAGES; index++) {
-      const more = await within(menu).findByRole('menuitem', { name: 'More', exact: true })
+      const more = await within(menu).findByRole('menuitem', { name: /^More$/ })
       await waitFor(() => expect(more).toHaveAttribute('aria-disabled', 'false'))
       await userEvent.click(more)
     }
@@ -262,7 +262,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
     try {
       await mount()
-      const user = userEvent.setup(), trigger = screen.getByRole('button', { name: 'Runs', exact: true })
+      const user = userEvent.setup(), trigger = screen.getByRole('button', { name: /^Runs$/ })
       trigger.focus(); await user.keyboard('{ArrowDown}')
       const menu = await screen.findByRole('menu', { name: 'Runs' })
       await within(menu).findByRole('menuitemradio', { name: labelRuns([runA, runB, runC])[2]!.label })

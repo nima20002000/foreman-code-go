@@ -85,12 +85,12 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
     if (!workflowId) return
     if (scope && (scope.workspaceId !== workspaceId || scope.workflowId !== workflowId)) throw new Error('Run selection belongs to a different board.')
     // Explicit legacy Run/Current actions replace, rather than combine, history pins.
-    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: (previous) => previous,
+    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: true,
       search: (previous) => boardSearchForRun(withoutRunsSelectorSearch(previous), workflowId, scope) })
   }, [workflowId, workspaceId, navigate])
   const selectInspection = useCallback((inspection: WorkspaceBoardInspection) => {
     if (!workflowId || !run) return
-    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: (previous) => previous, search: (previous) => {
+    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: true, search: (previous) => {
       if (previous.selectedRunId && previous.selectedRunId !== run.runId) return previous
       return { ...boardSearchForInspection(withoutRunsSelectorSearch(previous), workflowId, run, inspection),
         selectedRunId: previous.selectedRunId }
@@ -99,7 +99,7 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
   const selectDraftAgent = useCallback((agentId?: string) => {
     if (!workflowId) return
     // Read the latest search in the updater; an unrelated selection must not lose history.
-    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: (previous) => previous, search: (previous) => {
+    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: true, search: (previous) => {
       if (previous.workflowId && previous.workflowId !== workflowId) return previous
       const board = resolveWorkflowBoardLocation(location.pathname, previous)
       const next = { ...boardSearchForRun(withoutRunsSelectorSearch(board.search), workflowId, board.run),
