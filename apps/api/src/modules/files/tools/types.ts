@@ -7,6 +7,11 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 export const FILE_TOOL_NAMES = ['files.list', 'files.read', 'files.create_working_copy', 'files.publish_result'] as const
 export type FileToolName = typeof FILE_TOOL_NAMES[number]
+// Keep the original native-bridge allowlist/type stable until each adapter opts in.
+export const FILE_EDIT_TOOL_NAMES = ['files.write_working_copy', 'files.apply_format_edit'] as const
+export type FileEditToolName = typeof FILE_EDIT_TOOL_NAMES[number]
+export const ALL_FILE_TOOL_NAMES = [...FILE_TOOL_NAMES, ...FILE_EDIT_TOOL_NAMES] as const
+export type FileToolOperation = typeof ALL_FILE_TOOL_NAMES[number]
 
 /** Server-issued native session/turn binding. Never constructed from tool arguments or browser selection. */
 export interface FileToolContext {
@@ -17,7 +22,7 @@ export interface FileToolContext {
   messageId?: string | undefined
   /** Must come from the accepted harness security configuration, not merely the owner's grants. */
   allowMutation: boolean
-  allowedTools: FileToolName[]
+  allowedTools: FileToolOperation[]
 }
 export interface FileToolSession { context: FileToolContext; expiresAt: string }
 export interface AuthorizedFileCaller {
@@ -63,7 +68,7 @@ export interface FileToolRepository {
   revokeSession(tokenHash: string): Promise<void>
   createArtifact(artifact: FileToolArtifact): Promise<void>
   artifact(binding: string, artifactId: string): Promise<FileToolArtifact | undefined>
-  beginWrite(binding: string, artifactId: string, writeId: string): Promise<boolean>
+  beginWrite(binding: string, artifactId: string, writeId: string, baseRevisionId?: string): Promise<boolean>
   finishWrite(binding: string, artifactId: string, writeId: string, snapshot: ArtifactSnapshot): Promise<boolean>
   failWrite(binding: string, artifactId: string, writeId: string): Promise<void>
   copyReceipt(ownerPrincipalId: string, commandId: string): Promise<CopyReceipt | undefined>

@@ -24,10 +24,11 @@ export class PostgresFileToolRepository implements FileToolRepository {
     return (await this.pool.query<{ record: FileToolArtifact }>(
       'select record from file_tool_artifacts where artifact_id=$1 and binding=$2', [artifactId, binding])).rows[0]?.record
   }
-  async beginWrite(binding: string, artifactId: string, writeId: string): Promise<boolean> {
+  async beginWrite(binding: string, artifactId: string, writeId: string, baseRevisionId?: string): Promise<boolean> {
     const result = await this.pool.query(`update file_tool_artifacts set record=record || $3::jsonb
-      where artifact_id=$1 and binding=$2 and record->>'state' in ('complete','failed')`,
-    [artifactId, binding, JSON.stringify({ state: 'writing', writeId })])
+      where artifact_id=$1 and binding=$2 and record->>'state' in ('complete','failed')
+        and ($4::text is null or record #>> '{snapshot,revision,revisionId}'=$4::text)`,
+    [artifactId, binding, JSON.stringify({ state: 'writing', writeId }), baseRevisionId ?? null])
     return result.rowCount === 1
   }
   async finishWrite(binding: string, artifactId: string, writeId: string, snapshot: ArtifactSnapshot): Promise<boolean> {

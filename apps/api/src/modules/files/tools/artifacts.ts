@@ -5,9 +5,9 @@ import { DomainError } from '../../errors.js'
 import type { FileByteStorage } from '../storage.js'
 import type { FileToolSessions } from './context.js'
 import { completedBytes } from './transfers.js'
-import type { ArtifactSnapshot, AuthorizedFileCaller, FileToolArtifact, FileToolRepository } from './types.js'
+import type { ArtifactSnapshot, AuthorizedFileCaller, FileToolArtifact, FileToolRepository, FileEditToolName } from './types.js'
 
-type ArtifactPermission = 'files.create_working_copy' | 'files.publish_result'
+type ArtifactPermission = 'files.create_working_copy' | 'files.publish_result' | FileEditToolName
 
 const opaqueId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)
 const missing = () => new DomainError('FILE_ARTIFACT_NOT_FOUND', 'The artifact does not belong to this authenticated turn.', 404)
@@ -30,7 +30,7 @@ export class FileToolArtifacts {
     return { ...artifact, snapshot: artifact.snapshot }
   }
 
-  /** Internal native-runner API, not a fifth MCP tool. Accepted harness write permission is mandatory. */
+  /** Internal native-runner API. Accepted file mutation permission is mandatory. */
   async create(token: string, filename: string, mediaType: FileToolArtifact['mediaType'],
     source?: { ref: MessageAttachmentRef; sha256: string }, permission: ArtifactPermission = 'files.publish_result'): Promise<{ artifactId: string; writeId: string }> {
     const caller = await this.sessions.authenticate(token, permission)
@@ -42,11 +42,16 @@ export class FileToolArtifacts {
     return { artifactId, writeId }
   }
 
-  async beginWrite(token: string, artifactId: string): Promise<string> {
-    const caller = await this.sessions.authenticate(token, 'files.publish_result')
-    await this.get(caller, artifactId)
+  async beginWrite(token: string, artifactId: string, baseRevisionId?: string,
+    permission: ArtifactPermission = 'files.publish_result'): Promise<string> {
+    const caller = await this.sessions.authenticate(token, permission)
+    const artifact = await this.get(caller, artifactId)
+    if (baseRevisionId !== undefined && artifact.snapshot?.revision.revisionId !== baseRevisionId) {
+      throw new DomainError('FILE_WORKING_COPY_CONFLICT', 'The working copy has changed.', 409)
+    }
     const writeId = randomUUID()
-    if (!await this.repository.beginWrite(caller.binding, artifactId, writeId)) {
+    if (!await this.repository.beginWrite(caller.binding, artifactId, writeId, baseRevisionId)) {
+      if (baseRevisionId !== undefined) throw new DomainError('FILE_WORKING_COPY_CONFLICT', 'The working copy changed or another writer owns it.', 409)
       throw new DomainError('FILE_ARTIFACT_BUSY', 'An artifact write is already in progress.', 409)
     }
     return writeId
@@ -58,6 +63,15 @@ export class FileToolArtifacts {
   }
   async completeWrite(token: string, artifactId: string, writeId: string, source: Readable,
     signal: AbortSignal = AbortSignal.timeout(120_000), permission: ArtifactPermission = 'files.publish_result'): Promise<void> {
+    await this.commitWrite(token, artifactId, writeId, source, signal, permission)
+  }
+  /** Return this writer's exact commit, even if another writer starts before the response is sent. */
+  async completeEdit(token: string, artifactId: string, writeId: string, source: Readable,
+    permission: FileEditToolName): Promise<ArtifactSnapshot> {
+    return this.commitWrite(token, artifactId, writeId, source, AbortSignal.timeout(120_000), permission)
+  }
+  private async commitWrite(token: string, artifactId: string, writeId: string, source: Readable,
+    signal: AbortSignal, permission: ArtifactPermission): Promise<ArtifactSnapshot> {
     let caller: AuthorizedFileCaller | undefined
     try {
       caller = await this.sessions.authenticate(token, permission)
@@ -67,7 +81,7 @@ export class FileToolArtifacts {
       const sha256 = createHash('sha256').update(data).digest('hex')
       if (artifact.state === 'complete') {
         if (artifact.snapshot?.revision.sha256 === sha256 && artifact.snapshot.revision.byteSize === data.length) {
-          await this.sessions.authenticate(token, permission); return
+          await this.sessions.authenticate(token, permission); return artifact.snapshot
         }
         throw new DomainError('FILE_REQUEST_CONFLICT', 'A completed writer cannot change its bytes.', 409)
       }
@@ -82,9 +96,10 @@ export class FileToolArtifacts {
       if (!await this.repository.finishWrite(caller.binding, artifactId, writeId, { storageKey, revision })) {
         const current = await this.get(caller, artifactId)
         if (current.state === 'complete' && current.writeId === writeId && current.snapshot?.revision.sha256 === sha256
-          && current.snapshot.revision.byteSize === data.length) return
+          && current.snapshot.revision.byteSize === data.length) return current.snapshot
         throw new DomainError('FILE_ARTIFACT_WRITE_STALE', 'A newer writer owns the artifact.', 409)
       }
+      return { storageKey, revision }
     } catch (error) {
       if (caller && opaqueId(artifactId)) await this.repository.failWrite(caller.binding, artifactId, writeId)
       throw error

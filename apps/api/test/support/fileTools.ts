@@ -114,9 +114,10 @@ export class MemoryTools implements FileToolRepository {
   async artifact(binding: string, id: string) {
     const value = this.artifacts.get(id); return value?.binding === binding ? clone(value) : undefined
   }
-  async beginWrite(binding: string, id: string, writeId: string) {
+  async beginWrite(binding: string, id: string, writeId: string, baseRevisionId?: string) {
     const value = this.artifacts.get(id)
-    if (!value || value.binding !== binding || value.state === 'writing') return false
+    if (!value || value.binding !== binding || value.state === 'writing'
+      || (baseRevisionId !== undefined && value.snapshot?.revision.revisionId !== baseRevisionId)) return false
     value.state = 'writing'; value.writeId = writeId; return true
   }
   async finishWrite(binding: string, id: string, writeId: string, snapshot: ArtifactSnapshot) {

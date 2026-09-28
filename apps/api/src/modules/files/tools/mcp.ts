@@ -5,7 +5,9 @@ import { z, ZodError } from 'zod'
 import {
   AgentFileListInputSchema, AgentFileListResultSchema, AgentFileReadInputSchema, AgentFileReadResultSchema,
   AgentFileCreateWorkingCopyInputSchema, AgentFileCreateWorkingCopyResultSchema,
-  AgentFilePublishInputSchema, AgentFilePublishResultSchema,
+  AgentFilePublishInputSchema, AgentFilePublishResultSchema, MAX_FILE_WRITE_BYTES,
+  AgentFileWriteWorkingCopyInputSchema, AgentFileWriteWorkingCopyResultSchema,
+  AgentFileApplyFormatEditInputSchema, AgentFileApplyFormatEditResultSchema,
 } from '@graphql/contracts/files'
 import { requireLocalRequest } from '../../access/http.js'
 import { DomainError } from '../../errors.js'
@@ -13,10 +15,11 @@ import { toolFailure, toolResult } from '../../../mcp/shared/results.js'
 import { isMutation } from './context.js'
 import type { AgentFileToolService } from './service.js'
 import { FileTransferError } from './transfers.js'
-import { FILE_TOOL_NAMES, type FileToolName } from './types.js'
+import { ALL_FILE_TOOL_NAMES, type FileToolOperation } from './types.js'
 
 /** A native facade may wrap these operations without changing any frozen tool schema. */
-export type FileMcpService = Pick<AgentFileToolService, 'list' | 'read' | 'createWorkingCopy' | 'publish'> & {
+export type FileMcpService = Pick<AgentFileToolService, 'list' | 'read' | 'createWorkingCopy' | 'publish'>
+  & Partial<Pick<AgentFileToolService, 'writeWorkingCopy' | 'applyFormatEdit'>> & {
   sessions: Pick<AgentFileToolService['sessions'], 'authenticate'>
   /** Trusted runner annotation only; never a tool input or an immutable source path. */
   workingCopyLocation?(token: string, artifactId: string): Promise<string>
@@ -30,13 +33,13 @@ const annotations = (write: boolean) => ({ readOnlyHint: !write, destructiveHint
 
 export async function createFileMcpServer(service: FileMcpService, token: string): Promise<McpServer> {
   const caller = await service.sessions.authenticate(token)
-  const enabled = new Set<FileToolName>()
-  for (const name of FILE_TOOL_NAMES) {
+  const enabled = new Set<FileToolOperation>()
+  for (const name of ALL_FILE_TOOL_NAMES) {
     if (!caller.context.allowedTools.includes(name) || (isMutation(name) && !caller.context.allowMutation)) continue
     try { await service.sessions.authenticate(token, name); enabled.add(name) }
     catch (error) { if (!(error instanceof DomainError) || error.status !== 403) throw error }
   }
-  const allowed = (name: FileToolName) => enabled.has(name)
+  const allowed = (name: FileToolOperation) => enabled.has(name)
   const server = new McpServer({ name: 'graphql-files', version: '1.0.0' }, { instructions:
     `File-only tools for this authenticated native turn. No workflow GraphQL tools, worker authority, or Operator credentials. `
     + `Scope/destination fields are assertions, not selectors; use ${JSON.stringify(caller.context.scope)}. `
@@ -49,7 +52,7 @@ export async function createFileMcpServer(service: FileMcpService, token: string
       return detail ? { ...result, content: [...result.content, { type: 'text' as const, text: detail }] } : result
     }
     catch (error) {
-      const publicError = error instanceof ZodError ? new DomainError('INVALID_REQUEST', 'The input does not match the frozen file contract.', 400)
+      const publicError = error instanceof ZodError ? new DomainError('INVALID_REQUEST', 'The input does not match the shared file contract.', 400)
         : error instanceof FileTransferError ? new DomainError(error.code, error.message, 409) : error
       return toolFailure(publicError, 'The file service could not complete the request.')
     }
@@ -73,18 +76,35 @@ export async function createFileMcpServer(service: FileMcpService, token: string
     description: 'Publish a completed artifact as new immutable temporary file/revision IDs in its originating conversation, linked to this turn. commandId is the retry key; changed bytes conflict.',
     inputSchema: AgentFilePublishInputSchema, outputSchema: AgentFilePublishResultSchema, annotations: annotations(true),
   }, async (input) => invoke(() => service.publish(token, input)))
+  // Old native facades do not advertise new operations until their safe dispatch is wired.
+  if (service.writeWorkingCopy && allowed('files.write_working_copy')) server.registerTool('files.write_working_copy', {
+    description: 'Replace all bytes of an owned temporary working-copy handle (at most 25 MiB, canonical base64). Optional baseRevisionId guards the working snapshot, not the source. Never writes project files or permanent references; publish separately.',
+    inputSchema: AgentFileWriteWorkingCopyInputSchema, outputSchema: AgentFileWriteWorkingCopyResultSchema,
+    annotations: { ...annotations(true), destructiveHint: true, idempotentHint: false },
+  }, async (input) => invoke(() => service.writeWorkingCopy!(token, input)))
+  if (service.applyFormatEdit && allowed('files.apply_format_edit')) server.registerTool('files.apply_format_edit', {
+    description: 'Edit an owned temporary working copy: append_text for Markdown/DOCX/PDF, resize_image, or replace_zip_entry for one existing regular entry. Server derives the format. Use baseRevisionId on retries to avoid applying an edit twice; publish separately. Project permissions do not change.',
+    inputSchema: AgentFileApplyFormatEditInputSchema, outputSchema: AgentFileApplyFormatEditResultSchema,
+    annotations: { ...annotations(true), destructiveHint: true, idempotentHint: false },
+  }, async (input) => invoke(() => service.applyFormatEdit!(token, input)))
   return server
 }
 
 /** Separate authenticated surface, not the workflow /mcp server or an Operator credential exchange. */
 export function registerFileToolsMcp(app: FastifyInstance, service: FileMcpService): void {
-  app.post(FILE_TOOLS_MCP_PATH, { bodyLimit: 64 * 1024 }, async (request, reply) => {
+  // Authenticate before buffering the larger, still bounded base64 request body.
+  app.post(FILE_TOOLS_MCP_PATH, { bodyLimit: 4 * Math.ceil(MAX_FILE_WRITE_BYTES / 3) + 512 * 1024,
+    onRequest: async (request) => {
+      requireLocalRequest(request)
+      await service.sessions.authenticate(bearer(request.headers.authorization))
+    },
+  }, async (request, reply) => {
     requireLocalRequest(request)
     const token = bearer(request.headers.authorization)
     await service.sessions.authenticate(token)
     const call = ToolCall.safeParse(request.body)
-    if (call.success && FILE_TOOL_NAMES.includes(call.data.params.name as FileToolName)) {
-      const name = call.data.params.name as FileToolName
+    if (call.success && ALL_FILE_TOOL_NAMES.includes(call.data.params.name as FileToolOperation)) {
+      const name = call.data.params.name as FileToolOperation
       try { await service.sessions.authenticate(token, name) }
       catch (error) {
         if (!(error instanceof DomainError) || error.status !== 403) throw error

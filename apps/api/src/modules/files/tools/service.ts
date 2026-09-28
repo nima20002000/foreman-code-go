@@ -12,6 +12,7 @@ import type { TemporaryFileService } from '../service.js'
 import { digest, targetOf, type FileToolSessions } from './context.js'
 import type { FileToolArtifacts } from './artifacts.js'
 import { byteRange, completedBytes } from './transfers.js'
+import { FileWorkingCopyEditor } from './workingCopyEdits.js'
 import type { AuthorizedFileCaller, FileReferenceResolver, FileToolRepository } from './types.js'
 
 class Unavailable extends DomainError {
@@ -153,6 +154,14 @@ export class AgentFileToolService {
       createdAt: this.clock().toISOString() }, replayed: false })
     const saved = await this.repository.saveCopyReceipt({ ownerPrincipalId: caller.principal.id, commandId: input.commandId, inputHash, result })
     return AgentFileCreateWorkingCopyResultSchema.parse({ ...saved.result, replayed: saved.result.value.artifactId !== handle.artifactId })
+  }
+
+  async writeWorkingCopy(token: string, raw: unknown) {
+    return new FileWorkingCopyEditor(this.sessions, this.artifacts, this.files.bytes).write(token, raw)
+  }
+
+  async applyFormatEdit(token: string, raw: unknown) {
+    return new FileWorkingCopyEditor(this.sessions, this.artifacts, this.files.bytes).apply(token, raw)
   }
 
   async publish(token: string, raw: unknown) {

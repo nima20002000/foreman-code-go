@@ -6,13 +6,13 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DomainError } from '../../errors.js'
 import type { FileAccess, FileConversation, FileConversationAuthorization } from '../authorization.js'
 import { fileScopeIdentity } from '../requests.js'
-import { FILE_TOOL_NAMES, type AuthorizedFileCaller, type FileToolContext, type FileToolName, type FileToolRepository } from './types.js'
+import { ALL_FILE_TOOL_NAMES, type AuthorizedFileCaller, type FileToolContext, type FileToolOperation, type FileToolRepository } from './types.js'
 
 const ContextSchema = z.object({
   ownerPrincipalId: z.string().min(1), scope: TemporaryFileScopeSchema,
   nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500),
   messageId: z.string().min(1).max(500).optional(), allowMutation: z.boolean(),
-  allowedTools: z.array(z.enum(FILE_TOOL_NAMES)).max(FILE_TOOL_NAMES.length),
+  allowedTools: z.array(z.enum(ALL_FILE_TOOL_NAMES)).max(ALL_FILE_TOOL_NAMES.length),
 }).strict()
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export function bindingIdentity(context: FileToolContext): string {
@@ -24,8 +24,9 @@ export function targetOf(context: FileToolContext): FileConversation {
   return chat.kind === 'operator' ? { kind: 'operator', conversationId: chat.conversationId }
     : { kind: 'agent', workspaceId: chat.workspaceId, conversationId: chat.conversationId }
 }
-export function isMutation(tool: FileToolName): boolean {
+export function isMutation(tool: FileToolOperation): boolean {
   return tool === 'files.create_working_copy' || tool === 'files.publish_result'
+    || tool === 'files.write_working_copy' || tool === 'files.apply_format_edit'
 }
 
 export class FileToolSessions {
@@ -58,7 +59,7 @@ export class FileToolSessions {
     return token
   }
 
-  async authenticate(token: string | undefined, tool?: FileToolName): Promise<AuthorizedFileCaller> {
+  async authenticate(token: string | undefined, tool?: FileToolOperation): Promise<AuthorizedFileCaller> {
     // Operator, worker, browser and workflow App MCP credentials are not accepted or exchanged here.
     if (!token || !/^gql_file_[A-Za-z0-9_-]{43}$/.test(token)) throw new DomainError('FILE_SESSION_REQUIRED', 'A scoped file-session credential is required.', 401)
     const session = await this.repository.session(digest(token), this.clock().toISOString())

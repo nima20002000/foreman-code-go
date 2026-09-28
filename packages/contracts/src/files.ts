@@ -336,3 +336,48 @@ export type BoardFilesListInput = z.infer<typeof BoardFilesListInputSchema>;
 export type BoardFilesList = z.infer<typeof BoardFilesListSchema>;
 export type WorkspaceProjectFilesListInput = z.infer<typeof WorkspaceProjectFilesListInputSchema>;
 export type WorkspaceProjectFilesList = z.infer<typeof WorkspaceProjectFilesListSchema>;
+
+/** FIL-05b. Additive working-copy tools; never accept file/reference IDs or host paths as targets. */
+export const MAX_FILE_WRITE_BYTES = MAX_FILE_BYTES;
+/** Canonical padded base64, bounded BEFORE decoding. Avoid a repeated-group regex on full files. */
+export const FileWorkingCopyBytesSchema = z.string().max(4 * Math.ceil(MAX_FILE_WRITE_BYTES / 3))
+  .refine((value) => value.length <= 4 * Math.ceil(MAX_FILE_WRITE_BYTES / 3)
+    && value.length % 4 === 0 && !/[^A-Za-z0-9+/=]/.test(value) && /^[A-Za-z0-9+/]*={0,2}$/.test(value)
+    && (!value.endsWith("==") || /[AQgw]==$/.test(value))
+    && (!value.endsWith("=") || value.endsWith("==") || /[AEIMQUYcgkosw048]=$/.test(value))
+    && base64ByteLength(value) <= MAX_FILE_WRITE_BYTES, "Expected bounded canonical base64");
+const WorkingCopyEditTarget = {
+  artifactId: IdSchema,
+  /** A working-copy snapshot revision, NOT the source file revision. Omit on the first edit. */
+  baseRevisionId: IdSchema.optional(),
+};
+export const AgentFileWriteWorkingCopyInputSchema = z.object({
+  ...WorkingCopyEditTarget, contentBase64: FileWorkingCopyBytesSchema,
+}).strict();
+/** Only the existing helpers' supported edits; media type is derived from the owned artifact. */
+export const AgentFileFormatEditSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("append_text"), text: z.string().max(MAX_FILE_READ_BYTES)
+    .refine((text) => text.length <= MAX_FILE_READ_BYTES
+      && new TextEncoder().encode(text).byteLength <= MAX_FILE_READ_BYTES,
+      "Append text exceeds the UTF-8 byte limit") }).strict(),
+  z.object({ kind: z.literal("resize_image"), width: z.number().int().min(1).max(8192),
+    height: z.number().int().min(1).max(8192) }).strict(),
+  z.object({ kind: z.literal("replace_zip_entry"), entryName: z.string().min(1).max(1024),
+    contentBase64: FileWorkingCopyBytesSchema }).strict(),
+]);
+export const AgentFileApplyFormatEditInputSchema = z.object({
+  ...WorkingCopyEditTarget, edit: AgentFileFormatEditSchema,
+}).strict();
+/** This identifies the committed working snapshot, not a published file or a storage location. */
+export const AgentFileWorkingCopyEditResultSchema = z.object({
+  artifactId: IdSchema, revisionId: IdSchema,
+  byteSize: z.number().int().min(0).max(MAX_FILE_WRITE_BYTES), sha256: FileSha256Schema,
+}).strict();
+export const AgentFileWriteWorkingCopyResultSchema = AgentFileWorkingCopyEditResultSchema;
+export const AgentFileApplyFormatEditResultSchema = AgentFileWorkingCopyEditResultSchema;
+export type AgentFileFormatEdit = z.infer<typeof AgentFileFormatEditSchema>;
+export type AgentFileWriteWorkingCopyInput = z.infer<typeof AgentFileWriteWorkingCopyInputSchema>;
+export type AgentFileWriteWorkingCopyResult = z.infer<typeof AgentFileWriteWorkingCopyResultSchema>;
+export type AgentFileApplyFormatEditInput = z.infer<typeof AgentFileApplyFormatEditInputSchema>;
+export type AgentFileApplyFormatEditResult = z.infer<typeof AgentFileApplyFormatEditResultSchema>;
+export type AgentFileWorkingCopyEditResult = z.infer<typeof AgentFileWorkingCopyEditResultSchema>;
