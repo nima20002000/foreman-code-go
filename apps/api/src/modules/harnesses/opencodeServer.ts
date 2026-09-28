@@ -31,7 +31,7 @@ import {
   type JsonObject, type OpenCodeEvent, type OpenCodeMessage,
 } from './opencodeProtocol.js'
 import {
-  childEnvironmentFingerprint, ManagedOpenCodeServer, OpenCodeNativeDeliveryError, QUALIFIED_OPENCODE_VERSION,
+  assertOpenCodeChatMcpDisabled, childEnvironmentFingerprint, ManagedOpenCodeServer, OpenCodeNativeDeliveryError, QUALIFIED_OPENCODE_VERSION,
   type NativeDeliveryCertainty, type OpenCodeServerController,
 } from './opencodeTransport.js'
 import { redactKnownSecrets } from './secrets.js'
@@ -40,6 +40,7 @@ import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js
 import { isOpenCodeReplyAcknowledgement } from './openCodeResponseAcknowledgement.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
 import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './opencodeReconciliation.js'
+import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -74,6 +75,8 @@ interface SessionState {
   autoReplies: OpenCodeNativeAutoReplies
   directory: string
   configuration: OpenCodeHarnessConfiguration
+  /** The accepted configuration's pinned app instructions, sent as system on every new turn. */
+  instructions: AgentInstructionBundle | undefined
   events: NativeHarnessEvent[]
   eventBytes: number
   eventIds: Set<string>
@@ -94,6 +97,8 @@ export interface OpenCodeNativeSessionManagerOptions {
   appMcpServerName?: string
   expectedAppMcpEndpoint?: string
   credentialEnvironmentVariable?: string
+  /** Agent chat has no App MCP authority; other consumers keep their scoped credential checks. */
+  appMcpAccess?: 'scoped' | 'none'
 }
 export interface OpenCodeMcpInspection {
   automaticEndpoint?: boolean
@@ -129,6 +134,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
     if (options.server.ownerAgentId !== undefined && options.server.ownerAgentId !== options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The native manager and resident server must have the same credential owner.')
+    }
+    if (options.appMcpAccess === 'none') {
+      const empty = childEnvironmentFingerprint({ agentId: options.ownerAgentId, variables: {} })
+      if ((options.server.credentialEnvironmentFingerprint && options.server.credentialEnvironmentFingerprint !== empty)
+        || (options.server instanceof ManagedOpenCodeServer
+          && options.server.disabledAppMcpServerName !== (options.appMcpServerName ?? APP_MCP_SERVER_NAME))) {
+        throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Chat requires its own credential-free server with the App MCP launch override.')
+      }
     }
     this.boundEnvironmentFingerprint = options.server.credentialEnvironmentFingerprint
   }
@@ -187,6 +200,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         combined.throwIfAborted()
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
         const configuration = this.configuration(input)
+        const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
         await this.assertConfiguration(configuration, directory, combined)
@@ -207,9 +221,42 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const session = NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_OPENCODE_VERSION, nativeSessionId: response.id })
         // A returned provider identity is authoritative even if cancellation raced
         // the response. Publish and return it so the caller can persist ownership.
-        this.sessions.set(response.id, newState(directory, configuration))
+        this.sessions.set(response.id, newState(directory, configuration, instructions))
         this.restartClosures.delete(response.id)
         return session
+      } catch (error) { return this.cleanupFailedSetup(error) }
+    })
+  }
+
+  /** `POST /session/{id}/fork` copies source history into a new session; the source session is not written. */
+  forkSession(source: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    const combined = this.signal(signal)
+    return this.exclusive(async () => {
+      try {
+        this.validateReference(source)
+        combined.throwIfAborted()
+        const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
+        const configuration = this.configuration(input)
+        const instructions = sessionInstructions(input)
+        await this.bindEnvironment(input.environment, combined)
+        await this.ready(combined)
+        await this.assertConfiguration(configuration, directory, combined)
+        const response = object(await this.mutate(withDirectory(`/session/${encodeURIComponent(source.nativeSessionId)}/fork`, directory), {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+        }, combined, true, 'OPENCODE_SESSION_NOT_FOUND'))
+        if (typeof response.id !== 'string' || !response.id || response.id === source.nativeSessionId) {
+          throw new OpenCodeNativeDeliveryError('OPENCODE_SESSION_ID_MISSING', 'Session fork may have succeeded but did not return a new native identity.', 'uncertain')
+        }
+        // A fork copies history, not the permission ruleset. Apply the accepted policy explicitly, then verify it.
+        await this.mutate(withDirectory(`/session/${encodeURIComponent(response.id)}`, directory), {
+          method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ permission: nativePolicy(configuration) }),
+        }, combined)
+        const native = object(await this.json(`/session/${encodeURIComponent(response.id)}`, directory, combined))
+        this.verifyAttachedSession(native, response.id, directory, configuration)
+        await this.applyMcpControls(configuration, directory, combined)
+        this.sessions.set(response.id, newState(directory, configuration, instructions))
+        this.restartClosures.delete(response.id)
+        return NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_OPENCODE_VERSION, nativeSessionId: response.id })
       } catch (error) { return this.cleanupFailedSetup(error) }
     })
   }
@@ -225,6 +272,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         }
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
         const configuration = this.configuration(input)
+        const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
         await this.assertConfiguration(configuration, directory, combined)
@@ -232,7 +280,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
         await this.applyMcpControls(configuration, directory, combined)
         combined.throwIfAborted()
-        const state = newState(directory, configuration)
+        const state = newState(directory, configuration, instructions)
         if (input.correlationId) state.recoveryCorrelationId = input.correlationId
         this.sessions.set(session.nativeSessionId, state)
         this.restartClosures.delete(session.nativeSessionId)
@@ -270,18 +318,19 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const root = await this.message(session.nativeSessionId, messageID, state.directory, signal)
         if (state.turn?.correlationId === correlationId) {
           turn = state.turn
-          if (prompt !== undefined && turn.promptHash && turn.promptHash !== digest(prompt)) {
+          if (prompt !== undefined && turn.promptHash && turn.promptHash !== turnDigest(prompt, state.instructions)) {
             throw new HarnessExecutionError('OPENCODE_CORRELATION_CONFLICT', 'The correlation ID was already used for a different prompt.')
           }
         } else {
           if (!root && prompt === undefined) {
             throw new HarnessExecutionError('OPENCODE_TURN_IDENTITY_MISSING', 'The requested native turn identity could not be recovered; no prompt was replayed.')
           }
-          if (root && prompt !== undefined && root.parts.filter((part) => part.type === 'text' && part.ignored !== true).map((part) => part.text).join('') !== prompt) {
+          if (root && prompt !== undefined && (root.parts.filter((part) => part.type === 'text' && part.ignored !== true).map((part) => part.text).join('') !== prompt
+            || (root.info.system ?? undefined) !== state.instructions?.text)) {
             throw new HarnessExecutionError('OPENCODE_CORRELATION_CONFLICT', 'The persisted correlation belongs to a different prompt.')
           }
           turn = {
-            correlationId, messageID, promptHash: prompt === undefined ? undefined : digest(prompt),
+            correlationId, messageID, promptHash: prompt === undefined ? undefined : turnDigest(prompt, state.instructions),
             submitted: !!root, observing: false, generation: this.generation, submittedAt: 0,
             idleObserved: false, scopedError: undefined, terminalResult: undefined,
           }
@@ -309,6 +358,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             body: JSON.stringify({ messageID, model: { providerID, modelID: model.join('/') },
               ...(state.configuration.variant ? { variant: state.configuration.variant } : {}),
               agent: state.configuration.nativeAgent, parts: [{ type: 'text', text: prompt }],
+              ...(state.instructions ? { system: state.instructions.text } : {}),
             }),
           }, signal)
           await onSubmitted?.(messageID)
@@ -820,6 +870,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   restartForCredential(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void> {
     const combined = this.signal(signal)
     return this.exclusive(async () => {
+      if (this.options.appMcpAccess === 'none' && Object.keys(environment.variables).length) {
+        throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
+      }
       if (environment.agentId !== this.options.ownerAgentId) throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The replacement credential belongs to another Agent.')
       if ([...this.sessions.values()].some((state) => state.turn && !state.turn.terminalResult)) {
         throw new HarnessExecutionError('OPENCODE_SERVER_RESTART_BUSY', 'Credential renewal requires all owned turns to be reconciled idle.')
@@ -843,6 +896,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async bindEnvironment(environment: ChildProcessEnvironment | undefined, signal: AbortSignal): Promise<void> {
+    if (this.options.appMcpAccess === 'none' && Object.keys(environment?.variables ?? {}).length) {
+      throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
+    }
     // An explicitly configured owner-scoped controller is already a validated binding.
     if (!environment && this.boundEnvironmentFingerprint && this.options.server.credentialEnvironmentFingerprint === this.boundEnvironmentFingerprint) return
     const selected = environment ?? { agentId: this.options.ownerAgentId, variables: {} }
@@ -906,6 +962,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async assertConfiguration(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<unknown> {
+    await this.assertChatMcpDisabled(directory, signal)
     if (this.options.server instanceof ManagedOpenCodeServer && !isDeepStrictEqual(configuration.advanced, this.options.server.advancedConfiguration)) {
       throw new HarnessExecutionError('OPENCODE_SERVER_CONFIGURATION_MISMATCH', 'Process-level Advanced settings differ from the pinned session configuration.')
     }
@@ -923,10 +980,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async applyMcpControls(configuration: OpenCodeHarnessConfiguration, directory: string, signal: AbortSignal): Promise<void> {
+    await this.assertChatMcpDisabled(directory, signal)
     const controls = configuration.advanced?.mcp.serverEnabled ?? {}
     if (!Object.keys(controls).length) return
     const configured = object(object(await this.json('/config', directory, signal)).mcp)
     for (const [name, enabled] of Object.entries(controls)) {
+      // The accepted switch is retained, but cannot reconnect workflow tools in chat.
+      if (this.options.appMcpAccess === 'none' && name === (this.options.appMcpServerName ?? APP_MCP_SERVER_NAME)) continue
       if (!Object.hasOwn(configured, name)) throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', `MCP server '${name}' is not in resolved configuration.`)
       const before = object(object(await this.json('/mcp', directory, signal))[name]).status
       const expected = enabled ? 'connected' : 'disabled'
@@ -934,6 +994,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const after = object(object(await this.json('/mcp', directory, signal))[name]).status
       if (after !== expected) throw new HarnessExecutionError('OPENCODE_MCP_CONTROL_NOT_APPLIED', `MCP server '${name}' did not reach the accepted ${expected} state.`)
     }
+  }
+
+  private async assertChatMcpDisabled(directory: string, signal: AbortSignal): Promise<void> {
+    if (this.options.appMcpAccess !== 'none') return
+    assertOpenCodeChatMcpDisabled(await this.json('/config', directory, signal), await this.json('/mcp', directory, signal),
+      this.options.appMcpServerName ?? APP_MCP_SERVER_NAME)
   }
 
   private verifyAttachedSession(native: JsonObject, id: string, directory: string, configuration: OpenCodeHarnessConfiguration): void {
@@ -1083,7 +1149,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return response.status === 204 ? undefined : this.sanitize(await readJson(response))
   }
 
-  private async mutate(path: string, init: RequestInit, signal: AbortSignal, requireReady = true): Promise<unknown> {
+  private async mutate(path: string, init: RequestInit, signal: AbortSignal, requireReady = true, notFoundCode?: string): Promise<unknown> {
     if (signal.aborted) throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_NOT_DISPATCHED', 'The native mutation was canceled before dispatch.', 'definite')
     let response: Response
     try { response = await this.options.server.request(path, init, signal, requireReady ? this.readyGeneration : this.generation) }
@@ -1091,7 +1157,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (error instanceof OpenCodeNativeDeliveryError) throw error
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native mutation may have been accepted before the connection failed.', 'uncertain', { cause: error })
     }
-    if (!response.ok) throw await responseError(response, 'OPENCODE_NATIVE_DELIVERY_REJECTED', response.status >= 500 ? 'uncertain' : 'definite')
+    if (!response.ok) throw await responseError(response, response.status === 404 && notFoundCode ? notFoundCode : 'OPENCODE_NATIVE_DELIVERY_REJECTED',
+      response.status >= 500 ? 'uncertain' : 'definite')
     try { return response.status === 204 ? undefined : this.sanitize(await readJson(response)) }
     catch (error) { throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native mutation was accepted but its response body could not be read.', 'uncertain', { cause: error }) }
   }
@@ -1191,8 +1258,16 @@ function historyWithOwnedTerminal(history: NativeHistory, turn: OwnedTurn, gener
   }
 }
 
-function newState(directory: string, configuration: OpenCodeHarnessConfiguration): SessionState {
-  return { connectionId: randomUUID(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
+/** Resolved before any native side effect, so invalid pinned instructions fail before task work. */
+function sessionInstructions(input: NativeSessionStart): AgentInstructionBundle | undefined {
+  return agentInstructionBundle(input.kind === 'operator' ? input.configuration : input.request.configuration)
+}
+/** A reused correlation must match both task text and the accepted instruction identity. */
+function turnDigest(prompt: string, instructions: AgentInstructionBundle | undefined): string {
+  return digest(`${instructions?.hash ?? 'none'}\n${prompt}`)
+}
+function newState(directory: string, configuration: OpenCodeHarnessConfiguration, instructions: AgentInstructionBundle | undefined): SessionState {
+  return { connectionId: randomUUID(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, instructions, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
     partTypes: new Map(), ownedIds: new Map(), sequence: 0, turn: undefined }
 }
 function withDirectory(path: string, directory: string): string {

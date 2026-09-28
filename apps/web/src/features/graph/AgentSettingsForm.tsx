@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   CodexSessionCompatibilitySchema, DEFAULT_HARNESS_DEFAULTS, legacyEffortForHarness,
   validateHarnessWorkflowCompatibility, withAdvancedDefaults,
-  type Agent, type ApprovalHandler, type GraphqlToolOverride, type HarnessDefaults, type WorkflowExecutionPolicy,
+  type Agent, type ApprovalHandler, type AssignedSkill, type GraphqlToolOverride, type HarnessDefaults, type WorkflowExecutionPolicy,
 } from '@graphql/contracts'
 
 import { Alert, Button, Icon, IconButton, Select, Textarea, TextField } from '../../shared/ui/nocturne'
@@ -16,6 +16,7 @@ import { HarnessBasicFields } from '../settings/HarnessBasicFields'
 import { createHarnessEditor, prepareHarnessEditor, switchHarnessEditor } from '../settings/harnessEditor'
 import { FieldValidationError, fieldMessage, focusFirstInvalid, issuesAt, validationIssues, type FieldIssue } from '../settings/fieldValidation'
 import { GraphqlToolsFields } from './GraphqlToolsFields'
+import { AgentSkillsField } from '../skills/AgentSkillsField'
 import './agentSettingsPanel.css'
 
 export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
@@ -45,6 +46,8 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
   const [localPrompt, setLocalPrompt] = useState(initialPrompt ?? '')
   const [localGraphqlTools, setLocalGraphqlTools] = useState<NonNullable<AgentForm['graphqlTools']>>(() => ({
     ...(agent.graphqlTools ? { defaults: agent.graphqlTools } : {}), ...(nodeGraphqlTools ? { override: nodeGraphqlTools } : {}) }))
+  const [localInstructions, setLocalInstructions] = useState(agent.prompt?.system ?? '')
+  const [localSkills, setLocalSkills] = useState<AssignedSkill[]>(agent.assignedSkills ?? [])
   const [error, setError] = useState<string>()
   const [issues, setIssues] = useState<FieldIssue[]>([])
   const [view, setView] = useState<'general' | 'advanced'>('general')
@@ -59,20 +62,24 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
   const retained = retainedForm && sameWorkflowValue(JSON.parse(retainedForm.base), JSON.parse(base)) ? retainedForm : undefined
   const name = retained?.name ?? localName, prompt = retained?.prompt ?? localPrompt, editor = retained?.editor ?? localEditor
   const graphqlTools = retained?.graphqlTools ?? localGraphqlTools
-  const changeForm = (patch: Partial<AgentForm>) => onFormChange?.({ base, name, prompt, editor, graphqlTools, ...patch })
+  const instructions = retained?.instructions ?? localInstructions, skills = retained?.skills ?? localSkills
+  const changeForm = (patch: Partial<AgentForm>) => onFormChange?.({ base, name, prompt, editor, graphqlTools, instructions, skills, ...patch })
   const setName = (value: string) => { if (onFormChange) changeForm({ name: value }); else setLocalName(value) }
   const setPrompt = (value: string) => { if (onFormChange) changeForm({ prompt: value }); else setLocalPrompt(value) }
   const setGraphqlTools = (value: NonNullable<AgentForm['graphqlTools']>) => { if (onFormChange) changeForm({ graphqlTools: value }); else setLocalGraphqlTools(value) }
+  const setInstructions = (value: string) => { if (onFormChange) changeForm({ instructions: value }); else setLocalInstructions(value) }
+  const setSkills = (value: AssignedSkill[]) => { if (onFormChange) changeForm({ skills: value }); else setLocalSkills(value) }
   const setEditor = (update: typeof editor | ((current: typeof editor) => typeof editor)) => {
     const value = typeof update === 'function' ? update(editor) : update
     if (onFormChange) changeForm({ editor: value }); else setLocalEditor(value)
   }
   const initialSnapshot = useRef<string | undefined>(undefined)
-  if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor: localEditor, graphqlTools: localGraphqlTools })
+  if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor: localEditor, graphqlTools: localGraphqlTools,
+    instructions: agent.prompt?.system ?? '', skills: agent.assignedSkills ?? [] })
   const defaultsQuery = useHarnessDefaultsQuery({ enabled: !creationDefaults })
   const providerDefaults = creationDefaults ?? defaultsQuery.data?.defaults
   const configuration = withAdvancedDefaults(editor.configuration)
-  const currentSnapshot = JSON.stringify({ name, prompt, editor, graphqlTools })
+  const currentSnapshot = JSON.stringify({ name, prompt, editor, graphqlTools, instructions, skills })
   const isDirty = currentSnapshot !== initialSnapshot.current
   const nameError = fieldMessage(issues, 'name')
   const clearErrors = () => { setError(undefined); setIssues([]) }
@@ -102,6 +109,7 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
         effort: legacyEffortForHarness(nextConfiguration), fastMode: nextConfiguration.harness === 'codex' ? nextConfiguration.serviceTier === 'priority' : undefined,
         harnessConfiguration: nextConfiguration,
         ...(graphqlTools.defaults ? { graphqlTools: graphqlTools.defaults } : {}),
+        prompt: instructions.trim() ? { system: instructions.trim() } : {}, assignedSkills: skills,
       }, prompt.trim() || undefined, executionPolicy, graphqlTools.override)
     } catch (failure) {
       initialSnapshot.current = previousSnapshot
@@ -142,8 +150,12 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
       <div className={`agent-settings-row agent-settings-row-runtime agent-settings-row-${configuration.harness}`}>
         <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration} />
       </div>
+      {workspaceId ? <AgentSkillsField workspaceId={workspaceId} value={skills} onChange={(next) => { setSkills(next); clearErrors() }} /> : null}
     </div> : <div className="agent-settings-advanced-view">
-      <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
+      <Textarea label="Agent instructions" className="agent-settings-prompt" rows={4} value={instructions}
+        hint="Given to this Agent before its skills on every turn. Not part of the task." onChange={(event) => { setInstructions(event.target.value); clearErrors() }} />
+      <Textarea label="Initial prompt" aria-label="Initial prompt" className="agent-settings-prompt" rows={3} value={prompt}
+        hint="The task this node starts with." onChange={(event) => { setPrompt(event.target.value); clearErrors() }} />
       <GraphqlToolsFields role={agent.productRole === 'orchestrator' ? 'orchestrator' : 'coder'} defaults={graphqlTools.defaults} override={graphqlTools.override}
         onChange={(defaults, override) => { setGraphqlTools({ ...(defaults ? { defaults } : {}), ...(override ? { override } : {}) }); clearErrors() }} />
       <HarnessConfigurationFields editor={editor} issues={issuesAt(issues, ['harness'])} onChange={(next) => { setEditor(next); clearErrors() }} allowHarnessChange={false} harnessDefaults={providerDefaults} workspaceId={workspaceId} routedApproval={Boolean(workflowApprovalHandler)} allowAutoReview={workflowApprovalHandler === 'orchestrator'} compact advancedOnly />

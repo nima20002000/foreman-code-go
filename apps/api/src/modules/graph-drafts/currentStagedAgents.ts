@@ -5,9 +5,8 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { type CurrentEditSaveInput, sameWorkflowValue } from '@graphql/contracts/wave25'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-import { configurationInput, lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
+import { configurationInput, lockAgentConfigurations, pinnedConfigurationContent } from '../workspaces/agentConfiguration.js'
 import { authorizeAgentConfiguration } from '../workspaces/operatorAgents.js'
-import { resolveAssignedSkills } from '../skills/catalog.js'
 import { readImmutableAgentConfiguration } from '../workflows/immutableRead.js'
 
 export function authorizeStagedAgents(principal: ManagementPrincipal, input: Pick<CurrentEditSaveInput, 'workspaceId' | 'stagedAgents'>) {
@@ -49,8 +48,7 @@ export async function prepareCurrentStagedAgents(client: pg.PoolClient, principa
     if (row && !current) throw new DomainError('AGENT_CONFIGURATION_CONFLICT', 'The original immutable Agent configuration is unavailable.', 409)
     const configInput = configurationInput(input.workspaceId, item.agent, current)
     authorizeAgentConfiguration(principal, input.workspaceId, configInput.harness, configInput.assignedSkills)
-    const resolvedSkills = await resolveAssignedSkills(client, input.workspaceId, configInput.assignedSkills)
-    const content = { ...configInput, ...(resolvedSkills.length ? { resolvedSkills } : {}) }
+    const content = await pinnedConfigurationContent(client, input.workspaceId, configInput, current)
     const id = `staged-config-${createHash('sha256').update(`${input.commandId}:${item.agent.id}`).digest('hex')}`
     const now = new Date().toISOString()
     const version = Number((await client.query<{ version: string }>('select coalesce(max(version),0)+1 as version from agent_configuration_versions where agent_id=$1', [item.agent.id])).rows[0]!.version)

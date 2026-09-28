@@ -20,6 +20,10 @@
       "types": "./dist/operatorChat.d.ts",
       "import": "./dist/operatorChat.js"
     },
+    "./agent-chat": {
+      "types": "./dist/agentChat.d.ts",
+      "import": "./dist/agentChat.js"
+    },
     "./wave25": {
       "types": "./dist/wave25/index.d.ts",
       "import": "./dist/wave25/index.js"
@@ -38,11 +42,11 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/heavy-job.mjs --build contracts -- tsc -p tsconfig.build.json",
     "dev": "tsc -p tsconfig.build.json --watch",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint . --max-warnings 0"
+    "test": "node ../../scripts/heavy-job.mjs -- vitest run",
+    "typecheck": "node ../../scripts/heavy-job.mjs -- tsc --noEmit",
+    "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0"
   },
   "dependencies": {
     "zod": "4.6.3"

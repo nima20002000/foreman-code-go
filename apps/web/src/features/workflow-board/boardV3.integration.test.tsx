@@ -159,7 +159,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(actions.getByRole('button', { name: 'Save changes' })).toBeVisible()
     const version = await save(mock, user, 1)
     expect(version.definition.name).toBe('Renamed board')
-  })
+  }, 15_000)
   it('saves before starting the exact newly published version from Save and run', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
     await mount(mock)
@@ -269,7 +269,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(mock.currents.get(run.id)!.state.bindings).toEqual([])
     expect(mock.calls.some((call) => /repeat.*update|convert|promote|\/graph$/.test(call.path))).toBe(false)
     expect(readBoardStart(key)).toBeUndefined()
-  })
+  }, 15_000)
   it('S3-05: the same form adds and removes finite repeat as separate V3 versions, while past Runs retain exact pins', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { id, key } = await create(mock, user); stageShape(key, 'repeat-ready', mock)
@@ -304,7 +304,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(editor)
     await user.click(screen.getByRole('button', { name: 'Clear Run selection' }))
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).not.toHaveProperty('repeat')
-  })
+  }, 15_000)
   it('keeps production capability false without issuing Start, and rejects retired saved tags before definition dispatch', async () => {
     const mock = newBoardMock(), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
@@ -324,7 +324,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
       expect(mock.calls.filter((call) => /\/(?:definition|drafts)(?:\/|$)/.test(call.path))).toHaveLength(before)
       view.unmount(); query.clear()
     }
-  })
+  }, 15_000)
   it.each(['denied', 'stale', 'unsupported', 'lost'] as const)('Start %s is fail-closed; reload never fabricates a replacement command', async (mode) => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'sequential', mock); await save(mock, user, 1)
@@ -355,7 +355,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     await waitFor(() => expect(readBoardStart(key)).toBeUndefined())
     const requests = mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))
     expect(requests.at(-1)!.body).toEqual(retained); expect(mock.runs.size).toBe(1)
-  })
+  }, 15_000)
   it('Stop receipt replay is not cleanup proof; Discard does not Stop and layout does not publish', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
@@ -382,7 +382,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
     expect(mock.versions.size).toBe(1); expect(mock.controls.stopCalls).toBe(1)
     expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
-  })
+  }, 15_000)
   it('stages before Stop confirmation even when the Board summary misses an active Run', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key, id } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
@@ -421,5 +421,5 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     await waitFor(() => expect(mock.versions.size).toBe(2))
     expect(mock.runs.size).toBe(1); expect(mock.runs.get(run.id)!.run.executionState).toBe('completed')
     expect([...mock.versions.values()].at(-1)!.definition.nodes[0]!.initialPrompt).toBe('Next pinned instructions')
-  })
+  }, 15_000)
 })

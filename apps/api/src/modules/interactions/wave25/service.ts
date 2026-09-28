@@ -8,6 +8,8 @@ import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, type NativeDel
 import type { Wave25InteractionRepository } from './repository.js'
 import { fail } from './context.js'
 import { SingleWriterSessionManager } from '../sessionWriter.js'
+import { canUserInteract } from '../../access/userPolicy.js'
+import { requireRespondableInteraction } from '../../access/appPolicy.js'
 
 /** Consumer must call consumeApprovalGraphResume in the existing Run/checkpoint
  * transaction. A callback that starts native work or returns void without that
@@ -61,6 +63,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
     attached = await deps.nativeRuntime.attachInteraction(current, signal)
     if (attached.manager.harness !== current.harness || attached.session.harness !== current.harness
       || attached.session.nativeSessionId !== current.nativeSessionId || attached.session.providerVersion !== current.providerVersion) return fail('APPROVAL_SESSION_MISMATCH')
+    await deps.nativeRuntime.validateInteraction(current, signal)
   } catch {
     return deps.repository.delivery.finish(claim, { state: 'failed', error: 'APPROVAL_NATIVE_QUALIFICATION_FAILED' })
   }
@@ -111,6 +114,13 @@ export async function respondToApproval(deps: ApprovalRuntimeDependencies, respo
   }
   const option = current.responseOptions.find((item) => item.optionId === input.optionId)
   if (!option) return fail('INTERACTION_OPTION_INVALID')
+  if (current.status === 'pending') {
+    if (responder.kind === 'user') {
+      if (!canUserInteract(responder.principal, 'interactions:respond', current)) return fail('INTERACTION_ACCESS_DENIED')
+    } else requireRespondableInteraction(responder.principal, current)
+    if (!deps.nativeRuntime.validateInteraction) return fail('APPROVAL_NATIVE_QUALIFICATION_REQUIRED')
+    await deps.nativeRuntime.validateInteraction(current)
+  }
   const decided = await deps.repository.decide({ id: current.id, optionId: input.optionId, expectedRevision: input.expectedRevision,
     principal: responder.principal, nativeResponse: { optionId: option.optionId, semantic: option.semantic } })
   const delivered = await deliverApproval(deps, current.id)

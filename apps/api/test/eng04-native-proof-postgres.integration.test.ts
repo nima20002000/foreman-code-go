@@ -29,7 +29,7 @@ import { agent3Database, graphHead, postgresEnabled, seedAgent3 } from './helper
 // This is NOT production HTTP Start/runtime/native verification. No native
 // source, closure, approval ack, untyped graph fact or fake service is inserted.
 // Positive native ingestion/settlement remain intentionally untested/blocked.
-const enabled = postgresEnabled && process.env.RUN_ENG04_NATIVE_PROOF_POSTGRES_TESTS === '1'
+const enabled = postgresEnabled
 describe.skipIf(!enabled)('ENG04 native proof accepted v3 PostgreSQL guard slice', () => {
   let db: Awaited<ReturnType<typeof agent3Database>>
   const apps: FastifyInstance[] = [], owners = new Set<RunOwnership>()

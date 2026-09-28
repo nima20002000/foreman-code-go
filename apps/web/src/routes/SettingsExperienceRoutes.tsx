@@ -1,10 +1,12 @@
-import { Link, Navigate, useNavigate, useSearch } from '@tanstack/react-router'
+import { Link, Navigate, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
 import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSettings'
 import { WorkspaceDefaultsSettings } from '../features/settings/WorkspaceDefaultsSettings'
 import { AccountAccess } from '../features/auth/AccountAccess'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
+import { SkillsLibrary } from '../features/skills/SkillsLibrary'
+import { NewSkillPage, SkillDetailPage } from '../features/skills/SkillPages'
 import '../features/settings/settingsExperience.css'
 
 function SettingsShell({ children, back }: { children: ReactNode; back?: ReactNode }) {
@@ -34,6 +36,25 @@ export function HarnessSettingsRouteEntry() {
   return <SettingsShell back={search.harness ? <Link to="/settings/harnesses" search={{}} className="settings-back-link" aria-label="Back to harnesses"><span aria-hidden="true">←</span> Harnesses</Link> : undefined}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.harness === 'opencode' && search.section === 'plugins' ? 'model' : search.section ?? 'model'}
     onSelectHarness={(harness) => void navigate({ search: harness ? { harness, section: 'model' } : {} })}
     onSectionChange={(section) => void navigate({ search: { ...search, section } })} /></SettingsShell>
+}
+const skillsBack = <Link to="/settings/skills" className="settings-back-link" aria-label="Back to skills"><span aria-hidden="true">←</span> Skills</Link>
+export function SkillsSettingsRouteEntry() {
+  const search = useSearch({ from: '/settings/skills' })
+  const navigate = useNavigate({ from: '/settings/skills' })
+  return <SettingsShell><SkillsLibrary search={search} onSearchChange={(next) => void navigate({ search: next, replace: true })} /></SettingsShell>
+}
+export function NewSkillRouteEntry() {
+  const search = useSearch({ from: '/settings/skills/new' })
+  const navigate = useNavigate()
+  return <SettingsShell back={skillsBack}><NewSkillPage workspaceId={search.workspace}
+    onSaved={(result) => void navigate({ to: '/settings/skills/$workspaceId/$skillId', params: { workspaceId: result.skill.workspaceId, skillId: result.skill.skillId }, replace: true })}
+    onCancel={() => void navigate({ to: '/settings/skills', search: search.workspace ? { workspace: search.workspace } : {} })} /></SettingsShell>
+}
+export function SkillDetailRouteEntry() {
+  const params = useParams({ from: '/settings/skills/$workspaceId/$skillId' })
+  const navigate = useNavigate()
+  return <SettingsShell back={skillsBack}><SkillDetailPage key={`${params.workspaceId}:${params.skillId}`} workspaceId={params.workspaceId} skillId={params.skillId}
+    onCancel={() => void navigate({ to: '/settings/skills' })} /></SettingsShell>
 }
 export function WorkspaceDefaultsSettingsRouteEntry() {
   return <SettingsShell><WorkspaceDefaultsSettings /></SettingsShell>

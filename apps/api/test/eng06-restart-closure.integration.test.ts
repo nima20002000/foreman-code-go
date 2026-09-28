@@ -11,11 +11,11 @@ import { recoveryExecution, recoveryIdentity } from './helpers/eng06Recovery.tes
  * This is intentionally not a public Run seeder or a fake native terminal/G1
  * receipt. Only the physical registry port is synthetic; no provider is started.
  * Full canonical engine, HTTP/MCP and real-provider restart tests remain separate. */
-describe.skipIf(process.env.RUN_WAVE25_POSTGRES_TESTS !== '1')('ENG06-A PostgreSQL recovery receipt guards', () => {
+describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery receipt guards', () => {
   let admin: pg.Pool, pool: pg.Pool, schema: string
   beforeAll(async () => {
-    const url = process.env.WAVE25_TEST_DATABASE_URL
-    if (!url) throw new Error('WAVE25_TEST_DATABASE_URL is required')
+    const url = process.env.TEST_DATABASE_URL
+    if (!url) throw new Error('TEST_DATABASE_URL is required')
     const parsed = new URL(url)
     if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {
       throw new Error('Use a disposable loopback PostgreSQL database explicitly named for tests')

@@ -11,13 +11,14 @@ import {
   type NativeSessionReference, type PendingNativeInteraction,
 } from '@graphql/contracts'
 
-import { HarnessExecutionError } from './errors.js'
+import { HarnessExecutionError, NativeTurnNotActiveError } from './errors.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { nativeQualification } from './nativeQualification.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
-import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from './port.js'
+import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
+import { agentInstructionBundle } from '../skills/instructions.js'
 import {
   assertCodexUnchanged, canonical, isQualifiedCodexVersion, qualifyCodex, QUALIFIED_CODEX_VERSION,
   QUALIFIED_CODEX_SCHEMA_SHA256, type QualifiedCodex,
@@ -99,6 +100,7 @@ interface Prepared {
   scopedCredentialVariable: string | undefined
   environment: NodeJS.ProcessEnv
   qualified: QualifiedCodex
+  disabledAppMcpServerName?: string
 }
 interface Creation {
   identity: string
@@ -149,8 +151,13 @@ function binding(input: NativeSessionStart): string {
     : canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
       runId: input.request.runId, workflowNodeId: input.request.workflowNodeId, cwd: input.request.workingDirectory })
 }
+/** App-owned developer instructions: the accepted configuration's pinned bundle, never the live catalog.
+ * Native base instructions stay Codex's own. Earlier accepted configurations keep their system prompt only. */
 function instructions(input: NativeSessionStart): string | null {
-  return input.kind === 'operator' ? null : input.request.configuration.prompt.system ?? null
+  if (input.kind === 'operator') return agentInstructionBundle(input.configuration)?.text ?? null
+  const configuration = input.request.configuration
+  if (configuration.instructionDelivery !== 'native-v1') return configuration.prompt.system ?? null
+  return agentInstructionBundle(configuration)?.text ?? null
 }
 function credentialIdentity(input: NativeSessionStart): string {
   return canonical(input.environment ?? null)
@@ -210,7 +217,7 @@ function configOverrides(value: CodexHarnessConfiguration): JsonObject {
   }
   return config
 }
-function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input'>): JsonObject {
+function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledAppMcpServerName'>): JsonObject {
   const value = prepared.harnessConfiguration
   const draft = advanced(value)
   return {
@@ -221,8 +228,11 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
     runtimeWorkspaceRoots: [prepared.workingDirectory, ...draft.additionalWritableDirectories],
     approvalPolicy: draft.approvalPolicy, approvalsReviewer: draft.approvalsReviewer,
     sandbox: value.sandbox, config: { ...configOverrides(value),
+      ...(prepared.disabledAppMcpServerName ? { [`mcp_servers.${prepared.disabledAppMcpServerName}.enabled`]: false } : {}),
       ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
-    }, developerInstructions: instructions(prepared.input),
+    },
+    // A resumed or forked thread already carries its accepted developer instructions.
+    ...(prepared.input.kind !== 'operator' && prepared.input.instructionsDelivered ? {} : { developerInstructions: instructions(prepared.input) }),
   }
 }
 function sameSet(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
@@ -278,6 +288,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly expectedVersion?: string,
     private readonly appMcpServerName = APP_MCP_SERVER_NAME,
     private readonly processRecovery?: NativeProcessRecovery,
+    /** Chat disables only its App MCP entry with a verified process-local override. */
+    private readonly appMcpAccess: 'scoped' | 'none' = 'scoped',
   ) {}
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
@@ -528,6 +540,111 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     } finally {
       signal?.removeEventListener('abort', abort)
       runtime.streamActive = false
+    }
+  }
+
+  async steerTurn(session: NativeSessionReference, input: NativeSteerInput, signal?: AbortSignal): Promise<{ nativeTurnId: string }> {
+    const runtime = this.requireRuntime(session)
+    signal?.throwIfAborted()
+    if (runtime.closed || runtime.disposed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before steering.')
+    if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Steering requires a stable correlation ID.')
+    if (!runtime.activeTurnId || runtime.terminalResult || runtime.activeTurnId !== input.expectedTurnId) throw new NativeTurnNotActiveError()
+    let result: unknown
+    try {
+      result = await runtime.transport.request('turn/steer', {
+        threadId: session.nativeSessionId, expectedTurnId: input.expectedTurnId, clientUserMessageId: input.clientCorrelationId,
+        input: [{ type: 'text', text: input.prompt, text_elements: [] }],
+      }, signal)
+    } catch (error) {
+      // Codex enforces expectedTurnId. A definite RPC rejection accepted no input.
+      if (error instanceof CodexRpcError && !error.uncertain) throw new NativeTurnNotActiveError(`Codex rejected the steer: ${error.nativeMessage ?? error.message}`)
+      throw error
+    }
+    const turnId = object(result, 'CODEX_TURN_STEER_INVALID').turnId
+    if (!text(turnId)) throw new HarnessExecutionError('CODEX_TURN_STEER_INVALID', 'Codex accepted the steer without a turn identity.')
+    this.record(runtime, 'turn.steered', { turnId, correlationId: input.clientCorrelationId })
+    return { nativeTurnId: String(turnId) }
+  }
+
+  /** Inspect persisted user-message identities without synchronizing/retargeting the live owner. */
+  async reconcileSteers(session: NativeSessionReference,
+    inputs: readonly Pick<NativeSteerInput, 'clientCorrelationId' | 'expectedTurnId'>[],
+    signal?: AbortSignal): Promise<readonly NativeSteerReceipt[]> {
+    signal = AbortSignal.any([this.shutdownController.signal, signal ?? AbortSignal.timeout(RESPONSE_DEADLINE_MS)])
+    return this.exclusive(session.nativeSessionId, async () => {
+      signal.throwIfAborted()
+      const runtime = this.requireRuntime(session)
+      if (!inputs.length) return []
+      if (runtime.closed) await this.restart(runtime, signal)
+      const response = object(await runtime.transport.request('thread/read', {
+        threadId: session.nativeSessionId, includeTurns: false,
+      }, signal), 'CODEX_THREAD_READ_INVALID')
+      if (object(response.thread, 'CODEX_THREAD_READ_INVALID').id !== session.nativeSessionId) {
+        throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Steer reconciliation returned another thread.')
+      }
+      const wanted = new Map(inputs.map((input) => [input.clientCorrelationId, input.expectedTurnId]))
+      const found = new Map<string, NativeSteerReceipt>()
+      const seen = new Map<string, string>()
+      const cursors = new Set<string>()
+      let cursor: string | undefined
+      do {
+        signal.throwIfAborted()
+        const page = object(await runtime.transport.request('thread/turns/list', {
+          threadId: session.nativeSessionId, limit: 50, sortDirection: 'desc', itemsView: 'full',
+          ...(cursor ? { cursor } : {}),
+        }, signal), 'CODEX_THREAD_READ_INVALID')
+        if (!Array.isArray(page.data)) throw new HarnessExecutionError('CODEX_THREAD_READ_INVALID', 'Codex returned an invalid turn page.')
+        for (const turn of page.data.filter(isObject)) {
+          const nativeTurnId = text(turn.id)
+          if (!nativeTurnId || turn.itemsView !== 'full' || !Array.isArray(turn.items)) continue
+          for (const item of turn.items.filter(isObject)) {
+            const correlationId = text(item.id)
+            if (item.type !== 'userMessage' || !correlationId || !wanted.has(correlationId)) continue
+            if (seen.has(correlationId) && seen.get(correlationId) !== nativeTurnId) {
+              throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this steering correlation.')
+            }
+            seen.set(correlationId, nativeTurnId)
+            if (wanted.get(correlationId) === nativeTurnId) {
+              found.set(correlationId, { nativeSessionId: session.nativeSessionId, nativeTurnId, correlationId })
+            }
+          }
+        }
+        cursor = text(page.nextCursor)
+        if (cursor && cursors.has(cursor)) throw new HarnessExecutionError('CODEX_THREAD_READ_INVALID', 'Codex repeated a history cursor.')
+        if (cursor) cursors.add(cursor)
+      } while (cursor && found.size < wanted.size)
+      return [...found.values()]
+    })
+  }
+
+  /** `thread/fork` copies the source history into a new thread; the source thread is never written. */
+  async forkSession(source: NativeSessionReference, value: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    this.assertSessionVersion(source)
+    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    const input = structuredClone(value)
+    if (input.kind !== 'operator') input.instructionsDelivered = true
+    const prepared = await this.prepareInput(input, signal)
+    if (prepared.qualified.providerVersion !== source.providerVersion) {
+      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The source session belongs to another Codex release.')
+    }
+    const candidate = await this.transport(prepared, 0, signal)
+    try {
+      const response = object(await candidate.transport.request('thread/fork', {
+        ...threadParameters(prepared), threadId: source.nativeSessionId, excludeTurns: true,
+        ephemeral: advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral',
+      }, signal), 'CODEX_THREAD_FORK_INVALID')
+      const thread = this.validateThreadResponse(prepared, response)
+      if (thread.id === source.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned the source thread instead of a fork.')
+      const session = NativeSessionReferenceSchema.parse({ harness: 'codex', providerVersion: prepared.qualified.providerVersion, nativeSessionId: thread.id })
+      if (this.runtimes.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_COLLISION', 'Codex returned an already-owned native session identity.')
+      const runtime = this.runtime(prepared, session, candidate.transport)
+      await candidate.activate(runtime)
+      this.runtimes.set(session.nativeSessionId, runtime)
+      this.record(runtime, 'thread.forked', { threadId: session.nativeSessionId, sourceThreadId: source.nativeSessionId })
+      return session
+    } catch (error) {
+      await candidate.transport.close().catch(() => undefined)
+      throw error
     }
   }
 
@@ -864,22 +981,32 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal.throwIfAborted()
     const input = structuredClone(source)
     validateEnvironmentOwner(input)
+    if (this.appMcpAccess === 'none' && Object.keys(input.environment?.variables ?? {}).length) {
+      throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
+    }
     const harnessConfiguration = configuration(input)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
     const environment = safeEnvironment(input.environment)
     const qualified = await qualifyCodex(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal)
     let scopedCredentialVariable: string | undefined
+    let excludedCredentialVariable: string | undefined
+    let disabledAppMcpServerName: string | undefined
     try {
       const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal)
-      if (mcp.configured.enabled) scopedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
+      excludedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
+      if (this.appMcpAccess === 'none') disabledAppMcpServerName = this.appMcpServerName
+      else if (mcp.configured.enabled) scopedCredentialVariable = excludedCredentialVariable
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
     validateEnvironmentOwner(input, scopedCredentialVariable)
-    const scopedEnvironment = safeEnvironment(input.environment, scopedCredentialVariable ? [scopedCredentialVariable] : [])
+    const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
+    const scopedEnvironment = safeEnvironment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     await qualifyNativeCodexModel(harnessConfiguration, qualified.binary, workingDirectory, scopedEnvironment, signal)
-    return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified }
+    return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified,
+      ...(disabledAppMcpServerName ? { disabledAppMcpServerName } : {}),
+    }
   }
 
   private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv,
@@ -1024,13 +1151,29 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         disconnected = true
         if (runtime?.generation === generation && runtime.transport === transport && !runtime.disposed) this.handleDisconnect(runtime)
       },
-      undefined, this.processRecovery,
+      undefined, this.processRecovery, prepared.disabledAppMcpServerName,
     )
     // Also own cold-attachment candidates before a Runtime has been published.
     this.transports.add(transport)
     const close = transport.close.bind(transport)
     transport.close = async () => { await close(); this.transports.delete(transport) }
-    await transport.start(signal)
+    try {
+      await transport.start(signal)
+      if (this.appMcpAccess === 'none') {
+        // Read the launched process, not the unmodified on-disk CLI configuration.
+        const response = object(await transport.request('config/read', { includeLayers: false, cwd: prepared.workingDirectory }, signal))
+        const config = object(response.config, 'CODEX_APP_MCP_UNAVAILABLE')
+        const servers = config.mcp_servers === undefined ? {} : object(config.mcp_servers, 'CODEX_APP_MCP_UNAVAILABLE')
+        const entry = servers[this.appMcpServerName]
+        if ((prepared.disabledAppMcpServerName && !Object.hasOwn(servers, this.appMcpServerName))
+          || (Object.hasOwn(servers, this.appMcpServerName) && (!isObject(entry) || entry.enabled !== false))) {
+          throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'GraphQL workflow tools are not available in chat; native launch did not confirm the App MCP entry was disabled.')
+        }
+      }
+    } catch (error) {
+      await transport.close()
+      throw error
+    }
     return {
       transport,
       activate: async (value) => {

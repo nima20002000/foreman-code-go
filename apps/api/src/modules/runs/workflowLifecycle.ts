@@ -8,7 +8,7 @@ import { beforeGraphCommit, poisonGraphTransaction, withExclusiveGraphConnection
 import { graphSourceDigest } from '../run-graph/publication.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
-import { openWorkflowLifecycleLocked, workflowRunScope } from './repeatLifecycle.js'
+import { openWorkflowLifecycleLocked } from './repeatLifecycle.js'
 import { sameRepeatValue, compileRepeatLayout } from './repeatResolution.js'
 import { assertWorkflowRunSettlementLocked } from './workflowRepositoryServices.js'
 import type { RunOwnership } from './ownership.js'

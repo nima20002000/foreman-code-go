@@ -37,6 +37,8 @@ export interface WorkflowNativeSessionStart {
   nativeTurnId?: string
   request: HarnessExecutionRequest
   environment?: ChildProcessEnvironment
+  /** The native session already carries its accepted startup instructions; attach/fork never resend them. */
+  instructionsDelivered?: boolean
 }
 
 export interface OperatorNativeSessionStart {
@@ -57,6 +59,20 @@ export interface NativeTurnInput {
   clientCorrelationId: string
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
   onSubmitted?(nativeTurnId: string): Promise<void>
+}
+
+/** Input added to the exact active turn; the provider rejects it when that turn is no longer active. */
+export interface NativeSteerInput {
+  prompt: string
+  clientCorrelationId: string
+  expectedTurnId: string
+}
+
+/** Positive acceptance of one steering correlation in one exact native turn; not proof of consumption. */
+export interface NativeSteerReceipt {
+  nativeSessionId: string
+  nativeTurnId: string
+  correlationId: string
 }
 
 /** Response identity is not a model-turn correlation and must never be used to replay a prompt. */
@@ -102,6 +118,14 @@ export interface NativeHarnessSessionManager {
   /** Verify and rebind a persisted provider identity; never create a replacement session. */
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
+  /** Add input to the exact active turn. Absent when the provider has no expected-turn precondition. */
+  steerTurn?(session: NativeSessionReference, input: NativeSteerInput, signal?: AbortSignal): Promise<{ nativeTurnId: string }>
+  /** Read-only receipt lookup; must not replace the runtime's active turn/correlation or replay input. */
+  reconcileSteers?(session: NativeSessionReference,
+    inputs: readonly Pick<NativeSteerInput, 'clientCorrelationId' | 'expectedTurnId'>[],
+    signal?: AbortSignal): Promise<readonly NativeSteerReceipt[]>
+  /** New native session copying a source session's history. The source session is never modified. */
+  forkSession?(source: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
   pending(session: NativeSessionReference, signal?: AbortSignal): Promise<PendingNativeInteraction | undefined>
   respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void>
   /** Synchronously stop client-side auto replies before cleanup reads; never terminal evidence. */

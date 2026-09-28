@@ -12,7 +12,6 @@ import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import { type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { NativeHistory } from '../harnesses/port.js'
-import { nativeProjectionId } from '../run-graph/nativeProjection.js'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation } from '../harnesses/opencodeReconciliation.js'
 import { openCodeGraphReconciliation } from '../harnesses/opencodeGraphReconciliation.js'
 
@@ -36,6 +35,7 @@ export interface WorkflowContinuationProof {
 export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransactionSql, owner: RunOwnership,
   input: HarnessNativeEvent, lease?: WorkflowNativeLease, approval?: WorkflowApprovalCorrelation,
   _continuation?: WorkflowContinuationProof): Promise<void> {
+  void _continuation
   assertGraphTransaction(sql)
   owner.assertOwned()
   const found = (await sql.query<{ record: unknown }>('select record from runs where id=$1', [owner.runId])).rows[0]

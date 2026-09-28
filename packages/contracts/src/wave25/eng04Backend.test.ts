@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture } from './currentFixture.js'
-import { ExecutableRepeatWorkflowV1Schema, parseRepeatExitResultV1, RepeatWorkflowVersionV1Schema } from './repeat.js'
+import { ExecutableRepeatWorkflowV1Schema, parseRepeatExitResultV1 } from './repeat.js'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema } from './currentAuthoring.js'
 
 function fixture() {

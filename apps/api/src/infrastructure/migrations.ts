@@ -2,7 +2,7 @@ import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMig
 import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
 import { runInspectionMigration } from './runInspectionMigration.js'
 import { currentApprovalAckMigration } from './currentApprovalAckMigration.js'
-import { workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
+import { reviewCleanupEntryReceiptMigration, workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
 import { installationIdentityMigration } from './runtimeIdentity.js'
 import type pg from 'pg'
 import { currentWorkflowWriterMigration } from './currentWorkflowWriterMigration.js'
@@ -16,6 +16,9 @@ import { pr18RecoveryMigration } from './pr18RecoveryMigration.js'
 import { runLiveActivityMigration } from './runLiveActivityMigration.js'
 import { reviewFailureLifecycleMigration } from './reviewFailureLifecycleMigration.js'
 import { browserAuthMigration } from './browserAuthMigration.js'
+import { skillsLibraryMigration } from './skillsLibraryMigration.js'
+import { currentApprovalPublicationMigration } from './currentApprovalPublicationMigration.js'
+import { agentChatMigration } from './agentChatMigration.js'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
 import { pr17AuditMigration } from './pr17AuditMigration.js'
@@ -722,6 +725,10 @@ export const migrations = [
           and r.result->'executionLocation' = w.execution_location);
   ` },
   unifiedMcpMigration,
+  skillsLibraryMigration,
+  currentApprovalPublicationMigration,
+  reviewCleanupEntryReceiptMigration,
+  agentChatMigration,
   workHandoffMigration,
   workNoticeMigration,
   runActivitiesMigration,

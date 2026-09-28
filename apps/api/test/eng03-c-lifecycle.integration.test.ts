@@ -103,8 +103,12 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
     } finally { release.resolve(); await task.catch(() => undefined) }
   }, 60000)
 
-  it('recovers the exact waiting session after one sibling is accepted without another native start', async () => {
-    const f = await fixture()
+  it('closes a cold waiting sibling without replaying its accepted predecessor', async () => {
+    const f = await checkpointRuntimeFixture(2, 1, { recoverNativeProcesses: async (executionId, signal) => {
+      signal.throwIfAborted()
+      return f.provider.closedSessions.has(`native-${executionId}`)
+    } })
+    closes.push(f.close)
     await f.engine.start(f.f.run.id)
     const [first, sibling] = await f.pending()
     if (!first || !sibling) throw new Error('Expected both native waits')
@@ -115,13 +119,13 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
     await f.engine.shutdown()
     const next = f.compose()
     await next.engine.resume(f.f.run.id)
-    const pending = await next.repository.get(sibling.id)
-    if (!pending) throw new Error('Expected persisted sibling interaction')
-    await next.service.respond({ kind: 'user', principal: f.principal }, br1002Response(pending))
-    expect((await next.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
+    const resumed = await next.runs.get(f.f.run.id)
+    expect({ state: resumed?.executionState, outcome: resumed?.outcome }).toEqual({ state: 'completed', outcome: 'failed' })
+    expect(f.provider.closedSessions.has(sibling.nativeSessionId)).toBe(true)
+    expect((await next.repository.get(sibling.id))?.status).toBe('canceled')
     expect((await next.runs.getExecution(sibling.executionId!))?.nativeSessionId).toBe(exact?.nativeSessionId)
     expect((await next.runs.getExecution(first.executionId!))?.result).toEqual(accepted.result)
-    expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 2 })
+    expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 1 })
   }, 60000)
 
   it('authenticates the real launch credential and revokes it at Stop', async () => {

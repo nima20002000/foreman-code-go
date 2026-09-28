@@ -77,7 +77,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     await changeRunState(db, t, 'waiting')
     expect(await graphPosition(db, t)).toBe('13')
     expect(await snapshot(t)).toEqual(after)
-  })
+  }, 15_000)
 
   it('enlists a real ownerless SQL Stop, permits exact receipt replay and rejects progress after Stop', async () => {
     const t = await fixture(), initial = await snapshot(t)

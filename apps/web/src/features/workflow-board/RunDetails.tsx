@@ -42,6 +42,7 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
   const snapshot = canonical.isError || canonical.isPaused || canonicalDenied || runDenied ? undefined : canonical.data
   // Only a terminal/cleanup transition needs a fresh private Run read for the
   // pre-existing Stop settlement fence. Never poll execution/activity arrays.
+  const refetchRun = run.refetch
   const lastSettlement = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (!snapshot || runDenied || canonicalDenied) return
@@ -50,8 +51,8 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
     if (lastSettlement.current === marker) return
     const previous = lastSettlement.current
     lastSettlement.current = marker
-    if (terminal && previous !== undefined) void run.refetch()
-  }, [scope.runId, snapshot, runDenied, canonicalDenied, run.refetch])
+    if (terminal && previous !== undefined) void refetchRun()
+  }, [scope.runId, snapshot, runDenied, canonicalDenied, refetchRun])
   const stop = useMutation({ retry: false, mutationFn: async () => {
     if (!snapshot || canonical.isError) throw new Error('Refresh the exact selected Run before Stop. No command was sent.')
     const journal = await reserveBoardStop(scope)
@@ -71,6 +72,7 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
       await settleBoardStop(scope, journal.request)
     }
   } })
+  const { mutate: settleStop, isPending: settlementPending, isError: settlementError } = settlement
   useEffect(() => {
     // The contextual slot can render C's controls while this Board still owns
     // passive settlement. Clearing a journal sends no Stop and moves no focus.
@@ -78,10 +80,10 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
       || run.isError || canonical.isError || run.isFetching || canonical.isFetching || run.isPaused || canonical.isPaused
       || detail?.run.executionState !== 'completed' || detail.cleanupPending !== false
       || snapshot?.state.run.executionState !== 'completed' || snapshot.state.run.cleanupPending !== false
-      || settlement.isPending || settlement.isError) return
-    settlement.mutate()
+      || settlementPending || settlementError) return
+    settleStop()
   }, [outbox.journal, outbox.error, detail, snapshot, run.isError, canonical.isError, run.isFetching, canonical.isFetching,
-    run.isPaused, canonical.isPaused, settlement.isPending, settlement.isError, settlement.mutate])
+    run.isPaused, canonical.isPaused, settlementPending, settlementError, settleStop])
   const principal = !access.isError ? access.data?.principal : undefined
   const permitted = !!principal && Date.parse(principal.expiresAt) > Date.now() && canUseBoardAction(principal.grants, 'runs:stop', scope)
   const receipt = outbox.journal?.receipt
@@ -96,8 +98,8 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
       {snapshot.state.run.stopRequested ? ' Stop requested; cleanup is not implied.' : ''}</p>}
     {run.isPending ? <p role="status">Reading accepted Run facts…</p> : null}
     {detail ? <p>Accepted Run facts below are from an explicit authenticated read.
-      <Button size="sm" variant="ghost" disabled={run.isFetching} onClick={() => void run.refetch()}>Refresh accepted Run facts</Button></p> : null}
-    {run.isError ? <Alert tone="warning" title="Private Run details are unavailable."><Button size="sm" onClick={() => void run.refetch()}>Retry pinned details</Button></Alert> : null}
+      <Button size="sm" variant="ghost" disabled={run.isFetching} onClick={() => void refetchRun()}>Refresh accepted Run facts</Button></p> : null}
+    {run.isError ? <Alert tone="warning" title="Private Run details are unavailable."><Button size="sm" onClick={() => void refetchRun()}>Retry pinned details</Button></Alert> : null}
     <div data-testid="run-details-actions-slot">{denied ? null : runActions !== undefined ? runActions : <>
     {canNeedStop ? <div className="n-actions"><Button variant="danger" disabled={!permitted || !snapshot || stop.isPending || !!outbox.error}
       onClick={() => stop.mutate()}>{stop.isPending ? 'Sending exact Stop…' : outbox.journal ? 'Reconcile Stop' : 'Stop this Run'}</Button>

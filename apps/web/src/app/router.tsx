@@ -9,8 +9,8 @@ import { WorkspaceBoardSearchSchema } from '@graphql/contracts/wave25'
 import { RootShell } from './RootShell'
 import { BrowserAuthSearchSchema } from '@graphql/contracts/management'
 import { SignInRoute, OwnerSetupRoute } from '../features/auth/AuthRoutes'
-import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema } from '@graphql/contracts/management'
-import { AccountRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
+import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema, SkillSettingsSearchSchema } from '@graphql/contracts/management'
+import { AccountRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
@@ -140,6 +140,23 @@ const agentSettingsRoute = createRoute({
   validateSearch: AgentSettingsSearchSchema,
   component: AgentSettingsRouteEntry,
 })
+const skillsSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/skills',
+  validateSearch: SkillSettingsSearchSchema,
+  component: SkillsSettingsRouteEntry,
+})
+const newSkillRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/skills/new',
+  validateSearch: SkillSettingsSearchSchema.pick({ workspace: true }),
+  component: NewSkillRouteEntry,
+})
+const skillDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/skills/$workspaceId/$skillId',
+  component: SkillDetailRouteEntry,
+})
 const workspaceDefaultsSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/workspaces',
@@ -201,6 +218,9 @@ export const routeTree = rootRoute.addChildren([
   accountRoute,
   harnessSettingsRoute,
   agentSettingsRoute,
+  skillsSettingsRoute,
+  newSkillRoute,
+  skillDetailRoute,
   workflowSettingsRoute,
   workspaceDefaultsSettingsRoute,
   operatorAccessSettingsRoute,

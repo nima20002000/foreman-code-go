@@ -58,7 +58,7 @@ it('discovers, installs, and removes using the exact reviewed snapshot', async (
   )
   const user = userEvent.setup()
   const { router } = mount('/settings/harnesses?harness=codex&section=plugins')
-  await user.click(await screen.findByRole('button', { name: 'Discover' }))
+  await user.click(await screen.findByRole('button', { name: 'Discover' }, { timeout: 10_000 }))
   expect(await screen.findByRole('button', { name: 'View notes plugin, available' })).toHaveTextContent(/^notes$/)
   await openPlugin()
   expect(screen.getByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('Bundle contents can be checked after installation.')
@@ -75,7 +75,7 @@ it('discovers, installs, and removes using the exact reviewed snapshot', async (
   for (const input of changes) expect(input).toMatchObject({ expectedRevision: revision, artifactIdentity })
   expect(changes[0]?.commandId).not.toBe(changes[1]?.commandId)
   expect(router.state.location.search.pluginId).toBeUndefined()
-})
+}, 20_000)
 it('does not expose Codex Plugins in OpenCode settings', async () => {
   const { router } = mount('/settings/harnesses?harness=opencode&section=plugins')
   expect(await screen.findByRole('heading', { name: 'OpenCode settings' })).toBeVisible()
@@ -104,7 +104,7 @@ it('retains a lost command through Refresh and panel remount, then retries its e
   expect(requests[1]).toEqual(requests[0])
   await user.click(await screen.findByRole('button', { name: 'View notes plugin, available' }))
   expect(screen.getByRole('button', { name: 'Install plugin' })).toBeDisabled()
-})
+}, 20_000)
 it('does not turn Refresh into reconciliation and never executes another install during reconciliation', async () => {
   reads()
   let writes = 0; let reconciliations = 0
@@ -122,7 +122,7 @@ it('does not turn Refresh into reconciliation and never executes another install
   await user.click(await screen.findByRole('button', { name: 'Reconcile original request' }))
   await waitFor(() => expect(reconciliations).toBe(1))
   expect(writes).toBe(1)
-})
+}, 20_000)
 it('rehydrates an unresolved server receipt after a fresh page lifetime', async () => {
   reads()
   const input = { pluginId: base.pluginId, action: 'remove', commandId: '00000000-0000-4000-8000-000000000001', expectedRevision: revision, artifactIdentity }

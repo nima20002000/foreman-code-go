@@ -34,9 +34,10 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
       selectRun(scope)
     },
   })
+  const resetDiscovery = discovery.reset
   // URL/back navigation invalidates discovery, without mirroring request state.
-  useEffect(() => { ++request.current; discovery.reset() },
-    [selected?.runId, selected?.workflowVersionId, selected?.executionSemanticsVersion, discovery.reset])
+  useEffect(() => { ++request.current; resetDiscovery() },
+    [selected?.runId, selected?.workflowVersionId, selected?.executionSemanticsVersion, resetDiscovery])
   useEffect(() => () => { ++request.current }, [])
   const latestDiscovery = discovery.variables?.ticket === request.current
   const reading = latestDiscovery && discovery.isPending ? discovery.variables?.runId : undefined
@@ -75,7 +76,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
         const current = !!selected && sameCanonicalGraphScope(scope, selected)
         return <li key={run.id}><button type="button" className="board-run-row" aria-pressed={current}
           aria-label={`Open Run ${run.id} · ${run.executionState} · ${run.outcome}`}
-          onClick={() => { ++request.current; discovery.reset(); selectRun(current ? undefined : scope) }}>
+          onClick={() => { ++request.current; resetDiscovery(); selectRun(current ? undefined : scope) }}>
           <StatusBadge label={runLabel(run.executionState, run.outcome)} tone={runTone(run.executionState, run.outcome)} busy={run.executionState === 'running'} />
           <code>{run.id.slice(-8)}</code><span>{when(run.startedAt)}</span>
           <span>{run.executionState === 'completed' ? 'Past Run' : 'Current Run'} · saved version <code>{run.workflowVersionId}</code></span>
@@ -91,7 +92,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
       <p>Select a Run to see its recorded Agent actions, outcomes and notices.</p></section> : null}
     {selected ? <section className="board-run-detail" aria-label="Selected run">
       <header><h3>Run {selected.runId.slice(-8)}</h3>
-        <Button size="sm" variant="ghost" onClick={() => { ++request.current; discovery.reset(); selectRun() }}>Clear Run selection</Button></header>
+        <Button size="sm" variant="ghost" onClick={() => { ++request.current; resetDiscovery(); selectRun() }}>Clear Run selection</Button></header>
       <CurrentRunDetails key={JSON.stringify(selected)} scope={selected}
         runActions={<RunActions workspaceId={selected.workspaceId} workflowId={selected.workflowId} runId={selected.runId} />} />
     </section> : null}

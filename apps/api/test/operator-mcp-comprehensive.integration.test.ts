@@ -14,7 +14,7 @@ import { OperatorLifecycleService } from '../src/modules/workspaces/operatorLife
 import { SkillCatalogService } from '../src/modules/skills/catalog.js'
 import { VersionHistoryService } from '../src/modules/workflows/historyManagement.js'
 
-describe.skipIf(!postgresEnabled)('comprehensive MCP persistence on isolated PostgreSQL schema',()=>{
+describe.skipIf(!postgresEnabled)('Operator domain-service persistence on isolated PostgreSQL schema',()=>{
   let database: Awaited<ReturnType<typeof currentDatabase>>
   const directories:string[]=[]
   beforeAll(async()=>{ database = await currentDatabase() }, 60000)
@@ -33,10 +33,10 @@ describe.skipIf(!postgresEnabled)('comprehensive MCP persistence on isolated Pos
     const workspace=(await workspaces.create(principal,'mcp',{commandId:'fixture-workspace',name:'Comprehensive fixture'})).value.workspace
     await locations.set(principal,'mcp',{workspaceId:workspace.id,commandId:'fixture-location',expectedLocationRevision:0,runnerId:'runner-local',rootPath:project})
     const skills=new SkillCatalogService(database.pool,commands)
-    await skills.publish(principal,{workspaceId:workspace.id,skillId:'test-guide',version:'1',commandId:'fixture-skill',name:'Test guide',instructions:'Use deterministic checks.'})
-    await expect(skills.publish(principal,{workspaceId:workspace.id,skillId:'test-guide',version:'1',commandId:'different-publish',name:'Overwrite attempt',instructions:'Different content.'})).rejects.toMatchObject({code:'SKILL_VERSION_EXISTS'})
+    const skill=(await skills.create(principal,{workspaceId:workspace.id,commandId:'fixture-skill',name:'Test guide',instructions:'Use deterministic checks.'},'mcp')).value.skill
+    await expect(skills.create(principal,{workspaceId:workspace.id,commandId:'fixture-skill',name:'Overwrite attempt',instructions:'Different content.'},'mcp')).rejects.toMatchObject({code:'COMMAND_ID_CONFLICT'})
     const agents=new OperatorAgentMutationService(database.pool,commands,{qualifyConfiguration:async value=>({harness:value.harness,version:'fixture',authenticated:true,ready:true,structuredEvents:true,supportsResume:true,supportsCancellation:true,supportsWorkingDirectory:true,supportsStartupPrompt:true,supportedNativeTools:[],supportedSettings:[],unsupportedCapabilities:[]})})
-    const agent=(await agents.create(principal,{workspaceId:workspace.id,agentId:'fixture-agent',commandId:'fixture-agent-create',name:'Worker',productRole:'coder',configuration:{harness:'codex',model:'fixture',reasoningEffort:'low',sandbox:'read-only',serviceTier:'standard'},assignedSkills:[{skillId:'test-guide',version:'1'}]})).value
+    const agent=(await agents.create(principal,{workspaceId:workspace.id,agentId:'fixture-agent',commandId:'fixture-agent-create',name:'Worker',productRole:'coder',configuration:{harness:'codex',model:'fixture',reasoningEffort:'low',sandbox:'read-only',serviceTier:'standard'},assignedSkills:[{skillId:skill.skillId,version:skill.version}]})).value
     const history=new VersionHistoryService(database.pool)
     const savedConfiguration=(await history.agent(principal,{workspaceId:workspace.id,agentId:agent.agent.id,versionId:agent.agent.configurationVersionId!})).version
     expect(savedConfiguration.resolvedSkills?.[0]?.instructions).toBe('Use deterministic checks.')

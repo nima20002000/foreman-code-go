@@ -38,7 +38,7 @@ export async function saveThrough(f: SaveFixture, transport: Transport, input: C
   }
   const reply = await rpc(f, CURRENT_WORKFLOW_TOOLS.save, input)
   expect(reply.result?.isError, JSON.stringify(reply)).not.toBe(true)
-  return CurrentWorkflowSaveResultSchema.parse(graphRpcValue(reply.result))
+  return CurrentWorkflowSaveResultSchema.parse(graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0]))
 }
 export async function editThrough(f: SaveFixture, transport: Transport,
   input: { workspaceId: string; workflowId: string; [key: string]: unknown }) {
@@ -49,7 +49,7 @@ export async function editThrough(f: SaveFixture, transport: Transport,
   }
   const reply = await rpc(f, CURRENT_WORKFLOW_TOOLS.edits, input)
   expect(reply.result?.isError, JSON.stringify(reply)).not.toBe(true)
-  return CurrentEditReadResultSchema.parse(graphRpcValue(reply.result))
+  return CurrentEditReadResultSchema.parse(graphRpcValue(reply.result as unknown as Parameters<typeof graphRpcValue>[0]))
 }
 export async function stageThrough(f: SaveFixture, transport: Transport, input: CurrentWorkflowSaveInput) {
   const stage = { ...input, commandId: randomUUID(), action: 'stage_edits', draftId: `editor-${randomUUID()}` }

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { HarnessNativeEventSchema, type HarnessNativeEvent } from '@graphql/contracts'
+import { HarnessExecutionSchema, HarnessNativeEventSchema, WorkflowRunSchema, type HarnessNativeEvent } from '@graphql/contracts'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 
 import { applyApplicationMigrations, migrations } from '../src/infrastructure/migrations.js'
 import { nativeEventSequenceMigration } from '../src/infrastructure/nativeEventSequenceMigration.js'
+import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
@@ -48,15 +49,25 @@ async function database(test: (pool: pg.Pool) => Promise<void>, existingPR17 = f
 }
 
 async function seed(pool: pg.Pool) {
-  await pool.query("insert into workspaces(id,record) values('workspace','{}')")
-  await pool.query("insert into agents(id,workspace_id,record) values('agent','workspace','{}')")
-  await pool.query("insert into workflows(id,workspace_id,record) values('workflow','workspace','{}')")
-  await pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record)
-    values('version','workspace','workflow',1,'node','{}')`)
+  await ensureAcceptanceSeed(pool)
+  const run = WorkflowRunSchema.parse({ id: 'run', workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline',
+    workflowVersionId: 'workflow-content-pipeline-v1', executionSemanticsVersion: 3,
+    agentConfigurationVersionIds: { 'agent-researcher': 'agent-researcher-config-v1',
+      'agent-developer': 'agent-developer-config-v1', 'agent-reviewer': 'agent-reviewer-config-v1' },
+    approval: { handler: 'user' }, executionCondition: { kind: 'manual' }, executionState: 'running',
+    outcome: 'pending', input: {}, createdAt: timestamp })
   await pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
-    values('run','workspace','workflow','version','running','{}')`)
-  await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-    values('execution','run','node','agent',1,'{}'),('other-execution','run','other-node','agent',1,'{}')`)
+    values($1,$2,$3,$4,$5,$6::jsonb)`, [run.id, run.workspaceId, run.workflowId, run.workflowVersionId,
+    run.executionState, JSON.stringify(run)])
+  for (const [id, nodeId, agentId, configurationId] of [
+    ['execution', 'node-developer', 'agent-developer', 'agent-developer-config-v1'],
+    ['other-execution', 'node-reviewer', 'agent-reviewer', 'agent-reviewer-config-v1'],
+  ]) {
+    const execution = HarnessExecutionSchema.parse({ id, runId: run.id, workflowNodeId: nodeId, agentId,
+      agentConfigurationVersionId: configurationId, attempt: 1, input: {}, state: 'running', createdAt: timestamp })
+    await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
+      values($1,$2,$3,$4,1,$5::jsonb)`, [id, run.id, nodeId, agentId, JSON.stringify(execution)])
+  }
 }
 
 function event(sequence = 17, overrides: Partial<HarnessNativeEvent> = {}): HarnessNativeEvent {
@@ -282,5 +293,5 @@ describe('PR17 F10 migration 1702', () => {
       expect((await pool.query('select version from application_migrations where version=1702')).rowCount).toBe(1)
       expect(await counts(pool)).toEqual({ events: 3, activity: 3 })
     }, true)
-  })
+  }, 20_000)
 })

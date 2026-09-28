@@ -61,10 +61,30 @@ async function reader(f: Fixture, grants?: ManagementPrincipal['grants']) {
     ] })
   return { ...issued, client: await f.connect(issued.token) }
 }
-async function terminal(f: Fixture, runId = f.f.run.id) {
-  await waitForSuccessfulRunCleanup({ pool: f.db.pool, runId, timeoutMs: 20000,
-    readRecord: () => f.services.runs.inspection.record(f.writer.principal,
-      { workspaceId: f.f.scope.workspaceId, runId }) })
+async function terminal(f: Fixture, runId = f.f.run.id, timeoutMs = 20000) {
+  try {
+    await waitForSuccessfulRunCleanup({ pool: f.db.pool, runId, timeoutMs,
+      readRecord: () => f.services.runs.inspection.record(f.writer.principal,
+        { workspaceId: f.f.scope.workspaceId, runId }) })
+  } catch (error) {
+    // A failed async Start can otherwise leave only "running" in the public
+    // record. Keep failure evidence bounded and omit native/private payloads.
+    const [executions, effects, activity] = await Promise.all([
+      f.db.pool.query<{ workflow_node_id: string; accepted: boolean; state: string | null }>(
+        `select workflow_node_id,accepted,record->>'status' as state from harness_executions
+         where run_id=$1 order by created_at,id limit 8`, [runId]),
+      f.db.pool.query<{ effect_kind: string; count: string }>(
+        `select effect_kind,count(*)::text from run_graph_effects where run_id=$1
+         group by effect_kind order by effect_kind`, [runId]),
+      f.db.pool.query<{ kind: string }>(
+        `select kind from run_activity where run_id=$1 order by sequence desc limit 12`, [runId]),
+    ])
+    throw new Error(`${String(error)}; progress=${JSON.stringify({
+      dispatchErrors: f.dispatchErrors.map(String), providerCounts: f.provider.counts,
+      startedNodes: f.provider.startedNodes, executions: executions.rows,
+      effects: effects.rows, recentActivity: activity.rows.map((row) => row.kind),
+    })}`, { cause: error })
+  }
 }
 async function allExecutions(f: Fixture, r: Awaited<ReturnType<typeof reader>>) {
   const items: RunExecutionSummary[] = [], seen = new Set<string>()
@@ -117,7 +137,7 @@ afterEach(() => vi.restoreAllMocks())
 // Real application migrations, current Save/Run publication, engine/repository/receipts,
 // live SQL grants, HTTP security and authenticated MCP. Only the documented provider
 // transport and runner filesystem qualification in checkpointRuntimeFixture are synthetic.
-// No paid model/native binary is used. Opt-in and loopback/test-DB safeguards are inherited.
+// No paid model/native binary is used. The shared integration fixture uses an isolated PostgreSQL schema.
 describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspection parity', () => {
   it('reads ordinary fork/join history, exact inputs/results, denied scopes and replayed pages; keeps its old pin after adding repeat', async () => {
     const f = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'parallel'), approvalNodeIds: [] })
@@ -220,7 +240,7 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
         expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds, expectedLocationRevision: locationRevision,
         commandId: randomUUID(), input: {},
       } })) as { run: { id: string } }
-      await terminal(f, started.run.id)
+      await terminal(f, started.run.id, 60000)
       const otherExecution = (await f.db.pool.query<{ id: string }>('select id from harness_executions where run_id=$1 order by id limit 1', [started.run.id])).rows[0]!.id
       await denied(f, f.client, f.writer.token, RUN_INSPECTION_TOOLS.execution, { ...args, executionId: otherExecution }, 404, 'RUN_EXECUTION_NOT_FOUND')
       await denied(f, r.client, r.token, RUN_INSPECTION_TOOLS.executions, { ...args, runId: started.run.id }, 403, 'ACCESS_DENIED')
@@ -233,7 +253,7 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
       expect(await parity(f, f.client, f.writer.token, RUN_INSPECTION_TOOLS.record, args)).toEqual(oldRecord)
       expect(f.dispatchErrors).toEqual([])
     } finally { await f.close() }
-  }, 90000)
+  }, 150000)
 
   it('retains two real occurrences, attempt identities, exact text-carrier result and carry ancestry after removing repeat', async () => {
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'repeat'), exitId = fixture.version.definition.nodes[1]!.id

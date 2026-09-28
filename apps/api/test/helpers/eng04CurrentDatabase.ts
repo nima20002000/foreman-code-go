@@ -5,12 +5,12 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 
-export const postgresEnabled = process.env.RUN_WAVE25_POSTGRES_TESTS === '1'
+export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 /** The existing disposable loopback test gate, without importing retired
  * execution seeders. No DATABASE_URL fallback or live/shared data cleanup. */
 export async function currentDatabase() {
-  const url = process.env.WAVE25_TEST_DATABASE_URL
-  if (!url) throw new Error('WAVE25_TEST_DATABASE_URL is required when RUN_WAVE25_POSTGRES_TESTS=1')
+  const url = process.env.TEST_DATABASE_URL
+  if (!url) throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const parsed = new URL(url)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { OPENCODE_APPROVAL_OPTIONS_FIXTURE, type PendingNativeInteraction } from '@graphql/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, type PendingNativeInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -11,11 +11,17 @@ import { nativeCorrelation } from '../src/modules/conversations/operatorChatRepo
 import { operatorChatBootstrapFrame, OPERATOR_BOOTSTRAP_FRAME_BYTES } from '../src/modules/conversations/operatorChatBootstrap.js'
 import { ReviewManager } from './fixtures/agent1OperatorChat.js'
 
-const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql'
+const connectionString = process.env.TEST_DATABASE_URL
 let schema: string, admin: pg.Pool, pool: pg.Pool
 let owner: ManagementPrincipal, access: PostgresAccessService
 let repository: PostgresOperatorConversationRepository, chat: OperatorChatService, manager: ReviewManager
 beforeEach(async () => {
+  let database: URL
+  try { database = new URL(connectionString!) } catch { throw new Error('Use a loopback PostgreSQL database explicitly named for tests') }
+  if (!['postgres:', 'postgresql:'].includes(database.protocol)
+    || !['localhost', '127.0.0.1', '[::1]'].includes(database.hostname)
+    || !/(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(decodeURIComponent(database.pathname.slice(1)))
+    || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   schema = `agent3_${randomUUID().replaceAll('-', '')}`
   admin = new pg.Pool({ connectionString })
   await admin.query(`create schema "${schema}"`)
@@ -39,7 +45,7 @@ afterEach(async () => {
   await admin?.end()
 })
 
-describe('PR17 Agent3 SQL history, terminal receipts, and owner recovery', () => {
+describe.skipIf(!connectionString)('PR17 Agent3 SQL history, terminal receipts, and owner recovery', () => {
   it('F7 terminal success without nativeMessageId clears the request exactly once without an assistant row', async () => {
     const c = await chat.create(owner)
     await repository.beginTurn(c.id, { requestId: 'no-message', content: 'Run without a final assistant row' }, owner.id)
@@ -99,7 +105,7 @@ describe('PR17 Agent3 SQL history, terminal receipts, and owner recovery', () =>
     await repository.submitted(c.id, 'current', 'current-native')
     const pending: PendingNativeInteraction = { session: manager.session,
       turn: { nativeTurnId: 'current-native', nativeRequestId: 'ask' },
-      nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [...OPENCODE_APPROVAL_OPTIONS_FIXTURE] }
+      nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [...CODEX_APPROVAL_OPTIONS_FIXTURE] }
     await repository.pending(c.id, 'current', pending)
     const total = await pool.query('select sum(octet_length(record::text))::bigint as bytes from operator_conversation_messages where conversation_id=$1', [c.id])
     expect(Number(total.rows[0].bytes)).toBeGreaterThan(8 * 1024 * 1024)

@@ -11,13 +11,13 @@ import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 export type InspectionHarness = Awaited<ReturnType<typeof currentOperatorIntegration>>
 export type InspectionReader = { token: string; client: InspectionHarness['client']; principal: ManagementPrincipal }
 export type InspectionMeasurement = { tool: string; status: number; bytes: number; items?: number; cursor: boolean; limit?: unknown }
-export function value(result: { isError?: boolean; structuredContent?: unknown }): unknown {
+export function value(result: { isError?: boolean | undefined; structuredContent?: unknown }): unknown {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
   expect(result.structuredContent).toBeDefined()
   return result.structuredContent
 }
 export function errorCode(result: unknown): string {
-  const failure = result as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
+  const failure = result as { isError?: boolean | undefined; content?: Array<{ type: string; text?: string }> }
   expect(failure.isError).toBe(true)
   const text = failure.content?.find((item) => item.type === 'text')?.text
   expect(text).toBeDefined()
@@ -60,8 +60,8 @@ export async function pairedDenial(f: InspectionHarness, r: InspectionReader, na
   expect(response.json()).toMatchObject({ error: { code } })
   expect(errorCode(await r.client.callTool({ name, arguments: input }))).toBe(code)
 }
-export async function terminal(f: InspectionHarness, runId: string) {
-  await expect.poll(async () => (await f.runs.get(runId))?.executionState, { timeout: 60000 }).toBe('completed')
+export async function terminal(f: InspectionHarness, runId: string, timeout = 60000) {
+  await expect.poll(async () => (await f.runs.get(runId))?.executionState, { timeout }).toBe('completed')
   await expect.poll(async () => (await f.db.pool.query<{ pending: boolean }>(
     'select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as pending', [runId])).rows[0]?.pending,
   { timeout: 20000 }).toBe(false)

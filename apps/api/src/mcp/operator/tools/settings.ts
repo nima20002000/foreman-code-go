@@ -57,7 +57,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'workflow_defaults_get', () => settings.getWorkflowDefaults(context.principal)))
   if (operatorToolAvailable(context, 'agent_defaults_update')) server.registerTool('agent_defaults_update', {
-    description: 'Revision-check and replace role defaults, including the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update.',
+    description: 'Revision-check and replace role defaults, including the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update; changing Operator skills, harness or thinking settings also requires skills:read in every assigned skill workspace.',
     inputSchema: AgentDefaultsUpdateInputSchema, outputSchema: AgentDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'agent_defaults_update', () => settings.updateAgentDefaults(context.principal, 'mcp', input)))

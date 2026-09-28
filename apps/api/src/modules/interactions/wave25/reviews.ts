@@ -58,7 +58,7 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
   }
   override async appendReviewNativeEvent(job: ReviewJob, event: NativeHarnessEvent,
     projection?: { writer: WriterFence; live: boolean; terminalReady: boolean; nativeCapture?: ReviewNativeCapture }): Promise<void> {
-    const mode = await this.subject('review', job.id)
+    await this.subject('review', job.id)
 
     if (!projection?.nativeCapture || !this.nativeProofs) return fail('REVIEW_ORIGINAL_SOURCE_REQUIRED')
     await appendReviewNativeGraphEvent(this.approvalPool, job, event,
@@ -75,7 +75,7 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
     return { requestingNodeId: context.requester.workflowNodeId, orchestratorNodeId: context.reviewer.workflowNodeId }
   }
   override async assertReviewConnection(job: ReviewJob): Promise<void> {
-    const mode = await this.subject('review', job.id)
+    await this.subject('review', job.id)
 
     const found = (await this.approvalPool.query<{ record: unknown; execution_id: string; reference: unknown }>(
       `select i.record,j.execution_id,s.reference from review_jobs j join durable_interactions i on i.id=j.interaction_id
@@ -165,7 +165,7 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
     })
   }
   override async renewReviewJob(id: string, token: string, leaseMs: number): Promise<string> {
-    const mode = await this.subject('review', id)
+    await this.subject('review', id)
 
     return renewReviewLease(this.approvalPool, id, token, leaseMs)
   }

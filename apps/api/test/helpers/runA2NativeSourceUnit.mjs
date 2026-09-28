@@ -3,6 +3,7 @@
  * replace Zod schemas, PostgreSQL, providers or production composition. The only
  * runner substitution is Vitest's `it` -> node:test's `it`. This is not a full
  * repository typecheck, Vitest run, native acceptance or database qualification. */
+import process from 'node:process'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { resolve, dirname, sep } from 'node:path'

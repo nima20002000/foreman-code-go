@@ -268,11 +268,11 @@ export class PostgresOperatorConversationRepository {
     return (await this.pool.query('select 1 from operator_conversation_messages where conversation_id=$1 limit 1', [id])).rowCount === 1
   }
   async active(id: string, query: Queryable = this.pool): Promise<ConversationRow | undefined> {
-    return (await query.query<ConversationRow>('select * from operator_conversations where id=$1', [id])).rows[0]
+    return (await query.query<ConversationRow>("select * from operator_conversations where id=$1 and kind='operator'", [id])).rows[0]
   }
   async unfinished(): Promise<ConversationRow[]> {
     return (await this.pool.query<ConversationRow>(
-      'select * from operator_conversations where active_request_id is not null order by updated_at,id')).rows
+      "select * from operator_conversations where active_request_id is not null and kind='operator' order by updated_at,id")).rows
   }
 
   async setDeleted(id: string, ownerId: string, deleted: boolean): Promise<void> {

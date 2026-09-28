@@ -243,7 +243,7 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
           const closed = new Map<string, NativeSessionReference>()
           const close = t.provider.close.bind(t.provider)
           vi.spyOn(t.provider as NativeHarnessSessionManager, 'close').mockImplementation(async (...args) => {
-            await close()
+            await close(args[0])
             closed.set(args[0].nativeSessionId, structuredClone(args[0]))
           })
           const record = PostgresWorkflowClosureStore.prototype.record

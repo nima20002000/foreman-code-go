@@ -244,7 +244,7 @@ export const RepeatGraphStateV3Schema = z.object({
   for (const node of value.nodes) {
     if (node.state.execution) {
       const actual = executions.get(node.state.execution.executionId)
-      const bare = actual && (({ occurrence: _occurrence, ...identity }) => identity)(actual.identity)
+      const bare = actual && (({ occurrence, ...identity }) => { void occurrence; return identity })(actual.identity)
       if (!bare || !same(node.state.execution, bare)) fail()
     }
     if (node.resolution) {
@@ -261,7 +261,7 @@ export const RepeatGraphStateV3Schema = z.object({
   for (const fact of publicProjectionFacts(value)) {
     for (const identity of graphFactExecutions(fact)) {
       const actual = executions.get(identity.executionId)
-      const bare = actual && (({ occurrence: _occurrence, ...value }) => value)(actual.identity)
+      const bare = actual && (({ occurrence, ...value }) => { void occurrence; return value })(actual.identity)
       if (!bare || !same(bare, identity)) fail()
     }
   }

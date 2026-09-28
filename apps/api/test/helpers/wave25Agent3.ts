@@ -17,15 +17,15 @@ import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/module
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { RepeatNativeEvidence } from '../../src/modules/runs/repeatNativeRepository.js'
 
-export const postgresEnabled = process.env.RUN_WAVE25_POSTGRES_TESTS === '1'
+export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
 
 /** Uses real independent PostgreSQL sessions and an isolated random schema.
  * No DATABASE_URL fallback, public host, destructive shared-table cleanup or
- * paid native model. Every suite must explicitly opt in to a loopback test DB. */
+ * paid native model. The integration runner supplies a disposable test DB. */
 export async function agent3Database() {
-  const url = process.env.WAVE25_TEST_DATABASE_URL
-  if (!url) throw new Error('WAVE25_TEST_DATABASE_URL is required when RUN_WAVE25_POSTGRES_TESTS=1')
+  const url = process.env.TEST_DATABASE_URL
+  if (!url) throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const parsed = new URL(url)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')

@@ -110,6 +110,8 @@ export class RecoveryProvider {
 
   connection(): NativeHarnessSessionManager {
     let owned: NativeSessionReference | undefined
+    // The returned manager methods need this provider instance after connection returns.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const provider = this
     return {
       harness: 'codex',

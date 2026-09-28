@@ -14,6 +14,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   readonly counts = { sessions: 0, starts: 0, responses: 0, attaches: 0 }
   readonly startedNodes: string[] = []
   readonly startedExecutions: string[] = []
+  readonly closedSessions = new Set<string>()
   private readonly requests = new Map<string, HarnessExecutionRequest>()
   private readonly waits = new Map<string, PendingNativeInteraction[]>()
   private readonly terminals = new Map<string, NonNullable<NativeHistory['terminalResult']>>()
@@ -21,6 +22,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   private readonly receipts = new Map<string, NativeResponseDeliveryEvidence[]>()
   /** Fault/timing observation only; receives no SQL or authority capability. */
   beforeRespond?: () => Promise<void>
+  beforeClose?: () => Promise<void>
 
   constructor(private readonly approvalNodes: ReadonlySet<string>, private readonly pendingPerExecution: 1 | 2 = 1,
     private readonly acknowledgeStarts = true, private readonly disconnectAfterStart = false,
@@ -32,7 +34,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       createSession: this.createSession.bind(this), attachSession: this.attachSession.bind(this),
       startTurn: this.startTurn.bind(this), pending: this.pending.bind(this), respond: this.respond.bind(this),
       history: this.history.bind(this), reconcile: this.reconcile.bind(this),
-      cancel: this.cancel.bind(this), close: this.close.bind(this) }
+      cancel: this.cancel.bind(this), close: this.close.bind(this), closeForRestart: this.close.bind(this) }
   }
   async capabilities(): Promise<NativeHarnessCapabilities> {
     return { provider: this.harness, providerVersion: '0.154.0', persistentSessions: true,
@@ -137,5 +139,9 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     } : {}) }
   }
   async cancel() { return true }
-  async close() { /* The deterministic external history survives API restart. */ }
+  async close(session: NativeSessionReference) {
+    await this.beforeClose?.()
+    // The deterministic provider confirms physical closure; its retained history survives API restart.
+    this.closedSessions.add(session.nativeSessionId)
+  }
 }

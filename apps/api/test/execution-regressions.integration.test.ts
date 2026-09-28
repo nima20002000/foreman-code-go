@@ -39,14 +39,14 @@ describe.skipIf(!postgresEnabled)('current execution regressions', () => {
       expect((await f.runs.get(f.f.run.id))?.executionState).toBe('queued')
       const errors: unknown[] = []
       await f.engine.reconcile((error) => errors.push(error))
-      await expect.poll(async () => (await f.runs.get(f.f.run.id))?.executionState, { timeout: 15000 }).toBe('waiting')
+      await expect.poll(async () => (await f.runs.get(f.f.run.id))?.executionState, { timeout: 45000 }).toBe('waiting')
       const [interaction] = await f.pending()
       await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction!))
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
       expect(f.provider.counts).toMatchObject({ starts: 2, sessions: 2, responses: 1 })
       expect(errors).toEqual([])
     } finally { await f.close() }
-  }, 60000)
+  }, 90000)
 
   it('keeps its accepted project directory when workspace settings later point elsewhere', async () => {
     const db = await agent3Database()

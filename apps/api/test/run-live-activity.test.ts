@@ -12,7 +12,7 @@ const definition = {
   edges: [{ id: 'handoff', source: 'review', target: 'worker' }],
 } as WorkflowDefinition
 const run = {
-  id: 'run', workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version',
+  id: 'run', executionSemanticsVersion: 3, workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version',
   agentConfigurationVersionIds: { orchestrator: 'orchestrator-v1', coder: 'coder-v1' },
   executionCondition: { kind: 'manual' },
   approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'orchestrator' },

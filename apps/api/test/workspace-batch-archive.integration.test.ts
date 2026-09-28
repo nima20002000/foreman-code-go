@@ -1,7 +1,9 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { AgentSchema, AgentConfigurationVersionSchema } from '@graphql/contracts'
 import * as c from '@graphql/contracts/management'
+import { canonicalGraphJson, makeCurrentWorkflowFixture, WorkflowRunV3Schema, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -54,15 +56,43 @@ it('batch archives workspaces through authenticated MCP with atomic conflicts, a
     expect(rejected.isError).toBe(true)
     expect((await pool.query('select count(*) from workspaces where archived_at is not null')).rows[0].count).toBe('0')
     const workflow = (await workflows.create(owner.principal, 'http', { workspaceId: first.workspace.id, name: 'Retained workflow', commandId: randomUUID() })).value.workflow
-    await pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record)
-      values ('version-active',$1,$2,1,'node','{}')`, [first.workspace.id, workflow.id])
+    const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
+    const hash = (value: unknown) => `sha256:${createHash('sha256').update(canonicalGraphJson(value)).digest('hex')}`
+    for (const original of fixture.configurations) {
+      const value = { ...original, workspaceId: first.workspace.id }
+      const configuration = AgentConfigurationVersionSchema.parse({ ...value, contentHash: hash(Object.fromEntries(
+        Object.entries(value).filter(([key]) => key !== 'contentHash'))) })
+      const agent = AgentSchema.parse({ id: configuration.agentId, name: 'Archive fixture Worker',
+        productRole: configuration.productRole, harness: configuration.harness.harness,
+        model: configuration.harness.model, effort: 'low', fastMode: false,
+        harnessConfiguration: configuration.harness, prompt: configuration.prompt,
+        assignedSkills: configuration.assignedSkills, configurationVersionId: configuration.id })
+      await pool.query('insert into agents(id,workspace_id,record) values($1,$2,$3::jsonb)',
+        [agent.id, first.workspace.id, JSON.stringify(agent)])
+      await pool.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
+        values($1,$2,$3,1,$4::jsonb)`, [configuration.id, first.workspace.id, agent.id, JSON.stringify(configuration)])
+    }
+    const definition = { ...fixture.version.definition, id: workflow.id, workspaceId: first.workspace.id }
+    const version = WorkflowVersionV3Schema.parse({ ...fixture.version, id: 'version-active',
+      workspaceId: first.workspace.id, workflowId: workflow.id,
+      definition, contentHash: hash({ definition, configurations: fixture.version.agentConfigurationVersionIds,
+        entryNodeId: fixture.version.entryNodeId }) })
+    const run = WorkflowRunV3Schema.parse({ ...fixture.run, id: 'run-active', workspaceId: first.workspace.id,
+      workflowId: workflow.id, workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+      executionState: 'running' })
+    await pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
+      values ($1,$2,$3,$4,$5,$6::jsonb,3)`, [version.id, version.workspaceId, version.workflowId,
+      version.version, version.entryNodeId, JSON.stringify(version)])
     await pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
-      values ('run-active',$1,$2,'version-active','running','{}')`, [first.workspace.id, workflow.id])
+      values ($1,$2,$3,$4,$5,$6::jsonb)`, [run.id, run.workspaceId, run.workflowId, run.workflowVersionId,
+      run.executionState, JSON.stringify(run)])
     const active = await client.callTool({ name: 'workspace_batch_archive', arguments: input })
     expect(active.isError).toBe(true)
     expect(JSON.stringify(active)).toContain('ARCHIVE_BLOCKED_BY_ACTIVE_RUN')
     expect((await pool.query('select count(*) from workspaces where archived_at is not null')).rows[0].count).toBe('0')
-    await pool.query("update runs set execution_state='completed' where id='run-active'")
+    const completed = WorkflowRunV3Schema.parse({ ...run, executionState: 'completed', outcome: 'canceled',
+      result: { outcome: 'canceled' }, finishedAt: new Date().toISOString() })
+    await pool.query("update runs set execution_state='completed',record=$2::jsonb where id=$1", [run.id, JSON.stringify(completed)])
     const result = c.WorkspaceBatchArchiveResultSchema.parse((await client.callTool({ name: 'workspace_batch_archive', arguments: input })).structuredContent)
     expect(result.replayed).toBe(false)
     expect(result.value.workspaceIds.sort()).toEqual([first.workspace.id, second.workspace.id].sort())

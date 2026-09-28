@@ -5,10 +5,8 @@ import { RunOwnership } from '../src/modules/runs/ownership.js'
 
 // Only a disposable explicitly configured test database. No application tables
 // or migrations are created/dropped; each lock has a random test-only identity.
-const enabled = process.env.RUN_WAVE25_POSTGRES_TESTS === '1'
-const databaseUrl = enabled ? process.env.WAVE25_TEST_DATABASE_URL : undefined
-if (enabled) {
-  if (!databaseUrl) throw new Error('WAVE25_TEST_DATABASE_URL is required')
+const databaseUrl = process.env.TEST_DATABASE_URL
+if (databaseUrl) {
   const url = new URL(databaseUrl)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')

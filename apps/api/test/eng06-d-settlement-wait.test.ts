@@ -55,9 +55,9 @@ describe('ENG06-D bounded settlement wait', () => {
       { id: `execution-${Math.floor(performance.now() / 10000)}`, state: 'running', accepted: false },
     ] }))
     const rejected = expect(task).rejects.toThrow('ENG06_SETTLEMENT_DEADLINE')
-    await vi.advanceTimersByTimeAsync(60000)
+    await vi.advanceTimersByTimeAsync(120000)
     await rejected
-    expect(performance.now()).toBe(60000)
+    expect(performance.now()).toBe(120000)
   })
 
   it('propagates a database/probe failure rather than masking it as a timeout', async () => {
