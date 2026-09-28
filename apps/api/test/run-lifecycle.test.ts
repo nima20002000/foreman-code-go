@@ -214,7 +214,11 @@ function runtimeFixture(names = ['entry', 'approval', 'sibling'], edges: Array<[
   const f = syntheticCurrentWorkflow(names, edges), checkpointer = new MemorySaver(), controller = new AbortController()
   const state = { executionState: 'queued', stopRequested: false, outcome: 'pending', cancel: 0, cleanup: false, settled: 0 }
   const driver = f.driver()
+  const unsupportedWork = async (): Promise<never> => { throw new Error('Unexpected work handoff') }
   const store = { ...f.store,
+    ensureWorkEntry: unsupportedWork, admitWorkActivation: unsupportedWork, acceptWorkTerminal: unsupportedWork,
+    admitWorkRequest: unsupportedWork, returnWork: unsupportedWork, recordWorkUnresolved: unsupportedWork,
+    completeWorkRun: unsupportedWork,
     resolveExcluded: async () => undefined, // All nodes in these fixtures are reachable.
     completeRun: async () => {
       assert.equal(f.resolutions.size, names.length)
