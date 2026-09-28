@@ -6,6 +6,7 @@ import type { QualificationSuite, QualificationSuiteInput } from '../types.js'
 import { protocolFromBundle } from '../../codexProtocol.js'
 import { CodexStdioTransport, type RpcRequest } from '../../codexStdioTransport.js'
 import { codexFileDynamicTools } from '../../codexFiles/index.js'
+import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from '../../appMcpLauncher.js'
 import { runCommand } from '../../process.js'
 import { inheritedAgentEnvironment } from '../../secrets.js'
 import { collectChecks, nonempty, object, requireCondition, type Check } from './checks.js'
@@ -121,6 +122,15 @@ export const codexQualificationSuite: QualificationSuite = {
       }],
       ['thread-start', async () => {
         requireCondition(protocol, 'Schema check did not produce a protocol.')
+        const listed = await runCommand(input.binary, ['mcp', 'list', '--json'], input.workDirectory, signal, environment)
+        let entries: unknown
+        try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
+        requireCondition(listed.exitCode === 0 && Array.isArray(entries) && entries.length <= 500
+          && entries.every((entry: unknown) => typeof object(entry).name === 'string'),
+        'Codex MCP configuration inspection failed; absence was not established.')
+        const configuredNames = new Set(entries.map((entry: { name: string }) => entry.name))
+        const disabledAppMcpServerNames = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
+          .filter((name) => configuredNames.has(name))
         transport = new CodexStdioTransport(input.binary, input.workDirectory, environment, protocol,
           async (request: RpcRequest) => {
             if (!turnId && request.method === 'item/tool/call') { stagedTools.push(request); return }
@@ -141,12 +151,12 @@ export const codexQualificationSuite: QualificationSuite = {
                 else completionFailure?.(new Error('Native turn failed.'))
               }
             }
-          }, (error) => completionFailure?.(error), 30_000, undefined, 'graphql-app')
+          }, (error) => completionFailure?.(error), 30_000, undefined, disabledAppMcpServerNames)
         await transport.start(signal)
         const started = object(await transport.request('thread/start', {
           cwd: input.workDirectory, runtimeWorkspaceRoots: [input.workDirectory], sandbox: 'workspace-write',
           approvalPolicy: 'never', ephemeral: false, ...(input.model ? { model: input.model } : {}),
-          config: { 'mcp_servers.graphql-app.enabled': false, 'mcp_servers.graphql-operator.enabled': false,
+          config: { ...Object.fromEntries(disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
             sandbox_workspace_write: { writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true } },
           dynamicTools: codexFileDynamicTools({ allowedTools: () => ['files.read', 'files.publish_result'] }),
         }, signal))
