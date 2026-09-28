@@ -21,7 +21,7 @@ import { DomainError } from '../errors.js'
 import { NativeTurnNotActiveError } from '../harnesses/errors.js'
 import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../harnesses/port.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
-import { resolvedSkillPrompt } from '../skills/prompt.js'
+import { legacySkillPrompt } from '../skills/instructions.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
@@ -633,10 +633,11 @@ export class AgentChatService {
     return (await runtime.manager.capabilities(this.lifetime.signal)).providerVersion
   }
 
-  /** Accepted startup instructions and skills are sent exactly once, with the first turn of a fresh session. */
+  /** Earlier configurations send pinned skills with the first turn; native-v1 delivers them at session start. */
   private prompt(row: AgentConversationRow, configuration: AgentConfigurationVersion, content: string): { text: string; startup: boolean } {
     if (row.record.origin.kind !== 'fresh' || row.record.startupDelivered) return { text: content, startup: false }
-    const skills = resolvedSkillPrompt(configuration)
+    if (configuration.instructionDelivery === 'native-v1') return { text: content, startup: true }
+    const skills = legacySkillPrompt(configuration)
     // Codex receives the system prompt as native developer instructions at thread/start.
     const system = configuration.harness.harness === 'opencode' && configuration.prompt.system
       ? ['AGENT SYSTEM PROMPT', configuration.prompt.system, ''] : []

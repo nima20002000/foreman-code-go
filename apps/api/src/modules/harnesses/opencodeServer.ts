@@ -237,6 +237,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         combined.throwIfAborted()
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
         const configuration = this.configuration(input)
+        const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
         await this.assertConfiguration(configuration, directory, combined)
@@ -253,7 +254,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const native = object(await this.json(`/session/${encodeURIComponent(response.id)}`, directory, combined))
         this.verifyAttachedSession(native, response.id, directory, configuration)
         await this.applyMcpControls(configuration, directory, combined)
-        this.sessions.set(response.id, newState(directory, configuration))
+        this.sessions.set(response.id, newState(directory, configuration, instructions))
         this.restartClosures.delete(response.id)
         return NativeSessionReferenceSchema.parse({ harness: 'opencode', providerVersion: QUALIFIED_OPENCODE_VERSION, nativeSessionId: response.id })
       } catch (error) { return this.cleanupFailedSetup(error) }
