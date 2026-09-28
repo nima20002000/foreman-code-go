@@ -1,3 +1,6 @@
+import type { FileReferenceService } from '../../modules/files/references/service.js'
+import { MAX_REFERENCE_MCP_BODY_BYTES } from '../../modules/files/references/requests.js'
+import { unavailableFileReferenceToolCall } from '../operator/tools/fileReferences.js'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type { ManagementAudience } from '@graphql/contracts/management'
 import type { FastifyInstance } from 'fastify'
@@ -26,10 +29,23 @@ export interface GraphqlMcpServices {
 
 /** The single, stateless GraphQL MCP endpoint. The bearer credential decides the role. */
 export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpServices): void {
+  // FIL-03 is composed after buildProductionApp. Bind the same service before any MCP request,
+  // rather than constructing another storage/auth boundary or changing server startup ownership.
+  app.addHook('onReady', async () => {
+    if (services.operator && app.hasDecorator('fileReferenceService')) {
+      services.operator.fileReferences = app.getDecorator<FileReferenceService>('fileReferenceService')
+    }
+  })
   const audiences: ManagementAudience[] = [
     ...(services.operator ? ['operator' as const] : []), ...(services.interactions ? ['worker' as const] : []),
   ]
-  app.post(GRAPHQL_MCP_PATH, { bodyLimit: 1_000_000 }, async (request, reply) => {
+  app.post(GRAPHQL_MCP_PATH, { bodyLimit: services.operator ? MAX_REFERENCE_MCP_BODY_BYTES : 1_000_000,
+    // Large inline adds must authenticate before Fastify buffers/parses their bounded JSON body.
+    onRequest: async (request) => {
+      requireLocalRequest(request)
+      await services.access.authenticate(bearerToken(request.headers.authorization), audiences)
+    },
+  }, async (request, reply) => {
     requireLocalRequest(request)
     const principal = await services.access.authenticate(bearerToken(request.headers.authorization), audiences)
     const access = principal.audience === 'operator' ? undefined : await services.interactions!.toolAccess(principal)
@@ -43,6 +59,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableCurrentWorkflowToolCall(context, request.body)
         ?? await unavailableRunGraphToolCall(context, request.body)
         ?? await unavailableRunInspectionToolCall(context, request.body)
+        ?? await unavailableFileReferenceToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
     const context = { role, principal, ...(access ? { tools: access.tools } : {}),

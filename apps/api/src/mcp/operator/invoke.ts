@@ -1,3 +1,4 @@
+import type { FileReferenceToolName } from './tools/fileReferences.js'
 import type { RunInspectionToolName } from '@graphql/contracts/wave25'
 import type { OperatorToolName } from '@graphql/contracts/management'
 
@@ -7,7 +8,7 @@ import type { OperatorRequestContext } from './types.js'
 
 export async function invokeOperatorTool(
   context: OperatorRequestContext,
-  name: OperatorToolName | RunInspectionToolName,
+  name: OperatorToolName | RunInspectionToolName | FileReferenceToolName,
   work: () => Promise<unknown>,
 ) {
   try { return toolResult(await work()) } catch (error) {

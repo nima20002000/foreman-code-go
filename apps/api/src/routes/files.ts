@@ -7,9 +7,13 @@ import { requirePrincipal } from '../modules/access/http.js'
 import { DomainError } from '../modules/errors.js'
 import type { FileConversation } from '../modules/files/authorization.js'
 import { EmptyFileCommandSchema } from '../modules/files/requests.js'
-import type { TemporaryFileService } from '../modules/files/service.js'
+import type { FileStorageService, TemporaryFileService } from '../modules/files/service.js'
 
-interface Params { conversationId: string; workspaceId?: string; requestId: string; fileId: string; revisionId: string }
+export interface FileRouteParams {
+  conversationId: string; workspaceId?: string; workflowId?: string; requestId: string; fileId: string; revisionId: string
+}
+export interface FileScopeRoute<Target> { root: string; target(params: FileRouteParams): Target }
+type Params = FileRouteParams
 const RequestIdSchema = z.string().trim().min(1).max(200)
 const UPLOAD_TIMEOUT_MS = 120_000
 
@@ -26,7 +30,9 @@ export function fileDownloadHeaders(filename: string, mediaType: string, byteSiz
   }
 }
 
-export function registerFileRoutes(app: FastifyInstance, service: TemporaryFileService): void {
+/** Shared FIL-03 raw-upload parsing, deadlines, finalize/cancel and download headers. */
+export function registerFileScopeRoutes<Target>(app: FastifyInstance, service: FileStorageService<Target>,
+  routes: readonly FileScopeRoute<Target>[]): void {
   // Encapsulation prevents the raw-byte parser from changing unrelated API routes.
   void app.register(async (files) => {
     files.addHook('onRequest', async (request, reply) => {
@@ -47,12 +53,7 @@ export function registerFileRoutes(app: FastifyInstance, service: TemporaryFileS
       if (request.body instanceof Readable) { reply.header('connection', 'close'); request.body.resume() }
     })
     files.addContentTypeParser('application/octet-stream', (_request, payload, done) => done(null, payload))
-    for (const kind of ['operator', 'agent'] as const) {
-      const root = kind === 'operator' ? '/api/operator/conversations/:conversationId/files'
-        : '/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/files'
-      const target = (params: Params): FileConversation => kind === 'operator'
-        ? { kind, conversationId: params.conversationId }
-        : { kind, workspaceId: params.workspaceId!, conversationId: params.conversationId }
+    for (const { root, target } of routes) {
       files.get<{ Params: Params; Querystring: unknown }>(root, async (request) =>
         service.list(requirePrincipal(request), target(request.params), request.query))
       files.post<{ Params: Params; Body: unknown }>(`${root}/uploads`, async (request, reply) => {
@@ -88,4 +89,14 @@ export function registerFileRoutes(app: FastifyInstance, service: TemporaryFileS
       })
     }
   })
+}
+
+export function registerFileRoutes(app: FastifyInstance, service: TemporaryFileService): void {
+  registerFileScopeRoutes(app, service, (['operator', 'agent'] as const).map((kind) => ({
+    root: kind === 'operator' ? '/api/operator/conversations/:conversationId/files'
+      : '/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/files',
+    target: (params: Params): FileConversation => kind === 'operator'
+      ? { kind, conversationId: params.conversationId }
+      : { kind, workspaceId: params.workspaceId!, conversationId: params.conversationId },
+  })))
 }

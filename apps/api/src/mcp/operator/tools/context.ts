@@ -56,7 +56,10 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' })),
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
           detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' }))],
-      runtimeLimits:[...OPERATOR_RUNTIME_LIMITS],
+      runtimeLimits:[...OPERATOR_RUNTIME_LIMITS, ...(context.services.fileReferences ? [{
+        feature: 'permanent_reference_files', state: 'limited' as const,
+        detail: 'Permanent references support reference_files_list, reference_file_read, reference_file_add and reference_file_remove through tools/list. Read requires the scope-specific workspaces:read or workflows:read grant; add/remove additionally require the matching update grant. Worker access is not granted. These backend extension names are not in this frozen capability tools enum; use tools/list for caller-filtered schemas. Agent access resolution is separate.',
+      }] : [])],
       workerToolsMcp:{implemented:context.services.workerToolsMcpImplemented===true,endpoint:'/mcp'}}
   }))
 }

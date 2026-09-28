@@ -3,12 +3,13 @@ import type pg from 'pg'
 import { z } from 'zod'
 import {
   MAX_FILE_PAGE_SIZE, FileSchema, FileScopeSchema, FileWithRevisionSchema, FilePageSchema, fileStateAt,
-  type FileScope, type File,
+  type FileScope, type File, PermanentFileScopeSchema, MessageAttachmentRefSchema,
+  type PermanentFileScope, type MessageAttachmentRef,
 } from '@graphql/contracts/files'
 
 import { DomainError } from '../errors.js'
-import type { AllocationSession, AllocationState, FileAllocation, FileAllocationRepository,
-  FileRepository, NewStoredFile, StoredFile } from './repository.js'
+import type { AllocationSession, AllocationState, FileAllocation, FileReferenceRepository,
+  FileMutationContext, NewStoredFile, StoredFile } from './repository.js'
 
 type Query = Pick<pg.PoolClient, 'query'>
 interface FileRow {
@@ -82,7 +83,7 @@ async function transaction<T>(client: pg.PoolClient, work: () => Promise<T>): Pr
 }
 
 /** Bytes live only in FileByteStorage. This repository also serves FIL-04/05/36. */
-export class PostgresFileRepository implements FileRepository, FileAllocationRepository {
+export class PostgresFileRepository implements FileReferenceRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   private async insert(query: Query, input: NewStoredFile): Promise<void> {
@@ -159,8 +160,23 @@ export class PostgresFileRepository implements FileRepository, FileAllocationRep
     return result.rows[0] ? file(result.rows[0]) : undefined
   }
 
+  async removeReference(scope: PermanentFileScope, ref: MessageAttachmentRef, query: Query) {
+    scope = PermanentFileScopeSchema.parse(scope)
+    ref = MessageAttachmentRefSchema.parse(ref)
+    // A row lock serializes removal with setState below. Publication may finish its disk link,
+    // but its conditional metadata update can never turn this tombstone back into a ready file.
+    const removed = await query.query(`update files set state='removed' where file_id=$1
+      and current_revision_id=$2 and scope_kind=$3 and workspace_id=$4
+      and workflow_id is not distinct from $5::text returning file_id`,
+    [ref.fileId, ref.revisionId, scope.kind, scope.workspaceId,
+      scope.kind === 'workflow_reference' ? scope.workflowId : null])
+    if (!removed.rowCount) throw new DomainError('FILE_NOT_FOUND', 'The pinned reference was not found in this scope.', 404)
+    await query.query("update file_allocations set state='canceled' where file_id=$1 and state<>'finalized'", [ref.fileId])
+    return (await this.read(ref.fileId, ref.revisionId, query))!.value
+  }
+
   async withAllocation<T>(ownerPrincipalId: string, requestId: string,
-    operation: (session: AllocationSession) => Promise<T>): Promise<T> {
+    operation: (session: AllocationSession) => Promise<T>, mutation?: FileMutationContext): Promise<T> {
     const client = await this.pool.connect()
     const lockKey = JSON.stringify(['file-allocation', ownerPrincipalId, requestId])
     let locked = false
@@ -176,25 +192,35 @@ export class PostgresFileRepository implements FileRepository, FileAllocationRep
         where a.owner_principal_id=$1 and a.request_id=$2`, [ownerPrincipalId, requestId])
       return result.rows[0] ? allocation(result.rows[0]) : undefined
     }
+    const auditReference = async (value: FileAllocation, action: string) => {
+      if (value.stored.value.file.scope.kind === 'temporary') return
+      await client.query(`insert into management_audit (principal_id,source,action,target_key,outcome,details)
+        values ($1,$2,$3,$4,'succeeded',$5::jsonb)`, [ownerPrincipalId, mutation?.source ?? 'http', action,
+        `file:${value.stored.value.file.fileId}`, JSON.stringify({ requestId, revisionId: value.stored.value.revision.revisionId })])
+    }
     try {
       const result = await client.query<{ locked: boolean }>('select pg_try_advisory_lock(hashtextextended($1,273601)) as locked', [lockKey])
       locked = result.rows[0]?.locked === true
       if (!locked) throw new DomainError('FILE_UPLOAD_BUSY', 'This upload is being committed. Retry the same request.', 409)
+      await mutation?.authorize(client)
       const session: AllocationSession = {
         read,
         create: async (value) => {
           check()
           if (value.stored.ownerPrincipalId !== ownerPrincipalId || value.requestId !== requestId) throw new Error('Allocation identity mismatch.')
           await transaction(client, async () => {
+            await mutation?.authorize(client)
             await this.insert(client, value.stored)
             await client.query(`insert into file_allocations (allocation_id,owner_principal_id,request_id,input_hash,file_id,revision_id,state,created_at)
               values ($1,$2,$3,$4,$5,$6,$7,$8)`, [value.allocationId, ownerPrincipalId, requestId, value.inputHash,
               value.stored.value.file.fileId, value.stored.value.revision.revisionId, value.state, value.stored.value.file.createdAt])
+            await auditReference(value, 'reference_file.allocate')
           })
         },
         setState: async (state) => {
           check()
           await transaction(client, async () => {
+            await mutation?.authorize(client)
             const current = await read()
             if (!current) throw new DomainError('FILE_UPLOAD_NOT_FOUND', 'Upload was not found.', 404)
             const f = current.stored.value.file
@@ -204,11 +230,15 @@ export class PostgresFileRepository implements FileRepository, FileAllocationRep
             } else {
               if (current.state === 'canceled' || f.state === 'removed') throw new DomainError('FILE_UPLOAD_CANCELED', 'Upload was canceled.', 409)
               const result = await client.query(`update files set state=$2 where file_id=$1 and state in ('pending','ready')
-                and expires_at>clock_timestamp() returning file_id`, [f.fileId, state === 'finalized' ? 'ready' : f.state])
-              if (!result.rowCount) throw new DomainError('FILE_EXPIRED', 'The file has expired.', 410)
+                and ((scope_kind='temporary' and expires_at>clock_timestamp())
+                  or scope_kind in ('workflow_reference','workspace_reference')) returning file_id`, [f.fileId, state === 'finalized' ? 'ready' : f.state])
+              if (!result.rowCount) throw new DomainError(f.scope.kind === 'temporary' ? 'FILE_EXPIRED' : 'FILE_BYTES_UNAVAILABLE',
+                'The file expired or was removed during publication.', 410)
               if (current.state === 'finalized' && state !== 'finalized') throw new DomainError('FILE_ALREADY_FINALIZED', 'The upload is already finalized.', 409)
             }
             await client.query('update file_allocations set state=$3 where owner_principal_id=$1 and request_id=$2', [ownerPrincipalId, requestId, state])
+            if (state === 'finalized' && current.state !== 'finalized') await auditReference(current, 'reference_file.add')
+            if (state === 'canceled' && current.state !== 'canceled') await auditReference(current, 'reference_file.cancel')
           })
           return (await read())!
         },

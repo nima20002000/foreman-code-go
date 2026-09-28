@@ -35,7 +35,6 @@ async function main() {
     config.database,
   )
   const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints, componentLogger('http'))
-  registerProductionFileStorage(app, database.pool, config)
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
@@ -70,6 +69,7 @@ async function main() {
   const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
 
   try {
+    registerProductionFileStorage(app, database.pool, config)
     await database.ping()
     stopIfClosing()
     await database.migrate()

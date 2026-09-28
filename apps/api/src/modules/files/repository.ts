@@ -1,4 +1,13 @@
-import type { File, FilePage, FileScope, FileWithRevision } from '@graphql/contracts/files'
+import type pg from 'pg'
+import type { File, FilePage, FileScope, FileWithRevision, PermanentFileScope, MessageAttachmentRef } from '@graphql/contracts/files'
+
+export type FileQuery = Pick<pg.PoolClient, 'query'>
+export type FileMutationSource = 'http' | 'mcp'
+/** Reference writes revalidate live grants and lineage in the same transaction as their metadata/audit. */
+export interface FileMutationContext {
+  source: FileMutationSource
+  authorize(query: FileQuery): Promise<void>
+}
 
 /** Internal persistence seam, not an authorization boundary. No host path is public metadata. */
 export interface StoredFile {
@@ -34,5 +43,10 @@ export interface AllocationSession {
 export interface FileAllocationRepository {
   /** Across API processes; interruption drops ownership, so a crashed upload can be retried. */
   withAllocation<T>(ownerPrincipalId: string, requestId: string,
-    operation: (session: AllocationSession) => Promise<T>): Promise<T>
+    operation: (session: AllocationSession) => Promise<T>, mutation?: FileMutationContext): Promise<T>
+}
+
+export interface FileReferenceRepository extends FileRepository, FileAllocationRepository {
+  /** Caller supplies a command transaction; tombstone and allocation fencing commit with its receipt/audit. */
+  removeReference(scope: PermanentFileScope, ref: MessageAttachmentRef, query: FileQuery): Promise<FileWithRevision>
 }

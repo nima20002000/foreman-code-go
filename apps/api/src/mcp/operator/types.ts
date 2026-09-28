@@ -1,3 +1,4 @@
+import type { FileReferenceService } from '../../modules/files/references/service.js'
 import type { RunGraphReadApi } from '../../modules/run-graph/readService.js'
 import type { OperatorExtensions } from './extensions.js'
 import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
@@ -19,6 +20,7 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  fileReferences?: FileReferenceService
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService
   runGraph?: RunGraphReadApi
   operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
