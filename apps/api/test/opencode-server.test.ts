@@ -17,6 +17,16 @@ async function collect(events: AsyncIterable<NativeHarnessEvent>) {
   return result
 }
 
+it('reads the server version during ensure before checking its profile', async () => {
+  const server = new FixtureServer()
+  server.expectedVersion = ''
+  const ensure = server.ensure.bind(server)
+  server.ensure = async (signal) => { await ensure(signal); server.expectedVersion = '1.18.31' }
+  const native = manager(server)
+  try { assert.equal((await sessionFor(native)).providerVersion, '1.18.31') }
+  finally { await native.dispose() }
+})
+
 it('qualifies the pinned live API and submits one prompt after opening its event stream', async () => {
   const server = new FixtureServer()
   const native = manager(server)

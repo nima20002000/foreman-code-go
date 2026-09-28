@@ -14,6 +14,8 @@ import type { TemporaryFileService } from './modules/files/service.js'
 import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
 import { codexChatHostDirectory, localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
 import { buildProductionApp } from './production.js'
+import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
+import { opencodeQualificationSuite } from './modules/harnesses/qualification/suites/opencode.js'
 
 const lifecycle = componentLogger('lifecycle')
 // First, before configuration or infrastructure can fail: nothing may end silently.
@@ -45,7 +47,8 @@ async function main() {
     return fileStorage
   }, () => localCodexChatHost(fileStorageRoot), codexChatHostDirectory(fileStorageRoot))
   const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints,
-    componentLogger('http'), undefined, codexFiles)
+    componentLogger('http'), undefined, codexFiles,
+    { codex: codexQualificationSuite, opencode: opencodeQualificationSuite })
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')

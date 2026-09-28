@@ -14,7 +14,7 @@ const bundleName = 'codex_app_server_protocol.schemas.json'
 const response = (value: unknown) => ({ success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] })
 
 export const codexQualificationSuite: QualificationSuite = {
-  harness: 'codex', revision: 'codex-live-1',
+  harness: 'codex', revision: 'codex-live-2',
   async run(input: QualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const environment = inheritedAgentEnvironment()
@@ -38,8 +38,8 @@ export const codexQualificationSuite: QualificationSuite = {
     const now = new Date().toISOString()
     const sourceBytes = Buffer.from(`# Qualification\n\n${marker}\n`)
     const sourceFile = { fileId: sourceId, currentRevisionId: sourceRevisionId, createdAt: now,
-      scope, state: 'ready' as const, retentionDurationSeconds: 600,
-      expiresAt: new Date(Date.parse(now) + 600_000).toISOString() }
+      scope, state: 'ready' as const, retentionDurationSeconds: 3600,
+      expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString() }
     const sourceRevision = { fileId: sourceId, revisionId: sourceRevisionId, filename: 'qualification-source.md',
       mediaType: 'text/markdown' as const, byteSize: sourceBytes.length,
       sha256: createHash('sha256').update(sourceBytes).digest('hex'), origin: 'upload' as const, createdAt: now }
@@ -92,7 +92,7 @@ export const codexQualificationSuite: QualificationSuite = {
         const createdAt = new Date().toISOString()
         await transport.respond(request.id, request.method, response({ value: {
           file: { fileId: outputId, currentRevisionId: outputRevisionId, createdAt, scope,
-            state: 'ready', retentionDurationSeconds: 600, expiresAt: new Date(Date.parse(createdAt) + 600_000).toISOString() },
+            state: 'ready', retentionDurationSeconds: 3600, expiresAt: new Date(Date.parse(createdAt) + 3_600_000).toISOString() },
           revision: { fileId: outputId, revisionId: outputRevisionId, filename: 'qualification-result.md',
             mediaType: 'text/markdown', byteSize: Buffer.byteLength(bytes),
             sha256: createHash('sha256').update(bytes).digest('hex'), origin: 'agent_output', createdAt },

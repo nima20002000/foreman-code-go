@@ -8,7 +8,7 @@ import Fastify from 'fastify'
 import { MAX_FILE_BYTES, MAX_MESSAGE_ATTACHMENTS } from '@graphql/contracts/files'
 import { DomainError } from '../../src/modules/errors.js'
 import { registerFileToolsMcp } from '../../src/modules/files/tools/mcp.js'
-import { ManagedOpenCodeServer, QUALIFIED_OPENCODE_VERSION } from '../../src/modules/harnesses/opencodeTransport.js'
+import { ManagedOpenCodeServer } from '../../src/modules/harnesses/opencodeTransport.js'
 import { createOpenCodeFileMcpFacade } from '../../src/modules/harnesses/opencodeFiles/facade.js'
 import { LocalOpenCodeExecutionFiles } from '../../src/modules/harnesses/opencodeFiles/host.js'
 import { readPinnedAttachment, sha256 } from '../../src/modules/harnesses/opencodeFiles/attachments.js'
@@ -20,7 +20,6 @@ const { values } = parseArgs({ options: { model: { type: 'string' }, binary: { t
 assert.equal(process.platform, 'linux', 'This runner-side smoke currently qualifies Linux only.')
 assert.notEqual(process.geteuid?.(), 0, 'Run the native smoke as a non-root user.')
 assert.ok(values.model?.includes('/'), 'Supply --model provider/model using your configured native provider.')
-assert.match(QUALIFIED_OPENCODE_VERSION, /^1\.18\./)
 const [providerID, ...modelPath] = (values.model ?? '').split('/')
 const modelID = modelPath.join('/')
 assert.ok(providerID && modelID)
@@ -124,7 +123,7 @@ try {
   await writeFile(output, published.bytes, { flag: 'wx', mode: 0o600 })
   await f.sessions.revoke(readToken)
   await turn.finish('terminal', AbortSignal.timeout(10_000))
-  console.log(JSON.stringify({ ok: true, nativeVersion: QUALIFIED_OPENCODE_VERSION,
+  console.log(JSON.stringify({ ok: true, nativeVersion: server.expectedVersion,
     output, ...publications[0], sha256: published.revision.sha256 }, null, 2))
 } finally {
   // Stop this isolated native process before dropping its fixture. Unknown submissions are never retried.

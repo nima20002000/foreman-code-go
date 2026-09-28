@@ -24,7 +24,7 @@ const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/
   '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']
 
 export const opencodeQualificationSuite: QualificationSuite = {
-  harness: 'opencode', revision: 'opencode-live-1',
+  harness: 'opencode', revision: 'opencode-live-2',
   async run(input: QualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)
@@ -43,10 +43,10 @@ export const opencodeQualificationSuite: QualificationSuite = {
       turnId: 'qualification', allowMutation: true, allowedTools: ['files.read', 'files.publish_result'] }
     const token = `gql_file_${randomBytes(32).toString('base64url')}`
     const sourceId = randomUUID(), sourceRevisionId = randomUUID(), outputId = randomUUID(), outputRevisionId = randomUUID()
-    const now = new Date().toISOString(), expiresAt = new Date(Date.parse(now) + 600_000).toISOString()
+    const now = new Date().toISOString(), expiresAt = new Date(Date.parse(now) + 3_600_000).toISOString()
     const sourceBytes = Buffer.from(`# Qualification\n\n${marker}\n`)
     const sourceFile: File = { fileId: sourceId, currentRevisionId: sourceRevisionId, createdAt: now,
-      scope, state: 'ready', retentionDurationSeconds: 600, expiresAt }
+      scope, state: 'ready', retentionDurationSeconds: 3600, expiresAt }
     const sourceRevision: FileRevision = { fileId: sourceId, revisionId: sourceRevisionId, filename: 'qualification-source.md',
       mediaType: 'text/markdown', byteSize: sourceBytes.length, sha256: createHash('sha256').update(sourceBytes).digest('hex'),
       origin: 'upload', createdAt: now }
@@ -75,8 +75,8 @@ export const opencodeQualificationSuite: QualificationSuite = {
         published = true
         const createdAt = new Date().toISOString()
         return { value: { file: { fileId: outputId, currentRevisionId: outputRevisionId, createdAt,
-          scope, state: 'ready' as const, retentionDurationSeconds: 600,
-          expiresAt: new Date(Date.parse(createdAt) + 600_000).toISOString() },
+          scope, state: 'ready' as const, retentionDurationSeconds: 3600,
+          expiresAt: new Date(Date.parse(createdAt) + 3_600_000).toISOString() },
         revision: { fileId: outputId, revisionId: outputRevisionId, filename: 'qualification-result.md',
           mediaType: 'text/markdown' as const, byteSize: bytes.length,
           sha256: createHash('sha256').update(bytes).digest('hex'), origin: 'agent_output' as const, createdAt } }, replayed: false }

@@ -40,16 +40,15 @@ const workDirectory = await mkdtemp(join(tmpdir(), `graphql-${values.harness}-qu
 const requireApi = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const { tsImport } = await import(requireApi.resolve('tsx/esm/api'))
 const source = (name) => new URL(`../apps/api/src/modules/harnesses/qualification/${name}`, import.meta.url).href
-const { QUALIFICATION_TARGET_PROFILE } = await tsImport(source('profiles.ts'), import.meta.url)
-const { codexQualificationSuite } = await tsImport(source('suites/codex.ts'), import.meta.url)
-const { opencodeQualificationSuite } = await tsImport(source('suites/opencode.ts'), import.meta.url)
+const { QUALIFICATION_TARGET_PROFILE, runAsQualificationCandidate, codexQualificationSuite, opencodeQualificationSuite } =
+  await tsImport(source('cliEntry.ts'), import.meta.url)
 const suite = values.harness === 'codex' ? codexQualificationSuite : opencodeQualificationSuite
 const controller = new AbortController()
 const timeout = setTimeout(() => controller.abort(new Error('Harness qualification exceeded four minutes.')), 240_000)
 try {
-  const result = await suite.run({ binary, version, binarySha256: before,
+  const result = await runAsQualificationCandidate(values.harness, before, () => suite.run({ binary, version, binarySha256: before,
     profile: QUALIFICATION_TARGET_PROFILE[values.harness], model: values.model ?? null,
-    workDirectory, signal: controller.signal })
+    workDirectory, signal: controller.signal }))
   const unchanged = before === await sha256()
   const checks = [...result.checks, { id: 'binary-unchanged', passed: unchanged,
     detail: unchanged ? null : 'Installed binary changed during qualification.' }]

@@ -1029,8 +1029,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async ready(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
-    if (harnessProfile('opencode', this.options.server.expectedVersion) === null) throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode native mode requires a qualified version.')
     await this.options.server.ensure(signal)
+    if (harnessProfile('opencode', this.options.server.expectedVersion) === null) throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode native mode requires a qualified version.')
     if (this.readyGeneration === this.generation) return
     const generation = this.generation
     const health = object(await this.json('/global/health', undefined, signal))

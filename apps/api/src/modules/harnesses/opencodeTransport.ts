@@ -14,7 +14,6 @@ import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from 
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
 
-export const QUALIFIED_OPENCODE_VERSION = '1.18.31'
 const STARTUP_TIMEOUT_MS = 30_000
 const REQUEST_TIMEOUT_MS = 30_000
 const APP_CREDENTIAL_ENV = APP_MCP_TOKEN
@@ -79,7 +78,7 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 
 /** One process and one serialized lifecycle for one logical Agent credential owner. */
 export class ManagedOpenCodeServer implements OpenCodeServerController {
-  expectedVersion = QUALIFIED_OPENCODE_VERSION
+  expectedVersion = ''
   readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   generation = 0
   private desiredEnvironment: ChildProcessEnvironment | undefined
@@ -290,7 +289,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         this.expectedVersion = installed
       }
       if (version.exitCode !== 0) {
-        throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', `OpenCode server mode requires exactly ${this.expectedVersion}; found ${installed || 'unavailable'}.`)
+        throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The installed OpenCode version could not be read.')
       }
       this.password = randomBytes(32).toString('hex')
       const environment: NodeJS.ProcessEnv = inheritedAgentEnvironment()

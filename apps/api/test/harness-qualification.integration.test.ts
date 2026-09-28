@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { HarnessQualificationListSchema } from '@graphql/contracts/harness-qualification'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -41,11 +41,12 @@ it('runs a fake suite through authenticated HTTP and MCP, denies a reader, and r
     const commands = new PostgresCommandCoordinator(pool)
     const repository = new HarnessQualificationRepository(pool)
     const registry = new HarnessQualificationRegistry(repository, { codex: 'fake-v1', opencode: 'fake-v1' })
-    const suite: QualificationSuite = { harness: 'codex', revision: 'fake-v1', run: async () => ({
+    const suite: QualificationSuite = { harness: 'codex', revision: 'fake-v1', run: vi.fn(async () => ({
       checks: [{ id: 'protocol', passed: true, detail: null }], evidence: { fixture: true },
-    }) }
+    })) }
+    const staticCheck = vi.fn(async () => 'a'.repeat(64))
     const service = new HarnessQualificationService(repository, registry, { codex: suite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands)
+      { codex: binary, opencode: binary }, commands, staticCheck)
     installQualificationGate(registry, service)
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).rejects.toMatchObject({ result: { error: { code: 'HARNESS_QUALIFYING', retryable: true } } })
     const services = { commands, harnessQualifications: service } as unknown as OperatorServices
@@ -66,7 +67,8 @@ it('runs a fake suite through authenticated HTTP and MCP, denies a reader, and r
     expect(started.isError).not.toBe(true)
     await viWaitFor(async () => expect((await repository.list())[0]?.status).toBe('qualified'))
     const listed = HarnessQualificationListSchema.parse((await readClient.callTool({ name: 'harness_qualifications_list', arguments: {} })).structuredContent)
-    expect(listed.qualifications[0]).toMatchObject({ harness: 'codex', version: '0.158.0', status: 'qualified', suiteRevision: 'fake-v1' })
+    expect(listed.qualifications[0]).toMatchObject({ harness: 'codex', version: '0.158.0', status: 'qualified', suiteRevision: 'fake-v1',
+      checks: [{ id: 'static-compatibility', passed: true }, { id: 'protocol', passed: true }] })
     expect(await registry.trusted('codex', '0.158.0', listed.qualifications[0]!.binarySha256!)).toBe(true)
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
     expect(await registry.trusted('codex', '0.158.0', '0'.repeat(64))).toBe(false)
@@ -75,18 +77,36 @@ it('runs a fake suite through authenticated HTTP and MCP, denies a reader, and r
     expect(HarnessQualificationListSchema.parse(http.json()).qualifications).toHaveLength(1)
     const denied = await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/qualification', headers: { authorization: `Bearer ${reader.token}` } })
     expect(denied.statusCode).toBe(403)
+    await writeFile(binary, '#!/bin/sh\n# another binary, same version\necho "codex-cli 0.158.0"\n')
+    await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).rejects.toMatchObject({
+      result: { error: { code: 'HARNESS_QUALIFYING', retryable: true } },
+    })
+    await viWaitFor(async () => expect((await repository.list()).filter((item) => item.suiteRevision === 'fake-v1' && item.status === 'qualified')).toHaveLength(2))
+    expect(suite.run).toHaveBeenCalledTimes(3)
+    expect(staticCheck).toHaveBeenCalledTimes(3)
+    await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
     const failedSuite: QualificationSuite = { harness: 'codex', revision: 'fake-v2', run: async () => ({
       checks: [{ id: 'protocol', passed: false, detail: 'fixture mismatch' }], evidence: { fixture: true },
     }) }
     const failedRegistry = new HarnessQualificationRegistry(repository, { codex: 'fake-v2', opencode: 'fake-v1' })
     const failedService = new HarnessQualificationService(repository, failedRegistry, { codex: failedSuite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands)
+      { codex: binary, opencode: binary }, commands, staticCheck)
     await failedService.begin('codex')
     await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v2')?.status).toBe('failed'))
     installQualificationGate(failedRegistry, failedService)
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).rejects.toMatchObject({
       result: { error: { code: 'HARNESS_UNQUALIFIED' } },
     })
+    const skippedSuite: QualificationSuite = { ...suite, revision: 'fake-v3', run: vi.fn(async () => ({ checks: [], evidence: {} })) }
+    const staticFailure = new HarnessQualificationService(repository,
+      new HarnessQualificationRegistry(repository, { codex: 'fake-v3', opencode: 'fake-v1' }),
+      { codex: skippedSuite, opencode: { ...suite, harness: 'opencode' } },
+      { codex: binary, opencode: binary }, commands, async () => { throw new Error('schema missing required method') })
+    await staticFailure.begin('codex')
+    await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v3')).toMatchObject({
+      status: 'failed', checks: [{ id: 'static-compatibility', passed: false, detail: 'schema missing required method' }],
+    }))
+    expect(skippedSuite.run).not.toHaveBeenCalled()
   } finally {
     clearQualificationGate()
     await Promise.allSettled(clients.map((client) => client.close()))

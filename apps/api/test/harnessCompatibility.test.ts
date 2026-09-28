@@ -6,7 +6,6 @@ import type { CompatibilityProbe, HarnessInstallation } from '../src/modules/har
 import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
 import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES } from '../src/modules/harnesses/compatibility/releases.js'
 import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
-import { QUALIFIED_OPENCODE_VERSION } from '../src/modules/harnesses/opencodeTransport.js'
 
 const now = Date.parse('2026-09-19T12:00:00.000Z')
 const sha = 'a'.repeat(64)
@@ -39,7 +38,6 @@ afterEach(async () => { await Promise.allSettled(services.splice(0).map((service
 describe('harness compatibility diagnostics (not execution qualification)', () => {
   it('records official provenance for the bundled native qualification versions', async () => {
     expect(`codex-cli ${QUALIFIED_RELEASES.codex.version}`).toBe(QUALIFIED_CODEX_VERSION)
-    expect(QUALIFIED_RELEASES.opencode.version).toBe(QUALIFIED_OPENCODE_VERSION)
     const options = fixture(QUALIFIED_RELEASES.codex.version)
     const result = await create(options).checkAll()
     expect(result.map((row) => row.status)).toEqual(['known-compatible', 'known-compatible'])

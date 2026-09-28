@@ -1,3 +1,4 @@
+import { runAsQualificationCandidate } from './gate.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +11,7 @@ import { DomainError } from '../../errors.js'
 import { runCommand } from '../process.js'
 import { QUALIFICATION_TARGET_PROFILE } from './profiles.js'
 import { parseInstalledVersion } from '../compatibility/probe.js'
+import { nativeCompatibilityProbe } from '../compatibility/probe.js'
 import type { HarnessQualificationRepository } from './repository.js'
 import type { HarnessQualificationRegistry } from './registry.js'
 import type { QualificationSuite } from './types.js'
@@ -18,7 +20,8 @@ export class HarnessQualificationService {
   private readonly flights = new Map<CompatibilityHarness, Promise<void>>()
   constructor(private readonly repository: HarnessQualificationRepository, private readonly registry: HarnessQualificationRegistry,
     private readonly suites: Record<CompatibilityHarness, QualificationSuite>, private readonly binaries: Record<CompatibilityHarness, string>,
-    private readonly commands: PostgresCommandCoordinator) {}
+    private readonly commands: PostgresCommandCoordinator,
+    private readonly staticCheck: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal) => Promise<string> = checkStaticCompatibility) {}
 
   async list(principal: ManagementPrincipal): Promise<{ qualifications: HarnessQualification[] }> {
     requireAuthorization(principal, 'harnesses:read')
@@ -61,17 +64,40 @@ export class HarnessQualificationService {
     const profile = QUALIFICATION_TARGET_PROFILE[harness]
     const base = { harness, version, binarySha256: sha256, suiteRevision: suite.revision, profile, startedAt }
     await this.repository.save({ ...base, status: 'qualifying', checks: [], failureReason: null, checkedAt: null })
+    const checks: HarnessQualification['checks'] = []
+    const signal = AbortSignal.timeout(120_000)
+    try {
+      const schemaSha256 = await this.staticCheck(harness, binary, version, signal)
+      checks.push({ id: 'static-compatibility', passed: true, detail: schemaSha256 })
+    } catch (error) {
+      checks.push({ id: 'static-compatibility', passed: false, detail: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500) })
+      await this.repository.save({ ...base, status: 'failed', checks, failureReason: 'The installed CLI failed static compatibility.', checkedAt: new Date().toISOString() })
+      return
+    }
     const workDirectory = await mkdtemp(join(tmpdir(), `graphql-${harness}-qualification-`))
     try {
-      const result = await suite.run({ binary, version, binarySha256: sha256, profile, model: null, workDirectory, signal: AbortSignal.timeout(120_000) })
+      const result = await runAsQualificationCandidate(harness, sha256,
+        () => suite.run({ binary, version, binarySha256: sha256, profile, model: null, workDirectory, signal }))
+      checks.push(...result.checks)
       const unchanged = (await this.registry.inspectBinary(binary)).sha256 === sha256
       const passed = unchanged && result.checks.length > 0 && result.checks.every((check) => check.passed)
-      await this.repository.save({ ...base, status: passed ? 'qualified' : 'failed', checks: result.checks,
+      await this.repository.save({ ...base, status: passed ? 'qualified' : 'failed', checks,
         failureReason: passed ? null : 'The local qualification checks did not pass against the same binary.',
         checkedAt: new Date().toISOString() }, result.evidence)
       if (passed) await this.registry.trusted(harness, version, sha256)
     } catch {
-      await this.repository.save({ ...base, status: 'failed', checks: [], failureReason: 'The local qualification suite did not pass.', checkedAt: new Date().toISOString() })
+      await this.repository.save({ ...base, status: 'failed', checks, failureReason: 'The local qualification suite did not pass.', checkedAt: new Date().toISOString() })
     } finally { await rm(workDirectory, { recursive: true, force: true }) }
   }
+}
+
+async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal): Promise<string> {
+  const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd())
+  try {
+    const installation = await probe.inspect(harness, signal)
+    if (installation.version !== version) throw new Error('The installed CLI version changed during qualification.')
+    const schemaSha256 = await probe.probe(harness, installation, signal)
+    await probe.assertUnchanged(installation, signal)
+    return schemaSha256
+  } finally { await probe.close?.() }
 }
