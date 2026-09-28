@@ -24,7 +24,7 @@ const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/
   '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']
 
 export const opencodeQualificationSuite: QualificationSuite = {
-  harness: 'opencode', revision: 'opencode-live-2',
+  harness: 'opencode', revision: 'opencode-live-3',
   async run(input: QualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)

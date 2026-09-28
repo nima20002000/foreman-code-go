@@ -8,6 +8,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { requireAuthorization } from '../../access/policy.js'
 import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'
+import type { PostgresSettingsRepository } from '../../settings/postgres.js'
 import { runCommand } from '../process.js'
 import { QUALIFICATION_TARGET_PROFILE } from './profiles.js'
 import { parseInstalledVersion } from '../compatibility/probe.js'
@@ -21,6 +22,7 @@ export class HarnessQualificationService {
   constructor(private readonly repository: HarnessQualificationRepository, private readonly registry: HarnessQualificationRegistry,
     private readonly suites: Record<CompatibilityHarness, QualificationSuite>, private readonly binaries: Record<CompatibilityHarness, string>,
     private readonly commands: PostgresCommandCoordinator,
+    private readonly settings: Pick<PostgresSettingsRepository, 'getManagedHarnessDefaults'>,
     private readonly staticCheck: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal) => Promise<string> = checkStaticCompatibility) {}
 
   async list(principal: ManagementPrincipal): Promise<{ qualifications: HarnessQualification[] }> {
@@ -76,8 +78,10 @@ export class HarnessQualificationService {
     }
     const workDirectory = await mkdtemp(join(tmpdir(), `graphql-${harness}-qualification-`))
     try {
+      const saved = await this.settings.getManagedHarnessDefaults()
+      const model = saved.revision > 0 ? saved.defaults[harness].model : null
       const result = await runAsQualificationCandidate(harness, sha256,
-        () => suite.run({ binary, version, binarySha256: sha256, profile, model: null, workDirectory, signal }))
+        () => suite.run({ binary, version, binarySha256: sha256, profile, model, workDirectory, signal }))
       checks.push(...result.checks)
       const unchanged = (await this.registry.inspectBinary(binary)).sha256 === sha256
       const passed = unchanged && result.checks.length > 0 && result.checks.every((check) => check.passed)

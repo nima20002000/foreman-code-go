@@ -14,7 +14,7 @@ const bundleName = 'codex_app_server_protocol.schemas.json'
 const response = (value: unknown) => ({ success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] })
 
 export const codexQualificationSuite: QualificationSuite = {
-  harness: 'codex', revision: 'codex-live-2',
+  harness: 'codex', revision: 'codex-live-3',
   async run(input: QualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const environment = inheritedAgentEnvironment()

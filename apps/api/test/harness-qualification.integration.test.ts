@@ -12,6 +12,7 @@ import { harnessQualificationMigration } from '../src/infrastructure/harnessQual
 import { migrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
@@ -39,6 +40,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     await applyApplicationMigrations(pool)
     const access = new PostgresAccessService(pool)
     const commands = new PostgresCommandCoordinator(pool)
+    const settings = new PostgresSettingsRepository(pool)
     const repository = new HarnessQualificationRepository(pool)
     const registry = new HarnessQualificationRegistry(repository, { codex: 'fake-v1', opencode: 'fake-v1' })
     const suite: QualificationSuite = { harness: 'codex', revision: 'fake-v1', run: vi.fn(async () => ({
@@ -46,7 +48,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     })) }
     const staticCheck = vi.fn(async () => 'a'.repeat(64))
     const service = new HarnessQualificationService(repository, registry, { codex: suite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands, staticCheck)
+      { codex: binary, opencode: binary }, commands, settings, staticCheck)
     installQualificationGate(registry, service)
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).rejects.toMatchObject({ result: { error: { code: 'HARNESS_QUALIFYING', retryable: true } } })
     const services = { commands, harnessQualifications: service } as unknown as OperatorServices
@@ -90,7 +92,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     }) }
     const failedRegistry = new HarnessQualificationRegistry(repository, { codex: 'fake-v2', opencode: 'fake-v1' })
     const failedService = new HarnessQualificationService(repository, failedRegistry, { codex: failedSuite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands, staticCheck)
+      { codex: binary, opencode: binary }, commands, settings, staticCheck)
     await failedService.begin('codex')
     await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v2')?.status).toBe('failed'))
     installQualificationGate(failedRegistry, failedService)
@@ -101,7 +103,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticat
     const staticFailure = new HarnessQualificationService(repository,
       new HarnessQualificationRegistry(repository, { codex: 'fake-v3', opencode: 'fake-v1' }),
       { codex: skippedSuite, opencode: { ...suite, harness: 'opencode' } },
-      { codex: binary, opencode: binary }, commands, async () => { throw new Error('schema missing required method') })
+      { codex: binary, opencode: binary }, commands, settings, async () => { throw new Error('schema missing required method') })
     await staticFailure.begin('codex')
     await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v3')).toMatchObject({
       status: 'failed', checks: [{ id: 'static-compatibility', passed: false, detail: 'schema missing required method' }],

@@ -8,6 +8,7 @@ import { componentLogger } from '../../../infrastructure/logger.js'
 import { bootIdentity, identityAlive, processIdentity, type LinuxProcessIdentity } from './linuxIdentity.js'
 import { cgroupBoundary, cgroupPopulated, killCgroup, retireCgroup, type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
+import { nativeAgentEnvironment } from '../secrets.js'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 
 export interface NativeProcessRecovery {
@@ -407,7 +408,9 @@ function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
 export function spawnNativeProcess(binary: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery
 }): ChildProcessWithoutNullStreams {
-  return observeNativeProcess(spawnNativeProcessUnobserved(binary, args, options), binary, options.recovery?.owner)
+  return observeNativeProcess(spawnNativeProcessUnobserved(binary, args, {
+    ...options, env: nativeAgentEnvironment(binary, options.cwd, options.env),
+  }), binary, options.recovery?.owner)
 }
 
 const harnessLog = componentLogger('harness')
