@@ -42,6 +42,15 @@ export interface OpenCodeExecutionFiles {
 export type OpenCodeFileService = Pick<AgentFileToolService,
   'sessions' | 'artifacts' | 'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn'>
 
+/** A trusted admission-bound range reader. It reauthorizes the owner/scope and
+ * pinned revision on every call without minting a native file-tool credential.
+ * It must not be implemented by issueForAcceptedSession before native ack.
+ */
+export type OpenCodeAcceptedFileReader = (
+  input: MessageAttachmentRef & { offset: number; length: number },
+  signal: AbortSignal,
+) => ReturnType<AgentFileToolService['read']>
+
 export type OpenCodeFilePart = {
   type: 'file'
   mime: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
@@ -59,6 +68,13 @@ export interface OpenCodeFileTurnOptions {
   /** FIL-03/contract constants are supplied by the composition root. */
   maxFileBytes: number
   maxAttachments: number
+  /** Trusted, idempotent repository operation: read FIL-05 publications for this
+   * exact binding and adopt them into context.messageId. No destination is taken
+   * from a tool result. Must remain usable after credential revocation/expiry.
+   */
+  adoptPublished?: (context: FileToolContext) => Promise<void>
+  /** Manager-owned redaction registry only; never a logger or model callback. */
+  rememberCredential?: (token: string) => void
 }
 
 export class OpenCodeFileError extends Error {

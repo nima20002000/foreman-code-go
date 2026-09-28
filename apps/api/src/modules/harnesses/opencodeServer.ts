@@ -41,6 +41,7 @@ import { isOpenCodeReplyAcknowledgement } from './openCodeResponseAcknowledgemen
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
 import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from './opencodeReconciliation.js'
 import { agentInstructionBundle, type AgentInstructionBundle } from '../skills/instructions.js'
+import { prepareOpenCodeChatFiles, type OpenCodeChatFiles, type OpenCodeManagedFileTurn } from './opencodeFiles/chat.js'
 
 export {
   ManagedOpenCodeServer, OpenCodeNativeDeliveryError, buildOpenCodeConfigContent,
@@ -69,6 +70,9 @@ interface OwnedTurn {
   terminalResult: NativeHistory['terminalResult']
   nativeMessageId?: string
   reconciliationEvents?: readonly NativeHarnessEvent[]
+  /** The native turn owns file inputs/tools across observer detach and retry. */
+  files?: OpenCodeManagedFileTurn
+  fileIdentity?: string
 }
 interface SessionState {
   readonly connectionId: string
@@ -91,6 +95,8 @@ interface SessionState {
 interface MessagePage { messages: OpenCodeMessage[]; nextCursor?: string }
 
 export interface OpenCodeNativeSessionManagerOptions {
+  /** Authenticated durable chat admission + execution-host capabilities only. */
+  chatFiles?: OpenCodeChatFiles
   responseJournal?: NativeResponseJournal
   server: OpenCodeServerController
   ownerAgentId: string
@@ -132,6 +138,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private readonly responseReceipts = new Map<string, NativeResponseDeliveryEvidence>()
 
   constructor(private readonly options: OpenCodeNativeSessionManagerOptions) {
+    if (options.chatFiles && options.appMcpAccess !== 'none') {
+      throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'File chat requires a credential-free, App-MCP-disabled native manager.')
+    }
     if (options.server.ownerAgentId !== undefined && options.server.ownerAgentId !== options.ownerAgentId) {
       throw new HarnessExecutionError('OPENCODE_CREDENTIAL_OWNER_MISMATCH', 'The native manager and resident server must have the same credential owner.')
     }
@@ -309,16 +318,23 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         signal.throwIfAborted()
         if (this.requireSession(session) !== state) throw new HarnessExecutionError('OPENCODE_SESSION_CONTEXT_MISSING', 'The session was closed before its turn could be reserved.')
         await this.ready(signal)
+        if (this.options.chatFiles && [...this.sessions.values()].some((other) => other !== state
+          && other.turn && (other.turn.files || (other.turn.submitted && !other.turn.terminalResult)))) {
+          throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'File chat cannot share its native process with another active chat turn.')
+        }
         if (state.turn?.observing) throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This turn already has an event observer; detach it before re-subscribing.')
         if (state.turn && !state.turn.terminalResult && state.turn.correlationId !== correlationId) {
           await this.reconcileReady(session, state.turn.correlationId, signal)
           if (!state.turn.terminalResult) throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'The previous native turn is still running or its outcome is uncertain.')
         }
+        if (state.turn?.terminalResult && state.turn.files) {
+          await this.finishFiles(state.turn, 'terminal')
+        }
         const messageID = nativeMessageId(correlationId)
         const root = await this.message(session.nativeSessionId, messageID, state.directory, signal)
         if (state.turn?.correlationId === correlationId) {
           turn = state.turn
-          if (prompt !== undefined && turn.promptHash && turn.promptHash !== turnDigest(prompt, state.instructions)) {
+          if (prompt !== undefined && turn.promptHash && turn.promptHash !== turnDigest(prompt, state.instructions, turn.fileIdentity)) {
             throw new HarnessExecutionError('OPENCODE_CORRELATION_CONFLICT', 'The correlation ID was already used for a different prompt.')
           }
         } else {
@@ -341,29 +357,53 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         if (turn.terminalResult) return
         if (turn.submitted) {
           initialHistory = await this.reconcileReady(session, correlationId, signal)
+          // An observer can yield saved history before its next pull. Subscribe
+          // now so native completion in that interval is not missed.
+          if (turn.files && !initialHistory.terminalResult) response = await this.openEvents(state.directory, signal, false)
           return
         }
         const status = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
         if (status !== 'idle') throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'The native session has active work; another prompt was not submitted.')
+        if (!turn.files && this.options.chatFiles) {
+          const files = await prepareOpenCodeChatFiles(this.options.chatFiles, {
+            ownerAgentId: this.options.ownerAgentId, nativeSessionId: session.nativeSessionId,
+            nativeTurnId: messageID, clientCorrelationId: correlationId, directory: state.directory,
+            configuration: state.configuration,
+          }, this.options.server, this.options.appMcpServerName ?? APP_MCP_SERVER_NAME, signal, (token) => { this.knownSecrets.add(token) })
+          if (files) {
+            turn.files = files
+            turn.fileIdentity = files.inputs.identity
+            turn.promptHash = turnDigest(prompt ?? '', state.instructions, turn.fileIdentity)
+          }
+        }
         response = await this.openEvents(state.directory, signal, false)
         const [providerID, ...model] = state.configuration.model.split('/')
         // Claim delivery before awaiting it. An uncertain transport/body failure must
         // never become permission to resend a potentially accepted prompt.
+        turn.files?.bridge.submissionAttempted()
         turn.submitted = true
         turn.submittedAt = Date.now()
         turn.generation = this.generation
+        let nativeAcknowledged = false
         try {
           await this.mutate(withDirectory(`/session/${encodeURIComponent(session.nativeSessionId)}/prompt_async`, state.directory), {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ messageID, model: { providerID, modelID: model.join('/') },
               ...(state.configuration.variant ? { variant: state.configuration.variant } : {}),
-              agent: state.configuration.nativeAgent, parts: [{ type: 'text', text: prompt }],
+              agent: state.configuration.nativeAgent, parts: [
+                { type: 'text', text: turn.files ? `${prompt ?? ''}\n\n${turn.files.inputs.promptSuffix}` : prompt },
+                ...(turn.files?.inputs.imageParts ?? []),
+              ],
               ...(state.instructions ? { system: state.instructions.text } : {}),
             }),
           }, signal)
+          nativeAcknowledged = true
           await onSubmitted?.(messageID)
+          await turn.files?.bridge.acknowledge(signal)
         } catch (error) {
-          if (error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite') turn.submitted = false
+          // A file/listener/adoption failure AFTER native acceptance is not a
+          // rejected prompt, even if the secondary error claims definite delivery.
+          if (!nativeAcknowledged && error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite') turn.submitted = false
           throw error
         }
       })
@@ -445,9 +485,18 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       // Detaching observation is deliberately NOT native cancellation or writer release.
       if (turn) {
         turn.observing = false
-        if (!turn.submitted && state.turn === turn) state.turn = undefined
+        if (!turn.submitted && state.turn === turn) {
+          await this.finishFiles(turn, 'definite_rejection')
+          state.turn = undefined
+        }
       }
     }
+  }
+
+  private async finishFiles(turn: OwnedTurn, evidence: 'terminal' | 'definite_rejection'): Promise<void> {
+    if (!turn.files) return
+    await turn.files.finish(evidence, AbortSignal.timeout(10_000))
+    delete turn.files
   }
 
   async pending(session: NativeSessionReference, signal?: AbortSignal): Promise<PendingNativeInteraction | undefined> {
@@ -630,6 +679,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private async cancelReady(session: NativeSessionReference, signal: AbortSignal): Promise<boolean> {
     const state = this.requireSession(session)
     state.autoReplies.stop()
+    const fileErrors: unknown[] = []
+    try { await state.turn?.files?.bridge.revoke() } catch (error) { fileErrors.push(error) }
     const statuses = object(await this.json('/session/status', state.directory, signal))
     const permissions = await this.permissionRequests(state.directory, signal)
     const questions = await this.json('/question', state.directory, signal)
@@ -659,7 +710,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (object(after[id]).type !== 'idle' && await this.ownedSession(session.nativeSessionId, id, state, signal)) accepted = false
     }
     if (remaining.length) accepted = false
-    if (accepted && state.turn) state.turn.terminalResult = { outcome: 'canceled' }
+    if (accepted && state.turn) {
+      state.turn.terminalResult = { outcome: 'canceled' }
+      try { await this.finishFiles(state.turn, 'terminal') } catch (error) { fileErrors.push(error) }
+    }
+    if (fileErrors.length) throw new AggregateError(fileErrors, 'Native cancellation requires file cleanup retry.')
     return accepted
   }
 
@@ -744,7 +799,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     }
-    if (turn?.terminalResult) return historyWithOwnedTerminal(result, turn, this.generation)
+    if (turn?.terminalResult) {
+      await this.finishFiles(turn, 'terminal')
+      return historyWithOwnedTerminal(result, turn, this.generation)
+    }
     if (!root) {
       if (!turn?.submitted) throw new HarnessExecutionError('OPENCODE_TURN_IDENTITY_MISSING', 'The requested turn could not be identified in native history; older answers are not substitutes.')
     } else if (root.info.role !== 'user') {
@@ -771,12 +829,18 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         result.nativeMessageId = history.resultMessageId
       }
     }
+    if (root && turn?.files?.bridge.needsAcknowledgement && turn.generation === this.generation && !terminalResult) {
+      await turn.files.bridge.acknowledge(signal)
+    }
     const statusAfter = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
     if (statusBefore !== 'idle' || statusAfter !== 'idle' || pendingInteractions.length
       || (usesOpenCodeNativeAuto(state.configuration) && !state.autoReplies.stopped && state.autoReplies.hasPending)) return result
     // Another observation may have finished while this scan awaited provider I/O.
     // Reuse its complete result/source pair; do not mint a competing receipt.
-    if (turn?.terminalResult) return historyWithOwnedTerminal(result, turn, this.generation)
+    if (turn?.terminalResult) {
+      await this.finishFiles(turn, 'terminal')
+      return historyWithOwnedTerminal(result, turn, this.generation)
+    }
     if (!terminalResult && turn?.scopedError && (root || turn.idleObserved)) {
       const error = turn.scopedError
       terminalResult = failure(typeof error.name === 'string' ? error.name : 'OPENCODE_TURN_FAILED',
@@ -814,6 +878,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       result.terminalResult = terminalResult
       result.terminalTurn = { correlationId, providerId: messageID, result: terminalResult }
+      if (turn) await this.finishFiles(turn, 'terminal')
     }
     return result
   }
@@ -842,7 +907,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (!restart && (state.turn?.observing || (state.turn?.submitted && !state.turn.terminalResult))) {
         throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'Cancel or reconcile this native turn before closing its session.')
       }
-      if (this.sessions.size === 1) await this.disposeUnusedServer()
+      if (restart && state.turn?.files && this.sessions.size !== 1) {
+        throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'File input cleanup requires closing its dedicated native process.')
+      }
+      if (this.sessions.size === 1) {
+        await this.disposeUnusedServer()
+        await state.turn?.files?.nativeProcessClosed(AbortSignal.timeout(10_000))
+      } else if (state.turn?.files) await this.finishFiles(state.turn, 'terminal')
       if (restart) this.restartClosures.set(session.nativeSessionId, structuredClone(session))
       this.sessions.delete(session.nativeSessionId)
     })
@@ -852,10 +923,25 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (this.disposal) return this.disposal
     // Synchronously invalidate queued setup and observers, then drain the owner lifecycle.
     this.lifetime.abort(new Error('OpenCode session manager disposed.'))
+    // Close facade admission synchronously and attempt revoke independently of a
+    // failed native-process stop. A shutdown failure must not leave live tools.
+    const revoking = Promise.allSettled([...this.sessions.values()].flatMap((state) =>
+      state.turn?.files ? [state.turn.files.bridge.revoke()] : []))
     const stopping = this.options.server.dispose()
     void stopping.catch(() => undefined)
     const attempt = this.exclusive(async () => {
-      await stopping
+      const revoked = await revoking
+      const errors: unknown[] = revoked.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+      try { await stopping } catch (error) {
+        errors.push(error)
+        if (!this.options.chatFiles && errors.length === 1) throw error
+        throw new AggregateError(errors, `Native process shutdown and file revocation require retry: ${String(error)}`, { cause: error })
+      }
+      for (const state of this.sessions.values()) {
+        try { await state.turn?.files?.nativeProcessClosed(AbortSignal.timeout(10_000)) } catch (error) { errors.push(error) }
+      }
+      // Keep failed cleanup reachable for a subsequent dispose attempt.
+      if (errors.length) throw new AggregateError(errors, 'Disposed native manager still requires file cleanup.')
       this.sessions.clear()
       this.boundEnvironmentFingerprint = undefined
       this.readyGeneration = undefined
@@ -949,6 +1035,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       '/session/{sessionID}/message/{messageID}', '/session/{sessionID}/prompt_async', '/session/{sessionID}/abort',
       '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']) {
       if (!(path in paths)) throw new HarnessExecutionError('OPENCODE_SERVER_SCHEMA_UNQUALIFIED', `The live OpenCode schema is missing ${path}.`)
+    }
+    for (const state of this.sessions.values()) {
+      if (state.turn?.files && state.turn.generation !== generation) {
+        await state.turn.files.nativeProcessClosed(AbortSignal.timeout(10_000))
+        delete state.turn.files
+      }
     }
     // MCP controls are directory-instance state, so restore once per retained directory.
     const restored = new Set<string>()
@@ -1173,7 +1265,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     throw error
   }
   private async disposeUnusedServer(): Promise<void> {
-    await this.options.server.dispose()
+    const revoking = Promise.allSettled([...this.sessions.values()].flatMap((state) =>
+      state.turn?.files ? [state.turn.files.bridge.revoke()] : []))
+    const errors: unknown[] = []
+    try { await this.options.server.dispose() } catch (error) { errors.push(error) }
+    const revoked = await revoking
+    errors.push(...revoked.flatMap((result) => result.status === 'rejected' ? [result.reason] : []))
+    if (errors.length === 1) throw errors[0]
+    if (errors.length) throw new AggregateError(errors, 'Native process closure and file revocation require retry.')
     this.boundEnvironmentFingerprint = undefined
     this.readyGeneration = undefined
   }
@@ -1263,8 +1362,10 @@ function sessionInstructions(input: NativeSessionStart): AgentInstructionBundle 
   return agentInstructionBundle(input.kind === 'operator' ? input.configuration : input.request.configuration)
 }
 /** A reused correlation must match both task text and the accepted instruction identity. */
-function turnDigest(prompt: string, instructions: AgentInstructionBundle | undefined): string {
-  return digest(`${instructions?.hash ?? 'none'}\n${prompt}`)
+function turnDigest(prompt: string, instructions: AgentInstructionBundle | undefined, fileIdentity?: string): string {
+  const legacy = `${instructions?.hash ?? 'none'}\n${prompt}`
+  // Preserve text-only correlation identity byte-for-byte.
+  return digest(fileIdentity ? JSON.stringify([legacy, fileIdentity]) : legacy)
 }
 function newState(directory: string, configuration: OpenCodeHarnessConfiguration, instructions: AgentInstructionBundle | undefined): SessionState {
   return { connectionId: randomUUID(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, instructions, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),

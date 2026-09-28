@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
 import type { FileRevision, MessageAttachmentRef } from '@graphql/contracts/files'
-import { checkFileCondition, type OpenCodeFilePart, type OpenCodeFileService,
+import { checkFileCondition, type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileService,
   type OpenCodeRegisteredFile } from './types.js'
 
 const CHUNK_BYTES = 65_536
@@ -11,13 +11,19 @@ export const sha256 = (bytes: Uint8Array | string) => createHash('sha256').updat
 /** Native delivery is a sequence of authorized pinned range reads, NOT an API storage-path read. */
 export async function readPinnedAttachment(service: OpenCodeFileService, token: string,
   ref: MessageAttachmentRef, maxBytes: number, signal: AbortSignal): Promise<{ revision: FileRevision; bytes: Uint8Array }> {
+  return readPinnedInput((input) => service.read(token, input), ref, maxBytes, signal)
+}
+
+/** Same bounded FIL-05 readback validation, also usable before a native credential exists. */
+export async function readPinnedInput(read: OpenCodeAcceptedFileReader,
+  ref: MessageAttachmentRef, maxBytes: number, signal: AbortSignal): Promise<{ revision: FileRevision; bytes: Uint8Array }> {
   checkFileCondition(Number.isSafeInteger(maxBytes) && maxBytes > 0, 'FILE_LIMIT_INVALID', 'A bounded file limit is required.')
   let revision: FileRevision | undefined
   const chunks: Uint8Array[] = []
   let offset = 0
   while (true) {
     signal.throwIfAborted()
-    const result = await service.read(token, { ...ref, offset, length: CHUNK_BYTES })
+    const result = await read({ ...ref, offset, length: CHUNK_BYTES }, signal)
     checkFileCondition(result.status === 'ready', 'FILE_ATTACHMENT_UNAVAILABLE', 'An attachment is unavailable.')
     const value = result.revision
     checkFileCondition(value.fileId === ref.fileId && value.revisionId === ref.revisionId
@@ -43,7 +49,7 @@ export async function readPinnedAttachment(service: OpenCodeFileService, token: 
   checkFileCondition(revision && sha256(bytes) === revision.sha256,
     'FILE_ATTACHMENT_CHANGED', 'The attachment checksum does not match its revision.')
   // A final read rechecks revocation/expiry even for a one-range file.
-  const current = await service.read(token, { ...ref, offset: revision.byteSize, length: 1 })
+  const current = await read({ ...ref, offset: revision.byteSize, length: 1 }, signal)
   checkFileCondition(current.status === 'ready' && current.revision.fileId === ref.fileId
     && current.revision.revisionId === ref.revisionId && current.revision.sha256 === revision.sha256
     && current.revision.filename === revision.filename && current.revision.mediaType === revision.mediaType
