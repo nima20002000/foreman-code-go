@@ -11,6 +11,7 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { captureScheduleAuthority } from './authority.js'
 import { PostgresWorkflowScheduleRepository, type ScheduleSlot } from './postgres.js'
 import {
   ScheduleClearInputSchema, ScheduleClearResultSchema, ScheduleEnableResultSchema,
@@ -123,6 +124,7 @@ export class WorkflowScheduleService {
           nextOccurrenceAt: nextOccurrences(accepted.schedule, now, 1)[0] ?? null,
         })
         await this.repository.put(client, value, principal.id)
+        await captureScheduleAuthority(client, value, principal.id)
         return value
       },
     }))
@@ -158,6 +160,7 @@ export class WorkflowScheduleService {
           nextOccurrenceAt: enabled ? nextOccurrences(settings, now, 1)[0] ?? null : null,
         })
         await this.repository.put(client, value, principal.id)
+        await captureScheduleAuthority(client, value, principal.id)
         return value
       },
     })

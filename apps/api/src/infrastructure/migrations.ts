@@ -35,6 +35,7 @@ import { nativeProjectionMigration } from '../modules/run-graph/nativeProjection
 import { workHandoffMigration } from './workHandoffMigration.js'
 import { workNoticeMigration } from './workNoticeMigration.js'
 import { runActivitiesMigration } from './runActivitiesMigration.js'
+import { workflowScheduleDispatchMigration } from '../modules/schedules/dispatchMigration.js'
 import { workflowScheduleMigration } from './workflowScheduleMigration.js'
 import { runSnapshotMigration } from './runSnapshotMigration.js'
 
@@ -736,6 +737,7 @@ export const migrations = [
   runActivitiesMigration,
   workflowScheduleMigration,
   runSnapshotMigration,
+  workflowScheduleDispatchMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

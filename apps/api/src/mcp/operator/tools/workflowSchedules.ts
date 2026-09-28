@@ -43,7 +43,7 @@ export function workflowScheduleToolAvailable(context: OperatorRequestContext, n
 export function workflowScheduleCapabilities(context: OperatorRequestContext, resource: AuthorizedResource) {
   return WORKFLOW_SCHEDULE_TOOLS.filter((name) => workflowScheduleToolAvailable(context, name, resource))
     .map((name) => ({ name, actions: [actions[name]],
-      detail: 'Exact workspace/workflow scope; live authority is rechecked, including command replay. Writes persist preferences only, never start a Run. Clear and occurrence paging use provisional SCH-03 compositions.' }))
+      detail: 'Exact workspace/workflow scope; live authority is rechecked, including command replay. Saving does not immediately start a Run. The API dispatcher attempts only the latest due within five minutes, skips overlapping scheduled Runs, and pins the latest saved workflow. Admission requires the bound human owner\'s current runs:start and workspace_locations:read rights within the captured writer grant ceiling. Clear and occurrence paging use provisional SCH-03 compositions.' }))
 }
 
 export function registerWorkflowScheduleTools(server: McpServer, context: OperatorRequestContext): void {
@@ -56,11 +56,11 @@ export function registerWorkflowScheduleTools(server: McpServer, context: Operat
     inputSchema: ScheduleGetInputSchema, outputSchema: ScheduleGetResultSchema, annotations: read,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_get', () => service.get(context.principal, input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_save')) server.registerTool('workflow_schedule_save', {
-    description: 'Create or replace weekly, elapsed interval (at least one minute), or future Once settings. Use revision 0 for absence, otherwise the read revision, and retain commandId for retries. Policy is latest_saved. Saving NEVER starts a Run; timed delivery is not implemented here.',
+    description: 'Create or replace weekly, elapsed interval (at least one minute), or future Once settings. Use revision 0 for absence, otherwise the read revision, and retain commandId for retries. Policy is latest_saved. Saving does not immediately start a Run. Enabled saves bind the writer\'s root human owner and grant ceiling for server-side dispatch. At dispatch the owner must still have runs:start and workspace_locations:read. Older unbound schedules require a new save or enable; read occurrence history for outcomes.',
     inputSchema: ScheduleSaveInputSchema, outputSchema: ScheduleSaveResultSchema, annotations: write,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_save', () => service.save(context.principal, 'mcp', input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_enable')) server.registerTool('workflow_schedule_enable', {
-    description: 'Enable existing saved settings with commandId and expectedRevision. Past Once settings cannot be enabled. This changes future admission preferences only; it does not start a Run.',
+    description: 'Enable existing saved settings with commandId and expectedRevision. Past Once settings cannot be enabled. This binds the enabling caller\'s root human owner and grant ceiling for future server dispatch; it does not immediately start a Run. Live owner Run and location rights are rechecked at dispatch.',
     inputSchema: ScheduleEnableInputSchema, outputSchema: ScheduleEnableResultSchema, annotations: write,
   }, (input) => invokeOperatorTool(context, 'workflow_schedule_enable', () => service.enable(context.principal, 'mcp', input)))
   if (workflowScheduleToolAvailable(context, 'workflow_schedule_disable')) server.registerTool('workflow_schedule_disable', {

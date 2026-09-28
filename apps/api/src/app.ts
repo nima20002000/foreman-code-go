@@ -99,6 +99,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     // Fastify's per-request lines are replaced by one line whose level says whether it matters.
     logController: new LogController({ disableRequestLogging: true }),
   })
+  // Timed delivery is an API lifecycle, never a browser or HTTP-request timer.
+  app.addHook('onReady', async () => {
+    options.operator?.services.runs?.startScheduleDispatcher?.(() => {
+      app.log.error({ code: 'SCHEDULE_DISPATCH_RETRY' }, 'schedule dispatch failed; durable state retained for retry')
+    })
+  })
+  app.addHook('preClose', async () => { await options.operator?.services.runs?.stopScheduleDispatcher?.() })
   app.addHook('onResponse', async (request, reply) => {
     const statusCode = reply.statusCode, responseTimeMs = Math.round(reply.elapsedTime)
     // Routine success (the Board polls every 1.5s) is debug; failures and slow calls stay visible.

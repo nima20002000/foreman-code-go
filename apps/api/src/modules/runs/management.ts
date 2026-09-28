@@ -20,8 +20,12 @@ import type { PostgresRunRepository } from './postgres.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { CurrentRunProductionBinding, CurrentRuntimeAvailability } from './currentProduction.js'
 
+import { createScheduleDispatcher } from '../schedules/runtime.js'
+import type { WorkflowScheduleDispatcher } from '../schedules/dispatcher.js'
+
 export class RunManagementService {
   readonly history: RunHistoryService
+  private scheduleDispatcher: WorkflowScheduleDispatcher | undefined
   readonly inspection: RunInspectionService
   readonly activities: RunActivitiesService
   readonly handoffs: RunHandoffReadService
@@ -37,6 +41,16 @@ export class RunManagementService {
     this.inspection = new RunInspectionService(pool)
     this.activities = new RunActivitiesService(pool)
     this.handoffs = new RunHandoffReadService(pool)
+  }
+
+  /** Internal API lifecycle, not a remotely callable Start endpoint. */
+  startScheduleDispatcher(reportError: (error: unknown) => void): void {
+    if (!this.currentProduction || this.scheduleDispatcher) return
+    this.scheduleDispatcher = createScheduleDispatcher(this.pool, this.locations, this.currentProduction, this.engine, reportError)
+    this.scheduleDispatcher.start()
+  }
+  async stopScheduleDispatcher(): Promise<void> {
+    await this.scheduleDispatcher?.stop()
   }
 
   private visibleRun(principal: ManagementPrincipal, run: ReturnType<typeof SavedWorkflowRunSchema.parse>) {
