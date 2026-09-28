@@ -1,4 +1,5 @@
-import { CurrentWorkflowCreateInputSchema } from '@graphql/contracts/wave25'
+import { CurrentWorkflowCreateInputSchema, RunActivitiesInputSchema,
+  RunHandoffsReadInputSchema } from '@graphql/contracts/wave25'
 import { AgentCreateInputSchema, AgentUpdateInputSchema } from '@graphql/contracts/management'
 import { registerCurrentWorkflowRoutes } from './currentWorkflow.js'
 import { registerRunInspectionRoutes } from './runInspection.js'
@@ -166,6 +167,14 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
       ...(request.query.cursor ? { afterSequence: Number(request.query.cursor) } : {}),
       ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
     })))
+  app.get<{ Params: Params; Querystring: Query }>('/api/management/workspaces/:workspaceId/runs/:runId/activities', async (request) =>
+    services.runs.activities.read(requirePrincipal(request), RunActivitiesInputSchema.parse({
+      ...request.params,
+      ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
+      ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
+    })))
+  app.get<{ Params: Params }>('/api/management/workspaces/:workspaceId/runs/:runId/handoffs', async (request) =>
+    services.runs.handoffs.read(requirePrincipal(request), RunHandoffsReadInputSchema.parse(request.params)))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs', async (request, reply) => {
     const result = await services.runs.start(requirePrincipal(request), 'http', ManualRunStartInputSchema.parse(routeInput(request.params, request.body)))
     reply.code(202)

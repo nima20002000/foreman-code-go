@@ -297,6 +297,9 @@ export async function finishWorkflowCleanup(owner: RunOwnership, failed: boolean
     await lifecycleSource(publication, { kind: 'cleanup_checked', runId: owner.runId, failed, attempt: row.attempts + 1, at: now }, async () => {
       await sql.query(`update run_cleanup_intents set pending=$2,attempts=attempts+1,last_error=$3,updated_at=$4::timestamptz where run_id=$1`,
         [owner.runId, failed, failed ? 'Exact native, reviewer or credential settlement is still pending.' : null, now])
+      await sql.query(`insert into run_activity(run_id,source,kind,occurred_at,payload)
+        values($1,'backend','run_cleanup_checked',$2,$3::jsonb)`,
+      [owner.runId, now, canonicalGraphJson({ failed, attempt: row.attempts + 1 })])
     })
   })
 }

@@ -402,6 +402,17 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
           'select record,delivery_state from run_work_notices where run_id=$1', [run.id])).rows[0]
         expect(savedNotice?.delivery_state).toBe('queued')
         expect(WorkNoticeSchema.parse(savedNotice?.record).noticeId).toBe(denied.notice.noticeId)
+        expect((await pool.query<{ kind: string }>(`select kind from run_activity where run_id=$1
+          and kind in ('work_handoff_denied','work_limit_notice_queued','work_requester_reactivated')
+          and sequence >= (select min(sequence) from run_activity
+            where run_id=$1 and kind='work_handoff_denied')
+          order by sequence`, [run.id])).rows.map((row) => row.kind)).toEqual([
+          'work_handoff_denied', 'work_limit_notice_queued', 'work_requester_reactivated',
+        ])
+        await expect(pool.query(`insert into run_activity(run_id,source,kind,occurred_at,payload)
+          values($1,'backend','work_requester_reactivated',clock_timestamp(),$2::jsonb)`,
+        [run.id, JSON.stringify({ activationId: denied.notice.continuationActivationId })]))
+          .rejects.toMatchObject({ code: '23505' })
         expect((await pool.query(`select 1 from run_work_activations
           where run_id=$1 and cause_kind='limit_denial' and cause_id=$2`,
           [run.id, denied.denial.denialId])).rowCount).toBe(1)

@@ -678,7 +678,7 @@ export const OperatorToolNameSchema = z.enum([
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive", "workflow_batch_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
-  "run_events_list", "run_start", "run_stop",
+  "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_start", "run_stop",
   "interaction_list", "interaction_get",
 ]);
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;

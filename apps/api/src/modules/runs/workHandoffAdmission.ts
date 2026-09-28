@@ -356,15 +356,19 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
       cause_kind,cause_id,state,record) values($1,$2,$3,$4,'limit_denial',$5,'queued',$6::jsonb)`,
     [continuationActivationId, scope.runId, scope.workflowVersionId, node.id,
       denial.denialId, canonicalGraphJson(continuation)])
+    await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+      values($1,'backend','work_handoff_denied',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
+      context.now, canonicalGraphJson({ denialId: denial.denialId, relationshipId: relationship.id,
+        requesterNodeId: node.id, destinationNodeId, used: usage.used, maximum })])
     const notice = await persistWorkLimitNoticeLocked(context, { cause: { kind: 'limit_denial', denialId: denial.denialId },
       requesterActivationId: activation.activationId, requesterNodeId: node.id,
       continuationActivationId, relationshipId: relationship.id, destinationNodeId,
       used: usage.used, maximum, latestDeliverable: result.data.latestDeliverable,
       remainingFindings: result.data.remainingFindings })
     await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
-      values($1,'backend','work_handoff_denied',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
-      context.now, canonicalGraphJson({ denialId: denial.denialId, relationshipId: relationship.id,
-        requesterNodeId: node.id, destinationNodeId, used: usage.used, maximum })])
+      values($1,'backend','work_requester_reactivated',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
+      context.now, canonicalGraphJson({ activationId: continuationActivationId, requesterNodeId: node.id,
+        denialId: denial.denialId, noticeId: notice.noticeId })])
     return { kind: 'limit_reached', denial, notice, replayed: false }
   }
   const incoming = version.definition.edges.filter((edge) => edge.kind === 'execution' && edge.target === destinationNodeId)
@@ -429,6 +433,16 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
     values($1,'backend','work_handoff_accepted',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
     context.now, canonicalGraphJson({ requestId, relationshipId: relationship.id, requesterNodeId: node.id,
       destinationNodeId, used: reserved.used, maximum })])
+  const sourceNotice = (await sql.query<{ notice_id: string; relationship_id: string }>(
+    `select notice_id,relationship_id from run_work_notices
+      where run_id=$1 and continuation_activation_id=$2`, [scope.runId, activation.activationId])).rows[0]
+  if (sourceNotice && sourceNotice.relationship_id !== relationship.id) {
+    await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+      values($1,'backend','work_rerouted',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
+      context.now, canonicalGraphJson({ requestId, noticeId: sourceNotice.notice_id,
+        fromRelationshipId: sourceNotice.relationship_id,
+        relationshipId: relationship.id, destinationNodeId })])
+  }
   return { kind: 'accepted', request, replayed: false, destinationReady }
 }
 
@@ -520,13 +534,19 @@ export async function returnWorkHandoffLocked(context: AdmissionContext, sourceE
         where run_id=$1 and workflow_version_id=$2 and relationship_id=$3 for update`,
       [scope.runId, scope.workflowVersionId, request.relationshipId])).rows[0]
     if (!usage) return repeatConflict('WORK_COUNTER_PIN_CONFLICT')
+    let notice: WorkNotice | undefined
     if (usage.maximum !== null && usage.used === usage.maximum) {
-      await persistWorkLimitNoticeLocked(context, { cause: { kind: 'last_return', returnId },
+      notice = await persistWorkLimitNoticeLocked(context, { cause: { kind: 'last_return', returnId },
         requesterActivationId: request.requesterActivationId, requesterNodeId: request.requesterNodeId,
         continuationActivationId: continuationActivationId!, relationshipId: request.relationshipId,
         destinationNodeId: request.destinationNodeId, used: usage.used, maximum: usage.maximum,
         latestDeliverable: value.latestDeliverable, remainingFindings: value.remainingFindings })
     }
+    await sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+      values($1,'backend','work_requester_reactivated',$2,$3,$4::jsonb)`, [scope.runId, sourceExecutionId,
+      context.now, canonicalGraphJson({ activationId: continuationActivationId,
+        requesterNodeId: request.requesterNodeId, returnId,
+        ...(notice ? { noticeId: notice.noticeId } : {}) })])
   }
   return { value, replayed: false }
 }

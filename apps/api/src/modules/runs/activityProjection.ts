@@ -1,0 +1,238 @@
+import { GraphIdSchema, RunActivityPublicSchema,
+  type RunActivityPublic, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { repeatId } from './repeatResolution.js'
+import { safeNodeName } from './nativeAction.js'
+
+export interface ActivityReadRow {
+  sequence: string; source: string; kind: string; occurred_at: Date;
+  harness_execution_id: string | null;
+  execution_node_id: string | null; execution_agent_id: string | null;
+  execution_attempt: number | null; work_activation_id: string | null;
+  result_outcome: string | null;
+  safe_payload: Record<string, unknown>; native: Record<string, unknown> | null;
+}
+
+const string = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined
+const id = (value: unknown): string | undefined => GraphIdSchema.safeParse(value).success ? value as string : undefined
+const count = (value: unknown): number | undefined => typeof value === 'number'
+  && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+
+function toolLabel(native: Record<string, unknown>): string | undefined {
+  const item = string(native.itemType), part = string(native.partTool)
+  if (item === 'commandExecution' || part === 'bash') return 'Command action'
+  if (item === 'fileChange' || ['write','edit','apply_patch','multiedit'].includes(part ?? '')) return 'File change'
+  if (item === 'webSearch' || ['websearch','webfetch','codesearch'].includes(part ?? '')) return 'Web search'
+  if (item === 'mcpToolCall' || part?.startsWith('graphql_') || part?.startsWith('graphql-app_')) return 'MCP tool action'
+  if (item === 'collabAgentToolCall' || part === 'task') return 'Subagent action'
+  if (part === 'read') return 'File read'
+  if (part === 'grep' || part === 'glob' || part === 'list') return 'File search'
+  return undefined
+}
+
+/** Deliberate allowlist: no original payload, prompt, file path, command,
+ * provider text, error body or raw tool argument reaches Activities. */
+export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersionV3,
+  runId: string, runOutcome: string): RunActivityPublic {
+  const scope = { workspaceId: version.workspaceId, workflowId: version.workflowId,
+    runId, workflowVersionId: version.id,
+    executionSemanticsVersion: 3 as const }
+  const payload = row.safe_payload, native = row.native ?? {}
+  const node = version.definition.nodes.find((item) => item.id === row.execution_node_id)
+  const actorKind = new Set(['node_scheduled','node_state_changed','harness_session_started',
+    'harness_output','harness_session_finished','result_recorded','work_result_accepted',
+    'work_handoff_accepted','work_handoff_returned','work_handoff_denied','work_rerouted'])
+  const actor = actorKind.has(row.kind) && node && node.agentId === row.execution_agent_id
+    ? { agentId: node.agentId, agentName: safeNodeName(node.name ?? node.label) ?? 'Agent',
+      nodeId: node.id, nodeName: safeNodeName(node.label ?? node.name) ?? 'Agent' } : undefined
+  const subjectId = row.kind === 'work_requester_reactivated' ? id(payload.requesterNodeId)
+    : row.kind.startsWith('work_limit_notice_') || row.kind === 'work_rerouted'
+      ? id(payload.destinationNodeId) : undefined
+  const subjectNode = version.definition.nodes.find((item) => item.id === subjectId)
+  const subject = subjectNode ? { agentId: subjectNode.agentId,
+    agentName: safeNodeName(subjectNode.name ?? subjectNode.label) ?? 'Agent',
+    nodeId: subjectNode.id, nodeName: safeNodeName(subjectNode.label ?? subjectNode.name) ?? 'Agent' } : undefined
+  const relationship = id(payload.relationshipId)
+  const fromRelationship = id(payload.fromRelationshipId)
+  const requesterNode = id(payload.requesterNodeId)
+  const destinationNode = id(payload.destinationNodeId)
+  const refs = {
+    ...(row.harness_execution_id && row.execution_node_id ? { executionId: row.harness_execution_id } : {}),
+    ...(id(row.work_activation_id ?? payload.activationId) ? { activationId: id(row.work_activation_id ?? payload.activationId) } : {}),
+    ...(id(payload.requestId) ? { requestId: id(payload.requestId) } : {}),
+    ...(id(payload.returnId) ? { returnId: id(payload.returnId) } : {}),
+    ...(id(payload.denialId) ? { denialId: id(payload.denialId) } : {}),
+    ...(id(payload.noticeId) ? { noticeId: id(payload.noticeId) } : {}),
+    ...(id(payload.unresolvedId) ? { unresolvedId: id(payload.unresolvedId) } : {}),
+    ...(relationship && version.definition.edges.some((edge) => edge.id === relationship)
+      ? { relationshipId: relationship } : {}),
+    ...(fromRelationship && version.definition.edges.some((edge) => edge.id === fromRelationship)
+      ? { fromRelationshipId: fromRelationship } : {}),
+    ...(requesterNode && version.definition.nodes.some((item) => item.id === requesterNode)
+      ? { requesterNodeId: requesterNode } : {}),
+    ...(destinationNode && version.definition.nodes.some((item) => item.id === destinationNode)
+      ? { destinationNodeId: destinationNode } : {}),
+    ...(id(payload.interactionId) ? { interactionId: id(payload.interactionId) } : {}),
+    ...(id(payload.reviewJobId) ? { reviewJobId: id(payload.reviewJobId) } : {}),
+    ...(id(payload.acknowledgementId) ? { acknowledgementId: id(payload.acknowledgementId) } : {}),
+    ...(count(row.execution_attempt) && row.execution_node_id ? { technicalAttempt: row.execution_attempt! } : {}),
+    ...(count(payload.nativeEventSequence) !== undefined ? { nativeEventSequence: count(payload.nativeEventSequence) } : {}),
+  }
+  const used = count(payload.used), maximum = count(payload.maximum)
+  const usageProven = row.kind === 'work_handoff_accepted' ? Boolean(refs.requestId)
+    : row.kind === 'work_handoff_denied' ? Boolean(refs.denialId)
+      : row.kind.startsWith('work_limit_notice_') ? Boolean(refs.noticeId) : true
+  const usage = used === undefined || !usageProven ? undefined
+    : { used, limit: maximum && maximum > 0 ? maximum : null }
+  let kind: RunActivityPublic['kind'] = 'agent_work'
+  let status: RunActivityPublic['status']
+  let summary: string
+  let detail: string | undefined
+  switch (row.kind) {
+    case 'run_state_changed': {
+      kind = 'run'
+      const state = string(payload.executionState)
+      status = state === 'completed' ? runOutcome === 'failed' ? 'failed'
+        : runOutcome === 'canceled' ? 'canceled' : 'completed'
+        : state === 'running' ? 'running' : state === 'queued' ? 'queued'
+          : state === 'interrupted' ? 'unknown' : 'pending'
+      summary = state === 'completed' ? 'Run completed' : state === 'running' ? 'Run started'
+        : state === 'queued' ? 'Run queued' : state === 'waiting' ? 'Run waiting'
+          : 'Run state changed'
+      break
+    }
+    case 'run_stop_requested': kind = 'stop'; status = 'pending'; summary = 'Stop requested'; break
+    case 'run_cleanup_checked':
+      kind = 'recovery'; status = payload.failed === true ? 'failed' : 'completed'
+      summary = payload.failed === true ? 'Native cleanup remains pending' : 'Native cleanup verified'
+      break
+    case 'node_scheduled': case 'work_activation_queued':
+      status = 'queued'; summary = 'Work turn queued'; break
+    case 'node_state_changed': {
+      const state = string(payload.state)
+      status = state === 'completed' ? row.result_outcome === 'failed' ? 'failed'
+        : row.result_outcome === 'canceled' ? 'canceled' : 'completed'
+        : state === 'starting' ? 'starting' : state === 'running' ? 'running'
+          : state === 'waiting' ? 'pending' : 'queued'
+      summary = state === 'completed' ? 'Agent work completed'
+        : state === 'running' ? 'Agent working' : state === 'waiting' ? 'Agent waiting'
+          : 'Agent work queued'
+      if (status === 'failed') detail = 'Error details are available in Run inspection.'
+      break
+    }
+    case 'harness_session_started': status = 'running'; summary = 'Native session started'; break
+    case 'harness_session_finished': status = 'completed'; summary = 'Native session finished'; break
+    case 'harness_output': {
+      const label = toolLabel(native)
+      kind = label ? 'tool_action' : 'tool_log'
+      const event = string(native.type)
+      const itemStatus = string(native.itemStatus), partStatus = string(native.partStatus)
+      const failed = native.itemError === true || string(native.partStatus) === 'error'
+        || ['failed','declined','canceled'].includes(itemStatus ?? '')
+      status = failed ? 'failed' : event === 'item.completed'
+        || itemStatus === 'completed' || partStatus === 'completed' ? 'completed'
+        : itemStatus === 'pending' || partStatus === 'pending' ? 'pending'
+          : event === 'item.started' || itemStatus === 'inProgress'
+            || itemStatus === 'running' || partStatus === 'running' ? 'running' : 'recorded'
+      summary = label ? `${label} ${status === 'failed' ? 'failed'
+        : status === 'completed' ? 'completed' : status === 'running' ? 'started'
+          : status === 'pending' ? 'pending' : 'recorded'}`
+        : 'Native activity recorded; details unavailable'
+      break
+    }
+    case 'result_recorded': case 'work_result_accepted':
+      status = 'completed'; summary = 'Work result recorded'; break
+    case 'work_handoff_accepted':
+      kind = 'work_request'; status = refs.requestId ? 'accepted' : 'unknown'
+      summary = refs.requestId ? 'Work request admitted' : 'Work request details unavailable'; break
+    case 'work_handoff_returned':
+      kind = 'work_return'; status = !refs.returnId ? 'unknown'
+        : payload.outcome === 'needs_changes' ? 'needs_changes'
+          : payload.outcome === 'accepted' ? 'accepted' : 'unknown'
+      summary = status === 'needs_changes' ? 'Review returned with changes needed'
+        : status === 'accepted' ? 'Work return accepted' : 'Work return details unavailable'
+      break
+    case 'work_handoff_denied':
+      kind = 'work_request'; status = refs.denialId ? 'denied' : 'unknown'
+      summary = refs.denialId ? 'Work request denied at connection limit'
+        : 'Work denial details unavailable'; break
+    case 'work_requester_reactivated':
+      kind = 'agent_work'; status = refs.activationId ? 'queued' : 'unknown'
+      summary = refs.activationId ? `${subject?.nodeName ?? 'Requester'} continuation queued`
+        : 'Requester continuation details unavailable'; break
+    case 'work_rerouted':
+      kind = 'reroute'; status = refs.requestId && refs.noticeId && refs.relationshipId
+        && refs.fromRelationshipId ? 'accepted' : 'unknown'
+      summary = status === 'accepted' ? 'Work rerouted on a saved connection'
+        : 'Reroute details unavailable'; break
+    case 'work_limit_notice_queued': case 'work_limit_notice_pending':
+    case 'work_limit_notice_delivered': case 'work_limit_notice_unknown':
+      kind = 'work_notice'
+      status = !refs.noticeId ? 'unknown'
+        : row.kind === 'work_limit_notice_delivered' ? 'delivered'
+        : row.kind === 'work_limit_notice_unknown' ? 'unknown'
+          : row.kind === 'work_limit_notice_pending' ? 'pending' : 'queued'
+      summary = !refs.noticeId ? 'Work limit notice details unavailable'
+        : status === 'delivered' ? 'Work limit notice acknowledged by requester'
+        : status === 'unknown' ? 'Work limit notice delivery uncertain'
+          : status === 'pending' ? 'Work limit notice bound to requester turn'
+            : 'Work limit notice queued'
+      if (subject) summary = `${summary} for ${subject.nodeName}`
+      break
+    case 'work_needs_direction': case 'work_direction_wait':
+      kind = 'needs_direction'
+      status = row.kind === 'work_direction_wait' || refs.unresolvedId ? 'needs_direction' : 'unknown'
+      summary = status === 'unknown' ? 'Unresolved work details unavailable'
+        : row.kind === 'work_direction_wait' ? 'Run waiting for direction' : 'Work needs direction'
+      break
+    case 'interaction_pending':
+      kind = 'approval'; status = refs.interactionId ? 'pending' : 'unknown'
+      summary = refs.interactionId ? 'Approval requested' : 'Approval details unavailable'; break
+    case 'interaction_decided':
+      kind = 'approval'; status = 'recorded'
+      summary = !refs.interactionId ? 'Approval decision details unavailable'
+        : payload.selectedSemantic === 'reject' ? 'Approval rejected; decision recorded'
+        : payload.selectedSemantic === 'cancel' ? 'Approval canceled; decision recorded'
+          : ['approve_once','allow_turn','allow_session','provider_scoped_allow','persistent_policy_change']
+            .includes(string(payload.selectedSemantic) ?? '')
+            ? 'Approval granted; decision recorded' : 'Approval decision recorded'
+      break
+    case 'interaction_delivery_state': case 'interaction_resolved': {
+      kind = 'approval'
+      const delivery = string(payload.deliveryState), resolution = string(payload.status)
+      status = !refs.interactionId ? 'unknown'
+        : delivery === 'delivered' && resolution === 'delivered' ? 'delivered'
+        : resolution === 'delivery_failed' || delivery === 'failed' ? 'delivery_failed'
+          : delivery === 'unknown' ? 'unknown' : resolution === 'canceled' ? 'canceled' : 'pending'
+      summary = !refs.interactionId ? 'Approval details unavailable'
+        : status === 'delivered' ? 'Approval delivered to provider'
+        : status === 'delivery_failed' ? 'Approval delivery failed'
+          : status === 'unknown' ? 'Approval delivery uncertain'
+            : status === 'canceled' ? 'Approval canceled' : 'Approval delivery pending'
+      break
+    }
+    case 'interaction_worker_ack':
+      kind = 'approval'; status = refs.interactionId && refs.acknowledgementId ? 'acknowledged' : 'unknown'
+      summary = status === 'acknowledged' ? 'Worker acknowledged approval'
+        : 'Worker acknowledgement details unavailable'; break
+    case 'review_job_state': {
+      kind = 'review'
+      const state = string(payload.state)
+      status = !refs.reviewJobId ? 'unknown'
+        : state === 'completed' ? 'completed' : state === 'failed' ? 'failed'
+        : state === 'uncertain' ? 'unknown' : 'pending'
+      summary = !refs.reviewJobId ? 'Review details unavailable'
+        : status === 'completed' ? 'Review completed'
+        : status === 'failed' ? 'Review failed' : 'Review status updated'
+      break
+    }
+    default: kind = 'error'; status = 'unknown'; summary = 'Activity details unavailable'
+  }
+  const severity = status === 'failed' || status === 'delivery_failed' ? 'error'
+    : ['denied','unknown','needs_direction'].includes(status) ? 'warning' : 'info'
+  return RunActivityPublicSchema.parse({ id: repeatId('activity', scope.runId, row.sequence),
+    scope, sequence: row.sequence, occurredAt: row.occurred_at.toISOString(), source: row.source,
+    kind, status, severity, summary,
+    ...(detail ? { detail } : {}), ...(actor ? { actor } : {}),
+    ...(subject ? { subject } : {}), refs,
+    ...(usage ? { usage } : {}) })
+}

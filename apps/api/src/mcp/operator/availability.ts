@@ -122,6 +122,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'workspace_location_provision') result.push({action:'workspace_locations:update',scope:'workspace'})
   if (['agent_create','agent_update','agent_clone','agent_configuration_restore'].includes(name)) result.push({action:'agents:read',scope:name==='agent_clone'?'resource':'workspace'})
   if (['run_resume','run_retry'].includes(name)) result.push({action:'runs:read',scope:'run'})
+  if (name === 'run_handoffs_get_v1') result.push({action:'workflows:read',scope:'workflow'})
   if (name === 'workflow_trigger_update') result.push({action:'workflows:read',scope:'workflow'})
   if (name === 'workflow_trigger_fire') result.push({action:'runs:start',scope:'workflow'},{action:'workspace_locations:read',scope:'workspace'})
   return result

@@ -9,7 +9,8 @@ import { AgentConfigurationVersionSchema, AgentSchema, DEFAULT_OPENCODE_ADVANCED
   ListInteractionsResponseSchema, WorkspaceSchema } from '@graphql/contracts'
 import { ManagementActionSchema, RunEventsPageSchema } from '@graphql/contracts/management'
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
-  SavedManagedWorkflowCommandResultSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+  RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema,
+  makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
@@ -256,6 +257,9 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                 url: `/api/user/interactions/${interaction.id}/respond`,
                 headers: { host: 'localhost', authorization: `Bearer ${user.token}` },
                 payload: { interactionId: interaction.id, optionId: choice.optionId, expectedRevision: interaction.revision } })
+              if (response.statusCode === 409 && (response.json() as { error?: { code?: string } }).error?.code === 'REVISION_CONFLICT') {
+                continue // The native request changed after the list read; refetch its current revision.
+              }
               expect(response.statusCode, response.body).toBe(200)
               approved.add(interaction.id)
             }
@@ -293,6 +297,30 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             from harness_native_events e join harness_executions x on x.id=e.execution_id
             where x.run_id=$1 order by e.sequence`, [runId])).rows.map((row) => row.type)
           expect(approved.size, JSON.stringify({ nativeTypes })).toBeGreaterThan(0)
+          const approvalEvents = activityKinds.filter((kind) => kind.startsWith('interaction_'))
+          expect(approvalEvents).toContain('interaction_decided')
+          expect(approvalEvents).toContain('interaction_resolved')
+          expect(approvalEvents).toContain('interaction_worker_ack')
+          expect(approvalEvents.indexOf('interaction_decided')).toBeLessThan(
+            approvalEvents.indexOf('interaction_worker_ack'))
+          const approvalActivity = new Map<string, ReturnType<typeof RunActivitiesPageSchema.parse>['items'][number]>()
+          let olderCursor: string | null = null
+          for (let pageIndex = 0; pageIndex < 11; pageIndex++) {
+            const response = await app.inject({ method: 'GET', headers,
+              url: `/api/management/workspaces/${workspace.id}/runs/${runId}/activities?limit=100${
+                olderCursor ? `&cursor=${encodeURIComponent(olderCursor)}` : ''}` })
+            expect(response.statusCode, response.body).toBe(200)
+            const page = RunActivitiesPageSchema.parse(response.json())
+            for (const item of page.items) if (item.kind === 'approval') approvalActivity.set(item.id, item)
+            olderCursor = page.olderCursor
+            if (!olderCursor) break
+          }
+          const approvalStatuses = [...approvalActivity.values()].sort((a, b) =>
+            BigInt(a.sequence)<BigInt(b.sequence) ? -1 : 1).map((item) => item.status)
+          expect(approvalStatuses).toContain('recorded')
+          expect(approvalStatuses).toContain('delivered')
+          expect(approvalStatuses).toContain('acknowledged')
+          expect(approvalStatuses.indexOf('recorded')).toBeLessThan(approvalStatuses.indexOf('acknowledged'))
         }
         expect((await pool.query('select 1 from run_work_results where run_id=$1', [runId])).rowCount)
           .toBe(scenario.capLoop ? scenario.attemptFourth ? 10 : finalAccepted ? 8 : 9 : configurations.length)
@@ -350,6 +378,36 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             const capUsage = (await pool.query<{ used: number }>(`select used from run_work_connection_usage
               where run_id=$1 and relationship_id=$2`, [runId, capEdges![1]!.id])).rows[0]
             expect(capUsage?.used).toBe(3)
+            const handoffsHttp = await app.inject({ method: 'GET', headers,
+              url: `/api/management/workspaces/${workspace.id}/runs/${runId}/handoffs` })
+            expect(handoffsHttp.statusCode, handoffsHttp.body).toBe(200)
+            const handoffs = RunHandoffsReadSchema.parse(handoffsHttp.json())
+            expect(handoffs.connections.find((item) => item.relationshipId === capEdges![1]!.id))
+              .toMatchObject({ used: 3, limit: 3, remaining: 0 })
+            expect(handoffs.notices).toHaveLength(scenario.attemptFourth ? 2 : finalAccepted ? 0 : 1)
+            if (noRoute) expect(handoffs).toMatchObject({ directionWait: true,
+              unresolved: [expect.objectContaining({ reason: 'finish_with_findings' })] })
+            const activityPath = `/api/management/workspaces/${workspace.id}/runs/${runId}/activities?limit=100`
+            const activities = new Map<string, ReturnType<typeof RunActivitiesPageSchema.parse>['items'][number]>()
+            let olderCursor: string | null = null
+            for (let pageIndex = 0; pageIndex < 11; pageIndex++) {
+              const response = await app.inject({ method: 'GET', headers,
+                url: `${activityPath}${olderCursor ? `&cursor=${encodeURIComponent(olderCursor)}` : ''}` })
+              expect(response.statusCode, response.body).toBe(200)
+              const page = RunActivitiesPageSchema.parse(response.json())
+              for (const item of page.items) activities.set(item.id, item)
+              olderCursor = page.olderCursor
+              if (!olderCursor) break
+            }
+            const activityItems = [...activities.values()]
+            expect(activityItems.some((item) => item.kind === 'work_request')).toBe(true)
+            expect(activityItems.some((item) => item.kind === 'work_return')).toBe(true)
+            if (noRoute) expect(activityItems.some((item) => item.kind === 'needs_direction')).toBe(true)
+            else if (!finalAccepted) {
+              expect(activityItems.some((item) => item.kind === 'work_notice'
+                && item.status === 'delivered')).toBe(true)
+              expect(activityItems.some((item) => item.kind === 'reroute')).toBe(true)
+            }
             expect((await pool.query('select 1 from run_work_denials where run_id=$1', [runId])).rowCount)
               .toBe(scenario.attemptFourth ? 1 : 0)
             const notice = (await pool.query<{ record: { message: string }; delivery_state: string }>(`
@@ -398,6 +456,18 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           expect((await pool.query<{ execution_state: string; outcome: string }>(
             `select execution_state,record->>'outcome' as outcome from runs where id=$1`,
             [runId])).rows[0]).toEqual({ execution_state: 'completed', outcome: 'canceled' })
+          const stopKinds = (await pool.query<{ kind: string }>(
+            `select kind from run_activity where run_id=$1
+              and kind in ('run_stop_requested','run_cleanup_checked') order by sequence`,
+            [runId])).rows.map((row) => row.kind)
+          expect(stopKinds).toContain('run_stop_requested')
+          expect(stopKinds).toContain('run_cleanup_checked')
+          const stoppedActivities = await app.inject({ method: 'GET', headers,
+            url: `/api/management/workspaces/${workspace.id}/runs/${runId}/activities?limit=100` })
+          expect(stoppedActivities.statusCode, stoppedActivities.body).toBe(200)
+          const stopPage = RunActivitiesPageSchema.parse(stoppedActivities.json())
+          expect(stopPage.items.some((item) => item.kind === 'stop')).toBe(true)
+          expect(stopPage.items.some((item) => item.kind === 'recovery')).toBe(true)
         }
         let cleanupPending = true
         for (let attempt = 0; attempt < 30; attempt++) {
