@@ -48,6 +48,7 @@ import { DomainError } from './modules/errors.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
 import { CodexAppServerSessionManager } from './modules/harnesses/codexAppServer.js'
+import { productionCodexChatFiles, type ProductionCodexChatFiles } from './modules/harnesses/codexFiles/production.js'
 import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './modules/harnesses/opencodeServer.js'
@@ -98,6 +99,8 @@ export function buildProductionApp(
   // The shared API logger by default; tests pass false.
   logger: boolean | FastifyBaseLogger = componentLogger('http'),
   createCurrentProduction?: CurrentRunProductionFactory,
+  // Trusted FIL-10 admission + execution-host ports; never populated from HTTP fields.
+  codexChatFiles?: ProductionCodexChatFiles,
 ) {
   const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
   const processRegistry = new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
@@ -274,7 +277,8 @@ export function buildProductionApp(
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
     const manager = harness.harness === 'codex'
-      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none')
+      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none',
+        codexChatFiles ? productionCodexChatFiles(() => app, conversationId, codexChatFiles) : undefined)
       : new OpenCodeNativeSessionManager({
         server: new ManagedOpenCodeServer({
           binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId, processRecovery: recovery, appMcpAccess: 'none',

@@ -161,6 +161,14 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
     compile(`ServerRequest:${method}`, branch('ServerRequest', method))
     compile(type, definition(type))
   }
+  // Older schema fixtures and native releases without dynamic tools keep their
+  // existing protocol. A bundle that advertises the response must also carry
+  // the matching request branch before file calls can be accepted.
+  const dynamicToolResponse = isObject(definitions.v2) ? definitions.v2.DynamicToolCallResponse : definitions.DynamicToolCallResponse
+  if (dynamicToolResponse) {
+    compile('ServerRequest:item/tool/call', branch('ServerRequest', 'item/tool/call'))
+    compile('DynamicToolCallResponse', definition('DynamicToolCallResponse'))
+  }
   for (const method of ['turn/started', 'turn/completed', 'item/started', 'item/completed', 'serverRequest/resolved']) {
     compile(`ServerNotification:${method}`, branch('ServerNotification', method))
   }
@@ -182,7 +190,7 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
       check(type, definition(type), value)
     },
     serverResponse: (method, value) => {
-      const type = serverResponseTypes[method]
+      const type = method === 'item/tool/call' && dynamicToolResponse ? 'DynamicToolCallResponse' : serverResponseTypes[method]
       if (!type) throw new Error('Unqualified native response.')
       check(type, definition(type), value)
     },

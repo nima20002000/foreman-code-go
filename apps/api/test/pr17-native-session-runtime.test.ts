@@ -33,6 +33,7 @@ function codexFixture() {
     configuration: { serviceTier: 'standard' } as CodexHarnessConfiguration,
     scopedCredentialVariable: undefined, transport, session: codexSession, generation: 0,
     phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
+    files: undefined, fileCleanup: undefined, fileRequests: new Map(),
     activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined,
     finalAnswer: undefined, lastAgentMessage: undefined, finalAnswerId: undefined, lastAgentMessageId: undefined,
     interactions: new Map(), resolvedRequests: new Map(), events: [], eventSizes: [], eventBytes: 0, sequence: 0,
