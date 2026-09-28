@@ -23,7 +23,7 @@ export class HarnessQualificationService {
     private readonly suites: Record<CompatibilityHarness, QualificationSuite>, private readonly binaries: Record<CompatibilityHarness, string>,
     private readonly commands: PostgresCommandCoordinator,
     private readonly settings: Pick<PostgresSettingsRepository, 'getManagedHarnessDefaults'>,
-    private readonly staticCheck: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal) => Promise<string> = checkStaticCompatibility) {}
+    private readonly staticCheck: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt?: number) => Promise<string> = checkStaticCompatibility) {}
 
   async list(principal: ManagementPrincipal): Promise<{ qualifications: HarnessQualification[] }> {
     requireAuthorization(principal, 'harnesses:read')
@@ -67,15 +67,23 @@ export class HarnessQualificationService {
     const base = { harness, version, binarySha256: sha256, suiteRevision: suite.revision, profile, startedAt }
     await this.repository.save({ ...base, status: 'qualifying', checks: [], failureReason: null, checkedAt: null })
     const checks: HarnessQualification['checks'] = []
-    const signal = AbortSignal.timeout(120_000)
     try {
-      const schemaSha256 = await this.staticCheck(harness, binary, version, signal)
-      checks.push({ id: 'static-compatibility', passed: true, detail: schemaSha256 })
+      let schemaSha256: string
+      let attempts = 1
+      try {
+        schemaSha256 = await this.staticCheck(harness, binary, version, AbortSignal.timeout(120_000), 1)
+      } catch (error) {
+        if (!(error instanceof Error && (error.name === 'TimeoutError' || ('code' in error && error.code === 'CHECK_TIMEOUT')))) throw error
+        attempts = 2
+        schemaSha256 = await this.staticCheck(harness, binary, version, AbortSignal.timeout(240_000), 2)
+      }
+      checks.push({ id: 'static-compatibility', passed: true, detail: `${schemaSha256} (${attempts} attempt${attempts === 1 ? '' : 's'})` })
     } catch (error) {
       checks.push({ id: 'static-compatibility', passed: false, detail: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500) })
       await this.repository.save({ ...base, status: 'failed', checks, failureReason: 'The installed CLI failed static compatibility.', checkedAt: new Date().toISOString() })
       return
     }
+    const signal = AbortSignal.timeout(240_000)
     const workDirectory = await mkdtemp(join(tmpdir(), `graphql-${harness}-qualification-`))
     try {
       const saved = await this.settings.getManagedHarnessDefaults()
@@ -95,8 +103,8 @@ export class HarnessQualificationService {
   }
 }
 
-async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal): Promise<string> {
-  const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd())
+async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt = 1): Promise<string> {
+  const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, attempt === 1 ? 2000 : 10_000)
   try {
     const installation = await probe.inspect(harness, signal)
     if (installation.version !== version) throw new Error('The installed CLI version changed during qualification.')

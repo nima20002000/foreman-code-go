@@ -3,6 +3,20 @@ import type { QualificationSuiteInput, QualificationSuiteResult } from '../types
 
 export type Check = readonly [id: string, run: () => Promise<string | null>]
 
+/** Retry only live model behavior, with a new native session supplied by the caller. */
+export async function modelCheck(id: string, signal: AbortSignal, evidence: Record<string, unknown>, run: (attempt: number) => Promise<string>): Promise<string> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    evidence[`${id}Attempts`] = attempt
+    try {
+      signal.throwIfAborted()
+      return await run(attempt)
+    } catch (error) {
+      if (attempt === 2 || signal.aborted) throw error
+    }
+  }
+  throw new Error('Unreachable model check state.')
+}
+
 /** Each check reports independently; errors cannot accidentally qualify a binary. */
 export async function collectChecks(input: QualificationSuiteInput, checks: readonly Check[], evidence: Record<string, unknown> = {}): Promise<QualificationSuiteResult> {
   const results: HarnessQualificationCheck[] = []

@@ -1,12 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import type { QualificationSuiteInput } from '../types.js'
-import { collectChecks } from './checks.js'
+import { collectChecks, modelCheck } from './checks.js'
 
 const input = { binary: '/tmp/candidate', version: '1.2.3', binarySha256: 'a'.repeat(64),
   profile: 'codex-0.156', model: null, workDirectory: '/tmp/qualification',
   signal: new AbortController().signal } satisfies QualificationSuiteInput
 
 describe('qualification check aggregation', () => {
+  it('retries a live check once with a fresh fake session and records attempts', async () => {
+    const evidence: Record<string, unknown> = {}
+    const sessions: string[] = []
+    const result = await modelCheck('text-turn', input.signal, evidence, async (attempt) => {
+      sessions.push(`session-${attempt}`)
+      if (attempt === 1) throw new Error('model did not answer')
+      return 'completed'
+    })
+    expect(result).toBe('completed')
+    expect(sessions).toEqual(['session-1', 'session-2'])
+    expect(evidence).toEqual({ 'text-turnAttempts': 2 })
+    await expect(modelCheck('file-tools', input.signal, evidence, async () => { throw new Error('still failed') })).rejects.toThrow('still failed')
+    expect(evidence['file-toolsAttempts']).toBe(2)
+  })
+
   it('records failures and still runs independent later checks', async () => {
     const visited: string[] = []
     const result = await collectChecks(input, [

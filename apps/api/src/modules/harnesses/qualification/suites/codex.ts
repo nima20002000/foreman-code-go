@@ -9,13 +9,13 @@ import { codexFileDynamicTools } from '../../codexFiles/index.js'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from '../../appMcpLauncher.js'
 import { runCommand } from '../../process.js'
 import { inheritedAgentEnvironment } from '../../secrets.js'
-import { collectChecks, nonempty, object, requireCondition, type Check } from './checks.js'
+import { collectChecks, modelCheck, nonempty, object, requireCondition, type Check } from './checks.js'
 
 const bundleName = 'codex_app_server_protocol.schemas.json'
 const response = (value: unknown) => ({ success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] })
 
 export const codexQualificationSuite: QualificationSuite = {
-  harness: 'codex', revision: 'codex-live-3',
+  harness: 'codex', revision: 'codex-live-4',
   async run(input: QualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const environment = inheritedAgentEnvironment()
@@ -30,6 +30,7 @@ export const codexQualificationSuite: QualificationSuite = {
     let completionFailure: ((error: Error) => void) | undefined
     let toolRead = false, toolPublished = false
     let lastText = ''
+    let disabledAppMcpServerNames: string[] = []
     const marker = `QUALIFY_${randomUUID()}`
     const inputPath = join(input.workDirectory, 'qualification-source.md')
     const outputPath = join(input.workDirectory, 'qualification-result.md')
@@ -100,6 +101,20 @@ export const codexQualificationSuite: QualificationSuite = {
         }, replayed: false }))
       } else await transport.reject(request.id, -32602, 'Invalid qualification file call.')
     }
+    const createThread = async () => {
+      requireCondition(transport, 'Transport is unavailable.')
+      const started = object(await transport.request('thread/start', {
+        cwd: input.workDirectory, runtimeWorkspaceRoots: [input.workDirectory], sandbox: 'workspace-write',
+        approvalPolicy: 'never', ephemeral: false, ...(input.model ? { model: input.model } : {}),
+        config: { ...Object.fromEntries(disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
+          sandbox_workspace_write: { writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true } },
+        dynamicTools: codexFileDynamicTools({ allowedTools: () => ['files.read', 'files.publish_result'] }),
+      }, signal))
+      const thread = object(started.thread)
+      threadId = nonempty(thread.id, 'thread ID')
+      evidence.threadId = threadId
+      if (typeof started.model === 'string' && started.model) evidence.modelUsed = started.model
+    }
     const checks: Check[] = [
       ['binary-sha256', async () => {
         const actual = createHash('sha256').update(await readFile(input.binary)).digest('hex')
@@ -129,7 +144,7 @@ export const codexQualificationSuite: QualificationSuite = {
           && entries.every((entry: unknown) => typeof object(entry).name === 'string'),
         'Codex MCP configuration inspection failed; absence was not established.')
         const configuredNames = new Set(entries.map((entry: { name: string }) => entry.name))
-        const disabledAppMcpServerNames = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
+        disabledAppMcpServerNames = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
           .filter((name) => configuredNames.has(name))
         transport = new CodexStdioTransport(input.binary, input.workDirectory, environment, protocol,
           async (request: RpcRequest) => {
@@ -153,27 +168,25 @@ export const codexQualificationSuite: QualificationSuite = {
             }
           }, (error) => completionFailure?.(error), 30_000, undefined, disabledAppMcpServerNames)
         await transport.start(signal)
-        const started = object(await transport.request('thread/start', {
-          cwd: input.workDirectory, runtimeWorkspaceRoots: [input.workDirectory], sandbox: 'workspace-write',
-          approvalPolicy: 'never', ephemeral: false, ...(input.model ? { model: input.model } : {}),
-          config: { ...Object.fromEntries(disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
-            sandbox_workspace_write: { writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true } },
-          dynamicTools: codexFileDynamicTools({ allowedTools: () => ['files.read', 'files.publish_result'] }),
-        }, signal))
-        threadId = nonempty(object(started.thread).id, 'thread ID')
-        evidence.threadId = threadId
+        await createThread()
         return 'Native thread started.'
       }],
-      ['text-turn', async () => {
+      ['text-turn', () => modelCheck('text-turn', signal, evidence, async (attempt) => {
+        if (attempt === 2) await createThread()
+        lastText = ''
         await terminal('Reply with a short sentence confirming this qualification text turn. Do not call tools.')
         requireCondition(lastText.trim(), 'Native turn completed without an assistant text message.')
         return 'Native assistant text message completed.'
-      }],
+      })],
       ['file-tools', async () => {
         await writeFile(inputPath, sourceBytes, { flag: 'wx', mode: 0o400 })
-        await terminal(`Call files_read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} as Markdown containing that marker and the word QUALIFIED. Then call files_publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or access other paths.`)
-        requireCondition(toolRead && toolPublished, 'Native turn did not read and publish through both dynamic tools.')
-        return 'Dynamic read and publish callbacks completed.'
+        return modelCheck('file-tools', signal, evidence, async (attempt) => {
+          if (attempt === 2) await createThread()
+          toolRead = false; toolPublished = false
+          await terminal(`Call files_read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} as Markdown containing that marker and the word QUALIFIED. Then call files_publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or access other paths.`)
+          requireCondition(toolRead && toolPublished, 'Native turn did not read and publish through both dynamic tools.')
+          return 'Dynamic read and publish callbacks completed.'
+        })
       }],
       ['thread-resume', async () => {
         requireCondition(transport && threadId, 'Codex thread is unavailable.')

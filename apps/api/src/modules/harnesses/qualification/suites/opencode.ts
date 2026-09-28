@@ -6,7 +6,7 @@ import type { File, FileRevision } from '@graphql/contracts/files'
 import { registerFileToolsMcp, type FileMcpService } from '../../../files/tools/mcp.js'
 import type { FileToolContext } from '../../../files/tools/types.js'
 import { ManagedOpenCodeServer } from '../../opencodeTransport.js'
-import { collectChecks, nonempty, object, requireCondition, type Check } from './checks.js'
+import { collectChecks, modelCheck, nonempty, object, requireCondition, type Check } from './checks.js'
 import type { QualificationSuite, QualificationSuiteInput } from '../types.js'
 
 // The resident controller validates against expectedVersion at startup. The suite
@@ -24,7 +24,7 @@ const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/
   '/permission', '/permission/{requestID}/reply', '/question', '/question/{requestID}/reject', '/event', '/config', '/mcp']
 
 export const opencodeQualificationSuite: QualificationSuite = {
-  harness: 'opencode', revision: 'opencode-live-3',
+  harness: 'opencode', revision: 'opencode-live-4',
   async run(input: QualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)
@@ -91,6 +91,16 @@ export const opencodeQualificationSuite: QualificationSuite = {
       const text = await response.text()
       return text ? JSON.parse(text) as unknown : undefined
     }
+    const createSession = async () => {
+      const session = object(await request('/session', { title: 'Harness qualification', permission: [
+        { permission: '*', pattern: '*', action: 'deny' },
+        { permission: 'read', pattern: '*', action: 'allow' },
+        { permission: 'edit', pattern: '*', action: 'allow' },
+        { permission: 'graphql_files_*', pattern: '*', action: 'allow' },
+      ] }))
+      sessionId = nonempty(session.id, 'session ID')
+      evidence.sessionId = sessionId
+    }
     const turn = async (prompt: string) => {
       requireCondition(sessionId, 'OpenCode session is unavailable.')
       const messageID = `msg_${randomUUID().replaceAll('-', '')}`
@@ -103,12 +113,13 @@ export const opencodeQualificationSuite: QualificationSuite = {
         parts: [{ type: 'text', text: prompt }] })
       while (true) {
         signal.throwIfAborted()
-        const messages = await request(`${sessionPath}/message`) as { info?: { role?: string; parentID?: string; finish?: string; error?: unknown; time?: { completed?: number } } }[]
+        const messages = await request(`${sessionPath}/message`) as { info?: { role?: string; parentID?: string; finish?: string; error?: unknown; providerID?: string; modelID?: string; time?: { completed?: number } } }[]
         const terminal = messages.find((message) => message.info?.role === 'assistant' && message.info.parentID === messageID
           && (message.info.error || (typeof message.info.time?.completed === 'number'
             && message.info.finish !== undefined && message.info.finish !== 'tool-calls')))
         if (terminal) {
           requireCondition(!terminal.info?.error && typeof terminal.info?.time?.completed === 'number', 'Native turn failed.')
+          if (terminal.info.providerID && terminal.info.modelID) evidence.modelUsed = `${terminal.info.providerID}/${terminal.info.modelID}`
           return
         }
         await new Promise((resolve) => setTimeout(resolve, 1_000))
@@ -136,20 +147,14 @@ export const opencodeQualificationSuite: QualificationSuite = {
         return `${requiredPaths.length} application paths present.`
       }],
       ['session-create', async () => {
-        const session = object(await request('/session', { title: 'Harness qualification', permission: [
-          { permission: '*', pattern: '*', action: 'deny' },
-          { permission: 'read', pattern: '*', action: 'allow' },
-          { permission: 'edit', pattern: '*', action: 'allow' },
-          { permission: 'graphql_files_*', pattern: '*', action: 'allow' },
-        ] }))
-        sessionId = nonempty(session.id, 'session ID')
-        evidence.sessionId = sessionId
+        await createSession()
         return 'Native session created.'
       }],
-      ['text-turn', async () => {
+      ['text-turn', () => modelCheck('text-turn', signal, evidence, async (attempt) => {
+        if (attempt === 2) await createSession()
         await turn('Reply with a short sentence confirming this qualification text turn. Do not call tools.')
         return 'Asynchronous text turn completed.'
-      }],
+      })],
       ['mcp-file-tools', async () => {
         await writeFile(sourcePath, sourceBytes, { flag: 'wx', mode: 0o400 })
         const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -158,9 +163,13 @@ export const opencodeQualificationSuite: QualificationSuite = {
           oauth: false, headers: { Authorization: `Bearer ${token}` } } })
         mcpReady = true
         requireCondition(object(object(await request('/mcp'))[mcpName]).status === 'connected', 'File MCP did not connect.')
-        await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
-        requireCondition(read && published, 'Native turn did not complete MCP read and publication.')
-        return 'MCP read and publication completed.'
+        return modelCheck('mcp-file-tools', signal, evidence, async (attempt) => {
+          read = false; published = false
+          if (attempt === 2) await createSession()
+          await turn(`Use files.read with fileId ${sourceId} and revisionId ${sourceRevisionId} to read the Markdown marker. Write ${JSON.stringify(outputPath)} with that marker and the word QUALIFIED. Then call files.publish_result with artifactId qualification-result, commandId ${randomUUID()}, filename qualification-result.md, mediaType text/markdown, and scope ${JSON.stringify(scope)}. Do not use shell commands or other paths.`)
+          requireCondition(read && published, 'Native turn did not complete MCP read and publication.')
+          return 'MCP read and publication completed.'
+        })
       }],
     ]
     try { return await collectChecks({ ...input, signal }, checks, evidence) }

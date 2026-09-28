@@ -152,7 +152,7 @@ async function readExport(path: string): Promise<string> {
     return bytes.subarray(0, bytesRead).toString('utf8')
   } finally { await handle.close() }
 }
-export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, string>, workingDirectory: string, source: NodeJS.ProcessEnv = process.env): CompatibilityProbe {
+export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, string>, workingDirectory: string, source: NodeJS.ProcessEnv = process.env, inspectTimeoutMs = 2000): CompatibilityProbe {
   const processes = new Set<DiagnosticProcess>()
   const directories = new Set<string>()
   return {
@@ -161,7 +161,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
       const identity = await fingerprint(resolved, signal)
       const version = await isolated(source, directories, async (directory, environment) => {
         const output = await command(resolved, ['--version'], directory, environment,
-          AbortSignal.any([signal, AbortSignal.timeout(2000)]), 4096, processes)
+          AbortSignal.any([signal, AbortSignal.timeout(inspectTimeoutMs)]), 4096, processes)
         return parseInstalledVersion(harness, output.stdout, output.stderr)
       })
       return { executable: resolved, identity, version }
