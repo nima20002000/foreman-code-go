@@ -47,16 +47,31 @@ export class FileToolSessions {
     return { context, principal, binding: bindingIdentity(context) }
   }
 
+  /** Server-only pre-ack authority; no credential is issued or accepted from a caller. */
+  authorizeAccepted(context: FileToolContext): Promise<AuthorizedFileCaller> {
+    return this.current(ContextSchema.parse(context), 'read')
+  }
+
   /** Internal issuer only. Call from the already authenticated native-session/turn admission.
    * No HTTP/MCP issuance route exists. The adapter must supply accepted harness write restrictions. */
-  async issueForAcceptedSession(binding: FileToolContext, expiresAt: Date): Promise<string> {
+  async issueForAcceptedSession(binding: FileToolContext, expiresAt: Date, transport?: 'opencode'): Promise<string> {
     const context = ContextSchema.parse(binding)
     const caller = await this.current(context, context.allowMutation && context.allowedTools.some(isMutation) ? 'write' : 'read')
     const expiry = Math.min(expiresAt.getTime(), Date.parse(caller.principal.expiresAt), this.clock().getTime() + 60 * 60 * 1_000)
     if (!Number.isFinite(expiry) || expiry <= this.clock().getTime()) throw new DomainError('FILE_SESSION_INVALID', 'A live file session expiry is required.', 400)
     const token = `gql_file_${randomBytes(32).toString('base64url')}`
-    await this.repository.putSession(digest(token), { context, expiresAt: new Date(expiry).toISOString() })
+    await this.repository.putSession(digest(token), { context, expiresAt: new Date(expiry).toISOString(),
+      ...(transport ? { transport } : {}) })
     return token
+  }
+
+  async authenticateSharedEndpoint(token: string | undefined): Promise<AuthorizedFileCaller> {
+    const caller = await this.authenticate(token)
+    const session = await this.repository.session(digest(token!), this.clock().toISOString())
+    if (!session || session.transport === 'opencode') {
+      throw new DomainError('FILE_SESSION_INVALID', 'This file credential belongs to a dedicated native turn.', 401)
+    }
+    return caller
   }
 
   async authenticate(token: string | undefined, tool?: FileToolOperation): Promise<AuthorizedFileCaller> {

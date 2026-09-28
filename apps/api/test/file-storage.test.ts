@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, it } from 'vitest'
@@ -12,7 +11,7 @@ import { fileFixtures, fileMetadata, traversalZip, expansionZip } from './helper
 describe('FIL-03 managed file bytes', () => {
   let root: string, storage: FileByteStorage
   beforeEach(async () => {
-    root = await mkdtemp(join(homedir(), '.fil03-bytes-test-'))
+    root = await mkdtemp(join(process.cwd(), '.fil03-bytes-test-'))
     storage = new FileByteStorage(root, MAX_FILE_BYTES)
   })
   afterEach(async () => { await rm(root, { recursive: true, force: true }) })

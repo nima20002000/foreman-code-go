@@ -24,7 +24,7 @@ export interface FileToolContext {
   allowMutation: boolean
   allowedTools: FileToolOperation[]
 }
-export interface FileToolSession { context: FileToolContext; expiresAt: string }
+export interface FileToolSession { context: FileToolContext; expiresAt: string; transport?: 'opencode' }
 export interface AuthorizedFileCaller {
   context: FileToolContext
   principal: ManagementPrincipal

@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { link, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'vitest'
 
 import { ManagedFileCleanupBytes } from '../src/modules/files/cleanup/bytes.js'
 
 async function fixture(work: (value: { root: string; bytes: ManagedFileCleanupBytes }) => Promise<void>) {
-  const root = await mkdtemp(join(homedir(), '.fil04-bytes-'))
+  const root = await mkdtemp(join(process.cwd(), '.fil04-bytes-'))
   const storage = { root, initialize: async () => {
     for (const area of ['objects', 'staging']) await mkdir(join(root, area), { mode: 0o700, recursive: true })
   } }
