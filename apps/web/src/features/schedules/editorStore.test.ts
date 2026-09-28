@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ScheduleConfiguration } from '@graphql/contracts/schedules'
 import { buildScheduleCommand, createDraft, createScheduleEditorStore, draftIdentity, timezoneOptions } from './editorStore'
 
@@ -67,6 +67,32 @@ describe('schedule form validation and draft ownership', () => {
   })
   it('keeps saved aliases in the timezone select', () => {
     expect(timezoneOptions('US/Eastern')).toEqual(expect.arrayContaining(['UTC', 'US/Eastern']))
+  })
+  it('keeps the browser zone available when Intl has no timezone list', () => {
+    const resolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions
+    const localZone = 'Asia/Dushanbe'
+    vi.stubGlobal('Intl', Object.assign(Object.create(Intl), { supportedValuesOf: undefined }))
+    vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockImplementation(function (this: Intl.DateTimeFormat) {
+      return { ...resolvedOptions.call(this), timeZone: localZone }
+    })
+    try {
+      const saved = editor()
+      expect(timezoneOptions(saved.getState().draft!.timezone)).toContain(localZone)
+
+      const fresh = editor(null, 0)
+      expect(fresh.getState().draft?.timezone).toBe(localZone)
+      fresh.getState().edit({ timezone: 'UTC' })
+      expect(timezoneOptions(fresh.getState().draft!.timezone)).toContain(localZone)
+      const result = buildScheduleCommand(scope, fresh.getState(), now)
+      if (result.command?.kind !== 'save') throw new Error('Expected save')
+      const reopened = editor(result.command.input.schedule, 1)
+      expect(timezoneOptions(reopened.getState().draft!.timezone)).toContain(localZone)
+      reopened.getState().edit({ timezone: localZone })
+      expect(timezoneOptions(reopened.getState().draft!.timezone)).toContain('UTC')
+    } finally {
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    }
   })
   it('compares only the selected tab, ignoring weekday order', () => {
     const draft = createDraft(weekly)

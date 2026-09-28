@@ -32,7 +32,7 @@ export function timezoneOptions(current: string): string[] {
   let zones: string[] = []
   try { zones = intl.supportedValuesOf?.('timeZone') ?? [] } catch { /* Browser zone and UTC remain usable. */ }
   // Intl's canonical list can omit aliases already persisted by the service.
-  return [...new Set(['UTC', current, ...zones])].sort()
+  return [...new Set(['UTC', browserTimezone(), current, ...zones])].sort()
 }
 function tomorrow(timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en', {
