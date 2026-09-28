@@ -47,6 +47,10 @@
     "./run-snapshots": {
       "types": "./dist/runSnapshots.d.ts",
       "import": "./dist/runSnapshots.js"
+    },
+    "./files": {
+      "types": "./dist/files.d.ts",
+      "import": "./dist/files.js"
     }
   },
   "scripts": {
