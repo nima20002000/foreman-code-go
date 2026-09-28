@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { UrlSearchSelectionSchema } from '../index.js'
 import { GraphIdSchema } from './protocol.js'
 import { RepeatGraphScopeV3Schema, sameCanonicalGraphScope, type RepeatGraphScopeV3 } from './repeatGraphMetadata.js'
+import { RunActivityPublicKindSchema } from './runActivities.js'
 
 export const WorkspaceBoardInspectionSchema = z.object({
   runNodeId: GraphIdSchema.optional(), runRelationshipId: GraphIdSchema.optional(),
@@ -39,6 +40,7 @@ export function readRunInspectionKey(key?: string): WorkspaceBoardExecutionSelec
 /** Presentation only. A URL requests a Run; it never authorizes or proves its pins. */
 export const WorkspaceBoardSearchSchema = UrlSearchSelectionSchema.extend({
   ...WorkspaceBoardInspectionSchema.shape,
+  activityKind: RunActivityPublicKindSchema.optional(), activityAgentId: GraphIdSchema.optional(),
   runId: GraphIdSchema.optional(),
   workflowVersionId: GraphIdSchema.optional(),
   executionSemanticsVersion: z.union([
@@ -107,8 +109,10 @@ export function staysOnWorkflowBoard(current: { pathname: string; search: unknow
     const a = resolveWorkflowBoardLocation(current.pathname, current.search)
     const b = resolveWorkflowBoardLocation(next.pathname, next.search)
     if (a.workspaceId !== b.workspaceId || !a.workflowId || a.workflowId !== b.workflowId) return false
-    const left = boardSearchForRun(a.search, a.workflowId), right = boardSearchForRun(b.search, b.workflowId)
-    const keys = new Set([...Object.keys(left), ...Object.keys(right)]) as Set<keyof WorkspaceBoardSearch>
+    const { activityKind: _leftKind, activityAgentId: _leftAgent, ...left } = boardSearchForRun(a.search, a.workflowId)
+    const { activityKind: _rightKind, activityAgentId: _rightAgent, ...right } = boardSearchForRun(b.search, b.workflowId)
+    void _leftKind; void _leftAgent; void _rightKind; void _rightAgent
+    const keys = new Set([...Object.keys(left), ...Object.keys(right)]) as Set<keyof typeof left>
     return [...keys].every((key) => left[key] === right[key])
   } catch { return false }
 }

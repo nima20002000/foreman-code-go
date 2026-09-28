@@ -53,6 +53,13 @@ describe('unified board URL contract', () => {
     expect(staysOnWorkflowBoard(first, at({ ...search, workflowId: 'other' }))).toBe(false)
     expect(staysOnWorkflowBoard(first, { pathname: '/account', search: {} })).toBe(false)
   })
+  it('keeps Activities filters linkable through Run switches without leaving the draft', () => {
+    const selected = WorkspaceBoardSearchSchema.parse({ ...boardSearchForRun(search, 'workflow', scope),
+      activityKind: 'work_notice', activityAgentId: 'agent-2' })
+    expect(boardSearchForRun(selected, 'workflow', { ...scope, runId: 'run-2' }))
+      .toMatchObject({ activityKind: 'work_notice', activityAgentId: 'agent-2', runId: 'run-2' })
+    expect(staysOnWorkflowBoard(at(boardSearchForRun(search, 'workflow', scope)), at(selected))).toBe(true)
+  })
   it('recognizes the same board across aliases without losing a dirty editor', () => {
     expect(staysOnWorkflowBoard(at({ workflowId: 'workflow' }), {
       pathname: '/workspaces/workspace/workflows/workflow/runs/run-1/graph/version-1/3', search: {},

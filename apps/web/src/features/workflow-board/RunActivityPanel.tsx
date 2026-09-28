@@ -87,6 +87,8 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
       <Button size="sm" variant="ghost" leading={<Icon name="refresh" size={14} />} disabled={runs.isFetching} onClick={() => void refreshFirstInspectionPage(client, boardRunListKey(workspaceId, workflowId))}>Refresh Runs</Button>
     </div>
     {runs.data?.pages.length === 5 ? <p>The five most recently loaded pages are retained. Refresh starts at the first page.</p> : null}
+    {!selected ? <section className="board-activities" aria-label="Activities"><h3>Activities</h3>
+      <p>Select a Run to see its recorded Agent actions, outcomes and notices.</p></section> : null}
     {selected ? <section className="board-run-detail" aria-label="Selected run">
       <header><h3>Run {selected.runId.slice(-8)}</h3>
         <Button size="sm" variant="ghost" onClick={() => { ++request.current; discovery.reset(); selectRun() }}>Clear Run selection</Button></header>
@@ -95,4 +97,3 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     </section> : null}
   </div>
 }
-
