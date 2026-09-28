@@ -51,6 +51,10 @@
     "./run-snapshots": {
       "types": "./dist/runSnapshots.d.ts",
       "import": "./dist/runSnapshots.js"
+    },
+    "./selected-run-chat": {
+      "types": "./dist/selectedRunChat.d.ts",
+      "import": "./dist/selectedRunChat.js"
     }
   },
   "scripts": {
