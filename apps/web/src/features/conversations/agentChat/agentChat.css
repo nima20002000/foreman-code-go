@@ -13,7 +13,8 @@
 .agent-chat-now > span { min-width: 0; }
 .agent-chat-session-label { color: var(--text-strong); font: var(--type-label); }
 .agent-chat-note, .agent-chat-reasons { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
-.agent-chat-reasons { display: grid; gap: var(--space-2); }
+/* Reasons stay available to assistive tech (aria-describedby) and button titles; sighted users see disabled controls. */
+.agent-chat-reasons { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .agent-chat-controls, .agent-chat-delivery { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
 .agent-chat-message-actions, .agent-chat-orphaned-turns, .agent-chat-new-conversation { display: grid; gap: var(--space-2); min-width: 0; }
 .agent-conversation .n-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
@@ -74,13 +75,14 @@
 .agent-conversation > .conversation-viewport { flex: 1 1 0; }
 .agent-chat-notices { display: grid; gap: var(--space-3); min-width: 0; }
 .agent-chat-composer-controls { flex: 0 0 auto; gap: var(--space-2); border-top: 1px solid var(--border); padding-top: var(--space-2); }
-.agent-chat-composer-controls > .agent-chat-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.agent-chat-composer-controls .n-button { min-height: 44px; }
+.agent-chat-composer-controls .n-button { min-height: 32px; }
+.agent-chat-composer-controls > .agent-chat-controls { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .agent-chat-composer-controls .n-composer { padding: var(--space-2); }
 /* The fixed Operator launcher otherwise paints above this nonmodal sheet (z-index 100 vs 40).
    Hide only the launcher while Chat is open; do not close/mutate an Operator conversation. */
 body:has(.n-agent-popover[data-panel='chat']) .operator-chat-launcher { visibility: hidden; pointer-events: none; }
 @media (max-width: 720px) {
+  .agent-chat-composer-controls .n-button { min-height: 44px; }
   .n-agent-popover[data-panel='chat'] {
     width: var(--agent-chat-viewport-width, 100vw);
     height: min(48rem, calc(var(--agent-chat-viewport-height, 100dvh) - 12px));
