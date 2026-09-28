@@ -754,7 +754,12 @@ export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
   const client = await pool.connect()
   try {
     await client.query('begin')
-    await client.query('select pg_advisory_xact_lock($1)', [810_001])
+    const schema = (await client.query<{ schema: string | null }>('select current_schema() as schema')).rows[0]?.schema
+    if (!schema) throw new Error('Application migrations require a current PostgreSQL schema.')
+    // Independent test schemas can migrate together; retain the established
+    // lock for the normal public schema and serialize callers of each schema.
+    if (schema === 'public') await client.query('select pg_advisory_xact_lock($1)', [810_001])
+    else await client.query('select pg_advisory_xact_lock($1, hashtext($2))', [810_001, schema])
     await client.query(`
       create table if not exists application_migrations (
         version integer primary key,
