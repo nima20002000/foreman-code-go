@@ -61,6 +61,13 @@ export function integrationLogPath(base, file) {
   return join(base, `${file.slice('apps/api/test/'.length)}.log`)
 }
 
+/** Failing case names from a Vitest log, so failures can be acted on while the run continues. */
+export function failedCasesFromLog(output) {
+  const names = output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)
+    .map((line) => /^\s*FAIL\s+\S+\s+>\s+(.+)$/.exec(line)?.[1].trim()).filter(Boolean)
+  return [...new Set(names)]
+}
+
 export function parseVitestCases(output) {
   const lines = output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)
   const line = lines.findLast((item) => /^\s*Tests\s+.*\(\d+\)\s*$/.test(item))
@@ -86,7 +93,7 @@ export function fullRunExitCode(failed, interrupted) {
 }
 
 export function integrationShardLimit(value, cpuCount = availableParallelism()) {
-  const limit = value === undefined ? Math.min(8, cpuCount) : Number(value)
+  const limit = value === undefined ? Math.min(12, cpuCount) : Number(value)
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 12) throw new Error('Integration shards must be an integer from 1 to 12')
   return limit
 }
@@ -282,6 +289,7 @@ async function main() {
         mkdirSync(dirname(saved), { recursive: true })
         copyFileSync(log, saved)
         console.error(`[integration] ${label}FAIL ${file} (slot ${slot.index}, exit ${code}); log: ${saved}`)
+        for (const name of failedCasesFromLog(readFileSync(log, 'utf8'))) console.error(`[integration]   × ${name}`)
         if (error) console.error(`[integration] ${error.message}`)
       }
       return { code }

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { autoRetestFiles, discoverFiles, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, integrationLogPath, integrationShardLimit, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
+import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, integrationLogPath, integrationShardLimit, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -105,7 +105,7 @@ test('a successful retest cannot make a failed first pass green', () => {
 
 test('integration shard limit respects CPU capacity by default and bounds explicit overrides', () => {
   assert.equal(integrationShardLimit(undefined, 4), 4)
-  assert.equal(integrationShardLimit(undefined, 16), 8)
+  assert.equal(integrationShardLimit(undefined, 16), 12)
   assert.equal(integrationShardLimit('8', 4), 8)
   assert.equal(integrationShardLimit('12', 16), 12)
   assert.throws(() => integrationShardLimit('0', 16), /integer from 1 to 12/)
@@ -177,4 +177,9 @@ test('interrupt escalates a TERM-ignoring owned process group without awaiting i
     for (const timer of timers.values()) clearTimeout(timer)
     if (child.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch { /* exited */ } }
   }
+})
+
+test('lists failing case names from a Vitest log', () => {
+  const log = '\x1b[31m FAIL \x1b[39m test/a.integration.test.ts > suite > breaks\n FAIL  test/a.integration.test.ts > suite > breaks\n FAIL  test/b.integration.test.ts [ test/b.integration.test.ts ]\n ✓ passes'
+  assert.deepEqual(failedCasesFromLog(log), ['suite > breaks'])
 })
