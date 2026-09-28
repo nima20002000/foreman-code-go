@@ -24,6 +24,10 @@
       "types": "./dist/agentChat.d.ts",
       "import": "./dist/agentChat.js"
     },
+    "./selected-run-chat": {
+      "types": "./dist/selectedRunChat.d.ts",
+      "import": "./dist/selectedRunChat.js"
+    },
     "./wave25": {
       "types": "./dist/wave25/index.d.ts",
       "import": "./dist/wave25/index.js"
