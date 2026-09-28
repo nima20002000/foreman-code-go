@@ -59,8 +59,10 @@ try {
   // This smoke explicitly accepts writes ONLY to its disposable project, with shell/subagents denied.
   const session = await native('/session', { title: 'FIL-09 isolated file smoke', permission: [
     { permission: '*', pattern: '*', action: 'deny' },
-    { permission: 'read', pattern: `${directory}/**`, action: 'allow' },
-    { permission: 'edit', pattern: `${directory}/**`, action: 'allow' },
+    // OpenCode matches read/edit patterns relative to the project; paths outside it are
+    // separately gated by external_directory, which the deny-all rule above keeps denied.
+    { permission: 'read', pattern: '*', action: 'allow' },
+    { permission: 'edit', pattern: '*', action: 'allow' },
     { permission: 'graphql_files_*', pattern: '*', action: 'allow' },
   ] })
   assert.equal(typeof session.id, 'string')
@@ -80,15 +82,33 @@ try {
     expiresAt: new Date(f.clock().getTime() + 600_000) }, abort)
   turn.submissionAttempted()
   // Native image parts would be in the same parts array. Markdown remains a path, not pasted content.
-  const result = await native(`/session/${encodeURIComponent(session.id as string)}/message`, {
-    messageID: `msg_${sha256(turnId).slice(0, 32)}`, agent: 'build', model: { providerID, modelID },
+  // Like production: submit asynchronously, then wait for the terminal message. A synchronous
+  // /message call would hit the transport's 30s per-request cap during a real agent turn.
+  const messageID = `msg_${sha256(turnId).slice(0, 32)}`
+  const sessionPath = `/session/${encodeURIComponent(session.id as string)}`
+  const submitted = await server.request(`${sessionPath}/prompt_async?directory=${encodeURIComponent(directory)}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+    messageID, agent: 'build', model: { providerID, modelID },
     parts: [{ type: 'text', text: `Read the attached Markdown with the native Read tool. Use the native Edit tool to append\n${marker}\n`+
       'to its working copy. Then call the available files.publish_result tool with its artifactId, a new commandId, '+
       'filename returned.md, mediaType text/markdown, and the exact scope in the file MCP instructions. Do not use shell commands.\n'+
       prepared.promptSuffix }, ...prepared.imageParts],
-  })
+  }) }, abort)
+  assert.ok(submitted.ok, `Native OpenCode prompt submission failed (${submitted.status}); it will not be replayed.`)
   turn.submissionAcknowledged()
-  const info = result.info as { error?: unknown; time?: { completed?: number } } | undefined
+  type NativeMessage = { info?: { role?: string; parentID?: string; finish?: string; error?: unknown; time?: { completed?: number } } }
+  let info: NativeMessage['info']
+  while (!info) {
+    abort.throwIfAborted()
+    const response = await server.request(`${sessionPath}/message?directory=${encodeURIComponent(directory)}`, { method: 'GET' }, abort)
+    assert.ok(response.ok, `Native OpenCode message read failed (${response.status}).`)
+    const reply = (await response.json() as NativeMessage[]).find((entry) => entry.info?.role === 'assistant'
+      && entry.info.parentID === messageID
+      // Each tool step is its own completed message; the turn ends at a non-tool-call finish.
+      && (entry.info.error || (typeof entry.info.time?.completed === 'number' && entry.info.finish !== undefined && entry.info.finish !== 'tool-calls')))
+    if (reply) info = reply.info
+    else await new Promise((resolve) => setTimeout(resolve, 1_000))
+  }
   assert.ok(info && !info.error && typeof info.time?.completed === 'number', 'No confirmed successful native terminal message.')
   completed = true
   const publications = await turn.publications()
