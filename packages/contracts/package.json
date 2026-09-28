@@ -39,6 +39,14 @@
     "./runtime-identity-node": {
       "types": "./dist/runtimeIdentityNode.d.ts",
       "import": "./dist/runtimeIdentityNode.js"
+    },
+    "./schedules": {
+      "types": "./dist/schedules.d.ts",
+      "import": "./dist/schedules.js"
+    },
+    "./run-snapshots": {
+      "types": "./dist/runSnapshots.d.ts",
+      "import": "./dist/runSnapshots.js"
     }
   },
   "scripts": {
