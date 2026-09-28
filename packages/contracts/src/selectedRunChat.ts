@@ -67,7 +67,11 @@ export type ReadSelectedRunChatResponse = z.infer<typeof ReadSelectedRunChatResp
 /** Context/Agent ids are derived from the snapshot, not accepted again in the message body. */
 export const SendSelectedRunChatRequestSchema = z.object({
   selection: SelectedRunChatExecutionSchema,
-  message: SendAgentChatMessageRequestSchema.omit({ context: true }),
+  // Derive fields before refining: omit must not discard the message-content check.
+  message: z.object(SendAgentChatMessageRequestSchema.shape).omit({ context: true }).strict()
+    .refine((value) => value.content.length > 0 || value.attachments.length > 0, {
+      path: ["content"], message: "Message requires text or an attachment.",
+    }),
 }).strict();
 export const InterruptSelectedRunChatRequestSchema = z.object({
   key: SelectedRunChatKeySchema, request: InterruptAgentChatRequestSchema,

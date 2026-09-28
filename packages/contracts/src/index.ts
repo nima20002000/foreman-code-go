@@ -1492,7 +1492,7 @@ export const GetOperatorConversationResponseSchema = OperatorConversationStateSc
 export const SendOperatorMessageRequestSchema = z.object({
   requestId: IdSchema,
   ...MessageAttachmentFields,
-  content: z.string().trim().min(1),
+  content: z.string().trim(),
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
   forkExpectedRevision: z.number().int().nonnegative().optional(),
@@ -1502,7 +1502,9 @@ export const SendOperatorMessageRequestSchema = z.object({
   defaultsRevision: z.number().int().nonnegative().optional(),
   /** Read an existing receipt without creating or relaunching native work. Not part of command identity. */
   recovery: z.literal("receipt").optional(),
-}).strict();
+}).strict().refine((value) => value.content.length > 0 || value.attachments.length > 0, {
+  path: ["content"], message: "Message requires text or an attachment.",
+});
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
 export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
 export const RespondOperatorInteractionRequestSchema = z.object({

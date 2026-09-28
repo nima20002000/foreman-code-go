@@ -194,13 +194,15 @@ export const SendAgentChatMessageRequestSchema = z.object({
   requestId: IdSchema,
   ...MessageAttachmentFields,
   context: AgentChatQuerySchema,
-  content: z.string().trim().min(1).max(32000),
+  content: z.string().trim().max(32000),
   intent: AgentChatIntentSchema.default("next_turn"),
   /** Null = the client saw no conversation (first message). A mismatch returns 409 context_stale. */
   expectedConversationId: IdSchema.nullable(),
   /** Required for steer when capabilities.steer is "native_expected_turn". */
   expectedNativeTurnId: IdSchema.optional(),
-}).strict();
+}).strict().refine((value) => value.content.length > 0 || value.attachments.length > 0, {
+  path: ["content"], message: "Message requires text or an attachment.",
+});
 export type SendAgentChatMessageRequest = Omit<z.infer<typeof SendAgentChatMessageRequestSchema>, "attachments">
   & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };
 /** Legacy urgent receipts did not retain the original target. This is readback, not target verification. */
