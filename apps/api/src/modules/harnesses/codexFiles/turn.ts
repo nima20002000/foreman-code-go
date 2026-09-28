@@ -1,0 +1,307 @@
+import { Readable } from 'node:stream'
+import type { FileWithRevision, MessageAttachmentRef } from '@graphql/contracts/files'
+import type { FileToolName } from '../../files/tools/types.js'
+import { assertRegisteredCodexCopy, collectCodexFileBytes, fail, sha256 } from './bytes.js'
+import type {
+  AcceptedCodexFileTurn, CodexAttachmentSource, CodexFileCall, CodexFileCallResult,
+  CodexFileHostLease, CodexFileInput, CodexFileLimits, CodexFileServices,
+  CodexImagePreparation, RegisteredCodexCopy,
+} from './port.js'
+
+/** Codex function names cannot contain dots. The underlying FIL-05 names do not change. */
+export const CODEX_FILE_TOOL_ALIASES = Object.freeze({
+  files_list: 'files.list',
+  files_read: 'files.read',
+  files_create_working_copy: 'files.create_working_copy',
+  files_publish_result: 'files.publish_result',
+} as const)
+const mutation = (name: FileToolName) => name === 'files.create_working_copy' || name === 'files.publish_result'
+const pins = (ref: MessageAttachmentRef): string => JSON.stringify([ref.fileId, ref.revisionId])
+const sameScope = (left: unknown, right: unknown): boolean => {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)])) : value
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right))
+}
+const textResult = (value: unknown, extra?: string): CodexFileCallResult => ({ success: true,
+  contentItems: [{ type: 'inputText', text: JSON.stringify(value) }, ...(extra ? [{ type: 'inputText' as const, text: extra }] : [])],
+})
+const refused = (): CodexFileCallResult => ({ success: false,
+  contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }],
+})
+interface Delivery { ref: MessageAttachmentRef; revision: FileWithRevision['revision']; filename: string; copy: RegisteredCodexCopy; image?: RegisteredCodexCopy; firstFrameOnly: boolean }
+interface WorkingCopy { copy: RegisteredCodexCopy; writeId: string; completed: boolean; busy: boolean }
+
+export interface CodexFileTurnDependencies {
+  files: CodexFileServices
+  source: CodexAttachmentSource
+  host: CodexFileHostLease
+  limits: CodexFileLimits
+  prepareImage?: CodexImagePreparation
+  /** Must parse and bind FIL-05 read results to the requested immutable range. */
+  parseRead: (request: unknown, result: unknown) => Awaited<ReturnType<CodexFileServices['read']>>
+  /** Frozen strict input validation MUST precede sealing or any runner mutation. */
+  parseCall: (tool: FileToolName, arguments_: unknown) => unknown
+  clock?: () => Date
+}
+
+/** A per-admission bridge for the EXISTING app-server transport. Does not spawn a
+ * second Codex process, issue Operator/worker credentials, or configure App MCP.
+ * No credential is returned in native inputs, tool definitions or tool results. */
+export class CodexFileTurn {
+  #accepted: AcceptedCodexFileTurn
+  #dependencies: CodexFileTurnDependencies
+  #deliveries: Delivery[] = []
+  #working = new Map<string, WorkingCopy>()
+  #registrations = new Set<string>()
+  #paths = new Set<string>()
+  #token: string | undefined
+  #nativeTurnId: string | undefined
+  #activation: Promise<void> | undefined
+  #closing = false
+  #closeAttempt: Promise<void> | undefined
+  #pending = new Set<Promise<CodexFileCallResult>>()
+
+  private constructor(accepted: AcceptedCodexFileTurn, dependencies: CodexFileTurnDependencies) {
+    this.#accepted = structuredClone(accepted)
+    this.#dependencies = dependencies
+  }
+
+  static async prepare(accepted: AcceptedCodexFileTurn, dependencies: CodexFileTurnDependencies,
+    signal?: AbortSignal): Promise<CodexFileTurn> {
+    const turn = new CodexFileTurn(accepted, dependencies)
+    try {
+      turn.assertAdmission()
+      for (const ref of turn.#accepted.attachments) {
+        signal?.throwIfAborted()
+        const opened = await dependencies.source.open(ref)
+        let data: Buffer
+        try {
+          turn.assertAttachment(ref, opened.value)
+          data = await collectCodexFileBytes(opened.stream, dependencies.limits.fileBytes, signal)
+        } finally { opened.stream.destroy() }
+        if (data.length !== opened.value.revision.byteSize || sha256(data) !== opened.value.revision.sha256) fail('CODEX_FILE_BYTES_CHANGED')
+        // All turn inputs are read-only detached copies, even in project Write mode.
+        // The agent explicitly obtains an editable registered copy through FIL-05.
+        const copy = await turn.materialize(opened.value.revision.filename, opened.value.revision.mediaType, data, false)
+        const delivery: Delivery = { ref: { ...ref }, revision: structuredClone(opened.value.revision), filename: opened.value.revision.filename, copy, firstFrameOnly: false }
+        if (opened.value.revision.mediaType.startsWith('image/')) {
+          if (!dependencies.prepareImage) fail('CODEX_IMAGE_CAPABILITY_REQUIRED')
+          const image = await dependencies.prepareImage!(Buffer.from(data), opened.value.revision.mediaType)
+          if (!['image/png', 'image/jpeg', 'image/webp'].includes(image.mediaType)) fail('CODEX_IMAGE_PREPARATION_INVALID')
+          const imageBytes = Buffer.from(image.bytes)
+          delivery.image = image.mediaType === opened.value.revision.mediaType && sha256(imageBytes) === sha256(data)
+            ? copy : await turn.materialize(`preview.${image.mediaType === 'image/jpeg' ? 'jpg' : image.mediaType.slice(6)}`,
+              image.mediaType, imageBytes, false)
+          delivery.firstFrameOnly = image.firstFrameOnly
+        }
+        const current = await dependencies.source.recheck(ref)
+        turn.assertAttachment(ref, current)
+        if (!sameScope(current.revision, opened.value.revision)) fail('CODEX_FILE_BYTES_CHANGED')
+        turn.#deliveries.push(delivery)
+      }
+      signal?.throwIfAborted()
+      return turn
+    } catch (error) {
+      // A failed preparation does not leak a file session or a partially delivered turn.
+      try { await turn.close() } catch { fail('CODEX_FILE_PREPARATION_CLEANUP_REQUIRED') }
+      throw error
+    }
+  }
+
+  private assertAdmission(): void {
+    const value = this.#accepted, { limits, host } = this.#dependencies
+    if (!value.ownerPrincipalId || !value.nativeSessionId || !value.admissionId
+      || !value.executionHostId || value.executionHostId !== host.executionHostId
+      || !['read', 'write'].includes(value.projectMode) || !['posix', 'win32'].includes(host.pathStyle)
+      || !Number.isFinite(value.expiresAt.getTime()) || value.expiresAt.getTime() <= this.now().getTime()
+      || ![limits.fileBytes, limits.readBytes, limits.attachments].every((n) => Number.isSafeInteger(n) && n > 0)
+      || limits.readBytes > limits.fileBytes || value.attachments.length > limits.attachments
+      || new Set(value.attachments.map((ref) => ref.fileId)).size !== value.attachments.length
+      || value.allowedTools.some((name) => !Object.values(CODEX_FILE_TOOL_ALIASES).includes(name))) fail('CODEX_FILE_ADMISSION_INVALID')
+    if (value.scope.kind !== 'temporary'
+      || (value.scope.chat.kind === 'operator' && value.scope.chat.ownerPrincipalId !== value.ownerPrincipalId)) fail('CODEX_FILE_SCOPE_INVALID')
+    // FIL-05 has no byte-edit tool for a read-only harness. Do not invent a write
+    // grant, mutable project path, or tool to work around that contract gap.
+    if (value.projectMode === 'read' && value.allowMutation) fail('CODEX_READ_MODE_FILE_EDIT_UNSUPPORTED')
+  }
+
+  private now(): Date { return this.#dependencies.clock?.() ?? new Date() }
+  private assertAttachment(ref: MessageAttachmentRef, value: FileWithRevision): void {
+    if (pins(ref) !== pins(value.revision) || value.file.fileId !== ref.fileId
+      || !sameScope(value.file.scope, this.#accepted.scope)) fail('CODEX_FILE_SCOPE_INVALID')
+    if (value.file.state !== 'ready' || !('expiresAt' in value.file)
+      || !Number.isFinite(Date.parse(value.file.expiresAt))
+      || Date.parse(value.file.expiresAt) <= this.now().getTime()) fail('CODEX_FILE_UNAVAILABLE')
+    if (!Number.isSafeInteger(value.revision.byteSize) || value.revision.byteSize < 0
+      || value.revision.byteSize > this.#dependencies.limits.fileBytes
+      || !/^[a-f0-9]{64}$/.test(value.revision.sha256)) fail('CODEX_FILE_BYTES_CHANGED')
+  }
+
+  private async materialize(filename: string, mediaType: FileWithRevision['revision']['mediaType'], data: Buffer,
+    writable: boolean): Promise<RegisteredCodexCopy> {
+    if (this.#closing) fail('CODEX_FILE_TURN_CLOSED')
+    if (data.length > this.#dependencies.limits.fileBytes) fail('CODEX_FILE_SIZE_LIMIT')
+    if (writable && (this.#accepted.projectMode !== 'write' || !this.#accepted.allowMutation)) fail('CODEX_FILE_WRITE_DENIED')
+    const expected = { executionHostId: this.#accepted.executionHostId, pathStyle: this.#dependencies.host.pathStyle,
+      writable, byteSize: data.length, sha256: sha256(data) }
+    const stream = Readable.from([Buffer.from(data)])
+    let copy: RegisteredCodexCopy
+    try { copy = await this.#dependencies.host.materialize({ filename, mediaType, bytes: stream, ...expected }) }
+    finally { stream.destroy() }
+    assertRegisteredCodexCopy(copy, expected)
+    if (this.#registrations.has(copy.registrationId) || this.#paths.has(copy.executionPath)) fail('CODEX_FILE_HOST_COLLISION')
+    this.#registrations.add(copy.registrationId); this.#paths.add(copy.executionPath)
+    return copy
+  }
+
+  allowedTools(): readonly FileToolName[] {
+    return [...new Set(this.#accepted.allowedTools)].filter((name) => !mutation(name) || this.#accepted.allowMutation)
+  }
+
+  /** Call immediately before turn/start. No startup prompt, skill bundle, or bytes. */
+  async nativeInput(prompt: string): Promise<CodexFileInput[]> {
+    if (this.#closing) fail('CODEX_FILE_TURN_CLOSED')
+    for (const delivery of this.#deliveries) {
+      const current = await this.#dependencies.source.recheck(delivery.ref)
+      this.assertAttachment(delivery.ref, current)
+      if (!sameScope(current.revision, delivery.revision)) fail('CODEX_FILE_BYTES_CHANGED')
+    }
+    const lines = this.#deliveries.map(({ ref, filename, copy, firstFrameOnly }) => JSON.stringify({
+      filename, path: copy.executionPath, ...ref, ...(firstFrameOnly ? { image: 'first frame' } : {}),
+    }))
+    const copyHint = this.allowedTools().includes('files.create_working_copy') ? '; use files_create_working_copy to edit' : ''
+    const note = lines.length ? `\n\nAttached files (read-only copies${copyHint}):\n${lines.join('\n')}` : ''
+    return [{ type: 'text', text: prompt + note, text_elements: [] },
+      ...this.#deliveries.flatMap((delivery): CodexFileInput[] => delivery.image
+        ? [{ type: 'localImage', path: delivery.image.executionPath }] : [])]
+  }
+
+  /** AFTER native acknowledgement and durable onSubmitted persistence; BEFORE
+   * dispatching staged item/tool/call requests. Never take this ID from tool args. */
+  activate(nativeTurnId: string): Promise<void> {
+    if (this.#closing || !nativeTurnId.trim()) return Promise.reject(new Error('CODEX_FILE_TURN_CLOSED'))
+    if (this.#nativeTurnId && this.#nativeTurnId !== nativeTurnId) return Promise.reject(new Error('CODEX_FILE_TURN_MISMATCH'))
+    if (this.#activation) return this.#activation
+    this.#nativeTurnId = nativeTurnId
+    this.#activation = (async () => {
+      const value = this.#accepted
+      const token = await this.#dependencies.files.sessions.issueForAcceptedSession({
+        ownerPrincipalId: value.ownerPrincipalId, scope: value.scope, nativeSessionId: value.nativeSessionId,
+        turnId: nativeTurnId, ...(value.messageId ? { messageId: value.messageId } : {}),
+        allowMutation: value.allowMutation, allowedTools: [...this.allowedTools()],
+      }, value.expiresAt)
+      if (!/^gql_file_[A-Za-z0-9_-]{43}$/.test(token)) {
+        await this.#dependencies.files.sessions.revoke(token)
+        fail('CODEX_FILE_SESSION_INVALID')
+      }
+      this.#token = token
+    })()
+    return this.#activation
+  }
+
+  /** The adapter routes only this four-tool allowlist. No shell, path-read, edit,
+   * Operator, worker, or workflow GraphQL entry points are accepted here. */
+  call(request: CodexFileCall): Promise<CodexFileCallResult> {
+    if (this.#closing) return Promise.resolve(refused())
+    const operation = this.dispatch(request).catch(() => refused())
+    this.#pending.add(operation)
+    void operation.finally(() => this.#pending.delete(operation))
+    return operation
+  }
+
+  private async dispatch(request: CodexFileCall): Promise<CodexFileCallResult> {
+    const token = this.#token
+    if (!token || request.threadId !== this.#accepted.nativeSessionId || request.turnId !== this.#nativeTurnId
+      || (request.namespace != null && request.namespace !== '')
+      || !Object.hasOwn(CODEX_FILE_TOOL_ALIASES, request.tool)) return refused()
+    const tool = CODEX_FILE_TOOL_ALIASES[request.tool as keyof typeof CODEX_FILE_TOOL_ALIASES]
+    if (!this.allowedTools().includes(tool)) return refused()
+    await this.#dependencies.files.sessions.authenticate(token, tool)
+    const files = this.#dependencies.files
+    const arguments_ = this.#dependencies.parseCall(tool, request.arguments)
+    if (mutation(tool) && (!arguments_ || typeof arguments_ !== 'object'
+      || !sameScope(Reflect.get(arguments_, tool === 'files.create_working_copy' ? 'destination' : 'scope'),
+        this.#accepted.scope))) return refused()
+    switch (tool) {
+      case 'files.list': return textResult(await files.list(token, arguments_))
+      case 'files.read': return textResult(await files.read(token, arguments_))
+      case 'files.create_working_copy': {
+        const result = await files.createWorkingCopy(token, arguments_)
+        const id = result.value.artifactId
+        if (!this.#working.has(id)) {
+          const data = await this.readPinned(token, result.value.source)
+          const writeId = await files.artifacts.beginWrite(token, id)
+          try {
+            const copy = await this.materialize(result.value.filename, data.mediaType, data.bytes, true)
+            await files.sessions.authenticate(token, 'files.create_working_copy')
+            this.#working.set(id, { copy, writeId, completed: false, busy: false })
+          } catch (error) { await files.artifacts.abortWrite(token, id, writeId); throw error }
+        }
+        const working = this.#working.get(id)!
+        return textResult(result, `Working copy: ${JSON.stringify({ artifactId: id, path: working.copy.executionPath })}`)
+      }
+      case 'files.publish_result': {
+        // This is only a lookup. Artifact IDs never become paths, filenames, or URLs.
+        const id = arguments_ && typeof arguments_ === 'object'
+          ? Reflect.get(arguments_, 'artifactId') as unknown : undefined
+        if (typeof id !== 'string') return refused()
+        const working = this.#working.get(id)
+        if (!working || working.busy) return refused()
+        working.busy = true
+        try {
+          if (!working.completed) {
+            const snapshot = await this.#dependencies.host.sealCompleted(working.copy.registrationId)
+            await files.artifacts.completeWrite(token, id, working.writeId, snapshot)
+            working.completed = true
+          }
+          return textResult(await files.publish(token, arguments_))
+        } finally { working.busy = false }
+      }
+    }
+  }
+
+  private async readPinned(token: string, ref: MessageAttachmentRef): Promise<{ bytes: Buffer; mediaType: FileWithRevision['revision']['mediaType'] }> {
+    const { files, limits, parseRead } = this.#dependencies
+    const chunks: Buffer[] = []
+    let offset = 0, revision: FileWithRevision['revision'] | undefined
+    for (;;) {
+      const request = { ...ref, offset, length: limits.readBytes }
+      const result = parseRead(request, await files.read(token, request))
+      if (result.status !== 'ready') fail('CODEX_FILE_UNAVAILABLE')
+      const ready = result as Extract<typeof result, { status: 'ready' }>
+      if (revision && !sameScope(revision, ready.revision)) fail('CODEX_FILE_BYTES_CHANGED')
+      revision = ready.revision
+      const data = Buffer.from(ready.contentBase64, 'base64')
+      if (data.length !== ready.byteLength || ready.offset !== offset || pins(ref) !== pins(ready.revision)
+        || data.length > limits.readBytes || (!data.length && !ready.eof)) fail('CODEX_FILE_RANGE_INVALID')
+      chunks.push(data); offset += data.length
+      if (offset > limits.fileBytes) fail('CODEX_FILE_SIZE_LIMIT')
+      if (ready.eof) break
+    }
+    const bytes = Buffer.concat(chunks, offset)
+    if (!revision || bytes.length !== revision.byteSize || sha256(bytes) !== revision.sha256) fail('CODEX_FILE_BYTES_CHANGED')
+    return { bytes, mediaType: revision.mediaType }
+  }
+
+  async publications(): Promise<MessageAttachmentRef[]> {
+    if (!this.#token || this.#closing) fail('CODEX_FILE_TURN_CLOSED')
+    return this.#dependencies.files.publishedForTurn(this.#token!)
+  }
+
+  /** Revoke first, drain in-flight calls, then release host allocations. Retry a
+   * failed close explicitly; neither uncertainty nor cleanup permits a new turn. */
+  close(): Promise<void> {
+    if (this.#closeAttempt) return this.#closeAttempt
+    this.#closing = true
+    const attempt = (async () => {
+      await this.#activation?.catch(() => undefined)
+      if (this.#token) { await this.#dependencies.files.sessions.revoke(this.#token); this.#token = undefined }
+      await Promise.allSettled([...this.#pending])
+      await this.#dependencies.host.close()
+    })()
+    this.#closeAttempt = attempt
+    void attempt.catch(() => { if (this.#closeAttempt === attempt) this.#closeAttempt = undefined })
+    return attempt
+  }
+}
