@@ -5,7 +5,6 @@ import { SignalEdgeShape } from '../graph/SignalEdgeShape'
 import { savedEdgeCurve } from './curve'
 import { projectRunBoard, READ_ONLY_FLOW_PROPS, type AvailableRunBoardSnapshot, type SavedBoardEdge, type SavedBoardNode } from './model'
 import '@xyflow/react/dist/style.css'
-import '../../shared/ui/nocturne/canvas.css'
 import './runBoard.css'
 
 const sides = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const
