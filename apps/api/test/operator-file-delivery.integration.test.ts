@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -148,8 +149,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     await applyApplicationMigrations(pool)
     f = await fileRuntimeFixture()
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
-    vault = await mkdtemp(join(process.cwd(), '.af02-vault-'))
-    runtimeHome = await mkdtemp(join(process.cwd(), '.af02-runtime-'))
+    vault = await mkdtemp(join(homedir(), '.af02-vault-'))
+    runtimeHome = await mkdtemp(join(homedir(), '.af02-runtime-'))
     await writeFile(join(f.directory, 'file-turn'), '')
     // Audit key presence only, not credential values. The fixture's worker
     // default is absent because the actual Operator service supplies its input.

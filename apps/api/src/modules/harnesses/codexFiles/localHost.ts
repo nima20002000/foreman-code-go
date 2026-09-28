@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, realpath, rm } from 'node:fs/promises'
-import { basename, dirname, extname, join, resolve } from 'node:path'
+import { dirname, extname, join, resolve } from 'node:path'
 import { collectCodexFileBytes } from './bytes.js'
 import type { CodexFileHostLease, RegisteredCodexCopy } from './port.js'
 
@@ -9,7 +9,8 @@ import type { CodexFileHostLease, RegisteredCodexCopy } from './port.js'
  * edits go through FIL-05b; this lease never exposes a mutable host path. */
 export function codexChatHostDirectory(fileStorageRoot: string): string {
   const root = resolve(fileStorageRoot)
-  return join(dirname(root), `${basename(root)}-codex-chat-files`)
+  // A sibling, not a name derived from the storage path: prompts must never contain the storage root.
+  return join(dirname(root), 'codex-chat-files')
 }
 
 export async function localCodexChatHost(fileStorageRoot: string): Promise<CodexFileHostLease> {

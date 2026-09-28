@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,7 +13,7 @@ test('Codex chat host delivers verified read-only bytes and rejects mutable path
   const root = await mkdtemp(join(tmpdir(), 'codex-host-test-'))
   try {
     const host = await localCodexChatHost(join(root, 'files'))
-    assert.equal(codexChatHostDirectory(join(root, 'files')), join(root, 'files-codex-chat-files'))
+    assert.equal(codexChatHostDirectory(join(root, 'files')), join(root, 'codex-chat-files'))
     const bytes = Buffer.from('# attachment\n')
     const input = { filename: 'notes.md', mediaType: 'text/markdown' as const,
       byteSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), writable: false,
@@ -31,7 +32,7 @@ test('Codex chat host delivers verified read-only bytes and rejects mutable path
 })
 
 test('write-mode Operator host stays outside the default temporary harness root', async () => {
-  const root = await mkdtemp(join(process.cwd(), '.codex-host-guard-'))
+  const root = await mkdtemp(join(homedir(), '.codex-host-guard-'))
   const unsafe = await mkdtemp(join(tmpdir(), 'codex-host-guard-'))
   try {
     const workingDirectory = join(root, 'operator')

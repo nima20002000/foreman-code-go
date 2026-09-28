@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -56,7 +57,7 @@ const pin = (value: { file: { fileId: string }; revision: { revisionId: string }
 
 async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
   const database = await agent3Database()
-  const root = await mkdtemp(join(process.cwd(), '.r2-inherited-'))
+  const root = await mkdtemp(join(homedir(), '.r2-inherited-'))
   const f = await fileRuntimeFixture()
   const app = Fastify({ logger: false })
   const managers = new Map<string, NativeHarnessSessionManager>()
