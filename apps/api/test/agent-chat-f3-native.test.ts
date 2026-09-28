@@ -45,6 +45,7 @@ function codex(chat = true) {
 }
 function openCode() {
   const server = new FixtureServer()
+  server.config = { mcp: { graphql: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
   const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpAccess: 'none' })
   cleanups.push(() => manager.dispose())
   return { manager, server }

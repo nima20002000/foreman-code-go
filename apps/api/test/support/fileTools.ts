@@ -116,13 +116,20 @@ export class MemoryTools implements FileToolRepository {
   }
   async beginWrite(binding: string, id: string, writeId: string, baseRevisionId?: string) {
     const value = this.artifacts.get(id)
-    if (!value || value.binding !== binding || value.state === 'writing'
+    if (!value || value.binding !== binding || value.retiredAt || value.state === 'writing'
       || (baseRevisionId !== undefined && value.snapshot?.revision.revisionId !== baseRevisionId)) return false
     value.state = 'writing'; value.writeId = writeId; return true
   }
+  async registerStorage(binding: string, id: string, writeId: string, storageKey: string) {
+    const value = this.artifacts.get(id)
+    if (!value || value.binding !== binding || value.writeId !== writeId || value.retiredAt || value.state !== 'writing') return false
+    value.storageKeys = [...new Set([...(value.storageKeys ?? []),
+      ...(value.snapshot ? [value.snapshot.storageKey] : []), storageKey])]
+    return true
+  }
   async finishWrite(binding: string, id: string, writeId: string, snapshot: ArtifactSnapshot) {
     const value = this.artifacts.get(id)
-    if (!value || value.binding !== binding || value.writeId !== writeId || value.state !== 'writing') return false
+    if (!value || value.binding !== binding || value.writeId !== writeId || value.retiredAt || value.state !== 'writing') return false
     value.state = 'complete'; value.snapshot = clone(snapshot); return true
   }
   async failWrite(binding: string, id: string, writeId: string) {

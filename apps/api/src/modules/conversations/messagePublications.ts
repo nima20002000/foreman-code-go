@@ -1,0 +1,65 @@
+import type pg from 'pg'
+import { MessageAttachmentRefSchema, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { DomainError } from '../errors.js'
+import { bindingIdentity } from '../files/tools/context.js'
+
+/** Server-owned output pins are not new send inputs and do not consume the ten
+ * input slots. Keep them separate so resume never re-delivers published output. */
+export const MessagePublicationRefsSchema = MessageAttachmentRefSchema.array()
+  .refine((refs) => new Set(refs.map((ref) => ref.fileId)).size === refs.length,
+    'Attach a logical file at most once per message')
+
+export function mergeMessagePins(...groups: readonly (readonly MessageAttachmentRef[])[]): MessageAttachmentRef[] {
+  const byFile = new Map<string, MessageAttachmentRef>()
+  for (const refs of groups) for (const ref of refs) {
+    const prior = byFile.get(ref.fileId)
+    if (prior && prior.revisionId !== ref.revisionId) throw new DomainError(
+      'MESSAGE_PUBLICATION_CONFLICT', 'A different revision is already pinned to this message.', 409)
+    byFile.set(ref.fileId, ref)
+  }
+  return MessagePublicationRefsSchema.parse([...byFile.values()])
+}
+
+/** Read recovery after process loss, including a canceled publish whose final
+ * authentication failed. Reconstruct bindings from persisted chat facts, never
+ * a live token, mutable host path, current selection, or caller-provided context.
+ * This projects already-finalized facts; it cannot authorize another write. */
+export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'query'>,
+  conversationId: string, messageIds: string[]): Promise<Map<string, MessageAttachmentRef[]>> {
+  const result = new Map<string, MessageAttachmentRef[]>()
+  if (!messageIds.length) return result
+  const turns = (await query.query<{
+    message_id: string; native_turn_id: string; owner_principal_id: string; native_session_id: string
+    workspace_id: string; workflow_id: string; agent_id: string
+    origin_run_id: string | null; origin_execution_id: string | null
+  }>(`select t.message_id,t.native_turn_id,t.payload->>'ownerPrincipalId' as owner_principal_id,
+      c.native_session_id,c.workspace_id,c.workflow_id,c.agent_id,c.origin_run_id,c.origin_execution_id
+    from operator_conversations c join operator_conversation_turns t on t.conversation_id=c.id
+    join operator_conversation_messages m on m.id=t.message_id and m.conversation_id=c.id and m.role='user'
+    where c.id=$1 and c.kind='agent' and c.harness='codex' and c.deleted_at is null
+      and t.intent<>'steer' and t.message_id=any($2::text[]) and t.native_turn_id is not null
+      and c.native_session_id is not null and t.payload->>'ownerPrincipalId' is not null`,
+  [conversationId, messageIds])).rows
+  const bindings = new Map(turns.map((turn) => [bindingIdentity({
+    ownerPrincipalId: turn.owner_principal_id, nativeSessionId: turn.native_session_id,
+    turnId: turn.native_turn_id, messageId: turn.message_id, allowMutation: false, allowedTools: [],
+    scope: { kind: 'temporary', chat: { kind: 'agent', conversationId, agentId: turn.agent_id,
+      workspaceId: turn.workspace_id, workflowId: turn.workflow_id,
+      ...(turn.origin_run_id !== null && turn.origin_execution_id !== null
+        ? { runId: turn.origin_run_id, executionId: turn.origin_execution_id } : {}) } },
+  }), turn]))
+  if (!bindings.size) return result
+  const published = (await query.query<{ binding: string; owner_principal_id: string; file_id: string; revision_id: string }>(`
+    select p.binding,p.owner_principal_id,p.file_id,p.revision_id from file_tool_publications p
+    join file_allocations a on a.owner_principal_id=p.owner_principal_id and a.request_id=p.request_id
+      and a.file_id=p.file_id and a.revision_id=p.revision_id and a.state='finalized'
+    where p.binding=any($1::text[]) order by p.request_id`, [[...bindings.keys()]])).rows
+  for (const publication of published) {
+    const turn = bindings.get(publication.binding)
+    if (!turn || publication.owner_principal_id !== turn.owner_principal_id) continue
+    const refs = result.get(turn.message_id) ?? []
+    refs.push(MessageAttachmentRefSchema.parse({ fileId: publication.file_id, revisionId: publication.revision_id }))
+    result.set(turn.message_id, refs)
+  }
+  return result
+}

@@ -9,6 +9,7 @@ import { bindingIdentity } from '../../files/tools/context.js'
 import { fileScopeIdentity } from '../../files/requests.js'
 import { PostgresWorkflowRepository } from '../../workflows/postgres.js'
 import { DomainError } from '../../errors.js'
+import { MessagePublicationRefsSchema } from '../../conversations/messagePublications.js'
 import { codexChatFileTools } from './declarations.js'
 import type { CodexFileHostLease } from './port.js'
 import type { ProductionCodexChatFiles } from './production.js'
@@ -131,20 +132,23 @@ export function postgresCodexChatFiles(pool: pg.Pool, files: () => TemporaryFile
           for (const ref of refs) if (!published.some((pin) => pin.file_id === ref.fileId && pin.revision_id === ref.revisionId)) {
             throw new DomainError('CODEX_FILE_PUBLICATION_MISMATCH', 'The publication is not finalized for this turn.', 409)
           }
-          const message = (await client.query<{ record: { attachmentRefs?: MessageAttachmentRef[] } }>(`
+          const message = (await client.query<{ record: { attachmentRefs?: MessageAttachmentRef[]; publicationRefs?: MessageAttachmentRef[] } }>(`
             select record from operator_conversation_messages where id=$1 and conversation_id=$2 and role='user' for update`,
           [row.message_id, input.conversationId])).rows[0]
           if (!message) throw new DomainError('CODEX_FILE_MESSAGE_MISSING', 'The originating message is unavailable.', 409)
-          const byFile = new Map((message.record.attachmentRefs ?? []).map((ref) => [ref.fileId, ref]))
-          for (const ref of refs) {
+          const originals = message.record.attachmentRefs ?? []
+          const byFile = new Map([...originals, ...(message.record.publicationRefs ?? [])].map((ref) => [ref.fileId, ref]))
+          for (const pin of published) {
+            const ref = { fileId: pin.file_id, revisionId: pin.revision_id }
             const prior = byFile.get(ref.fileId)
             if (prior && prior.revisionId !== ref.revisionId) throw new DomainError(
               'CODEX_FILE_PUBLICATION_CONFLICT', 'A different revision is already pinned to this message.', 409)
             byFile.set(ref.fileId, ref)
           }
-          const combined = MessageAttachmentRefsSchema.parse([...byFile.values()])
-          await client.query(`update operator_conversation_messages set record=jsonb_set(record,'{attachmentRefs}',$2::jsonb)
-            where id=$1`, [row.message_id, JSON.stringify(combined)])
+          const output = MessagePublicationRefsSchema.parse([...byFile.values()]
+            .filter((ref) => !originals.some((input) => input.fileId === ref.fileId)))
+          await client.query(`update operator_conversation_messages set record=jsonb_set(record,'{publicationRefs}',$2::jsonb)
+            where id=$1`, [row.message_id, JSON.stringify(output)])
           await client.query('commit')
         } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
         finally { client.release() }

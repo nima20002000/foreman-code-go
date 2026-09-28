@@ -45,6 +45,10 @@ export interface FileToolArtifact {
   source?: MessageAttachmentRef
   sourceSha256?: string
   snapshot?: ArtifactSnapshot
+  /** Durable ownership of every attempted immutable write, including superseded snapshots. */
+  storageKeys?: string[]
+  /** Terminal cleanup marker: failed writers may retry, retired artifacts may not. */
+  retiredAt?: string
 }
 export interface CopyReceipt {
   ownerPrincipalId: string
@@ -69,6 +73,8 @@ export interface FileToolRepository {
   createArtifact(artifact: FileToolArtifact): Promise<void>
   artifact(binding: string, artifactId: string): Promise<FileToolArtifact | undefined>
   beginWrite(binding: string, artifactId: string, writeId: string, baseRevisionId?: string): Promise<boolean>
+  /** Commit storage ownership before receive/stage/finalize can create any bytes. */
+  registerStorage(binding: string, artifactId: string, writeId: string, storageKey: string): Promise<boolean>
   finishWrite(binding: string, artifactId: string, writeId: string, snapshot: ArtifactSnapshot): Promise<boolean>
   failWrite(binding: string, artifactId: string, writeId: string): Promise<void>
   copyReceipt(ownerPrincipalId: string, commandId: string): Promise<CopyReceipt | undefined>

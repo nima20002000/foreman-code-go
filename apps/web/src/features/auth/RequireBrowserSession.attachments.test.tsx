@@ -79,6 +79,10 @@ async function mountDrafts() {
     {scopes.map((value) => <Probe key={value.chat.conversationId} value={value} />)}
   </RequireBrowserSession></QueryClientProvider>)
   await screen.findByTestId('chat-a')
+  await waitFor(() => {
+    expect(drafts.get('chat-a')).toBeDefined()
+    expect(drafts.get('chat-b')).toBeDefined()
+  })
   act(() => {
     drafts.get('chat-a')!.addFiles([new File(['a'], 'ready.md'), new File(['b'], 'uploading.md')])
     drafts.get('chat-b')!.addFiles([new File(['c'], 'other.md')])

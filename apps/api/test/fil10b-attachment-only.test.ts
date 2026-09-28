@@ -61,10 +61,11 @@ for (const [name, schema, input] of [
 }
 
 describe('FIL-10b text/attachment receipt identities', () => {
-  it('retains the Agent text limit and accepts attachment-only input for every send intent', () => {
-    for (const intent of ['next_turn', 'steer', 'interrupt_and_send'] as const) {
+  it('retains the Agent text limit and accepts attachment-only input for new-turn intents', () => {
+    for (const intent of ['next_turn', 'interrupt_and_send'] as const) {
       expect(SendAgentChatMessageRequestSchema.parse({ ...agentInput, content: '', attachments: [first], intent }).intent).toBe(intent)
     }
+    expect(SendAgentChatMessageRequestSchema.safeParse({ ...agentInput, content: '', attachments: [first], intent: 'steer' }).success).toBe(false)
     for (const attachments of [[], [first]]) {
       expect(SendAgentChatMessageRequestSchema.safeParse({ ...agentInput, content: 'x'.repeat(32000), attachments }).success).toBe(true)
       expect(SendAgentChatMessageRequestSchema.safeParse({ ...agentInput, content: 'x'.repeat(32001), attachments }).success).toBe(false)

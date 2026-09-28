@@ -13,7 +13,8 @@ export interface CodexChatFileAdmission {
   dependencies: Omit<PrepareCodexFileTurnDependencies, 'files'>
   /** Must atomically union exact pins into THIS persisted message, idempotently.
    * Re-check native session/turn + message identity, not the current active chat.
-   * Adoption repairs a ready publication; it never authorizes a new file write. */
+   * Adoption repairs a ready publication; it never authorizes a new file write.
+   * An empty refs array reconciles all finalized publications for this turn. */
   adoptPublished(nativeTurnId: string, refs: readonly MessageAttachmentRef[]): Promise<void>
 }
 
@@ -81,7 +82,21 @@ export function productionCodexChatFiles(app: () => FastifyInstance, conversatio
           return result
         },
       }
-      return prepareCodexFileTurn(accepted, { ...admission.dependencies, editsOnly: true, files }, input.signal)
+      const host = admission.dependencies.host
+      return prepareCodexFileTurn(accepted, { ...admission.dependencies, editsOnly: true, files,
+        host: {
+          executionHostId: host.executionHostId, pathStyle: host.pathStyle,
+          materialize: (value) => host.materialize(value),
+          sealCompleted: (id) => host.sealCompleted(id),
+          close: async () => {
+            // CodexFileTurn revokes and drains every call before closing its lease.
+            // Reconcile the ledger even when publish committed but never returned.
+            // A failed adoption leaves close retryable and the next turn fenced.
+            if (nativeTurnId) await admission.adoptPublished(nativeTurnId, [])
+            await host.close()
+          },
+        },
+      }, input.signal)
     },
   }
 }

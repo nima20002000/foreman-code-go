@@ -1,6 +1,6 @@
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { z } from "zod";
-import { FileWithRevisionSchema, MAX_MESSAGE_ATTACHMENTS, MessageAttachmentFields } from "./files.js";
+import { FileWithRevisionSchema, MessageAttachmentFields } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 export type { Id, Timestamp } from "./schemaPrimitives.js";
@@ -793,8 +793,9 @@ export const MessageSchema = z
     afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),
-    /** Pinned metadata readback; lifecycle state is resolved at read time, not frozen on send. */
-    attachments: z.array(FileWithRevisionSchema).max(MAX_MESSAGE_ATTACHMENTS).optional(),
+    /** Pinned input and published-output metadata. The ten-file limit applies to sends, not readback.
+     * Lifecycle state is resolved at read time, not frozen on send. */
+    attachments: z.array(FileWithRevisionSchema).optional(),
     ...OptionalTimestampFields,
   })
   .strict();

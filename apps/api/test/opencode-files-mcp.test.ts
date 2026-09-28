@@ -14,6 +14,35 @@ import { fileToolFixture } from './support/fileTools.js'
 
 /** Real FIL-05 domain + authenticated MCP surface; fake ONLY the native server and byte store. */
 describe('FIL-09 scoped OpenCode MCP facade', () => {
+  it('rejects a configured or connected legacy App MCP server during file chat', async () => {
+    const f = await fileToolFixture()
+    const host = new LocalOpenCodeExecutionFiles({ executionHostId: 'fixture-host', root: tmpdir(), maxFileBytes: MAX_FILE_BYTES,
+      async assertSourceIsolation() {} })
+    const config: Record<string, { enabled: boolean }> = { graphql: { enabled: false } }
+    const status: Record<string, { status: string }> = { graphql: { status: 'disabled' } }
+    const native = {
+      expectedVersion: '1.18.31', async ensure() {}, async dispose() {},
+      async request(path: string) {
+        return Response.json(new URL(path, 'http://127.0.0.1').pathname === '/config' ? { mcp: config } : status)
+      },
+    }
+    const turn = new OpenCodeFileTurn({ service: f.service, host, server: native,
+      endpoint: 'http://127.0.0.1:9876/mcp/files', appMcpServerName: 'graphql',
+      maxFileBytes: MAX_FILE_BYTES, maxAttachments: MAX_MESSAGE_ATTACHMENTS })
+    Object.assign(turn, { accepted: { directory: tmpdir() } })
+    const signal = AbortSignal.timeout(10_000)
+    await expect(turn['assertChat'](signal)).resolves.toBeUndefined()
+    for (const name of ['graphql-app', 'graphql-operator']) {
+      config[name] = { enabled: true }
+      await expect(turn['assertChat'](signal)).rejects.toMatchObject({ code: 'FILE_CHAT_ISOLATION_REQUIRED' })
+      config[name] = { enabled: false }
+      status[name] = { status: 'connected' }
+      await expect(turn['assertChat'](signal)).rejects.toMatchObject({ code: 'FILE_CHAT_ISOLATION_REQUIRED' })
+      status[name] = { status: 'disabled' }
+    }
+    await expect(turn['assertChat'](signal)).resolves.toBeUndefined()
+  })
+
   it('copies, annotates the native path, publishes edited bytes, denies foreign credentials and keeps permanent writes forbidden', async () => {
     const f = await fileToolFixture()
     const root = await mkdtemp(join(tmpdir(), 'fil09-mcp-'))

@@ -51,6 +51,8 @@ function actionFor(request: FastifyRequest) {
   }
   if (url.startsWith('/api/operator/conversations')) {
     if (['GET', 'HEAD'].includes(request.method)) return 'operator_chat:read' as const
+    // Upload IDs are data, not chat actions (for example: uploads/cancel or uploads/responses).
+    if (/^\/api\/operator\/conversations\/[^/]+\/files(?:\/|$)/.test(url)) return 'operator_chat:write' as const
     if (url.endsWith('/cancel')) return 'operator_chat:cancel' as const
     if (url.endsWith('/responses')) return 'operator_chat:respond' as const
     return 'operator_chat:write' as const

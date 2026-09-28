@@ -3,6 +3,7 @@ import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type { AgentFileApplyFormatEditInput, AgentFileCreateWorkingCopyInput,
   AgentFilePublishInput, AgentFileWriteWorkingCopyInput } from '@graphql/contracts/files'
+import { chatExcludedAppMcpServerNames } from '../appMcpLauncher.js'
 import { fileDeliveryPrompt, nativeImagePart, readPinnedAttachment, readPinnedInput, sha256, type DeliveredAttachment } from './attachments.js'
 import { checkFileCondition, OpenCodeFileError, type AcceptedOpenCodeFileTurn,
   type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileTurnOptions } from './types.js'
@@ -100,7 +101,7 @@ export class OpenCodeFileTurn {
   private async assertChat(signal: AbortSignal): Promise<void> {
     const config = object(await this.json('/config', signal))
     const mcp = object(config.mcp)
-    const names = new Set([this.options.appMcpServerName, 'graphql', 'graphql-app', 'graphql-operator'])
+    const names = chatExcludedAppMcpServerNames(this.options.appMcpServerName)
     checkFileCondition(object(mcp[this.options.appMcpServerName]).enabled === false,
       'FILE_CHAT_ISOLATION_REQUIRED', 'Workflow App MCP must already be disabled for chat.')
     const status = object(await this.json('/mcp', signal))

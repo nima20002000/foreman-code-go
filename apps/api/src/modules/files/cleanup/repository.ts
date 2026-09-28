@@ -11,7 +11,20 @@ export interface FileCleanupCandidate {
 }
 export type FileCleanupOutcome = 'cleaned' | 'remaining' | 'stale' | 'busy'
 
+export interface FileArtifactCleanupCandidate {
+  artifactId: string
+  binding: string
+  storageKey: string
+}
+export interface FileArtifactCleanupRepository {
+  findByStorageKeys(keys: readonly string[]): Promise<FileArtifactCleanupCandidate[]>
+  remove(candidate: FileArtifactCleanupCandidate, removeBytes: () => Promise<boolean>): Promise<FileCleanupOutcome>
+}
+
 export interface FileCleanupRepository {
+  /** Turn artifacts have session lifetime, not a user-file retention preference. */
+  readonly artifacts?: FileArtifactCleanupRepository
+
   /** Only overdue pending/ready files; persisted tombstones are discovered from disk instead. */
   findDue(afterFileId: string | null, limit: number): Promise<FileCleanupCandidate[]>
   /** Maps managed disk keys back to eligible temporary revisions. Unknown/permanent keys are ignored. */

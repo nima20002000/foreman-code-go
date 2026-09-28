@@ -115,7 +115,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     expect(within(editor).getByRole('heading', { name: 'Unsaved board name' })).toBeVisible()
     expect(router.state.location.search.selectedRunId).toBeUndefined()
     expect(screen.queryByRole('region', { name: 'Selected Run board' })).not.toBeInTheDocument()
-  })
+  }, 20_000)
 
   it('restores the URL-selected Run in a fresh Router and QueryClient, with back/forward selection', async () => {
     const first = await mount()

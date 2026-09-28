@@ -43,7 +43,7 @@ export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Poo
   app.decorate('agentReferenceService', agentReferences)
   registerFileRoutes(app, service)
   registerFileReferenceRoutes(app, references)
-  registerProductionFileTools(app, pool, service, referenceResolver ?? agentFileReferenceResolver(agentReferences, repository))
+  registerProductionFileTools(app, pool, service, referenceResolver ?? agentFileReferenceResolver(agentReferences, repository, bytes))
   const cleanup = new TemporaryFileCleanupSweeper(new PostgresFileCleanupRepository(pool),
     new ManagedFileCleanupBytes(bytes), (error, context) => app.log.warn({ err: error, ...context }, 'temporary file cleanup failed'))
   app.addHook('onReady', async () => { await bytes.initialize(); cleanup.start() })

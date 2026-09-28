@@ -1,4 +1,4 @@
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, isAppLauncher } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -1078,7 +1078,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const configured = object(object(await this.json('/config', directory, signal)).mcp)
     for (const [name, enabled] of Object.entries(controls)) {
       // The accepted switch is retained, but cannot reconnect workflow tools in chat.
-      if (this.options.appMcpAccess === 'none' && name === (this.options.appMcpServerName ?? APP_MCP_SERVER_NAME)) continue
+      if (this.options.appMcpAccess === 'none'
+        && chatExcludedAppMcpServerNames(this.options.appMcpServerName ?? APP_MCP_SERVER_NAME).includes(name)) continue
       if (!Object.hasOwn(configured, name)) throw new HarnessExecutionError('OPENCODE_MCP_SERVER_NOT_CONFIGURED', `MCP server '${name}' is not in resolved configuration.`)
       const before = object(object(await this.json('/mcp', directory, signal))[name]).status
       const expected = enabled ? 'connected' : 'disabled'

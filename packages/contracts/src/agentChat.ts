@@ -21,7 +21,7 @@ import {
 export const AgentChatIntentSchema = z.enum([
   /** Run after the current turn finishes (or immediately when idle). */
   "next_turn",
-  /** Add input to the active turn. Only valid when capabilities.steer is not "unavailable". */
+  /** Add text to the active turn. Attachments require a new turn; capabilities.steer must be available. */
   "steer",
   /** Interrupt the active turn, wait for native settlement, then submit this input once. */
   "interrupt_and_send",
@@ -195,13 +195,16 @@ export const SendAgentChatMessageRequestSchema = z.object({
   ...MessageAttachmentFields,
   context: AgentChatQuerySchema,
   content: z.string().trim().max(32000),
-  intent: AgentChatIntentSchema.default("next_turn"),
+  intent: AgentChatIntentSchema.default("next_turn")
+    .describe("steer supports text only; send attachments with next_turn or interrupt_and_send"),
   /** Null = the client saw no conversation (first message). A mismatch returns 409 context_stale. */
   expectedConversationId: IdSchema.nullable(),
   /** Required for steer when capabilities.steer is "native_expected_turn". */
   expectedNativeTurnId: IdSchema.optional(),
 }).strict().refine((value) => value.content.length > 0 || value.attachments.length > 0, {
   path: ["content"], message: "Message requires text or an attachment.",
+}).refine((value) => value.intent !== "steer" || value.attachments.length === 0, {
+  path: ["attachments"], message: "Attachment steering is not supported. Send attachments in a new turn.",
 });
 export type SendAgentChatMessageRequest = Omit<z.infer<typeof SendAgentChatMessageRequestSchema>, "attachments">
   & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };

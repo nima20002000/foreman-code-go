@@ -6,10 +6,11 @@ import {
 } from '@graphql/contracts/files'
 
 import { DomainError } from '../errors.js'
+import { MessagePublicationRefsSchema, mergeMessagePins, readCodexMessagePublications } from './messagePublications.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
 const StoredMessageSchema = MessageSchema.omit({ attachments: true }).extend({
-  attachmentRefs: MessageAttachmentRefsSchema.optional(),
+  attachmentRefs: MessageAttachmentRefsSchema.optional(), publicationRefs: MessagePublicationRefsSchema.optional(),
 }).strict()
 
 /** Only immutable pins are stored on the message. Expiry/state must not be snapshotted there. */
@@ -61,8 +62,8 @@ function metadata(row: AttachmentRow): FileWithRevision {
 
 async function readPins(query: Queryable, conversationId: string, refs: MessageAttachmentRef[]) {
   if (!refs.length) return new Map<string, FileWithRevision>()
-  // Pages are already bounded (100 messages x 10 pins). Deduplicate exact pins, not
-  // logical file IDs: two historical messages can legitimately pin different revisions.
+  // The caller bounds message pages; output pins are not subject to the send limit.
+  // Deduplicate exact pins, not logical IDs: history can pin different revisions.
   const pins = [...new Map(refs.map((ref) => [identity(ref), ref])).values()]
   const result = await query.query<AttachmentRow>(`select f.file_id,f.current_revision_id,f.chat_kind,
       f.owner_principal_id,f.operator_id,f.conversation_id,f.agent_id,f.workspace_id,f.workflow_id,
@@ -100,16 +101,28 @@ export async function validateMessageAttachments(query: Queryable, conversationI
   }
 }
 
-/** One bounded metadata lookup for the page; never downloads bytes or follows a file head.
+/** Metadata-only page readback, including durable Codex publications missed at close.
+ * Never downloads bytes or follows a file head.
  * Callers retain the existing chat read authorization, including on receipt replay. */
 export async function hydrateMessageAttachments(query: Queryable, conversationId: string, input: unknown[]): Promise<Message[]> {
   const messages = input.map((value) => StoredMessageSchema.parse(value))
   if (messages.some((message) => message.conversationId !== conversationId)) {
     throw new DomainError('MESSAGE_ATTACHMENT_CONTEXT_MISMATCH', 'Message readback addressed another conversation.', 500)
   }
-  const rows = await readPins(query, conversationId, messages.flatMap((message) => message.attachmentRefs ?? []))
-  return messages.map(({ attachmentRefs, ...message }) => {
-    const attachments = attachmentRefs?.map((ref) => {
+  const pins = (message: typeof messages[number]) => mergeMessagePins(message.attachmentRefs ?? [], message.publicationRefs ?? [])
+  const rows = await readPins(query, conversationId, messages.flatMap(pins))
+  // Text-only and Operator readback retain their existing no-ledger path. Agent
+  // inputs identify candidate messages; the recovery query verifies exact Codex
+  // receipt/session/sender bindings, independent of current token authority.
+  const candidates = messages.filter((message) => message.role === 'user' && message.attachmentRefs?.some((ref) => {
+    const scope = rows.get(identity(ref))?.file.scope
+    return scope?.kind === 'temporary' && scope.chat.kind === 'agent'
+  })).map((message) => message.id)
+  const recovered = await readCodexMessagePublications(query, conversationId, candidates)
+  const missing = [...recovered.values()].flat().filter((ref) => !rows.has(identity(ref)))
+  for (const [key, value] of await readPins(query, conversationId, missing)) rows.set(key, value)
+  return messages.map(({ attachmentRefs, publicationRefs, ...message }) => {
+    const attachments = mergeMessagePins(attachmentRefs ?? [], publicationRefs ?? [], recovered.get(message.id) ?? []).map((ref) => {
       const value = rows.get(identity(ref))
       // Tombstone metadata is retained by FIL-03. Do not fabricate metadata or expose
       // a foreign file if storage invariants have been violated.

@@ -1,5 +1,7 @@
 import type pg from 'pg'
 
+import { PostgresFileArtifactCleanupRepository } from './artifacts.js'
+
 import { cleanupBatchSize, type FileCleanupCandidate, type FileCleanupOutcome, type FileCleanupRepository } from './repository.js'
 
 interface Row {
@@ -31,7 +33,10 @@ function matches(row: Row | undefined, expected: FileCleanupCandidate): row is R
  * Never scan all historical tombstones each poll; the metadata expiry index discovers new work,
  * and the bounded objects/staging walk finds failed deletions, old revisions and late upload residue. */
 export class PostgresFileCleanupRepository implements FileCleanupRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  readonly artifacts: PostgresFileArtifactCleanupRepository
+  constructor(private readonly pool: pg.Pool) {
+    this.artifacts = new PostgresFileArtifactCleanupRepository(pool)
+  }
 
   async findDue(afterFileId: string | null, limit: number): Promise<FileCleanupCandidate[]> {
     const result = await this.pool.query<Row>(`select ${projection} from files f ${joins}

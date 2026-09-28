@@ -55,13 +55,21 @@ export class TemporaryFileCleanupSweeper {
     const residue = await this.repository.findByStorageKeys(disk.keys)
     this.afterFileId = due.length === this.batchSize ? due.at(-1)!.fileId : null
     // At most 2*batchSize guarded revisions; each directory deletion is itself bounded.
-    const candidates = new Map([...due, ...residue].map((value) => [value.storageKey, value]))
+    const candidates = new Map([...due, ...residue].map((value) => [value.storageKey, {
+      fileId: value.fileId, remove: () => this.repository.remove(value, () => this.bytes.remove(value.storageKey)),
+    }] as const))
+    const artifacts = this.repository.artifacts
+    if (artifacts) for (const value of await artifacts.findByStorageKeys(disk.keys)) {
+      if (!candidates.has(value.storageKey)) candidates.set(value.storageKey, {
+        fileId: value.artifactId, remove: () => artifacts.remove(value, () => this.bytes.remove(value.storageKey)),
+      })
+    }
     result.hasMore = due.length === this.batchSize || !disk.exhausted
     for (const value of candidates.values()) {
       if (this.stopping) break
       result.visited++
       try {
-        const outcome = await this.repository.remove(value, () => this.bytes.remove(value.storageKey))
+        const outcome = await value.remove()
         result[outcome]++
       } catch (error) {
         result.errors++

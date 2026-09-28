@@ -22,6 +22,7 @@ export class FileToolArtifacts {
     if (!opaqueId(artifactId)) throw missing()
     const artifact = await this.repository.artifact(caller.binding, artifactId)
     if (!artifact || artifact.binding !== caller.binding) throw missing()
+    if (artifact.retiredAt) throw new DomainError('FILE_ARTIFACT_EXPIRED', 'This turn artifact is no longer available.', 410)
     return artifact
   }
   async completed(caller: AuthorizedFileCaller, artifactId: string): Promise<FileToolArtifact & { snapshot: ArtifactSnapshot }> {
@@ -89,6 +90,11 @@ export class FileToolArtifacts {
         filename: artifact.filename, mediaType: artifact.mediaType, byteSize: data.length, sha256,
         origin: artifact.sourceSha256 === sha256 ? 'agent_copy' : 'agent_output', createdAt: this.clock().toISOString() })
       const storageKey = randomUUID()
+      // The registry commit precedes all filesystem I/O. Failed writes, lost acknowledgements
+      // and snapshots replaced by later edits remain discoverable after a process restart.
+      if (!await this.repository.registerStorage(caller.binding, artifactId, writeId, storageKey)) {
+        throw new DomainError('FILE_ARTIFACT_WRITE_STALE', 'A newer writer owns the artifact.', 409)
+      }
       const candidate = await this.bytes.receive(storageKey, Readable.from([data]), revision, signal)
       try { await this.bytes.stage(candidate, revision); await this.bytes.finalize(storageKey, revision) }
       finally { await this.bytes.discard(candidate) }

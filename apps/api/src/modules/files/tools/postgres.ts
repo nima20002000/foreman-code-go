@@ -1,16 +1,22 @@
 import type pg from 'pg'
 import type { MessageAttachmentRef, RunFileProvenance } from '@graphql/contracts/files'
 import { DomainError } from '../../errors.js'
+import { bindingIdentity } from './context.js'
 import type { ArtifactSnapshot, CopyReceipt, FileToolArtifact, FileToolRepository, FileToolSession, PublicationLink } from './types.js'
 
 export class PostgresFileToolRepository implements FileToolRepository {
   constructor(private readonly pool: pg.Pool) {}
   async putSession(tokenHash: string, session: FileToolSession): Promise<void> {
-    await this.pool.query('insert into file_tool_sessions (token_hash,record,expires_at) values ($1,$2::jsonb,$3)',
-      [tokenHash, JSON.stringify(session), session.expiresAt])
+    const binding = bindingIdentity(session.context)
+    // Serialize issuance with retirement of this exact turn, without storing the bearer token.
+    await this.pool.query(`with ownership as materialized (
+      select pg_advisory_xact_lock(hashtextextended($4,273605))
+    ) insert into file_tool_sessions (token_hash,record,expires_at)
+      select $1,$2::jsonb,$3::timestamptz from ownership`,
+    [tokenHash, JSON.stringify({ ...session, binding }), session.expiresAt, binding])
   }
   async session(tokenHash: string, asOfUtc: string): Promise<FileToolSession | undefined> {
-    return (await this.pool.query<{ record: FileToolSession }>(`select record from file_tool_sessions
+    return (await this.pool.query<{ record: FileToolSession }>(`select record - 'binding' as record from file_tool_sessions
       where token_hash=$1 and revoked_at is null and expires_at>$2`, [tokenHash, asOfUtc])).rows[0]?.record
   }
   async revokeSession(tokenHash: string): Promise<void> {
@@ -27,13 +33,26 @@ export class PostgresFileToolRepository implements FileToolRepository {
   async beginWrite(binding: string, artifactId: string, writeId: string, baseRevisionId?: string): Promise<boolean> {
     const result = await this.pool.query(`update file_tool_artifacts set record=record || $3::jsonb
       where artifact_id=$1 and binding=$2 and record->>'state' in ('complete','failed')
+        and record->>'retiredAt' is null
         and ($4::text is null or record #>> '{snapshot,revision,revisionId}'=$4::text)`,
     [artifactId, binding, JSON.stringify({ state: 'writing', writeId }), baseRevisionId ?? null])
     return result.rowCount === 1
   }
+  async registerStorage(binding: string, artifactId: string, writeId: string, storageKey: string): Promise<boolean> {
+    const result = await this.pool.query(`update file_tool_artifacts set record=jsonb_set(record,'{storageKeys}',
+      coalesce(record->'storageKeys','[]'::jsonb) || jsonb_build_array($4::text) ||
+      case when record #>> '{snapshot,storageKey}' is not null
+        and not (coalesce(record->'storageKeys','[]'::jsonb) ? (record #>> '{snapshot,storageKey}'))
+        then jsonb_build_array(record #>> '{snapshot,storageKey}') else '[]'::jsonb end)
+      where artifact_id=$1 and binding=$2 and record->>'writeId'=$3
+        and record->>'state'='writing' and record->>'retiredAt' is null`,
+    [artifactId, binding, writeId, storageKey])
+    return result.rowCount === 1
+  }
   async finishWrite(binding: string, artifactId: string, writeId: string, snapshot: ArtifactSnapshot): Promise<boolean> {
     const result = await this.pool.query(`update file_tool_artifacts set record=record || $4::jsonb
-      where artifact_id=$1 and binding=$2 and record->>'writeId'=$3 and record->>'state'='writing'`,
+      where artifact_id=$1 and binding=$2 and record->>'writeId'=$3 and record->>'state'='writing'
+        and record->>'retiredAt' is null`,
     [artifactId, binding, writeId, JSON.stringify({ state: 'complete', snapshot })])
     return result.rowCount === 1
   }

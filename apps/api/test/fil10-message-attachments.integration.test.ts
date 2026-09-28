@@ -241,9 +241,10 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
           allowedTools: accepted.allowedTools }, ref: pin(publication), createdAt: new Date().toISOString() })])
     await admission!.adoptPublished(nativeTurnId, [pin(publication)])
     await admission!.adoptPublished(nativeTurnId, [pin(publication)])
-    const stored = (await database.pool.query<{ record: { attachmentRefs: MessageAttachmentRef[] } }>(
+    const stored = (await database.pool.query<{ record: { attachmentRefs: MessageAttachmentRef[]; publicationRefs: MessageAttachmentRef[] } }>(
       'select record from operator_conversation_messages where id=$1', [accepted.messageId])).rows[0]!
-    expect(stored.record.attachmentRefs).toEqual([pin(file), pin(publication)])
+    expect(stored.record.attachmentRefs).toEqual([pin(file)])
+    expect(stored.record.publicationRefs).toEqual([pin(publication)])
     await expect(admission!.adoptPublished('foreign-turn', [pin(publication)]))
       .rejects.toMatchObject({ code: 'CODEX_FILE_PUBLICATION_MISMATCH' })
     await expect(resolver.resolve({ conversationId: id, session: { ...session, nativeSessionId: 'foreign' },
@@ -532,7 +533,8 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
       })])
     await database.pool.query(`insert into operator_conversation_turns
       (conversation_id,request_id,payload,input_hash,intent,delivery,message_id,native_turn_id)
-      values($1,$2,'{}'::jsonb,'test','next_turn','submitting',$3,$4)`, [id, requestId, messageId, nativeTurnId])
+      values($1,$2,$5::jsonb,'test','next_turn','submitting',$3,$4)`,
+    [id, requestId, messageId, nativeTurnId, JSON.stringify({ ownerPrincipalId: owner.principal.id })])
     const identity = { ownerAgentId: current.agent_id, nativeSessionId: current.native_session_id,
       nativeTurnId, clientCorrelationId: correlation, directory: current.directory, configuration: harness }
     const admitted = await resolveOpenCodeFileAdmission(database.pool, id, identity)
@@ -549,9 +551,10 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
       output.revision.revisionId, JSON.stringify({ context: admitted!.context, ref: pin(output) })])
     await adoptOpenCodePublications(database.pool, admitted!.context)
     await adoptOpenCodePublications(database.pool, admitted!.context)
-    const stored = (await database.pool.query<{ record: { attachmentRefs: MessageAttachmentRef[] } }>(
+    const stored = (await database.pool.query<{ record: { attachmentRefs: MessageAttachmentRef[]; publicationRefs: MessageAttachmentRef[] } }>(
       'select record from operator_conversation_messages where id=$1', [messageId])).rows[0]!
-    expect(stored.record.attachmentRefs).toEqual([pin(source), pin(output)])
+    expect(stored.record.attachmentRefs).toEqual([pin(source)])
+    expect(stored.record.publicationRefs).toEqual([pin(output)])
     await expect(adoptOpenCodePublications(database.pool, { ...admitted!.context, ownerPrincipalId: 'foreign' }))
       .rejects.toMatchObject({ code: 'FILE_ADOPTION_MISMATCH' })
   })

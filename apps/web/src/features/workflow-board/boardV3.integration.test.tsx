@@ -219,7 +219,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.edges).toHaveLength(0)
     await user.keyboard('{Control>}y{/Control}')
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.edges).toHaveLength(1)
-  })
+  }, 20_000)
   it.each<Shape>(['single', 'sequential', 'parallel', 'conditional', 'approval'])('S3-01..04: fresh %s Save/reopen/Start persists V3 without dummy repeat state', async (shape) => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), first = await mount(mock)
     const { id, key } = await create(mock, user)

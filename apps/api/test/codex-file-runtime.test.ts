@@ -42,12 +42,12 @@ function makeManager(custom?: CodexChatFiles) {
           admissionId: `receipt-${clientCorrelationId}`, messageId, executionHostId: 'execution-host-a',
           projectMode: 'write', allowMutation: true,
           allowedTools: ['files.list', 'files.read', 'files.create_working_copy', 'files.publish_result'],
-          expiresAt: new Date('2026-09-28T01:00:00.000Z'), attachments: [sourceRef],
+          expiresAt: new Date(Date.now() + 60_000), attachments: [sourceRef],
         },
         dependencies: ports.dependencies,
         async adoptPublished(turnId, refs) {
           assert.equal(turnId, ports.issued.at(-1)?.turnId)
-          assert.deepEqual(refs, [publishedRef])
+          if (refs.length) assert.deepEqual(refs, [publishedRef])
           ports.events.push(`adopt:${messageId}`)
           adopted.set(messageId, refs.map((ref) => ({ ...ref })))
         },

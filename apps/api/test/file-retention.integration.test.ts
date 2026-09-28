@@ -49,7 +49,7 @@ const payload = (durationSeconds: number, expectedRevision = 0, applyToExisting 
 
 /** Real PostgreSQL transactions, credentials, HTTP and authenticated /mcp. No native harness/model. */
 describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport parity', () => {
-  let database: Awaited<ReturnType<typeof agent3Database>>, app: FastifyInstance, storageRoot: string
+  let database: Awaited<ReturnType<typeof agent3Database>>, app: FastifyInstance, storageRoot: string, address: string
   let access: PostgresAccessService, commands: PostgresCommandCoordinator, retention: FileRetentionService
   let files: PostgresFileRepository, bytes: FileByteStorage, authorization: PostgresFileConversationAuthorization
   let operator: Awaited<ReturnType<PostgresOperatorRepository['ensure']>>
@@ -88,7 +88,7 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     registerFileRoutes(app, new TemporaryFileService(files, bytes, authorization))
     // Unrelated product services are intentionally absent; the real retention service/auth/MCP transport are not mocked.
     registerGraphqlMcp(app, { access, operator: { commands, fileRetention: retention } as unknown as OperatorServices })
-    await app.ready()
+    address = await app.listen({ host: '127.0.0.1', port: 0 })
   })
   afterAll(async () => {
     await app?.close()
@@ -141,15 +141,16 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
   }
   async function mcp(owner: Credential, method: string, params: Record<string, unknown>): Promise<McpResult> {
     const id = randomUUID()
-    const response = await app.inject({ method: 'POST', url: '/mcp', headers: {
-      ...headers(owner), accept: 'application/json, text/event-stream', 'content-type': 'application/json',
-    }, payload: { jsonrpc: '2.0', id, method, params } })
-    assert.equal(response.statusCode, 200, response.body)
-    const messages = String(response.headers['content-type']).includes('text/event-stream')
-      ? response.body.split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
-      : [JSON.parse(response.body)]
+    const response = await fetch(new URL('/mcp', address), { method: 'POST', headers: {
+      authorization: `Bearer ${owner.token}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json',
+    }, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }) })
+    const body = await response.text()
+    assert.equal(response.status, 200, body)
+    const messages = String(response.headers.get('content-type')).includes('text/event-stream')
+      ? body.split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
+      : [JSON.parse(body)]
     const message = messages.find((item: { id?: string }) => item.id === id) as { result?: McpResult; error?: unknown } | undefined
-    assert.ok(message?.result, response.body)
+    assert.ok(message?.result, body)
     return message.result
   }
   const call = (owner: Credential, name: string, input: Record<string, unknown> = {}) =>

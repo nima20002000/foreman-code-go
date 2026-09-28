@@ -67,10 +67,12 @@ export type ReadSelectedRunChatResponse = z.infer<typeof ReadSelectedRunChatResp
 /** Context/Agent ids are derived from the snapshot, not accepted again in the message body. */
 export const SendSelectedRunChatRequestSchema = z.object({
   selection: SelectedRunChatExecutionSchema,
-  // Derive fields before refining: omit must not discard the message-content check.
+  // Derive fields before refining: preserve content and attachment-steering checks.
   message: z.object(SendAgentChatMessageRequestSchema.shape).omit({ context: true }).strict()
     .refine((value) => value.content.length > 0 || value.attachments.length > 0, {
       path: ["content"], message: "Message requires text or an attachment.",
+    }).refine((value) => value.intent !== "steer" || value.attachments.length === 0, {
+      path: ["attachments"], message: "Attachment steering is not supported. Send attachments in a new turn.",
     }),
 }).strict();
 export const InterruptSelectedRunChatRequestSchema = z.object({
