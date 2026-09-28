@@ -1,5 +1,8 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import type { AgentChatContext, AgentChatIntent, AgentChatSessionState } from '@graphql/contracts/agent-chat'
+import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
+import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
+import { ChatAttachmentBoundary } from '../ChatAttachmentBoundary'
+import { prepareChatAttachments } from '../chatAttachmentAttempt'
 import { Alert, Button, ConfirmDialog, LoadingState } from '../../../shared/ui/nocturne'
 import { ApiError } from '../../../shared/api/client'
 import { ConversationComposer } from '../ConversationComposer'
@@ -9,6 +12,7 @@ import { AgentChatTranscript } from './AgentChatTranscript'
 import { chatBusy, deliveryLabels, intentLabels, intentUnavailable } from './model'
 import { useAgentChat } from './useAgentChat'
 import './agentChat.css'
+import '../chatAttachments.css'
 
 const stateLabels: Record<AgentChatSessionState, string> = {
   none: 'Start a conversation', creating: 'Creating the native session', idle: 'Ready for a follow-up', active: 'Agent is working',
@@ -17,13 +21,24 @@ const stateLabels: Record<AgentChatSessionState, string> = {
 }
 
 /** Mounted ONLY through the existing Board AgentChatPanel. Server state stays in Query. */
-export function AgentConversation({ context, name, runActivity, onNewConversation }: {
+type AgentConversationProps = {
   context: AgentChatContext; name: string; runActivity?: ReactNode; onNewConversation?: () => void
-}) {
+}
+export function AgentConversation(props: AgentConversationProps) {
+  return <ChatAttachmentBoundary><AgentConversationContent {...props} /></ChatAttachmentBoundary>
+}
+
+function AgentConversationContent({ context, name, runActivity, onNewConversation }: AgentConversationProps) {
   const chat = useAgentChat(context), state = chat.state
+  const conversation = state?.conversation
+  const attachments = useConversationAttachments(conversation ? { kind: 'temporary', chat: {
+    kind: 'agent', conversationId: conversation.id, agentId: conversation.agentId,
+    workspaceId: conversation.workspaceId, workflowId: conversation.workflowId,
+    ...(conversation.origin.kind === 'run_execution' ? { runId: conversation.origin.runId, executionId: conversation.origin.executionId } : {}),
+  } } : null)
   const draft = useConversationDraftStore((store) => store.drafts[chat.draftKey] ?? '')
   const composer = useRef<HTMLTextAreaElement>(null), focused = useRef(false)
-  const [sendAgain, setSendAgain] = useState<string>()
+  const [sendAgain, setSendAgain] = useState<Pick<SendAgentChatMessageRequest, 'content' | 'attachments'>>()
   const reasonId = useId()
   useEffect(() => {
     if (!state || focused.current || !composer.current) return
@@ -35,7 +50,11 @@ export function AgentConversation({ context, name, runActivity, onNewConversatio
     }
   }, [state])
   const focus = () => composer.current?.focus({ preventScroll: true })
-  const submit = (intent: AgentChatIntent) => { chat.send(draft, intent); focus() }
+  const submit = (intent: AgentChatIntent, content = draft) => {
+    const attempt = prepareChatAttachments(attachments)
+    if (attempt) chat.send(content, intent, true, false, attempt)
+    focus()
+  }
   if (chat.access.isPending) return <ConversationViewport revision="access">{() => <>{runActivity}<LoadingState label="Checking Agent chat access…" rows={1} /></>}</ConversationViewport>
   if (chat.access.isError || chat.denial || !chat.state && !chat.canRead) return <ConversationViewport revision="denied">{() => <>{runActivity}<Alert tone="warning" title="Agent chat access unavailable" live>
     <p>{chat.denial?.message ?? chat.access.error?.message ?? 'Your access does not allow reading chat for this Agent and Run.'}</p>
@@ -51,7 +70,7 @@ export function AgentConversation({ context, name, runActivity, onNewConversatio
   const stopReason = cancelReason ?? (state?.capabilities.interruptAndSend ? undefined
     : state?.capabilities.unavailable.interruptAndSend ?? 'Interrupting is unavailable.')
   const busy = !!state && chatBusy(state), hasQueue = state?.turns.some((turn) => turn.delivery === 'queued')
-  const empty = !draft.trim() || draft.length > 32_000
+  const empty = (!draft.trim() && !attachments.hasAttachments) || attachments.hasBlockingAttachments || draft.length > 32_000
   const latest = chat.latestCommand
   const receipt = chat.latestReceipt
   const error = !receipt && latest?.status === 'error' ? latest.error : undefined
@@ -122,12 +141,14 @@ export function AgentConversation({ context, name, runActivity, onNewConversatio
   return <div className="agent-conversation" data-testid="agent-conversation" data-chat-key={chat.draftKey}>
     {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} commands={chat.commands} history={chat.history}
       notices={notices} cancelReason={cancelReason} responseReason={responseReason} resendReason={nextReason}
-      onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={setSendAgain} />
+      onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
       : <ConversationViewport revision="loading">{() => notices}</ConversationViewport>}
     {showComposer || canStop ? <div className="agent-chat-composer-controls" role="group" aria-label="Chat actions" aria-describedby={reasonId}>
       {showComposer ? <ConversationComposer conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}
-        allowEditingWhileSending isSending={chat.pending} sendDisabled={!!nextReason} error={chat.localError}
-        sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content) => chat.send(content, 'next_turn')} /> : null}
+        allowEditingWhileSending isSending={chat.pending} sendDisabled={!!nextReason || attachments.hasBlockingAttachments}
+        hasAttachments={attachments.hasAttachments}
+        attachmentControl={<ChatAttachmentControl draft={attachments} disabled={!!writeReason} />} error={chat.localError}
+        sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content) => submit('next_turn', content)} /> : null}
       {state?.activeTurn || canStop ? <div className="agent-chat-controls" role="group" aria-label="Active turn controls">
         {state?.activeTurn && (state.capabilities.steer !== 'unavailable' || state.capabilities.unavailable.steer) ? <Button size="sm" disabled={!!steerReason || empty}
           title={steerReason} aria-describedby={reasonId} onClick={() => submit('steer')}>Steer</Button> : null}
@@ -140,7 +161,7 @@ export function AgentConversation({ context, name, runActivity, onNewConversatio
     <ConfirmDialog open={sendAgain !== undefined} onOpenChange={(open) => { if (!open) setSendAgain(undefined) }}
       title="Send again as a new message?" description="The original message may already have been accepted. This creates a new message and can repeat work. It is not a retry or a resume."
       confirmLabel="Send as new message" error={nextReason} pending={chat.pending} onConfirm={() => {
-        if (sendAgain !== undefined && chat.send(sendAgain, 'next_turn', false, true)) { setSendAgain(undefined); focus() }
+        if (sendAgain !== undefined && chat.send(sendAgain.content, 'next_turn', false, true, { attachments: sendAgain.attachments ?? [] })) { setSendAgain(undefined); focus() }
       }} />
   </div>
 }

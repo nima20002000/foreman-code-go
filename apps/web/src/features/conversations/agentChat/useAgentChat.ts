@@ -11,6 +11,7 @@ import { isAuthAccessError } from '../../auth/accessError'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { useConversationDraftStore } from '../conversationDraftStore'
+import { messageAttachmentRefs, sameAttachmentRefs, type ChatAttachmentAttempt } from '../chatAttachmentAttempt'
 import { readEarlierChatHistory } from './historyReadback'
 import { claimDraftReadback, receiptForCommand } from './receiptReadback'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, stateBelongsToContext } from './model'
@@ -24,6 +25,7 @@ function reconcileDraftReadback(state: AgentChatState | undefined, commands: Age
     const { command } = record
     if (claimDraftReadback(command, confirmedCommandReceipt(record, state) ?? receiptForCommand(state, command)) && command?.kind === 'send') {
       useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
+      command.attachmentAttempt?.acknowledge?.()
       reconciled = true
     }
   }
@@ -174,6 +176,7 @@ export function useAgentChat(context: AgentChatContext) {
       if (command.kind === 'send' && claimDraftReadback(command, result.turn)) {
         setLocalError(undefined)
         useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
+        command.attachmentAttempt?.acknowledge?.()
       }
       refresh()
     },
@@ -199,17 +202,19 @@ export function useAgentChat(context: AgentChatContext) {
     if (pending) return 'A command is being sent.'
     return undefined
   }
-  const send = (content: string, intent: AgentChatIntent, clearDraft = true, allowNewMessage = false): boolean => {
+  const send = (content: string, intent: AgentChatIntent, clearDraft = true, allowNewMessage = false, attachmentAttempt?: ChatAttachmentAttempt): boolean => {
     const text = content.trim()
+    const attachments = attachmentAttempt?.attachments ?? []
     const reason = blocked('agent_chat:write') ?? (state ? intentUnavailable(state, intent) : undefined)
     // A completed send can clear the draft before React paints its empty value. Ignore an old
     // Enter/click handler in that gap; do not allocate another requestId for the cleared text.
     reconcileDraftReadback(client.getQueryData<AgentChatState>(key), commands, draftKey)
     if (clearDraft && (useConversationDraftStore.getState().drafts[draftKey] ?? '').trim() !== text) return false
-    if (reason || !state || !text || text.length > 32_000) { setLocalError(reason ?? 'Write a message of up to 32,000 characters.'); return false }
-    const unconfirmed = state.turns.some((turn) => turn.delivery === 'unknown' && state.messages.some((message) => message.id === turn.messageId && message.content.trim() === text))
+    if (clearDraft && attachmentAttempt?.isCurrent && !attachmentAttempt.isCurrent()) return false
+    if (reason || !state || (!text && !attachments.length) || text.length > 32_000 || attachments.length > 0 && !state.conversation) { setLocalError(reason ?? 'Write a message of up to 32,000 characters.'); return false }
+    const unconfirmed = state.turns.some((turn) => turn.delivery === 'unknown' && state.messages.some((message) => message.id === turn.messageId && message.content.trim() === text && sameAttachmentRefs(messageAttachmentRefs(message), attachments)))
       || commands.some((record) => {
-        if (record.command?.kind !== 'send' || record.command.input.content !== text) return false
+        if (record.command?.kind !== 'send' || record.command.input.content !== text || !sameAttachmentRefs(record.command.input.attachments, attachments)) return false
         const receipt = confirmedCommandReceipt(record, state) ?? receiptForCommand(state, record.command) ?? (record.result && 'turn' in record.result ? record.result.turn : undefined)
         return receipt ? receipt.delivery === 'unknown' : record.status === 'error' && commandMayHaveBeenAccepted(record.error)
       })
@@ -217,7 +222,8 @@ export function useAgentChat(context: AgentChatContext) {
     return runCommand(() => {
       const target = { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId, agentId: context.agentId,
         ...(context.runId ? { runId: context.runId } : {}) }
-      return { kind: 'send', clearDraft, input: { requestId: `agent-chat-${crypto.randomUUID()}`, context: target, content: text, intent,
+      return { kind: 'send', clearDraft, attachmentAttempt, input: { requestId: `agent-chat-${crypto.randomUUID()}`, context: target, content: text, intent,
+        ...(attachments.length ? { attachments: attachments.map((pin) => ({ ...pin })) } : {}),
         expectedConversationId: state.conversation?.id ?? null,
         ...(intent !== 'next_turn' && state.activeTurn?.nativeTurnId ? { expectedNativeTurnId: state.activeTurn.nativeTurnId } : {}) } }
     })

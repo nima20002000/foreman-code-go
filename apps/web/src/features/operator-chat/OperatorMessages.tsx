@@ -1,4 +1,5 @@
 import type { Message, OperatorActivity } from '@graphql/contracts'
+import { ChatMessageFiles } from '../conversations/ChatMessageFiles'
 import { MessageBubble } from '../../shared/ui/nocturne'
 import { OperatorActivityList } from './OperatorActivityList'
 import { OperatorThinking } from './OperatorThinking'
@@ -71,7 +72,7 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
         }
       }
       const placed = orderedTimeline ? new Set(orderedTimeline.filter((entry) => entry.kind === 'activity').map((entry) => entry.id)) : undefined
-      if (!content && !entries.length && !active && !orderedTimeline?.length) return null
+      if (!content && !entries.length && !active && !orderedTimeline?.length && !message?.attachments?.length) return null
       return <li key={key} data-message-role={role}>
         <div aria-label={active ? 'Assistant response in progress' : undefined}>
           <MessageBubble author={assistant ? 'Assistant' : role === 'user' ? 'You' : role} role={assistant ? 'assistant' : role === 'user' ? 'user' : 'system'}>
@@ -87,6 +88,7 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
               {live && working && !partialText ? <div className="operator-chat-typing" role="status" aria-label="Operator is typing"><span /><span /><span /><span className="n-sr-only">Operator is typing…</span></div> : null}
             </div> : null}
             {orderedTimeline && live && working && !partialText ? <div className="operator-chat-typing" role="status" aria-label="Operator is typing"><span /><span /><span /><span className="n-sr-only">Operator is typing…</span></div> : null}
+            {message?.attachments?.length ? <ChatMessageFiles message={message} /> : null}
           </MessageBubble>
         </div>
       </li>

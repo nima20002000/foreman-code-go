@@ -4,7 +4,8 @@ import {
   MAX_MESSAGE_ATTACHMENTS, MessageAttachmentRefsSchema, TemporaryFileScopeSchema, fileStateAt,
   type FileMediaType, type FileWithRevision, type MessageAttachmentRef, type TemporaryFileScope,
 } from '@graphql/contracts/files'
-import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
+import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
+import { sessionControllerSignal } from '../../shared/api/sessionController'
 import { attachmentDraftKey, inspectAttachment, type SelectionIssue } from './attachmentFiles'
 import { parseAttachmentUpload, type AttachmentClient, type AttachmentProgress, type AttachmentUploadInput } from './attachmentClient'
 
@@ -55,7 +56,7 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
   const uploadKey = [...cachePrefix, 'upload'] as const
   const progressKey = (key: string) => [...cachePrefix, 'progress', key] as const
   const generation = sessionGeneration()
-  const boundarySignal = sessionSignal()
+  const boundarySignal = sessionControllerSignal()
   const store = createStore<AttachmentDraftState>(() => ({ available: !sessionIsSwitching(), drafts: {} }))
   const active = new Map<string, ActiveUpload>()
   const snapshots = new WeakMap<AttachmentSendSnapshot, SnapshotPins>()

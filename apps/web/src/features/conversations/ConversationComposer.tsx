@@ -1,4 +1,4 @@
-import { useRef, type RefObject } from 'react'
+import { useRef, type ReactNode, type RefObject } from 'react'
 import { MessageComposer } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from './conversationDraftStore'
 
@@ -11,6 +11,8 @@ export interface ConversationComposerProps {
   /** Existing callers keep their original in-flight editing behavior. */
   allowEditingWhileSending?: boolean
   isSending?: boolean
+  attachmentControl?: ReactNode
+  hasAttachments?: boolean
   error?: string
   sendLabel?: string
   maxLength?: number
@@ -25,6 +27,8 @@ export function ConversationComposer({
   sendDisabled = false,
   allowEditingWhileSending = false,
   isSending = false,
+  attachmentControl,
+  hasAttachments = false,
   error,
   sendLabel = 'Send message',
   maxLength,
@@ -38,6 +42,8 @@ export function ConversationComposer({
 
   return (
     <MessageComposer
+      context={attachmentControl}
+      hasAttachments={hasAttachments}
       formLabel="Conversation composer"
       label="Message"
       placeholder="Write a message for this agent"

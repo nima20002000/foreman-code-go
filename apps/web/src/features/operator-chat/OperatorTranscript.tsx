@@ -40,7 +40,7 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
   // Polling can create new arrays/elements with identical contents. Loading old
   // pages is browsing, not new output, so only the recent stream participates.
   const contentRevision = JSON.stringify([
-    messages.map((message) => [message.id, message.content, message.afterActivitySequence, message.nativeMessageComplete]),
+    messages.map((message) => [message.id, message.content, message.afterActivitySequence, message.nativeMessageComplete, message.attachments]),
     activities.map((entry) => [entry.id, entry.revision]), partialText, thinkingText, timeline?.timeline,
     approvalRevision ?? Boolean(approval),
   ])

@@ -1,9 +1,10 @@
 import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Icon, IconButton } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from '../conversations'
+import '../conversations/chatAttachments.css'
 
-export function OperatorComposer({ conversationId, context, access, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
-  conversationId: string; context?: ReactNode; access?: ReactNode; sendDisabled?: boolean; isSending?: boolean;
+export function OperatorComposer({ conversationId, context, access, attachmentControl, hasAttachments = false, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
+  conversationId: string; context?: ReactNode; access?: ReactNode; attachmentControl?: ReactNode; hasAttachments?: boolean; sendDisabled?: boolean; isSending?: boolean;
   onSubmit(content: string): void; onNewChat(): void; onCancel?: () => void;
 }) {
   const value = useConversationDraftStore((state) => state.drafts[conversationId] ?? '')
@@ -13,7 +14,7 @@ export function OperatorComposer({ conversationId, context, access, sendDisabled
   const [dismissed, setDismissed] = useState(false)
   const commandsOpen = !dismissed && /^\/n?e?w?$/.test(value.trim())
   const isNew = value.trim() === '/new'
-  const cannotSend = (!isNew && (isSending || sendDisabled)) || !value.trim()
+  const cannotSend = (!isNew && (isSending || sendDisabled)) || (!value.trim() && !hasAttachments)
   useLayoutEffect(() => {
     if (!input.current) return
     input.current.style.height = '0px'
@@ -46,6 +47,7 @@ export function OperatorComposer({ conversationId, context, access, sendDisabled
           else send()
         }
       }} />
+    {attachmentControl}
     <div className="operator-composer-toolbar">
       <IconButton label="New chat" variant="ghost" onClick={onNewChat}><Icon name="plus" size={17} /></IconButton>
       {access}

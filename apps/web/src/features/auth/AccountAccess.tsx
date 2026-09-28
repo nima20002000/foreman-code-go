@@ -3,6 +3,7 @@ import { ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import { SignOutButton } from './SignOutButton'
 import { ProtectedAccessError } from './ProtectedAccessError'
 import { isAuthAccessError } from './accessError'
+import { ChatRetentionSettings } from '../retention-settings'
 import './auth.css'
 
 export function AccountAccess() {
@@ -43,6 +44,7 @@ export function AccountAccess() {
           </div>)}
         </details>
       </section>
+      <ChatRetentionSettings />
     </div>
     <footer className="account-actions">{session.data.localDev
       ? <p>Local development access stays active while the dev server runs.</p>

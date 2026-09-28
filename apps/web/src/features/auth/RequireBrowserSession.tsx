@@ -7,6 +7,7 @@ import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
 import { Button } from '../../shared/ui/nocturne'
 import { SignOutButton } from './SignOutButton'
 import { RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
+import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
 import './auth.css'
 
 export function RequireBrowserSession({ children }: { children: ReactNode }) {
@@ -40,5 +41,5 @@ export function RequireBrowserSession({ children }: { children: ReactNode }) {
     </section></main>
   }
   if (session.isPending || !session.data) return <main className="auth-screen" role="status">Checking your session…</main>
-  return <RuntimeInstanceBoundary>{children}</RuntimeInstanceBoundary>
+  return <RuntimeInstanceBoundary><ChatAttachmentBoundary>{children}</ChatAttachmentBoundary></RuntimeInstanceBoundary>
 }

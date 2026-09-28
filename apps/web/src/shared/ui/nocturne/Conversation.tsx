@@ -15,13 +15,13 @@ export function MessageBubble({ author, role = 'assistant', children, time, date
 }
 
 /** The caller owns the draft and mutation. Rejected sends never erase the draft here. */
-export function MessageComposer({ value, onValueChange, onSend, pending = false, disabled = false, sendDisabled = false, error, onStop, maxLength = 16000,
+export function MessageComposer({ value, onValueChange, onSend, pending = false, disabled = false, sendDisabled = false, hasAttachments = false, error, onStop, maxLength = 16000,
   label = 'Message the operator', placeholder = 'Describe what you want to do…', sendLabel = 'Send', pendingLabel = 'Sending…', formLabel, context, inputRef }:
-  { value: string; onValueChange: (value: string) => void; onSend: (value: string) => void; pending?: boolean; disabled?: boolean; sendDisabled?: boolean; error?: string;
+  { value: string; onValueChange: (value: string) => void; onSend: (value: string) => void; pending?: boolean; disabled?: boolean; sendDisabled?: boolean; hasAttachments?: boolean; error?: string;
     onStop?: () => void; maxLength?: number; label?: string; placeholder?: string; sendLabel?: string; pendingLabel?: string; formLabel?: string; context?: ReactNode; inputRef?: Ref<HTMLTextAreaElement> }) {
   const id = useId()
   const limit = Number.isFinite(maxLength) ? Math.max(1, Math.floor(maxLength)) : 16000
-  const cannotSend = disabled || sendDisabled || pending || !value.trim() || value.length > limit
+  const cannotSend = disabled || sendDisabled || pending || (!value.trim() && !hasAttachments) || value.length > limit
   function send() { if (!cannotSend) onSend(value) }
   return <form className="n-composer" onSubmit={(event) => { event.preventDefault(); send() }} aria-label={formLabel} aria-busy={pending || undefined}>
     {context && <div className="n-composer-context">{context}</div>}

@@ -1,9 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { AgentChatState, AgentChatTurn, SendAgentChatMessageRequest, SendAgentChatMessageResponse } from '@graphql/contracts/agent-chat'
+import type { ChatAttachmentAttempt } from '../chatAttachmentAttempt'
 import { receiptForCommand } from './receiptReadback'
 
 export type AgentChatCommand =
-  | { kind: 'send'; input: SendAgentChatMessageRequest; clearDraft: boolean }
+  | { kind: 'send'; input: SendAgentChatMessageRequest; clearDraft: boolean; attachmentAttempt?: ChatAttachmentAttempt }
   | { kind: 'stop'; conversationId: string; requestId: string; expectedNativeTurnId?: string }
   | { kind: 'cancel'; conversationId: string; requestId: string; turnRequestId: string }
   | { kind: 'respond'; conversationId: string; requestId: string; nativeRequestId: string; optionId: string }
