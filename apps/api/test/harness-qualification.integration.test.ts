@@ -24,7 +24,7 @@ it('registers the qualification migration after earlier blocks', () => {
   expect(new Set(migrations.map((migration) => migration.version)).size).toBe(migrations.length)
 })
 
-it('runs a fake suite through authenticated HTTP and MCP, denies a reader, and reads persisted trust', async () => {
+it.skipIf(!process.env.TEST_DATABASE_URL)('runs a fake suite through authenticated HTTP and MCP, denies a reader, and reads persisted trust', async () => {
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL })
   const schema = `harness_qualification_${randomUUID().replaceAll('-', '')}`
   await admin.query(`create schema "${schema}"`)

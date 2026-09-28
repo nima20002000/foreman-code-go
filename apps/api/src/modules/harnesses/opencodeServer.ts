@@ -245,13 +245,13 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const combined = this.signal(signal)
     return this.exclusive(async () => {
       try {
-        this.validateReference(source)
         combined.throwIfAborted()
         const directory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
         const configuration = this.configuration(input)
         const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
+        this.validateReference(source)
         await this.assertConfiguration(configuration, directory, combined)
         const response = object(await this.mutate(withDirectory(`/session/${encodeURIComponent(source.nativeSessionId)}/fork`, directory), {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
@@ -277,7 +277,6 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const combined = this.signal(signal)
     return this.exclusive(async () => {
       try {
-        this.validateReference(session)
         combined.throwIfAborted()
         if (this.sessions.has(session.nativeSessionId)) {
           throw new HarnessExecutionError('OPENCODE_SESSION_ALREADY_ATTACHED', 'This manager already owns that session; attaching must not discard its writer state.')
@@ -287,6 +286,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         const instructions = sessionInstructions(input)
         await this.bindEnvironment(input.environment, combined)
         await this.ready(combined)
+        this.validateReference(session)
         await this.assertConfiguration(configuration, directory, combined)
         const native = object(await this.json(`/session/${encodeURIComponent(session.nativeSessionId)}`, directory, combined))
         this.verifyAttachedSession(native, session.nativeSessionId, directory, configuration)
