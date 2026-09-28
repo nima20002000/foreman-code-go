@@ -37,7 +37,7 @@ async function authoring() {
   return editor
 }
 async function choose(runId: string | null) {
-  const controls = screen.getByRole('group', { name: 'Schedule and runs' })
+  const controls = screen.getByRole('group', { name: 'Board controls' })
   await userEvent.click(within(controls).getByRole('button', { name: /^Runs$/ }))
   const menu = await screen.findByRole('menu', { name: 'Runs' })
   const item = runId === null ? within(menu).getByRole('menuitemradio', { name: 'Current workflow' })
@@ -190,18 +190,17 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     expect(screen.queryByTestId('unified-workflow-board')).not.toBeInTheDocument()
   })
 
-  it('keeps the compact controls adjacent and reserves one icon at 320px (DOM/CSS invariants only)', async () => {
+  it('keeps the compact clock, Runs and Files controls adjacent at 320px (DOM/CSS invariants only)', async () => {
     vi.stubGlobal('innerWidth', 320)
     installFlowLayout(320, 480)
     const { container } = await mount(runsUrl('run-a', scope))
     await savedY()
-    const group = screen.getByRole('group', { name: 'Schedule and runs' })
+    const group = screen.getByRole('group', { name: 'Board controls' })
     const clock = await within(group).findByRole('button', { name: 'Schedule workflow' })
     const selector = within(group).getByRole('button', { name: /^Runs$/ })
-    const reserved = group.querySelector('[data-board-slot="files"]')!
+    const files = within(group).getByRole('button', { name: 'Files' })
     expect(clock.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(reserved).toHaveAttribute('aria-hidden', 'true')
-    expect(reserved).toHaveStyle({ flex: '0 0 28px', width: '28px' })
+    expect(selector.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(group.closest('header')).toHaveStyle({ position: 'static', minWidth: '0', boxSizing: 'border-box' })
     expect(container.querySelector('.unified-workflow-board')).toHaveStyle({ flexDirection: 'column' })
     await userEvent.click(selector)

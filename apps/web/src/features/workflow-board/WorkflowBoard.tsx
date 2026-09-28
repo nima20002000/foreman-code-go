@@ -8,6 +8,7 @@ import { WorkspaceExecutionLocationSettings } from '../settings/WorkspaceExecuti
 import { RunBoardSlot } from '../run-board'
 import { RunsSelector, useSelectedRun } from '../runs-selector'
 import { ScheduleClockButton } from '../schedules'
+import { WorkflowFilesButton } from '../workflow-files'
 import { CurrentRunObserver } from './CurrentRunObserver'
 import { nextDraftApi } from '../graph/nextDraft/transport'
 import { boardDraftContextKey } from './keys'
@@ -92,10 +93,10 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
     <div className="unified-workflow-board" data-testid="unified-workflow-board" style={{ flexDirection: 'column' }}>
       <header ref={toolbar} className="board-topbar" aria-label="Board toolbar"
         style={{ position: 'static', flex: '0 0 auto', justifyContent: 'flex-end', padding: 'var(--space-2)', boxSizing: 'border-box', minWidth: 0 }}>
-        <Toolbar label="Schedule and runs">
+        <Toolbar label="Board controls">
           <ScheduleClockButton workspaceId={workspaceId} workflowId={workflowId} isSaved={Boolean(saved.data?.draft.baseWorkflowVersionId)} />
           <RunsSelector selection={selectedRun} />
-          <span aria-hidden="true" data-board-slot="files" style={{ flex: '0 0 28px', width: 28 }} />
+          <WorkflowFilesButton workspaceId={workspaceId} workflowId={workflowId} readOnly={selectedRun.identity.runId !== null} />
         </Toolbar>
       </header>
       <RunBoardSlot selection={boardSelection}>
