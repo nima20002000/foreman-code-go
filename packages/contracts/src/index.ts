@@ -30,6 +30,7 @@ export * from "./runLiveActivity.js";
 
 export * from "./harnessEditing.js";
 export * from "./harnessCompatibility.js";
+export * from "./harnessQualification.js";
 export * from "./approvalTopology.js";
 export * from "./graphqlMcpTools.js";
 
