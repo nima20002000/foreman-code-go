@@ -379,11 +379,11 @@ describe('FIL-13 real chat mounts', () => {
     // jsdom asserts affordances only, not physical 320px layout.
   })
 
-  it.fails('FIL13-BLOCKER: the pinned Operator send contract must accept an attachment without text', () => {
+  it('the pinned Operator send contract must accept an attachment without text', () => {
     expect(SendOperatorMessageRequestSchema.safeParse({ requestId: 'file-only', content: '',
       attachments: [{ fileId: 'file', revisionId: 'revision' }] }).success).toBe(true)
   })
-  it.fails('FIL13-BLOCKER: the pinned Agent send contract must accept an attachment without text', () => {
+  it('the pinned Agent send contract must accept an attachment without text', () => {
     const selected = idleAgent().context
     const context = { workflowId: selected.workflowId, workflowNodeId: selected.workflowNodeId, agentId: selected.agentId,
       ...(selected.runId ? { runId: selected.runId } : {}) }
