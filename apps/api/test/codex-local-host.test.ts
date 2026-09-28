@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { test } from 'vitest'
-import { localCodexChatHost } from '../src/modules/harnesses/codexFiles/localHost.js'
+import { codexChatHostDirectory, localCodexChatHost } from '../src/modules/harnesses/codexFiles/localHost.js'
+import { assertOperatorCodexHost } from '../src/modules/harnesses/operatorFiles/codex.js'
 
 test('Codex chat host delivers verified read-only bytes and rejects mutable paths', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codex-host-test-'))
   try {
-    const host = await localCodexChatHost(root)
+    const host = await localCodexChatHost(join(root, 'files'))
+    assert.equal(codexChatHostDirectory(join(root, 'files')), join(root, 'files-codex-chat-files'))
     const bytes = Buffer.from('# attachment\n')
     const input = { filename: 'notes.md', mediaType: 'text/markdown' as const,
       byteSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), writable: false,
@@ -26,4 +28,19 @@ test('Codex chat host delivers verified read-only bytes and rejects mutable path
     await host.close()
     await assert.rejects(stat(copy.executionPath), { code: 'ENOENT' })
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('write-mode Operator host stays outside the default temporary harness root', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.codex-host-guard-'))
+  const unsafe = await mkdtemp(join(tmpdir(), 'codex-host-guard-'))
+  try {
+    const workingDirectory = join(root, 'operator')
+    await mkdir(workingDirectory)
+    await assertOperatorCodexHost(join(root, 'files'), workingDirectory, [], true)
+    await assert.rejects(assertOperatorCodexHost(join(unsafe, 'files'), workingDirectory, [], true),
+      { code: 'CODEX_FILE_HOST_UNAVAILABLE' })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await rm(unsafe, { recursive: true, force: true })
+  }
 })

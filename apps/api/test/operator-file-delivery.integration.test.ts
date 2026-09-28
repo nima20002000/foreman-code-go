@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -13,6 +12,7 @@ import type { FileMediaType, MessageAttachmentRef } from '@graphql/contracts/fil
 import { AgentFileCreateWorkingCopyResultSchema, AgentFileWriteWorkingCopyResultSchema,
   AgentFilePublishResultSchema } from '@graphql/contracts/files'
 import type { CodexFileCallResult } from '../src/modules/harnesses/codexFiles/port.js'
+import { codexChatHostDirectory } from '../src/modules/harnesses/codexFiles/localHost.js'
 import type { ApiConfig } from '../src/config.js'
 import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
@@ -148,8 +148,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     await applyApplicationMigrations(pool)
     f = await fileRuntimeFixture()
     // Outside /tmp: Codex workspace-write treats /tmp as writable, so the file host must not live there.
-    vault = await mkdtemp(join(homedir(), '.af02-vault-'))
-    runtimeHome = await mkdtemp(join(homedir(), '.af02-runtime-'))
+    vault = await mkdtemp(join(process.cwd(), '.af02-vault-'))
+    runtimeHome = await mkdtemp(join(process.cwd(), '.af02-runtime-'))
     await writeFile(join(f.directory, 'file-turn'), '')
     // Audit key presence only, not credential values. The fixture's worker
     // default is absent because the actual Operator service supplies its input.
@@ -160,7 +160,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       `log({ af02CredentialKeys: Object.keys(process.env).filter((key) => /GRAPHQL.*(?:TOKEN|CREDENTIAL)/.test(key) && key !== 'GRAPHQL_HEAVY_JOB_TOKEN') })\n${seam}`))
     config = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
       database: { connectionString: connectionString!, maxConnections: 4, connectionTimeoutMs: 2000, queryTimeoutMs: 5000 },
-      checkpoints: { schema: 'langgraph' }, workspaceStorageRoot: join(f.directory, 'projects'), fileStorageRoot: vault,
+      checkpoints: { schema: 'langgraph' }, workspaceStorageRoot: join(f.directory, 'projects'), fileStorageRoot: join(vault, 'files'),
       harnesses: { workspaceRoot: join(runtimeHome, 'runtime'), codexBinary: f.binary, openCodeBinary: 'protocol-fixture', timeoutMs: 10000 } }
     const cwd = join(config.harnesses.workspaceRoot, 'operator')
     await mkdir(cwd, { recursive: true })
@@ -417,7 +417,8 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expect(prompt).not.toContain('GRAPHQL_MCP_TOKEN')
       expect(prompt).not.toContain(issued[0]!.token)
       // Find the immutable original, not a model-selected/API-storage path.
-      const hostFiles = await paths(join(config.harnesses.workspaceRoot, harness === 'codex' ? 'codex-chat-files' : 'chat-files'))
+      const hostFiles = await paths(harness === 'codex'
+        ? codexChatHostDirectory(config.fileStorageRoot!) : join(config.harnesses.workspaceRoot, 'chat-files'))
       const original = (await Promise.all(hostFiles.map(async (path) => ({ path, bytes: await readFile(path) }))))
         .find((file) => digest(file.bytes) === ready.value.revision.sha256)
       expect(original).toBeDefined()

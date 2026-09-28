@@ -40,6 +40,7 @@ const { registerProductionFileStorage } = await import('../src/modules/files/pro
 const { productionFileTools } = await import('../src/modules/files/tools/production.js')
 const { CodexAppServerSessionManager } = await import('../src/modules/harnesses/codexAppServer.js')
 const { postgresCodexChatFiles } = await import('../src/modules/harnesses/codexFiles/chatAdmission.js')
+const { codexChatHostDirectory } = await import('../src/modules/harnesses/codexFiles/localHost.js')
 const { productionCodexChatFiles } = await import('../src/modules/harnesses/codexFiles/production.js')
 const { OpenCodeNativeSessionManager } = await import('../src/modules/harnesses/opencodeServer.js')
 const { productionOpenCodeChatFiles } = await import('../src/modules/harnesses/opencodeFiles/production.js')
@@ -71,8 +72,8 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
       }
     }
   })
-  const project = join(root, 'project'), hostRoot = join(root, 'codex-host')
-  await Promise.all([mkdir(project), mkdir(hostRoot)])
+  const project = join(root, 'project')
+  await mkdir(project)
   await writeFile(join(f.directory, 'file-turn'), '')
   // Observe key presence, never values; AgentChatService supplies the native env.
   const binary = await readFile(f.binary, 'utf8')
@@ -84,8 +85,9 @@ async function fixture(harness: 'codex' | 'opencode', readOnly: boolean) {
     host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
     database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4, connectionTimeoutMs: 2000, queryTimeoutMs: 5000 },
     checkpoints: { schema: 'langgraph' }, fileStorageRoot: join(root, 'vault'), workspaceStorageRoot: join(root, 'projects'),
-    harnesses: { workspaceRoot: join(root, 'runtime'), codexBinary: f.binary, openCodeBinary: 'protocol-fixture', timeoutMs: 10000 },
+    harnesses: { workspaceRoot: join(f.directory, 'runtime'), codexBinary: f.binary, openCodeBinary: 'protocol-fixture', timeoutMs: 10000 },
   }
+  const hostRoot = codexChatHostDirectory(config.fileStorageRoot!)
   await Promise.all([mkdir(config.workspaceStorageRoot!), mkdir(config.harnesses.workspaceRoot)])
   const files = registerProductionFileStorage(app, database.pool, config)
   await app.ready()
@@ -253,6 +255,17 @@ describe.skipIf(!postgresEnabled || process.platform !== 'linux')('R2-2 attachme
       const f = await fixture(harness, readOnly)
       const active = await f.send(null)
       expect(active.context.allowMutation).toBe(!readOnly)
+      if (harness === 'codex' && !readOnly) {
+        const conversation = (await f.database.pool.query<{ provider_version: string }>(
+          'select provider_version from operator_conversations where id=$1', [active.id])).rows[0]!
+        const unsafe = postgresCodexChatFiles(f.database.pool, () => { throw new Error('unused') },
+          async () => f.host, '/tmp')
+        await expect(unsafe.resolve({ conversationId: active.id,
+          clientCorrelationId: agentChatCorrelation(active.id, active.requestId),
+          session: { harness: 'codex', nativeSessionId: active.context.nativeSessionId,
+            providerVersion: conversation.provider_version }, signal: new AbortController().signal }))
+          .rejects.toMatchObject({ code: 'CODEX_FILE_HOST_UNAVAILABLE' })
+      }
       const expected = ['files.list', 'files.read', ...(readOnly ? [] : [
         'files.create_working_copy', 'files.write_working_copy', 'files.apply_format_edit', 'files.publish_result',
       ])].sort()

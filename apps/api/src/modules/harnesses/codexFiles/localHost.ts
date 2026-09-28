@@ -1,14 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, realpath, rm } from 'node:fs/promises'
-import { extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import { collectCodexFileBytes } from './bytes.js'
 import type { CodexFileHostLease, RegisteredCodexCopy } from './port.js'
 
 /** Read-only delivery directory outside Codex's workspace-write roots. Working-copy
  * edits go through FIL-05b; this lease never exposes a mutable host path. */
-export async function localCodexChatHost(runtimeRoot: string): Promise<CodexFileHostLease> {
-  const parent = join(runtimeRoot, 'codex-chat-files')
+export function codexChatHostDirectory(fileStorageRoot: string): string {
+  const root = resolve(fileStorageRoot)
+  return join(dirname(root), `${basename(root)}-codex-chat-files`)
+}
+
+export async function localCodexChatHost(fileStorageRoot: string): Promise<CodexFileHostLease> {
+  const parent = codexChatHostDirectory(fileStorageRoot)
   await mkdir(parent, { recursive: true, mode: 0o700 })
   const stat = await lstat(parent)
   if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077)

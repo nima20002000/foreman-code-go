@@ -9,9 +9,10 @@ import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
 import { registerProductionFileStorage } from './modules/files/production.js'
+import { defaultFileStorageRoot } from './modules/files/storage.js'
 import type { TemporaryFileService } from './modules/files/service.js'
 import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
-import { localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
+import { codexChatHostDirectory, localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
 import { buildProductionApp } from './production.js'
 
 const lifecycle = componentLogger('lifecycle')
@@ -38,10 +39,11 @@ async function main() {
     config.database,
   )
   let fileStorage: TemporaryFileService | undefined
+  const fileStorageRoot = config.fileStorageRoot ?? defaultFileStorageRoot()
   const codexFiles = postgresCodexChatFiles(database.pool, () => {
     if (!fileStorage) throw new Error('File storage is not registered.')
     return fileStorage
-  }, () => localCodexChatHost(config.harnesses.workspaceRoot), config.harnesses.workspaceRoot)
+  }, () => localCodexChatHost(fileStorageRoot), codexChatHostDirectory(fileStorageRoot))
   const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, codexFiles)
   let reconciliationTimer: NodeJS.Timeout | undefined

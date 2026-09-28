@@ -4,6 +4,7 @@ import type { ApiConfig } from '../../../config.js'
 import type { NativeManagerResolver } from '../../conversations/operatorChat.js'
 import { OPERATOR_MCP_ENVIRONMENT_VARIABLE } from '../../conversations/operatorChatAuthority.js'
 import { DomainError } from '../../errors.js'
+import { defaultFileStorageRoot } from '../../files/storage.js'
 import { CodexAppServerSessionManager } from '../codexAppServer.js'
 import { productionCodexChatFiles } from '../codexFiles/production.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../opencodeServer.js'
@@ -42,7 +43,7 @@ export function productionOperatorManagers(input: {
       manager = fileInputs
         ? new CodexAppServerSessionManager(input.config.harnesses.codexBinary, undefined, undefined, recovery, 'none',
           productionCodexChatFiles(input.app, conversationId, operatorCodexFileAdmissions(input.app, input.pool,
-            configuration, input.workingDirectory, input.config.harnesses.workspaceRoot)))
+            configuration, input.workingDirectory, input.config.fileStorageRoot ?? defaultFileStorageRoot())))
         : new CodexAppServerSessionManager(input.config.harnesses.codexBinary, undefined, undefined, recovery)
     } else {
       const authority = fileInputs ? { appMcpAccess: 'none' as const }

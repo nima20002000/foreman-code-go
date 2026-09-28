@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { realpath } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { MessageAttachmentRefsSchema, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { PostgresAccessService } from '../../access/postgres.js'
@@ -66,6 +66,7 @@ export function postgresCodexChatFiles(pool: pg.Pool, files: () => TemporaryFile
     const allowMutation = configuration.harness.sandbox === 'workspace-write'
     const writableRoots = await Promise.all([row.conversation_record.workingDirectory,
       ...(configuration.harness.advanced?.additionalWritableDirectories ?? [])].map((path) => realpath(path)))
+    await mkdir(hostRoot, { recursive: true, mode: 0o700 })
     const canonicalHostRoot = await realpath(hostRoot)
     const inside = (parent: string, child: string) => {
       const path = relative(resolve(parent), resolve(child))
