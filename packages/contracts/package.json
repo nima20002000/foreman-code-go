@@ -39,6 +39,10 @@
     "./runtime-identity-node": {
       "types": "./dist/runtimeIdentityNode.d.ts",
       "import": "./dist/runtimeIdentityNode.js"
+    },
+    "./files": {
+      "types": "./dist/files.d.ts",
+      "import": "./dist/files.js"
     }
   },
   "scripts": {
