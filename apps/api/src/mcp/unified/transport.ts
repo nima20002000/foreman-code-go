@@ -14,6 +14,8 @@ import { unavailableRunGraphToolCall } from '../operator/tools/runGraph.js'
 import { unavailableRunInspectionToolCall } from '../operator/tools/runInspection.js'
 import { unavailableRunToolCall } from '../operator/tools/runs.js'
 import { unavailableFileRetentionToolCall } from '../operator/tools/fileRetention.js'
+import { unavailableWorkflowScheduleToolCall } from '../operator/tools/workflowSchedules.js'
+import { unavailableRunHistoryToolCall } from '../operator/tools/runHistory.js'
 import type { OperatorServices } from '../operator/types.js'
 import type { McpRole } from './roles.js'
 import { createGraphqlMcpServer, roleDeniedToolCall } from './server.js'
@@ -62,6 +64,8 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableRunGraphToolCall(context, request.body)
         ?? await unavailableRunInspectionToolCall(context, request.body)
         ?? await unavailableFileReferenceToolCall(context, request.body)
+        ?? await unavailableWorkflowScheduleToolCall(context, request.body)
+        ?? await unavailableRunHistoryToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
     const context = { role, principal, ...(access ? { tools: access.tools } : {}),

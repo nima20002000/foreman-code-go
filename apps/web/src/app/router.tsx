@@ -5,7 +5,7 @@ import {
   redirect,
 } from '@tanstack/react-router'
 import { ApprovalInboxSearchSchema, UrlSearchSelectionSchema } from '@graphql/contracts'
-import { WorkspaceBoardSearchSchema } from '@graphql/contracts/wave25'
+import { RunsSelectorSearchSchema } from '../features/runs-selector'
 import { RootShell } from './RootShell'
 import { BrowserAuthSearchSchema } from '@graphql/contracts/management'
 import { SignInRoute, OwnerSetupRoute } from '../features/auth/AuthRoutes'
@@ -50,7 +50,7 @@ const workspacesRoute = createRoute({
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId',
-  validateSearch: WorkspaceBoardSearchSchema,
+  validateSearch: RunsSelectorSearchSchema,
   component: WorkspaceRouteEntry,
 })
 

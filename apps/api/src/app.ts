@@ -27,6 +27,7 @@ import { registerManagementRoutes } from './routes/management.js'
 import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
 import { registerAgentChatRoutes } from './routes/agentChat.js'
+import { registerWorkflowScheduleRoutes } from './routes/workflowSchedules.js'
 import { registerHarnessCompatibilityRoutes } from './routes/harnessCompatibility.js'
 import type { HarnessCompatibilityService } from './modules/harnesses/compatibility/service.js'
 
@@ -98,6 +99,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     // Fastify's per-request lines are replaced by one line whose level says whether it matters.
     logController: new LogController({ disableRequestLogging: true }),
   })
+  // Timed delivery is an API lifecycle, never a browser or HTTP-request timer.
+  app.addHook('onReady', async () => {
+    options.operator?.services.runs?.startScheduleDispatcher?.(() => {
+      app.log.error({ code: 'SCHEDULE_DISPATCH_RETRY' }, 'schedule dispatch failed; durable state retained for retry')
+    })
+  })
+  app.addHook('preClose', async () => { await options.operator?.services.runs?.stopScheduleDispatcher?.() })
   app.addHook('onResponse', async (request, reply) => {
     const statusCode = reply.statusCode, responseTimeMs = Math.round(reply.elapsedTime)
     // Routine success (the Board polls every 1.5s) is debug; failures and slow calls stay visible.
@@ -137,6 +145,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator) registerBrowserAuthRoutes(app, options.browserAuth)
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.browserAuth, options.localDevBrowserAccess)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
+  if (options.operator?.services.workflows?.schedules) registerWorkflowScheduleRoutes(app, options.operator.services.workflows.schedules)
   if (options.operator?.services.runGraph) registerRunGraphRoutes(app, options.operator.services.runGraph,
     (principalId, code, route) => options.operator!.services.commands.recordDenied(principalId, 'http', code, route))
   if (options.operator && options.harnessCompatibility) registerHarnessCompatibilityRoutes(app, options.harnessCompatibility)

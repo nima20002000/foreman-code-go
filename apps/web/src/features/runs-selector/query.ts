@@ -1,0 +1,74 @@
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { ApiError } from '../../shared/api/client'
+import { runsSelectorApi } from './client'
+import { flattenRunPages, nextRunsCursor, RUNS_MAX_PAGES, RUNS_PAGE_SIZE } from './presentation'
+import type { RunsSelectorScope } from './types'
+import type { SelectedRunState } from './useSelectedRun'
+
+export const runsSelectorKeys = {
+  all: ['runs-selector'] as const,
+  list: ({ workspaceId, workflowId }: RunsSelectorScope) => ['runs-selector', 'list', workspaceId, workflowId] as const,
+  snapshot: (selection: SelectedRunState) => ['runs-selector', 'snapshot', selection.identity.workspaceId,
+    selection.identity.workflowId, selection.identity.runId, selection.generation.id] as const,
+}
+
+export function isRunAccessError(error: unknown) {
+  return ApiError.is(error) && [401, 403, 404].includes(error.status)
+}
+export function runReadErrorLabel(error: unknown, subject: 'run' | 'list' = 'run') {
+  if (ApiError.is(error)) {
+    if (error.status === 401) return 'Sign in'
+    if (error.status === 403) return 'No access'
+    if (error.status === 404) return subject === 'run' ? 'Run not found' : 'Not found'
+  }
+  return 'Load failed'
+}
+const retry = (count: number, error: unknown) => !isRunAccessError(error) && count < 1
+
+export function useRunSummaries(identity: RunsSelectorScope, enabled = true) {
+  // Callers may pass a selection that also carries runId; the list is workflow-scoped.
+  const scope = { workspaceId: identity.workspaceId, workflowId: identity.workflowId }
+  const query = useInfiniteQuery({
+    queryKey: runsSelectorKeys.list(scope),
+    queryFn: ({ pageParam, signal }) => runsSelectorApi.list({ ...scope, limit: RUNS_PAGE_SIZE,
+      ...(pageParam === undefined ? {} : { cursor: pageParam }) }, { signal }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: nextRunsCursor,
+    // The cap stops forward paging rather than evicting the newest page.
+    maxPages: RUNS_MAX_PAGES,
+    enabled,
+    retry,
+    staleTime: 5_000,
+    gcTime: 60_000,
+    refetchInterval: (query) => enabled && !isRunAccessError(query.state.error) ? 15_000 : false,
+    placeholderData: () => undefined,
+  })
+  // A forbidden background refetch must not leave authorized-looking cached rows.
+  const items = isRunAccessError(query.error) ? [] : flattenRunPages(query.data?.pages)
+  return { ...query, data: isRunAccessError(query.error) ? undefined : query.data, items }
+}
+
+/** An authorized single-Run read, independent of whichever summary pages are loaded.
+ * `unavailable/legacy_run` confirms the Run exists; it is not a missing Run.
+ */
+export function useSelectedRunSnapshot(selection: SelectedRunState) {
+  const { identity, generation } = selection
+  const query = useQuery({
+    queryKey: runsSelectorKeys.snapshot(selection),
+    queryFn: async ({ signal }) => {
+      if (identity.runId === null) throw new Error('Select a Run before reading its snapshot.')
+      const result = await runsSelectorApi.snapshot({ ...identity, runId: identity.runId }, { signal })
+      if (!selection.isCurrent(generation)) throw new DOMException('Run selection changed.', 'AbortError')
+      return result
+    },
+    enabled: selection.active && !selection.invalid && identity.runId !== null,
+    retry: (count, error) => !(error instanceof Error && error.name === 'AbortError') && retry(count, error),
+    staleTime: 0,
+    gcTime: 0,
+    placeholderData: () => undefined,
+  })
+  const current = selection.isCurrent(generation)
+  // Do not render cached data after *any* failed authorization/validation read.
+  const snapshot = current && !query.isError ? query.data?.snapshot : undefined
+  return { ...query, data: snapshot ? { snapshot } : undefined, snapshot }
+}

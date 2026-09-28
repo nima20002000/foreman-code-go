@@ -1,14 +1,20 @@
-import { RunActivitiesPageSchema, RepeatGraphScopeV3Schema,
-  type RepeatGraphScopeV3, type RunActivitiesPage, type RunActivityPublic } from '@graphql/contracts/wave25'
+import { RepeatGraphScopeV3Schema, RunActivitiesPageSchema, type RunActivitiesPage, type RunActivityPublic } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
-export const runActivitiesKey = (scope: RepeatGraphScopeV3, generation = sessionGeneration()) =>
+// A selected snapshot pins these four fields. Do not invent a URL semantics pin:
+// the existing response schema independently verifies executionSemanticsVersion=3.
+export type RunActivityScope = Pick<RunActivitiesPage['scope'], 'workspaceId' | 'workflowId' | 'runId' | 'workflowVersionId'>
+
+export const runActivitiesKey = (scope: RunActivityScope, generation = sessionGeneration()) =>
   ['workbench', 'run-activities', generation, scope.workspaceId, scope.workflowId,
     scope.runId, scope.workflowVersionId, 3] as const
 
-export async function readRunActivities(scope: RepeatGraphScopeV3, cursor: string | null = null, options?: RequestOptions): Promise<RunActivitiesPage> {
-  RepeatGraphScopeV3Schema.parse(scope)
+export async function readRunActivities(scope: RunActivityScope, cursor: string | null = null, options?: RequestOptions): Promise<RunActivitiesPage> {
+  if ('executionSemanticsVersion' in scope) RepeatGraphScopeV3Schema.parse(scope)
+  RunActivitiesPageSchema.shape.scope.omit({ executionSemanticsVersion: true }).parse({
+    workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId, workflowVersionId: scope.workflowVersionId,
+  })
   const generation = sessionGeneration()
   const query = new URLSearchParams({ limit: '50' })
   if (cursor) query.set('cursor', cursor)
@@ -39,7 +45,7 @@ export type RunActivityFeed = { items: RunActivityPublic[]; olderCursor: string 
 
 /** A query refetch catches every new page through its frozen high-water mark.
  * A 410 is surfaced to the UI for an explicit resync, never silently skipped. */
-export async function readRunActivityFeed(scope: RepeatGraphScopeV3, previous?: RunActivityFeed,
+export async function readRunActivityFeed(scope: RunActivityScope, previous?: RunActivityFeed,
   options?: RequestOptions): Promise<RunActivityFeed> {
   if (!previous) {
     const page = await readRunActivities(scope, null, options)

@@ -35,6 +35,9 @@ import { nativeProjectionMigration } from '../modules/run-graph/nativeProjection
 import { workHandoffMigration } from './workHandoffMigration.js'
 import { workNoticeMigration } from './workNoticeMigration.js'
 import { runActivitiesMigration } from './runActivitiesMigration.js'
+import { workflowScheduleDispatchMigration } from '../modules/schedules/dispatchMigration.js'
+import { workflowScheduleMigration } from './workflowScheduleMigration.js'
+import { runSnapshotMigration } from './runSnapshotMigration.js'
 import { fileStorageMigration } from './fileStorageMigration.js'
 import { fileReferenceMigration } from './fileReferenceMigration.js'
 import { fileRetentionMigration } from './fileRetentionMigration.js'
@@ -737,6 +740,9 @@ export const migrations = [
   workHandoffMigration,
   workNoticeMigration,
   runActivitiesMigration,
+  workflowScheduleMigration,
+  runSnapshotMigration,
+  workflowScheduleDispatchMigration,
   fileStorageMigration,
   fileReferenceMigration,
   fileRetentionMigration,

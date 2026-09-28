@@ -1,9 +1,11 @@
+import { runHistoryCapabilityLimit } from './runHistory.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { OperatorCapabilityInputSchema } from '@graphql/contracts/management'
-import { CurrentOperatorCapabilitiesSchema, CURRENT_WORKFLOW_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS, RUN_INSPECTION_TOOLS } from '@graphql/contracts/wave25'
+import { CURRENT_WORKFLOW_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS, RUN_INSPECTION_TOOLS } from '@graphql/contracts/wave25'
 import { currentWorkflowAvailable, currentWorkflowRequirements, type CurrentWorkflowOperation } from '../../../modules/workflows/currentWorkflowPolicy.js'
 import { runInspectionToolAvailable, runInspectionRequirements } from './runInspection.js'
 import { runGraphToolAvailable } from './runGraph.js'
+import { ScheduleOperatorCapabilitiesSchema, workflowScheduleCapabilities } from './workflowSchedules.js'
 import { hasAction, isAuthorized } from '../../../modules/access/policy.js'
 import { invokeOperatorTool } from '../invoke.js'
 import { OPERATOR_TOOL_ACTIONS } from '../catalog.js'
@@ -33,7 +35,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
   if (!operatorToolAvailable(context,'operator_get_capabilities')) return
   server.registerTool('operator_get_capabilities', {
     description: 'Inspect your grants, compatible tool permissions, optional resource scope, and explicit runtime limits. Supply a complete workspace/workflow/run hierarchy for resource checks. This is not a grant or a promise that a specific object exists.',
-    inputSchema: OperatorCapabilityInputSchema, outputSchema: CurrentOperatorCapabilitiesSchema,
+    inputSchema: OperatorCapabilityInputSchema, outputSchema: ScheduleOperatorCapabilitiesSchema,
     annotations: {readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
   },async(input)=>invokeOperatorTool(context,'operator_get_capabilities',async()=>{
     const resource={...(input.workspaceId?{workspaceId:input.workspaceId}:{}),...(input.workflowId?{workflowId:input.workflowId}:{}),...(input.runId?{runId:input.runId}:{})}
@@ -44,7 +46,8 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
       ? isAuthorized(context.principal, 'runs:read', resource) : hasAction(context.principal, 'runs:read'))
       ? Object.values(CANONICAL_RUN_GRAPH_MCP_TOOLS).filter((name) => runGraphToolAvailable(context, name)) : []
     const inspection = Object.values(RUN_INSPECTION_TOOLS).filter((name) => runInspectionToolAvailable(context, name, resource))
-    const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection]
+    const schedules = workflowScheduleCapabilities(context, resource)
+    const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection, ...schedules.map((entry) => entry.name)]
     return {endpoint:'/mcp',audience:'operator',protocol:'2026-07-28',tools,
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
       grants:context.principal.grants,requestedResource:resource,
@@ -55,8 +58,9 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
           detail: 'Current V3 only. Concrete services recheck all scope, pin and settlement requirements; Stop also needs each affected Run grant.' })),
         ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' })),
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
-          detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' }))],
-      runtimeLimits:[...OPERATOR_RUNTIME_LIMITS, ...(context.services.fileReferences ? [{
+          detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' })), ...schedules],
+      runtimeLimits:[...OPERATOR_RUNTIME_LIMITS, runHistoryCapabilityLimit(context), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
+        detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. No dispatcher or timed Run admission is included. Clear/paging/discovery compositions await shared-contract follow-up.' }] : []), ...(context.services.fileReferences ? [{
         feature: 'permanent_reference_files', state: 'limited' as const,
         detail: 'Permanent references support reference_files_list, reference_file_read, reference_file_add and reference_file_remove through tools/list. Read requires the scope-specific workspaces:read or workflows:read grant; add/remove additionally require the matching update grant. Worker access is not granted. These backend extension names are not in this frozen capability tools enum; use tools/list for caller-filtered schemas. Agent access resolution is separate.',
       }] : [])],

@@ -1,0 +1,8 @@
+.selected-run-chat { min-width: 0; display: grid; gap: .5rem; }
+.selected-run-chat > *, .selected-chat-execution { min-width: 0; }
+.selected-run-chat select, .selected-chat-execution input { max-width: 100%; min-width: 0; }
+.selected-chat-execution form { display: flex; gap: .5rem; }
+.selected-chat-execution input { flex: 1; }
+.selected-run-chat .board-activities { margin-top: .75rem; }
+.selected-run-chat .board-activities-filters { flex-wrap: wrap; }
+.selected-run-chat .board-activities-list { overflow-wrap: anywhere; }
