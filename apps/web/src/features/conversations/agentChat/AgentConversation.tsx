@@ -109,9 +109,10 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     {chat.query.isError ? <Alert title="Chat could not be refreshed" tone="warning" live><p>{chat.query.error.message}</p>
       <Button size="sm" onClick={() => { void chat.query.refetch() }}>Refresh chat</Button></Alert> : null}
     {chat.query.isPending ? <LoadingState label="Loading this Agent conversation…" rows={1} /> : null}
-    {state?.availability.message ? <Alert title={state.availability.reason === 'run_active' ? 'Selected Run — read only' : sessionMissing ? state.conversation ? 'Native session missing' : context.runId ? 'No stored session for this Run' : 'No native session' : 'Chat availability'} tone="warning">
-      {state.availability.message}
-    </Alert> : null}
+    {state?.availability.message ? <details className="agent-chat-availability">
+      <summary title={state.availability.message}>{state.availability.canSend ? 'Chat note' : 'Chat unavailable'}</summary>
+      <p>{state.availability.message}</p>
+    </details> : null}
     {sessionMissing ? <div className="agent-chat-new-conversation">
       <p>{state?.conversation
         ? 'This conversation cannot be resumed. A separate conversation will not change this chat or the selected Run.'

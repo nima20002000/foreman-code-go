@@ -59,8 +59,8 @@
 .n-agent-popover[data-panel='chat'] {
   box-sizing: border-box;
   width: min(392px, calc(var(--agent-chat-viewport-width, 100vw) - 24px));
-  height: min(48rem, calc(var(--agent-chat-viewport-height, 100dvh) - 24px));
-  max-height: calc(var(--agent-chat-viewport-height, 100dvh) - 24px);
+  height: min(48rem, var(--agent-chat-available-height, calc(var(--agent-chat-viewport-height, 100dvh) - 24px)));
+  max-height: var(--agent-chat-available-height, calc(var(--agent-chat-viewport-height, 100dvh) - 24px));
   bottom: auto;
 }
 .n-agent-popover[data-panel='chat'] > .n-agent-popover-header,
@@ -74,6 +74,9 @@
 .agent-chat-panel > .conversation-viewport,
 .agent-conversation > .conversation-viewport { flex: 1 1 0; }
 .agent-chat-notices { display: grid; gap: var(--space-3); min-width: 0; }
+.agent-chat-availability { color: var(--text-muted); font-size: 12px; }
+.agent-chat-availability summary { cursor: pointer; }
+.agent-chat-availability p { margin-top: var(--space-1); }
 .agent-chat-composer-controls { flex: 0 0 auto; gap: var(--space-2); border-top: 1px solid var(--border); padding-top: var(--space-2); }
 .agent-chat-composer-controls .n-button { min-height: 32px; }
 .agent-chat-composer-controls > .agent-chat-controls { display: flex; flex-wrap: wrap; gap: var(--space-2); }
@@ -85,8 +88,8 @@ body:has(.n-agent-popover[data-panel='chat']) .operator-chat-launcher { visibili
   .agent-chat-composer-controls .n-button { min-height: 44px; }
   .n-agent-popover[data-panel='chat'] {
     width: var(--agent-chat-viewport-width, 100vw);
-    height: min(48rem, calc(var(--agent-chat-viewport-height, 100dvh) - 12px));
-    max-height: calc(var(--agent-chat-viewport-height, 100dvh) - 12px);
+    height: min(48rem, var(--agent-chat-available-height, calc(var(--agent-chat-viewport-height, 100dvh) - 12px)));
+    max-height: var(--agent-chat-available-height, calc(var(--agent-chat-viewport-height, 100dvh) - 12px));
   }
   .n-agent-popover[data-panel='chat'] .n-agent-popover-body { padding-bottom: max(var(--space-3), env(safe-area-inset-bottom)); }
 }

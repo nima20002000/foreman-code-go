@@ -41,6 +41,10 @@
   min-width: 0;
   gap: 6px;
 }
+.agent-chat-composer-controls .n-composer > footer .n-actions { width: 100%; justify-content: space-between; }
+.agent-chat-composer-controls .n-composer > footer .attachment-control { display: contents; }
+.agent-chat-composer-controls .n-composer > footer .attachment-content { flex: 1 0 100%; order: -1; }
+.agent-chat-composer-controls .n-composer > footer .attachment-content:empty { display: none; }
 .agent-chat-composer-controls .agent-chat-controls > button {
   flex-shrink: 0;
 }

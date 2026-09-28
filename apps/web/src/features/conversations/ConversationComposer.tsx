@@ -42,7 +42,7 @@ export function ConversationComposer({
 
   return (
     <MessageComposer
-      context={attachmentControl}
+      footerControl={attachmentControl}
       hasAttachments={hasAttachments}
       formLabel="Conversation composer"
       label="Message"
