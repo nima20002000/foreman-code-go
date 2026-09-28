@@ -1,12 +1,18 @@
 /* One canvas with a top bar, one side panel at a time, and a save bar only when there is something to save. */
 .unified-workflow-board { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
-.workflow-board-authoring { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+.workflow-board-authoring { display: flex; position: relative; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+/* Current editor and past Run board fill the space under the toolbar instead of collapsing to content height. */
+.unified-workflow-board > .run-board-slot { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.unified-workflow-board > .run-board-slot > .run-board-current { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.unified-workflow-board > .run-board-slot > .run-board-current[hidden] { display: none; }
+.unified-workflow-board > .run-board-slot > .run-board { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.unified-workflow-board > .run-board-slot > .run-board .run-board-canvas { flex: 1; height: auto; min-height: 18rem; }
 
 .board-run-banner {
   position: absolute; z-index: 6; bottom: var(--space-4); left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
   border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--surface-raised); box-shadow: var(--shadow-popover);
-  color: var(--text); font: var(--type-body); white-space: nowrap;
+  color: var(--text); font: var(--type-body); max-width: calc(100% - 2rem);
 }
 .board-run-banner code { font: var(--type-mono); }
 .board-run-banner > svg { color: var(--text-muted); }
