@@ -122,7 +122,6 @@ async function smoke(argv) {
   try {
     await writeFile(inputPath, original, { mode: 0o400, flag: 'wx' })
     child = spawn(options.codex, ['app-server', ...stdioArguments,
-      '-c', 'mcp_servers.graphql.enabled=false',
       '-c', 'mcp_servers.graphql-app.enabled=false',
       '-c', 'mcp_servers.graphql-operator.enabled=false'],
     { cwd: directory, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
@@ -166,7 +165,7 @@ async function smoke(argv) {
     const started = await request('thread/start', {
       cwd: directory, runtimeWorkspaceRoots: [directory], sandbox: 'workspace-write', approvalPolicy: 'never',
       ...(options.model ? { model: options.model } : {}), ephemeral: true,
-      config: { 'mcp_servers.graphql.enabled': false, 'mcp_servers.graphql-app.enabled': false,
+      config: { 'mcp_servers.graphql-app.enabled': false,
         'mcp_servers.graphql-operator.enabled': false,
         sandbox_workspace_write: { writable_roots: [], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true },
         shell_environment_policy: { inherit: 'none', set: { PATH: env.PATH ?? '' } } },
