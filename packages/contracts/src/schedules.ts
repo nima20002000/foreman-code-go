@@ -28,7 +28,8 @@ export const ScheduleInstantSchema = TimestampSchema.refine((value) => {
   const instant = Date.parse(value);
   return !/\.\d{4}/.test(value) && instant >= MIN_INSTANT && instant <= MAX_INSTANT;
 }, "Use a valid instant in years 0001–9999 with at most millisecond precision")
-  .transform((value) => new Date(value).toISOString());
+  // overwrite (not transform) keeps the schema JSON-Schema representable for MCP tools.
+  .overwrite((value) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toISOString() });
 export const ScheduleTimeZoneSchema = z.string().min(1).max(255).refine((value) => {
   // Require a named Area/Location (including slash-form links), UTC or GMT.
   // Intl also accepts ambiguous compatibility abbreviations and, on newer engines, numeric offsets.
