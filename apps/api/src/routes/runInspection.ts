@@ -1,3 +1,4 @@
+import { registerRunHistoryRoutes } from './runHistory.js'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { requirePrincipal } from '../modules/access/http.js'
@@ -18,6 +19,7 @@ function privateRead(reply: FastifyReply) {
  * authorization, bounds, exact readback and output validation all live in the
  * same service called by Operator MCP. Existing global denial audit is retained. */
 export function registerRunInspectionRoutes(app: FastifyInstance, services: OperatorServices): void {
+  registerRunHistoryRoutes(app, services)
   const reads = () => {
     if (!services.runs?.inspection) throw new DomainError('RUN_INSPECTION_UNAVAILABLE',
       'Run inspection services are not composed in this application.', 503)

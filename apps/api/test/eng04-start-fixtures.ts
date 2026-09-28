@@ -5,6 +5,7 @@ import {
   AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture, canonicalGraphJson,
   type AcceptedWorkflowRunV3,
 } from '@graphql/contracts/wave25'
+import { RunBoardSnapshotSchema, type RunBoardSnapshot } from '@graphql/contracts/run-snapshots'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { beforeGraphCommit } from '../src/modules/run-graph/connection.js'
 import { repeatDigest } from '../src/modules/runs/repeatResolution.js'
@@ -57,6 +58,8 @@ type Binding = { principal_id: string; run_id: string; owner_principal_id: strin
   grant_ceiling: unknown; accepted_expires_at: Date }
 interface Database {
   run: AcceptedWorkflowRunV3 | undefined
+  boardSnapshot?: RunBoardSnapshot
+  admissionTrigger?: string
   principals: PrincipalRow[]
   bindings: Binding[]
   receipt: Receipt | undefined
@@ -78,7 +81,7 @@ export function startSqlFixture() {
   const releases: boolean[] = []
   const state = { filesystemCalls: 0, publications: 0, activeTransactions: 0, count: '0',
     loseCommit: false, missingSource: false, denyClock: false, stopped: false, cleanupPending: false,
-    filesystemError: false, onSnapshot: undefined as (() => void) | undefined,
+    failBoardSnapshot: false, filesystemError: false, onSnapshot: undefined as (() => void) | undefined,
     rows: undefined as ((sql: string, values: unknown[], rows: Record<string, unknown>[]) => Record<string, unknown>[]) | undefined }
   const result = (sql: string, values: unknown[], rows: Record<string, unknown>[]) => {
     const actual = state.rows ? state.rows(sql, values, structuredClone(rows)) : structuredClone(rows)
@@ -140,9 +143,18 @@ export function startSqlFixture() {
       if (sql.includes('from workflows where')) return answer([f.workflow])
       if (sql.includes('from graph_drafts')) return answer([])
       if (sql.startsWith('select count(*)::text as count from runs')) return answer([{ count: state.count }])
+      // Recovery fence: no interrupted Run or pending cleanup in this workflow.
+      if (sql.startsWith('select 1 from runs r where r.workspace_id=$1 and r.workflow_id=$2')) return answer([])
       if (sql.startsWith('insert into runs(')) {
         if (db.run) throw new Error('duplicate fixture Run')
         db.run = AcceptedWorkflowRunV3Schema.parse(JSON.parse(String(values[4])))
+        return answer()
+      }
+      if (sql.startsWith('insert into run_board_snapshots')) {
+        if (state.failBoardSnapshot) throw new Error('synthetic snapshot storage failure')
+        if (!this.inTransaction || !db.run || db.boardSnapshot) throw new Error('invalid snapshot admission')
+        db.boardSnapshot = RunBoardSnapshotSchema.parse(JSON.parse(String(values[6])))
+        db.admissionTrigger = String(values[5])
         return answer()
       }
       if (sql.startsWith('select r.id,r.workspace_id,r.workflow_id')) {

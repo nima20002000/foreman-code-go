@@ -1,3 +1,4 @@
+import { runHistoryCapabilityLimit } from './runHistory.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { OperatorCapabilityInputSchema } from '@graphql/contracts/management'
 import { CURRENT_WORKFLOW_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS, RUN_INSPECTION_TOOLS } from '@graphql/contracts/wave25'
@@ -58,7 +59,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' })),
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
           detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' })), ...schedules],
-      runtimeLimits:[...OPERATOR_RUNTIME_LIMITS, ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
+      runtimeLimits:[...OPERATOR_RUNTIME_LIMITS, runHistoryCapabilityLimit(context), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
         detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. No dispatcher or timed Run admission is included. Clear/paging/discovery compositions await shared-contract follow-up.' }] : [])],
       workerToolsMcp:{implemented:context.services.workerToolsMcpImplemented===true,endpoint:'/mcp'}}
   }))

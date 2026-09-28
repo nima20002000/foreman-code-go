@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { IdSchema } from '@graphql/contracts'
+import type { RunDropdownTrigger } from '@graphql/contracts/run-snapshots'
+import { insertRunBoardSnapshot } from './boardSnapshot.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
   AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema,
@@ -146,7 +148,7 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
 /** The v3 INSERT and canonical initialization share the existing Start G1
  * transaction. This function does not acquire RunOwnership or invoke the graph. */
 export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedRepeatStartV1,
-  publication: RepeatStartPublication): Promise<AcceptedWorkflowRunV3> {
+  publication: RepeatStartPublication, admissionTrigger: RunDropdownTrigger = 'manual'): Promise<AcceptedWorkflowRunV3> {
   assertGraphTransaction(sql)
   const accepted = AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(input)))
   const run = acceptedReceipt(accepted.run, accepted.snapshot.request)
@@ -155,6 +157,9 @@ export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedR
     runner_id,working_directory,location_revision) values($1,$2,$3,$4,'queued',$5::jsonb,$6,$7,$8)`,
   [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, canonicalGraphJson(run),
     run.executionLocation.runnerId, run.executionLocation.rootPath, run.executionLocation.locationRevision])
+  // Required admission write: failure rolls back the Run, authority and command.
+  // Internal scheduled admission must pass 'schedule'; never accept it from HTTP/MCP input.
+  await insertRunBoardSnapshot(sql, accepted, admissionTrigger)
   // Do not let an adapter mutate the candidate whose digest/pins we retained.
   const published = await publication.initializeLocked(sql, AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(accepted))))
   const semanticDigest = GraphDigestSchema.parse(published.semanticDigest)

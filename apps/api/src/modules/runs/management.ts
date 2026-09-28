@@ -4,6 +4,7 @@ import type pg from 'pg'
 import { RunStartV3InputSchema, SavedWorkflowRunSchema, CurrentJournalStopSchema, canonicalGraphJson,
   type RunStartV3Input } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { RunHistoryService } from './history.js'
 import { RunInspectionService } from './inspection.js'
 import { RunActivitiesService } from './activities.js'
 import { RunHandoffReadService } from './handoffRead.js'
@@ -20,6 +21,7 @@ import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { CurrentRunProductionBinding, CurrentRuntimeAvailability } from './currentProduction.js'
 
 export class RunManagementService {
+  readonly history: RunHistoryService
   readonly inspection: RunInspectionService
   readonly activities: RunActivitiesService
   readonly handoffs: RunHandoffReadService
@@ -31,6 +33,7 @@ export class RunManagementService {
     private readonly locations: WorkspaceLocationService,
     private readonly currentProduction?: CurrentRunProductionBinding,
   ) {
+    this.history = new RunHistoryService(pool)
     this.inspection = new RunInspectionService(pool)
     this.activities = new RunActivitiesService(pool)
     this.handoffs = new RunHandoffReadService(pool)

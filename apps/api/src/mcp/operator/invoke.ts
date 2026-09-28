@@ -1,3 +1,4 @@
+import type { RunHistoryToolName } from './tools/runHistory.js'
 import type { RunInspectionToolName } from '@graphql/contracts/wave25'
 import type { OperatorToolName } from '@graphql/contracts/management'
 import type { WorkflowScheduleToolName } from './tools/workflowSchedules.js'
@@ -8,7 +9,7 @@ import type { OperatorRequestContext } from './types.js'
 
 export async function invokeOperatorTool(
   context: OperatorRequestContext,
-  name: OperatorToolName | RunInspectionToolName | WorkflowScheduleToolName,
+  name: OperatorToolName | RunInspectionToolName | WorkflowScheduleToolName | RunHistoryToolName,
   work: () => Promise<unknown>,
 ) {
   try { return toolResult(await work()) } catch (error) {
