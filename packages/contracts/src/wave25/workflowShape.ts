@@ -101,6 +101,10 @@ export const CurrentWorkflowNodeSchema = z.object({
 export const CurrentWorkflowRelationshipSchema = z.object({
   id: GraphIdSchema, source: GraphIdSchema, target: GraphIdSchema,
   sourceHandle: Handle, targetHandle: Handle, label: z.string().optional(), kind: z.enum(['execution', 'approval']),
+  /** New handoff-policy work connection only. Missing means no connection cap. */
+  maxWorkHandoffsPerRun: z.number().int().min(1).max(2147483647).optional(),
+  /** A correlated return is always permitted; this controls independent new work. */
+  workRequestDirection: z.enum(['source_to_target', 'both']).optional(),
 }).strict()
 /** Incomplete authoring is allowed here; immutable executable validation below
  * requires a real entry, complete approval and enough execution budget. */
@@ -123,6 +127,9 @@ export type WorkflowRelationship = z.infer<typeof WorkflowRelationshipSchema>
  * constants and validators are not runtime admission permission. */
 export const REPEAT_CONTRACT_VERSION = 1 as const
 export const REPEAT_EXECUTION_SEMANTICS_VERSION = 3 as const
+export const HANDOFF_CONTRACT_VERSION = 1 as const
+export const WorkHandoffPolicyV1Schema = z.object({ contractVersion: z.literal(HANDOFF_CONTRACT_VERSION) }).strict()
+export type WorkHandoffPolicyV1 = z.infer<typeof WorkHandoffPolicyV1Schema>
 const Ordinal = z.number().int().min(1).max(2147483647)
 const Header = { contractVersion: z.literal(REPEAT_CONTRACT_VERSION) }
 
@@ -166,5 +173,19 @@ export type RepeatPlanV1 = z.infer<typeof RepeatPlanV1Schema>
  * ordinary execution; a missing executionSemanticsVersion is never repaired. */
 export const WorkflowDefinitionV3Schema = CurrentWorkflowDefinitionBaseSchema.extend({
   repeat: RepeatPlanV1Schema.optional(),
-}).strict()
+  handoffs: WorkHandoffPolicyV1Schema.optional(),
+}).strict().superRefine((definition, context) => {
+  if (definition.handoffs && definition.repeat) context.addIssue({ code: 'custom', path: ['handoffs'], message: 'HANDOFF_REPEAT_POLICY_CONFLICT' })
+  const pairs = new Set<string>()
+  for (const [index, edge] of definition.edges.entries()) {
+    const configured = edge.maxWorkHandoffsPerRun !== undefined || edge.workRequestDirection !== undefined
+    if (configured && (!definition.handoffs || edge.kind !== 'execution')) {
+      context.addIssue({ code: 'custom', path: ['edges', index], message: 'HANDOFF_CONNECTION_POLICY_REQUIRED' })
+    }
+    if (!definition.handoffs || edge.kind !== 'execution') continue
+    const pair = [edge.source, edge.target].sort().join('\u0000')
+    if (pairs.has(pair)) context.addIssue({ code: 'custom', path: ['edges', index], message: 'HANDOFF_DUPLICATE_CONNECTION' })
+    pairs.add(pair)
+  }
+})
 export type WorkflowDefinitionV3 = z.infer<typeof WorkflowDefinitionV3Schema>

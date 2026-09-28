@@ -16,7 +16,8 @@ import { requiredLocationAccess, type WorkspaceLocationService } from '../worksp
 import { executeRepeatEngineStart } from './repeatStartComposition.js'
 import { repeatSettlementPending } from './repeatRuntime.js'
 import { readWorkflowCheckpoint } from './repeatGraph.js'
-import { persistWorkflowApprovalWait, settleWorkflowRun } from './workflowLifecycle.js'
+import { hasWorkDirectionWait, persistWorkDirectionWait,
+  persistWorkflowApprovalWait, settleWorkflowRun } from './workflowLifecycle.js'
 import { consumeDeliveredApprovals, type WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { AuthorizeWorkflowStop } from './repeatLifecycle.js'
 import type { PostgresRunRepository } from './postgres.js'
@@ -130,6 +131,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       }
       if (!['queued', 'running', 'waiting'].includes(snapshot.run.executionState)) throw new DomainError(
         'RUN_NOT_RESUMABLE', 'This Run requires Stop settlement or a separately authorized new Run.', 409)
+      if (snapshot.run.executionState === 'waiting' && snapshot.version.definition.handoffs
+        && await hasWorkDirectionWait(owner)) return
       // Classify cold native lifetimes before binding/consuming an interrupt.
       // A dead requester may leave a valid approval alongside a task error. Do
       // not weaken checkpoint validation or replay delivery to escape that wait.
@@ -180,6 +183,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
             return { executionState: current.run.executionState, stopRequested: current.stopRequested }
           },
           persistWait: async (current) => (await persistWorkflowApprovalWait(owner, this.checkpointer, current)).length > 0,
+          persistDirectionWait: () => persistWorkDirectionWait(owner, this.locations),
           cancelNativeAndRequestCleanup: async () => {
             await this.runs.requestCleanup(runId, owner)
             try { await this.nativeExecutions.cancelRun(runId, owner); return true } catch { return false }

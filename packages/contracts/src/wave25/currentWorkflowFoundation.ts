@@ -10,7 +10,7 @@ import { canonicalGraphJson } from './json.js'
 import { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflowShape.js'
 export { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflowShape.js'
 
-import { CurrentWorkflowDefinitionBaseSchema, type RepeatPlanV1 } from './workflowShape.js'
+import { CurrentWorkflowDefinitionBaseSchema, WorkHandoffPolicyV1Schema, type RepeatPlanV1 } from './workflowShape.js'
 export { CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema } from './workflowShape.js'
 
 /** Extracted current topology/lifecycle rules. No old WorkflowVersion validator,
@@ -22,7 +22,7 @@ export const CurrentRunScopeSchema = z.object({
 export const CurrentWorkflowVersionBaseSchema = z.object({
   id: GraphIdSchema, workspaceId: GraphIdSchema, workflowId: GraphIdSchema,
   version: z.number().int().positive(), executionSemanticsVersion: CurrentExecutionSemanticsSchema,
-  entryNodeId: GraphIdSchema, definition: CurrentWorkflowDefinitionBaseSchema,
+  entryNodeId: GraphIdSchema, definition: CurrentWorkflowDefinitionBaseSchema.extend({ handoffs: WorkHandoffPolicyV1Schema.optional() }),
   agentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
   approval: AcceptedWorkflowApprovalConfigurationSchema,
   contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/), createdAt: TimestampSchema,
@@ -92,7 +92,10 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
     for (const declaration of node.choice.outcomes) {
       if (declaration.target.kind === 'branch_end') continue
       const edge = edges.get(declaration.target.relationshipId)
-      if (!edge || edge.kind !== 'execution' || edge.source !== node.id) issue('choice targets must be outgoing execution relationships')
+      if (!edge || edge.kind !== 'execution' || (edge.source !== node.id
+        && !(version.definition.handoffs && edge.workRequestDirection === 'both' && edge.target === node.id))) {
+        issue('choice targets must be permitted work relationships')
+      }
       selected.add(declaration.target.relationshipId)
     }
     for (const edge of execution) if (edge.source === node.id && !selected.has(edge.id)) issue('every outgoing choice relationship requires a declared outcome')

@@ -2,7 +2,8 @@ import { useId, useState } from 'react'
 import type { WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
 import type { DraftAgentEdits } from './agentEdits'
 import { attachAgent, changeApprovalHandler, entryChoices, nodeTitle, putRelationship,
-  removeRelationship, roleEvidence, type DraftNode, type NextDraftContext } from './model'
+  removeRelationship, roleEvidence, setWorkConnectionLimit, type DraftNode, type NextDraftContext } from './model'
+import { WorkConnectionLimitEditor } from './WorkConnectionLimitEditor'
 import { Button, Icon, IconButton, SegmentedControl, Select, Switch, TextField, type SelectOption } from '../../../shared/ui/nocturne'
 
 export type EditGraph = (update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => void
@@ -126,6 +127,9 @@ export function RelationshipFields({ graph, relationship, change, report }: { gr
     <Select label={approval ? 'Reviewer' : 'From'} value={relationship.source} onChange={(event) => put({ source: event.target.value })} options={nodeOptions(graph)} />
     <Select label={approval ? 'Asks for approval' : 'To'} value={relationship.target} onChange={(event) => put({ target: event.target.value })} options={nodeOptions(graph)} />
     <TextField label="Label" hint="Optional. Shown on the connection." value={relationship.label ?? ''} onChange={(event) => put({ label: event.target.value })} />
+    {!approval && graph.handoffs ? <WorkConnectionLimitEditor value={relationship.maxWorkHandoffsPerRun}
+      onApply={(limit) => { try { change((value) => setWorkConnectionLimit(value, relationship.id, limit)) } catch (error) { report(error) } }} /> : null}
+    {!approval && !graph.handoffs ? <p className="next-draft-hint">This older workflow keeps its original execution behavior. Work handoff limits are available on new workflows; no limit is inferred for this saved version.</p> : null}
     <Button variant="danger" size="sm" onClick={() => change((value) => removeRelationship(value, relationship.id))}>Remove connection</Button>
   </section>
 }
@@ -160,5 +164,4 @@ export function NodeConnections({ graph, nodeId, change, report }: { graph: Work
     </form> : null}
   </section>
 }
-
 

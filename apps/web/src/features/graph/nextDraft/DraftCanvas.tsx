@@ -11,7 +11,8 @@ import { AgentHandles } from '../AgentHandles'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../signalEdge'
 import { SignalEdgeShape } from '../SignalEdgeShape'
 import type { GraphNode } from '../types'
-import { nodeTitle, putRelationship, removeRelationship } from './model'
+import { nodeTitle, putRelationship, removeRelationship, setWorkConnectionLimit } from './model'
+import { WorkConnectionLimitEditor } from './WorkConnectionLimitEditor'
 import type { EditGraph } from './AuthoringFields'
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { SelectedRunCanvas } from '../../workflow-board/inspect/SelectedRunCanvas'
@@ -60,18 +61,37 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<Gr
 })
 
 type DraftEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean;
-  remove: () => void; removeLabel: string; removalDisabled: boolean }>
+  remove: () => void; removeLabel: string; removalDisabled: boolean;
+  workPolicy: boolean; maxWorkHandoffsPerRun?: number; draftChanged: boolean; disabled: boolean;
+  onApplyLimit?: (value?: number) => void }>
 const TypedEdge = memo(function TypedEdge({ id, source, target, data }: EdgeProps<DraftEdge>) {
   const curve = useFloatingCurve(source, target, data?.bend ?? 28)
   const [hovered, setHovered] = useState(false)
+  const [editing, setEditing] = useState(false)
   if (!curve) return null
   const offset = data?.explicit ? (data.label.length * 7.2 + 24) / 2 + 8 : 0
+  const limit = data?.maxWorkHandoffsPerRun
   return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
     <SignalEdgeShape id={id} curve={curve} kind={data?.kind}
       label={data?.label} showLabel={data?.explicit && hovered} />
     {hovered ? <foreignObject className="board-edge-remove nodrag nopan" x={curve.mid.x + offset - 18} y={curve.mid.y - 36} width={36} height={36}>
       <IconButton size="sm" variant="ghost" label={data?.removeLabel ?? `Remove connection from ${source} to ${target}`}
         disabled={data?.removalDisabled} onClick={(event) => { event.stopPropagation(); data?.remove() }}><Icon name="close" size={14} /></IconButton>
+    </foreignObject> : null}
+    {data?.workPolicy ? <foreignObject className="work-connection-limit-object"
+      x={curve.mid.x - (editing ? 132 : 54)} y={curve.mid.y + 12}
+      width={editing ? 264 : 108} height={editing ? 208 : 42}>
+      <div className="work-connection-limit-control nodrag nopan nowheel"
+        onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+        {editing ? <WorkConnectionLimitEditor compact value={limit} disabled={data.disabled}
+          onCancel={() => setEditing(false)} onApply={(value) => { data.onApplyLimit?.(value); setEditing(false) }} />
+          : <button type="button" className="work-connection-limit-pill" data-testid={`work-limit-${id}`}
+            disabled={data.disabled} title="Edit the work handoff limit on this connection"
+            aria-label={`Maximum work handoffs per Run: ${limit ?? 'unlimited'}${data.draftChanged ? ', draft change' : ''}. Edit connection limit.`}
+            onClick={(event) => { event.stopPropagation(); setEditing(true) }}>
+            <span>{limit ?? '∞'}</span>{data.draftChanged ? <small>Draft</small> : null}
+          </button>}
+      </div>
     </foreignObject> : null}
   </g>
 })
@@ -85,11 +105,13 @@ export type DraftCanvasHandle = { flush(): void; cancel(): void }
  * Run state or repeatedly scan execution history. */
 export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   draftKey: string; graph: WorkflowDefinitionV3; agents: readonly Agent[]; kind: WorkflowRelationship['kind']
+  baseGraph?: WorkflowDefinitionV3; semanticLocked?: boolean
   change: EditGraph; geometry: (changes: GraphGeometryChange[]) => void; pending: (pending: boolean) => void
   report: (error: unknown) => void; inspect?: (action: () => void) => void; removalDisabled?: boolean
   open?: OpenAgentPanel; setOpen?: (next?: OpenAgentPanel) => void; panels?: AgentPanelRenderer
   children?: ReactNode
-}>(function DraftCanvas({ draftKey, graph, agents, kind, change, geometry, pending, report, inspect = (action) => action(), removalDisabled = false,
+}>(function DraftCanvas({ draftKey, graph, agents, kind, baseGraph, semanticLocked = false,
+  change, geometry, pending, report, inspect = (action) => action(), removalDisabled = false,
   open, setOpen = () => undefined, panels = () => ({ chat: null, settings: null, info: null }), children }, ref) {
   const selectedRun = useWorkflowBoard()?.run
   const [project] = useState(() => createGraphTopologyProjector())
@@ -114,14 +136,21 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       const pair = JSON.stringify([edge.source, edge.target].sort()), count = counts.get(pair) ?? 0
       counts.set(pair, count + 1)
       const kindLabel = members.length > 1 ? 'Handoff · approval' : edge.kind === 'approval' ? 'Approval' : 'Handoff'
-      return { ...edge, type: 'typed',
+      return { ...edge, type: 'typed', sourceHandle: 'right', targetHandle: 'left',
         ariaLabel: `${kindLabel} from ${nodeTitle(graph, edge.source)} to ${nodeTitle(graph, edge.target)}${edge.label ? `: ${edge.label}` : ''}`,
         data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel, explicit: Boolean(edge.label),
           remove: () => change((value) => removeRelationship(value, edge.id)),
           removeLabel: `Remove ${edge.kind === 'approval' ? 'approval' : 'handoff'} from ${nodeTitle(graph, edge.source)} to ${nodeTitle(graph, edge.target)}`,
-          removalDisabled } }
+          removalDisabled, workPolicy: Boolean(graph.handoffs && edge.kind === 'execution'),
+          maxWorkHandoffsPerRun: edge.maxWorkHandoffsPerRun,
+          draftChanged: edge.maxWorkHandoffsPerRun !== baseGraph?.edges.find((item) => item.id === edge.id)?.maxWorkHandoffsPerRun,
+          disabled: semanticLocked,
+          onApplyLimit: (limit?: number) => {
+            try { change((value) => setWorkConnectionLimit(value, edge.id, limit)) }
+            catch (error) { report(error) }
+          } } }
     })
-  }, [graph, change, removalDisabled])
+  }, [graph, baseGraph, semanticLocked, change, report, removalDisabled])
   const onNodesChange = (changes: NodeChange<GraphNode>[]) => {
     const nextSelection = new Set(presentation.getState().selectedNodeIds)
     for (const item of changes) if (item.type === 'select') {

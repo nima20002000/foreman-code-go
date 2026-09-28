@@ -18,7 +18,7 @@ const FormBlock = z.object({ ...RepeatBlockV1Schema.shape,
   id: z.string(), nodeIds: z.array(z.string()), entryNodeId: z.string(), exitNodeId: z.string(),
   maxOccurrences: FormNumber, repeatOutcome: z.string(), earlyExitOutcome: z.string(), limitExit: FormTarget,
 }).strict()
-export const LocalWorkflowFormSchema = WorkflowDefinitionV3Schema.extend({
+export const LocalWorkflowFormSchema = z.object({ ...WorkflowDefinitionV3Schema.shape,
   nodes: z.array(FormNode), entryNodeId: z.string().nullable(),
   executionPolicy: z.object({ maxParallelism: FormNumber, maxNodeExecutions: FormNumber }).strict().optional(),
   requiredAgentCount: FormNumber.optional(),

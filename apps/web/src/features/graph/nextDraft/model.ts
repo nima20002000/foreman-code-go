@@ -1,4 +1,4 @@
-import { executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue } from '@graphql/contracts/wave25'
+import { WorkflowRelationshipSchema, executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { z } from 'zod'
 import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
 import type { Agent, WorkflowApprovalConfiguration } from '@graphql/contracts'
@@ -130,6 +130,15 @@ export function putRelationship(graph: WorkflowDefinitionV3, relationship: Workf
   if (relationship.kind === 'approval' && graph.edges.some((edge) => edge.kind === 'approval' && edge.target === relationship.target && edge.id !== relationship.id)) throw new Error('A requester can have only one App reviewer. Edit its existing approval record.')
   if (previous && sameValue(previous, relationship)) return graph
   return { ...graph, edges: previous ? graph.edges.map((edge) => edge.id === relationship.id ? relationship : edge) : [...graph.edges, relationship] }
+}
+
+export function setWorkConnectionLimit(graph: WorkflowDefinitionV3, relationshipId: string, limit?: number): WorkflowDefinitionV3 {
+  const edge = graph.edges.find((item) => item.id === relationshipId)
+  if (!graph.handoffs || !edge || edge.kind !== 'execution') throw new Error('Choose a work connection in a handoff workflow.')
+  const next = { ...edge }
+  if (limit === undefined) delete next.maxWorkHandoffsPerRun
+  else next.maxWorkHandoffsPerRun = limit
+  return putRelationship(graph, WorkflowRelationshipSchema.parse(next))
 }
 
 export function changeApprovalHandler(graph: WorkflowDefinitionV3, handler: WorkflowApprovalConfiguration['handler']): WorkflowDefinitionV3 {

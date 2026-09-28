@@ -13,6 +13,7 @@ import { useWorkflowBoard } from '../context'
 import { currentRunKey } from '../currentRunQuery'
 import { readPinnedAgentVersion } from '../runDetailsClient'
 import { useSelectedRunRecord } from '../runFacts'
+import { useRunHandoffsQuery } from '../runHandoffsQuery'
 import { runInspectionQueryKey, useRunVersionQuery } from './queries'
 import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
 import { useRunChoreography } from './runChoreography'
@@ -47,15 +48,34 @@ const PinnedRunNode = memo(function PinnedRunNode({ id, data }: NodeProps<RunNod
 type LineMotion = { pulses: Map<string, EdgePulse[]>; reversed: Map<string, boolean> }
 const Choreography = createContext<LineMotion>({ pulses: new Map(), reversed: new Map() })
 
-type RunEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean }>
+type RunEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean;
+  handoffs: boolean; limit?: number; used?: number }>
 const PinnedRunEdge = memo(function PinnedRunEdge({ id, source, target, data, selected }: EdgeProps<RunEdge>) {
   const { pulses, reversed } = useContext(Choreography)
   const curve = useFloatingCurve(source, target, data?.bend ?? 28)
   const [hovered, setHovered] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   if (!curve) return null
+  const showUsage = hovered || selected || expanded
+  const usage = data?.used === undefined ? 'Usage unavailable' : data.limit === undefined
+    ? `${data.used} used · no connection cap` : `${data.used} of ${data.limit} used`
   return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
     <SignalEdgeShape id={id} curve={curve} kind={data?.kind} pulses={pulses.get(id)} reversed={reversed.get(id)}
       label={data?.label} showLabel={data?.explicit && (hovered || selected)} />
+    {data?.handoffs ? <foreignObject className="pinned-work-limit-object"
+      x={curve.mid.x - 90} y={curve.mid.y + 12} width={180} height={showUsage ? 70 : 42}>
+      <div className="pinned-work-limit-control nodrag nopan">
+        <button type="button" className="pinned-work-limit-pill"
+          aria-label={`Saved maximum work handoffs per Run: ${data.limit ?? 'unlimited'}. ${usage}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => { event.stopPropagation(); setExpanded((current) => !current) }}
+          onFocus={() => setExpanded(true)} onKeyDown={(event) => {
+            event.stopPropagation()
+            if (event.key === 'Escape') setExpanded(false)
+          }}>{data.limit ?? '∞'}</button>
+        {showUsage ? <span className="pinned-work-limit-usage">{usage}</span> : null}
+      </div>
+    </foreignObject> : null}
   </g>
 })
 const nodeTypes = { pinnedRunNode: PinnedRunNode }, edgeTypes = { pinnedRunEdge: PinnedRunEdge }
@@ -75,6 +95,9 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
   const canonical = useQuery({ queryKey: currentRunKey(scope), enabled: false })
   const canonicalDenied = useProtectedAccessError(canonical)
   const version = query.isError || denied || canonicalDenied ? undefined : query.data?.version
+  const handoffsQuery = useRunHandoffsQuery(scope, Boolean(version?.definition.handoffs))
+  const handoffsDenied = useProtectedAccessError(handoffsQuery)
+  const handoffs = !handoffsDenied && !handoffsQuery.isError ? handoffsQuery.data : undefined
   const record = useSelectedRunRecord()
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
   const states = useMemo(() => pinnedNodeStates(record), [record])
@@ -140,11 +163,15 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
       counts.set(pair, count + 1)
       const kindLabel = edge.members.length > 1 ? 'Handoff · approval' : edge.kind === 'approval' ? 'Approval' : 'Handoff'
       return { id: edge.id, source: edge.source, target: edge.target, type: 'pinnedRunEdge',
+        sourceHandle: 'right', targetHandle: 'left',
         selected: edge.members.some((member) => member.id === board.inspection.runRelationshipId),
         ariaLabel: `${edge.kind} relationship ${edge.id} from ${edge.source} to ${edge.target}`,
-        data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel, explicit: Boolean(edge.label) } }
+        data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel,
+          explicit: Boolean(edge.label), handoffs: Boolean(version?.definition.handoffs && edge.kind === 'execution'),
+          limit: edge.maxWorkHandoffsPerRun,
+          used: handoffs?.connections.find((item) => item.relationshipId === edge.id)?.used } }
     })
-  }, [lines, board.inspection.runRelationshipId])
+  }, [lines, board.inspection.runRelationshipId, version?.definition.handoffs, handoffs?.connections])
   const missingNode = !!version && !!board.inspection.runNodeId
     && !version.definition.nodes.some((node) => node.id === board.inspection.runNodeId)
   return <section className="next-draft-canvas board-draft-canvas pinned-run-canvas" aria-label="Selected Run pinned topology">
@@ -179,7 +206,9 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow></Choreography.Provider></RunAgentPanels.Provider>
     </div> : null}
-    {version ? <p className="pinned-run-footnote">{version.definition.repeat
+    {version ? <p className="pinned-run-footnote">{version.definition.handoffs
+      ? 'Work handoff limits belong to this saved version. Usage comes from this Run, not the current Board draft.'
+      : version.definition.repeat
       ? 'Configured repeat blocks belong to this saved version. Node badges show the bounded current cut; inspect a repetition for its recorded facts.'
       : 'No repeat block is configured in this saved version. Inspect execution attempts without synthetic repetition rounds.'}</p> : null}
   </section>

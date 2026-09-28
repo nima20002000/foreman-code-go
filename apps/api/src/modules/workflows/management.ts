@@ -85,6 +85,7 @@ export class WorkflowManagementService {
           ...(input.description !== undefined ? { description: input.description } : {}),
           approval: { handler: defaults.value.approvalHandler },
           executionSemanticsVersion: 3, entryNodeId: null,
+          handoffs: { contractVersion: 1 },
           executionCondition: { kind: 'manual' }, nodes: [], edges: [], createdAt: now, updatedAt: now,
         })
         const result = await client.query<WorkflowRow>(

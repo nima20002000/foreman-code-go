@@ -34,9 +34,10 @@ export function clearCurrentRunAccess(client: QueryClient) {
   client.removeQueries({ queryKey: ['workbench', 'pinned-v3-run-details'] })
   client.removeQueries({ queryKey: ['workbench', 'run-inspection'] })
   client.removeQueries({ queryKey: ['workbench', 'board-history'] })
+  client.removeQueries({ queryKey: ['workbench', 'run-handoffs'] })
   client.removeQueries({ queryKey: ['workbench', 'board-run-discovery'] })
 }
 export function revokeCurrentRunWorkspace(client: QueryClient, workspaceId: string) {
-  client.removeQueries({ predicate: (query) => ['current-v3-run', 'pinned-v3-run-details', 'run-inspection', 'board-run-discovery', 'board-history'].includes(String(query.queryKey[1]))
+  client.removeQueries({ predicate: (query) => ['current-v3-run', 'pinned-v3-run-details', 'run-inspection', 'board-run-discovery', 'board-history', 'run-handoffs'].includes(String(query.queryKey[1]))
     && query.queryKey[3] === workspaceId })
 }

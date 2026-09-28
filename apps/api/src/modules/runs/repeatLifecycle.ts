@@ -145,6 +145,9 @@ export async function requestWorkflowStopLocked(sql: GraphTransactionSql, runId:
   { expected, readCurrentLocked: readAuthority }, async () => {
     await sql.query(`insert into run_cleanup_intents(run_id) values($1)
       on conflict(run_id) do update set pending=true,updated_at=now()`, [runId])
+    await sql.query(`insert into run_activity(run_id,source,kind,occurred_at,payload)
+      values($1,'backend','run_stop_requested',clock_timestamp(),$2::jsonb)`,
+    [runId, JSON.stringify({ stopRequested: true })])
   })
   requireRepeatCanonicalReceiptBeforeCommit(sql, { scope: publication.scope, evidence, sourceDigest: effect.digest,
     effect: { kind: 'run.stop', entityId: runId, digest: effect.digest } })

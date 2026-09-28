@@ -12,6 +12,7 @@ import { openWorkflowLifecycleLocked } from './repeatLifecycle.js'
 import { sameRepeatValue, compileRepeatLayout } from './repeatResolution.js'
 import { assertWorkflowRunSettlementLocked } from './workflowRepositoryServices.js'
 import type { RunOwnership } from './ownership.js'
+import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { RepeatCheckpoint } from './repeatGraph.js'
 import { readRepeatExecutionLocked } from './repeatPostgres.js'
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
@@ -111,13 +112,16 @@ export async function persistWorkflowApprovalWait(owner: RunOwnership, saver: Ba
       await retainOwner(sql, owner)
       if (snapshot.stopRequested || snapshot.cleanupPending) return fail('GRAPH_STOP_CONFLICT')
       if (!['running', 'waiting'].includes(run.executionState)) return fail('GRAPH_TERMINAL_CONFLICT')
-      const wrappers = new Map(compileRepeatLayout(version).nodes.map((node) => [node.name, node]))
+      const workHandoffs = version.definition.handoffs !== undefined
+      const wrappers = workHandoffs ? null : new Map(compileRepeatLayout(version).nodes.map((node) => [node.name, node]))
       const seen = new Set<string>(), current: DurableInteraction[] = []
       const retained: Array<{ item: DurableInteraction; checkpointId: string }> = []
       for (const task of checkpoint.tasks) {
         if (!task.interrupts?.length) continue
-        const wrapper = wrappers.get(task.name)
-        if (!wrapper || !['once', 'body'].includes(wrapper.kind)) return fail('GRAPH_INTERRUPT_INVALID')
+        const wrapper = wrappers?.get(task.name)
+        if (workHandoffs ? task.name !== 'activation' : !wrapper || !['once', 'body'].includes(wrapper.kind)) {
+          return fail('GRAPH_INTERRUPT_INVALID')
+        }
         for (const pending of task.interrupts) {
           if (!pending.id || !pending.value || typeof pending.value !== 'object') return fail('GRAPH_INTERRUPT_INVALID')
           const value = pending.value as { interactionId?: unknown; interactionIds?: unknown }
@@ -135,11 +139,13 @@ export async function persistWorkflowApprovalWait(owner: RunOwnership, saver: Ba
             if (executionId && executionId !== item.executionId) return fail('INTERACTION_INTERRUPT_CONFLICT')
             executionId = item.executionId
             const stored = await readRepeatExecutionLocked(sql, snapshot, item.executionId)
-            if (stored.ref.nodeId !== wrapper.nodeId || stored.execution.nativeSessionId !== item.nativeSessionId
+            if (!workHandoffs && stored.ref.nodeId !== wrapper!.nodeId
+              || stored.execution.nativeSessionId !== item.nativeSessionId
               || stored.execution.agentId !== item.requestingAgentId
-              || (wrapper.kind === 'body'
-                ? !stored.ref.occurrence || stored.ref.occurrence.occurrenceId !== checkpoint.values.occurrences?.[wrapper.blockId!]
-                : stored.ref.occurrence !== null)) return fail('REPEAT_CHECKPOINT_OCCURRENCE_CONFLICT')
+              || (workHandoffs ? !stored.workActivationId || stored.ref.occurrence !== null
+                : wrapper!.kind === 'body'
+                  ? !stored.ref.occurrence || stored.ref.occurrence.occurrenceId !== checkpoint.values.occurrences?.[wrapper!.blockId!]
+                  : stored.ref.occurrence !== null)) return fail('REPEAT_CHECKPOINT_OCCURRENCE_CONFLICT')
             await assertSavedPendingApprovalOriginalLocked(sql, item)
             const bound = item.graphInterruptId ? item : nextInteraction(item, { graphInterruptId: pending.id })
             const checkpointId = await saver.inspectApprovalInterrupt(sql, bound)
@@ -199,6 +205,61 @@ async function lifecycleSource(publication: Awaited<ReturnType<typeof openWorkfl
   // after this mutation. No parallel journal or callback-shaped receipt exists.
 }
 
+/** A completed graph with unresolved work waits for owner direction or Stop.
+ * It remains pending, so sibling results are preserved without declaring a
+ * global success or failure. No approval resume or native launch is inferred. */
+export async function persistWorkDirectionWait(owner: RunOwnership,
+  locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization'>): Promise<void> {
+  owner.assertOwned()
+  await owner.oneShotConnection().transaction(async (sql) => {
+    const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
+    const { run, version } = snapshot
+    await retainOwner(sql, owner)
+    if (!version.definition.handoffs || snapshot.stopRequested || snapshot.cleanupPending
+      || !['running', 'waiting'].includes(run.executionState)) return fail('WORK_DIRECTION_WAIT_CONFLICT')
+    const rows = (await sql.query<{ unresolved_id: string }>(
+      'select unresolved_id from run_work_unresolved where run_id=$1 order by unresolved_id limit 1001',
+      [run.id])).rows
+    if (!rows.length || rows.length>1000) return fail('WORK_DIRECTION_WAIT_CONFLICT')
+    const unresolvedIds = rows.map((item) => item.unresolved_id)
+    if (run.executionState === 'waiting') {
+      const prior = (await sql.query<{ unresolved_ids: unknown }>(
+        'select unresolved_ids from run_work_direction_waits where run_id=$1', [run.id])).rows[0]
+      if (!sameRepeatValue(prior?.unresolved_ids, unresolvedIds)) return fail('WORK_DIRECTION_WAIT_CONFLICT')
+      return
+    }
+    const incomplete = await sql.query(`select 1 from run_work_activations
+      where run_id=$1 and state<>'completed' limit 1`, [run.id])
+    if (incomplete.rowCount) return fail('WORK_ACTIVATIONS_UNRESOLVED')
+    const authorize = () => locations.revalidateRunAuthorization(run.authorizationPrincipalId,
+      run.workspaceId, run.workflowId, sql as unknown as Pick<pg.PoolClient, 'query'>)
+    await authorize()
+    beforeGraphCommit(sql, authorize)
+    await assertWorkflowRunSettlementLocked(sql, run, owner)
+    const next = AcceptedWorkflowRunV3Schema.parse({ ...run, executionState: 'waiting', outcome: 'pending' })
+    await lifecycleSource(publication, { kind: 'work_direction_wait', next, unresolvedIds }, async () => {
+      const changed = await sql.query('update runs set execution_state=$2,record=$3::jsonb where id=$1',
+        [run.id, next.executionState, canonicalGraphJson(next)])
+      if (changed.rowCount !== 1) return fail('RUN_PIN_CONFLICT')
+      await sql.query(`insert into run_work_direction_waits(run_id,workflow_version_id,unresolved_ids,created_at)
+        values($1,$2,$3::jsonb,clock_timestamp())`, [run.id, version.id, canonicalGraphJson(unresolvedIds)])
+      await sql.query(`insert into run_activity(run_id,source,kind,occurred_at,payload)
+        values($1,'backend','work_direction_wait',clock_timestamp(),$2::jsonb)`,
+      [run.id, canonicalGraphJson({ unresolvedIds })])
+    })
+  })
+}
+
+export async function hasWorkDirectionWait(owner: RunOwnership): Promise<boolean> {
+  owner.assertOwned()
+  const row = await owner.client.query(`select 1 from run_work_direction_waits d join runs r on r.id=d.run_id
+    where d.run_id=$1 and r.execution_state='waiting'
+      and r.record->>'executionState'='waiting' and r.record->>'outcome'='pending'
+      and r.workflow_version_id=d.workflow_version_id and r.stop_requested_at is null`,
+  [owner.runId])
+  return row.rowCount === 1
+}
+
 /** A negative cleanup intent is not success/closure. It only fences new work.
  * Ownerless calls are restricted to an already authorized Stop or terminal Run;
  * active-run cancellation must use its actual existing owner. */
@@ -236,6 +297,9 @@ export async function finishWorkflowCleanup(owner: RunOwnership, failed: boolean
     await lifecycleSource(publication, { kind: 'cleanup_checked', runId: owner.runId, failed, attempt: row.attempts + 1, at: now }, async () => {
       await sql.query(`update run_cleanup_intents set pending=$2,attempts=attempts+1,last_error=$3,updated_at=$4::timestamptz where run_id=$1`,
         [owner.runId, failed, failed ? 'Exact native, reviewer or credential settlement is still pending.' : null, now])
+      await sql.query(`insert into run_activity(run_id,source,kind,occurred_at,payload)
+        values($1,'backend','run_cleanup_checked',$2,$3::jsonb)`,
+      [owner.runId, now, canonicalGraphJson({ failed, attempt: row.attempts + 1 })])
     })
   })
 }

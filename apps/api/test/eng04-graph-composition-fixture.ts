@@ -22,8 +22,10 @@ export const privateCanary = 'ENG04-PRIVATE-INPUT-MUST-NOT-REACH-GRAPH'
 /** Real current typed Create/Save + canonical Start-publication SQL fixture.
  * No native/public Start acceptance is claimed. Current authoring, authentication,
  * SQL receipts/audit and canonical publication are actual production services. */
-export async function graphFixture(db: GraphTestDatabase, options: { insert?: boolean; qualifiedReads?: boolean; form?: CurrentFixtureForm } = {}) {
+export async function graphFixture(db: GraphTestDatabase, options: { insert?: boolean; qualifiedReads?: boolean;
+  form?: CurrentFixtureForm; handoffs?: boolean } = {}) {
   const f = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'repeat')
+  if (options.handoffs && f.version.definition.repeat) throw new Error('Handoff fixture requires a non-repeat form')
   await db.pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
     values($1,$2::jsonb,$3::jsonb,$4::jsonb,1)`, [f.scope.workspaceId,
   JSON.stringify({ id: f.scope.workspaceId, name: 'Current graph fixture' }),
@@ -62,7 +64,10 @@ export async function graphFixture(db: GraphTestDatabase, options: { insert?: bo
         expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
         // A fresh authorable workflow has no saved version yet. Preserve its
         // exact creation stamps; publication assigns the first immutable V3.
-        graph: { ...f.version.definition, id: workflowId, version: managed.workflow.version,
+        graph: { ...f.version.definition,
+          ...(options.handoffs ? { handoffs: { contractVersion: 1 },
+            edges: f.version.definition.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })) } : {}),
+          id: workflowId, version: managed.workflow.version,
           createdAt: managed.workflow.createdAt, updatedAt: managed.workflow.updatedAt },
       } })
     if (response.statusCode !== 200) throw new Error(`Current typed fixture Save failed: ${response.statusCode} ${response.body}`)

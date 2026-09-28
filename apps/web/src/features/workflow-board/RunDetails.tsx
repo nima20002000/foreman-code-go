@@ -14,6 +14,7 @@ import { useInspectionPresentation } from './inspect/presentation'
 import { recordBoardStopReceipt, reserveBoardStop, sendBoardStop, settleBoardStop, useBoardStopOutbox } from './stopOutbox'
 import { canUseBoardAction } from './permissions'
 import { RunHistory } from './RunHistory'
+import { Activities } from './Activities'
 
 /** Lane C replaces the action controls, not the Board's passive Stop-journal
  * settlement. Both authenticated Run readbacks must confirm terminal + cleanup
@@ -126,6 +127,7 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
         {version ? <JsonValue label="Pinned WorkflowVersion" value={version} /> : null}
       </> : null}
     </details>
+    {!denied && !pinnedDenied ? <Activities key={JSON.stringify(scope)} scope={scope} /> : null}
     {version ? <ExecutionInspector scope={scope} version={version} /> : pinned.isPending ? <p role="status">Loading the pinned version before inspection…</p>
       : <Alert tone="warning" title="Run inspection is unavailable until its immutable version is verified.">
         {!pinnedDenied && !runDenied && !canonicalDenied ? <Button size="sm" onClick={() => void pinned.refetch()}>Retry Run inspection</Button> : null}

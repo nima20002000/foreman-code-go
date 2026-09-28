@@ -431,6 +431,8 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   return <section className="workflow-graph board-typed-editor" aria-label="Workflow authoring">
     <div className="workflow-graph-canvas">
       <DraftCanvas ref={canvas} draftKey={draftKey} graph={graph} agents={agents} kind="execution"
+        baseGraph={edit.context.savedDraft?.graph ?? edit.context.draft.graph}
+        semanticLocked={edit.busy || reloading || editIntent.locked || starting || !!edit.pending || !!pendingStart}
         change={change} geometry={geometry} pending={setGeometryPending} report={report} inspect={inspect}
         removalDisabled={edit.busy || reloading || editIntent.locked}
         open={openNode} setOpen={setOpenNode} panels={panels} />
@@ -462,7 +464,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
           <Button variant="secondary" className="n-icon-button workflow-approval-inbox" aria-label={`Open human approval inbox${pendingApprovals ? `, ${pendingApprovals} pending` : ''}`}
             title="Approval inbox" onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId: graph.workspaceId, workflowId: graph.id })}><Inbox aria-hidden="true" size={16} />
             {pendingApprovals ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{pendingApprovals}</span> : null}</Button>
-          <Button size="sm" variant="ghost" onClick={() => openPanel('repeat')}>Repeats</Button>
+          {!graph.handoffs ? <Button size="sm" variant="ghost" onClick={() => openPanel('repeat')}>Repeats</Button> : null}
           {board ? <IconButton label="Runs" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
           <Button variant="primary" leading={<Icon name="play" size={14} />} aria-label={pendingStart ? 'Reconcile Start' : needsSave ? 'Save and run' : 'Start saved version'}
             title={startReason} disabled={startDisabled} loading={starting} onClick={() => void (pendingStart ? start() : prepare(() => needsSave ? startMutation.mutateAsync({ saveFirst: true }) : start())).catch(report)}>{pendingStart ? 'Confirm start' : needsSave ? 'Save and run' : 'Run'}</Button>
@@ -503,6 +505,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         <header><h2>{panelTitle}</h2><IconButton variant="ghost" label="Close panel" onClick={() => openPanel(null)}><Icon name="close" size={16} /></IconButton></header>
         <fieldset disabled={edit.busy || reloading || editIntent.locked}>
           {panel === 'workflow' ? <>
+            {graph.handoffs ? <p className="next-draft-hint">Set each work connection’s Run-wide handoff limit on its line. The Board keeps these edits as a draft until Save.</p> : null}
             <EntryFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} />
             <ApprovalFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} report={report} />
             <section className="next-draft-section" aria-label="Execution bounds"><h3>Limits</h3>

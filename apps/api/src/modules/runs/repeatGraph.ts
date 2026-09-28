@@ -6,6 +6,7 @@ import { ExecutionLimiter } from './limiter.js'
 import { repeatNodeAction, type RepeatExecutionDriver, type RepeatGraphState, type RepeatNodeStore } from './repeatNode.js'
 import { compileRepeatLayout, repeatConflict } from './repeatResolution.js'
 import type { RepeatRunRepository } from './repeatPostgres.js'
+import { buildWorkHandoffGraph } from './workHandoffGraph.js'
 
 const RepeatState = Annotation.Root({
   runId: Annotation<string>(),
@@ -103,6 +104,15 @@ export function compileWorkflowGraph(version: WorkflowVersionV3, checkpointer: B
 
 export async function readWorkflowCheckpoint(runId: string, version: WorkflowVersionV3,
   saver: BaseCheckpointSaver): Promise<RepeatCheckpoint> {
+  if (version.definition.handoffs) {
+    const unavailable = async (): Promise<never> => { throw new Error('Checkpoint inspection cannot execute work activations.') }
+    const work = buildWorkHandoffGraph({ runId, version, checkpointer: saver,
+      signal: new AbortController().signal,
+      port: { ensureEntryActivation: unavailable, executeActivation: unavailable } })
+    const snapshot = await work.graph.getState(work.config)
+    if (snapshot.values.runId !== undefined && snapshot.values.runId !== runId) return repeatConflict('RUN_PIN_CONFLICT')
+    return snapshot as RepeatCheckpoint
+  }
   const graph = compileWorkflowGraph(version, saver, async () => { throw new Error('Checkpoint inspection cannot execute workflow nodes.') })
   const checkpoint = await graph.getState({ configurable: { thread_id: runId } })
   if (checkpoint.values.runId !== undefined && checkpoint.values.runId !== runId) return repeatConflict('RUN_PIN_CONFLICT')
