@@ -38,9 +38,8 @@ import {
   ensureOperatorRuntimeDirectory,
   OperatorChatService,
   PostgresOperatorConversationRepository,
-  type NativeManagerResolver,
 } from './modules/conversations/operatorChat.js'
-import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from './modules/conversations/operatorChatAuthority.js'
+import { PostgresOperatorChatAuthority } from './modules/conversations/operatorChatAuthority.js'
 import { AgentChatService, type AgentChatManagerFactory } from './modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from './modules/conversations/agentChatRepository.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
@@ -53,6 +52,7 @@ import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorA
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './modules/harnesses/opencodeServer.js'
 import { productionOpenCodeChatFiles } from './modules/harnesses/opencodeFiles/production.js'
+import { productionOperatorManagers } from './modules/harnesses/operatorFiles/managers.js'
 import { openCodeMcpInspectorAdapter } from './modules/harnesses/opencodeMcpInspectorAdapter.js'
 import { ExecutionReadinessService } from './modules/harnesses/executionReadiness.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
@@ -235,34 +235,10 @@ export function buildProductionApp(
   registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
-  const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
-    const existing = operatorManagers.get(conversationId)
-    if (existing) return existing
-    let manager: NativeHarnessSessionManager
-    if (configuration.harness.harness === 'codex') {
-      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined,
-        processRegistry.scope(`conversation:${conversationId}`))
-    } else {
-      const server = new ManagedOpenCodeServer({
-        binary: config.harnesses.openCodeBinary,
-        workingDirectory: operatorWorkingDirectory,
-        ownerAgentId: configuration.operatorId,
-        processRecovery: processRegistry.scope(`conversation:${conversationId}`),
-        credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
-        ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
-      })
-      manager = new OpenCodeNativeSessionManager({
-        server,
-        ownerAgentId: configuration.operatorId,
-        responseJournal,
-        expectedAppMcpEndpoint: appMcpEndpoint,
-        credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
-      })
-    }
-    operatorManagers.set(conversationId, manager)
-    return manager
-  }
-  resolveOperatorManager.release = (conversationId) => { operatorManagers.delete(conversationId) }
+  const resolveOperatorManager = productionOperatorManagers({
+    app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
+    endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers,
+  })
   const chatAuthority = new PostgresOperatorChatAuthority(
     database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
   )

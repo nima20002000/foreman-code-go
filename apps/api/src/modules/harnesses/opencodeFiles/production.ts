@@ -14,12 +14,18 @@ import { LocalOpenCodeExecutionFiles, assertProtectedSourcePaths } from './host.
 import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from './postgres.js'
 import { OpenCodeFileError } from './types.js'
 
+export interface OpenCodeFileAdmissions {
+  resolve: typeof resolveOpenCodeFileAdmission
+  adoptPublished: typeof adoptOpenCodePublications
+}
+
 /** Chat-only production composition. The protected vault check runs on the actual native process. */
 export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg.Pool, config: ApiConfig,
-  conversationId: string, server: OpenCodeServerController, endpointHost: string): OpenCodeChatFiles {
+  conversationId: string, server: OpenCodeServerController, endpointHost: string,
+  admissions: OpenCodeFileAdmissions = { resolve: resolveOpenCodeFileAdmission, adoptPublished: adoptOpenCodePublications }): OpenCodeChatFiles {
   return { async resolve(identity, signal) {
     signal.throwIfAborted()
-    const admission = await resolveOpenCodeFileAdmission(pool, conversationId, identity)
+    const admission = await admissions.resolve(pool, conversationId, identity)
     signal.throwIfAborted()
     if (!admission) return undefined
     const service = productionFileTools(app())
@@ -60,7 +66,7 @@ export function productionOpenCodeChatFiles(app: () => FastifyInstance, pool: pg
         readSignal.throwIfAborted()
         return result
       },
-      adoptPublished: (context) => adoptOpenCodePublications(pool, context),
+      adoptPublished: (context) => admissions.adoptPublished(pool, context),
       mount: async (facade) => {
         await mkdir(root, { recursive: true, mode: 0o700 })
         try {

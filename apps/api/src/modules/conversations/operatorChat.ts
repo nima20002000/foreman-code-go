@@ -58,7 +58,11 @@ export class OperatorConversationEvents {
 }
 
 export interface NativeManagerResolver {
-  (configuration: OperatorConfigurationVersion, conversationId: string): NativeHarnessSessionManager
+  (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs?: boolean): NativeHarnessSessionManager
+  /** Resolve the accepted receipt, not the caller's current route or upload owner. */
+  hasFileInputs?(conversationId: string, requestId: string): Promise<boolean>
+  /** After durable native acknowledgement, before either file bridge issues authority. */
+  recordFileSubmission?(conversationId: string, requestId: string, nativeTurnId: string): Promise<void>
   release?(conversationId: string): void
 }
 export interface OperatorChatAuthority {
@@ -70,6 +74,7 @@ export interface OperatorChatAuthority {
   release(conversationId: string): Promise<void>
 }
 interface Runtime {
+  fileInputs?: boolean
   configuration?: OperatorConfigurationVersion
   manager: NativeHarnessSessionManager
   session?: NativeSessionReference
@@ -320,20 +325,26 @@ export class OperatorChatService {
     return fork || childReceipt ? this.control(childId, admit) : admit()
   }
 
-  private async runtime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<Runtime> {
+  private async runtime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion, signal: AbortSignal,
+    fileInputs: boolean): Promise<Runtime> {
     signal.throwIfAborted()
-    if (this.runtimes.get(id)?.observationOnly) await this.release(id)
+    const resident = this.runtimes.get(id)
+    if (resident && (resident.observationOnly || Boolean(resident.fileInputs) !== fileInputs)) await this.release(id)
     const existing = this.runtimes.get(id)
     if (existing?.session) {
-      if ((await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
+      if (!fileInputs && (await this.authority.setup(existing.manager, signal, configuration)).status !== 'configured') {
         throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Install and enable the graphql MCP connection in the selected harness before chatting.', 409)
       }
       existing.configuration = configuration; return existing
     }
-    const runtime: Runtime = existing ?? { manager: this.managers(configuration, id) }
+    const runtime: Runtime = existing ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     runtime.configuration = configuration
     this.runtimes.set(id, runtime) // Includes managers still starting; shutdown must see them.
-    const environment = await this.authority.prepare(runtime.manager, configuration, id, row.owner_principal_id!, signal)
+    // File turns never acquire the management token, including on an existing
+    // native session. Fence an older token before attaching a file-only child.
+    if (fileInputs) await this.authority.release(id)
+    const environment = fileInputs ? { agentId: configuration.operatorId, variables: {} }
+      : await this.authority.prepare(runtime.manager, configuration, id, row.owner_principal_id!, signal)
     runtime.environment = environment
     signal.throwIfAborted(); this.assertOpen()
     if (row.native_session_id) {
@@ -360,12 +371,13 @@ export class OperatorChatService {
   private async cleanupRuntime(id: string, row: ConversationRow, configuration: OperatorConfigurationVersion,
     signal: AbortSignal): Promise<Runtime> {
     if (!row.native_session_id || !row.active_request_id) throw new Error('Cleanup requires a durable native session and request.')
+    const fileInputs = await this.managers.hasFileInputs?.(id, row.active_request_id) ?? false
     if (this.runtimes.has(id) && !this.runtimes.get(id)?.session) {
       // A failed credentialed attach may have left a bound manager. Dispose that
       // context before a cleanup-only attach; the durable request stays fenced.
       await this.release(id)
     }
-    const runtime: Runtime = this.runtimes.get(id) ?? { manager: this.managers(configuration, id) }
+    const runtime: Runtime = this.runtimes.get(id) ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     this.runtimes.set(id, runtime)
     if (!runtime.session) {
       runtime.session = await runtime.manager.attachSession({ harness: row.harness,
@@ -376,7 +388,7 @@ export class OperatorChatService {
         // This is deliberately NOT an issued credential: the App rejects it.
         // Do not mint fresh owner authority merely to inspect/stop old work.
         environment: { agentId: configuration.operatorId,
-          variables: { GRAPHQL_MCP_TOKEN: 'operator-cleanup-disabled' } },
+          variables: fileInputs ? {} : { GRAPHQL_MCP_TOKEN: 'operator-cleanup-disabled' } },
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       }, signal)
     }
@@ -401,7 +413,11 @@ export class OperatorChatService {
     try {
       let row = await this.repository.active(id)
       if (!row || row.active_request_id !== input.requestId) return
-      const runtime = await this.runtime(id, row, configuration, signal)
+      const fileInputs = Boolean(input.attachments?.length)
+      const admittedFiles = await this.managers.hasFileInputs?.(id, input.requestId) ?? false
+      if (fileInputs !== admittedFiles || fileInputs && !this.managers.recordFileSubmission) throw new DomainError(
+        'OPERATOR_FILE_DELIVERY_UNAVAILABLE', 'The accepted Operator attachments have no native delivery binding.', 409)
+      const runtime = await this.runtime(id, row, configuration, signal, fileInputs)
       if (!runtime.session) {
         if (!await this.repository.phase(id, input.requestId, 'creating')) {
           await this.control(id, () => this.complete(id, input.requestId, { outcome: 'canceled' })); return
@@ -443,6 +459,7 @@ export class OperatorChatService {
           submitted = true
           const cancelRequested = await this.control(id, async () => {
             if (!await this.repository.submitted(id, input.requestId, nativeTurnId)) throw new Error('Native turn ownership was lost.')
+            if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, input.requestId, nativeTurnId)
             const current = await this.repository.active(id)
             this.events.publish(id, 'state', { requestId: input.requestId, activeRequestId: input.requestId,
               revision: Number(current?.revision), turnState: current?.cancel_requested ? 'canceling' : 'active' })
@@ -544,6 +561,7 @@ export class OperatorChatService {
       return
     }
     if (!await this.repository.submitted(id, requestId, history.nativeTurnId)) return
+    if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, requestId, history.nativeTurnId)
     let precedingActivityId: string | null = null
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
       ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true

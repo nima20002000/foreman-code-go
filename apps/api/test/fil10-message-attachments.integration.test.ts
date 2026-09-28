@@ -30,6 +30,7 @@ import { PostgresFileConversationAuthorization } from '../src/modules/files/auth
 import { PostgresFileRepository } from '../src/modules/files/postgres.js'
 import { TemporaryFileService } from '../src/modules/files/service.js'
 import { postgresCodexChatFiles } from '../src/modules/harnesses/codexFiles/chatAdmission.js'
+import { operatorTurnHasFileInputs, recordOperatorFileSubmission } from '../src/modules/harnesses/operatorFiles/postgres.js'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
@@ -148,8 +149,13 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
     }
     operatorRepo = new PostgresOperatorConversationRepository(database.pool)
     agentRepo = new PostgresAgentChatRepository(database.pool)
+    const operatorManager = Object.assign((_configuration: unknown, id: string) => native(id), {
+      hasFileInputs: (id: string, requestId: string) => operatorTurnHasFileInputs(database.pool, id, requestId),
+      recordFileSubmission: (id: string, requestId: string, nativeTurnId: string) =>
+        recordOperatorFileSubmission(database.pool, id, requestId, nativeTurnId),
+    })
     operator = new OperatorChatService(operatorRepo, new PostgresOperatorRepository(database.pool),
-      (_configuration, id) => native(id), root, {
+      operatorManager, root, {
         current: (id) => access.currentOperator(id), assertConfiguration() {},
         setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
         prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {},
