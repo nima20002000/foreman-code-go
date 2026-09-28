@@ -312,13 +312,15 @@ async function endpoint(f: Fixture) {
     void reply.code(status).send({ error: error instanceof DomainError ? error.code : 'REQUEST_ERROR' })
   })
   registerFileToolsMcp(app, f.service)
-  await app.ready()
+  // A real socket: the MCP transport's node-server teardown needs socket.destroySoon, which inject() lacks.
+  const base = await app.listen({ host: '127.0.0.1', port: 0 })
   async function rpc(method: string, params: unknown, token = f.token) {
-    const response = await app.inject({ method: 'POST', url: FILE_TOOLS_MCP_PATH,
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method, params } })
-    const line = response.body.split('\n').find((value) => value.startsWith('data: '))
-    return { status: response.statusCode, body: JSON.parse(line ? line.slice(6) : response.body) as RpcBody }
+    const response = await fetch(`${base}${FILE_TOOLS_MCP_PATH}`, { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })
+    const text = await response.text()
+    const line = text.split('\n').find((value) => value.startsWith('data: '))
+    return { status: response.status, body: JSON.parse(line ? line.slice(6) : text) as RpcBody }
   }
   return { app, rpc }
 }

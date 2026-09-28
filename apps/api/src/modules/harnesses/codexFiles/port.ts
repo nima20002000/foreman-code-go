@@ -3,7 +3,7 @@ import type {
   FileRevision, FileWithRevision, MessageAttachmentRef, TemporaryFileScope,
 } from '@graphql/contracts/files'
 import type { AgentFileToolService } from '../../files/tools/service.js'
-import type { FileToolName } from '../../files/tools/types.js'
+import type { FileToolOperation } from '../../files/tools/types.js'
 
 /** Trusted chat admission, not HTTP input and not a native tool's arguments. */
 export interface AcceptedCodexFileTurn {
@@ -17,7 +17,7 @@ export interface AcceptedCodexFileTurn {
   projectMode: 'read' | 'write'
   /** Accepted file-tool policy, never inferred from the owner's broader grants. */
   allowMutation: boolean
-  allowedTools: readonly FileToolName[]
+  allowedTools: readonly FileToolOperation[]
   expiresAt: Date
   attachments: readonly MessageAttachmentRef[]
 }
@@ -71,7 +71,7 @@ export interface CodexFileHostLease {
 }
 
 export type CodexFileServices = Pick<AgentFileToolService,
-  'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn'> & {
+  'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn' | 'writeWorkingCopy' | 'applyFormatEdit'> & {
     sessions: Pick<AgentFileToolService['sessions'], 'issueForAcceptedSession' | 'authenticate' | 'revoke'>
     artifacts: Pick<AgentFileToolService['artifacts'], 'beginWrite' | 'completeWrite' | 'abortWrite'>
   }

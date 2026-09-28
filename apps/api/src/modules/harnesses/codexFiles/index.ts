@@ -1,11 +1,12 @@
 import { z } from 'zod'
 import {
   AgentFileCreateWorkingCopyInputSchema, AgentFileListInputSchema, AgentFilePublishInputSchema,
-  AgentFileReadInputSchema, FileWithRevisionSchema, MessageAttachmentRefsSchema,
+  AgentFileReadInputSchema, AgentFileWriteWorkingCopyInputSchema, AgentFileApplyFormatEditInputSchema,
+  FileWithRevisionSchema, MessageAttachmentRefsSchema,
   TemporaryFileScopeSchema, MAX_FILE_BYTES, MAX_FILE_READ_BYTES, MAX_MESSAGE_ATTACHMENTS,
   parseAgentFileReadResult,
 } from '@graphql/contracts/files'
-import type { FileToolName } from '../../files/tools/types.js'
+import type { FileToolOperation } from '../../files/tools/types.js'
 import type { NativeImageOptions, ImageMediaType } from '../../files/images/index.js'
 import { CODEX_FILE_TOOL_ALIASES, CodexFileTurn, type CodexFileTurnDependencies } from './turn.js'
 import type { AcceptedCodexFileTurn } from './port.js'
@@ -18,12 +19,16 @@ const schemas = {
   'files.read': AgentFileReadInputSchema,
   'files.create_working_copy': AgentFileCreateWorkingCopyInputSchema,
   'files.publish_result': AgentFilePublishInputSchema,
-} satisfies Record<FileToolName, z.ZodType>
-const descriptions: Record<FileToolName, string> = {
+  'files.write_working_copy': AgentFileWriteWorkingCopyInputSchema,
+  'files.apply_format_edit': AgentFileApplyFormatEditInputSchema,
+} satisfies Record<FileToolOperation, z.ZodType>
+const descriptions: Record<FileToolOperation, string> = {
   'files.list': 'List a bounded metadata manifest in an authorized file scope. No file contents.',
   'files.read': 'Read a bounded byte range from the exact fileId and revisionId. Never follows a newer revision.',
-  'files.create_working_copy': 'Create a detached temporary working copy in this conversation. In Write mode the result includes its registered execution-host path.',
-  'files.publish_result': 'Publish a completed registered working copy as a new immutable temporary file in this turn. Does not replace a source or permanent reference.',
+  'files.create_working_copy': 'Create a detached temporary working copy in this conversation. Edit it with the file edit tools.',
+  'files.publish_result': 'Publish a completed working copy as a new immutable temporary file in this turn. Does not replace a source or permanent reference.',
+  'files.write_working_copy': 'Replace the bytes of an owned working copy. Supply canonical base64 and an optional base revision.',
+  'files.apply_format_edit': 'Apply a supported format edit to an owned working copy with an optional base revision.',
 }
 
 /** v0.157 DynamicToolSpec function form. Register only the accepted allowlist.
@@ -45,7 +50,7 @@ export interface PrepareCodexFileTurnDependencies extends Omit<CodexFileTurnDepe
   nativeImageOptions?: NativeImageOptions
 }
 
-/** Composition seam; deliberately not installed into production by this partial lane.
+/** Composition seam for the authenticated production chat admission.
  * source and host MUST come from the authenticated persisted chat/execution, not HTTP fields. */
 export async function prepareCodexFileTurn(accepted: AcceptedCodexFileTurn,
   dependencies: PrepareCodexFileTurnDependencies, signal?: AbortSignal): Promise<CodexFileTurn> {

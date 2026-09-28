@@ -405,7 +405,8 @@ export class AgentChatService {
     if (input.intent === 'steer') return this.steer(principal, context, key, input, resolution)
     if (input.intent === 'interrupt_and_send' && !row) throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.', 409)
     const create = resolution.create ? { ...resolution.create, context } : undefined
-    const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ...(create ? { create } : {}) })
+    const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id,
+      ...(create ? { create } : {}) })
     if (admitted.replayed) return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true,
       ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
     this.events.publish(admitted.conversationId, 'turn', { requestId: input.requestId, delivery: admitted.turn.delivery })

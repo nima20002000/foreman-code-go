@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -27,7 +26,9 @@ import { DomainError } from '../src/modules/errors.js'
 import { PostgresFileConversationAuthorization } from '../src/modules/files/authorization.js'
 import { PostgresFileRepository } from '../src/modules/files/postgres.js'
 import { TemporaryFileService } from '../src/modules/files/service.js'
+import { postgresCodexChatFiles } from '../src/modules/harnesses/codexFiles/chatAdmission.js'
 import { FileByteStorage } from '../src/modules/files/storage.js'
+import { bindingIdentity } from '../src/modules/files/tools/context.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
@@ -91,6 +92,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
   let reader: Awaited<ReturnType<PostgresAccessService['issue']>>
   let operator: OperatorChatService, agent: AgentChatService
   let operatorRepo: PostgresOperatorConversationRepository, agentRepo: PostgresAgentChatRepository
+  let fileStorage: TemporaryFileService
   let fixture: ReturnType<typeof makeCurrentWorkflowFixture>
   const managers = new Map<string, AttachmentNative>()
   const runs = new Map<string, NonNullable<Awaited<ReturnType<PostgresRunRepository['getForWorkspace']>>>>(), executions = new Map<string, HarnessExecution[]>()
@@ -130,7 +132,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
         await client.query('insert into application_migrations(version) values($1)', [fileStorageMigration.version]); await client.query('commit')
       } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
     }
-    root = await mkdtemp(join(homedir(), '.fil10-test-'))
+    root = await mkdtemp(join(process.cwd(), '.fil10-test-'))
     fixture = await seedAgent3(database.pool, root, makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential'))
     access = new PostgresAccessService(database.pool)
     owner = await access.issue({ name: 'FIL-10 owner', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
@@ -162,8 +164,9 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
     app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : error instanceof z.ZodError ? 400 : 500)
       .send({ error: { code: error instanceof DomainError ? error.code : 'INVALID_REQUEST' } }))
     registerOperatorChatRoutes(app, operator); registerAgentChatRoutes(app, agent)
-    registerFileRoutes(app, new TemporaryFileService(new PostgresFileRepository(database.pool),
-      new FileByteStorage(join(root, 'files'), MAX_FILE_BYTES), new PostgresFileConversationAuthorization(database.pool)))
+    fileStorage = new TemporaryFileService(new PostgresFileRepository(database.pool),
+      new FileByteStorage(join(root, 'files'), MAX_FILE_BYTES), new PostgresFileConversationAuthorization(database.pool))
+    registerFileRoutes(app, fileStorage)
     await app.ready()
   })
   afterAll(async () => {
@@ -196,6 +199,56 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
   async function ensureAgent() {
     return (await agent.read(owner.principal, fixture.scope.workspaceId, query())).conversation?.id ?? startAgent()
   }
+
+  it('resolves the persisted Codex sender, message, session and pinned attachment', async () => {
+    const id = await ensureAgent()
+    const file = await upload(id, Buffer.from('# admitted'), 'agent')
+    const input = request(id, { attachments: [pin(file)] })
+    expect((await agentSend(input)).statusCode).toBe(202)
+    await settleAgent(id)
+    const conversation = await agentRepo.get(id)
+    const session = { harness: 'codex' as const, providerVersion: conversation!.provider_version!,
+      nativeSessionId: conversation!.native_session_id! }
+    const resolver = postgresCodexChatFiles(database.pool, () => fileStorage, async () => ({
+      executionHostId: 'test-host', pathStyle: 'posix',
+      materialize: async () => { throw new Error('unused') }, sealCompleted: async () => { throw new Error('unused') },
+      close: async () => {},
+    }), '/tmp')
+    const admission = await resolver.resolve({ conversationId: id, session,
+      clientCorrelationId: `agent-chat:${id}:${input.requestId}`, signal: new AbortController().signal })
+    expect(admission?.accepted).toMatchObject({ ownerPrincipalId: owner.principal.id,
+      messageId: (await agentRepo.turn(id, input.requestId))!.messageId, attachments: [pin(file)] })
+    const opened = await admission!.dependencies.source.open(pin(file))
+    const chunks: Buffer[] = []
+    for await (const chunk of opened.stream) chunks.push(Buffer.from(chunk as Uint8Array))
+    expect(Buffer.concat(chunks).toString()).toBe('# admitted')
+    const publication = await upload(id, Buffer.from('# published'), 'agent')
+    const allocation = (await database.pool.query<{ request_id: string }>(
+      'select request_id from file_allocations where file_id=$1', [publication.file.fileId])).rows[0]!
+    const nativeTurnId = (await agentRepo.turn(id, input.requestId))!.nativeTurnId!
+    const accepted = admission!.accepted
+    const binding = bindingIdentity({ ownerPrincipalId: accepted.ownerPrincipalId, scope: accepted.scope,
+      nativeSessionId: accepted.nativeSessionId, turnId: nativeTurnId, messageId: accepted.messageId,
+      allowMutation: accepted.allowMutation, allowedTools: [...accepted.allowedTools] })
+    await database.pool.query(`insert into file_tool_publications
+      (owner_principal_id,request_id,binding,file_id,revision_id,record) values ($1,$2,$3,$4,$5,$6::jsonb)`,
+    [owner.principal.id, allocation.request_id, binding, publication.file.fileId, publication.revision.revisionId,
+      JSON.stringify({ ownerPrincipalId: owner.principal.id, requestId: allocation.request_id, binding,
+        context: { ownerPrincipalId: accepted.ownerPrincipalId, scope: accepted.scope, nativeSessionId: accepted.nativeSessionId,
+          turnId: nativeTurnId, messageId: accepted.messageId, allowMutation: accepted.allowMutation,
+          allowedTools: accepted.allowedTools }, ref: pin(publication), createdAt: new Date().toISOString() })])
+    await admission!.adoptPublished(nativeTurnId, [pin(publication)])
+    await admission!.adoptPublished(nativeTurnId, [pin(publication)])
+    const stored = (await database.pool.query<{ record: { attachmentRefs: MessageAttachmentRef[] } }>(
+      'select record from operator_conversation_messages where id=$1', [accepted.messageId])).rows[0]!
+    expect(stored.record.attachmentRefs).toEqual([pin(file), pin(publication)])
+    await expect(admission!.adoptPublished('foreign-turn', [pin(publication)]))
+      .rejects.toMatchObject({ code: 'CODEX_FILE_PUBLICATION_MISMATCH' })
+    await expect(resolver.resolve({ conversationId: id, session: { ...session, nativeSessionId: 'foreign' },
+      clientCorrelationId: `agent-chat:${id}:${input.requestId}`, signal: new AbortController().signal }))
+      .rejects.toMatchObject({ code: 'CODEX_FILE_ADMISSION_MISMATCH' })
+    await admission!.dependencies.host.close()
+  })
 
   it('keeps two Operator chats with identical filenames and different bytes distinct; Board context is not file scope', async () => {
     const a = (await operator.create(owner.principal)).id, b = (await operator.create(owner.principal)).id

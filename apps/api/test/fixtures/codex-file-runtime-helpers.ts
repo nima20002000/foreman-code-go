@@ -73,6 +73,8 @@ export function filePorts() {
     return {} as never
   }
   const files: CodexFileServices = {
+    writeWorkingCopy: async () => { throw new Error('FILE_EDIT_UNEXPECTED') },
+    applyFormatEdit: async () => { throw new Error('FILE_EDIT_UNEXPECTED') },
     sessions: {
       issueForAcceptedSession: async (context) => {
         events.push('issue:entered')
