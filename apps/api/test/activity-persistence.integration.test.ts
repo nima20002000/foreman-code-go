@@ -86,7 +86,8 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
       add column message_id text default 'message', add column native_turn_id text, add column target_native_turn_id text,
       add column delivery_error jsonb, add column result jsonb, add column input_hash text default 'fixture',
       add column payload jsonb default '{}'::jsonb, add column created_at timestamptz default now();
-      create table operator_conversation_messages (record jsonb, sequence bigint generated always as identity);
+      create table operator_conversation_messages (conversation_id text not null references operator_conversations(id),
+        record jsonb not null, sequence bigint generated always as identity);
       insert into operator_conversation_turns (conversation_id,request_id,intent,delivery,updated_at)
         values ('conversation','A','next_turn','accepted',now())`)
     await repository.append('conversation', 'A', { ...value('running'), id: 'old-child', kind: 'subagent' }, fence('1'))
@@ -140,7 +141,10 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
       if (event.type === 'activity') outputs.push((event.data.activity as { output?: string }).output)
     })
     try {
-      await f.send('A'); await f.idle()
+      await f.send('A')
+      // The pump awaits real PostgreSQL I/O; unit fixture tick counts are not a completion fence.
+      await f.internals.tasks.get(f.store.row.id)
+      await f.idle()
       expect(outputs).toEqual(ordered ? ['first', 'second', 'authoritative correction'] : ['first', 'authoritative correction'])
       const stored = (await pool.query("select record,revision::text,source_provenance from operator_conversation_activity where activity_id='mounted-tool'")).rows[0]
       expect(stored.record.output).toBe('authoritative correction'); expect(stored.revision).toBe(ordered ? '2' : '1')

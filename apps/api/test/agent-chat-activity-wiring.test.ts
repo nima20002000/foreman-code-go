@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeHarnessEvent } from '@graphql/contracts'
-import { fixture } from './helpers/agentChatF1.js'
+import { deferred, fixture } from './helpers/agentChatF1.js'
 
 const part = (sequence: number, output: string): NativeHarnessEvent => ({ sequence, connectionId: 'transport-1',
   occurredAt: '2026-10-01T00:00:00Z', type: 'message.part.updated', payload: { part: {
@@ -59,6 +59,28 @@ describe('Agent activity production source wiring', () => {
       expect(committed).toEqual(['prefix '])
       expect(deltas).toEqual([{ text: 'prefix ', mode: 'replace' }, { text: 'suffix', mode: 'append' }])
     } finally { unsubscribe(); await f.service.shutdown() }
+  })
+
+  it('awaits the actual pump completion while an activity persistence operation is still pending', async () => {
+    const f = fixture(), entered = deferred(), persisted = deferred()
+    f.service['activity'].append = async () => { entered.resolve(); await persisted.promise; return undefined }
+    const manager: import('../src/modules/harnesses/port.js').NativeHarnessSessionManager = f.manager
+    const start = manager.startTurn.bind(manager)
+    manager.startTurn = async function* (session, input, signal) {
+      yield* start(session, input, signal)
+      yield { sequence: 1, connectionId: 'pending-persistence', occurredAt: '2026-10-01T00:00:00Z', type: 'item.snapshot',
+        payload: { turnId: 'turn-A', item: { id: 'tool', type: 'commandExecution', status: 'running' } } }
+    }
+    try {
+      await f.send('A'); await entered.promise
+      const task = f.internals.tasks.get(f.store.row.id)
+      expect(task).toBeDefined()
+      expect(f.store.row.active_request_id).toBe('A')
+      persisted.resolve()
+      await task
+      await f.idle()
+      expect(f.store.turns.get('A')?.delivery).toBe('completed')
+    } finally { persisted.resolve(); await f.service.shutdown() }
   })
 
 })
