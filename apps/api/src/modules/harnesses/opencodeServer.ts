@@ -326,6 +326,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     signal = AbortSignal.any([signal, admission.signal])
     let turn: OwnedTurn | undefined
     let response: Response | undefined
+    let responseGeneration: number | undefined
     let initialHistory: NativeHistory | undefined
     try {
       await this.exclusive(async () => {
@@ -374,7 +375,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           initialHistory = await this.reconcileReady(session, correlationId, signal)
           // An observer can yield saved history before its next pull. Subscribe
           // now so native completion in that interval is not missed.
-          if (turn.files && !initialHistory.terminalResult) response = await this.openEvents(state.directory, signal, false)
+          if (turn.files && !initialHistory.terminalResult) {
+            responseGeneration = this.generation
+            response = await this.openEvents(state.directory, signal, false)
+          }
           return
         }
         const status = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
@@ -391,6 +395,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             turn.promptHash = turnDigest(prompt ?? '', state.instructions, turn.fileIdentity)
           }
         }
+        responseGeneration = this.generation
         response = await this.openEvents(state.directory, signal, false)
         const [providerID, ...model] = state.configuration.model.split('/')
         // Claim delivery before awaiting it. An uncertain transport/body failure must
@@ -436,11 +441,16 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       while (true) {
         signal.throwIfAborted()
         try {
-          response ??= await this.openEvents(state.directory, signal)
+          if (!response) {
+            responseGeneration = this.generation
+            response = await this.openEvents(state.directory, signal)
+          }
           if (!response.body) throw new Error('OpenCode event stream has no body.')
           for await (const native of parseOpenCodeSse(response.body, signal)) {
+            if (responseGeneration !== this.generation || state.turn !== turn) throw new OpenCodeNativeDeliveryError('OPENCODE_OBSERVER_STALE', 'Native observer ownership changed.', 'uncertain')
             const id = eventSessionId(native)
             if (!id || !(await this.ownedSession(session.nativeSessionId, id, state, signal))) continue
+            if (responseGeneration !== this.generation || state.turn !== turn) throw new OpenCodeNativeDeliveryError('OPENCODE_OBSERVER_STALE', 'Native observer ownership changed during ancestry lookup.', 'uncertain')
             if (id === session.nativeSessionId && native.type === 'session.error') turn.scopedError = object(object(native.properties).error)
             if (id === session.nativeSessionId && (native.type === 'session.status' && object(native.properties?.status).type === 'busy'
               || native.type === 'message.updated' && object(native.properties?.info).id === turn.messageID)) turn.activityObserved = true
@@ -473,6 +483,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         } finally {
           await response?.body?.cancel().catch(() => undefined)
           response = undefined
+          responseGeneration = undefined
           state.partTypes.clear()
         }
         try {
@@ -706,6 +717,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async cancelReady(session: NativeSessionReference, signal: AbortSignal): Promise<boolean> {
     const state = this.requireSession(session)
+    const generation = this.generation
+    const current = () => {
+      signal.throwIfAborted()
+      if (generation !== this.generation) throw new OpenCodeNativeDeliveryError('OPENCODE_RECONCILIATION_STALE', 'Native cancellation ownership changed during reconciliation.', 'uncertain')
+    }
     state.autoReplies.stop()
     const fileErrors: unknown[] = []
     try { await state.turn?.files?.bridge.revoke() } catch (error) { fileErrors.push(error) }
@@ -713,6 +729,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const permissions = await this.permissionRequests(state.directory, signal)
     const questions = await this.json('/question', state.directory, signal)
     const questionSessions = Array.isArray(questions) ? questions.flatMap((item) => typeof object(item).sessionID === 'string' ? [String(object(item).sessionID)] : []) : []
+    current()
     const targets = new Set([session.nativeSessionId])
     for (const id of [...Object.keys(statuses), ...permissions.map((item) => item.sessionID), ...questionSessions]) {
       if (await this.ownedSession(session.nativeSessionId, id, state, signal)) targets.add(id)
@@ -720,12 +737,15 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     let accepted = true
     // Abort descendants too, rather than assuming aborting the task parent clears them.
     for (const id of [...targets].reverse()) {
+      current()
       const result = await this.mutate(withDirectory(`/session/${encodeURIComponent(id)}/abort`, state.directory), { method: 'POST' }, signal)
+      current()
       if (result !== true) accepted = false
     }
     const rejected = new Set<string>()
     for (const request of await this.permissionRequests(state.directory, signal)) {
       if (rejected.has(request.sessionID) || !(await this.ownedSession(session.nativeSessionId, request.sessionID, state, signal))) continue
+      current()
       await this.mutate(withDirectory(`/permission/${encodeURIComponent(request.id)}/reply`, state.directory), {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply: 'reject' }),
       }, signal)
@@ -737,6 +757,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     for (const id of Object.keys(after)) {
       if (object(after[id]).type !== 'idle' && await this.ownedSession(session.nativeSessionId, id, state, signal)) accepted = false
     }
+    current()
     if (remaining.length) accepted = false
     if (accepted && state.turn) {
       state.turn.terminalResult = { outcome: 'canceled' }
@@ -809,8 +830,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     assertCurrent()
     let turn = state.turn?.correlationId === correlationId ? state.turn : undefined
-    if (await this.rejectQuestions(session, signal)) {
+    const rejectedQuestion = await this.rejectQuestions(session, signal)
+    assertCurrent()
+    if (rejectedQuestion) {
       await this.cancelReady(session, signal)
+      assertCurrent()
       if (turn) turn.terminalResult = failure('OPENCODE_QUESTION_UNSUPPORTED', 'An owned native question was rejected because this transport supports approvals, not interactive questions.')
     }
     const messageID = nativeMessageId(correlationId)
@@ -1178,6 +1202,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async ownedSession(root: string, candidate: string, state: SessionState, signal: AbortSignal): Promise<boolean> {
+    const generation = this.generation
     if (candidate === root) return true
     if (state.ownedIds.get(candidate)) return true
     const visited = new Set<string>()
@@ -1185,10 +1210,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     while (id && visited.size < 256 && !visited.has(id)) {
       if (id === root) { boundedMapSet(state.ownedIds, candidate, true); return true }
       visited.add(id)
-      const response = await this.options.server.request(withDirectory(`/session/${encodeURIComponent(id)}`, state.directory), { method: 'GET' }, signal)
+      const response = await this.clientRequest(withDirectory(`/session/${encodeURIComponent(id)}`, state.directory), { method: 'GET' }, signal, generation)
       if (response.status === 404) { await response.body?.cancel().catch(() => undefined); return false }
       if (!response.ok) throw await responseError(response, 'OPENCODE_SESSION_LOOKUP_FAILED', response.status >= 500 ? 'uncertain' : 'definite')
       const native = object(await readJson(response))
+      signal.throwIfAborted()
+      if (generation !== this.generation) throw new OpenCodeNativeDeliveryError('OPENCODE_RECONCILIATION_STALE', 'Native ancestry changed while its response was being read.', 'uncertain')
       if (native.id !== id || native.directory !== state.directory) return false
       id = typeof native.parentID === 'string' ? native.parentID : undefined
     }
@@ -1197,14 +1224,22 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async rejectQuestions(session: NativeSessionReference, signal: AbortSignal): Promise<boolean> {
     const state = this.requireSession(session)
+    const generation = this.generation
+    const current = () => {
+      signal.throwIfAborted()
+      if (generation !== this.generation) throw new OpenCodeNativeDeliveryError('OPENCODE_RECONCILIATION_STALE', 'Native question ownership changed during reconciliation.', 'uncertain')
+    }
     const questions = await this.json('/question', state.directory, signal)
+    current()
     if (!Array.isArray(questions)) throw new Error('Invalid native question response.')
     let rejected = false
     for (const value of questions) {
       const question = object(value)
       if (typeof question.id !== 'string' || typeof question.sessionID !== 'string') continue
       if (!(await this.ownedSession(session.nativeSessionId, question.sessionID, state, signal))) continue
+      current()
       await this.mutate(withDirectory(`/question/${encodeURIComponent(question.id)}/reject`, state.directory), { method: 'POST' }, signal)
+      current()
       rejected = true
     }
     return rejected

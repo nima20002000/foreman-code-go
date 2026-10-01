@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import { configuration, errorCode, FixtureServer, json, manager, sessionFor } from './opencode-fixtures.js'
+import { advanced, configuration, errorCode, FixtureServer, json, manager, sessionFor } from './opencode-fixtures.js'
 
 it('ignores pre-submission idle with ACK and persisted root before later completion', async () => {
   const server = new FixtureServer()
@@ -112,7 +112,26 @@ it('rejects different permission lifetimes despite identical directory MCP switc
   const native = manager(server)
   try {
     await sessionFor(native)
-    await assert.rejects(sessionFor(native, { ...configuration(), autoApprove: true }), errorCode('OPENCODE_PERMISSION_CONTEXT_CONFLICT'))
+    await assert.rejects(sessionFor(native, { ...configuration(), advanced: { ...advanced(),
+      permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }],
+    } }), errorCode('OPENCODE_PERMISSION_CONTEXT_CONFLICT'))
     assert.equal(server.calls.filter(call => call.path.startsWith('/session?') && call.method === 'POST').length, 1)
+  } finally { await native.dispose() }
+})
+
+it('drops old-generation stream error before it can settle a recovered turn', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  const session = await sessionFor(native)
+  const turn = native.startTurn(session, { clientCorrelationId: 'stale-stream', prompt: 'hello' })[Symbol.asyncIterator]()
+  try {
+    assert.equal((await turn.next()).done, false)
+    server.generation++
+    server.statuses.delete(session.nativeSessionId)
+    server.emit('session.error', { sessionID: session.nativeSessionId, error: { name: 'STALE_STREAM_ERROR', data: { message: 'old generation' } } })
+    while (!(await turn.next()).done) { /* consume reconciliation */ }
+    const history = await native.reconcile(session, 'stale-stream')
+    assert.equal(history.terminalResult?.error?.code, 'OPENCODE_TURN_INTERRUPTED')
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 1)
   } finally { await native.dispose() }
 })
