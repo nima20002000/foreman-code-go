@@ -996,7 +996,7 @@ export function buildProductionApp(
           deviceCapabilities: id => deviceRuntime.endpointForDomains().capabilities(id),
           getNativeOwners: () => approvals.passiveOwnedNativeSessions().flatMap(owned => {
             const captured = launchScopes.get(owned.manager)
-            return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, nativeOwner: captured.owner }] : []
+            return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, assertCurrent: owned.assertCurrent, nativeOwner: captured.owner }] : []
           }) })
         telemetry = await createResourceTelemetryRuntime({ localContext: mainTelemetryContext, registry, ...authorities,
           wholeHostVisible: false, signal: telemetryLifetime.signal })

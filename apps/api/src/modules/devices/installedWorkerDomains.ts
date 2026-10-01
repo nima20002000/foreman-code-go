@@ -30,6 +30,9 @@ export async function createInstalledWorkerDomains(input: {
 }) {
   const lifetime = new AbortController(), active = new Set<Promise<unknown>>()
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
+  const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
+  let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
+  const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'job-runtime-operations.json'))
   let journalOpening: Promise<RemoteOperationJournal> | undefined
   const journal = () => journalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'workflow-operations.json'))
   const current = () => {
@@ -84,7 +87,7 @@ export async function createInstalledWorkerDomains(input: {
     } }, ...(native.kind === 'configured' ? native.extensions : []))
   }
   if (input.jobConfiguration && approved) extensions.push(createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
-    currentBinding: current, request, journal, registry, signal: lifetime.signal }))
+    currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal }))
   extensions.push({ namespace: 'harness-discovery-v1', version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
     async handle(payload, context) {
       HarnessDiscoveryRequestSchema.parse(payload)
@@ -109,7 +112,11 @@ export async function createInstalledWorkerDomains(input: {
       try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }
       await Promise.allSettled([...active])
       try { await receiver?.receiver.close() } catch (error) { failures.push(error) }
-      if (!failures.length && journalOpening) { try { await (await journalOpening).close() } catch (error) { failures.push(error) } }
+      if (!failures.length) {
+        for (const opening of [journalOpening, jobJournalOpening]) {
+          if (opening) { try { await (await opening).close() } catch (error) { failures.push(error) } }
+        }
+      }
       if (failures.length) throw new AggregateError(failures, 'Actual installed worker domain cleanup is incomplete.')
     })() },
   }
