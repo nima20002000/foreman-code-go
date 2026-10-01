@@ -71,7 +71,13 @@ export async function persistWorkerPairing(directory: string, configuration: imp
   const file = join(directory, 'pairing.json'), temporary = join(directory, `.pairing-${randomUUID()}`)
   await writeFile(temporary, JSON.stringify(parsed), { mode: 0o600, flag: 'wx' })
   await syncPath(temporary)
-  try { await link(temporary, file); await syncPath(directory) } finally { await unlink(temporary) }
+  try {
+    try { await link(temporary, file) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if (JSON.stringify(await loadWorkerPairing(directory)) !== JSON.stringify(parsed)) throw new Error('Worker is already paired; explicit unpairing is required.')
+    }
+    await syncPath(directory)
+  } finally { await unlink(temporary) }
 }
 export async function loadWorkerPairing(directory: string): Promise<import('./deviceIdentity.js').WorkerPairingConfiguration> {
   const { WorkerPairingConfigurationSchema } = await import('./deviceIdentity.js')
