@@ -33,7 +33,7 @@ export class ClaudeCheckedNativeConfigurationPort implements ClaudeNativeConfigu
     // Explicit API-key provisioning is checked by the actual native host; this read-only path never delivers a key.
     const capabilities = requireClaudePolicyQualification(configuration, accepted)
     const supportedSettings = ['model', 'permissions', 'sandbox', 'instructions', 'mcp']
-    return { harness: 'claude', version: accepted.currentBinding.pin.cliVersion, authenticated: accepted.persistedProof.authenticated, ready: capabilities.sdk && capabilities.basicTurns,
+    return { harness: 'claude', version: accepted.currentBinding.pin.cliVersion, authenticated: accepted.persistedProof.authenticated === true, ready: capabilities.sdk && capabilities.basicTurns,
       structuredEvents: capabilities.basicTurns, supportsResume: capabilities.resume, supportsCancellation: capabilities.cancellation,
       supportsWorkingDirectory: capabilities.workingDirectory, supportsStartupPrompt: capabilities.startupPrompt,
       supportedNativeTools: accepted.persistedProof.claudeProof?.observedTools ?? [], supportedSettings,

@@ -1,3 +1,4 @@
+import { PendingNativeInteractionSchema, type PendingNativeInteraction, type NativeSessionReference, type ApprovalResponseOption } from '@graphql/contracts'
 import type { ClaudeLiveCallbackQuery } from './callbackAvailability.js'
 import type { NativeResponseAvailability } from '../responseAvailability.js'
 import { ClaudeQuestionInputSchema, ClaudeQuestionAnswersSchema, type ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
@@ -12,6 +13,7 @@ export interface ClaudeCallbackIdentity {
   nativeSessionId: string
   nativeTurnId?: string
   nativeMessageId?: string
+  clientCorrelationId?: string
   attemptId: string
   toolUseId: string
   /** Control request ID, distinct from tool_use and message IDs; absent on PreToolUse hooks. */
@@ -19,9 +21,13 @@ export interface ClaudeCallbackIdentity {
   agentId?: string
   parentToolUseId?: string
 }
+export interface ClaudePendingNotification {
+  nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string; generation: string
+  nativeRequestId: string; nativeRequestType: 'can_use_tool'
+}
 export type ClaudeToolDecision = { behavior: 'allow'; updatedInput: Record<string, unknown> }
   | { behavior: 'deny'; message: string; interrupt?: boolean }
-export type ClaudeInteractionAnswer = { outcome: 'allow_once' | 'deny' | 'cancel' | 'expired' }
+export type ClaudeInteractionAnswer = { outcome: 'allow_once' | 'deny' | 'cancel' | 'expired'; reason?: string }
   | { outcome: 'answered'; answers: unknown }
 /** Consumer binds these operations to existing persistence/claim/delivery services, not a second store. */
 export interface ClaudeInteractionAuthority {
@@ -36,12 +42,21 @@ export class ClaudeInteractionBridge {
   private readonly requests = new Map<string, {
     input: unknown; promise: Promise<ClaudeToolDecision>; identity: ClaudeCallbackIdentity; signal: AbortSignal
     stage: 'pending' | 'response_in_flight' | 'consumed'
+    response?: { promise: Promise<ClaudeInteractionAnswer>; resolve(answer: ClaudeInteractionAnswer): void; selected?: ClaudeInteractionAnswer }
   }>()
   private readonly controller = new AbortController()
+  private readonly listeners = new Set<(notification: ClaudePendingNotification) => void>()
   constructor(configuration: ClaudeHarnessConfiguration, private readonly authority: ClaudeInteractionAuthority) {
     this.configuration = structuredClone(configuration)
   }
   close(): void { this.controller.abort() }
+  subscribePending(listener: (notification: ClaudePendingNotification) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
+  private changed(identity: ClaudeCallbackIdentity): void {
+    if (!identity.nativeMessageId || !identity.clientCorrelationId || !identity.generation || !identity.nativeRequestId || identity.nativeRequestType !== 'can_use_tool') return
+    const notification: ClaudePendingNotification = { nativeSessionId: identity.nativeSessionId, nativeMessageId: identity.nativeMessageId,
+      clientCorrelationId: identity.clientCorrelationId, generation: identity.generation, nativeRequestId: identity.nativeRequestId, nativeRequestType: identity.nativeRequestType }
+    for (const listener of this.listeners) listener(notification)
+  }
 
   /** Inspect only the owned SDK callback map; availability is never delivery evidence. */
   inspectCallbackAvailability(query: ClaudeLiveCallbackQuery): NativeResponseAvailability {
@@ -61,6 +76,81 @@ export class ClaudeInteractionBridge {
     if (request.stage === 'response_in_flight') return unavailable('response_in_flight')
     return { ...base, ...(request.identity.nativeTurnId ? { nativeTurnId: request.identity.nativeTurnId } : {}), generation: query.generation,
       qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }
+  }
+
+  private live(identity: ClaudeCallbackIdentity) {
+    const entries = [...this.requests.values()].filter((entry) => isDeepStrictEqual(entry.identity, identity))
+    if (entries.length !== 1 || this.controller.signal.aborted || entries[0]!.signal.aborted) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The exact SDK callback is not live.')
+    return entries[0]!
+  }
+
+  pendingInteractions(session: NativeSessionReference): PendingNativeInteraction[] {
+    if (this.controller.signal.aborted) return []
+    return [...this.requests.values()].filter((entry) => entry.stage !== 'consumed' && !entry.signal.aborted
+      && entry.identity.nativeSessionId === session.nativeSessionId && (entry.input as { toolName: string }).toolName !== 'AskUserQuestion')
+      .map((entry) => PendingNativeInteractionSchema.parse({ session,
+        turn: { ...(entry.identity.nativeTurnId ? { nativeTurnId: entry.identity.nativeTurnId } : { nativeMessageId: entry.identity.nativeMessageId }), nativeRequestId: entry.identity.nativeRequestId },
+        nativeRequestType: entry.identity.nativeRequestType,
+        request: { ...(entry.input as { toolName: string; input: Record<string, unknown> }), nativeMessageId: entry.identity.nativeMessageId,
+          toolUseId: entry.identity.toolUseId, generation: entry.identity.generation, attemptId: entry.identity.attemptId },
+        responseOptions: ['allow_once', 'deny', 'cancel'].map((optionId) => ({ optionId, semantic: optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel',
+          label: optionId === 'allow_once' ? 'Allow once' : optionId === 'deny' ? 'Deny' : 'Cancel', persistence: 'request',
+          affectsOtherPendingRequests: false, interruptsCurrentTurn: optionId === 'cancel', mutatesPersistentPolicy: false })) }))
+  }
+
+  /** Wait on the already-owned SDK callback; no new persistence or permission request is created. */
+  waitForResponse(identity: ClaudeCallbackIdentity): Promise<ClaudeInteractionAnswer> {
+    const entry = this.live(identity)
+    if (entry.stage === 'consumed') throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The SDK callback was consumed.')
+    if (!entry.response) {
+      let resolve!: (answer: ClaudeInteractionAnswer) => void
+      const promise = new Promise<ClaudeInteractionAnswer>((finish) => { resolve = finish })
+      entry.response = { promise, resolve }
+      const abort = () => resolve({ outcome: 'cancel' })
+      entry.signal.addEventListener('abort', abort, { once: true })
+      void promise.then(() => entry.signal.removeEventListener('abort', abort))
+    }
+    return entry.response.promise
+  }
+
+  async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    const pending = this.pendingInteractions(session).find((item) => item.turn.nativeRequestId === nativeRequestId)
+    if (!pending || !pending.responseOptions.some((offered) => isDeepStrictEqual(offered, option))) throw new HarnessExecutionError('NATIVE_RESPONSE_OPTION_INVALID', 'The exact callback did not offer this option.')
+    const entries = [...this.requests.values()].filter((entry) => entry.identity.nativeSessionId === session.nativeSessionId && entry.identity.nativeRequestId === nativeRequestId)
+    if (entries.length !== 1) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The native control identity is ambiguous.')
+    const entry = this.live(entries[0]!.identity)
+    if (entry.stage !== 'pending' || entry.response?.selected) throw new HarnessExecutionError('NATIVE_RESPONSE_UNCERTAIN', 'A response is already in flight; join observation without resending.')
+    const answer: ClaudeInteractionAnswer = { outcome: option.optionId as 'allow_once' | 'deny' | 'cancel' }
+    await this.authority.validateResponse(entry.identity, answer)
+    signal?.throwIfAborted()
+    this.live(entry.identity)
+    if (entry.stage !== 'pending' || entry.response?.selected) throw new HarnessExecutionError('NATIVE_RESPONSE_UNCERTAIN', 'The response already entered the SDK callback.')
+    void this.waitForResponse(entry.identity)
+    entry.response!.selected = answer
+    entry.response!.resolve(answer)
+    await entry.promise
+  }
+
+  /** Join only this SDK map's existing response listener. Never resubmit a permission reply. */
+  async observeResponse(session: NativeSessionReference, requestId: string, option: ApprovalResponseOption, signal?: AbortSignal) {
+    const entries = [...this.requests.values()].filter((entry) => entry.identity.nativeSessionId === session.nativeSessionId && entry.identity.nativeRequestId === requestId)
+    if (entries.length !== 1 || this.controller.signal.aborted) return { nativeRequestId: requestId, state: 'uncertain' as const }
+    const entry = entries[0]!
+    if (!entry.response?.selected) return { nativeRequestId: requestId, state: 'pending' as const }
+    if (entry.response.selected.outcome !== option.optionId) throw new HarnessExecutionError('NATIVE_RESPONSE_OPTION_INVALID', 'The observed callback belongs to another selected option.')
+    signal?.throwIfAborted()
+    let abort: (() => void) | undefined
+    const canceled = new Promise<never>((_resolve, reject) => {
+      if (!signal) return
+      abort = () => reject(signal.reason)
+      signal.addEventListener('abort', abort, { once: true })
+    })
+    try {
+      const decision = await Promise.race([entry.promise, canceled])
+      if (entry.signal.aborted || option.optionId === 'allow_once' && decision.behavior !== 'allow') return { nativeRequestId: requestId, state: 'uncertain' as const }
+      return { nativeRequestId: requestId, state: 'submitted' as const, selectedOptionId: option.optionId }
+    } finally { if (abort) signal?.removeEventListener('abort', abort) }
   }
 
   /** Install only as the pinned release's qualified always-applied PreToolUse hook. */
@@ -109,13 +199,14 @@ export class ClaudeInteractionBridge {
     })
     const resolving = Promise.resolve().then(() => this.resolve(identity, toolName, value.input, combined, () => {
       const current = this.requests.get(key)
-      if (current?.stage === 'pending' && !combined.aborted) current.stage = 'response_in_flight'
+      if (current?.stage === 'pending' && !combined.aborted) { current.stage = 'response_in_flight' }
     }))
     const promise = Promise.race([resolving, aborted]).finally(() => {
       if (onAbort) combined.removeEventListener('abort', onAbort)
     })
     const entry = { input: value, promise, identity: structuredClone(identity), signal: combined, stage: 'pending' as 'pending' | 'response_in_flight' | 'consumed' }
     this.requests.set(key, entry)
+    if (toolName !== 'AskUserQuestion') this.changed(identity)
     void promise.then(() => { entry.stage = 'consumed' }, () => { entry.stage = 'consumed' })
     return promise
   }
@@ -134,6 +225,7 @@ export class ClaudeInteractionBridge {
       onAnswer()
       if (signal.aborted) return { behavior: 'deny', message: 'The native callback was aborted.', interrupt: true }
       await this.authority.validate(identity, toolName, input)
+      if (answer.outcome === 'deny' && answer.reason) return { behavior: 'deny', message: answer.reason }
       await this.authority.validateResponse(identity, answer)
       if (signal.aborted) return { behavior: 'deny', message: 'The native callback was aborted.', interrupt: true }
       if (toolName === 'AskUserQuestion' && answer.outcome === 'answered') {
@@ -153,7 +245,7 @@ export class ClaudeInteractionBridge {
         return { behavior: 'allow', updatedInput: { ...input, answers } }
       }
       if (toolName !== 'AskUserQuestion' && answer.outcome === 'allow_once') return { behavior: 'allow', updatedInput: structuredClone(input) }
-      return { behavior: 'deny', message: `The interaction was ${answer.outcome}.`, ...(answer.outcome === 'cancel' ? { interrupt: true } : {}) }
+      return { behavior: 'deny', message: ('reason' in answer ? answer.reason : undefined) ?? `The interaction was ${answer.outcome}.`, ...(answer.outcome === 'cancel' ? { interrupt: true } : {}) }
     } finally { if (abort) signal.removeEventListener('abort', abort) }
   }
 }
