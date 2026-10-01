@@ -1,5 +1,6 @@
 import { HARNESS_DISCOVERY_NAMESPACE, HarnessDiscoveryRequestSchema, HarnessRegistryReadbackSchema, type HarnessRegistryReadback } from '@graphql/contracts/harness-registry'
 import type { DeviceConnectionIdentity, CanonicalMachineReference } from '@graphql/contracts/device-identity'
+import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
 import { discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'
 
 export interface PassiveDriverInstallationDeclaration {
@@ -10,7 +11,7 @@ export interface PassiveDriverInstallationDeclaration {
   readonly requestedLauncher: string
   readonly payloadPaths?: readonly string[]
 }
-interface PassiveDiscoveryContext { binding: DeviceConnectionIdentity; signal: AbortSignal }
+interface PassiveDiscoveryContext { binding: DeviceConnectionIdentity & { connectionEpoch: string }; signal: AbortSignal }
 
 /** Register only this actual worker handler; no caller-supplied paths or commands are accepted. */
 export function createPassiveHarnessDiscoveryExtension(options: {
@@ -20,26 +21,27 @@ export function createPassiveHarnessDiscoveryExtension(options: {
   platform: { platform: string; architecture: string }
   installations: readonly PassiveDriverInstallationDeclaration[]
 }) {
+  const target = structuredClone(options)
   return {
     namespace: HARNESS_DISCOVERY_NAMESPACE, version: 1, role: 'server' as const, maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
     async handle(payload: unknown, { binding, signal }: PassiveDiscoveryContext): Promise<{ payload: HarnessRegistryReadback }> {
       HarnessDiscoveryRequestSchema.parse(payload)
       signal.throwIfAborted()
-      if (binding.mainId !== options.hostRef.mainId || binding.deviceId !== options.hostRef.deviceId
-        || binding.workerInstallationId !== options.applicationInstallationId) throw new Error('Passive discovery host binding mismatch.')
+      if (binding.mainId !== target.hostRef.mainId || binding.deviceId !== target.hostRef.deviceId
+        || binding.workerInstallationId !== target.applicationInstallationId) throw new Error('Passive discovery host binding mismatch.')
       const installations = []
-      for (const declaration of options.installations) {
-        const launcher = await discoverLauncher(declaration.requestedLauncher, options.environment, declaration.payloadPaths ?? [], signal)
-        installations.push({ hostRef: options.hostRef, harnessInstallationId: declaration.harnessInstallationId,
+      for (const declaration of target.installations) {
+        const launcher = await discoverLauncher(declaration.requestedLauncher, target.environment, declaration.payloadPaths ?? [], signal)
+        installations.push({ hostRef: target.hostRef, harnessInstallationId: declaration.harnessInstallationId,
           installationFingerprint: launcher.fingerprint, driverId: declaration.driverId, driverRevision: declaration.driverRevision,
-          protocolRevision: declaration.protocolRevision, environmentGeneration: options.environment.generation,
-          connectionGeneration: String(binding.connectionGeneration), launcher, observedVersion: null,
+          protocolRevision: declaration.protocolRevision, environmentGeneration: target.environment.generation,
+          connectionGeneration: harnessConnectionGeneration(binding), launcher, observedVersion: null,
           installed: launcher.status === 'installed', authenticated: null, compatible: null, qualified: null })
       }
       signal.throwIfAborted()
       return { payload: HarnessRegistryReadbackSchema.parse({ instances: [], installations,
-        hostMetadata: { hostRef: options.hostRef, applicationInstallationId: options.applicationInstallationId,
-          platform: options.platform, workspaceRoots: null } }) }
+        hostMetadata: { hostRef: target.hostRef, applicationInstallationId: target.applicationInstallationId,
+          platform: target.platform, workspaceRoots: null } }) }
     },
   }
 }
