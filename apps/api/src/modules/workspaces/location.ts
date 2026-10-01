@@ -1,3 +1,4 @@
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, mkdir, realpath, rmdir, stat } from 'node:fs/promises'
@@ -266,7 +267,7 @@ export class WorkspaceLocationService {
     principalId: string,
     workspaceId: string,
     workflowId: string,
-    client?: Pick<pg.PoolClient, 'query'>,
+    client?: GraphSqlClient,
     atCommit = false,
   ): Promise<void> {
     // Preserve the accepted ceiling and live root owner without acquiring a nested connection.

@@ -14,6 +14,12 @@ export function installQualificationGate(registry: HarnessQualificationRegistry,
 
 export function clearQualificationGate(): void { active = undefined }
 
+const readOnly = new AsyncLocalStorage<HarnessQualificationRegistry>()
+/** An operation-scoped authenticated Main reader. No begin/write service or global gate replacement. */
+export function runWithReadOnlyQualification<T>(registry: HarnessQualificationRegistry, work: () => Promise<T>): Promise<T> {
+  return readOnly.run(registry, work)
+}
+
 /** The binary a qualification suite is currently testing; admitted only inside that run. */
 const candidate = new AsyncLocalStorage<{ harness: CompatibilityHarness; sha256: string }>()
 export function runAsQualificationCandidate<T>(harness: CompatibilityHarness, sha256: string, work: () => Promise<T>): Promise<T> {
@@ -22,6 +28,12 @@ export function runAsQualificationCandidate<T>(harness: CompatibilityHarness, sh
 
 export async function requireHarnessQualification(harness: CompatibilityHarness, version: string, binary: string): Promise<void> {
   const normalized = normalizeHarnessVersion(harness, version)
+  const scoped = readOnly.getStore()
+  if (scoped) {
+    const { sha256 } = await scoped.inspectBinary(binary)
+    if (!await scoped.trustedExact(harness, normalized, sha256)) throw new HarnessExecutionError('HARNESS_UNQUALIFIED', 'Current authenticated Main qualification for this exact installed harness is required.')
+    return
+  }
   if (baselineProfile(harness, normalized)) return
   const testing = candidate.getStore()
   if (testing?.harness === harness

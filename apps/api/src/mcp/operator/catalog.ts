@@ -21,8 +21,6 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'operator_chat_cancel', action: 'operator_chat:cancel' },
   { name: 'operator_chat_respond', action: 'operator_chat:respond' },
   { name: 'operator_chat_send', action: 'operator_chat:write' },
-  { name: 'operator_chat_cancel', action: 'operator_chat:cancel' },
-  { name: 'operator_chat_respond', action: 'operator_chat:respond' },
   { name: 'device_setup_options_get', action: 'settings:read' },
   { name: 'device_setup_code_create', action: 'settings:update' },
   { name: 'device_main_identity_get', action: 'settings:read' },

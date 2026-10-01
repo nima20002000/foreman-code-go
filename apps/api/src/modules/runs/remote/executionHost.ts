@@ -1,8 +1,9 @@
+import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema, type NativeSessionReference, type HarnessExecutionRequest } from '@graphql/contracts'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent } from '@graphql/contracts/node-placement'
+import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@graphql/contracts/node-placement'
 import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation, type RemoteApplicationAccess } from '@graphql/contracts/remote-execution'
 import { RemoteExecutionRpcRequestSchema } from '@graphql/contracts/remote-execution-rpc'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
@@ -19,15 +20,15 @@ export interface RemoteExecutionHostPorts {
   managers: NativeSessionManagerResolver
   authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control'): Promise<void>
   /** Host-local credentials and sandbox policy; never copied from main. */
-  attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest): Promise<RuntimeLeafAttestation>
+  attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest, executionPlacement?: NativeExecutionPlacement): Promise<RuntimeLeafAttestation>
   preflight(request: HarnessExecutionRequest, applicationAccess?: RemoteApplicationAccess): Promise<ChildProcessEnvironment | void>
-  nativeEvidence(intent: DispatchIntent, session: NativeSessionReference): Promise<RemoteNativeIdentity>
+  nativeEvidence(intent: DispatchIntent, session: NativeSessionReference, context?: { manager: NativeHarnessSessionManager; request: HarnessExecutionRequest; signal: AbortSignal }): Promise<RemoteNativeIdentity>
   /** W11/provider closure verification; terminal observation alone is insufficient. */
   verifyOwnerRenewal?(transition: RemoteOwnerReconciliation, receipt: RemoteOperationReceipt): Promise<void>
   verifyRecovery?(receipt: RemoteOperationReceipt, session: NativeSessionReference, evidenceDigest: string): Promise<void>
   settle(intent: DispatchIntent, history: NativeHistory, owner: { manager: NativeHarnessSessionManager; session: NativeSessionReference; request: HarnessExecutionRequest }): Promise<RemoteTerminalEvidence | null>
 }
-interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void> }
+interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void>; settlementTask?: Promise<void>; settlementHistory?: NativeHistory; settlementEvidence?: RemoteTerminalEvidence }
 /** Worker-only authenticated extension handler. No DB, scheduler, HTTP server or production composition. */
 export class RemoteExecutionHost {
   private closing = false
@@ -106,21 +107,23 @@ export class RemoteExecutionHost {
     this.allocatedManagers.add(resolved.manager)
     return resolved.manager[method]()
   }
-  prepare(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
+  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
     return this.track(() => this.prepareOwned(raw))
   }
-  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
+  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
+    const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
+      ? readNativeExecutionBinding(placement, intent, raw.executionPlacement) : undefined
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
       || placement.mainId !== this.ports.connection.mainId || placement.bindingHash !== intent.bindingHash
       || placement.runId !== intent.runId || placement.nodeId !== intent.nodeId || placement.payload.kind !== 'agent'
       || placement.payload.agentConfigurationVersionId !== request.configuration.id || placement.payload.agentId !== request.configuration.agentId
       || request.executionId !== intent.executionId || request.runId !== intent.runId || request.workflowNodeId !== intent.nodeId
-      || request.workingDirectory !== placement.destination.canonicalCwd
+      || request.workingDirectory !== (executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd)
       || intent.inputDigest !== `sha256:${createHash('sha256').update(canonicalGraphJson(request.input)).digest('hex')}`) throw new Error('Remote launch binding mismatch')
     await this.ports.authorize(intent, placement, 'start')
     assertRuntimeLeafPath(request.runtimeDirectory, placement)
-    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(intent, placement, request), request.runtimeDirectory, intent, placement)
+    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(intent, placement, request, executionPlacement), request.runtimeDirectory, intent, placement, executionPlacement)
     this.bindings.set(intent.operationId, { intent, placement })
     await this.ports.journal.accept(intent, this.ports.connection, this.ports.incarnationId)
     const existing = this.residents.get(intent.operationId)
@@ -147,7 +150,7 @@ export class RemoteExecutionHost {
       resolved.beginStart?.()
       const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`, ...(environment ? { environment } : {}) }, controller.signal)
       resolved.markResident?.()
-      const native = await this.ports.nativeEvidence(intent, session)
+      const native = await this.ports.nativeEvidence(intent, session, { manager: resolved.manager, request, signal: controller.signal })
       if (native.sessionId !== session.nativeSessionId) throw new Error('Native session attestation mismatch')
       const receipt = await this.ports.journal.acknowledgeStart(intent.operationId, native)
       const resident = { intent, placement, request, manager: resolved.manager, session, controller }
@@ -218,14 +221,32 @@ export class RemoteExecutionHost {
     })()
     return this.ports.journal.status(operationId)
   }
-  private async settle(resident: Resident, correlationId: string) {
-    const evidence = await this.ports.settle(resident.intent, await resident.manager.reconcile(resident.session, correlationId), resident)
-    if (evidence) await this.ports.journal.terminal(resident.intent.operationId, evidence)
+  private settle(resident: Resident, correlationId: string): Promise<void> {
+    if (resident.settlementTask) return resident.settlementTask
+    const task = (async () => {
+      const status = await this.ports.journal.status(resident.intent.operationId)
+      if (status.status === 'known' && status.receipt.terminal) return
+      const history = resident.settlementHistory ?? await resident.manager.reconcile(resident.session, correlationId)
+      // Preserve the actual last provider snapshot before a closure producer removes its runtime.
+      if (history.terminalTurn?.correlationId === correlationId || (history.correlationId === correlationId && history.terminalResult)) resident.settlementHistory = structuredClone(history)
+      const evidence = resident.settlementEvidence ?? await this.ports.settle(resident.intent, history, resident)
+      if (evidence) {
+        resident.settlementHistory = structuredClone(history)
+        resident.settlementEvidence = structuredClone(evidence)
+        await this.ports.journal.terminal(resident.intent.operationId, evidence)
+      }
+    })()
+    resident.settlementTask = task
+    void task.then(() => { if (resident.settlementTask === task) delete resident.settlementTask }, () => { if (resident.settlementTask === task) delete resident.settlementTask })
+    return task
   }
   async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp') {
     const resident = await this.resident(operationId, 'read')
-    if (method === 'history') return { history: await resident.manager.reconcile(resident.session, `execution:${resident.intent.executionId}`), status: await this.ports.journal.status(operationId) }
-    if (method === 'pending') return resident.manager.pending(resident.session)
+    if (resident.settlementEvidence) await this.settle(resident, `execution:${resident.intent.executionId}`)
+    if (method === 'history') return { history: resident.settlementHistory ? structuredClone(resident.settlementHistory)
+      : await resident.manager.reconcile(resident.session, `execution:${resident.intent.executionId}`), status: await this.ports.journal.status(operationId) }
+    if (method === 'pending') return resident.settlementHistory
+      ? resident.settlementHistory.pendingInteraction ?? resident.settlementHistory.pendingInteractions[0] : resident.manager.pending(resident.session)
     return resident.manager[method]()
   }
   async control(raw: unknown, binding?: { intent: DispatchIntent; placement: AcceptedNodePlacement }) {

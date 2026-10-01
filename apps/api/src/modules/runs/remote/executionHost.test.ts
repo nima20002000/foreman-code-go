@@ -13,7 +13,7 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../../interactions/
 import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteNativeSessionManager } from './nativeManagerProxy.js'
-import { RemoteExecutionHost } from './executionHost.js'
+import { RemoteExecutionHost, type RemoteExecutionHostPorts } from './executionHost.js'
 const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 const hosts: RemoteExecutionHost[] = []
@@ -34,11 +34,31 @@ async function setup(expectedToken?: string) {
   const session = { harness: 'codex' as const, providerVersion: 'test', nativeSessionId: 'native-session' }
   const manager: NativeHarnessSessionManager = { harness: 'codex', capabilities: async () => { throw new Error('unused') }, inspectMcp: async () => { throw new Error('unused') }, createSession: async () => { state.starts++; return session }, attachSession: async () => session,
     startTurn: async function* (_session, turn) { state.turns++; await turn.onSubmitted?.('native-turn'); yield { sequence: 1, type: 'event', occurredAt: '2026-10-01T00:00:00.000Z', payload: {} } }, pending: async () => undefined, respond: async () => { state.responds++ }, cancel: async () => { state.cancels++; return false }, history: async () => ({ events: [], pendingInteractions: [] }), reconcile: async () => ({ events: [], pendingInteractions: [] }), close: async () => {} }
-  const host = new RemoteExecutionHost({ journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers: new ExecutionScopedNativeSessionManagerResolver(() => manager), authorize: async () => { if (!state.allowed) throw new Error('revoked') }, attestRuntimeLeaf: async (intent, placement, request) => ({ executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory, directoryIdentityHash: digest, materializationId: placement.source.materializationId, materializationDigest: placement.source.materializationDigest }), preflight: async (_request,access) => { if (expectedToken) { expect(access?.token).toBe(expectedToken); return {agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:expectedToken}} } }, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null })
+  const ports: RemoteExecutionHostPorts = { journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers: new ExecutionScopedNativeSessionManagerResolver(() => manager), authorize: async () => { if (!state.allowed) throw new Error('revoked') }, attestRuntimeLeaf: async (intent, placement, request) => { if (!placement.source.materializationId || !placement.source.materializationDigest) throw new Error('Original fixture has no materialized source'); return ({ executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory, directoryIdentityHash: digest, materializationId: placement.source.materializationId, materializationDigest: placement.source.materializationDigest }) }, preflight: async (_request,access) => { if (expectedToken) { expect(access?.token).toBe(expectedToken); return {agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:expectedToken}} } }, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null }
+  const host = new RemoteExecutionHost(ports)
   hosts.push(host)
-  return { host, manager, session, journal, intent, placement, request, state }
+  return { host, manager, session, journal, intent, placement, request, state, ports }
 }
 describe('actual worker native-port adapter', () => {
+  it('retains the real terminal provider history when an authoritative closure callback disposes the manager', async () => {
+    const { host, manager, ports, intent, placement, request } = await setup()
+    const history = { events: [], pendingInteractions: [], correlationId: 'execution:execution', terminalResult: { outcome: 'succeeded' as const, output: { answer: 'original provider result' } } }
+    const reconcile = vi.fn(async () => history)
+    manager.reconcile = reconcile
+    ports.settle = vi.fn(async () => {
+      manager.reconcile = async () => { throw new Error('Original native runtime already closed') }
+      manager.pending = async () => { throw new Error('Closed native runtime must not be re-entered') }
+      return { kind: 'completed' as const, closureEvidenceDigest: 'a'.repeat(64), result: history.terminalResult }
+    })
+    await host.prepare({ intent, placement, request })
+    await host.startTurn('operation', 'accepted prompt', 'execution:execution')
+    await host.drain()
+    expect(await host.read('operation', 'history')).toMatchObject({ history, status: { status: 'known', receipt: { phase: 'confirmed_terminal' } } })
+    expect(await host.read('operation', 'pending')).toBeUndefined()
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(ports.settle).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps a workflow-only host available without substituting it for the missing OCI Job runtime', async () => {
     const { host } = await setup()
     const execution = jobExecution()

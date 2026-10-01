@@ -1,3 +1,5 @@
+import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import type { SourceManifest } from '@graphql/contracts/source-materialization'
 import type pg from 'pg'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -74,7 +76,20 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const inputs = createCanonicalJobInputPorts({ pool: input.pool, storageRoot: input.storageRoot, runtime: dispatch,
     preparation: preparationPort, endpoint: { currentBinding: deviceId => input.endpoint().currentBinding(deviceId) }, receiptRoot: join(input.runtimeRoot, 'job-input-receipts') })
   const privateRepositories = new CanonicalJobPrivateRepositories(input.pool, source.sources, source.executions,
-    input.infrastructure?.privateRepositoryRemote ?? { async preparePrivateRepository() { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated private repository host is unavailable.', 409) } })
+    input.infrastructure?.privateRepositoryRemote ?? { async preparePrivateRepository(principal, record) {
+      const sql = await input.pool.connect()
+      let manifest: SourceManifest
+      try {
+        await sql.query('begin')
+        const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share',
+          [record.receipt.binding.rootId, record.receipt.binding.bindingRevision])).rows[0]
+        const root = SourceRootRecordSchema.parse(row?.record)
+        manifest = (await source.sources.resolveApprovedSource(sql, principal, record.receipt.binding.workspaceId, root.source)).manifest
+        await sql.query('commit')
+      } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+      await source.sources.verifyPreparation({ principal, record })
+      await source.executions.privateRepository(record, manifest)
+    } })
   const preparation = new CanonicalJobPreparationService(new CanonicalJobPreparationSources(source.sources, profiles, privateRepositories,
     { validateDeclaredJobInputs: inputs.validateDeclaredJobInputs }, source.policies))
   const publication = new JobPublicationAuthority(dispatch, preparation)

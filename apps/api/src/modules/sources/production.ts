@@ -1,3 +1,16 @@
+import { AgentSourceAttemptAuthority, installedSourceAttemptAuthority } from './agentSourceAuthority.js'
+import { readAcceptedPlacement, readDispatchIntent, readNativePlacement } from '../placement/persistence.js'
+import { readReconciledDispatchIntent, readRemoteReceipts } from '../runs/remote/persistence.js'
+import { readNativeExecutionBinding } from '../placement/executionBinding.js'
+import { sourceMaterializationDigest } from './bindingHash.js'
+import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
+import type { GraphSqlClient } from '../run-graph/connection.js'
+import { PostgresSourceOperationAuthority } from './operationAuthority.js'
+import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
+import { ExistingByteTransferSourcePackageSender } from './operationSender.js'
+import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
+import type { MainWorkerCarrier } from '../placement/workerCarrier.js'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type pg from 'pg'
@@ -59,24 +72,62 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   const root = join(input.runtimeRoot, 'source-snapshots')
   await mkdir(root, { recursive: true, mode: 0o700 })
   const snapshots = new PrivateSourceSnapshotStore(root)
-  const attempts = new JobSourceAttemptAuthority(input.pool, async (sql, value) => {
+  const installationFence = async (sql: GraphSqlClient, value: import('@graphql/contracts/source-admission').SourceRootRecord) => {
     await assertDeviceHostInstallation(sql, value.selection.hostRef, value.selection.hostRef.kind === 'main'
       ? value.selection.hostRef.mainId : value.registration!.workerInstallationId)
-  })
-  const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, input.remote ?? {
-    prepare: async () => unavailable(), verify: async () => unavailable(), releaseClaim: async () => unavailable(), privateRepository: async () => unavailable(),
-  })
+  }
+  const jobs = new JobSourceAttemptAuthority(input.pool, installationFence)
+  const agents = new AgentSourceAttemptAuthority(input.pool, installationFence)
+  const attempts = installedSourceAttemptAuthority(input.pool, agents, jobs)
+  const confirmedClosed = async (sql: GraphSqlClient, record: import('@graphql/contracts/source-admission').SourceMaterializationRecord) => {
+    const original = await readDispatchIntent(sql, record.receipt.executionId)
+    if (original) {
+      const intent = await readReconciledDispatchIntent(sql, record.operationId, true)
+      const parent = await readAcceptedPlacement(sql, original.runId, original.nodeId)
+      const rawNative = await readNativePlacement(sql, record.receipt.executionId)
+      if (!intent || !parent || !rawNative || intent.executionId !== record.receipt.executionId
+        || intent.attemptId !== record.receipt.attemptId || intent.operationId !== record.operationId
+        || original.bindingHash !== intent.bindingHash || !record.finalDispatchBindingHash) return false
+      const native = readNativeExecutionBinding(parent, intent, rawNative)
+      if (native.bindingHash !== record.finalDispatchBindingHash || native.workingTree.materializationId !== record.receipt.materializationId
+        || native.workingTree.materializationDigest !== sourceMaterializationDigest(record)) return false
+      const receipts = (await readRemoteReceipts(sql, intent.runId, intent.nodeId)).filter(value => value.intent.operationId === record.operationId)
+      const receipt = receipts.length === 1 ? receipts[0] : undefined
+      if (!receipt || parent.hostRef.kind !== 'device' || !parent.registration) return false
+      return sameWorkflowValue(receipt.intent, intent) && receipt.phase === 'confirmed_terminal' && Boolean(receipt.terminal)
+        && receipt.connection.mainId === record.receipt.binding.mainId && receipt.connection.deviceId === record.receipt.binding.deviceId
+        && receipt.connection.workerInstallationId === parent.registration.workerInstallationId
+        && receipt.connection.keyRevision === parent.registration.keyRevision && receipt.connection.authorizationRevision === parent.registration.authorizationRevision
+    }
+
+    const execution = await new JobRepository().execution(sql, record.receipt.binding.workspaceId, record.receipt.executionId)
+    if (execution.attemptId !== record.receipt.attemptId || execution.operationId !== record.operationId
+      || execution.acceptedSpec.source.materializationId !== record.receipt.materializationId) return false
+    return Boolean(await input.dispatch().readAcceptedClosureReceipt(sql, { workspaceId: execution.workspaceId, executionId: execution.id,
+      attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner }))
+  }
+  const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed)
+  const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint)
+  const carrier: MainWorkerCarrier = { capture(deviceId) {
+    const channel = input.endpoint().captureRequest(deviceId, SOURCE_OPERATION_EXTENSION.namespace)
+    if (!channel) return unavailable()
+    const { mainId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = channel.binding
+    return { identity: { mainId, deviceId: channel.binding.deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration },
+      request(namespace, payload, options) {
+        if (namespace !== SOURCE_OPERATION_EXTENSION.namespace) return Promise.reject(new DomainError('SOURCE_NAMESPACE_CONFLICT', 'The captured source channel cannot serve another namespace.', 409))
+        return channel.request(payload, options)
+      } }
+  } }
+  const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new ExistingByteTransferSourcePackageSender(snapshots, transfers))
+  const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote)
   const sources = new PostgresSourceService(input.pool, input.commands, input.locations, snapshots, input.mainId, roots, executions, {
     async confirmedClosed(record) {
       const sql = await input.pool.connect()
       try {
-        const execution = await new JobRepository().execution(sql, record.receipt.binding.workspaceId, record.receipt.executionId)
-        if (execution.attemptId !== record.receipt.attemptId || execution.operationId !== record.operationId
-          || execution.acceptedSpec.source.materializationId !== record.receipt.materializationId) return false
-        return Boolean(await input.dispatch().readAcceptedClosureReceipt(sql, { workspaceId: execution.workspaceId, executionId: execution.id,
-          attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner }))
+        return await confirmedClosed(sql, record)
       } finally { sql.release() }
     },
   })
-  return { sources, policies, executions, snapshots }
+  return { sources, policies, executions, snapshots, attempts, owners, transfers,
+    sourceExtension: createMainSourceOperationExtension(owners, transfers) }
 }

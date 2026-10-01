@@ -28,6 +28,15 @@ export class DeviceConnectionSupervisor {
     if (!this.channel || this.state.phase !== 'ready') return Promise.reject(new DeviceApplicationError('unavailable'))
     return this.channel.request(namespace, payload, options)
   }
+  /** Captures the same authenticated channel; callers must retain its exact binding. */
+  captureRequest(namespace: string) {
+    if (!this.channel || this.state.phase !== 'ready') return undefined
+    try { return this.channel.captureRequest(namespace) } catch { return undefined }
+  }
+  currentBinding(): Readonly<DeviceSessionBinding> | undefined {
+    if (!this.channel || this.state.phase !== 'ready') return undefined
+    try { return this.channel.currentBinding() } catch { return undefined }
+  }
   capabilities() { return this.channel?.capabilities() ?? [] }
   start(): void {
     if (this.task) return

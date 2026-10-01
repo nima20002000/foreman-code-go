@@ -26,7 +26,7 @@ export async function prepareWorkerApplicationAccess(channel: Pick<DeviceConnect
     || Date.parse(lease.expiresAt) <= Date.now()) throw new Error('Original main application lease is unavailable')
   signal?.throwIfAborted()
   const environment: ChildProcessEnvironment = { agentId: applicationAccess.agentId, variables: { GRAPHQL_MCP_TOKEN: applicationAccess.token } }
-  return { environment, async request(body: unknown, protocolVersion?: string, requestSignal?: AbortSignal) {
+  return { environment, expiresAt: lease.expiresAt, async request(body: unknown, protocolVersion?: string, requestSignal?: AbortSignal) {
     requestSignal?.throwIfAborted()
     const response = await channel.request(WORKER_MCP_EXTENSION.namespace,
       WorkerMcpRelayRequestSchema.parse({ ...envelope, operation: 'worker-mcp.request', body, ...(protocolVersion ? { protocolVersion } : {}) }),

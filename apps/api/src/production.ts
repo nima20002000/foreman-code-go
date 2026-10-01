@@ -1,3 +1,21 @@
+import { EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
+import { WORKER_MCP_EXTENSION } from '@graphql/contracts/worker-mcp-relay'
+import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
+import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
+import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
+import { MainWorkerMcpRelay, selectedMainMcpForward } from './modules/placement/workerMcpRelay.js'
+import { readAcceptedPlacement } from './modules/placement/persistence.js'
+import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
+import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
+import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
+import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
+import { retainInstalledCodexInventory } from './modules/harnesses/installedCodexInspection.js'
+import { readFile } from 'node:fs/promises'
+import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@graphql/contracts/resource-telemetry'
+import { createResourceTelemetryRuntime, type ResourceTelemetryRuntime } from './modules/resource-telemetry/runtime.js'
+import { createPassiveTelemetryAuthorities } from './modules/resource-telemetry/productionAuthority.js'
+import { registerResourceTelemetryRoutes } from './routes/resourceTelemetry.js'
+import { registerResourceTelemetrySelectorRoutes } from './routes/resourceTelemetrySelector.js'
 import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
 import { registerWorkspaceRootRoutes } from './modules/workspace-roots/transports.js'
 import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
@@ -168,8 +186,32 @@ export function buildProductionApp(
   const processRegistry = infrastructure?.auxiliary?.recovery
     ?? new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
   const access = new PostgresAccessService(database.pool)
+  let agentPlacement: AgentPlacementProducer | undefined
+  let agentPreparation: AgentExecutionPreparation | undefined
+  let executionAuthority: ReturnType<typeof createExecutionAuthorityExtension> | undefined
+  let mainWorkerMcp: MainWorkerMcpRelay | undefined
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
+      { ...EXECUTION_AUTHORITY_EXTENSION, role: 'server', async handle(payload, context) {
+        if (!executionAuthority?.handle) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Main Agent placement authority has not initialized.', 503)
+        return executionAuthority.handle(payload, context)
+      } },
+      { namespace: WORKER_MCP_EXTENSION.namespace, version: WORKER_MCP_EXTENSION.version, role: 'server',
+        maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: 0, async handle(payload, context) {
+          if (!mainWorkerMcp) throw new DomainError('WORKER_MCP_UNAVAILABLE', 'The original Main worker MCP authority has not initialized.', 503)
+          context.signal.throwIfAborted()
+          const result = await mainWorkerMcp.handle(payload, context.binding)
+          context.signal.throwIfAborted()
+          return { payload: result }
+        } },
+      { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
+        const handler = jobRuntime?.sourceExtension.handle
+        if (!handler) throw new DomainError('SOURCE_RUNTIME_UNAVAILABLE', 'The actual Main source domain has not initialized.', 503)
+        return handler(payload, context)
+      } },
+      ...((infrastructure?.deviceDomains?.extensions ?? []).some(value => value.namespace === BYTE_TRANSFER_NAMESPACE) ? [] : [{
+        namespace: BYTE_TRANSFER_NAMESPACE, version: 1, role: 'client' as const, maxJsonBytes: 16384, maxBinaryBytes: BYTE_TRANSFER_POLICY.maxChunkBytes,
+      }]),
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
@@ -195,7 +237,9 @@ export function buildProductionApp(
         const result = await endpoint.request(binding.deviceId, 'harness-discovery-v1',
           { operation: 'discover', refreshId: randomUUID() }, { signal })
         signal.throwIfAborted()
-        harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
+        if (selectedSuites) await retainInstalledCodexInventory({ registry: harnessRegistry, qualifications: qualificationRepository,
+          binding, inventory: result.payload, suiteRevision: selectedSuites.codex.revision })
+        else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
     },
@@ -206,6 +250,18 @@ export function buildProductionApp(
   const workflowCapture = createWorkflowNativeCaptureChannel()
   const reviewCapture = createReviewNativeCaptureChannel()
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify)
+  const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
+    async admitPlacementExecutionLocked(sql, owner, run, execution, ref, inputDigest) {
+      if (agentPlacement) { await agentPlacement.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId); return }
+      if (await readAcceptedPlacement(sql, run.id, execution.workflowNodeId)) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Agent placement producer is unavailable.', 503)
+    },
+    async preparePlacementExecution(owner, run, execution) {
+      if (agentPreparation) return agentPreparation.prepare(owner, run, execution)
+      const placed = await owner.oneShotConnection().transaction(sql => readAcceptedPlacement(sql, run.id, execution.workflowNodeId))
+      if (placed) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Agent source preparation producer is unavailable.', 503)
+      return undefined
+    },
+  }
   const reviewNativeProofs = new ReviewNativeProofServices(reviewCapture.verify)
   const repository = new PostgresInteractionRepository(database.pool, reviewNativeProofs)
   const budgets = new PostgresApprovalBudgetRepository(database.pool)
@@ -213,7 +269,7 @@ export function buildProductionApp(
   const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot, 'runner-local', projectRoot)
   const workflows = new PostgresWorkflowRepository(database.pool)
   const runs = new PostgresRunRepository(database.pool, workflows, locations,
-    { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime })
+    { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime, services: workflowServices })
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const hostProfileEvidence = new HostHarnessProfileEvidenceRepository(database.pool)
@@ -501,6 +557,9 @@ export function buildProductionApp(
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
   )
+  let telemetry: ResourceTelemetryRuntime | undefined
+  const telemetryLifetime = new AbortController()
+  let mainTelemetryContext: Extract<TrustedTelemetryContext, { kind: 'main-local' }> | null = null
   let jobRuntime: Awaited<ReturnType<typeof createProductionJobs>> | undefined
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
@@ -661,7 +720,12 @@ export function buildProductionApp(
       'The native runtime has not acquired ownership or is shutting down.', 503)
   }
   const currentProduction: CurrentRunProductionBinding = Object.freeze({
-    startPublication: binding.startPublication,
+    startPublication: { ...binding.startPublication, ...(selectedSuites ? { placementAdmission: {
+      prepare: (...args: Parameters<AgentPlacementProducer['prepare']>) => {
+        if (!agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual saved-placement admission producer is unavailable.', 503)
+        return agentPlacement.prepare(...args)
+      },
+    } } : {}) },
     availability: () => initialized && !closing ? binding.availability() : { runtimeAdmission: false, stopAvailable: false },
     assertStartReady: () => { assertRuntimeOpen(); binding.assertStartReady() },
     assertStopReady: () => { assertRuntimeOpen(); binding.assertStopReady() },
@@ -741,6 +805,7 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
       { name: 'device admission and channels', run: async () => { deviceRuntime.stop() } },
       { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
@@ -764,6 +829,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
       { name: 'GraphQL MCP routes', run: () => appRoutes.close() },
@@ -834,6 +900,13 @@ export function buildProductionApp(
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
+      if (selectedSuites) {
+        agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
+          harnessRegistry.installations, { codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision })
+        agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
+        executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
+      }
+      mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app))
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
@@ -845,6 +918,35 @@ export function buildProductionApp(
       assertOpen()
       await harnessRegistry.initialize(machine.installationId)
       assertOpen()
+      if (processRegistry instanceof NativeProcessRegistry) {
+        const registry = processRegistry
+        mainTelemetryContext = { kind: 'main-local', mainId: machine.installationId,
+          // Approved canonical alias for the Main, not a separate hardware UUID.
+          deviceId: machine.installationId, applicationInstallationId: machine.installationId,
+          bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim(),
+          runtimeEpoch: await runtimeOwner.readRuntimeEpoch(), capability: RESOURCE_TELEMETRY_CAPABILITY }
+        const authorities = createPassiveTelemetryAuthorities({ pool: database.pool, registry,
+          mainContext: () => mainTelemetryContext, mainActive: () => !closing && runtimeOwner.active,
+          deviceBinding: id => deviceRuntime.currentBinding(id), presence: id => deviceRuntime.presenceFor(id),
+          deviceCapabilities: id => deviceRuntime.endpointForDomains().capabilities(id),
+          getNativeOwners: () => approvals.passiveOwnedNativeSessions().flatMap(owned => {
+            const captured = launchScopes.get(owned.manager)
+            return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, nativeOwner: captured.owner }] : []
+          }) })
+        telemetry = await createResourceTelemetryRuntime({ localContext: mainTelemetryContext, registry, ...authorities,
+          wholeHostVisible: false, signal: telemetryLifetime.signal })
+        runtimeServices.resourceTelemetry = { reads: telemetry.service, selectors: telemetry.selectors }
+        const audit = { record: (principalId: string, source: 'http' | 'mcp', selectorKey: string) =>
+          commands.recordDenied(principalId, source, 'resource_telemetry_read', selectorKey) }
+        registerResourceTelemetryRoutes(app, telemetry.service, audit)
+        registerResourceTelemetrySelectorRoutes(app, telemetry.selectors, {
+          record: (principalId, source, selectorKey) => commands.recordDenied(principalId, source, 'resource_telemetry_selector_get', selectorKey),
+        })
+        void telemetry.completion.then(result => {
+          if (result.kind === 'failed') app.log.error({ err: result.error }, 'passive resource telemetry collector failed')
+        })
+        assertOpen()
+      }
       // Optional discovery warmups used to block startup on native auth/network.
       // Qualification still runs at every existing on-demand configuration/execution gate.
       // The bounded compatibility diagnostic creates no native session or model turn.

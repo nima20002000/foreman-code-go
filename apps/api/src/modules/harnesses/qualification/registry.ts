@@ -7,7 +7,7 @@ import { baselineProfile, forgetQualifiedProfile, rememberQualifiedProfile, QUAL
 import type { HarnessQualificationRepository } from './repository.js'
 
 export class HarnessQualificationRegistry {
-  constructor(private readonly repository: HarnessQualificationRepository, private readonly revisions: Record<CompatibilityHarness, string>) {}
+  constructor(private readonly repository: Pick<HarnessQualificationRepository, 'list' | 'find'>, private readonly revisions: Partial<Record<CompatibilityHarness, string>>) {}
 
   async load(): Promise<void> {
     for (const row of await this.repository.list()) {
@@ -28,9 +28,23 @@ export class HarnessQualificationRegistry {
     return { binary: resolved, sha256 }
   }
 
+  /** Worker read-only scopes require actual current proof even for known baseline versions. */
+  async trustedExact(harness: CompatibilityHarness, version: string, binarySha256: string): Promise<boolean> {
+    const revision = this.revisions[harness]
+    if (!revision) return false
+    const record = await this.repository.find(harness, version, binarySha256, revision)
+    const passed = record?.harness === harness && record.version === version && record.binarySha256 === binarySha256
+      && record.suiteRevision === revision && record.status === 'qualified' && record.profile === QUALIFICATION_TARGET_PROFILE[harness]
+      && record.checkedAt !== null && record.checks.length > 0 && record.checks.every(check => check.passed)
+    if (passed && record?.profile) rememberQualifiedProfile(harness, version, record.profile)
+    return passed
+  }
+
   async trusted(harness: CompatibilityHarness, version: string, binarySha256: string): Promise<boolean> {
     if (baselineProfile(harness, version)) return true
-    const record = await this.repository.find(harness, version, binarySha256, this.revisions[harness])
+    const revision = this.revisions[harness]
+    if (!revision) return false
+    const record = await this.repository.find(harness, version, binarySha256, revision)
     const passed = record?.status === 'qualified' && record.profile === QUALIFICATION_TARGET_PROFILE[harness]
     if (passed) rememberQualifiedProfile(harness, version, record.profile!)
     else forgetQualifiedProfile(harness, version)
