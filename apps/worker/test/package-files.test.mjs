@@ -1,0 +1,71 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { regularFiles, verifyPackage, artifactFiles, copySharpPackages, sharpPackages } from '../../../scripts/worker-artifact-files.mjs';
+import { validateManifest } from '../src/installation.mjs';
+
+function fixture() {
+  const files = new Map([['package.json', Buffer.from('{"name":"sharp","version":"0.35.4"}')], ['LICENSE', Buffer.from('license')], ['lib/index.js', Buffer.from('module.exports = {}')]]);
+  const index = { requiresBuild: false, manifest: { name: 'sharp', version: '0.35.4' }, algo: 'sha512', files: new Map([...files].map(([path, bytes]) => [path, { size: bytes.length, digest: createHash('sha512').update(bytes).digest('hex') }])) };
+  return { files, index };
+}
+
+test('package verification rejects changed bytes, sizes, file sets, identities and build hooks', () => {
+  const { files, index } = fixture();
+  verifyPackage('sharp', '0.35.4', index, files);
+  for (const invalid of [{ ...index, requiresBuild: true }, { ...index, manifest: { name: 'other', version: '0.35.4' } }, { ...index, algo: 'sha256' }]) assert.throws(() => verifyPackage('sharp', '0.35.4', invalid, files));
+  for (const changed of [new Map([...files, ['extra', Buffer.from('x')]]), new Map([...files].filter(([path]) => path !== 'LICENSE')), new Map(files).set('LICENSE', Buffer.from('License'))]) assert.throws(() => verifyPackage('sharp', '0.35.4', index, changed));
+  index.files.get('LICENSE').size++;
+  assert.throws(() => verifyPackage('sharp', '0.35.4', index, files));
+});
+
+test('recursive inventory retains scoped assets and licenses, excludes nested dependencies and rejects symlinks', async t => {
+  const directory = await mkdtemp('/tmp/worker-package-');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, 'node_modules/@img/native/lib'), { recursive: true });
+  await writeFile(join(directory, 'node_modules/@img/native/lib/binding.node'), 'native');
+  const inventory = await artifactFiles(directory);
+  assert.deepEqual(inventory.map(file => file.path), ['node_modules/@img/native/lib/binding.node']);
+  await symlink('binding.node', join(directory, 'node_modules/@img/native/lib/alias'));
+  await assert.rejects(artifactFiles(directory), /Nonregular/);
+  assert.equal((await regularFiles(directory, { excludeNodeModules: true })).size, 0);
+});
+
+test('installer accepts scoped native paths while rejecting traversal and duplicate paths', () => {
+  const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3', rootPersistent: true, homePersistent: true };
+  const manifest = { format: 1, version: '0.1.0', commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64), protocolVersion: 1, identityFormat: 1, packageManager: 'pnpm@11.27.0', target: facts,
+    files: ['src/cli.mjs', 'node_modules/@img/sharp-linux-x64/lib/sharp-linux-x64.node'].map(path => ({ path, sha256: 'c'.repeat(64), size: 1 })) };
+  const expected = { protocolVersion: 1, identityFormat: 1 };
+  validateManifest(manifest, facts, expected);
+  for (const path of ['node_modules/@img/../secret', '/secret', 'node_modules//secret', 'src/cli.mjs']) assert.throws(() => validateManifest({ ...manifest, files: [...manifest.files, { path, sha256: 'c'.repeat(64), size: 1 }] }, facts, expected));
+});
+
+
+test('locked native packages use exact TAB keys and copy deterministic verified buffers as siblings', async t => {
+  const directory = await mkdtemp('/tmp/worker-native-copy-');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'root'), lock = { packages: {} }, records = new Map();
+  const integrity = `sha512-${Buffer.alloc(64, 1).toString('base64')}`;
+  for (const [name, version] of Object.entries(sharpPackages)) {
+    const source = join(root, 'node_modules/.pnpm', `${name.replace('/', '+')}@${version}`, 'node_modules', name);
+    await mkdir(source, { recursive: true });
+    const files = new Map([['package.json', Buffer.from(JSON.stringify({ name, version }))], ['LICENSE', Buffer.from('license')]]);
+    for (const [path, bytes] of files) await writeFile(join(source, path), bytes);
+    lock.packages[`${name}@${version}`] = { resolution: { integrity } };
+    records.set(`${integrity}\t${name}@${version}`, { requiresBuild: false, manifest: { name, version }, algo: 'sha512', files: new Map([...files].map(([path, bytes]) => [path, { size: bytes.length, digest: createHash('sha512').update(bytes).digest('hex') }])) });
+  }
+  const first = join(directory, 'first'), second = join(directory, 'second');
+  const requested = [];
+  const record = key => { requested.push(key); return records.get(key); };
+  const result = await copySharpPackages({ root, output: first, lock, record });
+  await copySharpPackages({ root, output: second, lock, record });
+  assert.equal(result.length, 6);
+  assert.deepEqual(new Set(requested), new Set(records.keys()));
+  assert.deepEqual(await artifactFiles(first), await artifactFiles(second));
+  const changed = records.values().next().value;
+  changed.files.get('LICENSE').digest = '0'.repeat(128);
+  await assert.rejects(copySharpPackages({ root, output: join(directory, 'bad'), lock, record }), /integrity/);
+  await assert.rejects(copySharpPackages({ root, output: join(directory, 'missing'), lock, record: () => undefined }), /index/);
+});
