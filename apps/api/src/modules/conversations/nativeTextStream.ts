@@ -23,7 +23,37 @@ export function createNativeTextStream(input: {
   }
   input.signal?.addEventListener('abort', dispose, { once: true })
   if (input.signal?.aborted) dispose()
-  const normalize = (event: NativeHarnessEvent) => {
+
+  return {
+    before(event: NativeHarnessEvent) {
+      if (disposed) return
+      // Inspection must not consume/deduplicate the event before its canonical commit.
+      const deltas = nativeAssistantText(event, new Map(kinds))
+      if (!deltas.length || deltas.some((delta) => delta.mode !== 'append')) stream.flush()
+    },
+    push(event: NativeHarnessEvent) {
+      if (disposed) return
+      if (kinds.size >= TEXT_STREAM_LIMITS.items) { stream.flush(); if (!disposed) input.reconcile(); return }
+      for (const operation of normalizeNativeTextOperations(event, { ...input, kinds, parents })) {
+        if (operation) stream.push(operation)
+        else { stream.flush(); if (!disposed) input.reconcile() }
+      }
+    },
+    rejected(event: NativeHarnessEvent) {
+      if (disposed) return
+      for (const operation of normalizeNativeTextOperations(event, { ...input, kinds, parents })) if (operation?.final) stream.seal(operation)
+      if (!disposed) input.reconcile()
+    },
+    flush: stream.flush,
+    dispose,
+  }
+}
+
+export function normalizeNativeTextOperations(event: NativeHarnessEvent, input: {
+  harness: 'codex' | 'opencode' | 'claude'; owner: () => Omit<ActivityTextIdentity, 'itemId' | 'partId' | 'parentId' | 'channel'>
+  kinds: Map<string, string>; parents: Map<string, string>
+}): Array<ActivityTextOperation | undefined> {
+  const { kinds, parents } = input
     if (event.type === 'message.part.delta' && event.payload.field === 'text' && typeof event.payload.partID === 'string' && !kinds.has(event.payload.partID)) return [undefined]
     const deltas = nativeAssistantText(event, kinds)
     const completed = completedNativeAssistantMessage(event, input.harness)
@@ -39,7 +69,7 @@ export function createNativeTextStream(input: {
       const source = payload.source && typeof payload.source === 'object' ? payload.source as Record<string, unknown> : {}
       const eventId = typeof source.eventId === 'string' ? source.eventId : undefined
       const nativeSequence = typeof source.sequence === 'string' ? source.sequence : undefined
-      return { identity: { ...input.owner(), itemId: nativeItemId, partId: delta.partId,
+      return { observedAt: event.occurredAt, identity: { ...input.owner(), itemId: nativeItemId, partId: delta.partId,
         ...(parentId ? { parentId } : {}), channel: delta.partId.startsWith('thinking:') ? 'reasoning' : 'assistant' },
       mode: delta.mode, text: delta.text, final: !!completed && completed.complete !== false,
       ...(event.connectionId || eventId || nativeSequence ? { source: {
@@ -48,27 +78,3 @@ export function createNativeTextStream(input: {
       } } : {}) }
     })
   }
-  return {
-    before(event: NativeHarnessEvent) {
-      if (disposed) return
-      // Inspection must not consume/deduplicate the event before its canonical commit.
-      const deltas = nativeAssistantText(event, new Map(kinds))
-      if (!deltas.length || deltas.some((delta) => delta.mode !== 'append')) stream.flush()
-    },
-    push(event: NativeHarnessEvent) {
-      if (disposed) return
-      if (kinds.size >= TEXT_STREAM_LIMITS.items) { stream.flush(); if (!disposed) input.reconcile(); return }
-      for (const operation of normalize(event)) {
-        if (operation) stream.push(operation)
-        else { stream.flush(); if (!disposed) input.reconcile() }
-      }
-    },
-    rejected(event: NativeHarnessEvent) {
-      if (disposed) return
-      for (const operation of normalize(event)) if (operation?.final) stream.seal(operation)
-      if (!disposed) input.reconcile()
-    },
-    flush: stream.flush,
-    dispose,
-  }
-}
