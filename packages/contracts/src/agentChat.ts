@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ActivitySnapshotV1Schema } from "./activity.js";
 import { MessageAttachmentFields } from "./files.js";
 import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
 
@@ -181,6 +182,7 @@ export const AgentChatStateSchema = z.object({
   lastResult: ExecutionResultSchema.optional(),
   /** Monotonic per conversation; 0 when there is no conversation. */
   revision: z.number().int().nonnegative(),
+  activitySnapshot: ActivitySnapshotV1Schema.optional(),
 }).strict();
 export type AgentChatState = z.infer<typeof AgentChatStateSchema>;
 
