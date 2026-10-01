@@ -5,6 +5,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 
 
 export class PostgresCommandCoordinator {
@@ -12,7 +13,7 @@ export class PostgresCommandCoordinator {
 
   async execute<T>(input: {
     principal: ManagementPrincipal
-    source: 'http' | 'mcp'
+    source: 'http' | 'mcp' | 'device'
     operation: string
     commandId: string
     targetKey: string
@@ -23,11 +24,15 @@ export class PostgresCommandCoordinator {
     authorize?(client: pg.PoolClient): Promise<void>
     /** Lifecycle callbacks may await runtime cleanup that needs the application pool. */
     dedicatedConnection?: true
+    /** Prepare immutable bytes or installed metadata outside SQL under retained
+     * command ownership. Admission and its receipt then share one transaction. */
+    prepare?(): Promise<void>
     /** Explicit compatibility boundary for historical receipts, never new commands. */
     replayResult?(result: unknown): T
   }): Promise<{ value: T; replayed: boolean }> {
     const inputHash = commandInputHash(input.payload)
-    const commandPool = input.dedicatedConnection
+    const dedicatedConnection = input.dedicatedConnection || input.prepare !== undefined
+    const commandPool = dedicatedConnection
       ? new pg.Pool({ ...this.pool.options, max: 1, application_name: 'graphql-lifecycle-command' }) : this.pool
     const client = await commandPool.connect().catch(async (error: unknown) => {
       if (commandPool !== this.pool) await commandPool.end()
@@ -40,7 +45,7 @@ export class PostgresCommandCoordinator {
     try {
       await client.query('begin')
       inTransaction = true
-      if (input.dedicatedConnection) {
+      if (dedicatedConnection) {
         await client.query('select pg_advisory_lock(hashtext($1))', [commandLock])
         lifecycleLock = true
       } else {
@@ -66,12 +71,18 @@ export class PostgresCommandCoordinator {
       // A lifecycle callback can wait for runtime cleanup and database work.
       // Keep its command identity serialized by the session advisory lock, but
       // do not retain row locks while the idempotent callback runs.
-      if (input.dedicatedConnection) {
+      if (dedicatedConnection) {
         await client.query('commit')
         inTransaction = false
       }
+      if (input.prepare) {
+        await input.prepare()
+        await client.query('begin')
+        inTransaction = true
+        await input.authorize?.(client)
+      }
       const value = await input.perform(client)
-      if (input.dedicatedConnection) {
+      if (dedicatedConnection && !input.prepare) {
         await client.query('begin')
         inTransaction = true
       }
@@ -115,14 +126,16 @@ export class PostgresCommandCoordinator {
       throw error
     } finally {
       if (lifecycleLock && !releaseError) {
-        await client.query('select pg_advisory_unlock(hashtext($1))', [commandLock]).catch(() => undefined)
+        await client.query('select pg_advisory_unlock(hashtext($1))', [commandLock]).catch((error: unknown) => {
+          releaseError = error instanceof Error ? error : new Error('Command unlock failed.')
+        })
       }
       client.release(releaseError)
       if (commandPool !== this.pool) await commandPool.end()
     }
   }
 
-  async recordDenied(principalId: string | undefined, source: 'http' | 'mcp', action: string, targetKey: string): Promise<void> {
+  async recordDenied(principalId: string | undefined, source: 'http' | 'mcp' | 'device', action: string, targetKey: string): Promise<void> {
     await this.pool.query(
       `insert into management_audit (principal_id, source, action, target_key, outcome, details)
        values ($1, $2, $3, $4, 'denied', '{}'::jsonb)`,
@@ -132,12 +145,12 @@ export class PostgresCommandCoordinator {
 
   async recordAudit(
     principalId: string | undefined,
-    source: 'http' | 'mcp',
+    source: 'http' | 'mcp' | 'device',
     action: string,
     targetKey: string,
     outcome: 'succeeded' | 'failed' | 'uncertain',
     details: Record<string, unknown> = {},
-    client?: pg.ClientBase,
+    client?: GraphSqlClient,
   ): Promise<void> {
     await (client ?? this.pool).query(
       `insert into management_audit (principal_id, source, action, target_key, outcome, details)

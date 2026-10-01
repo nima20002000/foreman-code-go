@@ -1,0 +1,131 @@
+import pg from 'pg'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+
+const principal: ManagementPrincipal = { id: 'actor', name: 'Actor', audience: 'operator', grants: [],
+  expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
+const command = { principal, source: 'device' as const, operation: 'job.start', commandId: 'start-1',
+  targetKey: 'workspace', payload: { definitionId: 'definition', expectedRevision: 1 }, dedicatedConnection: true as const }
+afterEach(() => vi.restoreAllMocks())
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
+function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; failUnlock?: boolean } = {}) {
+  const calls: string[] = [], releases = vi.fn(), end = vi.fn(async () => undefined)
+  const secondLock = deferred()
+  let receipt: { input_hash: unknown; target_key: unknown; result: unknown } | undefined
+  let lockTail = Promise.resolve(), commits = 0, lockRequests = 0
+  const makeClient = () => {
+    let pending: typeof receipt, unlock: (() => void) | undefined
+    return { release: releases, query: vi.fn(async (sql: string, values?: unknown[]) => {
+      calls.push(sql)
+      if (sql.includes('pg_advisory_lock(')) {
+        const prior = lockTail, held = deferred()
+        lockTail = held.promise; unlock = held.resolve
+        if (++lockRequests === 2) secondLock.resolve()
+        await prior
+      }
+      if (sql.includes('pg_advisory_unlock(')) {
+        if (options.failUnlock) throw new Error('unlock failed')
+        unlock?.()
+      }
+      if (sql.includes('select input_hash')) return { rows: receipt ? [receipt] : [], rowCount: receipt ? 1 : 0 }
+      if (sql.includes('insert into management_command_receipts')) pending = {
+        input_hash: values?.[4], target_key: values?.[3], result: JSON.parse(String(values?.[5])),
+      }
+      if (sql === 'commit') {
+        if (pending) { receipt = pending; pending = undefined }
+        commits++
+        if (options.uncertainCommit && commits === 2) throw new Error('commit acknowledgment lost')
+      }
+      if (sql === 'rollback') {
+        if (options.failRollback) throw new Error('rollback failed')
+        pending = undefined
+      }
+      return { rows: [], rowCount: 0 }
+    }) }
+  }
+  const pool = { options: {}, connect: async () => makeClient(), end }
+  vi.spyOn(pg, 'Pool').mockImplementation(function () { return { ...pool } } as never)
+  return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), calls, releases, end, secondLock }
+}
+
+describe('retained command preparation ownership', () => {
+  it('serializes duplicate commands through preparation and returns the original receipt', async () => {
+    const f = fixture(), entered = deferred(), resume = deferred()
+    const prepare = vi.fn(async () => { entered.resolve(); await resume.promise })
+    const perform = vi.fn(async () => ({ id: 'accepted-job' }))
+    const first = f.coordinator.execute({ ...command, prepare, perform })
+    await entered.promise
+    const second = f.coordinator.execute({ ...command, prepare, perform })
+    await f.secondLock.promise
+    expect(prepare).toHaveBeenCalledOnce()
+    resume.resolve()
+    expect(await first).toEqual({ value: { id: 'accepted-job' }, replayed: false })
+    expect(await second).toEqual({ value: { id: 'accepted-job' }, replayed: true })
+    expect(prepare).toHaveBeenCalledOnce(); expect(perform).toHaveBeenCalledOnce()
+    expect(f.releases).toHaveBeenCalledTimes(2); expect(f.end).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails changed command input before repeating preparation', async () => {
+    const f = fixture(), prepare = vi.fn(async () => undefined), perform = vi.fn(async () => 'accepted')
+    await f.coordinator.execute({ ...command, prepare, perform })
+    await expect(f.coordinator.execute({ ...command, payload: { expectedRevision: 2 }, prepare, perform }))
+      .rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+    expect(prepare).toHaveBeenCalledOnce(); expect(perform).toHaveBeenCalledOnce()
+  })
+
+  it('audits preparation failure and releases the session without admission or receipt writes', async () => {
+    const f = fixture(), error = new Error('capture failed'), perform = vi.fn()
+    await expect(f.coordinator.execute({ ...command, prepare: async () => { throw error }, perform })).rejects.toBe(error)
+    expect(perform).not.toHaveBeenCalled()
+    expect(f.calls.some(sql => sql.includes('insert into management_command_receipts'))).toBe(false)
+    expect(f.calls.some(sql => sql.includes("'failed'"))).toBe(true)
+    expect(f.calls.at(-1)).toContain('pg_advisory_unlock')
+    expect(f.releases).toHaveBeenCalledOnce(); expect(f.end).toHaveBeenCalledOnce()
+  })
+
+  it('does not prepare bytes or read receipts when initial live authority is denied', async () => {
+    const f = fixture(), prepare = vi.fn(), perform = vi.fn(), error = new Error('authority denied')
+    await expect(f.coordinator.execute({ ...command, prepare, perform, authorize: async () => { throw error } })).rejects.toBe(error)
+    expect(prepare).not.toHaveBeenCalled(); expect(perform).not.toHaveBeenCalled()
+    expect(f.calls.some(sql => sql.includes('select input_hash'))).toBe(false)
+    expect(f.calls).toContain('rollback')
+  })
+
+  it('reauthorizes after preparation and rolls back if authority was revoked', async () => {
+    const f = fixture(), perform = vi.fn(), error = new Error('authority revoked')
+    let revoked = false
+    const authorize = vi.fn(async () => { if (revoked) throw error })
+    await expect(f.coordinator.execute({ ...command, authorize, prepare: async () => { revoked = true }, perform })).rejects.toBe(error)
+    expect(authorize).toHaveBeenCalledTimes(2); expect(perform).not.toHaveBeenCalled()
+    expect(f.calls).toContain('rollback')
+    expect(f.calls.some(sql => sql.includes('insert into management_command_receipts'))).toBe(false)
+  })
+
+  it('replays a committed receipt after lost commit acknowledgment without preparing again', async () => {
+    const f = fixture({ uncertainCommit: true }), prepare = vi.fn(async () => undefined), perform = vi.fn(async () => 'accepted')
+    await expect(f.coordinator.execute({ ...command, prepare, perform })).rejects.toThrow('commit acknowledgment lost')
+    expect(await f.coordinator.execute({ ...command, prepare, perform })).toEqual({ value: 'accepted', replayed: true })
+    expect(prepare).toHaveBeenCalledOnce(); expect(perform).toHaveBeenCalledOnce()
+  })
+
+  it('evicts uncertain rollback connections and preserves the original admission error', async () => {
+    const f = fixture({ failRollback: true }), error = new Error('admission failed')
+    await expect(f.coordinator.execute({ ...command, prepare: async () => undefined, perform: async () => { throw error } })).rejects.toBe(error)
+    expect(f.releases).toHaveBeenCalledWith(expect.objectContaining({ message: 'rollback failed' }))
+    expect(f.calls.some(sql => sql.includes('pg_advisory_unlock'))).toBe(false)
+    expect(f.calls.some(sql => sql.includes("'failed'"))).toBe(false)
+  })
+
+  it('evicts a connection whose session lock cannot be released after success', async () => {
+    const f = fixture({ failUnlock: true })
+    expect(await f.coordinator.execute({ ...command, prepare: async () => undefined, perform: async () => 'accepted' }))
+      .toEqual({ value: 'accepted', replayed: false })
+    expect(f.releases).toHaveBeenCalledWith(expect.objectContaining({ message: 'unlock failed' }))
+    expect(f.end).toHaveBeenCalledOnce()
+  })
+})

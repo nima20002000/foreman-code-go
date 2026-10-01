@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
   ApprovedRootAllowlistSchema, WorkspaceRootAttestationSchema, WorkspaceRootBrowseResultSchema,
@@ -15,13 +15,13 @@ export interface RootWorkerClient {
 }
 export class InstalledWorkspaceRootHosts implements WorkspaceRootHostPort {
   constructor(private readonly main: ApprovedRootAllowlist,
-    private readonly authorizeInstallation: (sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+    private readonly authorizeInstallation: (sql: GraphSqlClient, principal: ManagementPrincipal,
       host: ApprovedRootAllowlist['hostRef'], installationId: string) => Promise<WorkspaceRootPolicy['registration']>,
     private readonly remote: RootWorkerClient) { this.main = ApprovedRootAllowlistSchema.parse(structuredClone(main)) }
-  authorize(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal, host: ApprovedRootAllowlist['hostRef'], installationId: string) {
+  authorize(sql: GraphSqlClient, principal: ManagementPrincipal, host: ApprovedRootAllowlist['hostRef'], installationId: string) {
     return this.authorizeInstallation(sql, principal, host, installationId)
   }
-  async configurations(sql: Pick<pg.PoolClient, 'query'>, _workspaceId: string): Promise<ApprovedRootAllowlist[]> {
+  async configurations(sql: GraphSqlClient, _workspaceId: string): Promise<ApprovedRootAllowlist[]> {
     void _workspaceId
     const rows = await sql.query<{ record: unknown }>(`select c.record from workspace_root_host_configuration_heads h
       join workspace_root_host_configurations c on c.host_scope=h.host_scope and c.configuration_revision=h.configuration_revision

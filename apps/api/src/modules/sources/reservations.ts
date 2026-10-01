@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import { isDeepStrictEqual } from 'node:util'
 import { DomainError } from '../errors.js'
 
@@ -10,7 +10,7 @@ export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024
  * Expiry/disconnect never frees an execution reservation or a pending capture.
  */
 export class PostgresSourceReservations {
-  async reserve(sql: Pick<pg.PoolClient, 'query'>, request: Omit<SourceReservation, 'reservationId'>): Promise<SourceReservation> {
+  async reserve(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>): Promise<SourceReservation> {
     if (!Number.isSafeInteger(request.reservedBytes) || request.reservedBytes < 0 || request.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes)
       throw new DomainError('SOURCE_CAPACITY', 'Invalid source disk reservation.', 409)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${request.scopeId}`])
@@ -34,7 +34,7 @@ export class PostgresSourceReservations {
       values($1,$2,$3,$4,$5,'preparing',$6::jsonb)`, [reservation.reservationId, request.scopeId, request.ownerKind, request.ownerId, request.reservedBytes, JSON.stringify(reservation)])
     return reservation
   }
-  async retain(sql: Pick<pg.PoolClient, 'query'>, reservation: SourceReservation, state: 'retained' | 'owned' | 'uncertain', accountedBytes = reservation.reservedBytes): Promise<void> {
+  async retain(sql: GraphSqlClient, reservation: SourceReservation, state: 'retained' | 'owned' | 'uncertain', accountedBytes = reservation.reservedBytes): Promise<void> {
     if (!Number.isSafeInteger(accountedBytes) || accountedBytes < 0 || accountedBytes > reservation.reservedBytes) throw new DomainError('SOURCE_CAPACITY', 'Invalid verified source footprint.', 409)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${reservation.scopeId}`])
     const result = await sql.query(`update source_storage_reservations set state=$2,reserved_bytes=$3 where reservation_id=$1 and state<>'reclaimed'`, [reservation.reservationId, state, accountedBytes])
@@ -42,7 +42,7 @@ export class PostgresSourceReservations {
   }
   /** Authoritative physical deletion AND execution closure must precede this.
    * No automatic timer or client input can provide that proof. */
-  async reclaimed(sql: Pick<pg.PoolClient, 'query'>, reservation: SourceReservation, prove: () => Promise<boolean>): Promise<void> {
+  async reclaimed(sql: GraphSqlClient, reservation: SourceReservation, prove: () => Promise<boolean>): Promise<void> {
     if (!await prove()) throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'Physical source reclamation is not confirmed.', 409)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${reservation.scopeId}`])
     await sql.query(`update source_storage_reservations set state='reclaimed' where reservation_id=$1`, [reservation.reservationId])

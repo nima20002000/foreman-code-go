@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { SourceAction } from '@graphql/contracts/source-admission'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -8,7 +8,7 @@ import { DomainError } from '../errors.js'
 /** The authenticated caller's accepted grants are a ceiling, even if its owner
  * later gets broader grants. Existing live delegation validation holds the chain.
  */
-export async function authorizeSource(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+export async function authorizeSource(sql: GraphSqlClient, principal: ManagementPrincipal,
   action: SourceAction, workspaceId: string): Promise<{ principal: ManagementPrincipal; ownerId: string }> {
   requireAuthorization(principal, action, { workspaceId })
   const live = await readLiveManagementPrincipal(sql, principal.id)
