@@ -1,3 +1,5 @@
+import { inspectNativeResponse } from '../harnesses/responseAvailability.js'
+import type { InteractionActivityEvidence } from './activityProjection.js'
 import type { ReviewNativeCapture, ReviewNativeCapturePort, ReviewOriginalNativeSource } from './reviewNativeCapture.js'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -853,6 +855,34 @@ export class ApprovalExecutionCoordinator {
       failures.push(...await this.cleanupSession(owned, false))
     }
     if (failures.length) throw new AggregateError(failures, 'Completed Run session cleanup was incomplete.')
+  }
+
+  /** Read-only exact callback qualification. A cold read never allocates or attaches a manager. */
+  async inspectInteractionActivity(interaction: DurableInteraction): Promise<InteractionActivityEvidence> {
+    const identity = { interactionId: interaction.id, revision: interaction.revision, sessionId: interaction.nativeSessionId,
+      requestId: interaction.nativeRequestId, executionId: interaction.executionId }
+    const unavailable: InteractionActivityEvidence = { response: { authorized: false, qualified: false,
+      path: null, usable: false, identity } }
+    const owned = this.ownedSessions.get(interaction.executionId)
+    if (!owned?.session || this.closing || owned.failed || owned.cleanup || owned.openingFailed
+      || owned.controller.signal.aborted || this.stoppingRuns.has(interaction.runId)) return unavailable
+    const execution = await this.runs.getExecution(interaction.executionId)
+    const run = await this.runs.get(interaction.runId)
+    if (!execution || !run || execution.runId !== interaction.runId || execution.agentId !== interaction.requestingAgentId
+      || execution.nativeSessionId !== interaction.nativeSessionId || execution.state === 'completed'
+      || run.workspaceId !== interaction.workspaceId || run.workflowId !== interaction.workflowId || run.outcome !== 'pending'
+      || owned.execution.id !== execution.id || owned.execution.attempt !== execution.attempt
+      || owned.session.nativeSessionId !== interaction.nativeSessionId || owned.session.harness !== interaction.harness
+      || owned.session.providerVersion !== interaction.providerVersion) return unavailable
+    const manager = this.rawManagers.get(owned.manager) ?? owned.manager
+    const response = await inspectNativeResponse(manager, owned.session, {
+      nativeRequestId: interaction.nativeRequestId, nativeRequestType: interaction.nativeRequestType,
+    }, { signal: AbortSignal.any([owned.controller.signal, AbortSignal.timeout(5_000)]),
+      isCurrent: () => this.ownedSessions.get(execution.id) === owned && !this.closing && !owned.cleanup
+        && !owned.failed && !owned.controller.signal.aborted && !this.stoppingRuns.has(interaction.runId) })
+    return { response: { authorized: false, qualified: response.qualified, usable: response.state === 'available',
+      path: response.state === 'available' ? response.path : null, identity },
+      ...(response.nativeTurnId ? { nativeTurnId: response.nativeTurnId } : {}) }
   }
 
   async validateInteraction(interaction: DurableInteraction, signal?: AbortSignal): Promise<void> {
