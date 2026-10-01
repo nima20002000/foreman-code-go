@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
 import { HostHarnessOverrides } from './HostHarnessOverrides'
 import { clearRevisionedFormPersistence } from './revisionedForm'
+import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 const mainId = '11111111-1111-4111-8111-111111111111'
 const deviceId = '22222222-2222-4222-8222-222222222222'
 const pc: HostHarnessOverride = { instanceId: mainId, revision: 1, instanceRevision: 'pc-r1', target: { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId, harnessInstallationId: 'pc-installation', installationFingerprint: 'pc-fingerprint' },
@@ -21,6 +22,31 @@ function renderHost(value: HostHarnessOverride) {
 }
 afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const client of clients.splice(0)) client.clear() })
 describe('host-specific settings revisions', () => {
+  it('edits a Claude host profile without another provider or API-host model discovery', async () => {
+    const claude: HostHarnessOverride = { ...pc, driverId: 'claude', presetId: 'claude-default', configuration: savedClaudeConfiguration }
+    let catalogRequests = 0
+    server.use(http.get('/api/management/harnesses/:harness/options', () => { catalogRequests += 1; return HttpResponse.json({}, { status: 503 }) }),
+      http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [claude] })),
+      http.post('/api/management/harness-instances/save', async ({ request }) => {
+        const input = await request.json() as { expectedRevision: number; target: unknown; configuration: unknown }
+        expect(input.expectedRevision).toBe(claude.revision); expect(input.target).toEqual(claude.target)
+        expect(input.configuration).toEqual({ ...savedClaudeConfiguration, model: 'host-claude-model', configDirectory: '/host/claude/profile', authMode: 'api-key', sandbox: 'workspace-write' })
+        return HttpResponse.json({ value: { ...claude, revision: 2, instanceRevision: 'claude-r2', configuration: input.configuration }, replayed: false })
+      }))
+    renderHost(claude)
+    const user = userEvent.setup()
+    const model = await screen.findByRole('textbox', { name: 'Model' })
+    expect(screen.queryByLabelText('Provider variant')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Native Agent')).not.toBeInTheDocument()
+    await user.clear(model); await user.type(model, 'host-claude-model')
+    const profile = screen.getByRole('textbox', { name: 'Local Claude profile directory' })
+    await user.clear(profile); await user.type(profile, '/host/claude/profile')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Authentication' }), 'api-key')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+    await user.click(screen.getByRole('button', { name: 'Save host override' }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(catalogRequests).toBe(0)
+  })
   it('saves the exact installation and revision without calling API-host model discovery', async () => {
     server.use(http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: [pc] })),
       http.post('/api/management/harness-instances/save', async ({ request }) => {
