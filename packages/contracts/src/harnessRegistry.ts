@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { HarnessConfigurationSchema, type HarnessConfiguration } from './index.js'
+import { DevicePresenceSchema } from './deviceConnection.js'
 import type { CanonicalMachineReference } from './deviceIdentity.js'
 
 export const HarnessHostReferenceSchema: z.ZodType<CanonicalMachineReference> = z.discriminatedUnion('kind', [
@@ -45,10 +46,18 @@ export const HarnessWorkspaceRootReferenceSchema = z.object({
 }).strict()
 export const HarnessHostInventoryMetadataSchema = z.object({
   hostRef: HarnessHostReferenceSchema, applicationInstallationId: z.uuid(),
+  connection: DevicePresenceSchema.nullable(),
   platform: z.object({ platform: Identity, architecture: Identity }).strict().nullable(),
   // Null means no authorized canonical-root projection is supplied, not an empty allowlist.
   workspaceRoots: z.array(HarnessWorkspaceRootReferenceSchema).nullable(),
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.connection === null) return
+  const binding = value.connection.binding
+  if (value.hostRef.kind !== 'device' || binding.mainId !== value.hostRef.mainId
+    || binding.deviceId !== value.hostRef.deviceId || binding.workerInstallationId !== value.applicationInstallationId) {
+    context.addIssue({ code: 'custom', path: ['connection'], message: 'Observed connection must belong to the exact canonical device and application installation.' })
+  }
+})
 export type HarnessHostInventoryMetadata = z.infer<typeof HarnessHostInventoryMetadataSchema>
 export const HarnessRegistryReadbackSchema = z.object({
   hostMetadata: HarnessHostInventoryMetadataSchema.optional(),
