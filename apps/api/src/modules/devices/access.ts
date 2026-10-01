@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, verify } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { authorizeDevice, DevicePairingRequestSchema, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest } from '@graphql/contracts/device-identity'
+import { authorizeDevice, DevicePairingRequestSchema, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest, MainDeviceIdentityPublicSchema, type MainDeviceIdentityPublic } from '@graphql/contracts/device-identity'
 import { pairingProof, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { commandInputHash, PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -25,6 +25,15 @@ export class PostgresDeviceAccessService {
   }
   private async management(client: pg.PoolClient, principal: ManagementPrincipal, write: boolean): Promise<void> {
     requireAuthorization(await readLiveManagementPrincipal(client, principal.id), write ? 'settings:update' : 'settings:read')
+  }
+  async readMainIdentity(principal: ManagementPrincipal): Promise<MainDeviceIdentityPublic> {
+    return this.transaction(async client => {
+      await this.management(client, principal, false)
+      const result = await client.query<{ mainPublicKey: string; mainPublicKeyFingerprint: string }>(
+        `select record->>'publicKey' as "mainPublicKey", record->>'publicKeyFingerprint' as "mainPublicKeyFingerprint" from device_main_identity where main_id=$1`, [this.mainId])
+      if (!result.rows[0]) throw new DomainError('DEVICE_MAIN_IDENTITY_UNAVAILABLE', 'Main device authentication has not been initialized.', 503)
+      return MainDeviceIdentityPublicSchema.parse({ mainId: this.mainId, ...result.rows[0] })
+    })
   }
   async list(principal: ManagementPrincipal): Promise<DeviceRegistration[]> {
     return this.transaction(async client => {

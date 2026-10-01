@@ -76,3 +76,12 @@ export type DevicePairingRequest = z.infer<typeof DevicePairingRequestSchema>
 export const DevicePairingResultSchema = z.object({ registration: DeviceRegistrationSchema,
   credential: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime(),
 }).strict()
+
+export const DeviceListResultSchema = z.object({ devices: z.array(DeviceRegistrationSchema) }).strict()
+export const DevicePairingGrantResultSchema = z.object({ registration: DeviceRegistrationSchema,
+  grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/), expiresAt: z.string().datetime(),
+}).strict()
+export const MainDeviceIdentityPublicSchema = z.object({ mainId: z.uuid(), mainPublicKey: z.string().max(1024),
+  mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
+export type MainDeviceIdentityPublic = z.infer<typeof MainDeviceIdentityPublicSchema>
