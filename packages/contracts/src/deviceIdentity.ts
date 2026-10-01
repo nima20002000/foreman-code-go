@@ -39,7 +39,11 @@ export function revokeDevice(registration: DeviceRegistration): DeviceRegistrati
 export const WorkerPairingConfigurationSchema = z.object({
   formatVersion: z.literal(1), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
   keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
-  endpoint: z.url().refine(value => new URL(value).protocol === 'wss:' || (new URL(value).protocol === 'ws:' && ['127.0.0.1', '[::1]', 'localhost'].includes(new URL(value).hostname)), 'Use verified WSS or an explicit loopback carrier.'),
+  endpoint: z.url().refine(value => {
+    const url = new URL(value)
+    return !url.username && !url.password && !url.search && !url.hash
+      && (url.protocol === 'wss:' || (url.protocol === 'ws:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)))
+  }, 'Use verified WSS or an explicit loopback carrier without URL credentials, query or fragment.'),
   mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   credential: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime(),
 }).strict()
