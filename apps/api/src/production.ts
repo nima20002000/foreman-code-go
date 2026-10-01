@@ -57,6 +57,7 @@ import { HarnessQualificationRegistry } from './modules/harnesses/qualification/
 import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
 import { clearQualificationGate, installQualificationGate } from './modules/harnesses/qualification/gate.js'
 import type { QualificationSuite } from './modules/harnesses/qualification/types.js'
+import { withNativeQualificationOwnership } from './modules/harnesses/qualification/nativeOwnership.js'
 import { withQualificationIdentity } from './modules/harnesses/qualification/identity.js'
 import type { CompatibilityHarness } from '@graphql/contracts'
 import { NativeHarnessFactories } from './modules/harnesses/runtimeFactory.js'
@@ -180,8 +181,10 @@ export function buildProductionApp(
     registry: harnessRegistry.installations, pin: (harness: CompatibilityHarness) => harnessRegistry.pinDefault(harness),
   }
   const selectedSuites = qualificationSuites && identity ? {
-    codex: withQualificationIdentity(qualificationSuites.codex, identity.registry, (input) => identity.pin('codex', input)),
-    opencode: withQualificationIdentity(qualificationSuites.opencode, identity.registry, (input) => identity.pin('opencode', input)),
+    codex: withQualificationIdentity(withNativeQualificationOwnership(qualificationSuites.codex, processRegistry,
+      (input) => { const binding = identity.pin('codex', input); return (signal) => nativeFactories.assertInstallationUnchanged(binding, signal) }), identity.registry, (input) => identity.pin('codex', input)),
+    opencode: withQualificationIdentity(withNativeQualificationOwnership(qualificationSuites.opencode, processRegistry,
+      (input) => { const binding = identity.pin('opencode', input); return (signal) => nativeFactories.assertInstallationUnchanged(binding, signal) }), identity.registry, (input) => identity.pin('opencode', input)),
   } : qualificationSuites
   const qualificationRegistry = selectedSuites ? new HarnessQualificationRegistry(qualificationRepository, {
     codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
