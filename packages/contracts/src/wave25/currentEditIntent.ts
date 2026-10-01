@@ -77,7 +77,7 @@ export const CurrentEditIntentSchema = z.object({
       return !original || item.agent.configurationVersionId !== resultant[item.agent.id]
         || item.agent.name !== original.agent.name || item.metadataRevision !== (original.baseRevision ?? 0) + 1
     }))) fail('CURRENT_EDIT_SAVED_AGENTS_CONFLICT')
-  const nodeAgents = draft.graph.nodes.map((node) => node.agentId).sort()
+  const nodeAgents = [...new Set(draft.graph.nodes.filter(node=>node.kind!=='job').map((node) => node.agentId))].sort()
   if (new Set(updates.map((item) => item.agent.id)).size !== updates.length
     || updates.some((item) => !nodeAgents.includes(item.agent.id)
       || (item.agent.configurationVersionId ?? null) !== (draft.agentConfigurationVersionIds[item.agent.id] ?? null))

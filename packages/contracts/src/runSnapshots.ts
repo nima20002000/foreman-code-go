@@ -43,7 +43,8 @@ export function runDropdownStatus(run: { executionState: RunExecutionState; outc
   return run.outcome;
 }
 
-export const RunBoardNodeSnapshotSchema = z.object({
+export const AgentRunBoardNodeSnapshotSchema = z.object({
+  kind:z.literal("agent").optional(),
   id: GraphIdSchema,
   name: z.string().min(1).refine((value) => value.trim().length > 0, "A snapshot node requires a name"),
   agentId: GraphIdSchema,
@@ -51,6 +52,11 @@ export const RunBoardNodeSnapshotSchema = z.object({
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().readonly(),
   size: z.object({ width: z.number().finite().positive(), height: z.number().finite().positive() }).strict().readonly(),
 }).strict().readonly();
+export const JobRunBoardNodeSnapshotSchema=z.object({kind:z.literal('job'),id:GraphIdSchema,name:z.string().min(1),
+  jobDefinitionId:GraphIdSchema,jobDefinitionRevision:z.number().int().positive(),jobDefinitionVersionId:IdSchema,
+  position:AgentRunBoardNodeSnapshotSchema.unwrap().shape.position,size:AgentRunBoardNodeSnapshotSchema.unwrap().shape.size,
+}).strict().readonly()
+export const RunBoardNodeSnapshotSchema=z.union([AgentRunBoardNodeSnapshotSchema,JobRunBoardNodeSnapshotSchema])
 export type RunBoardNodeSnapshot = z.infer<typeof RunBoardNodeSnapshotSchema>;
 /** Reuse the current edge shape, including handles, labels and execution/approval semantics. */
 export const RunBoardEdgeSnapshotSchema = CurrentWorkflowRelationshipSchema.readonly();

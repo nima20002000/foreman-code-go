@@ -16,11 +16,12 @@ export function directApprovalConnection(
   requestingAgentId: string,
   orchestratorAgentId: string,
 ): DirectApprovalConnection | undefined {
-  const requesters = definition.nodes.filter((node) => node.id === requestingNodeId)
-  const reviewers = definition.nodes.filter((node) => node.agentId === orchestratorAgentId)
+  const requesters = definition.nodes.filter((node) => node.kind !== 'job' && node.id === requestingNodeId)
+  const reviewers = definition.nodes.filter((node) => node.kind !== 'job' && node.agentId === orchestratorAgentId)
   if (requesters.length !== 1 || reviewers.length !== 1) return undefined
   const requester = requesters[0]!
   const reviewer = reviewers[0]!
+  if (requester.kind === 'job' || reviewer.kind === 'job') return undefined
   if (requester.agentId !== requestingAgentId || requester.id === reviewer.id
     || requestingAgentId === orchestratorAgentId) return undefined
   const adjacent = definition.edges.some((edge) =>

@@ -5,14 +5,14 @@ export * from './claudeQualification.js';
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { InteractionActivityProjectionSchema, NativeInteractionResponseAvailabilitySchema } from "./interaction-activity.js";
 import { z } from "zod";
-import { FileWithRevisionSchema, MessageAttachmentFields } from "./files.js";
+import { FileWithRevisionSchema, MessageAttachmentFields, MessageAttachmentRefsSchema } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 export type { Id, Timestamp } from "./schemaPrimitives.js";
 import {
   ApprovalHandlerSchema, AcceptedWorkflowApprovalConfigurationSchema,
   ExecutionConditionSchema,
-  CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
+  CurrentAgentWorkflowNodeFields, CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
   WorkflowDefinitionV3Schema, ExecutionSemanticsVersionSchema,
 } from "./wave25/workflowShape.js";
 export {
@@ -700,7 +700,7 @@ export type Agent = z.infer<typeof AgentSchema>;
 
 /** Generic presentation names refer to the one current shape, never retired validators. */
 export const WorkflowNodeSchema = CurrentWorkflowNodeSchema;
-export const WorkflowNodeFields = CurrentWorkflowNodeSchema.shape;
+export const WorkflowNodeFields = CurrentAgentWorkflowNodeFields;
 export const WorkflowEdgeSchema = CurrentWorkflowRelationshipSchema;
 export const WorkflowDefinitionFields = CurrentWorkflowDefinitionBaseSchema.omit({ nodes: true, edges: true }).shape;
 export type WorkflowNode = z.infer<typeof CurrentWorkflowNodeSchema>;
@@ -797,6 +797,8 @@ export const MessageSchema = z
     activityNative: ActivityNativeIdentitySchema.optional(),
     revision: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
     sequence: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
+    /** Exact admitted send source; displayed publications are never new send inputs. */
+    originalInput: z.object({ requestId: IdSchema, content: z.string(), attachments: MessageAttachmentRefsSchema }).strict().nullable().optional(),
     nativeMessageId: IdSchema.optional(),
     /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
     nativeParentMessageId: IdSchema.optional(),
@@ -1491,6 +1493,7 @@ export const OperatorConversationSummarySchema = OperatorConversationStateSchema
   conversationId: IdSchema,
   title: z.string().optional(),
   needsAttention: z.boolean(),
+  backgroundActivity: z.enum(['running', 'unknown']).nullable().optional(),
 }).strict();
 export type OperatorConversationSummary = z.infer<typeof OperatorConversationSummarySchema>;
 export const OperatorConversationSummariesQuerySchema = z.object({
@@ -1524,8 +1527,9 @@ export const SendOperatorMessageRequestSchema = z.object({
   path: ["content"], message: "Message requires text or an attachment.",
 });
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
-export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
+export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema, commandId: z.string().min(8).max(200).optional() }).strict();
 export const RespondOperatorInteractionRequestSchema = z.object({
+  commandId: z.string().min(8).max(200).optional(),
   requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
 }).strict();
 export type SendOperatorMessageRequest = Omit<z.infer<typeof SendOperatorMessageRequestSchema>, "attachments">
