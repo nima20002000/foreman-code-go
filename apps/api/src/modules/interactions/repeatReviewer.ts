@@ -103,7 +103,7 @@ export class PostgresRepeatReviewerBindings implements RepeatReviewerBindings {
       || interaction.approval.handler !== 'orchestrator'
       || !isDeepStrictEqual(interaction.approval, run.approval)) return conflict()
     const reviewerId = interaction.approval.designatedOrchestratorAgentId
-    const reviewer = version.definition.nodes.find((node) => node.id === reviewerNodeId && node.agentId === reviewerId)
+    const reviewer = version.definition.nodes.find((node) => node.id === reviewerNodeId && node.kind !== 'job' && node.agentId === reviewerId)
     const relationships = version.definition.edges.filter((edge) => edge.kind === 'approval'
       && edge.source === reviewerNodeId && edge.target === requester.execution.workflowNodeId)
     if (!reviewer || reviewerId === requester.execution.agentId || relationships.length !== 1) return conflict()

@@ -20,7 +20,7 @@ export async function prepareCurrentStagedAgents(client: pg.PoolClient, principa
   const updates = input.stagedAgents ?? []
   authorizeStagedAgents(principal, input)
   const ids = updates.map((item) => item.agent.id)
-  if (new Set(ids).size !== ids.length || ids.some((id) => !input.graph.nodes.some((node) => node.agentId === id))) {
+  if (new Set(ids).size !== ids.length || ids.some((id) => !input.graph.nodes.some((node) => node.kind !== 'job' && node.agentId === id))) {
     throw new DomainError('AGENT_CONFIGURATION_CONFLICT', 'Stage Agent updates must be unique authored graph Agents.', 409)
   }
   await lockAgentConfigurations(client, [...Object.keys(input.expectedAgentConfigurationVersionIds), ...ids])

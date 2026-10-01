@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
+import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
 import { RepeatWorkflowVersionV1Schema, SavedRunVersionSnapshotSchema } from '@graphql/contracts/wave25'
 import { PostgresRepeatReviewerBindings } from '../src/modules/interactions/repeatReviewer.js'
 import { repeatDigest, repeatExecutionIdentity, repeatSlotId } from '../src/modules/runs/repeatResolution.js'
@@ -58,18 +59,34 @@ function bindingFixture() {
   const request = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
     executionId: f.get().id, requestingAgentId: f.get().agentId, approval,
     harness: 'codex' as const, nativeSessionId: f.get().nativeSessionId! }
-  const select = () => new PostgresRepeatReviewerBindings(sql as never).select(request, 'work')
-  return { select, request, requesterRow, reviewerRow, resolutionRow, resultRow, reviewer, occurrence, statements }
+  const select = (nodeId = 'work') => new PostgresRepeatReviewerBindings(sql as never).select(request, nodeId)
+  return { select, version, request, requesterRow, reviewerRow, resolutionRow, resultRow, reviewer, occurrence, statements }
+}
+
+function addJob(f: ReturnType<typeof bindingFixture>) {
+  const job = JobWorkflowNodeSchema.parse({ kind: 'job', id: 'review-binding-job', name: 'Build',
+    jobDefinitionId: 'binding-job', jobDefinitionRevision: 1, jobDefinitionVersionId: 'binding-job-version' })
+  f.version.definition.nodes.unshift(job)
+  f.version.definition.executionPolicy!.maxNodeExecutions++
+  return job
 }
 
 test('NATIVE-2 reviewer binding reads the accepted same-occurrence execution and exact relationship', async () => {
   const f = bindingFixture()
+  addJob(f)
   const bound = await f.select()
   assert.equal(bound.execution.id, f.reviewer.id)
   assert.equal(bound.relationshipId, 'approval-work-review')
   assert.equal(bound.requesterOccurrenceId, f.occurrence.identity.occurrenceId)
   assert.equal(bound.reviewerOccurrenceId, f.occurrence.identity.occurrenceId)
   assert.equal(f.statements.length, 5)
+})
+
+test('NATIVE-2 reviewer binding refuses a Job reviewer without choosing a neighboring accepted Agent', async () => {
+  const f = bindingFixture(), job = addJob(f)
+  await assert.rejects(f.select(job.id), { code: 'REPEAT_REVIEW_IDENTITY_CONFLICT' })
+  assert.equal(f.statements.length, 2)
+  assert.equal(f.statements.some(({ text }) => text.includes('from run_repeat_resolutions')), false)
 })
 
 test('NATIVE-2 reviewer binding rejects a physical occurrence mismatch before resolving review work', async () => {
