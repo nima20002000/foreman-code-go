@@ -41,3 +41,8 @@ export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal
   }) }).strict().optional(),
 }).strict()
 export type RemoteWorkflowPhysicalReadout = z.infer<typeof RemoteWorkflowPhysicalReadoutSchema>
+/** Cleanup acknowledgment, never evidence of native execution or success. */
+export const RemoteWorkflowPhysicalAckSchema=z.object({version:z.literal(1),operationId:z.string().min(1),
+  receiptSequence:z.number().int().positive(),sourceDigest:PlacementDigestSchema,status:z.enum(['retired','not_retained']),
+}).strict()
+export type RemoteWorkflowPhysicalAck=z.infer<typeof RemoteWorkflowPhysicalAckSchema>

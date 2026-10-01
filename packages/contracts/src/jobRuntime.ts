@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { JobPolicySchema, JobTargetSchema } from './jobs.js'
 import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
+import { DeviceSessionBindingSchema } from './deviceConnection.js'
 const Digest=z.string().regex(/^[a-f0-9]{64}$/)
 export const JobRuntimeLimitsSchema=z.object({cpuLimit:z.number().positive().max(256),memoryBytes:z.number().int().positive(),pidsLimit:z.number().int().positive(),diskBytes:z.number().int().positive()}).strict()
 /** Policy metadata refers to an existing authorized root, never a caller filesystem path. */
@@ -24,6 +25,28 @@ export const JobRuntimeApprovalSchema=z.object({schemaVersion:z.literal(1),id:z.
   fingerprint:JobRuntimeFingerprintSchema,fingerprintDigest:Digest,requestedByPrincipalId:IdSchema,
   status:z.enum(['awaiting-approval','approved','qualifying','complete','failed','cancelled','recovery-required']),approvedByPrincipalId:IdSchema.nullable(),approvedAt:TimestampSchema.nullable(),expiresAt:TimestampSchema,
 }).strict()
+/** Trusted admission retained on the original human-approved qualification row.
+ * A diagnostic is its own subject; it never borrows a workflow grant or Job ID.
+ * Public profile/request inputs do not accept this internal authority. */
+export const JobRuntimeNativeAdmissionSchema=z.object({schemaVersion:z.literal(1),kind:z.literal('job-runtime-qualification'),
+  approvalId:z.uuid(),qualificationId:z.uuid(),operationId:z.uuid(),workspaceId:IdSchema,profileId:IdSchema,profileRevision:z.number().int().positive(),
+  fingerprintDigest:Digest,leaseId:z.uuid(),runCommandId:IdSchema,runPrincipalId:IdSchema,approvedByPrincipalId:IdSchema,
+  hostRef:JobTargetSchema.shape.hostRef,registration:JobTargetSchema.shape.registration,mainInstallationId:IdSchema,bootId:z.uuid(),
+  connection:DeviceSessionBindingSchema.nullable(),admittedAt:TimestampSchema,expiresAt:TimestampSchema,
+}).strict().superRefine((value,ctx)=>{
+  if(value.operationId!==value.qualificationId||value.hostRef.mainId!==value.mainInstallationId)
+    ctx.addIssue({code:'custom',message:'Admission must retain the original qualification and Main installation.'})
+  if(Date.parse(value.expiresAt)<=Date.parse(value.admittedAt))
+    ctx.addIssue({code:'custom',message:'Admission must expire after reservation.'})
+  if(value.hostRef.kind==='main') {
+    if(value.registration!==null||value.connection!==null)
+      ctx.addIssue({code:'custom',message:'Main-local admission cannot carry worker authority.'})
+  } else if(!value.registration||!value.connection||value.connection.mainId!==value.mainInstallationId||value.connection.deviceId!==value.hostRef.deviceId||
+    value.connection.workerInstallationId!==value.registration.workerInstallationId||value.connection.keyRevision!==value.registration.keyRevision||
+    value.connection.authorizationRevision!==value.registration.authorizationRevision||value.connection.bootId!==value.bootId)
+    ctx.addIssue({code:'custom',message:'Admission must retain the exact authenticated worker binding.'})
+})
+export type JobRuntimeNativeAdmission=z.infer<typeof JobRuntimeNativeAdmissionSchema>
 /** A host producer supplies actual measured evidence. Public save input admits no ready/approval/proof fields. */
 export const JobRuntimeMeasurementSchema=z.object({schemaVersion:z.literal(1),qualificationId:z.uuid(),profileId:IdSchema,profileRevision:z.number().int().positive(),specDigest:Digest,
   hostRef:JobTargetSchema.shape.hostRef,registration:JobTargetSchema.shape.registration,root:SourceRootRecordSchema,
@@ -52,5 +75,41 @@ export type QualifiedJobRuntime=z.infer<typeof QualifiedJobRuntimeSchema>
 export type JobRuntimeFingerprint=z.infer<typeof JobRuntimeFingerprintSchema>
 export type JobRuntimeApproval=z.infer<typeof JobRuntimeApprovalSchema>
 
-export const JobRuntimeQualificationReadSchema=z.object({approval:JobRuntimeApprovalSchema,measurement:JobRuntimeMeasurementSchema.nullable(),profile:JobRuntimeProfileSchema,readiness:z.object({ready:z.boolean(),reasons:z.array(z.string()),sideEffects:z.literal(false)}).strict()}).strict()
+export const JobRuntimeQualificationReadSchema=z.object({approval:JobRuntimeApprovalSchema,nativeAdmission:JobRuntimeNativeAdmissionSchema.nullable(),measurement:JobRuntimeMeasurementSchema.nullable(),profile:JobRuntimeProfileSchema,readiness:z.object({ready:z.boolean(),reasons:z.array(z.string()),sideEffects:z.literal(false)}).strict()}).strict()
 export const JobRuntimeQualificationCommandSchema=z.object({commandId:IdSchema}).strict()
+const QualificationPath=z.string().startsWith('/').refine(value=>!value.includes('\0')&&!value.includes('\n')&&!value.includes(','))
+const QualificationEnvironment=z.object({PATH:z.string().min(1),XDG_RUNTIME_DIR:QualificationPath,LANG:z.literal('C.UTF-8')}).strict()
+export const InstalledJobRuntimeDescriptorSchema=z.object({
+  target:z.object({hostRef:JobRuntimeFingerprintSchema.shape.hostRef,registration:JobRuntimeFingerprintSchema.shape.registration,
+    mainInstallationId:JobRuntimeFingerprintSchema.shape.mainInstallationId}).strict(),
+  runtimeExecutable:QualificationPath,ociExecutable:QualificationPath,findmntExecutable:QualificationPath,findmntBinarySha256:Digest,
+  runtimeRoot:QualificationPath,backingFile:QualificationPath,controllerEnvironment:QualificationEnvironment,
+}).strict()
+export type InstalledJobRuntimeDescriptor=z.infer<typeof InstalledJobRuntimeDescriptorSchema>
+export const JobQualificationCandidateSchema=z.object({qualificationId:z.uuid(),operationId:z.uuid(),approvalId:z.uuid(),
+  fingerprint:JobRuntimeFingerprintSchema,findmntBinary:QualificationPath,findmntBinarySha256:Digest,
+  backingFile:QualificationPath,backingBytes:z.number().int().positive(),controllerEnvironment:QualificationEnvironment,
+  sourceParent:QualificationPath,runtimeRoot:QualificationPath,spoolBytes:z.number().int().min(131072).max(67108864),
+  ttlSeconds:z.number().int().positive().max(86400),
+}).strict().superRefine((value,ctx)=>{
+  if(value.fingerprint.root.binding.accessMode!=='exclusive-write'||value.sourceParent!==value.fingerprint.root.binding.canonicalPath)
+    ctx.addIssue({code:'custom',message:'Qualification requires the exact existing exclusive-write root binding.'})
+})
+export type JobQualificationCandidate=z.infer<typeof JobQualificationCandidateSchema>
+export const JobRuntimeQualificationResultSchema=z.discriminatedUnion('outcome',[
+  z.object({outcome:z.literal('qualified'),measurement:JobRuntimeMeasurementSchema}).strict(),
+  z.object({outcome:z.literal('denied'),closure:z.enum(['not_started','confirmed','unconfirmed']),reasons:z.array(z.string().max(500)).max(128)}).strict(),
+])
+export const JobRuntimeQualificationRpcRequestSchema=z.discriminatedUnion('operation',[
+  z.object({version:z.literal(1),operation:z.literal('inspect'),profile:JobRuntimeProfileSchema}).strict(),
+  z.object({version:z.literal(1),operation:z.enum(['run','authorize']),admission:JobRuntimeNativeAdmissionSchema,candidate:JobQualificationCandidateSchema}).strict(),
+])
+export const JobRuntimeQualificationRpcResponseSchema=z.discriminatedUnion('operation',[
+  z.object({version:z.literal(1),operation:z.literal('inspect'),descriptor:InstalledJobRuntimeDescriptorSchema,fingerprint:JobRuntimeFingerprintSchema}).strict(),
+  z.object({version:z.literal(1),operation:z.literal('run'),admission:JobRuntimeNativeAdmissionSchema,candidate:JobQualificationCandidateSchema,result:JobRuntimeQualificationResultSchema}).strict(),
+  z.object({version:z.literal(1),operation:z.literal('authorize'),admission:JobRuntimeNativeAdmissionSchema,candidate:JobQualificationCandidateSchema,
+    approval:z.object({status:z.literal('approved'),fingerprint:Digest,expiresAt:TimestampSchema}).strict()}).strict(),
+])
+export const JOB_RUNTIME_QUALIFICATION_EXTENSION=Object.freeze({namespace:'job-runtime-qualification-v1',version:1 as const,maxJsonBytes:1048576,maxBinaryBytes:0})
+export type JobRuntimeQualificationRpcRequest=z.infer<typeof JobRuntimeQualificationRpcRequestSchema>
+export type JobRuntimeQualificationRpcResponse=z.infer<typeof JobRuntimeQualificationRpcResponseSchema>
