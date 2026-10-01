@@ -1,12 +1,11 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { loadOrCreateWorkerIdentity, loadWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
-import { createWorkerConnection } from '../../../apps/api/src/modules/devices/workerConnection.ts';
 import { doctorReport, executableAvailability, hostFacts, WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
-import { startWorker, readWorkerStatus } from './runtime.mjs';
-import { validateManifest } from './installation.mjs';
+import { readWorkerStatus } from './runtime.mjs';
+import { prepareWorkerState, startConfiguredWorker } from './workerFactory.mjs';
 import { enrollWorker } from './enrollment.mjs';
 
 const execute = promisify(execFile);
@@ -46,10 +45,7 @@ async function main() {
     console.log(JSON.stringify(doctorReport({ facts, identity, service, connection, executables: executableAvailability(process.env.PATH ?? ''), errors })));
     return;
   }
-  if (!facts.rootPersistent || !facts.homePersistent || !facts.storagePersistent) throw new WorkerError('nonpersistent_storage');
-  const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
-  validateManifest(manifest, facts, { protocolVersion: 1, identityFormat: 1 });
-  await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+  const manifest = command === 'run' ? null : await prepareWorkerState(stateDirectory);
   if (command === 'pair') {
     await requirePrivateDirectory(stateDirectory);
     // One selected main: never call enrollment to overwrite an existing pairing.
@@ -65,10 +61,7 @@ async function main() {
     console.log(JSON.stringify({ formatVersion: identity.formatVersion, workerInstallationId: identity.workerInstallationId, keyRevision: identity.keyRevision, publicKey: identity.publicKey, publicKeyFingerprint: identity.publicKeyFingerprint }));
     return;
   }
-  runtime = await startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, createConnection: async ({ bootId }) => {
-    const pairing = await loadWorkerPairing(stateDirectory);
-    return createWorkerConnection({ pairing, bootId, appVersion: manifest.version });
-  } });
+  runtime = await startConfiguredWorker({ stateDirectory });
   const stop = () => {
     runtime.stop().then(() => process.exit(0), () => { console.error('shutdown_timeout'); process.exit(1); });
   };

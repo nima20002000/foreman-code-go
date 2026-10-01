@@ -15,11 +15,11 @@ const target = JSON.parse(await readFile(targetFile, 'utf8'));
 if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease) || !['x64', 'arm64'].includes(target.arch) || !/^glibc-\d+\.\d+$/.test(target.libc) || !/^v22\.\d+\.\d+$/.test(target.node)) throw new Error('Unsupported qualified target');
 // Fresh directories only: never mix files from another release or ship credentials.
 const output = resolve(outputDirectory); await mkdir(output, { mode: 0o700 }); await mkdir(join(output, 'src'));
-const built = await build({ absWorkingDir: root, entryPoints: ['apps/worker/src/cli.mjs'], outfile: join(output, 'src/cli.mjs'), bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle',
-  alias: { '@graphql/contracts/device-identity-node': './packages/contracts/src/deviceIdentityNode.ts', '@graphql/contracts/device-identity': './packages/contracts/src/deviceIdentity.ts', '@graphql/contracts/device-connection': './packages/contracts/src/deviceConnection.ts' },
+const built = await build({ absWorkingDir: root, entryPoints: { cli: 'apps/worker/src/cli.mjs', worker: 'apps/worker/src/workerFactory.mjs' }, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle',
+  alias: { '@graphql/contracts/device-identity-node': './packages/contracts/src/deviceIdentityNode.ts', '@graphql/contracts/device-identity': './packages/contracts/src/deviceIdentity.ts', '@graphql/contracts/device-connection': './packages/contracts/src/deviceConnection.ts', '@graphql/contracts/device-application': './packages/contracts/src/deviceApplication.ts' },
   define: { 'process.env.WS_NO_BUFFER_UTIL': '"1"', 'process.env.WS_NO_UTF_8_VALIDATE': '"1"' },
   banner: { js: "import { createRequire as workerCreateRequire } from 'node:module'; const require = workerCreateRequire(import.meta.url);" } });
-const allowedApiModules = new Set(['connectionSupervisor.ts', 'deviceWire.ts', 'deviceCarrier.ts', 'workerConnection.ts']);
+const allowedApiModules = new Set(['connectionSupervisor.ts', 'deviceWire.ts', 'deviceCarrier.ts', 'workerConnection.ts', 'deviceApplicationChannel.ts']);
 for (const source of Object.keys(built.metafile.inputs)) {
   if (source.startsWith('apps/api/') && !(source.startsWith('apps/api/src/modules/devices/') && allowedApiModules.has(source.split('/').at(-1)))) throw new Error(`Forbidden control-plane import: ${source}`);
 }

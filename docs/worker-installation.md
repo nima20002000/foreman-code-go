@@ -5,6 +5,14 @@ starts the W07 connection supervisor. It does not import API startup, PostgreSQL
 migrations, owner setup, workflow recovery or the schedule dispatcher. Dispatch
 and transfer remain disabled. A connection does not establish execution authority.
 
+The artifact also includes `src/worker.mjs`, a pure worker factory module. Its
+`createWorkerConnection` export accepts B's actual `extensions` registrations;
+`startConfiguredWorker({ stateDirectory, extensions })` performs the same
+runtime/persistence checks as the CLI and returns the worker handle with B's
+`request` and `capabilities` methods on `handle.connection`. Root/HRT-C supplies
+the real domain handlers and grants. No empty dispatch handler or dynamic plugin
+loader is installed by this package. The CLI uses no extensions by default.
+
 ## Build and approve an artifact
 
 Build on the source-pinned main checkout after the orchestrator integrates W07-A/B
