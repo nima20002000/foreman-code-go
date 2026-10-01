@@ -285,6 +285,12 @@ export class NativeHarnessFactories {
         if (failed) throw new AggregateError([failure, error], 'Native diagnostics and their cleanup both failed.', { cause: error })
         throw error
       }
+      // Physical cleanup can outlive successful work. A factory stop or caller
+      // cancellation during that await must still prevent the native reload.
+      if (!failed) {
+        pin.signal?.throwIfAborted()
+        if (this.auxiliaryClosing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics are shutting down.', 503)
+      }
     })
     owned.task = task
     return task

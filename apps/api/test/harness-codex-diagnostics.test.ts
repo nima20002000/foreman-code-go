@@ -115,3 +115,31 @@ it('retains uncertain diagnostic cleanup for retry and refuses reload until clos
     expect(f.closeRecovery.mock.calls.every(([scope]) => scope === retained)).toBe(true)
   } finally { await f.manager.dispose(); await f.factories.disposeAuxiliaries() }
 })
+
+it.each(['factory', 'caller'] as const)('fences %s cancellation during successful diagnostic physical cleanup', async (cancel) => {
+  const f = fixture()
+  const cleanupEntered = new ReplayGate<void>()
+  const finishCleanup = new ReplayGate<void>()
+  const caller = new AbortController()
+  let cleanupReleased = false
+  let reloading: Promise<void> | undefined
+  f.closeRecovery.mockImplementation(async () => { cleanupEntered.release(); await finishCleanup.promise })
+  try {
+    const session = await f.manager.createSession(f.source)
+    reloading = f.manager.reloadNativeMcp(session, caller.signal)
+    await cleanupEntered.promise
+    if (cancel === 'factory') f.factories.stopAuxiliaries()
+    else caller.abort(new Error('Caller canceled during cleanup.'))
+    cleanupReleased = true
+    finishCleanup.release()
+    await expect(reloading).rejects.toThrow(cancel === 'factory' ? 'shutting down' : 'Caller canceled')
+    await f.factories.disposeAuxiliaries()
+    expect(f.requests).toEqual(['thread/start'])
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.closeRecovery).toHaveBeenCalledTimes(1)
+  } finally {
+    if (!cleanupReleased) finishCleanup.release()
+    await Promise.allSettled(reloading ? [reloading] : [])
+    await f.manager.dispose(); await f.factories.disposeAuxiliaries()
+  }
+})
