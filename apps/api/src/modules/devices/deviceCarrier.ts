@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
-import { DeviceEndpoint } from './deviceEndpoint.js'
+import type { DeviceEndpoint } from './deviceEndpoint.js'
 import { adaptDeviceSocket, DeviceConnectionError, type DeviceSocket, type RawDeviceSocket } from './deviceWire.js'
 
 export interface UpgradeServer {
@@ -13,8 +13,8 @@ export function deviceUpgradeHandler(endpoint: DeviceEndpoint, server: UpgradeSe
     // Catch every post-upgrade path explicitly; no Fastify/browser auth middleware is involved.
     void endpoint.authenticate({
       ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}),
-      ...(request.headers.cookie ? { cookie: request.headers.cookie } : {}),
-      ...(request.headers.origin ? { origin: request.headers.origin } : {}),
+      ...(request.headers.cookie !== undefined ? { cookie: request.headers.cookie } : {}),
+      ...(request.headers.origin !== undefined ? { origin: request.headers.origin } : {}),
     }).then((principal) => {
       if (socket.destroyed) return
       server.handleUpgrade(request, socket, head, (raw) => { void endpoint.acceptAuthenticated(principal, adaptDeviceSocket(raw)).catch(() => raw.close()) })

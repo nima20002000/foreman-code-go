@@ -8,7 +8,7 @@ export function deviceHttpHandler(options: {
 }) {
   return (request: IncomingMessage, response: ServerResponse) => {
     const reply = (status: number, body: unknown) => { if (!response.destroyed) { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)) } }
-    if (request.headers.cookie || request.headers.origin) { reply(401, { error: 'device-authentication-required' }); return }
+    if (request.headers.cookie !== undefined || request.headers.origin !== undefined) { reply(401, { error: 'device-authentication-required' }); return }
     if (request.method === 'GET' && request.url === '/device/identity') {
       reply(200, { mainId: options.mainId, mainPublicKeyFingerprint: options.mainPublicKeyFingerprint, protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: options.appVersion, capabilities: { heartbeat: true, dispatch: false, transfer: false } }); return
     }

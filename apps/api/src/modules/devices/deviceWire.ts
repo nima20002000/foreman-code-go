@@ -33,19 +33,20 @@ export interface RawDeviceSocket {
 }
 export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
   const queue: string[] = []
+  let queuedBytes = 0
   let ended = false
   let failure: Error | undefined
   let wake: (() => void) | undefined
   const cleanup = () => { raw.off('message', message); raw.off('error', error); raw.off('close', close) }
-  const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; cleanup(); wake?.() }
+  const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; queuedBytes = 0; cleanup(); wake?.() }
   const close = () => finish()
   const error = () => finish(new DeviceConnectionError('transport'))
   const message = (data: unknown, binary: unknown) => {
     if (ended) return
     if (binary === true || (!Buffer.isBuffer(data) && typeof data !== 'string')) { finish(new DeviceConnectionError('malformed-frame')); raw.close(); return }
     const text = String(data)
-    if (Buffer.byteLength(text) > DEVICE_FRAME_BYTES || queue.length >= DEVICE_QUEUE_DEPTH) { finish(new DeviceConnectionError('backpressure')); raw.close(); return }
-    queue.push(text); wake?.()
+    if (Buffer.byteLength(text) > DEVICE_FRAME_BYTES || queue.length >= DEVICE_QUEUE_DEPTH || queuedBytes + Buffer.byteLength(text) > DEVICE_BUFFER_BYTES) { finish(new DeviceConnectionError('backpressure')); raw.close(); return }
+    queue.push(text); queuedBytes += Buffer.byteLength(text); wake?.()
   }
   raw.on('message', message); raw.on('error', error); raw.on('close', close)
   return {
@@ -55,7 +56,7 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
     messages: { async *[Symbol.asyncIterator]() {
       try {
         while (!ended) {
-          if (queue.length) { yield queue.shift()!; continue }
+          if (queue.length) { const text = queue.shift()!; queuedBytes -= Buffer.byteLength(text); yield text; continue }
           await new Promise<void>((resolve) => { wake = resolve }); wake = undefined
         }
         if (failure) throw failure

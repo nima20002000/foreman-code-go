@@ -1,9 +1,13 @@
+import WebSocket, { WebSocketServer } from 'ws'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { deviceHttpHandler } from '../src/modules/devices/deviceHttp.js'
 import { DeviceEndpoint, type AuthenticatedDevice } from '../src/modules/devices/deviceEndpoint.js'
 import { DeviceConnectionSupervisor } from '../src/modules/devices/connectionSupervisor.js'
-import { deviceConnector } from '../src/modules/devices/deviceCarrier.js'
-import { adaptDeviceSocket, readFrame, sendFrame, type RawDeviceSocket } from '../src/modules/devices/deviceWire.js'
+import { deviceConnector, deviceUpgradeHandler } from '../src/modules/devices/deviceCarrier.js'
+import { adaptDeviceSocket, readFrame, sendFrame } from '../src/modules/devices/deviceWire.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -101,10 +105,70 @@ describe('device-only carrier and lifecycle', () => {
     await supervisor.stop(); expect(vi.getTimerCount()).toBe(0)
   })
   it('requires verified WSS and disables compression', async () => {
-    expect(() => deviceConnector({ url: 'ws://main/device/connect', credential: 'secret', create: () => new Socket() as RawDeviceSocket })).toThrow('wrong-main')
+    expect(() => deviceConnector({ url: 'ws://main/device/connect', credential: 'secret', create: () => new Socket() })).toThrow('wrong-main')
     const socket = new Socket(); const create = vi.fn(() => socket); const connect = deviceConnector({ url: 'wss://main/device/connect', credential: 'secret', create })
     const abort = new AbortController(); const task = connect(abort.signal); socket.emit('open'); const adapted = await task
     expect(create.mock.calls[0]).toEqual(['wss://main/device/connect', expect.objectContaining({ rejectUnauthorized: true, perMessageDeflate: false, maxPayload: 16384 })]); adapted.close()
     expect(socket.listenerCount('message')).toBe(0)
+  })
+})
+
+
+describe('pinned ws adapter on disposable loopback transport', () => {
+  it('authenticates before upgrade and negotiates real bounded ws frames', async () => {
+    const { endpoint, presence } = makeEndpoint()
+    const server = createServer((_request, response) => { response.writeHead(404); response.end() })
+    const carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
+    server.on('upgrade', deviceUpgradeHandler(endpoint, carrier))
+    server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing loopback address')
+    const client = new WebSocket(`ws://127.0.0.1:${address.port}/device/connect`, { headers: { Authorization: 'Bearer device' }, perMessageDeflate: false })
+    try {
+      await once(client, 'open')
+      const welcomeMessage = once(client, 'message'); client.send(JSON.stringify(hello))
+      const [received] = await welcomeMessage; const negotiated = JSON.parse(String(received))
+      expect(negotiated).toMatchObject({ type: 'welcome', capabilities: { dispatch: false, transfer: false } })
+      expect(client.extensions).toBe('')
+      const pong = once(client, 'message'); client.send(JSON.stringify({ type: 'ping', connectionEpoch: negotiated.connectionEpoch }))
+      expect(JSON.parse(String((await pong)[0]))).toEqual({ type: 'pong', connectionEpoch: negotiated.connectionEpoch })
+      const closed = once(client, 'close'); endpoint.revoke('device'); await closed
+      await flush(); expect(presence.mock.calls.at(-1)![0].phase).toBe('offline')
+    } finally {
+      endpoint.close(); client.terminate(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+  it('maps pre-upgrade rejection into blocked auth without a retry storm', async () => {
+    const { endpoint, auth } = makeEndpoint(); auth.authenticateDevice.mockRejectedValue({ code: 'revoked' })
+    const server = createServer(); const carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
+    server.on('upgrade', deviceUpgradeHandler(endpoint, carrier)); server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing address')
+    // URL validation uses WSS; the injected constructor below uses disposable HTTP solely for this transport test.
+    const connect = deviceConnector({ url: 'wss://main/device/connect', credential: 'revoked', create: (_url, options) => new WebSocket(`ws://127.0.0.1:${address.port}/device/connect`, options) })
+    try { await expect(connect(new AbortController().signal)).rejects.toThrow('authentication') }
+    finally { endpoint.close(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve())) }
+  })
+})
+
+
+describe('device-only HTTP bootstrap', () => {
+  it('returns selected-main descriptor and bounded signed pairing only', async () => {
+    const pair = vi.fn(async () => ({ credential: 'device-only' }))
+    const server = createServer(deviceHttpHandler({ mainId: 'main', mainPublicKeyFingerprint: 'approved-fingerprint', appVersion: 'build', pair }))
+    server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing address')
+    const base = `http://127.0.0.1:${address.port}`
+    try {
+      const descriptor = await fetch(`${base}/device/identity`)
+      expect(await descriptor.json()).toMatchObject({ mainId: 'main', mainPublicKeyFingerprint: 'approved-fingerprint', capabilities: { dispatch: false } })
+      expect((await fetch(`${base}/device/identity`, { headers: { Cookie: 'owner=secret' } })).status).toBe(401)
+      const input = { grant: 'grant', requestId: 'request', mainId: 'main', workerInstallationId: 'installation', publicKey: 'public', signature: 'signature' }
+      const paired = await fetch(`${base}/device/pair`, { method: 'POST', body: JSON.stringify(input) })
+      expect(paired.status).toBe(200); expect(pair).toHaveBeenCalledWith(input)
+      expect((await fetch(`${base}/device/pair`, { method: 'POST', body: JSON.stringify({ ...input, mainId: 'wrong' }) })).status).toBe(409)
+      expect((await fetch(`${base}/device/pair`, { method: 'POST', body: '{' })).status).toBe(400)
+      expect((await fetch(`${base}/management`, { method: 'POST' })).status).toBe(404)
+      expect(pair).toHaveBeenCalledTimes(1)
+    } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
 })

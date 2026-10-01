@@ -40,9 +40,10 @@ export class DeviceEndpoint {
   }) {}
 
   async authenticate(headers: { authorization?: string; cookie?: string; origin?: string }): Promise<AuthenticatedDevice> {
+    if (this.pending.size >= 32) throw new DeviceConnectionError('backpressure')
     const abort = new AbortController(); this.pending.add(abort)
     try {
-      if (this.closed || headers.cookie || headers.origin || !headers.authorization?.startsWith('Bearer ')) throw new DeviceConnectionError('authentication')
+      if (this.closed || headers.cookie !== undefined || headers.origin !== undefined || !headers.authorization?.startsWith('Bearer ')) throw new DeviceConnectionError('authentication')
       let principal: AuthenticatedDevice
       try { principal = await withDeviceDeadline(this.options.auth.authenticateDevice(headers.authorization.slice(7), 'connect'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
       if (this.closed || abort.signal.aborted) throw new DeviceConnectionError('transport')
