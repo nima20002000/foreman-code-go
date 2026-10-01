@@ -164,7 +164,7 @@ for (const cursor of ['missing', 'looping'] as const) {
           cursor === 'looping' ? { 'x-next-cursor': 'same-cursor' } : {})
       }
       await assert.rejects(native.reconcile(session, 'unreachable'), cursor === 'looping'
-        ? /bounded progress/ : (error: unknown) => object(error).code === 'OPENCODE_TURN_HISTORY_INCOMPLETE')
+        ? /bounded progress/ : (error: unknown) => object(object(object(error).result).error).code === 'OPENCODE_TURN_HISTORY_INCOMPLETE')
       assert.equal(server.calls.filter((call) => call.path.includes('/prompt_async')).length, 0)
     } finally { await native.dispose() }
   })
