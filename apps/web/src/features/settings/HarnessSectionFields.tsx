@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { changeCodexSandbox, withAdvancedDefaults, type CodexAdvancedConfiguration, type HarnessConfiguration, type OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 import type { HarnessSettingsSection } from '@graphql/contracts/management'
 import { Button, Checkbox, Select, TextField } from '../../shared/ui/nocturne'
@@ -10,9 +11,9 @@ import { HarnessMcpPolicies } from './HarnessMcpPolicies'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { McpDetectionSettings } from './McpDetectionSettings'
 
-export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, allowAutoReview = false, requiresResume = false, workspaceId }: {
+export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, allowAutoReview = false, requiresResume = false, workspaceId, writableDirectories }: {
   editor: HarnessEditor; onChange(editor: HarnessEditor): void; section: HarnessSettingsSection;
-  issues?: readonly FieldIssue[]; routedApproval?: boolean; allowAutoReview?: boolean; requiresResume?: boolean; workspaceId?: string;
+  issues?: readonly FieldIssue[]; routedApproval?: boolean; allowAutoReview?: boolean; requiresResume?: boolean; workspaceId?: string; writableDirectories?: ReactNode;
 }) {
   const value = withAdvancedDefaults(editor.configuration)
   const error = (path: string) => fieldMessage(issues, path)
@@ -36,8 +37,8 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
                   onChange={(event) => codex({ ...value.advanced!, approvalsReviewer: event.target.value as CodexAdvancedConfiguration['approvalsReviewer'] })} />
               </div>
               {value.sandbox === 'workspace-write' ? <>
-                <HarnessDirectoryPicker value={value.advanced!.additionalWritableDirectories} error={error('advanced.additionalWritableDirectories')}
-                  onChange={(directories) => codex({ ...value.advanced!, additionalWritableDirectories: directories })} />
+                {writableDirectories ?? <HarnessDirectoryPicker value={value.advanced!.additionalWritableDirectories} error={error('advanced.additionalWritableDirectories')}
+                  onChange={(directories) => codex({ ...value.advanced!, additionalWritableDirectories: directories })} />}
                 <div className="harness-switch-list">{([
                   ['networkAccess', 'Workspace network access'],
                   ['excludeTmpdirEnvVar', 'Exclude TMPDIR from writable roots'],

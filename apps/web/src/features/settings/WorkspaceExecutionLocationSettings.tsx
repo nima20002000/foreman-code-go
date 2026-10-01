@@ -1,175 +1,206 @@
-import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { useContext, useEffect, useRef } from 'react'
-import { useIsMutating, useQueryClient } from '@tanstack/react-query'
-
+import { useIsMutating } from '@tanstack/react-query'
+import { WorkspaceRootSelectionSchema, type ApprovedRootAllowlist, type WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
+import { useManagedWorkspaceQuery } from '../../shared/api/query'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
+import { locationMutationKey } from '../../shared/api/workspaceLocationCache'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ApiError } from '../../shared/api/client'
 import {
-  useManagedWorkspaceQuery,
-  useReloadWorkspaceLocationMutation,
-  useSetWorkspaceLocationMutation,
-} from '../../shared/api/query'
-import { locationMutationKey } from '../../shared/api/workspaceLocationCache'
-import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
+  sameRootSelection, useWorkspaceRootChoices, useBoundWorkspaceLocation,
+  useBrowseBoundWorkspaceLocation, useValidateBoundWorkspaceLocation, useSetBoundWorkspaceLocation,
+} from '../../shared/api/workspaceBoundLocation'
+import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
+import { Alert, Button, Dialog, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
 import { ToastContext } from '../../shared/ui/nocturne/toastContext'
-import {
-  acknowledgeLocationSave,
-  hydrateLocationDraft,
-  locationDraftConflicts,
-  locationDraftFor,
-  reloadLocationDraft,
-  useWorkspaceLocationDraftStore,
-} from './workspaceLocationDraftStore'
-
-import { WorkspaceFolderPicker } from './WorkspaceFolderPicker'
-
-const RUNNER_ID = 'runner-local'
-
-function message(error: unknown): string {
-  return error instanceof ApiError ? error.message : error instanceof Error ? error.message : 'The location request failed.'
-}
+import { emptyRootPicker as empty, useBoundLocationDraftStore as usePickers, type RootPickerDraft as Picker, type RootCandidate as Candidate } from './workspaceBoundLocationDraftStore'
+import { sessionGeneration, sessionSignal } from '../../shared/api/sessionBoundary'
+import { WorkspaceLocationCard } from './WorkspaceLocationCard'
+import { ComputerPresenceReadback } from './ComputerPresence'
+import './computerSettings.css'
 
 type Props = { workspaceId: string; presentation?: 'field' | 'card' | 'tile'; onSaved?: () => void }
-
-function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Props) {
-  const toasts = useContext(ToastContext)
-  const queryClient = useQueryClient()
-  const workspace = useManagedWorkspaceQuery(workspaceId)
-  const save = useSetWorkspaceLocationMutation(workspaceId)
-  const reload = useReloadWorkspaceLocationMutation(workspaceId)
-  type SaveInput = Omit<Parameters<typeof save.mutateAsync>[0], 'commandId'>
-  const operation = useRef({ attempt: new CommandAttempt<SaveInput>(), input: undefined as SaveInput | undefined, conflicted: false }).current
-  const busy = useIsMutating({ mutationKey: locationMutationKey(workspaceId) }) > 0
-  const draft = useWorkspaceLocationDraftStore((state) => locationDraftFor(state, workspaceId))
-  const update = useWorkspaceLocationDraftStore((state) => state.update)
-  const current = workspace.data?.workspace.id === workspaceId ? workspace.data : undefined
-
-  useEffect(() => {
-    if (current) update(workspaceId, (previous) => hydrateLocationDraft(previous, current))
-  }, [current, draft, update, workspaceId])
-
-  // A draft alone is not authority to write: the selected workspace must have
-  // loaded its own saved record. Never render A's form while B is loading.
-  if (!current) {
-    return <section className="workspace-location-form" aria-label="Project folder">
-      {workspace.isError
-        ? <Alert live tone="danger" title="Execution location could not be loaded." />
-        : <LoadingState label="Loading execution location…" />}
-    </section>
-  }
-  if (current.locationValidation.status === 'restricted') {
-    return <section className="workspace-location-form" aria-label="Project folder">
-      <Alert live tone="danger" title="You do not have permission to read this workspace’s execution location." />
-    </section>
-  }
-  if (!draft) return <section className="workspace-location-form" aria-label="Project folder"><LoadingState label="Loading execution location…" /></section>
-
-  const conflict = operation.conflicted || locationDraftConflicts(draft, current.locationRevision) || (draft.conflictRevision ?? 0) > draft.baseRevision
-  const archived = current.archivedAt !== null
-  const writable = !busy && !archived
-  const status = current.locationValidation.status
-  const unavailableMessage = current.locationValidation.status === 'unavailable' ? current.locationValidation.error.message : 'validation failed'
-  const submittedDraft = () => {
-    if (archived || queryClient.isMutating({ mutationKey: locationMutationKey(workspaceId) })) return undefined
-    return locationDraftFor(useWorkspaceLocationDraftStore.getState(), workspaceId)
-  }
-
-  const savePath = async (selectedPath?: string) => {
-    const submitted = submittedDraft()
-    const rootPath = selectedPath ?? submitted?.rootPath
-    if (!submitted || !rootPath || (selectedPath === undefined && !submitted.dirty)
-      || (!operation.attempt.unresolved && (conflict || locationDraftConflicts(submitted, current.locationRevision)))) return false
-    // Selecting an already accepted, usable destination is a successful no-op.
-    if (!operation.attempt.unresolved && !submitted.dirty && status === 'ready'
-      && rootPath === current.executionLocation?.rootPath) return true
-    update(workspaceId, (value) => value ? { ...value, notice: undefined } : value)
-    try {
-      // mutateAsync settles even after this route unmounts. Apply the result to
-      // its submitted workspace's draft, never the workspace navigated to later.
-      operation.input ??= { workspaceId, runnerId: RUNNER_ID, rootPath, expectedLocationRevision: submitted.baseRevision }
-      if (operation.input.rootPath !== rootPath) throw new Error('Retry the previous destination before choosing another folder.')
-      const result = await save.mutateAsync(operation.attempt.input(operation.input))
-      operation.attempt.succeeded(); operation.input = undefined
-      update(workspaceId, (value) => value ? acknowledgeLocationSave(
-        value, submitted.editVersion, result.value.executionLocation.rootPath, result.value.locationRevision,
-      ) : value)
-      toasts?.notify({ tone: 'success', title: 'Folder saved' })
-      onSaved?.()
-      return true
-    } catch (error) {
-      operation.attempt.failed(error)
-      if (error instanceof ApiError && error.code === 'LOCATION_REVISION_CONFLICT') operation.conflicted = true
-      if (!operation.attempt.unresolved) operation.input = undefined
-      update(workspaceId, (value) => {
-        if (!value) return value
-        const revision = error instanceof ApiError ? error.details?.currentLocationRevision : undefined
-        return {
-          ...value,
-          conflictRevision: error instanceof ApiError && error.code === 'LOCATION_REVISION_CONFLICT'
-            ? Math.max(value.conflictRevision ?? 0, typeof revision === 'number' ? revision : submitted.baseRevision + 1)
-            : value.conflictRevision,
-          notice: message(error),
-        }
-      })
-      toasts?.notify({ tone: 'danger', title: 'Execution location not saved', description: message(error) })
-      if (selectedPath !== undefined) {
-        if (operation.conflicted) throw new Error(`${message(error)} Close this dialog and reload the saved location.`, { cause: error })
-        throw error
-      }
-      return false
-    }
-  }
-
-  const reloadSaved = async () => {
-    const submitted = submittedDraft()
-    if (!submitted) return
-    try {
-      const saved = await reload.mutateAsync({ workspaceId })
-      if (saved.workspace.id !== workspaceId) throw new Error('The reloaded location belongs to another workspace.')
-      if (saved.locationValidation.status !== 'restricted'
-        && saved.locationRevision >= Math.max(submitted.baseRevision, submitted.conflictRevision ?? 0)) operation.conflicted = false
-      update(workspaceId, (value) => value ? reloadLocationDraft(value, submitted.editVersion, saved) : value)
-      toasts?.notify({ tone: 'info', title: 'Saved location reloaded' })
-    } catch (error) {
-      update(workspaceId, (value) => value ? { ...value, notice: `${message(error)} Your local edit was preserved.` } : value)
-      toasts?.notify({ tone: 'danger', title: 'Could not reload location', description: message(error) })
-    }
-  }
-
-  return (
-    <section className="workspace-location-form" aria-label="Project folder">
-      <UnsavedEditorGuard editor={{ label: 'execution location', dirty: draft.dirty || operation.attempt.unresolved, busy: busy || operation.attempt.unresolved,
-        saveDisabled: archived || conflict || !draft.rootPath,
-        error: conflict ? 'The saved location changed. Keep editing to resolve the conflict.' : save.isError ? message(save.error) : undefined,
-        save: async () => { await savePath() },
-        discard: () => update(workspaceId, () => hydrateLocationDraft(undefined, current)),
-      }} />
-      {archived ? <Alert live tone="danger" title="This workspace is archived. Its execution location cannot be edited." /> : null}
-      <WorkspaceFolderPicker key={workspaceId}
-        label={presentation === 'tile' ? 'Execution location' : presentation === 'card' ? 'Choose workspace folder' : 'Project folder'}
-        description="App connections are checked from this folder."
-        value={draft.rootPath} copyValue={current.executionLocation?.rootPath ?? ''}
-        disabled={!writable || (conflict && !operation.attempt.unresolved)} selectionUnconfirmed={operation.attempt.unresolved && !busy} onSelect={async (path) => {
-        // The modal owns its candidate. Only acknowledgement changes the page's destination.
-        if (!await savePath(path)) {
-          throw new Error(locationDraftFor(useWorkspaceLocationDraftStore.getState(), workspaceId)?.notice
-            ?? 'The saved location changed. Close this dialog and reload the saved location.')
-        }
-      }} />
-      {conflict ? <Alert live tone="warning" title="The saved location changed elsewhere. Reload it to resolve the conflict." />
-        : status === 'unavailable' && !draft.dirty ? <Alert live tone="warning" title={unavailableMessage} /> : null}
-      {draft.notice ? <p className="settings-save-status" role="status">{draft.notice}</p> : null}
-      <div className="settings-location-actions">
-        {conflict ? <Button disabled={busy} onClick={() => void reloadSaved()}>
-          {reload.isPending ? 'Reloading…' : 'Reload saved location'}
-        </Button> : null}
-      </div>
-    </section>
-  )
+function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'The folder operation failed.' }
+function hostLabel(host: WorkspaceRootSelection['hostRef']) { return host.kind === 'main' ? `Main · ${host.mainId}` : `Worker · ${host.deviceId}` }
+function sameHost(left: WorkspaceRootSelection['hostRef'], right: WorkspaceRootSelection['hostRef']) {
+  return left.kind === right.kind && left.mainId === right.mainId && (left.kind === 'main' || right.kind === 'device' && left.deviceId === right.deviceId)
 }
-
-export function WorkspaceExecutionLocationSettings({ workspaceId, presentation, onSaved }: Props) {
+function revision(value: string | undefined) {
+  const result = Number(value ?? 0)
+  if (!Number.isSafeInteger(result) || result < 0) throw new Error('This root policy revision cannot be represented by the location API.')
+  return result
+}
+function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Props) {
+  const epoch = useHarnessSessionEpoch(), scope = `${epoch}:${workspaceId}`
+  const toasts = useContext(ToastContext)
+  const workspace = useManagedWorkspaceQuery(workspaceId)
+  const current = workspace.isSuccess && workspace.data.workspace.id === workspaceId ? workspace.data : undefined
+  const allowed = Boolean(current && current.locationValidation.status !== 'restricted')
+  const saved = useBoundWorkspaceLocation(workspaceId, allowed)
+  const choices = useWorkspaceRootChoices(workspaceId, allowed)
+  const browse = useBrowseBoundWorkspaceLocation(workspaceId)
+  const validate = useValidateBoundWorkspaceLocation(workspaceId)
+  const save = useSetBoundWorkspaceLocation(workspaceId)
+  type SaveFacts = { selection: WorkspaceRootSelection; host: ApprovedRootAllowlist }
+  const operation = useRef({ attempt: new CommandAttempt<SaveFacts>(), original: undefined as SaveFacts | undefined, uncertain: false }).current
+  const active = useRef(true)
+  useEffect(() => {
+    active.current = true
+    const signal = sessionSignal(), reset = usePickers.getState().reset
+    signal.addEventListener('abort', reset, { once: true })
+    return () => { active.current = false; signal.removeEventListener('abort', reset) }
+  }, [])
+  const busy = useIsMutating({ mutationKey: locationMutationKey(workspaceId) }) > 0
+  const picker = usePickers(state => state.pickers[scope]) ?? empty()
+  const update = usePickers(state => state.update)
+  const records = choices.isSuccess ? choices.data.allowlists.flatMap(host => host.bases.map(base => ({ host, base,
+    key: JSON.stringify([host.hostRef, host.applicationInstallationId, host.configurationRevision, base.baseId]),
+  }))) : []
+  const chosen = records.find(record => record.key === picker.selected)
+  const candidate = chosen && picker.candidates[chosen.key]
+  const selection: WorkspaceRootSelection | undefined = chosen && candidate ? { workspaceId, hostRef: chosen.host.hostRef,
+    allowedBaseId: chosen.base.baseId, configurationRevision: chosen.host.configurationRevision, relativePath: candidate.relativePath,
+    accessMode: candidate.accessMode, expectedLocationRevision: candidate.locationRevision, expectedRootPolicyRevision: candidate.rootPolicyRevision } : undefined
+  const locked = busy || operation.attempt.unresolved || browse.isPending || validate.isPending
+  const archived = current?.archivedAt !== null && current?.archivedAt !== undefined
+  const conflict = Boolean(picker.conflict || candidate && saved.isSuccess && candidate.locationRevision !== saved.data.locationRevision)
+  const change = (apply: (previous: Picker) => Picker) => { if (!locked) update(scope, previous => ({ ...apply(previous), editVersion: previous.editVersion + 1, notice: undefined })) }
+  const choose = (key: string) => {
+    const record = records.find(value => value.key === key)
+    if (!record || !saved.isSuccess || !choices.isSuccess) return
+    const previousPolicy = choices.data.policies.find(policy => sameHost(policy.hostRef, record.host.hostRef))
+    change(previous => ({ ...previous, selected: key, candidates: { ...previous.candidates, [key]: previous.candidates[key] ?? {
+      relativePath: previousPolicy?.allowedBaseId === record.base.baseId ? previousPolicy.relativePath : '',
+      accessMode: previousPolicy?.allowedBaseId === record.base.baseId && record.base.accessModes.includes(previousPolicy.accessMode) ? previousPolicy.accessMode : record.base.accessModes[0]!,
+      locationRevision: saved.data.locationRevision, rootPolicyRevision: revision(previousPolicy?.rootPolicyRevision),
+    } } }))
+    browse.reset(); validate.reset()
+  }
+  const changeCandidate = (fields: Partial<Candidate>) => {
+    if (!chosen || !candidate) return
+    change(previous => ({ ...previous, candidates: { ...previous.candidates, [chosen.key]: { ...candidate, ...fields } } }))
+    browse.reset(); validate.reset()
+  }
+  const reload = async () => {
+    if (operation.attempt.unresolved) return
+    const version = picker.editVersion
+    const [location, roots] = await Promise.all([saved.refetch(), choices.refetch()])
+    if (location.isError || roots.isError || !location.data || !roots.data) { update(scope, previous => ({ ...previous, notice: 'Saved location could not be reloaded. Your candidate was preserved.' })); return }
+    update(scope, previous => {
+      if (previous.editVersion !== version) return { ...previous, notice: 'Saved location reloaded. Your newer candidate was preserved.' }
+      return { ...empty(), open: previous.open, editVersion: previous.editVersion + 1, notice: 'Saved location and root policies reloaded. Select the intended computer again.' }
+    })
+  }
+  const submit = async () => {
+    if (busy || (!operation.attempt.unresolved && (archived || !selection || !chosen || conflict || !WorkspaceRootSelectionSchema.safeParse(selection).success))) return
+    const hadUnknownOutcome = operation.uncertain
+    const latest = usePickers.getState().pickers[scope] ?? picker
+    const submittedVersion = latest.editVersion
+    const submittedKey = latest.selected
+    const record = records.find(value => value.key === submittedKey)
+    const draft = record && latest.candidates[record.key]
+    const submitted: WorkspaceRootSelection | undefined = record && draft ? { workspaceId, hostRef: record.host.hostRef,
+      allowedBaseId: record.base.baseId, configurationRevision: record.host.configurationRevision, relativePath: draft.relativePath,
+      accessMode: draft.accessMode, expectedLocationRevision: draft.locationRevision, expectedRootPolicyRevision: draft.rootPolicyRevision } : undefined
+    // Re-selecting the exact saved binding is not a change: no command, no revision bump.
+    const readback = saved.isSuccess && saved.data.evidence === 'bound' ? saved.data : undefined
+    const binding = readback?.binding
+    if (!operation.attempt.unresolved && submitted && record && readback && binding && sameHost(binding.hostRef, submitted.hostRef)
+      && binding.applicationInstallationId === record.host.applicationInstallationId && binding.allowedBaseId === submitted.allowedBaseId
+      && binding.configurationRevision === submitted.configurationRevision && binding.relativePath === submitted.relativePath
+      && binding.accessMode === submitted.accessMode && readback.locationRevision === submitted.expectedLocationRevision) {
+      update(scope, previous => ({ ...previous, open: false, notice: undefined })); return
+    }
+    operation.original ??= submitted && record ? { selection: submitted, host: record.host } : undefined
+    if (!operation.original) return
+    try {
+      const request = operation.attempt.input(operation.original)
+      const result = await save.mutateAsync({ input: { ...request.selection, commandId: request.commandId }, expectedHost: request.host })
+      operation.attempt.succeeded(); operation.original = undefined; operation.uncertain = false
+      update(scope, previous => {
+        const newer = previous.editVersion !== submittedVersion
+        const candidates = { ...previous.candidates }
+        if (submittedKey && candidates[submittedKey] && !newer) candidates[submittedKey] = { ...candidates[submittedKey], locationRevision: result.value.locationRevision,
+          rootPolicyRevision: result.value.evidence === 'bound' ? revision(result.value.binding.rootPolicyRevision) : candidates[submittedKey].rootPolicyRevision }
+        return { ...previous, candidates, conflict: false, open: newer ? previous.open : false,
+          notice: newer ? 'Original folder command confirmed. Your newer candidate remains unsaved.' : `Execution folder command confirmed at location revision ${result.value.locationRevision}. Accepted Runs keep their pins.` }
+      })
+      toasts?.notify({ tone: 'success', title: 'Folder command confirmed' })
+      if (active.current && epoch === sessionGeneration()) onSaved?.()
+    } catch (error) {
+      // Losing permission to reconcile cannot disprove an earlier possible commit.
+      if (!(hadUnknownOutcome && error instanceof ApiError && (error.status === 401 || error.status === 403))) operation.attempt.failed(error)
+      operation.uncertain = operation.attempt.unresolved
+      if (!operation.attempt.unresolved) operation.original = undefined
+      update(scope, previous => ({ ...previous, conflict: error instanceof ApiError && error.status === 409 ? true : previous.conflict, notice: errorMessage(error) }))
+    }
+  }
+  const runBrowse = async () => { if (selection && chosen) try { await browse.mutateAsync({ input: selection, expectedHost: chosen.host }) } catch { /* Mutation exposes the scoped error. */ } }
+  const runValidate = async () => { if (selection && chosen) try { await validate.mutateAsync({ input: selection, expectedHost: chosen.host }) } catch { /* Mutation exposes the scoped error. */ } }
+  const guard = <UnsavedEditorGuard editor={{ label: 'execution folder command', dirty: operation.attempt.unresolved, busy: busy || operation.attempt.unresolved,
+    save: submit, discard: () => { if (!operation.attempt.unresolved) update(scope, () => empty()) }, error: save.error?.message }} />
+  const recovery = operation.attempt.unresolved ? <><Alert tone="warning" title="A submitted folder command has an unknown outcome. Its original selection is retained." />
+    <Button disabled={busy} onClick={() => void submit()}>Reconcile original selection</Button></> : null
+  if (!current) return <section aria-label="Project folder">{guard}{recovery}{workspace.isError ? <Alert tone="danger" title="Execution workspace could not be loaded." /> : <LoadingState label="Loading execution workspace…" />}</section>
+  if (current.locationValidation.status === 'restricted') return <>{guard}{recovery}<Alert tone="danger" title="You do not have permission to read this workspace’s execution location." /></>
+  if (saved.isError || choices.isError) return <section aria-label="Project folder">{guard}{recovery}{archived ? <Alert tone="warning" title="This workspace is archived. Its execution location cannot be edited." /> : null}<Alert tone="danger" title="Authenticated execution location or computer roots could not be read." /><Button onClick={() => void reload()}>Retry location readback</Button></section>
+  if (!saved.isSuccess || !choices.isSuccess) return <>{guard}{recovery}<LoadingState label="Loading saved execution computer and approved roots…" /></>
+  const savedPath = saved.data.executionLocation?.rootPath ?? ''
+  const browsingCurrent = sameRootSelection(browse.data?.selection, selection)
+  const validationCurrent = sameRootSelection(validate.data?.selection, selection)
+  return <section className="workspace-location-form" aria-label="Project folder">
+    {guard}
+    {archived ? <Alert tone="warning" title="This workspace is archived. Its execution location cannot be edited." /> : null}
+    <WorkspaceLocationCard label={presentation === 'tile' ? 'Execution location' : presentation === 'card' ? 'Choose workspace folder' : 'Project folder'} path={savedPath}
+      disabled={archived || busy} description="Choose an approved computer and validate its folder." onChoose={() => update(scope, previous => ({ ...previous, open: true }))}
+      onCopy={savedPath ? async () => {
+        try { await navigator.clipboard.writeText(savedPath); toasts?.notify({ tone: 'success', title: 'Folder path copied' }) }
+        catch { toasts?.notify({ tone: 'danger', title: 'Could not copy the folder path' }) }
+      } : undefined} />
+    {saved.data.evidence === 'bound' ? <dl className="computer-facts">
+      <div><dt>Saved execution computer</dt><dd>{hostLabel(saved.data.binding.hostRef)}</dd></div>
+      <div><dt>Application installation</dt><dd>{saved.data.binding.applicationInstallationId}</dd></div>
+      <div><dt>Location / root policy revision</dt><dd>{saved.data.locationRevision} / {saved.data.binding.rootPolicyRevision}</dd></div>
+    </dl> : saved.data.evidence === 'legacy_missing' ? <p>Saved folder history has no computer binding. Select an approved computer before changing it.</p> : <p>No execution folder has been configured.</p>}
+    {picker.notice ? <p role="status">{picker.notice}</p> : null}
+    <Dialog open={picker.open} onOpenChange={open => { if (open || !locked) update(scope, previous => ({ ...previous, open })) }} title="Execution folder" busy={locked}
+      description="Browsing and validation run on the selected computer. The workspace changes only when the save is confirmed." footer={<>
+        <Button disabled={locked} onClick={() => update(scope, previous => ({ ...previous, open: false }))}>Cancel</Button>
+        <Button disabled={archived || busy || (!operation.attempt.unresolved && (!selection || conflict))} onClick={() => void submit()}>
+          {busy ? 'Saving…' : operation.attempt.unresolved ? 'Reconcile original selection' : 'Select location'}
+        </Button></>}>
+      <Select label="Computer and approved base folder" value={picker.selected ?? ''} disabled={locked || archived}
+        options={[{ value: '', label: 'Choose a computer and approved root' }, ...records.map(record => ({ value: record.key, label: `${hostLabel(record.host.hostRef)} · ${record.base.canonicalPath}` }))]}
+        onChange={event => choose(event.target.value)} />
+      {!records.length ? <Alert tone="warning" title="No approved folders are available for this workspace. A person must approve a computer folder before it can be chosen." /> : null}
+      {chosen && candidate ? <>
+        <dl className="computer-facts"><div><dt>Approved base</dt><dd>{chosen.base.canonicalPath}</dd></div></dl>
+        <details className="computer-details"><summary>Computer installation</summary>
+          <dl className="computer-facts"><div><dt>Candidate application installation</dt><dd>{chosen.host.applicationInstallationId}</dd></div></dl></details>
+        <ComputerPresenceReadback key={chosen.key} host={chosen.host.hostRef} applicationInstallationId={chosen.host.applicationInstallationId} />
+        <TextField label="Relative folder on this computer" value={candidate.relativePath} maxLength={1024} disabled={locked || archived} placeholder="Empty selects the approved base"
+          onChange={event => changeCandidate({ relativePath: event.target.value })} />
+        <Select label="Folder access" value={candidate.accessMode} disabled={locked || archived} options={chosen.base.accessModes.map(mode => ({ value: mode, label: mode }))}
+          onChange={event => changeCandidate({ accessMode: event.target.value as Candidate['accessMode'] })} />
+        <div className="computer-actions">
+          <Button disabled={locked || conflict || archived} onClick={() => void runBrowse()}>Browse this computer</Button>
+          <Button disabled={locked || conflict || archived} onClick={() => void runValidate()}>Validate candidate folder</Button>
+        </div>
+      </> : null}
+      {browsingCurrent ? <><ul className="computer-instance-list">{browse.data!.browse.directories.map(directory => <li key={directory.relativePath}>
+        <Button disabled={locked} onClick={() => changeCandidate({ relativePath: directory.relativePath })}>{directory.name}</Button></li>)}</ul>
+        {browse.data!.browse.truncated ? <p>Directory listing is truncated. Enter an exact relative folder to validate.</p> : null}</> : null}
+      {validationCurrent ? <p role="status">Candidate verified on {hostLabel(validate.data!.attestation.hostRef)}: {validate.data!.attestation.canonicalProjectRoot}. Not saved yet.</p> : null}
+      {browse.isError && sameRootSelection(browse.variables?.input, selection) ? <p role="alert">{browse.error.message}</p> : null}
+      {validate.isError && sameRootSelection(validate.variables?.input, selection) ? <p role="alert">{validate.error.message}</p> : null}
+      {operation.attempt.unresolved && !busy ? <Alert tone="warning" title="The save outcome is unknown. Reconcile the original computer and folder selection before making another choice." /> : null}
+      {conflict && !operation.attempt.unresolved ? <Alert tone="warning" title="The saved location or root policy changed. Reload before saving this candidate." /> : null}
+      {conflict && !operation.attempt.unresolved ? <Button disabled={locked} onClick={() => void reload()}>Reload saved location</Button> : null}
+      {picker.notice ? <p role="status">{picker.notice}</p> : null}
+    </Dialog>
+  </section>
+}
+export function WorkspaceExecutionLocationSettings(props: Props) {
   const epoch = useHarnessSessionEpoch()
-  return <LocationSettings key={`${epoch}:${workspaceId}`} workspaceId={workspaceId} presentation={presentation} onSaved={onSaved} />
+  return <LocationSettings key={`${epoch}:${props.workspaceId}`} {...props} />
 }
