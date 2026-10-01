@@ -11,6 +11,7 @@ import { requireHarnessQualification } from './qualification/gate.js'
 import { harnessProfile } from './qualification/profiles.js'
 import { isObject, object, type CodexProtocol, type JsonObject, type RpcRequest } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
+import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { CodexMethodMap } from './codexMethodTypes.js'
 
 export type CodexClientMethod = keyof CodexMethodMap
@@ -242,11 +243,11 @@ function gitBlob(bytes: Buffer): string {
 /** No lifetime auth/version cache: each newly launched process is requalified. */
 export async function qualifyCodex(
   binary: string, expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
-  requireAuthentication: boolean, signal?: AbortSignal,
+  requireAuthentication: boolean, signal?: AbortSignal, recovery?: NativeProcessRecovery,
 ): Promise<QualifiedCodex> {
   const resolved = await executable(binary, cwd, environment)
   const fingerprint = await identity(resolved)
-  const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment)
+  const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment, recovery ? { recovery } : {})
   const version = await command(['--version'])
   const actual = (version.stdout || version.stderr).trim()
   const schema = qualifiedSchemas[actual]
