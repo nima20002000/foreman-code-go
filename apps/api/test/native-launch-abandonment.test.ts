@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'vitest'
-import { NativeProcessRegistry, spawnNativeProcess } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { readRecord, recordObject, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
 function fixture() {
@@ -34,6 +34,42 @@ describe('original-parent no-dispatch retirement', () => {
       assert.deepEqual(readdirSync(f.ownerDirectory), ['retired.json'])
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
+
+  it('refuses positive no-start evidence for a real native process that has already entered', async () => {
+    const f = fixture()
+    const child = spawnNativeProcess(process.execPath, ['-e', 'console.log("native-entered");setInterval(()=>{},1000)'], {
+      cwd: f.root, env: {}, recovery: f.scope,
+    })
+    child.stderr.resume()
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        child.stdout.once('data', (chunk) => resolve(String(chunk)))
+        child.once('exit', () => reject(new Error('Native fixture exited before entering.')))
+      })
+      assert.equal(output, 'native-entered\n')
+      assert.equal(await f.registry.abandonReservedLaunch(f.scope), false)
+      assert.equal(readRecord(join(f.directory, 'not-started.json')), undefined)
+      assert.ok(readRecord(join(f.directory, 'birth.json')))
+    } finally {
+      await stopRecoveredChild(child)
+      await closed
+      // Only the observed original scope can report entered after registration GC.
+      assert.equal(await f.registry.abandonReservedLaunch(f.scope), false)
+      assert.equal(await f.registry.closeOwner(f.scope.owner), true)
+      await assert.rejects(f.registry.abandonReservedLaunch({ ...f.scope }))
+      const original = { ...f.scope }
+      for (const mutation of [{ owner: 'foreign-owner' }, { launchId: randomUUID() }, { root: join(f.root, 'foreign') }]) {
+        Object.assign(f.scope, mutation)
+        await assert.rejects(f.registry.abandonReservedLaunch(f.scope))
+        assert.throws(() => spawnNativeProcess(process.execPath, ['-e', 'throw new Error("must never launch")'], {
+          cwd: f.root, env: {}, recovery: f.scope,
+        }), /scope was modified/)
+        Object.assign(f.scope, original)
+      }
+      rmSync(f.root, { recursive: true, force: true })
+    }
+  }, 10_000)
 
   for (const state of ['claimed.json', 'dispatched.json', 'birth.json', 'containment.json', 'closed.json']) {
     it(`refuses abandonment after ${state} without publishing no-start evidence`, async () => {
