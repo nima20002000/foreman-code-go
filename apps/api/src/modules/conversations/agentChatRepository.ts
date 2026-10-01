@@ -130,7 +130,7 @@ export interface NewAgentConversation {
 export class PostgresAgentChatRepository {
   constructor(readonly pool: pg.Pool) {}
 
-  unfinishedActivityOwners() { return new PostgresOperatorActivityRepository(this.pool).unfinishedOwners('agent') }
+  unfinishedActivityOwners(conversationId?: string) { return new PostgresOperatorActivityRepository(this.pool).unfinishedOwners('agent', conversationId) }
 
   async byKey(key: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
     return (await query.query<AgentConversationRow>(

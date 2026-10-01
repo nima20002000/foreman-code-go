@@ -141,15 +141,15 @@ export class PostgresOperatorActivityRepository {
       hasMore: result.rows.length > limit }
   }
 
-  async unfinishedOwners(kind: 'agent' | 'operator') {
+  async unfinishedOwners(kind: 'agent' | 'operator', conversationId?: string) {
     const rows = (await this.pool.query<{ conversation_id: string; request_id: string; activity_id: string; native: unknown; owner_native: unknown }>(`
       select a.conversation_id,a.request_id,a.activity_id,a.source_provenance->'native' as native,a.source_provenance->'ownerNative' as owner_native
       from operator_conversation_activity a join operator_conversations c on c.id=a.conversation_id
         join operator_conversation_turns t on t.conversation_id=a.conversation_id and t.request_id=a.request_id
-      where c.kind=$1 and c.deleted_at is null and a.record->>'kind'<>'thinking' and a.record->>'status' in ('pending','running','unknown')
+      where c.kind=$1 and ($2::text is null or c.id=$2) and c.deleted_at is null and a.record->>'kind'<>'thinking' and a.record->>'status' in ('pending','running','unknown')
         and a.source_provenance#>>'{ownerNative,turnId}' is not null
         and a.source_provenance->>'ownerInputHash'=t.input_hash
-      order by a.sequence limit 101`, [kind])).rows
+      order by a.sequence limit 101`, [kind, conversationId ?? null])).rows
     return { owners: rows.slice(0, 100).flatMap((row) => {
       const native = ActivityNativeIdentitySchema.safeParse(row.native), owner = ActivityNativeIdentitySchema.safeParse(row.owner_native)
       return native.success && owner.success ? [{ conversationId: row.conversation_id, requestId: row.request_id, activityId: row.activity_id,
