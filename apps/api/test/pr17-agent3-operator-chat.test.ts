@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type NativeSessionReference, type OperatorConfigurationVersion, type PendingNativeInteraction } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type NativeHarnessEvent, type NativeSessionReference, type OperatorConfigurationVersion, type PendingNativeInteraction } from '@graphql/contracts'
 import { OperatorChatService, type OperatorChatAuthority } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation, type ConversationRow } from '../src/modules/conversations/operatorChatRepository.js'
 import type { NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
@@ -298,4 +298,44 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
     await f.chat.shutdown()
   })
 
+})
+
+it('buffers OpenCode text until exact parent metadata, then publishes prefix and suffix through the mounted Operator', async () => {
+  const f = fixture(), committed: string[] = [], deltas: Array<{ text: unknown; mode: unknown }> = []
+  const checkpoints: Array<{ committed: string[]; deltas: Array<{ text: unknown; mode: unknown }> }> = []
+  Object.defineProperty(f.manager, 'harness', { value: 'opencode' })
+  f.manager.session.harness = 'opencode'; f.row.harness = 'opencode'
+  f.repository.appendAssistantMessage = async (_id, _request, _native, text) => { committed.push(text); return true }
+  const base = { connectionId: 'operator-connection', occurredAt: '2026-10-01T00:00:00Z' }
+  const prefix: NativeHarnessEvent = { ...base, sequence: 1, type: 'message.part.updated', payload: { part: {
+    sessionID: f.manager.session.nativeSessionId, messageID: 'assistant', id: 'text-part', type: 'text', text: 'prefix ',
+  } } }
+  f.manager.startTurn = async function* (_session, input) {
+    f.manager.nativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: 'review-turn-1',
+      events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } }
+    await input.onSubmitted?.('review-turn-1')
+    yield { ...prefix, payload: { part: { ...prefix.payload.part as object, sessionID: 'foreign', text: 'foreign' } } }
+    yield prefix
+    checkpoints.push({ committed: [...committed], deltas: [...deltas] })
+    yield { ...base, sequence: 2, type: 'message.updated', payload: { info: {
+      sessionID: f.manager.session.nativeSessionId, id: 'assistant', role: 'assistant', parentID: 'review-turn-1',
+    } } }
+    checkpoints.push({ committed: [...committed], deltas: [...deltas] })
+    yield { ...base, sequence: 3, type: 'message.part.delta', payload: {
+      sessionID: f.manager.session.nativeSessionId, messageID: 'assistant', partID: 'text-part', field: 'text', delta: 'suffix',
+    } }
+  }
+  const unsubscribe = f.chat.events.subscribe(f.row.id, event => {
+    if (event.type === 'delta') deltas.push({ text: event.data.text, mode: event.data.mode })
+  })
+  try {
+    await f.chat.send(f.row.id, { requestId: 'operator-prefix', content: 'Use native stream' }, f.owner)
+    await eventually(() => f.finishResults.length === 1)
+    expect(checkpoints).toEqual([
+      { committed: [], deltas: [] },
+      { committed: ['prefix '], deltas: [{ text: 'prefix ', mode: 'replace' }] },
+    ])
+    expect(committed).toEqual(['prefix '])
+    expect(deltas).toEqual([{ text: 'prefix ', mode: 'replace' }, { text: 'suffix', mode: 'append' }])
+  } finally { unsubscribe(); await f.chat.shutdown() }
 })

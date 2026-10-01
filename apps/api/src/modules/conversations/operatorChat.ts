@@ -450,7 +450,7 @@ export class OperatorChatService {
       const partKinds = new Map<string, string>()
       let submittedTurnId = row.active_native_turn_id
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
-      for await (const event of runtime.manager.startTurn(runtime.session, {
+      for await (const nativeEvent of runtime.manager.startTurn(runtime.session, {
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
         onSubmitted: async (nativeTurnId) => {
           submittedTurnId = nativeTurnId
@@ -492,16 +492,17 @@ export class OperatorChatService {
       }, signal)) {
         // After native output, errors from pending/history reads are not prompt rejections.
         submitted = true
-        if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
-        await this.recordActivity(id, input.requestId, runtime, event)
-        await this.recordAssistantMessage(id, input.requestId, runtime, event)
-        for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: input.requestId })
-        if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
-          const pending = await runtime.manager.pending(runtime.session, signal)
-          if (pending) {
-            await this.repository.pending(id, input.requestId, pending)
-            this.events.publish(id, 'state', { requestId: input.requestId, pending: true })
-            return // Native request stays resident. The periodic reconciler observes its continuation.
+        for (const event of runtime.manager.harness === 'opencode' ? currentEvent(nativeEvent) : [nativeEvent]) {
+          await this.recordActivity(id, input.requestId, runtime, event)
+          await this.recordAssistantMessage(id, input.requestId, runtime, event)
+          for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: input.requestId })
+          if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
+            const pending = await runtime.manager.pending(runtime.session, signal)
+            if (pending) {
+              await this.repository.pending(id, input.requestId, pending)
+              this.events.publish(id, 'state', { requestId: input.requestId, pending: true })
+              return // Native request stays resident. The periodic reconciler observes its continuation.
+            }
           }
         }
       }
