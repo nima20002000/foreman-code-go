@@ -7,7 +7,7 @@ export const sharpPackages = Object.freeze({
   '@img/sharp-linux-x64': '0.35.4', '@img/sharp-libvips-linux-x64': '1.3.3',
 });
 export function assertWorkerDependency(path) {
-  if (/^(?:pg(?:-|$)|postgres(?:$|\/)|@fastify\/|fastify(?:$|\/)|drizzle-orm(?:$|\/)|kysely(?:$|\/))/.test(path)) {
+  if (/^(?:pg(?:-|$|\/)|postgres(?:$|\/)|@fastify\/|fastify(?:$|\/)|drizzle-orm(?:$|\/)|kysely(?:$|\/))/.test(path)) {
     throw new Error(`Forbidden control-plane dependency: ${path}`);
   }
 }
