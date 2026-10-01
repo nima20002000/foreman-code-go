@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile, copyFile, readdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
+import { createRequire, isBuiltin } from 'node:module';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(join(root, 'apps/worker/package.json'));
@@ -24,7 +24,7 @@ for (const source of Object.keys(built.metafile.inputs)) {
   if (source.startsWith('apps/api/') && !(source.startsWith('apps/api/src/modules/devices/') && allowedApiModules.has(source.split('/').at(-1)))) throw new Error(`Forbidden control-plane import: ${source}`);
 }
 for (const entry of Object.values(built.metafile.outputs)) for (const dependency of entry.imports) {
-  if (dependency.external && !dependency.path.startsWith('node:')) throw new Error(`Unbundled dependency: ${dependency.path}`);
+  if (dependency.external && !isBuiltin(dependency.path)) throw new Error(`Unbundled dependency: ${dependency.path}`);
 }
 for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs']) await copyFile(join(root, 'apps/worker/src', name), join(output, 'src', name));
 await mkdir(join(output, 'artifacts'));
