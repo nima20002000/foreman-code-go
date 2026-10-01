@@ -9,14 +9,14 @@ import {
 
 import { DomainError } from '../errors.js'
 import type { AllocationSession, AllocationState, FileAllocation, FileReferenceRepository,
-  FileMutationContext, NewStoredFile, StoredFile } from './repository.js'
+  FileMutationContext, NewStoredFile, StoredFile, FileQuery } from './repository.js'
 
-type Query = Pick<pg.PoolClient, 'query'>
+type Query = FileQuery
 interface FileRow {
   file_id: string; owner_principal_id: string; current_revision_id: string; scope_kind: FileScope['kind']
   chat_kind: 'operator' | 'agent' | null; operator_id: string | null; conversation_id: string | null
   agent_id: string | null; workspace_id: string | null; workflow_id: string | null
-  run_id: string | null; execution_id: string | null; state: File['state']; created_at: Date
+  run_id: string | null; execution_id: string | null; job_execution_id?: string | null; state: File['state']; created_at: Date
   retention_duration_seconds: number | null; expires_at: Date | null
 }
 interface RevisionRow extends FileRow {
@@ -35,7 +35,9 @@ function scopeColumns(input: FileScope): Record<string, string | null> {
   const scope = FileScopeSchema.parse(input)
   const base: Record<string, string | null> = { scope_kind: scope.kind, chat_kind: null, operator_id: null,
     conversation_id: null, agent_id: null, workspace_id: null, workflow_id: null, run_id: null, execution_id: null }
-  if (scope.kind !== 'temporary') {
+  if (scope.kind === 'job_execution') {
+    base.workspace_id = scope.workspaceId; base.job_execution_id = scope.jobExecutionId
+  } else if (scope.kind !== 'temporary') {
     base.workspace_id = scope.workspaceId
     if (scope.kind === 'workflow_reference') base.workflow_id = scope.workflowId
   } else {
@@ -55,7 +57,9 @@ function scopeKey(scope: FileScope): string {
     ? scope.chat.ownerPrincipalId : null])).digest('hex')
 }
 function file(row: FileRow): File {
-  const scope = row.scope_kind === 'temporary'
+  const scope = row.scope_kind === 'job_execution'
+    ? { kind: 'job_execution', workspaceId: row.workspace_id, jobExecutionId: row.job_execution_id }
+    : row.scope_kind === 'temporary'
     ? { kind: 'temporary', chat: row.chat_kind === 'operator'
       ? { kind: 'operator', ownerPrincipalId: row.owner_principal_id, operatorId: row.operator_id, conversationId: row.conversation_id }
       : { kind: 'agent', conversationId: row.conversation_id, agentId: row.agent_id, workspaceId: row.workspace_id,
@@ -63,13 +67,13 @@ function file(row: FileRow): File {
     : { kind: row.scope_kind, workspaceId: row.workspace_id,
       ...(row.scope_kind === 'workflow_reference' ? { workflowId: row.workflow_id } : {}) }
   return FileSchema.parse({ fileId: row.file_id, currentRevisionId: row.current_revision_id, scope,
-    state: row.state, createdAt: row.created_at.toISOString(), ...(row.scope_kind === 'temporary'
+    state: row.state, createdAt: row.created_at.toISOString(), ...(row.scope_kind === 'temporary' || row.scope_kind === 'job_execution'
       ? { retentionDurationSeconds: row.retention_duration_seconds, expiresAt: row.expires_at!.toISOString() } : {}) })
 }
 function stored(row: RevisionRow): StoredFile {
   return { value: FileWithRevisionSchema.parse({ file: file(row), revision: { fileId: row.file_id,
     revisionId: row.revision_id, filename: row.filename, mediaType: row.media_type, byteSize: Number(row.byte_size),
-    sha256: row.sha256, origin: row.origin, createdAt: row.revision_created_at.toISOString() } }),
+    sha256: row.sha256, origin: row.origin, ...(row.origin === 'job_output' ? { byteClass: 'ci-output' } : {}), createdAt: row.revision_created_at.toISOString() } }),
   ownerPrincipalId: row.owner_principal_id, storageKey: row.storage_key }
 }
 function allocation(row: AllocationRow): FileAllocation {
@@ -97,7 +101,7 @@ export class PostgresFileRepository implements FileReferenceRepository {
     const columns = scopeColumns(f.scope)
     await query.query(`insert into files (file_id,owner_principal_id,current_revision_id,
       ${Object.keys(columns).join(',')},state,created_at,retention_duration_seconds,expires_at)
-      values (${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')})`,
+      values (${Array.from({ length: 7 + Object.keys(columns).length }, (_, i) => `$${i + 1}`).join(',')})`,
     [f.fileId, input.ownerPrincipalId, f.currentRevisionId, ...Object.values(columns), f.state, f.createdAt,
       ...('expiresAt' in f ? [f.retentionDurationSeconds, f.expiresAt] : [null, null])])
     await query.query(`insert into file_revisions
@@ -157,7 +161,7 @@ export class PostgresFileRepository implements FileReferenceRepository {
   async markExpired(fileId: string, asOfUtc: string): Promise<File | undefined> {
     z.string().datetime().parse(asOfUtc)
     const result = await this.pool.query<FileRow>(`update files set state='expired' where file_id=$1
-      and scope_kind='temporary' and state in ('pending','ready') and expires_at<=$2::timestamptz returning *`, [fileId, asOfUtc])
+      and scope_kind in ('temporary','job_execution') and state in ('pending','ready') and expires_at<=$2::timestamptz returning *`, [fileId, asOfUtc])
     return result.rows[0] ? file(result.rows[0]) : undefined
   }
 
@@ -196,7 +200,7 @@ export class PostgresFileRepository implements FileReferenceRepository {
     const auditReference = async (value: FileAllocation, action: string) => {
       if (value.stored.value.file.scope.kind === 'temporary') return
       await client.query(`insert into management_audit (principal_id,source,action,target_key,outcome,details)
-        values ($1,$2,$3,$4,'succeeded',$5::jsonb)`, [ownerPrincipalId, mutation?.source ?? 'http', action,
+        values ($1,$2,$3,$4,'succeeded',$5::jsonb)`, [ownerPrincipalId, mutation?.source ?? 'http', value.stored.value.file.scope.kind === 'job_execution' ? action.replace('reference_file.', 'job_artifact.') : action,
         `file:${value.stored.value.file.fileId}`, JSON.stringify({ requestId, revisionId: value.stored.value.revision.revisionId })])
     }
     try {
@@ -239,9 +243,9 @@ export class PostgresFileRepository implements FileReferenceRepository {
             } else {
               if (current.state === 'canceled' || f.state === 'removed') throw new DomainError('FILE_UPLOAD_CANCELED', 'Upload was canceled.', 409)
               const result = await client.query(`update files set state=$2 where file_id=$1 and state in ('pending','ready')
-                and ((scope_kind='temporary' and expires_at>clock_timestamp())
+                and ((scope_kind in ('temporary','job_execution') and expires_at>clock_timestamp())
                   or scope_kind in ('workflow_reference','workspace_reference')) returning file_id`, [f.fileId, state === 'finalized' ? 'ready' : f.state])
-              if (!result.rowCount) throw new DomainError(f.scope.kind === 'temporary' ? 'FILE_EXPIRED' : 'FILE_BYTES_UNAVAILABLE',
+              if (!result.rowCount) throw new DomainError('expiresAt' in f ? 'FILE_EXPIRED' : 'FILE_BYTES_UNAVAILABLE',
                 'The file expired or was removed during publication.', 410)
               if (current.state === 'finalized' && state !== 'finalized') throw new DomainError('FILE_ALREADY_FINALIZED', 'The upload is already finalized.', 409)
             }

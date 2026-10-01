@@ -68,7 +68,7 @@ describe.skipIf(!databaseUrl)('W09 canonical edge database fault fixtures', () =
     let reached!: () => void; const waiting = new Promise<void>(resolve => { reached = resolve })
     const operation = repository.recordRead(b, new Date().toISOString(), async query => {
       reached(); const current = await query.query("select revoked from grants where grant_id='grant' for share")
-      if (current.rows[0].revoked) throw new DomainError('AUTH_REVOKED','revoked',403)
+      if (!current.rows[0] || current.rows[0].revoked) throw new DomainError('AUTH_REVOKED','revoked',403)
     })
     await waiting; await client.query("update grants set revoked=true where grant_id='grant'"); await client.query('commit'); client.release()
     await expect(operation).rejects.toMatchObject({ code: 'AUTH_REVOKED' })

@@ -1,7 +1,7 @@
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { File, FilePage, FileScope, FileWithRevision, PermanentFileScope, MessageAttachmentRef } from '@graphql/contracts/files'
 
-export type FileQuery = Pick<pg.PoolClient, 'query'>
+export type FileQuery = GraphSqlClient
 export type FileMutationSource = 'http' | 'mcp'
 /** Reference writes revalidate live grants and lineage in the same transaction as their metadata/audit. */
 export interface FileMutationContext {

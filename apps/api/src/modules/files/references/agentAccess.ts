@@ -1,4 +1,5 @@
 import type { Readable } from 'node:stream'
+import { FileRevisionSchema } from '@graphql/contracts/files'
 import type { AgentFileReadInput, AgentFileReadResult, FileWithRevision, PermanentFileScope } from '@graphql/contracts/files'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DomainError } from '../../errors.js'
@@ -22,11 +23,11 @@ function pinConflict(): never {
   throw new DomainError('FILE_REFERENCE_PIN_CONFLICT', 'This Run already read a different immutable revision of this file.', 409)
 }
 function compact(context: AgentReferenceContext, row: FileWithRevision): AgentReferenceManifestEntry {
-  if (!effectiveReference(context, row.file.scope) || row.file.scope.kind === 'temporary'
+  if (!effectiveReference(context, row.file.scope) || (row.file.scope.kind === 'temporary' || row.file.scope.kind === 'job_execution')
     || row.file.state === 'expired' || row.file.fileId !== row.revision.fileId) {
     throw new DomainError('FILE_REFERENCE_METADATA_INVALID', 'Reference metadata does not match its authorized scope.', 500)
   }
-  const { fileId, revisionId, filename, mediaType, byteSize } = row.revision
+  const { fileId, revisionId, filename, mediaType, byteSize } = FileRevisionSchema.parse(row.revision)
   return { fileId, revisionId, filename, mediaType, byteSize, scope: row.file.scope, state: row.file.state }
 }
 

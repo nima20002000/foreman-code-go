@@ -96,7 +96,12 @@ export class FileByteStorage {
     const hash = createHash('sha256')
     for await (const chunk of readFileChunks(handle)) hash.update(chunk)
     if (hash.digest('hex') !== expected.sha256) throw new DomainError('FILE_HASH_MISMATCH', 'The uploaded SHA-256 differs from its allocation.', 422)
-    if (type) await verifyFileType(handle, expected, this.maxBytes)
+    if (type) await this.verifyType(handle, expected, this.maxBytes)
+  }
+
+  protected async verifyType(handle: FileHandle, expected: ExpectedFileBytes, maxBytes: number): Promise<void> {
+    if ('byteClass' in expected) throw new DomainError('FILE_BYTE_CLASS_DENIED', 'CI output requires its explicit storage capability.', 415)
+    await verifyFileType(handle, expected, maxBytes)
   }
 
   /** A unique attempt file prevents a stale/disconnected uploader from truncating another retry. */
@@ -131,7 +136,7 @@ export class FileByteStorage {
       if (received !== expected.byteSize) throw new DomainError('FILE_SIZE_MISMATCH', 'The upload ended before its allocated byte count.', 422)
       if (hash.digest('hex') !== expected.sha256) throw new DomainError('FILE_HASH_MISMATCH', 'The uploaded SHA-256 differs from its allocation.', 422)
       await handle.sync()
-      await verifyFileType(handle, expected, this.maxBytes)
+      await this.verifyType(handle, expected, this.maxBytes)
       await handle.chmod(0o400); await handle.sync()
       complete = true
       return candidate
