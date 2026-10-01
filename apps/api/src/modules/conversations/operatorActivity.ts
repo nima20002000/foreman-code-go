@@ -29,17 +29,53 @@ const collabNames: Record<string, string> = {
 
 /** Replayed history and child-session output must not become this turn's answer or activity. */
 export function openCodeTurnEvents(sessionId: string, turnId: () => string | null) {
-  const messages = new Set<string>()
-  return (event: NativeHarnessEvent): boolean => {
-    if (!event.type.startsWith('message.')) return true
+  const messages = new Map<string, boolean>()
+  const pending = new Map<string, { event: NativeHarnessEvent; message: string; order: number; bytes: number }[]>()
+  let parent = turnId(), count = 0, bytes = 0, order = 0
+  const discard = (message: string): NativeHarnessEvent[] => {
+    const entries = []
+    for (const [key, parts] of pending) {
+      if (parts[0]?.message !== message) continue
+      pending.delete(key)
+      for (const part of parts) { count--; bytes -= part.bytes; entries.push(part) }
+    }
+    return entries.sort((a, b) => a.order - b.order).map(entry => entry.event)
+  }
+  return (event: NativeHarnessEvent): NativeHarnessEvent[] => {
+    if (turnId() !== parent) { messages.clear(); pending.clear(); count = 0; bytes = 0; parent = turnId() }
+    if (!event.type.startsWith('message.')) return [event]
     const info = object(event.payload.info)
     if (event.type === 'message.updated') {
-      if (info.role === 'assistant' && info.sessionID === sessionId && info.parentID === turnId() && typeof info.id === 'string') messages.add(info.id)
-      return false
+      if (info.sessionID !== sessionId || typeof info.id !== 'string') return []
+      const message = JSON.stringify([sessionId, info.id])
+      const owned = parent !== null && info.role === 'assistant' && info.summary !== true && info.parentID === parent
+      messages.set(message, owned)
+      if (messages.size > 256) messages.delete(messages.keys().next().value!)
+      const parts = discard(message)
+      return owned ? parts : []
     }
     const part = object(event.payload.part)
-    const messageId = string(part.messageID || event.payload.messageID)
-    return messages.has(messageId)
+    const nativeSessionId = string(part.sessionID ?? event.payload.sessionID)
+    const messageId = string(part.messageID ?? event.payload.messageID)
+    const partId = string(part.id ?? event.payload.partID)
+    if (nativeSessionId !== sessionId || !messageId || !partId
+      || !['message.part.updated', 'message.part.delta'].includes(event.type)) return []
+    const message = JSON.stringify([nativeSessionId, messageId])
+    if (messages.has(message)) return messages.get(message) ? [event] : []
+    const size = Buffer.byteLength(JSON.stringify(event))
+    if (size > 256 * 1024) return []
+    while (count >= 256 || bytes + size > 256 * 1024) {
+      // Evict an entire pending part, preserving the order of every retained part.
+      const first = pending.keys().next().value
+      if (!first) break
+      for (const value of pending.get(first)!) { count--; bytes -= value.bytes }
+      pending.delete(first)
+    }
+    const key = JSON.stringify([nativeSessionId, messageId, partId])
+    const parts = pending.get(key) ?? []
+    parts.push({ event: structuredClone(event), message, order: order++, bytes: size })
+    pending.set(key, parts); count++; bytes += size
+    return []
   }
 }
 

@@ -838,7 +838,7 @@ export class AgentChatService {
       const redact = nativePersistenceRedactor([])
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
-      for await (const event of runtime.manager.startTurn(session, {
+      for await (const nativeEvent of runtime.manager.startTurn(session, {
         prompt: prompt.text, clientCorrelationId: correlationId,
         onSubmitted: async (id_) => {
           nativeTurnId = id_; submitted = true
@@ -850,16 +850,17 @@ export class AgentChatService {
         },
       }, AbortSignal.any([signal, observer.signal]))) {
         submitted = true
-        if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
-        await this.record(id, turn.requestId, runtime, event, redact)
-        for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: turn.requestId })
-        if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
-          // Share the response lock so an older observation cannot overwrite its next approval.
-          await this.control(id, async () => {
-            const pending = await runtime!.manager.pending(session, signal)
-            await this.repository.pending(id, turn.requestId, pending)
-            this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
-          })
+        for (const event of runtime.manager.harness === 'opencode' ? currentEvent(nativeEvent) : [nativeEvent]) {
+          await this.record(id, turn.requestId, runtime, event, redact)
+          for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: turn.requestId })
+          if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
+            // Share the response lock so an older observation cannot overwrite its next approval.
+            await this.control(id, async () => {
+              const pending = await runtime!.manager.pending(session, signal)
+              await this.repository.pending(id, turn.requestId, pending)
+              this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
+            })
+          }
         }
       }
       await this.observe(id, turn.requestId, runtime!, correlationId)

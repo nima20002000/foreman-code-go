@@ -34,18 +34,24 @@ export interface OpenCodeServerController {
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
   readonly nativePid?: number | undefined
+  /** Pure current-resident proof; absent after exit, disposal or unconfirmed cleanup. */
+  readonly residentGeneration?: number | undefined
   /** Provenance from unexpanded configuration, never from resolved secret values. */
   readonly mcpCredentialReferences?: Readonly<Record<string, string>>
   inspectMcpConfiguration?(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined>
   redact?<T>(value: T): T
   ensure(signal?: AbortSignal): Promise<void>
   request(path: string, init?: RequestInit, signal?: AbortSignal, expectedGeneration?: number): Promise<Response>
+  /** Authenticated bounded GET only; never starts, recovers or attaches a process. */
+  requestResident?(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined>
   dispose(): Promise<void>
   restart?(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void>
 }
 
 export interface ManagedOpenCodeServerOptions {
   processRecovery?: NativeProcessRecovery
+  /** Validate the pinned host/launcher/payload selection around native startup/diagnostics. */
+  assertInstallation?: (signal?: AbortSignal) => Promise<void>
   binary: string
   workingDirectory: string
   ownerAgentId: string
@@ -108,6 +114,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
   get nativePid(): number | undefined { return this.child?.pid }
+  get residentGeneration(): number | undefined {
+    return !this.cleanupRequired && !this.disposal && this.child?.exitCode === null && this.child.signalCode === null
+      && this.baseUrl && this.password ? this.generation : undefined
+  }
   get disabledAppMcpServerName(): string | undefined {
     return this.options.appMcpAccess === 'none' ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
   }
@@ -151,6 +161,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   async inspectMcpConfiguration(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined> {
     const evidence = await inspectOpenCodeMcpConfiguration({
       binary: this.options.binary, workingDirectory: directory, serverName,
+      ...(this.options.processRecovery ? { processRecovery: this.options.processRecovery } : {}),
+      ...(this.options.assertInstallation ? { assertInstallation: this.options.assertInstallation } : {}),
       credentialEnvironmentVariable: this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV,
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
@@ -195,6 +207,26 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         'OpenCode was replaced; restore and verify native configuration before dispatching work.', 'definite')
     }
     return this.rawRequest(path, init, signal)
+  }
+
+  async requestResident(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined> {
+    signal.throwIfAborted()
+    const url = new URL(path, 'http://opencode.invalid')
+    if (url.origin !== 'http://opencode.invalid'
+      || !/^\/(?:permission|session\/[^/]+(?:\/message\/[^/]+)?)$/.test(url.pathname)
+      || [...url.searchParams.keys()].some(key => key !== 'directory')) return undefined
+    const child = this.child
+    const epoch = this.epoch
+    const current = () => !this.cleanupRequired && !this.disposal && this.child === child
+      && child !== undefined && child.exitCode === null && child.signalCode === null
+      && !!this.baseUrl && !!this.password && this.generation === expectedGeneration && this.epoch === epoch
+    if (!current()) return undefined
+    const response = await this.rawRequest(path, { method: 'GET' }, signal)
+    if (!current() || signal.aborted) {
+      await response.body?.cancel().catch(() => undefined)
+      return undefined
+    }
+    return response
   }
 
   dispose(): Promise<void> {
@@ -281,7 +313,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     const timer = setTimeout(() => abort.abort(new HarnessExecutionError('OPENCODE_SERVER_START_TIMEOUT',
       'OpenCode did not finish version probing and startup within the startup budget.')), this.options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS)
     try {
-      const version = await runCommand(this.options.binary, ['--version'], this.options.workingDirectory, abort.signal)
+      await this.options.assertInstallation?.(abort.signal)
+      abort.signal.throwIfAborted()
+      const version = await runCommand(this.options.binary, ['--version'], this.options.workingDirectory, abort.signal, undefined,
+        this.options.processRecovery ? { recovery: this.options.processRecovery } : {})
+      abort.signal.throwIfAborted()
+      await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
       const installed = (version.stdout || version.stderr).trim()
       if (version.exitCode === 0) {
@@ -307,6 +344,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
       this.stderr = ''
+      await this.options.assertInstallation?.(abort.signal)
+      abort.signal.throwIfAborted()
       const child = spawnNativeProcess(this.options.binary, ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])], {
         cwd: this.options.workingDirectory, env: environment,
         ...(this.options.processRecovery ? { recovery: this.options.processRecovery } : {}),
@@ -341,6 +380,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         }
         assertOpenCodeChatMcpDisabled(await read('/config'), await read('/mcp'), this.disabledAppMcpServerName)
       }
+      await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
       this.generation += 1
     } catch (error) {

@@ -501,7 +501,12 @@ export class OpenCodeFileTurn {
     return this.exclusive(async () => {
       checkFileCondition(this.releaseAuthorized || this.submission === 'not_submitted',
         'FILE_SUBMISSION_FENCED', 'An unresolved native turn still owns its files.')
-      await this.release(signal)
+      const errors: unknown[] = []
+      try { await this.release(signal) } catch (error) { errors.push(error) }
+      if (this.submission === 'terminal' || this.processClosed) {
+        try { await this.adoptReady() } catch (error) { errors.push(error) }
+      }
+      if (errors.length) throw new AggregateError(errors, 'File cleanup and publication adoption need retry.')
     })
   }
 
