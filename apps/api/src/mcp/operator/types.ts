@@ -7,6 +7,7 @@ import type { CodexPluginSettingsService } from '../../modules/harnesses/codexPl
 import type { OperatorChatService } from '../../modules/conversations/operatorChat.js'
 import type { AgentChatService } from '../../modules/conversations/agentChat.js'
 import type { FileRetentionService } from '../../modules/files/retention.js'
+import type { DeviceManagementService } from '../../modules/devices/management.js'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
@@ -21,10 +22,11 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  devices?: DeviceManagementService
   fileReferences?: FileReferenceService
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService
   runGraph?: RunGraphReadApi
-  operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
+  operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'cancel' | 'respond' | 'handoffHistory'>
   agentChat?: AgentChatService
   fileRetention?: FileRetentionService
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }

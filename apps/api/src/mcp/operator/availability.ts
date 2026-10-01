@@ -121,6 +121,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_handoff_history_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get') scope = 'global'
+  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond'].includes(name)) scope = 'global'
   if (name === 'run_start') scope = 'workflow'
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name === 'operator_get_capabilities') scope = 'caller'
@@ -130,6 +131,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   // Every chat command returns protected state. Discovery requires overlapping
   // read and command grants, including grants restricted to a selected Run.
   if (name.startsWith('agent_chat_') && name !== 'agent_chat_read') result.push({action:'agent_chat:read',scope:'resource'})
+  if (name === 'operator_chat_cancel' || name === 'operator_chat_respond') result.push({action:'operator_chat:read',scope:'global'})
   if (name === 'skill_archive') result.push({action:'skills:read',scope:'workspace'})
   if (name === 'workspace_folders_list') result.push({action:'harnesses:read',scope:'global'})
   if (['workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) result.push({action:'workspace_locations:read',scope:'global'})
@@ -176,6 +178,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false
   if ((name === 'harness_qualifications_list' || name === 'harness_qualification_run') && !service.harnessQualifications) return false
   if (name.startsWith('agent_chat_') && !service.agentChat) return false
+  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke'].includes(name) && !service.devices) return false
   if ((name === 'operator_mcp_setup_get' || name.startsWith('operator_chat_') || name === 'operator_handoff_history_get')
     && !service.operatorChat) return false
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name) && !service.harnessSettings) return false
