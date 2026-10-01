@@ -65,7 +65,8 @@ function sourceIdentity(record: WorkflowNativeProofRecord): unknown {
  * No native I/O, Pool acquisition, credentials, caller proof JSON, or guessed
  * no-submission/close evidence occurs inside these methods. */
 export class WorkflowNativeProofServices {
-  constructor(private readonly captures: WorkflowNativeVerificationPort) {}
+  constructor(private readonly captures: WorkflowNativeVerificationPort,
+    private readonly assertAdditionalPhysical?: (sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture) => Promise<void>) {}
 
   private async current(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, executionId: string,
     owner: RunOwnership): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope }> {
@@ -81,6 +82,7 @@ export class WorkflowNativeProofServices {
   private async physical(sql: GraphTransactionSql, scope: RepeatScope, stored: StoredRepeatExecution,
     capture: WorkflowNativeCapture, owner: RunOwnership): Promise<void> {
     capture.assertCurrent(); owner.assertOwned()
+    await this.assertAdditionalPhysical?.(sql, owner, capture)
     if (capture.owner !== owner || !isDeepStrictEqual(immutableExecution(capture.execution), immutableExecution(stored.execution))) return fail()
     const reservation = workflowNativeReservation(scope, stored.ref, stored.execution, stored.inputDigest)
     const entry = await readWorkflowNativeEntryLocked(sql, reservation)

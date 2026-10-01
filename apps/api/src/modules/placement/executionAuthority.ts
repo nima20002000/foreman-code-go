@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
+import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
 import { readPlacement } from './binding.js'
@@ -11,7 +11,7 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 export interface ExecutionRunAuthorityPort {
   revalidateRunAuthorization(principalId: string, workspaceId: string, workflowId: string, client: GraphSqlClient, atCommit: boolean): Promise<void>
 }
-import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
+import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
 import { DomainError } from '../errors.js'
@@ -21,7 +21,7 @@ const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', '
  * new grant, allocation or lease; main and worker entry guards remain mandatory. */
 export async function assertRemoteExecutionAuthority(sql: GraphTransactionSql,
   locations: ExecutionRunAuthorityPort,
-  raw: unknown, authenticated: DeviceExtensionContext['binding'], producer: AgentPlacementProducer): Promise<void> {
+  raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer): Promise<void> {
   const input = ExecutionAuthorityRequestSchema.parse(raw), pin = readPlacement(input.placement)
   const current = await readReconciledDispatchIntent(sql, input.intent.operationId, true)
   const persisted = await readExecutionPlacement(sql, input.intent.executionId)

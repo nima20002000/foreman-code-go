@@ -1,0 +1,116 @@
+import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
+import { createWorkerQualificationExtension } from '../jobs/workerQualificationCarrier.js'
+import type { InstalledRuntimeConfigurationLocation } from '../jobs/installedRuntimeHost.js'
+import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import type { WorkerPairingConfiguration } from '@graphql/contracts/device-identity'
+import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
+import { HarnessDiscoveryRequestSchema } from '@graphql/contracts/harness-registry'
+import { SOURCE_OPERATION_EXTENSION, SourceOperationResponseSchema } from '@graphql/contracts/source-operations'
+import type { DeviceExtensionRegistration, DeviceExtensionContext } from './deviceApplicationChannel.js'
+import type { DeviceConnectionSupervisor } from './connectionSupervisor.js'
+import { createAuthenticatedTransferReceiver, transferContextForBinding } from '../byte-transfer/carrier.js'
+import { sourceTransfersOnMain } from '../sources/operationCarrier.js'
+import { SourceOperationWorkerService } from '../sources/operationWorker.js'
+import { createInstalledWorkflowHost } from '../runs/remote/installedWorkflowHost.js'
+import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
+import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { DomainError } from '../errors.js'
+
+/** Shipped worker domains consume actual protected installation selections and
+ * sole Main authority. No database, Run scheduler, generated grant or ready flag. */
+export async function createInstalledWorkerDomains(input: {
+  stateDirectory: string; pairing: WorkerPairingConfiguration; bootId: string
+  configuration: InstalledWorkflowConfigurationLocation | null
+  jobConfiguration?: InstalledRuntimeConfigurationLocation | null
+  approvedRoots(): Promise<ApprovedRootAllowlist | null>
+  connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
+  codexSuiteRevision: string
+}) {
+  const lifetime = new AbortController(), active = new Set<Promise<unknown>>()
+  const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
+  let journalOpening: Promise<RemoteOperationJournal> | undefined
+  const journal = () => journalOpening ??= RemoteOperationJournal.open(join(input.stateDirectory, 'workflow-operations.json'))
+  const current = () => {
+    lifetime.signal.throwIfAborted()
+    const binding = input.connection()?.currentBinding()
+    if (!binding || binding.mainId !== input.pairing.mainId || binding.deviceId !== input.pairing.deviceId
+      || binding.workerInstallationId !== input.pairing.workerInstallationId || binding.bootId !== input.bootId
+      || binding.keyRevision !== input.pairing.keyRevision || binding.authorizationRevision !== input.pairing.authorizationRevision)
+      throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The current original paired Main connection is unavailable.', 409)
+    return binding
+  }
+  const request = async (namespace: string, payload: unknown, options?: { signal?: AbortSignal }) => {
+    const binding = current(), captured = input.connection()?.captureRequest(namespace)
+    if (!captured || !isDeepStrictEqual(captured.binding, binding)) throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The exact original Main channel is unavailable.', 409)
+    const reply = await captured.request(payload, { signal: options?.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal })
+    if (!isDeepStrictEqual(current(), binding)) throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The authenticated Main generation changed.', 409)
+    return reply
+  }
+  const roots = async () => {
+    lifetime.signal.throwIfAborted()
+    const value = await input.approvedRoots()
+    if (!value) throw new DomainError('ROOT_CONFIGURATION_MISSING', 'The actual human-approved worker roots are unavailable.', 409)
+    return ApprovedRootAllowlistSchema.parse(value)
+  }
+  const approved = await input.approvedRoots()
+  const extensions: DeviceExtensionRegistration[] = []
+  let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
+  let native: Awaited<ReturnType<typeof createInstalledWorkflowHost>> | undefined
+  if (approved) {
+    receiver = createAuthenticatedTransferReceiver({ stagingRoot: join(input.stateDirectory, 'source-transfer-staging'),
+      current: deviceId => { const binding = input.connection()?.currentBinding(); return binding?.deviceId === deviceId ? binding : undefined },
+      accepted: sourceTransfersOnMain(request, current) })
+    const sources = new SourceOperationWorkerService({
+      authenticate: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not on the actual original worker generation.', 409) },
+      approvedRoots: roots,
+      currentOwner: async (operation, context) => {
+        const reply = await request(SOURCE_OPERATION_EXTENSION.namespace, { version: 1, operation: 'sources.authorize', request: operation }, { signal: context.signal })
+        const value = SourceOperationResponseSchema.parse(reply.payload)
+        if (reply.bytes !== undefined || value.operation !== 'sources.authorize') throw new DomainError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'The original Main did not return source operation authority.', 403)
+        return value.owner
+      },
+      transfers: receiver.receiver,
+      transferContext: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'The source transfer generation changed.', 409); return transferContextForBinding(context.binding) },
+      nativeOwnerFor: record => native?.kind === 'configured' ? native.nativeOwnerFor(record) : Promise.resolve(null),
+    })
+    native = await createInstalledWorkflowHost({ stateDirectory: input.stateDirectory, pairing: input.pairing, bootId: input.bootId,
+      configuration: input.configuration, currentBinding: () => input.connection()?.currentBinding(),
+      captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
+      codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal, registry, journal })
+    extensions.push(receiver.extension, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
+      return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
+    } }, ...(native.kind === 'configured' ? native.extensions : []))
+  }
+  if (input.jobConfiguration && approved) extensions.push(createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
+    currentBinding: current, request, journal, registry, signal: lifetime.signal }))
+  extensions.push({ namespace: 'harness-discovery-v1', version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      HarnessDiscoveryRequestSchema.parse(payload)
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The actual installed inventory requires its original worker channel.', 409)
+      const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: input.configuration,
+        environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
+      if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
+      return { payload: inspected.inventory }
+    },
+  })
+  const tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
+    lifetime.signal.throwIfAborted()
+    const task = extension.handle!(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) })
+    active.add(task); void task.then(() => active.delete(task), () => active.delete(task))
+    return task
+  } } : {}) }))
+  let shutdown: Promise<void> | undefined
+  return { extensions: tracked, workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
+    close() { return shutdown ??= (async () => {
+      lifetime.abort()
+      const failures: unknown[] = []
+      try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }
+      await Promise.allSettled([...active])
+      try { await receiver?.receiver.close() } catch (error) { failures.push(error) }
+      if (!failures.length && journalOpening) { try { await (await journalOpening).close() } catch (error) { failures.push(error) } }
+      if (failures.length) throw new AggregateError(failures, 'Actual installed worker domain cleanup is incomplete.')
+    })() },
+  }
+}

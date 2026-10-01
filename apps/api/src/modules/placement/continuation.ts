@@ -5,7 +5,7 @@ import type { WorkspaceLocationService } from '../workspaces/location.js'
 import { continuationValidator } from '../runs/continuation.js'
 import { interactionConnection } from '../interactions/connection.js'
 import { DomainError } from '../errors.js'
-import type { AcceptedExecutionBinding, HostBoundExecutionManagers } from './nativeComposition.js'
+import type { AcceptedExecutionBinding } from './nativeComposition.js'
 
 /** Mandatory live owner/device/key/root/config/source revalidation. The host
  * implementation performs destination-native checks; main filesystem checks
@@ -14,7 +14,7 @@ export interface AcceptedDestinationContinuation {
   assertCurrent(binding: AcceptedExecutionBinding, signal?: AbortSignal): Promise<void>
 }
 export function placedContinuationValidator(pool: pg.Pool, locations: WorkspaceLocationService,
-  managers: HostBoundExecutionManagers, destination: AcceptedDestinationContinuation) {
+  managers: { prepare(executionId: string): Promise<AcceptedExecutionBinding | null> }, destination: AcceptedDestinationContinuation) {
   const local = continuationValidator(pool, locations)
   return async (executionId: string, signal?: AbortSignal): Promise<void> => {
     const binding = await managers.prepare(executionId)
@@ -34,7 +34,7 @@ export function placedContinuationValidator(pool: pg.Pool, locations: WorkspaceL
     if (row.stopped || row.cleanup_pending || ['completed', 'interrupted'].includes(run.executionState)
       || execution.id !== executionId || execution.runId !== run.id || binding.intent.runId !== run.id
       || execution.workflowNodeId !== binding.placement.nodeId || payload.kind !== 'agent'
-      || execution.workingDirectory !== binding.placement.destination.canonicalCwd
+      || execution.workingDirectory !== (binding.executionPlacement?.workingTree.canonicalCwd ?? binding.placement.destination.canonicalCwd)
       || execution.agentId !== payload.agentId || configuration.agentId !== execution.agentId
       || configuration.workspaceId !== run.workspaceId || configuration.id !== execution.agentConfigurationVersionId
       || configuration.id !== payload.agentConfigurationVersionId || run.agentConfigurationVersionIds[execution.agentId] !== configuration.id) {

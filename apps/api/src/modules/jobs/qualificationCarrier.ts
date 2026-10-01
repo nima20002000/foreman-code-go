@@ -1,0 +1,118 @@
+import type pg from 'pg'
+import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { JOB_RUNTIME_QUALIFICATION_EXTENSION, JobRuntimeQualificationRpcRequestSchema, JobRuntimeQualificationRpcResponseSchema,
+  type JobRuntimeProfile, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
+import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
+import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
+import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
+import { assertInstalledJobQualification } from './runtimeQualificationAdmission.js'
+import type { PostgresSourceService } from '../sources/service.js'
+import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
+import { DomainError } from '../errors.js'
+
+/** Main retains only a response from the exact authenticated installed worker.
+ * Passive/native IO stays outside admission SQL; SQL readback uses this capture. */
+export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: PostgresSourceService;
+  endpoint(): DeviceEndpoint; local: InstalledJobRuntimeHost }) {
+  const snapshots = new Map<string, Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseSchema.parse>, { operation: 'inspect' }>>()
+  const key = (profile: JobRuntimeProfile) => `${profile.id}:${profile.revision}`
+  const exchange = async (profile: JobRuntimeProfile, payload: unknown, signal?: AbortSignal) => {
+    const target = profile.root.selection.hostRef
+    if (target.kind !== 'device' || !profile.root.registration) throw new DomainError('JOB_RUNTIME_HOST_MISMATCH', 'The real installed worker is required.', 409)
+    const endpoint = input.endpoint(), captured = endpoint.captureRequest(target.deviceId, JOB_RUNTIME_QUALIFICATION_EXTENSION.namespace)
+    const check = () => {
+      signal?.throwIfAborted()
+      const current = endpoint.currentBinding(target.deviceId)
+      if (!captured || !current || !sameWorkflowValue(current, captured.binding)
+        || current.mainId !== target.mainId || current.workerInstallationId !== profile.root.registration?.workerInstallationId
+        || current.keyRevision !== profile.root.registration?.keyRevision || current.authorizationRevision !== profile.root.registration?.authorizationRevision)
+        throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The original installed qualification connection is unavailable or changed.', 409)
+    }
+    check()
+    const reply = await captured!.request(JobRuntimeQualificationRpcRequestSchema.parse(payload), signal ? { signal } : {})
+    check()
+    if (reply.bytes !== undefined) throw new DomainError('JOB_RUNTIME_RESPONSE_INVALID', 'Physical qualification metadata cannot contain arbitrary binary data.', 409)
+    return { response: JobRuntimeQualificationRpcResponseSchema.parse(reply.payload), binding: captured!.binding }
+  }
+  const inspect = async (profile: JobRuntimeProfile) => {
+    const { response, binding } = await exchange(profile, { version: 1, operation: 'inspect', profile })
+    if (response.operation !== 'inspect' || response.fingerprint.profileId !== profile.id || response.fingerprint.profileRevision !== profile.revision
+      || response.fingerprint.specDigest !== profile.specDigest || response.fingerprint.bootId !== binding.bootId
+      || !sameWorkflowValue(response.fingerprint.root, profile.root) || !sameWorkflowValue(response.fingerprint.hostRef, profile.root.selection.hostRef)
+      || !sameWorkflowValue(response.fingerprint.registration, profile.root.registration)
+      || !sameWorkflowValue(response.descriptor.target.hostRef, response.fingerprint.hostRef)
+      || !sameWorkflowValue(response.descriptor.target.registration, response.fingerprint.registration)
+      || response.descriptor.target.mainInstallationId !== binding.mainId) throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The actual installed worker returned another qualification context.', 409)
+    snapshots.set(key(profile), response)
+    return response
+  }
+  const host: InstalledJobRuntimeHost = {
+    capture: async profile => {
+      if (profile.root.selection.hostRef.kind !== 'main') return (await inspect(profile)).fingerprint
+      if (input.local.capture) return input.local.capture(profile)
+      await input.local.descriptor(profile)
+      const fingerprint = await input.local.currentMetadata(input.pool, profile)
+      if (!fingerprint) throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The actual protected Main runtime capture is unavailable.', 409)
+      return fingerprint
+    },
+    descriptor: async profile => profile.root.selection.hostRef.kind === 'main' ? input.local.descriptor(profile) : (await inspect(profile)).descriptor,
+    currentConnection: async (sql, profile) => {
+      const target = profile.root.selection.hostRef
+      if (target.kind === 'main') return null
+      const binding = input.endpoint().currentBinding(target.deviceId)
+      const registration = await assertDeviceHostInstallation(sql, target, profile.root.registration?.workerInstallationId ?? '')
+      if (!binding || !registration || !sameWorkflowValue({ workerInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }, profile.root.registration)
+        || binding.mainId !== target.mainId || binding.workerInstallationId !== registration.workerInstallationId
+        || binding.keyRevision !== registration.keyRevision || binding.authorizationRevision !== registration.authorizationRevision) return null
+      return binding
+    },
+    currentMetadata: async (sql, profile) => {
+      if (profile.root.selection.hostRef.kind === 'main') return input.local.currentMetadata(sql, profile)
+      const snapshot = snapshots.get(key(profile)), binding = await host.currentConnection(sql, profile)
+      return snapshot && binding && snapshot.fingerprint.bootId === binding.bootId
+        && snapshot.fingerprint.specDigest === profile.specDigest && sameWorkflowValue(snapshot.fingerprint.root, profile.root)
+        ? snapshot.fingerprint : null
+    },
+    reserveQualification: request => input.local.reserveQualification(request),
+    runAdmitted: async request => {
+      if (request.profile.root.selection.hostRef.kind !== 'device') throw new DomainError('JOB_RUNTIME_HOST_MISMATCH', 'The remote qualifier cannot replace the Main-local native owner.', 409)
+      await request.assertAdmission()
+      const { response, binding } = await exchange(request.profile, { version: 1, operation: 'run', admission: request.nativeAdmission, candidate: request.candidate }, request.signal)
+      await request.assertAdmission()
+      if (response.operation !== 'run' || !sameWorkflowValue(response.admission, request.nativeAdmission)
+        || !sameWorkflowValue(response.candidate, request.candidate) || !sameWorkflowValue(binding, request.nativeAdmission.connection))
+        throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'Actual worker qualification changed its original persisted admission.', 409)
+      return response.result
+    },
+  }
+  const authorize = async (admission: JobRuntimeNativeAdmission, candidate: JobQualificationCandidate, context: DeviceExtensionContext) => {
+    context.signal.throwIfAborted()
+    if (!admission.connection || !sameWorkflowValue(admission.connection, context.binding)
+      || !sameWorkflowValue(input.endpoint().currentBinding(context.binding.deviceId), context.binding))
+      throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'Diagnostic admission is not on its original authenticated worker channel.', 403)
+    const sql = await input.pool.connect()
+    try {
+      await sql.query('begin')
+      await assertInstalledJobQualification(sql, { candidate, runCommandId: admission.runCommandId, runPrincipalId: admission.runPrincipalId,
+        resolveRoot: (sql, profile, principal) => input.sources.resolveRootBinding(sql, principal, { workspaceId: profile.workspaceId,
+          rootId: profile.root.binding.rootId, bindingRevision: profile.root.binding.bindingRevision, source: profile.root.source }),
+        readCurrent: async (sql, profile) => {
+          const fingerprint = await host.currentMetadata(sql, profile)
+          if (!fingerprint) throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The original captured installed runtime is unavailable.', 409)
+          return { fingerprint, connection: await host.currentConnection(sql, profile) }
+        },
+      }, admission)
+      context.signal.throwIfAborted()
+      if (!sameWorkflowValue(input.endpoint().currentBinding(context.binding.deviceId), context.binding)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'The actual original qualification connection changed before commit.', 409)
+      await sql.query('commit')
+    } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+  }
+  const extension: DeviceExtensionRegistration = { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(raw, context) {
+    const request = JobRuntimeQualificationRpcRequestSchema.parse(raw)
+    if (context.bytes !== undefined || request.operation !== 'authorize') throw new DomainError('JOB_RUNTIME_REQUEST_INVALID', 'Main serves actual diagnostic authority only.', 403)
+    await authorize(request.admission, request.candidate, context)
+    return { payload: JobRuntimeQualificationRpcResponseSchema.parse({ version: 1, operation: 'authorize', admission: request.admission, candidate: request.candidate,
+      approval: { status: 'approved', fingerprint: request.admission.fingerprintDigest, expiresAt: request.admission.expiresAt } }) }
+  } }
+  return { host, extension }
+}

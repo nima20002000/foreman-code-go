@@ -93,6 +93,31 @@ describe('actual worker native-port adapter', () => {
     await expect(host.prepare({ intent, placement, request })).rejects.toThrow('shutting down')
   })
 
+  it.each(['physical-readout', 'physical-ack'] as const)('refuses generic %s without claiming installed physical evidence', async method => {
+    const f = await setup()
+    await expect(f.host.handle({ method, intent: f.intent, placement: f.placement, receiptSequence: 1, sourceDigest: 'a'.repeat(64) })).rejects.toThrow('generic execution host')
+    expect(f.state.starts).toBe(0)
+  })
+  it('retains authenticated receipt before observing the actual source and returning its session', async () => {
+    const f = await setup(), order: string[] = []
+    const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: (_method, frame) => f.host.handle(frame) },
+      observeReceipt: async receipt => { order.push(`receipt:${receipt.phase}`) },
+      observeOriginalSource: async (_receipt, source) => { expect(f.state.starts).toBe(1); order.push(`source:${source.type}`) },
+      controlFor: async () => { throw new Error('unused') } })
+    await proxy.createSession({ request: f.request, correlationId: 'execution:execution' }); order.push('returned')
+    expect(order).toEqual(['receipt:start_acknowledged', 'source:session_created', 'returned'])
+  })
+  it('retains uncertainty when physical source verification fails after the worker created its session', async () => {
+    const f = await setup()
+    const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: (_method, frame) => f.host.handle(frame) }, observeReceipt: async () => {},
+      observeOriginalSource: async () => { throw new Error('original physical source unavailable') },
+      controlFor: async () => { throw new Error('unused') } })
+    await expect(proxy.createSession({ request: f.request, correlationId: 'execution:execution' })).rejects.toThrow('original physical source unavailable')
+    await expect(proxy.dispose()).rejects.toThrow('disposal is unconfirmed')
+    expect(f.state.starts).toBe(1)
+  })
   it('uses the native manager once across duplicated delivery and turn requests', async () => { const { host, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); await host.prepare({ intent, placement, request }); expect(state.starts).toBe(1); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); expect(state.turns).toBe(1); await host.drain() })
   it('routes the main native port through the shared bound RPC and observes requested cancellation', async () => {
     const { host, intent, placement, request, state } = await setup()
@@ -102,7 +127,7 @@ describe('actual worker native-port adapter', () => {
       controlFor: async ({ native }) => ({ schemaVersion: 1, protocolVersion: 1, commandId: 'proxy-stop', operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner, native, action: { kind: 'stop' } }) })
     const session = await proxy.createSession({ request, correlationId: 'execution:execution' })
     expect(await proxy.cancel(session)).toBe(false)
-    expect(state.starts).toBe(1); expect(state.cancels).toBe(1); expect(observed).toEqual(['start_acknowledged', 'stop_requested'])
+    expect(state.starts).toBe(1); expect(state.cancels).toBe(1); expect(observed).toEqual(['start_acknowledged', 'stop_requested', 'stop_requested'])
   })
   it('reuses only the exact ephemeral main worker MCP lease without journaling it', async () => {
     const token = 'test-exact-main-lease', { host, intent, placement, request, journal, state } = await setup(token)

@@ -21,6 +21,8 @@ export interface RemoteResultTransaction {
   reject(receipt: RemoteOperationReceipt, reason: string): Promise<void>
   /** Canonical writer receives correlated evidence, never a trusted native capture cast. */
   accept(evidence: VerifiedRemoteEvidence): Promise<void>
+  /** Retain an authenticated duplicate source without another canonical mutation. */
+  retain?(evidence: VerifiedRemoteEvidence): Promise<void>
 }
 export interface RemoteResultCommitPort {
   transaction<T>(operationId: string, work: (transaction: RemoteResultTransaction) => Promise<T>): Promise<T>
@@ -48,7 +50,7 @@ export class VerifiedRemoteEvidence {
         : null
       if (reason) {
         // An identical committed terminal report converges without another publication.
-        if (reason === 'stale_sequence' && authority?.lastReceipt && isDeepStrictEqual(receipt, authority.lastReceipt)) return 'duplicate' as const
+        if (reason === 'stale_sequence' && authority?.lastReceipt && isDeepStrictEqual(receipt, authority.lastReceipt)) { await transaction.retain?.(new VerifiedRemoteEvidence(structuredClone(receipt), authority)); return 'duplicate' as const }
         if (reason === 'stale_sequence' && authority?.terminal != null
           && receipt.phase === 'confirmed_terminal' && isDeepStrictEqual(receipt.terminal, authority.terminal)) return 'duplicate' as const
         await transaction.reject(receipt, reason)

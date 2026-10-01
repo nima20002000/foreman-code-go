@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
+import type { AcceptedNodePlacement, DispatchIntent, NativeExecutionPlacement } from '@graphql/contracts/node-placement'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { HarnessExecution } from '@graphql/contracts'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
@@ -7,7 +7,7 @@ import { ExecutionScopedNativeSessionManagerResolver, type NativeManagerResoluti
 import { readAcceptedPlacement, readDispatchIntent } from './persistence.js'
 import { DomainError } from '../errors.js'
 
-export interface AcceptedExecutionBinding { intent: DispatchIntent; placement: AcceptedNodePlacement }
+export interface AcceptedExecutionBinding { intent: DispatchIntent; placement: AcceptedNodePlacement; executionPlacement?: NativeExecutionPlacement }
 
 /** Existing V3 validateContinuation runs before sync manager resolution. Compose
  * prepare there, rather than query current placement or switch managers during

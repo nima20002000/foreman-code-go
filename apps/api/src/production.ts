@@ -1,5 +1,10 @@
+import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@graphql/contracts/job-runtime'
+import { interactionConnection } from './modules/interactions/connection.js'
+import { createProductionRemoteWorkflow } from './modules/placement/productionRemoteWorkflow.js'
+import { placedContinuationValidator } from './modules/placement/continuation.js'
+import { readLiveManagementPrincipal } from './modules/access/liveManagementPrincipal.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
-import { readSourceActiveNativeSession } from './modules/sources/activeNativeSession.js'
+import { readSourceCurrentNativeSession } from './modules/sources/activeNativeSession.js'
 import type { SourceActiveNativeSessionReader, SourceNativeSessionCaptureReader } from './modules/sources/executionHosts.js'
 import { EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
 import { WORKER_MCP_EXTENSION } from '@graphql/contracts/worker-mcp-relay'
@@ -133,7 +138,6 @@ import { ExecutionScopedNativeSessionManagerResolver } from './modules/interacti
 import { InteractionService } from './modules/interactions/service.js'
 import { AutomaticReviewService } from './modules/interactions/automaticReview.js'
 import { PostgresOperatorRepository } from './modules/operators/postgres.js'
-import { continuationValidator } from './modules/runs/continuation.js'
 import { LangGraphWorkflowEngine } from './modules/runs/engine.js'
 import { RunManagementService } from './modules/runs/management.js'
 import { PostgresRunRepository } from './modules/runs/postgres.js'
@@ -195,6 +199,11 @@ export function buildProductionApp(
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
+      { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(payload, context) {
+        const handler = jobRuntime?.qualificationExtension.handle
+        if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual diagnostic qualification authority is unavailable.', 503)
+        return handler(payload, context)
+      } },
       { ...EXECUTION_AUTHORITY_EXTENSION, role: 'server', async handle(payload, context) {
         if (!executionAuthority?.handle) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Main Agent placement authority has not initialized.', 503)
         return executionAuthority.handle(payload, context)
@@ -252,14 +261,20 @@ export function buildProductionApp(
   // MCP nor a caller-supplied JSON observation can manufacture these captures.
   const workflowCapture = createWorkflowNativeCaptureChannel()
   const reviewCapture = createReviewNativeCaptureChannel()
-  const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify)
+  const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
+    if (!remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
+    return remoteWorkflow.assertPhysical(sql, owner, capture)
+  })
   const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
     async admitPlacementExecutionLocked(sql, owner, run, execution, ref, inputDigest) {
       if (agentPlacement) { await agentPlacement.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId); return }
       if (await readAcceptedPlacement(sql, run.id, execution.workflowNodeId)) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Agent placement producer is unavailable.', 503)
     },
     async preparePlacementExecution(owner, run, execution) {
-      if (agentPreparation) return agentPreparation.prepare(owner, run, execution)
+      if (agentPreparation) {
+        const prepared = await approvals.withSourceObservationLane(owner, execution, () => agentPreparation!.prepare(owner, run, execution))
+        return prepared ? { ...prepared, revalidate: () => approvals.withSourceObservationLane(owner, execution, prepared.revalidate) } : undefined
+      }
       const placed = await owner.oneShotConnection().transaction(sql => readAcceptedPlacement(sql, run.id, execution.workflowNodeId))
       if (placed) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Agent source preparation producer is unavailable.', 503)
       return undefined
@@ -272,7 +287,12 @@ export function buildProductionApp(
   const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot, 'runner-local', projectRoot)
   const workflows = new PostgresWorkflowRepository(database.pool)
   const runs = new PostgresRunRepository(database.pool, workflows, locations,
-    { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime, services: workflowServices })
+    { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime, services: workflowServices }, async evidence => {
+      try { await remoteWorkflow.afterCommit(workflowCapture.verify.read(evidence)) }
+      catch (error) { app.log.warn({ err: error }, 'Original remote metadata acknowledgment remains pending') }
+    })
+  const remoteWorkflow = createProductionRemoteWorkflow({ pool: database.pool, locations, endpoint: () => deviceRuntime.endpointForDomains(),
+    producer: () => agentPlacement, execution: id => runs.getExecution(id) })
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const hostProfileEvidence = new HostHarnessProfileEvidenceRepository(database.pool)
@@ -422,12 +442,14 @@ export function buildProductionApp(
     // Object allocation remains native/registry IO-free. The coordinator reserves
     // this SAME scope immediately before its lifetime/entered commits.
     const recovery = processRegistry.scope(`execution:${context.executionId}`)
+    const remote = remoteWorkflow!.manager(context, getOwner)
+    if (remote) return remote
     const placement = context.acceptedPlacement
     let selector: AcceptedProfileSelector | undefined
     if (placement) {
       if (placement.payload.kind !== 'agent' || placement.payload.agentId !== context.agentId
         || placement.payload.agentConfigurationVersionId !== context.configuration.id
-        || placement.runId !== context.runId || placement.destination.canonicalCwd !== context.workingDirectory
+        || placement.runId !== context.runId || (remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd) !== context.workingDirectory
         || placement.payload.driverId !== configuration.harness) throw new DomainError('PLACEMENT_BINDING_CONFLICT',
         'The native role must use its exact accepted workflow placement.', 409)
       selector = { instanceId: placement.payload.instanceId, instanceRevision: placement.payload.instanceRevision,
@@ -481,7 +503,16 @@ export function buildProductionApp(
     launchScopes.set(manager, recovery)
     return manager
   })
-  const validateContinuation = continuationValidator(database.pool, locations)
+  const validateContinuation = placedContinuationValidator(database.pool, locations, remoteWorkflow, {
+    async assertCurrent(binding, signal) {
+      signal?.throwIfAborted()
+      const sql = interactionConnection.getStore() ?? database.pool
+      const row = (await sql.query<{ principal_id: string; workspace_id: string }>("select record->>'authorizationPrincipalId' as principal_id,workspace_id from runs where id=$1", [binding.intent.runId])).rows[0]
+      if (!row || !agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
+      await agentPlacement.assertPinsCurrent(sql, binding.placement, await readLiveManagementPrincipal(sql, row.principal_id), row.workspace_id)
+      signal?.throwIfAborted()
+    },
+  })
   const credentials = new WorkerCredentialService(database.pool, access)
   const launchCredentials: ExecutionCredentialProvider = {
     async prepare(input) {
@@ -551,14 +582,21 @@ export function buildProductionApp(
   const approvals = new ApprovalExecutionCoordinator(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
     new PostgresWorkflowClosureStore(database.pool), new PostgresRepeatReviewerBindings(database.pool),
-    workflowCapture.capture, reviewCapture.capture,
-    (executionId, signal) => processRegistry.closeOwner(`execution:${executionId}`, signal),
+    { capture(input) {
+      const evidence = workflowCapture.capture.capture(input)
+      remoteWorkflow!.capture(input, workflowCapture.verify.read(evidence))
+      return evidence
+    } }, reviewCapture.capture,
+    (executionId, signal) => remoteWorkflow!.isRemote(executionId)
+      ? Promise.resolve(false) : processRegistry.closeOwner(`execution:${executionId}`, signal),
     (executionId, manager) => {
+      if (remoteWorkflow!.isRemote(executionId)) return
       const scope = launchScopes.get(manager)
       if (!scope || scope.owner !== `execution:${executionId}` || scope.launchId) throw new DomainError(
         'NATIVE_LAUNCH_RESERVATION_CONFLICT', 'The exact manager launch scope is unavailable or already reserved.', 409)
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
+    context => remoteWorkflow!.prepareContext(context),
   )
   let telemetry: ResourceTelemetryRuntime | undefined
   const telemetryLifetime = new AbortController()
@@ -900,35 +938,32 @@ export function buildProductionApp(
       const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
       assertOpen()
-      const activeNativeSession: SourceActiveNativeSessionReader = async (sql, record) => {
-        const captures = approvals.passiveOwnedNativeSessions().filter(value => value.execution.id === record.receipt.executionId)
-        if (captures.length !== 1) return null
-        return readSourceActiveNativeSession(sql, record, captures[0]!)
-      }
+      const activeNativeSession: SourceActiveNativeSessionReader = (sql, record) =>
+        readSourceCurrentNativeSession(sql, record, approvals.passiveOwnedNativeSessions())
       const captureNativeSession: SourceNativeSessionCaptureReader = async record => {
-        const captures = approvals.passiveOwnedNativeSessions().filter(value => value.execution.id === record.receipt.executionId)
-        if (captures.length !== 1) return null
-        const capture = captures[0]!
+        const captures = approvals.passiveOwnedNativeSessions()
         const readCurrent = async () => {
-          capture.signal.throwIfAborted(); capture.assertCurrent()
           const sql = await database.pool.connect()
           try {
             await sql.query('begin')
-            const proof = await readSourceActiveNativeSession(sql, record, capture)
-            capture.signal.throwIfAborted(); capture.assertCurrent()
+            const proof = await readSourceCurrentNativeSession(sql, record, captures)
             await sql.query('commit')
             return proof
           } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
         }
         const proof = await readCurrent()
         if (!proof) return null
+        const capture = captures.find(value => value.execution.id === record.receipt.executionId)!
         return { proof, signal: capture.signal, async assertCurrent() {
+          capture.signal.throwIfAborted(); capture.assertCurrent()
           if (!sameWorkflowValue(await readCurrent(), proof)) throw new DomainError('SOURCE_NATIVE_SESSION_CONFLICT', 'The original entered native owner or source lane is no longer current.', 409)
+          capture.signal.throwIfAborted(); capture.assertCurrent()
         } }
       }
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         activeNativeSession, captureNativeSession,
+        ...(processRegistry instanceof NativeProcessRegistry ? { nativeRegistry: processRegistry } : {}),
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,

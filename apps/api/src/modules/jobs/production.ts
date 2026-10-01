@@ -1,3 +1,9 @@
+import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { lstat } from 'node:fs/promises'
+import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
+import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { reserveInstalledJobQualification } from './installedRuntimeQualification.js'
+import { createJobQualificationCarrier } from './qualificationCarrier.js'
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import type { SourceManifest } from '@graphql/contracts/source-materialization'
 import type pg from 'pg'
@@ -43,15 +49,34 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; storageRoot: string;
   endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure;
   activeNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['activeNativeSession']>;
-  captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']> }) {
+  captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']>; nativeRegistry?: NativeProcessRegistry }) {
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
-  const host = createInstalledJobRuntimeHost({ identity: input.pool,
-    configuration: input.infrastructure?.installedConfiguration ?? null,
+  const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
+  const configured = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error })
+  let qualificationJournal: Promise<RemoteOperationJournal> | undefined
+  const localHost = createInstalledJobRuntimeHost({ identity: input.pool,
+    configuration: input.infrastructure?.installedConfiguration ?? (configured ? { path: configurationPath, ownerUid: process.getuid!() } : null),
+    currentConnection: async (_sql, profile) => profile.root.selection.hostRef.kind === 'device'
+      ? input.endpoint().currentBinding(profile.root.selection.hostRef.deviceId) ?? null : null,
     reserve: async original => {
-      if (!input.infrastructure?.reserveQualification) throw new DomainError('JOB_RUNTIME_OWNER_UNAVAILABLE', 'The installed runtime has no original admitted native and OCI owner.', 409)
-      return input.infrastructure.reserveQualification(original)
+      if (input.infrastructure?.reserveQualification) return input.infrastructure.reserveQualification(original)
+      if (!input.nativeRegistry || original.nativeAdmission.hostRef.kind !== 'main') throw new DomainError('JOB_RUNTIME_OWNER_UNAVAILABLE', 'The actual original local diagnostic native owner is unavailable.', 409)
+      qualificationJournal ??= RemoteOperationJournal.open(join(input.runtimeRoot, 'job-runtime-operations.json'))
+      const admission = original.nativeAdmission
+      return reserveInstalledJobQualification({ candidate: original.candidate, admission, journal: await qualificationJournal,
+        registry: input.nativeRegistry, signal: original.signal,
+        host: { hostRef: admission.hostRef, registration: admission.registration, mainInstallationId: input.mainId, bootId: original.candidate.fingerprint.bootId, connection: null },
+        assertAdmission: async supplied => { if (!sameWorkflowValue(supplied, admission)) throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The original local diagnostic admission changed.', 409); await original.assertAdmission() },
+        authority: {
+          readApproval: async id => { if (id !== admission.approvalId) return null; await original.assertAdmission(); return { status: 'approved', fingerprint: admission.fingerprintDigest, expiresAt: admission.expiresAt } },
+          assertCurrent: async candidate => { if (!sameWorkflowValue(candidate, original.candidate)) throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The original local diagnostic candidate changed.', 409); await original.assertAdmission() },
+          async reserve() { throw new DomainError('JOB_RUNTIME_OWNER_UNAVAILABLE', 'The original installed diagnostic owner controls reservation.', 409) },
+        },
+      })
     } })
+  const qualification = createJobQualificationCarrier({ pool: input.pool, sources: source.sources, endpoint: input.endpoint, local: localHost })
+  const host = qualification.host
   const profiles = createJobRuntimeProfileService({ pool: input.pool, commands: input.commands, sources: source.sources, host })
   const preparationPort: JobPreparationPort = {
     choices: (...args) => preparation.choices(...args), validate: (...args) => preparation.validate(...args),
@@ -102,6 +127,6 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     verifyPublication: (sql, execution) => artifacts.verifyRequiredOutputs(sql, execution) })
   const application = new JobApplicationBridge(input.pool, dispatch, workers, publication)
   const workflow = createWorkflowJobComposition({ jobs, dispatch, outputs: artifacts })
-  return { ...source, jobs, profiles, dispatch, artifacts, inputs, application, workflow, host,
-    async close() { await dispatch.close() } }
+  return { ...source, jobs, profiles, dispatch, artifacts, inputs, application, workflow, host, qualificationExtension: qualification.extension,
+    async close() { await dispatch.close(); if (qualificationJournal) await (await qualificationJournal).close() } }
 }

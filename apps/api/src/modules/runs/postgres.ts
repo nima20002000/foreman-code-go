@@ -40,7 +40,8 @@ export class PostgresRunRepository implements RunRepository {
   private readonly factory: RepeatRepositoryFactory
   private readonly nativeProof: WorkflowNativeProofServices
   constructor(private readonly pool: pg.Pool, private readonly workflows: PostgresWorkflowRepository,
-    private readonly locations: WorkspaceLocationService, runtime: RepeatRepositoryActivation) {
+    private readonly locations: WorkspaceLocationService, runtime: RepeatRepositoryActivation,
+    private readonly nativeCommitted?: (evidence: RepeatNativeEvidence) => Promise<void>) {
     if (!runtime || !(runtime.native instanceof WorkflowNativeProofServices)) throw new DomainError(
       'NATIVE_CAPTURE_COMPOSITION_REQUIRED', 'Compose the real native capture/proof service before starting the product.', 500)
     this.nativeProof = runtime.native
@@ -133,6 +134,7 @@ export class PostgresRunRepository implements RunRepository {
     const original = captureRepeatNativeEvidence(evidence), incoming = HarnessExecutionSchema.parse(structuredClone(execution))
     this.requireOwner(incoming.runId, owner)
     await (await this.repeat(owner)).updateExecution(incoming, original)
+    await this.nativeCommitted?.(original)
   }
   async getAcceptedResult(id: string, owner?: RunOwnership): Promise<ExecutionResult | undefined> {
     const execution = await this.getExecution(id, owner)
@@ -160,6 +162,7 @@ export class PostgresRunRepository implements RunRepository {
       const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
       await this.nativeProof.appendEventLocked(sql, snapshot.run, original, evidence, owner, lease, approval, continuation)
     })
+    await this.nativeCommitted?.(evidence)
   }
   async updateState(runId: string, update: RunStateUpdate, owner: RunOwnership, resume?: WorkflowResumePermit): Promise<void> {
     await markRepeatRunRunning(this.requireOwner(runId, owner), this.locations, update, resume)

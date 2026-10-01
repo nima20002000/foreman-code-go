@@ -39,7 +39,6 @@ export async function reserveRemoteDispatchOrigin(sql: GraphTransactionSql, owne
   if (owner.runId !== intent.runId) throw new DomainError('REMOTE_RUN_OWNER_CONFLICT', 'Use the original Run owner.', 409)
   const placement = await accepted(sql, intent), connection = DeviceConnectionIdentitySchema.parse(raw)
   if (!matches(connection, placement)) throw new DomainError('REMOTE_CONNECTION_CONFLICT', 'Dispatch connection does not match the accepted registered device.', 409)
-  await domain.assertCurrent(sql, intent, placement, connection)
   await owner.readOneShotFence(sql)
   await sql.query('insert into remote_dispatch_origins(operation_id,connection) values($1,$2::jsonb) on conflict(operation_id) do nothing', [intent.operationId, JSON.stringify(connection)])
   const verify = async () => {
@@ -96,6 +95,7 @@ export class OwnedRemoteReceiptCommit implements RemoteResultCommitPort {
             native: previous?.native ?? null, terminal: previous?.terminal ?? null }
         },
         reject: (receipt, reason) => auditRejectedRemoteReceipt(sql, receipt, reason),
+        retain: async evidence => { await assertLive(); await this.domain.publishNative(sql, this.owner, evidence); beforeGraphCommit(sql, assertLive) },
         accept: async evidence => {
           await assertLive()
           await this.domain.publishNative(sql, this.owner, evidence)

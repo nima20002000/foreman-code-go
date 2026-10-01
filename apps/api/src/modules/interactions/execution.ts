@@ -427,6 +427,7 @@ export class ApprovalExecutionCoordinator {
     private readonly reviewNativeCaptures?: ReviewNativeCapturePort,
     private readonly recoverNativeProcesses?: (executionId: string, signal: AbortSignal) => Promise<boolean>,
     private readonly reserveNativeLaunch?: (executionId: string, manager: NativeHarnessSessionManager) => void,
+    private readonly prepareManagerContext?: (context: NativeManagerResolutionContext) => Promise<NativeManagerResolutionContext>,
   ) {
     this.reviewers = new ReviewerDispatcher(interactions.coordination, this)
   }
@@ -506,6 +507,27 @@ export class ApprovalExecutionCoordinator {
     await this.reviewers.reconcile(onError)
   }
 
+  /** Revalidate source on the actual resident workflow owner between turns.
+   * This acquires no native manager, credential, process or execution grant. */
+  async withSourceObservationLane<T>(owner: RunOwnership, execution: HarnessExecution, work: () => Promise<T>): Promise<T> {
+    owner.assertOwned()
+    if (owner.runId !== execution.runId) throw new DomainError('RUN_OWNERSHIP_LOST', 'Source observation requires its original Run owner.', 409)
+    const owned = this.ownedSessions.get(execution.id)
+    if (!owned?.session) return work()
+    const session = owned.session, generation = owned.generation
+    const check = () => {
+      owner.assertOwned()
+      if (this.ownedSessions.get(execution.id) !== owned || owned.session !== session || owned.generation !== generation
+        || owned.context.purpose === 'reviewer' || owned.failed || owned.cleanup || owned.opening || owned.controller.signal.aborted)
+        throw new DomainError('SOURCE_NATIVE_SESSION_CONFLICT', 'The original resident workflow source owner changed.', 409)
+    }
+    check()
+    const active = owned.manager.capturedLease(session)
+    const observe = async () => { check(); const value = await work(); check(); return value }
+    if (active) { await active.guard.check(); const value = await observe(); await active.guard.check(); return value }
+    return owned.manager.withLane(session, `execution:${execution.id}`, owned.controller.signal, observe)
+  }
+
   /** Read-only current manager/lease facts; absence is not replaced with a historic lane. */
   passiveOwnedNativeSessions() {
     return [...this.ownedSessions.values()].flatMap(owned => {
@@ -524,19 +546,20 @@ export class ApprovalExecutionCoordinator {
     })
   }
 
-  private managerContext(
+  private async managerContext(
     execution: HarnessExecution,
     configuration: AgentConfigurationVersion,
-  ): NativeManagerResolutionContext {
+  ): Promise<NativeManagerResolutionContext> {
     if (!execution.workingDirectory) throw new Error('The durable execution has no accepted working directory.')
     if (configuration.id !== execution.agentConfigurationVersionId || configuration.agentId !== execution.agentId) {
       throw new Error('The pinned Agent configuration does not match its durable execution.')
     }
-    return {
+    const context = {
       harness: configuration.harness.harness, executionId: execution.id, agentId: execution.agentId,
       runId: execution.runId, attempt: execution.attempt,
       workingDirectory: execution.workingDirectory, configuration,
     }
+    return this.prepareManagerContext ? this.prepareManagerContext(context) : context
   }
 
   private resolveManager(context: NativeManagerResolutionContext, owner?: RunOwnership) {
@@ -684,7 +707,7 @@ export class ApprovalExecutionCoordinator {
     signal.throwIfAborted()
     const owned = this.ownedSessions.get(executionId)
     if (owned?.session) this.assertSessionIdentity(owned.session, session)
-    const context = { ...this.managerContext(execution, configuration), purpose: 'reviewer' as const }
+    const context = { ...await this.managerContext(execution, configuration), purpose: 'reviewer' as const }
     const resolved = owned ? undefined : this.resolveManager(context)
     const manager = owned?.manager ?? resolved!.manager
     // Resolving a writer is not starting/attaching it. In particular there is no
@@ -960,7 +983,7 @@ export class ApprovalExecutionCoordinator {
       throw new DomainError('WORKER_EXECUTION_TERMINAL', 'A completed workflow execution cannot resume native work.', 409)
     }
     await this.validateContinuation?.(execution.id, signal)
-    const resolutionContext = { ...this.managerContext(execution, configuration),
+    const resolutionContext = { ...await this.managerContext(execution, configuration),
       ...(context.purpose ? { purpose: context.purpose } : {}),
     }
     const request = HarnessExecutionRequestSchema.parse({
@@ -1259,7 +1282,7 @@ export class ApprovalExecutionCoordinator {
       // Read the durable reference before resolving a manager: a repository
       // failure must not evict a resident session still needed by run cleanup.
       const existing = execution.nativeSessionId ? await this.interactions.getForExecution(execution.id) : undefined
-      context = this.managerContext(execution, input.request.configuration)
+      context = await this.managerContext(execution, input.request.configuration)
       const request = HarnessExecutionRequestSchema.parse({
         ...input.request, executionId: execution.id, runId: execution.runId,
         workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
@@ -1333,11 +1356,11 @@ export class ApprovalExecutionCoordinator {
         input.owner.assertOwned()
         await assertBoundary()
         const start = { request, ...(environment ? { environment } : {}) }
-        const persistObservedSession = async (observed: NativeSessionReference) => {
+        const persistObservedSession = async (observed: NativeSessionReference, setupLane?: SessionWriteLease) => {
           if (observed.harness !== context!.harness) throw new Error('The observed native session has the wrong harness.')
           session = observed
           resolved!.markResident?.()
-          const createdEvidence = this.captureNative(input.owner, execution, { type: 'session_created', session: observed }, 'live')
+          const createdEvidence = this.captureNative(input.owner, execution, { type: 'session_created', session: observed }, 'live', setupLane ?? manager!.capturedLease(observed))
           execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: observed.nativeSessionId, state: 'running' })
           await this.runs.updateExecution(execution, input.owner, createdEvidence)
           ownedSession!.execution = execution
@@ -1345,6 +1368,14 @@ export class ApprovalExecutionCoordinator {
           signal.throwIfAborted()
           input.owner.assertOwned()
           await assertBoundary()
+        }
+        const publishObservedSession = async (observed: NativeSessionReference) => {
+          const active = manager!.capturedLease(observed)
+          if (!context!.acceptedPlacement || active) return persistObservedSession(observed, active)
+          // Actual source continuation needs the original native owner and a
+          // live lane during publication/revalidation before its first turn.
+          return manager!.withLane(observed, `execution:${execution.id}`, signal,
+            (_native, lane) => persistObservedSession(observed, lane))
         }
         let nativeEvents: AsyncIterable<NativeHarnessEvent>
         let rejectObserved: ((error: unknown) => void) | undefined
@@ -1358,11 +1389,11 @@ export class ApprovalExecutionCoordinator {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
               onSessionObserved: async (native) => {
                 resolveObserved(native)
-                await persistObservedSession(await opening)
+                await publishObservedSession(await opening)
               },
             }, signal)
           } else {
-            await persistObservedSession(await this.openingSession(ownedSession, manager.createSession(start, signal)))
+            await publishObservedSession(await this.openingSession(ownedSession, manager.createSession(start, signal)))
             nativeEvents = manager.startTurn(session!, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
             }, signal)

@@ -47,9 +47,10 @@ function receiptFromResponse(raw: unknown): RemoteOperationReceipt | undefined {
 /** Actual proxy construction over W07 execution-v1, with every receipt tied to
  * its authenticated response channel before B's branded canonical commit. */
 export function remoteNativeManager(context: NativeManagerResolutionContext, binding: AcceptedExecutionBinding, options: {
-  carrier: MainWorkerCarrier; commit(receipt: RemoteOperationReceipt, authenticated: DeviceConnectionIdentity, response: unknown): RemoteResultCommitPort;
+  carrier: MainWorkerCarrier; commit(receipt: RemoteOperationReceipt, authenticated: DeviceConnectionIdentity, response: unknown): RemoteResultCommitPort | Promise<RemoteResultCommitPort>;
   beforePrepare(intent: AcceptedExecutionBinding['intent'], placement: AcceptedExecutionBinding['placement'], authenticated: DeviceConnectionIdentity): Promise<void>;
   controlFor: RemoteNativeManagerOptions['controlFor']
+  observeOriginalSource?: NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>
 }): RemoteNativeSessionManager {
   if (binding.placement.payload.kind !== 'agent' || binding.placement.payload.agentId !== context.agentId
     || binding.placement.payload.agentConfigurationVersionId !== context.configuration.id) {
@@ -59,15 +60,17 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
   const receiptKey = (receipt: RemoteOperationReceipt) => canonicalGraphJson(receipt)
   return new RemoteNativeSessionManager({ intent: binding.intent, placement: binding.placement, harness: context.harness,
     configuration: context.configuration, controlFor: options.controlFor,
+    ...(options.observeOriginalSource ? { observeOriginalSource: options.observeOriginalSource } : {}),
     transport: { async request(method, raw, signal) {
-      const request = RemoteExecutionRpcRequestSchema.parse(raw)
+      const request = RemoteExecutionRpcRequestSchema.parse(['prepare', 'capabilities', 'inspect-mcp'].includes(method) && binding.executionPlacement && raw && typeof raw === 'object'
+        ? { ...raw, executionPlacement: binding.executionPlacement } : raw)
       if (request.method !== method || !sameWorkflowValue(request.placement, binding.placement)
         || request.intent.operationId !== binding.intent.operationId || request.intent.executionId !== binding.intent.executionId
         || request.intent.attemptId !== binding.intent.attemptId || request.intent.bindingHash !== binding.intent.bindingHash) {
         throw new DomainError('REMOTE_BINDING_CONFLICT', 'Native request cannot change its accepted operation or placement.', 409)
       }
       const connection = selected(options.carrier, binding.placement.hostRef, binding.placement.registration)
-      if (method === 'prepare') await options.beforePrepare(request.intent, request.placement, connection.identity)
+      if (['prepare', 'capabilities', 'inspect-mcp'].includes(method)) await options.beforePrepare(request.intent, request.placement, connection.identity)
       const result = await connection.request(REMOTE_EXECUTION_EXTENSION, request, signal ? { signal } : {})
       if (result.bytes !== undefined) throw new DomainError('REMOTE_NATIVE_RESPONSE_INVALID', 'Native metadata responses cannot contain arbitrary bytes.', 409)
       const receipt = receiptFromResponse(result.payload)
@@ -81,7 +84,7 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       const key = receiptKey(receipt), original = sources.get(key)
       if (!original) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'The receipt did not originate in this authenticated native proxy.', 403)
       try {
-        const result = await VerifiedRemoteEvidence.commit(receipt, original.connection, options.commit(receipt, original.connection, original.response))
+        const result = await VerifiedRemoteEvidence.commit(receipt, original.connection, await options.commit(receipt, original.connection, original.response))
         if (result === 'rejected') throw new DomainError('REMOTE_OBSERVATION_REJECTED', 'Main ownership rejected the original worker receipt.', 409)
       } finally { sources.delete(key) }
     },

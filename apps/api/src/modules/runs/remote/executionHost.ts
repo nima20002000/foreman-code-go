@@ -35,6 +35,7 @@ export class RemoteExecutionHost {
   private shutdownTask: Promise<void> | undefined
   private readonly preparations = new Set<Promise<unknown>>()
   private readonly allocatedManagers = new Set<NativeHarnessSessionManager>()
+  private readonly inspections = new Map<string, Set<AbortController>>()
   private readonly launchControllers = new Map<string, AbortController>()
   private readonly bindings = new Map<string, { intent: DispatchIntent; placement: AcceptedNodePlacement }>()
   private readonly residents = new Map<string, Resident>()
@@ -45,6 +46,7 @@ export class RemoteExecutionHost {
   private async shutdownOwned(): Promise<void> {
     this.closing = true
     for (const controller of this.launchControllers.values()) controller.abort(new Error('Worker execution host is shutting down.'))
+    for (const controllers of this.inspections.values()) for (const controller of controllers) controller.abort(new Error('Worker execution host is shutting down.'))
     for (const owned of this.residents.values()) owned.controller.abort(new Error('Worker execution host is shutting down.'))
     await Promise.allSettled([...this.preparations])
     const active = [...this.residents.values()]
@@ -92,20 +94,30 @@ export class RemoteExecutionHost {
     if (frame.method === 'control') return this.control(frame.command, frame)
     if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId)
     if (frame.method === 'status') return this.status(frame.intent.operationId)
+    if (frame.method === 'physical-readout' || frame.method === 'physical-ack') throw new Error('Actual installed physical readout is unavailable on this generic execution host.')
     return this.read(frame.intent.operationId, frame.method)
   }
-  async inspect(raw: { intent: unknown; placement: unknown; configuration: unknown }, method: 'capabilities' | 'inspectMcp') {
+  async inspect(raw: { intent: unknown; placement: unknown; configuration: unknown; executionPlacement?: NativeExecutionPlacement | undefined }, method: 'capabilities' | 'inspectMcp') {
     if (this.closing) throw new Error('Worker execution host is shutting down.')
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), configuration = AgentConfigurationVersionSchema.parse(raw.configuration)
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId || placement.mainId !== this.ports.connection.mainId
       || intent.bindingHash !== placement.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentId !== configuration.agentId
       || placement.payload.agentConfigurationVersionId !== configuration.id) throw new Error('Remote discovery binding mismatch')
     await this.ports.authorize(intent, placement, 'read')
-    const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: configuration.agentId,
-      harness: configuration.harness.harness, configuration, workingDirectory: placement.destination.canonicalCwd })
-    if (this.closing) throw new Error('Worker execution host is shutting down.')
-    this.allocatedManagers.add(resolved.manager)
-    return resolved.manager[method]()
+    const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
+      ? readNativeExecutionBinding(placement, intent, raw.executionPlacement) : undefined
+    this.bindings.set(intent.operationId, { intent, placement })
+    await this.ports.journal.accept(intent, this.ports.connection, this.ports.incarnationId)
+    const controller = new AbortController()
+    const controllers = this.inspections.get(intent.operationId) ?? new Set<AbortController>()
+    controllers.add(controller); this.inspections.set(intent.operationId, controllers)
+    try {
+      const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: configuration.agentId,
+        harness: configuration.harness.harness, configuration, workingDirectory: executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd })
+      if (this.closing) throw new Error('Worker execution host is shutting down.')
+      this.allocatedManagers.add(resolved.manager)
+      return await resolved.manager[method](controller.signal)
+    } finally { controllers.delete(controller); if (!controllers.size) this.inspections.delete(intent.operationId) }
   }
   prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined }) {
     return this.track(() => this.prepareOwned(raw))
@@ -268,6 +280,7 @@ export class RemoteExecutionHost {
       if (command.action.kind !== 'stop') throw new Error('Original native question unavailable')
       await this.ports.journal.control(command)
       this.launchControllers.get(command.operationId)?.abort()
+      for (const controller of this.inspections.get(command.operationId) ?? []) controller.abort()
       return this.ports.journal.status(command.operationId)
     }
     const previous = await this.ports.journal.status(command.operationId)

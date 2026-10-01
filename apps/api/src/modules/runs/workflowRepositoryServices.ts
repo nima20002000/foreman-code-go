@@ -27,10 +27,10 @@ function conflict(code: string): never {
 /** Production service family, paired with the same coordinator capture channel.
  * The callbacks are SQL-only and use the existing G1/Run-owner transaction. They
  * are not feature flags, native mocks, or a separate normal/repeat engine. */
-export function createWorkflowRepositoryServices(captures: WorkflowNativeVerificationPort): {
+export function createWorkflowRepositoryServices(captures: WorkflowNativeVerificationPort, assertAdditionalPhysical?: ConstructorParameters<typeof WorkflowNativeProofServices>[1]): {
   services: RepeatRepositoryServices; native: WorkflowNativeProofServices
 } {
-  const native = new WorkflowNativeProofServices(captures)
+  const native = new WorkflowNativeProofServices(captures, assertAdditionalPhysical)
   const services: RepeatRepositoryServices = Object.freeze({
     openPublicationLocked: openRepeatCanonicalPublicationLocked,
     assertNativeBoundaryLocked: native.assertNativeBoundaryLocked.bind(native),

@@ -92,7 +92,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     }))
   }
   harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement) { return readPlacementHarnessFacts(sql, pin, this.installations, this.qualificationSuites) }
-  async assertPinsCurrent(sql: GraphTransactionSql, pin: AcceptedNodePlacement, principal: ManagementPrincipal, workspaceId: string): Promise<void> {
+  async assertPinsCurrent(sql: import('../run-graph/connection.js').GraphSqlClient, pin: AcceptedNodePlacement, principal: ManagementPrincipal, workspaceId: string): Promise<void> {
     if (!('kind' in pin.source) || pin.source.kind !== 'pending') this.conflict()
     const source = pin.source as Extract<AcceptedNodePlacement['source'], { kind: 'pending' }>
     const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId, rootId: source.rootId,
