@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { AcceptedNodePlacementSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { JobArtifactMediaTypeSchema, JobArtifactRetentionSchema } from './jobArtifacts.js'
-import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
+import { IdSchema, TimestampSchema, RunInputSchema } from './schemaPrimitives.js'
 
 export const JOB_CONTRACT_VERSION = 1 as const
 const Revision = z.number().int().positive()
@@ -13,7 +13,7 @@ export const JobDefinitionSourceSchema = z.object({
 }).strict()
 export const JobSourceSchema=JobDefinitionSourceSchema.extend({materializationId:z.uuid(),materializationDigest:PlacementDigestSchema}).strict()
 export const JobInputRevisionSchema = z.object({
-  fileId: IdSchema, revisionId: IdSchema, sha256: PlacementDigestSchema, byteSize: z.number().int().nonnegative(),
+  path:RelativePath, fileId: IdSchema, revisionId: IdSchema, sha256: PlacementDigestSchema, byteSize: z.number().int().nonnegative(),
 }).strict()
 export const JobPolicySchema = z.object({
   isolationPolicyId: IdSchema, isolationPolicyRevision: Revision, imageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -42,7 +42,10 @@ export const JobDefinitionSpecSchema = z.object({
   source: JobDefinitionSourceSchema, target: JobTargetSchema, argv: z.array(z.string().max(8192)).min(1).max(128),
   relativeCwd: RelativePath.optional(), inputs: z.array(JobInputRevisionSchema).max(128),
   policy: JobPolicySchema, outputs: z.array(JobOutputSpecSchema).max(64),
-}).strict()
+}).strict().superRefine((spec,context)=>{
+  if(new Set(spec.inputs.map(input=>input.path)).size!==spec.inputs.length) context.addIssue({code:'custom',path:['inputs'],message:'Immutable input paths must be unique.'})
+  if(new Set(spec.outputs.map(output=>output.path)).size!==spec.outputs.length) context.addIssue({code:'custom',path:['outputs'],message:'Accepted output paths must be unique.'})
+})
 export const JobDefinitionSchema = z.object({
   schemaVersion: z.literal(1), id: IdSchema, workspaceId: IdSchema, name: z.string().trim().min(1).max(200),
   revision: Revision, versionId: IdSchema, spec: JobDefinitionSpecSchema, createdAt: TimestampSchema, updatedAt: TimestampSchema,
@@ -54,6 +57,7 @@ export const JobStartSchema = z.object({ commandId: IdSchema, definitionId: IdSc
 export const PreparedJobSpecSchema=JobDefinitionSpecSchema.safeExtend({source:JobSourceSchema}).strict()
 export type PreparedJobSpec=z.infer<typeof PreparedJobSpecSchema>
 export const AcceptedJobSpecSchema = PreparedJobSpecSchema.safeExtend({
+  workflowInput:RunInputSchema.nullable(),
   definitionId: IdSchema, definitionRevision: Revision, definitionVersionId: IdSchema,
   scriptDigest: PlacementDigestSchema, outputSpecDigest: PlacementDigestSchema, specDigest: PlacementDigestSchema, bindingHash: PlacementDigestSchema,
 }).strict()
