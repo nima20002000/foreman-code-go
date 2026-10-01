@@ -86,3 +86,23 @@ it('SDK false permission acknowledgement stays uncertain and cannot advertise or
     assert.equal(calls.filter(value => value === 'reply').length, 1)
   } finally { await native.dispose() }
 })
+
+it('keeps accepted SDK prompt identity when the task observer detaches before the ACK callback', async () => {
+  const server = new FixtureServer()
+  const calls: string[] = []
+  const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpServerName: 'graphql', clientFactory: sdkQualificationClient(calls) })
+  const observer = new AbortController()
+  const submitted: string[] = []
+  try {
+    const session = await sessionFor(native)
+    server.onPrompt = () => observer.abort()
+    await assert.rejects(async () => {
+      for await (const event of native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'sdk-detached-acceptance',
+        onSubmitted: async id => { submitted.push(id) },
+      }, observer.signal)) void event
+    })
+    assert.deepEqual(submitted, [nativeMessageId('sdk-detached-acceptance')])
+    assert.equal(calls.filter(value => value === 'prompt').length, 1)
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 1)
+  } finally { await native.dispose() }
+})
