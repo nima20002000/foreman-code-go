@@ -28,6 +28,12 @@ create table job_executions (
  log_sequence bigint not null default 0 check(log_sequence>=0), log_truncated boolean not null default false,
  unique(workspace_id,id)
 );
+create table job_preparations (
+ execution_id text primary key, attempt_id text not null unique, operation_id text not null unique,
+ workspace_id text not null references workspaces(id), definition_version_id text not null references job_definition_versions(id),
+ principal_id text not null references management_principals(id), command_id text not null, definition jsonb not null,
+ created_at timestamptz not null default clock_timestamp(), unique(principal_id,command_id)
+);
 create table workflow_job_preparations (
  slot_id text primary key references run_repeat_slots(slot_id), run_id text not null references runs(id),
  preparation jsonb not null, bindings jsonb not null
