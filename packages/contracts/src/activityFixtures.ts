@@ -12,7 +12,10 @@ function snapshot(work: WorkSummary[], queued: WorkRef[] = [], latest: WorkRef |
 export const activitySnapshotFixtures = {
   idle: snapshot([], [], null),
   activeBeforeNewerQueued: snapshot([summary(a, 'active')], [b], b),
-  waiting: snapshot([summary(a, 'waiting')]),
+  waiting: ActivitySnapshotV1Schema.parse({ ...snapshot([summary(a, 'waiting')]), pendingInteractions: [{
+    id: 'interaction-A', revision: '3', owner: a, delivery: 'pending', answerRecorded: false,
+    providerAcknowledged: false, workerAcknowledged: false, responseAvailability: 'unknown',
+  }] }),
   interrupting: snapshot([summary(a, 'interrupting')]),
   uncertainDelivery: snapshot([{ ...summary(a, 'preparing', 'reconciling'), delivery: 'unknown' }]),
   terminalParentUnresolvedChild: snapshot([{ ...summary(a, 'terminal'), outcome: 'succeeded', delivery: 'completed' }, summary(child, 'active', 'unknown')]),

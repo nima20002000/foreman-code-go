@@ -24,6 +24,7 @@ import {
   assertRunChatConversation, findRunChatConversation, resolveRunChatSelection, runChatStorageKey,
   staleRunChat, withRunChatAuthority, type RunChatAuthorityCheck,
 } from './selectedRunChat.js'
+import { agentActivitySnapshot } from './activitySnapshot.js'
 import { AgentChatCommands } from './agentChatCommands.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
@@ -401,18 +402,18 @@ export class AgentChatService {
         'This chat has more than 100 unfinished messages. Only a recovery window is shown. Cancel queued messages to free capacity; Stop chat also cancels all queued messages when available. Unconfirmed deliveries still require native evidence.']
         .filter(Boolean).join(' ')
     }
-    const activities = (await this.activity.page(row.id, { limit: 100 })).activities
+    const activities = loaded.activityPage.activities
     return AgentChatStateSchema.parse({
       context, conversation: agentConversation(row), sessionState: this.sessionUnavailable(row, resolution.configuration)
         || blocked && ['native_session_missing', 'harness_unavailable', 'agent_missing'].includes(blocked.reason)
         ? 'unavailable' : this.sessionState(row), availability, capabilities,
       activeTurn: row.active_request_id ? { requestId: row.active_request_id,
-        ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}), startedAt: row.updated_at.toISOString() } : null,
+        ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}), startedAt: loaded.activeStartedAt?.toISOString() ?? loaded.turns.find((turn) => turn.requestId === row.active_request_id)?.createdAt ?? row.created_at.toISOString() } : null,
       turns: loaded.turns, messages: loaded.messages, hasEarlierMessages: loaded.hasEarlierMessages, activities,
       ...(loaded.hasMoreTurns ? { hasMoreTurns: true } : {}),
       ...(row.pending_interaction ? { pendingInteraction: row.pending_interaction } : {}),
       ...(row.last_result ? { lastResult: row.last_result } : {}),
-      revision: Number(row.revision),
+      revision: Number(row.revision), activitySnapshot: agentActivitySnapshot(loaded),
     })
   }
 

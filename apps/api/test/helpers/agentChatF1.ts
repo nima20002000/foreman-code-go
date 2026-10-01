@@ -40,7 +40,7 @@ interface Receipt {
   message_id: string; native_turn_id: string | null; target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null; input_hash: string
   payload: { content: string; interruptRequestId?: string }; result?: ExecutionResult
-  created_at: Date; updated_at: Date
+  created_at: Date; updated_at: Date; started_at?: Date | null
 }
 
 /** Executes the production repository against a strict scripted SQL store. This is NOT PostgreSQL:
@@ -73,7 +73,11 @@ export class F1Store {
     const result = (rows: unknown[] = [], rowCount = rows.length) => ({ rows: structuredClone(rows), rowCount })
     const id = String(values[1])
     const receipt = this.turns.get(id)
-    if (['begin', 'commit', 'rollback'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql.startsWith('select (select started_at from operator_conversation_turns')) {
+      const latest = [...this.turns.values()].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)).at(-1)
+      return result([{ started_at: receipt?.started_at ?? null, latest_request_id: latest?.request_id ?? null }])
+    }
     if (sql.startsWith('select * from operator_conversations') || sql.startsWith('select id from operator_conversations')) return result([this.row])
     if (sql.startsWith('select delivery from operator_conversation_turns')) {
       return result([...this.turns.values()].filter((entry) => entry.native_turn_id === values[1] && entry.intent !== 'steer'
@@ -151,7 +155,7 @@ export class F1Store {
       if (!receipt) return result()
       if (sql.includes("set delivery='submitting'")) {
         if (receipt.delivery !== 'queued') return result()
-        receipt.delivery = 'submitting'
+        receipt.delivery = 'submitting'; receipt.started_at ??= new Date()
       } else if (sql.includes("set delivery='accepted'") || sql.includes('set delivery=$4')) {
         if (!['submitting', 'unknown'].includes(receipt.delivery)) return result()
         if (sql.includes('target_native_turn_id=$3') && receipt.target_native_turn_id !== values[2]) return result()
