@@ -10,6 +10,8 @@ export interface ClaudeSdkQuery extends AsyncIterable<unknown> {
   interrupt(): Promise<unknown>
   /** First-connect answer only; does not resend initialize or offer input. */
   initializationResult?(): Promise<unknown>
+  mcpServerStatus?(): Promise<readonly unknown[]>
+  setMcpServers?(servers: Readonly<Record<string, unknown>>): Promise<unknown>
   close(): void
   /** Positive process containment closure supplied by the owned host adapter. */
   joinClosed?(): Promise<void>
@@ -65,6 +67,8 @@ export interface ClaudeSdkSession {
   offer(input: { promptUuid: string; content: string }, signal?: AbortSignal): Promise<{ state: 'queue-offered'; promptUuid: string }>
   interrupt(): Promise<unknown>
   initializationResult?(): Promise<unknown>
+  mcpServerStatus?(): Promise<readonly unknown[]>
+  setMcpServers?(servers: Readonly<Record<string, unknown>>): Promise<unknown>
   reconcile(promptUuid: string): readonly ClaudeNativeObservation[]
   close(): Promise<void>
   /** Native query.close terminates work: there is no qualified detach parity. */

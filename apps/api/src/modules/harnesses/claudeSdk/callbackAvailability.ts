@@ -16,3 +16,17 @@ export interface ClaudeNativeCallbackContext {
   /** Opaque process-local callback lifetime identity; not a native message/turn ID. */
   generation: string
 }
+
+/** Captured from the accepted application message before offer; never inferred from latest actor state. */
+export interface ClaudeCallbackAuthority {
+  ownerPrincipalId: string
+  attemptId: string
+}
+export interface ClaudePendingNotification {
+  nativeSessionId: string
+  nativeMessageId: string
+  clientCorrelationId: string
+  generation: string
+  nativeRequestId: string
+  nativeRequestType: 'can_use_tool'
+}

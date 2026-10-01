@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import type { ChildProcess } from 'node:child_process'
 import { spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from '../recovery/processRegistry.js'
 import { createClaudeSdkRunner } from './runner.js'
-import type { Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { Options, SDKUserMessage, McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import type { ClaudeSdkClient } from './port.js'
 
 export const CLAUDE_SDK_CANDIDATE_VERSION = '0.3.284'
@@ -45,7 +45,7 @@ export async function loadOfficialClaudeSdk(profilePath: string, recovery: Nativ
       } })
       return {
         [Symbol.asyncIterator]: () => query[Symbol.asyncIterator](),
-        interrupt: () => query.interrupt(), initializationResult: () => query.initializationResult(), close: () => query.close(),
+        interrupt: () => query.interrupt(), initializationResult: () => query.initializationResult(), mcpServerStatus: () => query.mcpServerStatus(), setMcpServers: (servers) => query.setMcpServers(servers as Record<string, McpServerConfig>), close: () => query.close(),
         async joinClosed() {
           const results = await Promise.allSettled([...children].map(async (child) => {
             if (!await stopRecoveredChild(child)) throw new Error('Claude native process closure is unverified')

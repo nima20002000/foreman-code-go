@@ -16,15 +16,15 @@ export interface ClaudeSdkPolicyBridge {
 export function createClaudeSdkCallbacks(input: {
   manager(): ClaudeNativeSessionManager
   bridge: ClaudeSdkPolicyBridge
-  ownerPrincipalId: string
-  attemptId: string
 }): Pick<Options, 'canUseTool' | 'hooks'> {
   const canUseTool: CanUseTool = async (name, value, options) => {
     if (options.agentID) return { behavior: 'deny', message: 'Native child tool callbacks are not qualified.' }
     if (!options.requestId || !options.toolUseID) return { behavior: 'deny', message: 'Exact native control request identity is unavailable.' }
     try {
       const context = await input.manager().waitNativeCallbackContext(options.toolUseID, options.signal)
-      return await input.bridge.canUseTool({ ...context, ownerPrincipalId: input.ownerPrincipalId, attemptId: input.attemptId,
+      const authority = input.manager().callbackAuthority(context)
+      if (!authority) return { behavior: 'deny', message: 'No admitted message authority matches the native callback.' }
+      return await input.bridge.canUseTool({ ...context, ...authority,
         toolUseId: options.toolUseID, nativeRequestId: options.requestId, nativeRequestType: 'can_use_tool' }, name, value, options.signal)
     } catch {
       return { behavior: 'deny', message: 'The admitted native callback context is unavailable.', interrupt: options.signal.aborted }
@@ -36,8 +36,9 @@ export function createClaudeSdkCallbacks(input: {
     if (hook.hook_event_name !== 'PreToolUse' || !hook.tool_input || typeof hook.tool_input !== 'object' || Array.isArray(hook.tool_input) || !hook.tool_use_id || suppliedToolId && suppliedToolId !== hook.tool_use_id) return deny
     try {
       const context = await input.manager().waitNativeCallbackContext(hook.tool_use_id, options.signal, hook.session_id)
-      const decision = await input.bridge.beforeToolUse({ ...context, ownerPrincipalId: input.ownerPrincipalId,
-        attemptId: input.attemptId, toolUseId: hook.tool_use_id }, hook.tool_name, hook.tool_input as Record<string, unknown>)
+      const authority = input.manager().callbackAuthority(context)
+      if (!authority) return deny
+      const decision = await input.bridge.beforeToolUse({ ...context, ...authority, toolUseId: hook.tool_use_id }, hook.tool_name, hook.tool_input as Record<string, unknown>)
       return { hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision } }
     } catch { return deny }
   }

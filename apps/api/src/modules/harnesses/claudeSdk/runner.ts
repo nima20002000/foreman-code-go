@@ -141,6 +141,16 @@ export function createClaudeSdkRunner(input: {
         if (!query?.initializationResult) throw new Error('Claude SDK initialization inspection is unavailable')
         return query.initializationResult()
       },
+      async mcpServerStatus() {
+        abort.signal.throwIfAborted()
+        if (!query?.mcpServerStatus) throw new Error('Claude SDK live MCP control inspection is unavailable')
+        return query.mcpServerStatus()
+      },
+      async setMcpServers(servers) {
+        abort.signal.throwIfAborted()
+        if (!query?.setMcpServers) throw new Error('Claude SDK scoped MCP control update is unavailable')
+        return query.setMcpServers(servers)
+      },
       reconcile(promptUuid) { return [...(receipts.get(promptUuid) ?? [])] },
       close() {
         if (closing) return closing
