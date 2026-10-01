@@ -46,7 +46,9 @@ export function NodePlacementFacts({ runId, nodeId, readback }: NodePlacementFac
         <dt>Accepted harness installation</dt><dd>{placement.payload.harnessInstallationId}</dd>
       </> : null}
     </dl>
-    {!attempts.size ? <p>Awaiting worker acknowledgment. Execution has not been observed.</p> : null}
+    {!attempts.size ? <p>{host.kind === 'main'
+      ? 'Main-local execution observations are unavailable in this readback. Accepted placement does not confirm execution.'
+      : 'Awaiting worker acknowledgment. Execution has not been observed.'}</p> : null}
     {[...attempts.values()].map((observation) => <div key={JSON.stringify([observation.executionId, observation.attemptId, observation.operationId])}>
       <p>{observation.phase === 'accepted' ? 'Worker acknowledged acceptance; execution has not been observed.'
         : startedAttempts.has(JSON.stringify([observation.executionId, observation.attemptId, observation.operationId])) ? `Execution observed on ${label} · ${observation.phase}`

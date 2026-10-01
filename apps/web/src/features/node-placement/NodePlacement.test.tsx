@@ -67,3 +67,13 @@ it('retains earlier process-start evidence when a later terminal observation omi
   ] }} />)
   expect(screen.getByText('Execution observed on Laptop at acceptance · terminal')).toBeInTheDocument()
 })
+
+
+it('shows main-local observation availability without awaiting a nonexistent worker or inferring execution', () => {
+  const mainPlacement = { ...placement, hostRef: { kind: 'main' as const, mainId: placement.mainId }, registration: null, labelAtAcceptance: 'Main at acceptance' }
+  render(<NodePlacementFacts runId="run-a" nodeId="node-a" readback={{ evidence: 'accepted', placement: mainPlacement, observations: [observation] }} />)
+  expect(screen.getByText('Main-local execution observations are unavailable in this readback. Accepted placement does not confirm execution.')).toBeInTheDocument()
+  expect(screen.queryByText(/Awaiting worker acknowledgment/)).not.toBeInTheDocument()
+  expect(screen.queryByText(/Execution observed on/)).not.toBeInTheDocument()
+  expect(screen.getByText('Main at acceptance')).toBeInTheDocument()
+})
