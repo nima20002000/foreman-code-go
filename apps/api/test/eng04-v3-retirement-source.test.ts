@@ -70,7 +70,7 @@ describe('NIM-2648 ENG04-D active execution-semantics retirement source guard', 
   })
 
   it('flags compatibility-only PostgreSQL fixtures until the gate retires them rather than treating them as current positives', () => {
-    const migration = source('./eng04-migration-postgres.test.ts')
+    const migration = source('./eng04-migration-postgres.integration.test.ts')
     const fixtures = source('./eng04-migration-fixtures.ts')
     const migrationStatic = source('./eng04-migration-static.test.ts')
 

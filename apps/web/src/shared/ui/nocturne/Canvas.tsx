@@ -112,6 +112,9 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
       const viewport = panel === 'chat' ? window.visualViewport : null
       const viewportWidth = viewport?.width ?? window.innerWidth, viewportHeight = viewport?.height ?? window.innerHeight
       const viewportLeft = viewport?.offsetLeft ?? 0, viewportTop = viewport?.offsetTop ?? 0
+      const toolbars = panel === 'chat' ? node?.closest('.unified-workflow-board')?.querySelectorAll('.board-topbar') : null
+      const toolbarBottom = toolbars ? Math.max(viewportTop, ...Array.from(toolbars, (toolbar) => toolbar.getBoundingClientRect().bottom)) : viewportTop
+      const minimumTop = Math.max(viewportTop + 12, toolbarBottom + 8)
       if (element && panel === 'chat') {
         const size = `${viewportWidth}:${viewportHeight}`
         if (size !== lastViewport) {
@@ -119,6 +122,7 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
           element.style.setProperty('--agent-chat-viewport-width', `${viewportWidth}px`)
           element.style.setProperty('--agent-chat-viewport-height', `${viewportHeight}px`)
         }
+        element.style.setProperty('--agent-chat-available-height', `${Math.max(0, viewportTop + viewportHeight - minimumTop - 12)}px`)
       }
       if (node && element && window.innerWidth > 720) {
         const rect = node.getBoundingClientRect()
@@ -126,12 +130,12 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
         const right = rect.right + GAP + width <= viewportLeft + viewportWidth - 12
         const preferredLeft = right ? rect.right + GAP : Math.max(viewportLeft + 12, rect.left - GAP - width)
         const left = panel === 'chat' ? Math.max(viewportLeft + 12, Math.min(preferredLeft, viewportLeft + viewportWidth - width - 12)) : preferredLeft
-        const top = Math.min(Math.max(viewportTop + 12, rect.top + rect.height / 2 - 120), Math.max(viewportTop + 12, viewportTop + viewportHeight - height - 12))
+        const top = Math.min(Math.max(minimumTop, rect.top + rect.height / 2 - 120), Math.max(minimumTop, viewportTop + viewportHeight - height - 12))
         const key = `${Math.round(left)}:${Math.round(top)}`
         if (key !== last) { last = key; element.style.left = `${left}px`; element.style.top = `${top}px` }
       } else if (element) {
         const left = panel === 'chat' ? `${viewportLeft}px` : ''
-        const top = panel === 'chat' ? `${viewportTop + Math.max(0, viewportHeight - element.offsetHeight)}px` : ''
+        const top = panel === 'chat' ? `${Math.max(minimumTop, viewportTop + viewportHeight - element.offsetHeight)}px` : ''
         const key = `sheet:${left}:${top}`
         if (key !== last) { last = key; element.style.left = left; element.style.top = top }
       }

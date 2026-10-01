@@ -8,7 +8,14 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
+import { registerProductionFileStorage } from './modules/files/production.js'
+import { defaultFileStorageRoot } from './modules/files/storage.js'
+import type { TemporaryFileService } from './modules/files/service.js'
+import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
+import { codexChatHostDirectory, localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
 import { buildProductionApp } from './production.js'
+import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
+import { opencodeQualificationSuite } from './modules/harnesses/qualification/suites/opencode.js'
 
 const lifecycle = componentLogger('lifecycle')
 // First, before configuration or infrastructure can fail: nothing may end silently.
@@ -33,7 +40,15 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints, componentLogger('http'))
+  let fileStorage: TemporaryFileService | undefined
+  const fileStorageRoot = config.fileStorageRoot ?? defaultFileStorageRoot()
+  const codexFiles = postgresCodexChatFiles(database.pool, () => {
+    if (!fileStorage) throw new Error('File storage is not registered.')
+    return fileStorage
+  }, () => localCodexChatHost(fileStorageRoot), codexChatHostDirectory(fileStorageRoot))
+  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints,
+    componentLogger('http'), undefined, codexFiles,
+    { codex: codexQualificationSuite, opencode: opencodeQualificationSuite })
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
@@ -68,6 +83,7 @@ async function main() {
   const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
 
   try {
+    fileStorage = registerProductionFileStorage(app, database.pool, config)
     await database.ping()
     stopIfClosing()
     await database.migrate()

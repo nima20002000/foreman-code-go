@@ -36,6 +36,7 @@ import {
   WorkspaceLocationValidateInputSchema,
   WorkflowDefaultsUpdateInputSchema,
 } from '@graphql/contracts/management'
+import { HarnessQualificationRunParamsSchema } from '@graphql/contracts/harness-qualification'
 import { ManualRunStartInputSchema } from '@graphql/contracts/wave25'
 import { requireBrowserSession, requirePrincipal } from '../modules/access/http.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
@@ -138,6 +139,13 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     return HarnessConfigurationCheckResultSchema.parse(await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration))
   })
 
+  if (services.harnessQualifications) {
+    app.get('/api/management/harnesses/qualifications', async (request) => services.harnessQualifications!.list(requirePrincipal(request)))
+    app.post<{ Params: Params }>('/api/management/harnesses/:harness/qualification', async (request) => {
+      const { harness } = HarnessQualificationRunParamsSchema.parse(request.params)
+      return services.harnessQualifications!.run(requirePrincipal(request), 'http', harness)
+    })
+  }
   app.get('/api/management/harnesses', async (request) => services.harnesses.list(requirePrincipal(request)))
   app.get<{ Params: Params }>('/api/management/harnesses/:harness', async (request) => {
     const input = HarnessGetInputSchema.parse(request.params)

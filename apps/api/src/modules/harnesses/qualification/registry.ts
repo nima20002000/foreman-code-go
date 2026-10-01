@@ -1,0 +1,39 @@
+import { createHash } from 'node:crypto'
+import { access, readFile, realpath } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { delimiter, isAbsolute, resolve } from 'node:path'
+import type { CompatibilityHarness } from '@graphql/contracts'
+import { baselineProfile, forgetQualifiedProfile, rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './profiles.js'
+import type { HarnessQualificationRepository } from './repository.js'
+
+export class HarnessQualificationRegistry {
+  constructor(private readonly repository: HarnessQualificationRepository, private readonly revisions: Record<CompatibilityHarness, string>) {}
+
+  async load(): Promise<void> {
+    for (const row of await this.repository.list()) {
+      if (row.status === 'qualified' && row.suiteRevision === this.revisions[row.harness] && row.profile === QUALIFICATION_TARGET_PROFILE[row.harness]) {
+        rememberQualifiedProfile(row.harness, row.version, row.profile)
+      }
+    }
+  }
+
+  async inspectBinary(binary: string): Promise<{ binary: string; sha256: string }> {
+    const candidates = isAbsolute(binary) || binary.includes('/') ? [binary] : (process.env.PATH ?? '').split(delimiter).map((entry) => resolve(entry || '.', binary))
+    let resolved: string | undefined
+    for (const candidate of candidates) {
+      try { await access(candidate, constants.X_OK); resolved = await realpath(candidate); break } catch { /* Try PATH. */ }
+    }
+    if (!resolved) throw new Error('The configured harness executable is unavailable.')
+    const sha256 = createHash('sha256').update(await readFile(resolved)).digest('hex')
+    return { binary: resolved, sha256 }
+  }
+
+  async trusted(harness: CompatibilityHarness, version: string, binarySha256: string): Promise<boolean> {
+    if (baselineProfile(harness, version)) return true
+    const record = await this.repository.find(harness, version, binarySha256, this.revisions[harness])
+    const passed = record?.status === 'qualified' && record.profile === QUALIFICATION_TARGET_PROFILE[harness]
+    if (passed) rememberQualifiedProfile(harness, version, record.profile!)
+    else forgetQualifiedProfile(harness, version)
+    return passed
+  }
+}

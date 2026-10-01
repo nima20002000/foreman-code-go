@@ -1,5 +1,7 @@
+import { isAbsolute } from 'node:path'
 import { resolveLocalBrowserOrigin } from '@graphql/contracts/browser-origin'
 import { z } from 'zod'
+import { defaultFileStorageRoot } from './modules/files/storage.js'
 import { readBrowserAuthConfig, type BrowserAuthConfig } from './modules/browser-auth/config.js'
 import { harnessBinaries } from './modules/harnesses/binaries.js'
 
@@ -18,6 +20,7 @@ const EnvironmentSchema = z.object({
   DATABASE_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().max(2147483647).default(1000),
   READINESS_TIMEOUT_MS: z.coerce.number().int().positive().max(2147483647).default(2000),
   LANGGRAPH_CHECKPOINT_SCHEMA: databaseSchemaName.default('langgraph'),
+  FILE_STORAGE_ROOT: z.string().trim().min(1).refine(isAbsolute, 'File storage requires an absolute directory').optional(),
   HARNESS_WORKSPACE_ROOT: z.string().trim().min(1).default('/tmp/graphql-harness-runs'),
   HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
@@ -27,6 +30,8 @@ const EnvironmentSchema = z.object({
 export interface ApiConfig {
   /** Trusted composition override for an isolated storage root; never a request field. */
   workspaceStorageRoot?: string
+  /** App-managed durable upload storage; separate from workspace and harness directories. */
+  fileStorageRoot?: string
   browserAuth?: BrowserAuthConfig
   localDevBrowserAccess?: { origin: string; principalId?: string | undefined }
   host: string
@@ -73,6 +78,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
       ...(localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId
         ? { principalId: localDevBrowserPrincipalId || browserAuth?.ownerPrincipalId } : {}),
     } } : {}),
+    fileStorageRoot: parsed.FILE_STORAGE_ROOT ?? defaultFileStorageRoot(),
     host: parsed.HOST,
     port: parsed.PORT,
     readinessTimeoutMs: parsed.READINESS_TIMEOUT_MS,

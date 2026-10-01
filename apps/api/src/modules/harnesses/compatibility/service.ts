@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import {
   HarnessCompatibilitySchema, type CompatibilityHarness, type HarnessCompatibility,
 } from '@graphql/contracts'
@@ -15,6 +16,7 @@ export interface CompatibilityOptions {
   now?: () => number
   checkerRevision?: string
   timeoutMs?: number
+  onUnknownInstalled?: (harness: CompatibilityHarness) => void
 }
 export function compatibilityCacheKey(harness: CompatibilityHarness, installation: HarnessInstallation, revision: string): string {
   return createHash('sha256').update(JSON.stringify([
@@ -39,6 +41,7 @@ export class HarnessCompatibilityService {
   private readonly reports: Record<CompatibilityHarness, HarnessCompatibility>
   private readonly flights = new Map<CompatibilityHarness, Promise<void>>()
   private readonly cleanupBlocked = new Set<CompatibilityHarness>()
+  private readonly refreshPending = new Set<CompatibilityHarness>()
   private readonly lifetime = new AbortController()
   private readonly now: () => number
   private readonly revision: string
@@ -71,6 +74,11 @@ export class HarnessCompatibilityService {
     this.begin(harness, true)
     return this.get(harness)
   }
+  refreshAfterQualification(harness: CompatibilityHarness): void {
+    if (this.lifetime.signal.aborted || this.cleanupBlocked.has(harness)) return
+    if (this.flights.has(harness)) this.refreshPending.add(harness)
+    else this.begin(harness, true)
+  }
   async checkAll(): Promise<HarnessCompatibility[]> {
     this.start()
     await Promise.all(this.flights.values())
@@ -89,23 +97,35 @@ export class HarnessCompatibilityService {
       installedVersion: this.reports[harness].installedVersion,
       checkedAt: this.reports[harness].checkedAt,
     }
-    const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(this.timeoutMs)])
     const checkId = this.reports[harness].checkId
     // Publish the flight before invoking any dependency, including synchronous test doubles.
-    const task = Promise.resolve().then(() => this.check(harness, checkId, force, signal))
+    const task = Promise.resolve().then(async () => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const deadline = attempt === 1 ? this.timeoutMs : Math.min(30_000, this.timeoutMs * 3)
+        const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(deadline)])
+        await this.check(harness, checkId, force, signal, attempt)
+        if (this.reports[harness].reason?.code !== 'CHECK_TIMEOUT' || attempt === 2 || this.lifetime.signal.aborted
+          || this.cleanupBlocked.has(harness)) return
+        this.reports[harness] = { ...this.reports[harness], status: 'checking', reason: null }
+        await delay(250, undefined, { signal: this.lifetime.signal })
+      }
+    })
       .catch((error: unknown) => {
         this.reports[harness] = {
           ...this.reports[harness], status: 'unavailable', checkedAt: new Date(this.now()).toISOString(),
-          reason: compatibilityReason(error, signal.aborted), source: 'none',
+          reason: compatibilityReason(error, this.lifetime.signal.aborted), source: 'none',
         }
-      }).finally(() => { this.flights.delete(harness) })
+      }).finally(() => {
+        this.flights.delete(harness)
+        if (this.refreshPending.delete(harness) && !this.lifetime.signal.aborted) this.begin(harness, true)
+      })
     this.flights.set(harness, task)
   }
-  private async check(harness: CompatibilityHarness, checkId: string, force: boolean, signal: AbortSignal): Promise<void> {
+  private async check(harness: CompatibilityHarness, checkId: string, force: boolean, signal: AbortSignal, attempt: number): Promise<void> {
     let installation: HarnessInstallation | undefined
     let warning: string | null = null
     try {
-      installation = await this.options.probe.inspect(harness, signal)
+      installation = await this.options.probe.inspect(harness, signal, attempt)
       signal.throwIfAborted()
       const release = knownRelease(harness, installation.version)
       const base: HarnessCompatibility = {
@@ -122,6 +142,7 @@ export class HarnessCompatibilityService {
         }
         return
       }
+      this.options.onUnknownInstalled?.(harness)
       const key = compatibilityCacheKey(harness, installation, this.revision)
       let cached: CompatibilityCacheEntry | null = null
       if (!force) {
@@ -148,6 +169,7 @@ export class HarnessCompatibilityService {
         throw new CompatibilityCheckError('CLI_CLEANUP_FAILED',
           'The diagnostic process did not confirm clean shutdown. Stop that process and restart the API before another check.')
       }
+      if (reason?.code === 'CHECK_TIMEOUT') throw new CompatibilityCheckError('CHECK_TIMEOUT', reason.message)
       // Never cache a result for a replaced binary or an interrupted check.
       signal.throwIfAborted()
       await this.options.probe.assertUnchanged(installation, signal)
@@ -168,15 +190,17 @@ export class HarnessCompatibilityService {
       if (error instanceof CompatibilityCheckError && error.code === 'CLI_CLEANUP_FAILED') this.cleanupBlocked.add(harness)
       this.reports[harness] = {
         ...this.initial(harness), checkId, installedVersion: installation?.version ?? null,
-        status: installation ? 'probe-failed' : 'unavailable', checkedAt: new Date(this.now()).toISOString(),
+        status: compatibilityReason(error, signal.aborted).code === 'CHECK_TIMEOUT' ? 'unavailable'
+          : installation ? 'probe-failed' : 'unavailable', checkedAt: new Date(this.now()).toISOString(),
         reason: compatibilityReason(error, signal.aborted), cacheWarning: warning,
       }
     }
   }
 }
-export function createHarnessCompatibility(config: { codexBinary: string; openCodeBinary: string; workspaceRoot: string }): HarnessCompatibilityService {
+export function createHarnessCompatibility(config: { codexBinary: string; openCodeBinary: string; workspaceRoot: string }, onUnknownInstalled?: (harness: CompatibilityHarness) => void): HarnessCompatibilityService {
   return new HarnessCompatibilityService({
     probe: nativeCompatibilityProbe({ codex: config.codexBinary, opencode: config.openCodeBinary }, config.workspaceRoot),
     cache: new FileCompatibilityCache(),
+    ...(onUnknownInstalled ? { onUnknownInstalled } : {}),
   })
 }

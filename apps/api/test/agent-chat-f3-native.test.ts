@@ -45,6 +45,7 @@ function codex(chat = true) {
 }
 function openCode() {
   const server = new FixtureServer()
+  server.config = { mcp: { graphql: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
   const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpAccess: 'none' })
   cleanups.push(() => manager.dispose())
   return { manager, server }
@@ -81,7 +82,8 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
     })
   }
   it('A-R01: disabled Codex entry is credential-free while non-chat scoped validation remains mandatory', async () => {
-    vi.mocked(runCommand).mockResolvedValue({ exitCode: 0, stdout: JSON.stringify(scopedCodexEntry(false)), stderr: '' })
+    vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
+      stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry(false)] : scopedCodexEntry(false)), stderr: '' }))
     const { manager } = codex(), input = codexInput()
     const prepared = await manager['prepareInput'](input)
     assert.equal(prepared.scopedCredentialVariable, undefined); assert.equal(prepared.input.environment, undefined)

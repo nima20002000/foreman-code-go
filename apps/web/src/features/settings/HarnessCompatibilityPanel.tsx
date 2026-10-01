@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { CompatibilityHarness, HarnessCompatibility } from '@graphql/contracts'
 import { ApiError } from '../../shared/api/client'
 import { useHarnessCompatibilityQuery, useRetryHarnessCompatibility } from '../../shared/api/harnessCompatibility'
+import { useCheckHarnessQualification, useHarnessQualificationsQuery } from '../../shared/api/harnessQualification'
 import { Button, useToast } from '../../shared/ui/nocturne'
 import './harnessCompatibility.css'
 
@@ -37,6 +38,21 @@ function loadError(error: unknown): string {
   }
   return error instanceof Error ? error.message : 'Check the local API, then retry.'
 }
+function HarnessQualificationRow({ harness }: { harness: CompatibilityHarness }) {
+  const query = useHarnessQualificationsQuery()
+  const check = useCheckHarnessQualification()
+  const row = query.data?.qualifications.find((entry) => entry.harness === harness)
+  const checking = row?.status === 'qualifying' || check.isPending
+  const status = row?.status === 'baseline' || row?.status === 'qualified' ? 'Trusted'
+    : checking ? 'Checking…' : 'Failed'
+  return <div className="harness-qualification" aria-label={`${nameOf(harness)} qualification`}>
+    <span>Installed {row?.version ?? 'unknown'}</span>
+    <span role="status">{query.isPending ? 'Loading…' : status}</span>
+    {!query.isPending && status === 'Failed' ? <span>{row?.failureReason ?? (query.isError ? loadError(query.error) : 'Not qualified')}</span> : null}
+    <Button size="sm" disabled={checking} onClick={() => void check.mutateAsync(harness).catch(() => undefined)}>Check</Button>
+    {check.isError ? <span role="alert">{loadError(check.error)}</span> : null}
+  </div>
+}
 export function HarnessCompatibilityPanel({ harness }: { harness: CompatibilityHarness }) {
   const query = useHarnessCompatibilityQuery()
   const { notify } = useToast()
@@ -70,6 +86,7 @@ export function HarnessCompatibilityPanel({ harness }: { harness: CompatibilityH
     } finally { submitting.current.delete(target) }
   }
   return <section className="harness-compatibility" aria-label={`${name} installation`}>
+    <HarnessQualificationRow harness={harness} />
     {!row ? <div className="harness-compatibility-summary">
       <strong>{name} installation</strong>
       {query.isError ? <><span role="alert">Check unavailable. {loadError(query.error)}</span>

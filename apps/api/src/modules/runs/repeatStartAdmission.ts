@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import type { ScheduleStartGuard } from '../schedules/startGuard.js'
 import type pg from 'pg'
 import { IdSchema } from '@graphql/contracts'
+import type { RunDropdownTrigger } from '@graphql/contracts/run-snapshots'
+import { insertRunBoardSnapshot } from './boardSnapshot.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
   AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema,
@@ -38,7 +41,12 @@ export interface RepeatStartPublication {
    * unselected repeat blocks. The existing graph enters them after COMMIT. */
   initializeLocked(sql: GraphTransactionSql, accepted: AcceptedRepeatStartV1): Promise<{ semanticDigest: string }>
 }
-export interface RepeatStartOptions { maximumResidentRuns?: number; triggerJobId?: string }
+export interface RepeatStartOptions {
+  maximumResidentRuns?: number
+  triggerJobId?: string
+  /** Internal SCH-04 composition only, never a field in public Start input. */
+  schedule?: ScheduleStartGuard
+}
 export interface RepeatStartOutcome { value: AcceptedWorkflowRunV3; replayed: boolean }
 interface ReceiptRow { input_hash: string; target_key: string; result: unknown }
 const locationColumns = 'id,execution_location,execution_location_identity,location_revision::text,archived_at'
@@ -146,7 +154,7 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
 /** The v3 INSERT and canonical initialization share the existing Start G1
  * transaction. This function does not acquire RunOwnership or invoke the graph. */
 export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedRepeatStartV1,
-  publication: RepeatStartPublication): Promise<AcceptedWorkflowRunV3> {
+  publication: RepeatStartPublication, admissionTrigger: RunDropdownTrigger = 'manual'): Promise<AcceptedWorkflowRunV3> {
   assertGraphTransaction(sql)
   const accepted = AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(input)))
   const run = acceptedReceipt(accepted.run, accepted.snapshot.request)
@@ -155,6 +163,9 @@ export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedR
     runner_id,working_directory,location_revision) values($1,$2,$3,$4,'queued',$5::jsonb,$6,$7,$8)`,
   [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, canonicalGraphJson(run),
     run.executionLocation.runnerId, run.executionLocation.rootPath, run.executionLocation.locationRevision])
+  // Required admission write: failure rolls back the Run, authority and command.
+  // Internal scheduled admission must pass 'schedule'; never accept it from HTTP/MCP input.
+  await insertRunBoardSnapshot(sql, accepted, admissionTrigger)
   // Do not let an adapter mutate the candidate whose digest/pins we retained.
   const published = await publication.initializeLocked(sql, AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(accepted))))
   const semanticDigest = GraphDigestSchema.parse(published.semanticDigest)
@@ -171,12 +182,15 @@ export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedR
  * reads the same command receipt and never dispatches it a second time.
  * Absent production composition permits only a verified replay, not a new Run. */
 export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocationService,
-  principal: ManagementPrincipal, source: 'http' | 'mcp', raw: RunStartV3Input,
+  principal: ManagementPrincipal, source: 'http' | 'mcp' | 'schedule', raw: RunStartV3Input,
   publication: RepeatStartPublication | undefined, options: RepeatStartOptions = {}): Promise<RepeatStartOutcome> {
   const input = RunStartV3InputSchema.parse(JSON.parse(canonicalGraphJson(raw)))
+  if ((source === 'schedule') !== Boolean(options.schedule)) {
+    throw new DomainError('SCHEDULE_ADMISSION_INVALID', 'Scheduled Start requires its internal atomic guard.', 409)
+  }
   const triggerJobId = options.triggerJobId === undefined ? undefined : IdSchema.parse(options.triggerJobId)
   if (triggerJobId !== undefined) {
-    throw new DomainError('REPEAT_TRIGGER_UNSUPPORTED', 'Bounded repeats do not yet support scheduled or event-triggered Start.', 409)
+    throw new DomainError('REPEAT_TRIGGER_UNSUPPORTED', 'Legacy trigger jobs cannot enter current Run Start; workflow schedules require the atomic dispatcher.', 409)
   }
   const maximumResidentRuns = options.maximumResidentRuns ?? 32
   if (!Number.isInteger(maximumResidentRuns) || maximumResidentRuns < 1 || maximumResidentRuns > 128) {
@@ -187,7 +201,8 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     requireAuthorization(caller, 'workspace_locations:read', { workspaceId: input.workspaceId })
   }
   authorize(principal)
-  const hash = commandInputHash({ ...input, ...(triggerJobId === undefined ? {} : { triggerJobId }) })
+  const hash = commandInputHash({ ...input, ...(triggerJobId === undefined ? {} : { triggerJobId }),
+    ...(options.schedule ? { scheduleOccurrenceId: options.schedule.occurrenceId } : {}) })
   const target = `workflow:${input.workflowId}:version:${input.workflowVersionId}`
   const liveAuthority = async (sql: GraphTransactionSql) => {
     const live = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, principal.id)
@@ -228,6 +243,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       if (BigInt(count) >= BigInt(maximumResidentRuns)) return conflict('RUNNER_ADMISSION_FULL', 'The runner has reached its bounded active-Run capacity.')
       const authority = await acceptRunAuthority(client, principal)
       authorize(authority.principal)
+      await options.schedule?.beforeAcceptance(sql)
       // acceptRunAuthority creates a NEW tokenless principal. Pass that exact
       // principal to the helper; patching the caller snapshot's ID is not a proof.
       const snapshot = await readLockedRepeatStartSnapshot(client, authority.principal, input, prepared)
@@ -239,7 +255,8 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
         executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
         input: input.input, createdAt: new Date().toISOString() })
       admissionBegan = true
-      await insertRepeatRun(sql, AcceptedRepeatStartV1Schema.parse({ snapshot, run }), publication)
+      await insertRepeatRun(sql, AcceptedRepeatStartV1Schema.parse({ snapshot, run }), publication,
+        source === 'schedule' ? 'schedule' : 'manual')
       await bindRunAuthority(client, run.id, authority)
       await sql.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
         values($1,'run.start',$2,$3,$4,$5::jsonb)`, [principal.id, input.commandId, target, hash, canonicalGraphJson(run)])
@@ -252,6 +269,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
         const valid = await sql.query('select 1 where clock_timestamp() < $1::timestamptz', [accepted.expiresAt])
         if (valid.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'Accepted Run authority expired before commit.', 403)
       })
+      await options.schedule?.afterAcceptance(sql, run)
       return { value: run, replayed: false }
     }))
   } catch (error) {

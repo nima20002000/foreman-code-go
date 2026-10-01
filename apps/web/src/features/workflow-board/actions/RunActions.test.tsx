@@ -44,6 +44,7 @@ function fixture(outcome: 'pending' | 'failed' | 'canceled' = 'pending') {
       runtimeAdmission: true, stopAvailable: true, meaningfulEdit: true, reasons: [],
       editIntents: { ...CURRENT_WORKFLOW_CAPABILITIES.editIntents, stopUnsettled: true } }),
     stopFailures: 0, startFailures: 0, approvalFailures: 0, canRespond: true,
+    failStatusAfterStop: false,
     stopStatus: 'accepted' as 'accepted' | 'not_owner',
     requests: [] as Array<{ method: string; path: string; body?: unknown }>,
     interactions: [DurableInteractionSchema.parse({ ...NATIVE_INTERACTION_FIXTURES.codex,
@@ -68,6 +69,8 @@ function fixture(outcome: 'pending' | 'failed' | 'canceled' = 'pending') {
     http.get('*/api/management/workflows/capabilities/v3', async ({ request }) => { await record(request); return HttpResponse.json(state.capabilities) }),
     http.get(`*${runPath}/executions`, async ({ request }) => {
       await record(request)
+      if (state.failStatusAfterStop && state.requests.some((entry) => entry.method === 'POST' && entry.path.endsWith('/stop')))
+        return failed()
       const url = new URL(request.url), limit = Number(url.searchParams.get('limit'))
       const all = rows(), after = url.searchParams.has('cursor')
       return HttpResponse.json({ run: metadata(), items: limit === 1 ? all.slice(0, 1) : after ? all.slice(1) : all.slice(0, 1),
@@ -210,6 +213,15 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     await user.click(screen.getByRole('button', { name: 'Verify cleanup settlement' }))
     await screen.findByText(/Authenticated readback confirms this Run is terminal and cleanup-settled/)
     expect(readBoardStop(mock.f.scope)).toBeUndefined()
+  })
+  it('keeps the exact accepted Stop receipt visible when the following current-state read fails', async () => {
+    const mock = fixture(), user = userEvent.setup(); mock.state.failStatusAfterStop = true
+    await mount(mock)
+    await user.click(screen.getByRole('button', { name: 'Stop this Run' }))
+    await screen.findByText(/Current Run state is unavailable:/)
+    expect(writes(mock, '/stop')).toHaveLength(1)
+    expect(readBoardStop(mock.f.scope)?.receipt?.status).toBe('accepted')
+    expect(screen.getByText(/Stop receipt: accepted/)).toBeInTheDocument()
   })
   it('does not clear a not-owner Stop or label it native settlement', async () => {
     const mock = fixture(), user = userEvent.setup(); mock.state.stopStatus = 'not_owner'

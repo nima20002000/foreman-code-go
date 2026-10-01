@@ -1,3 +1,4 @@
+import { registerRunHistoryTools, unavailableRunHistoryToolCall } from './runHistory.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import type { ManagementAction, ManagementScope } from '@graphql/contracts/management'
@@ -40,6 +41,7 @@ export function runInspectionToolAvailable(context: OperatorRequestContext, name
   return false
 }
 export function registerRunInspectionTools(server: McpServer, context: OperatorRequestContext): void {
+  registerRunHistoryTools(server, context)
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   const reads = context.services.runs?.inspection
   if (!reads) return
@@ -68,6 +70,8 @@ const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), 
   method: z.literal('tools/call'), params: z.object({ name: RunInspectionToolNameSchema }).passthrough() }).passthrough()
 /** Invoked only AFTER Host/Origin validation and Operator authentication. */
 export async function unavailableRunInspectionToolCall(context: OperatorRequestContext, body: unknown) {
+  const history = await unavailableRunHistoryToolCall(context, body)
+  if (history) return history
   const call = ToolCall.safeParse(body)
   if (!call.success || runInspectionToolAvailable(context, call.data.params.name)) return undefined
   const name = call.data.params.name

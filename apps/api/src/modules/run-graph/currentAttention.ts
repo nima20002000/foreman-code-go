@@ -27,37 +27,47 @@ export async function readPublicAttentionCounts(sql: GraphTransactionSql, runId:
   nodeIds?: readonly string[], overlay: PublicAttentionOverlay = {}): Promise<Map<string, PublicAttentionCount>> {
   if (nodeIds && nodeIds.length > 1000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const ids = nodeIds ? [...nodeIds] : null
-  const interactions = await sql.query<{ node_id: string; count: string; pending_id: string | null; blocked: boolean }>(
-    `select e.workflow_node_id as node_id,count(*)::text,
+  const rows = await sql.query<{ kind: 'interaction' | 'review'; node_id: string; count: string;
+    pending_id: string | null; blocked: boolean | null; cleanup: boolean | null }>(
+    `with interactions as (
+     select e.workflow_node_id as node_id,count(*)::text,
        min(i.id) filter(where i.status='pending') as pending_id,
        bool_or(i.status in ('decided','delivery_pending','delivery_failed','delivered')) as blocked
      from durable_interactions i join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id
      left join interaction_graph_resumes g on g.interaction_id=i.id
      where i.run_id=$1 and ${PUBLIC_PENDING_INTERACTION_SQL}
        and ($2::text[] is null or e.workflow_node_id=any($2)) and ($3::text is null or i.id<>$3)
-     group by e.workflow_node_id limit 1001`, [runId, ids, overlay.interaction?.record.id ?? null])
-  const reviews = await sql.query<{ node_id: string; count: string; cleanup: boolean }>(
-    `select e.workflow_node_id as node_id,count(*)::text,
+     group by e.workflow_node_id limit 1001
+    ), reviews as (
+     select e.workflow_node_id as node_id,count(*)::text,
        bool_or(j.record->'cleanup'->>'completedAt' is null and
          (j.record->'cleanup'->>'nativeState'='pending' or j.record->'cleanup'->>'credentialState'='pending')) as cleanup
      from harness_executions e join review_jobs j on j.execution_id=e.id
      where e.run_id=$1 and ($2::text[] is null or e.workflow_node_id=any($2))
-       and ($3::text is null or j.id<>$3) and ${PUBLIC_UNSETTLED_REVIEW_SQL}
-     group by e.workflow_node_id limit 1001`, [runId, ids, overlay.review?.record.id ?? null])
-  if (interactions.rows.length > 1000 || reviews.rows.length > 1000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
+       and ($4::text is null or j.id<>$4) and ${PUBLIC_UNSETTLED_REVIEW_SQL}
+     group by e.workflow_node_id limit 1001
+    )
+    select 'interaction'::text as kind,node_id,count,pending_id,blocked,null::boolean as cleanup from interactions
+    union all
+    select 'review'::text as kind,node_id,count,null::text as pending_id,null::boolean as blocked,cleanup from reviews`,
+    [runId, ids, overlay.interaction?.record.id ?? null, overlay.review?.record.id ?? null])
+  if (rows.rows.filter((row) => row.kind === 'interaction').length > 1000
+    || rows.rows.filter((row) => row.kind === 'review').length > 1000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const result = new Map<string, PublicAttentionCount>((nodeIds ?? []).map((id) => [id, empty()]))
   const get = (id: string) => {
     let value = result.get(id)
     if (!value) { value = empty(); result.set(id, value) }
     return value
   }
-  for (const row of interactions.rows) {
+  for (const row of rows.rows) {
+    if (row.kind !== 'interaction') continue
     const value = get(row.node_id)
     value.pendingInteractionCount = boundedCount(row.count)
-    value.deliveryBlocked = row.blocked
+    value.deliveryBlocked = row.blocked === true
     if (row.pending_id) value.pendingInteractionId = row.pending_id
   }
-  for (const row of reviews.rows) {
+  for (const row of rows.rows) {
+    if (row.kind !== 'review') continue
     const value = get(row.node_id)
     value.unsettledReviewCount = boundedCount(row.count)
     value.cleanupPending = row.cleanup === true

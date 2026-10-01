@@ -45,6 +45,7 @@ function messageSink(f: ReturnType<typeof fixture>) {
 describe('G2 A2-PF-03: actual OpenCode adapter, synthetic HTTP/SSE only', () => {
   it('releases a heartbeat-producing watcher after terminal history and starts B once on the same session', async () => {
     const f = fixture(), server = new FixtureServer()
+    server.config = { mcp: { graphql: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
     const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: f.store.row.agent_id, appMcpAccess: 'none' })
     let heartbeat: ReturnType<typeof setInterval> | undefined
     try {

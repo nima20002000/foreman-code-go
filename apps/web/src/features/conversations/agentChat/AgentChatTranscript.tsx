@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react'
 import type { AgentChatState } from '@graphql/contracts/agent-chat'
+import type { MessageAttachmentRef } from '@graphql/contracts/files'
+import { ChatMessageFiles } from '../ChatMessageFiles'
+import { messageAttachmentRefs } from '../chatAttachmentAttempt'
 import type { Message } from '@graphql/contracts'
 import { Badge, Button, MessageBubble } from '../../../shared/ui/nocturne'
 import { OperatorActivityList } from '../../operator-chat/OperatorActivityList'
@@ -14,7 +17,7 @@ import { commandMayHaveBeenAccepted, type AgentChatCommandRecord, type useAgentC
 export function AgentChatTranscript({ state, name, commands, history, notices, cancelReason, responseReason, resendReason, onCancel, onRespond, onSendAgain }: {
   state: AgentChatState; name: string; commands: AgentChatCommandRecord[]; history: ReturnType<typeof useAgentChat>['history']
   notices?: ReactNode; cancelReason?: string; responseReason?: string; resendReason?: string
-  onCancel(requestId: string): void; onRespond(optionId: string): void; onSendAgain(content: string): void
+  onCancel(requestId: string): void; onRespond(optionId: string): void; onSendAgain(content: string, attachments?: MessageAttachmentRef[]): void
 }) {
   const id = state.conversation?.id
   const messages = mergeChatMessages(...[...(history.data?.pages.flatMap((batch) => batch.pages) ?? [])].reverse().map((page) => page.messages), state.messages)
@@ -38,7 +41,7 @@ export function AgentChatTranscript({ state, name, commands, history, notices, c
   // reasoning, or synthetic "thinking" strings. Unknown delta payloads only trigger state reads.
   const activities = state.activities.filter((entry) => entry.kind !== 'thinking')
   const placement = placeChatActivities(messages, activities, state.activeTurn?.requestId)
-  const revision = JSON.stringify([state.messages, state.turns, activities, state.pendingInteraction, unresolved.map((record) => [record.command, record.status])])
+  const revision = JSON.stringify([messages, state.turns, activities, state.pendingInteraction, unresolved.map((record) => [record.command, record.status])])
   return <ConversationViewport revision={revision}>{(onBrowse) => <>
     {notices}
     {id && (state.hasEarlierMessages && !history.data || history.hasNextPage) ? <Button size="sm" variant="ghost" disabled={history.isFetching}
@@ -58,13 +61,14 @@ export function AgentChatTranscript({ state, name, commands, history, notices, c
           {turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
             {cancelReason ? <p className="agent-chat-note">{cancelReason}</p> : null}</> : null}
           {turn.delivery === 'unknown' ? <><p className="agent-chat-note">Delivery is unknown. No automatic resend. Read the original text before explicitly sending it as a new message.</p>
-            {content ? <><p className="conversation-message-content">{content}</p>
-              <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => onSendAgain(content)}>Send again as new message</Button></> : null}
+            {content !== undefined ? <><p className="conversation-message-content">{content}</p>
+              <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => onSendAgain(content, original?.kind === 'send' ? original.input.attachments : undefined)}>Send again as new message</Button></> : null}
           </> : null}
         </div>
       })}
     </section> : null}
     <ConversationHistory messages={messages} assistantName={name} renderStatus={status}
+      renderAfter={(message) => message.attachments?.length ? <ChatMessageFiles message={message} workspaceId={state.context.workspaceId} /> : null}
       interleaved={placement.rows.map(({ entry, beforeMessageId }) => ({
         key: JSON.stringify([id, entry.requestId, entry.id]), beforeMessageId,
         content: <OperatorActivityList entries={[entry]} activeRequestId={state.activeTurn?.requestId} onBrowse={onBrowse} />,
@@ -78,14 +82,14 @@ export function AgentChatTranscript({ state, name, commands, history, notices, c
         {turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
           {cancelReason ? <p className="agent-chat-note">{cancelReason}</p> : null}</> : null}
         {turn.delivery === 'unknown' ? <><p className="agent-chat-note">The original may have been accepted. It will not be resent automatically.</p>
-          <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => onSendAgain(message.content)}>Send again as new message</Button></> : null}
+          <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => onSendAgain(message.content, messageAttachmentRefs(message))}>Send again as new message</Button></> : null}
       </div>
     }} />
     {unresolved.map((record) => record.command?.kind === 'send' ? <MessageBubble key={record.command.input.requestId} role="user" author="You"
       status={<Badge tone={record.status === 'pending' ? 'neutral' : 'warning'}>{record.status === 'pending' ? 'Sending' : 'Unknown'}</Badge>}>
       <p className="conversation-message-content">{record.command.input.content}</p>
       <p className="agent-chat-note">{record.status === 'pending' ? 'Waiting for the server receipt.' : 'No receipt was confirmed. The original may have been accepted; it will not be resent automatically.'}</p>
-      {record.status === 'error' ? <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => { if (record.command?.kind === 'send') onSendAgain(record.command.input.content) }}>Send again as new message</Button> : null}
+      {record.status === 'error' ? <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => { if (record.command?.kind === 'send') onSendAgain(record.command.input.content, record.command.input.attachments) }}>Send again as new message</Button> : null}
     </MessageBubble> : null)}
     {state.pendingInteraction ? <><p className="agent-chat-note">Use these approval controls to reply. An ordinary chat message is not an approval.</p>
       <OperatorApprovalCard actor="Agent" interaction={state.pendingInteraction} onBrowse={onBrowse}

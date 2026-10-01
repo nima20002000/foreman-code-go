@@ -15,13 +15,13 @@ export function MessageBubble({ author, role = 'assistant', children, time, date
 }
 
 /** The caller owns the draft and mutation. Rejected sends never erase the draft here. */
-export function MessageComposer({ value, onValueChange, onSend, pending = false, disabled = false, sendDisabled = false, error, onStop, maxLength = 16000,
-  label = 'Message the operator', placeholder = 'Describe what you want to do…', sendLabel = 'Send', pendingLabel = 'Sending…', formLabel, context, inputRef }:
-  { value: string; onValueChange: (value: string) => void; onSend: (value: string) => void; pending?: boolean; disabled?: boolean; sendDisabled?: boolean; error?: string;
-    onStop?: () => void; maxLength?: number; label?: string; placeholder?: string; sendLabel?: string; pendingLabel?: string; formLabel?: string; context?: ReactNode; inputRef?: Ref<HTMLTextAreaElement> }) {
+export function MessageComposer({ value, onValueChange, onSend, pending = false, disabled = false, sendDisabled = false, hasAttachments = false, error, onStop, maxLength = 16000,
+  label = 'Message the operator', placeholder = 'Describe what you want to do…', sendLabel = 'Send', pendingLabel = 'Sending…', formLabel, context, footerControl, inputRef }:
+  { value: string; onValueChange: (value: string) => void; onSend: (value: string) => void; pending?: boolean; disabled?: boolean; sendDisabled?: boolean; hasAttachments?: boolean; error?: string;
+    onStop?: () => void; maxLength?: number; label?: string; placeholder?: string; sendLabel?: string; pendingLabel?: string; formLabel?: string; context?: ReactNode; footerControl?: ReactNode; inputRef?: Ref<HTMLTextAreaElement> }) {
   const id = useId()
   const limit = Number.isFinite(maxLength) ? Math.max(1, Math.floor(maxLength)) : 16000
-  const cannotSend = disabled || sendDisabled || pending || !value.trim() || value.length > limit
+  const cannotSend = disabled || sendDisabled || pending || (!value.trim() && !hasAttachments) || value.length > limit
   function send() { if (!cannotSend) onSend(value) }
   return <form className="n-composer" onSubmit={(event) => { event.preventDefault(); send() }} aria-label={formLabel} aria-busy={pending || undefined}>
     {context && <div className="n-composer-context">{context}</div>}
@@ -34,7 +34,7 @@ export function MessageComposer({ value, onValueChange, onSend, pending = false,
         event.preventDefault(); send()
       }} />
     <footer><span id={`${id}-hint`}>Enter to send · Shift + Enter for a new line<span className="n-composer-count">{value.length.toLocaleString()} / {limit.toLocaleString()}</span></span>
-      <div className="n-actions">{pending && onStop && <Button variant="secondary" disabled={disabled} leading={<Icon name="stop" size={14} />} onClick={onStop}>Stop</Button>}
+      <div className="n-actions">{footerControl}{pending && onStop && <Button variant="secondary" disabled={disabled} leading={<Icon name="stop" size={14} />} onClick={onStop}>Stop</Button>}
         <Button type="submit" variant="primary" disabled={cannotSend} loading={pending} loadingLabel={pendingLabel} trailing={<Icon name="arrow" size={15} />}>{sendLabel}</Button></div>
     </footer>{error && <p className="n-field-error" id={`${id}-error`} role="alert">{error}</p>}
   </form>

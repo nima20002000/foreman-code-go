@@ -79,7 +79,7 @@ export async function graphFixture(db: GraphTestDatabase, options: { insert?: bo
     const grantScope = { workspaceIds: [scope.workspaceId], workflowIds: [scope.workflowId] }
     const readRequest = { protocolVersion: 1, scope }
     return { f: { ...f, version, run, scope }, version, run, accepted, scope, grantScope, writer, credential,
-      access, commands, repeat: graph, graph, app, readRequest }
+      access, commands, workflows, repeat: graph, graph, app, readRequest }
   } catch (error) { await app.close(); throw error }
 }
 export type GraphFixture = Awaited<ReturnType<typeof graphFixture>>

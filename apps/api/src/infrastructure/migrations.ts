@@ -35,6 +35,15 @@ import { nativeProjectionMigration } from '../modules/run-graph/nativeProjection
 import { workHandoffMigration } from './workHandoffMigration.js'
 import { workNoticeMigration } from './workNoticeMigration.js'
 import { runActivitiesMigration } from './runActivitiesMigration.js'
+import { workflowScheduleDispatchMigration } from '../modules/schedules/dispatchMigration.js'
+import { workflowScheduleMigration } from './workflowScheduleMigration.js'
+import { runSnapshotMigration } from './runSnapshotMigration.js'
+import { fileStorageMigration } from './fileStorageMigration.js'
+import { fileReferenceMigration } from './fileReferenceMigration.js'
+import { fileRetentionMigration } from './fileRetentionMigration.js'
+import { fileReferenceAccessMigration } from './fileReferenceAccessMigration.js'
+import { fileToolsMigration } from '../modules/files/tools/migration.js'
+import { harnessQualificationMigration } from './harnessQualificationMigration.js'
 
 // Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
 // HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
@@ -732,13 +741,27 @@ export const migrations = [
   workHandoffMigration,
   workNoticeMigration,
   runActivitiesMigration,
+  workflowScheduleMigration,
+  runSnapshotMigration,
+  workflowScheduleDispatchMigration,
+  fileStorageMigration,
+  fileReferenceMigration,
+  fileRetentionMigration,
+  fileToolsMigration,
+  fileReferenceAccessMigration,
+  harnessQualificationMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
   const client = await pool.connect()
   try {
     await client.query('begin')
-    await client.query('select pg_advisory_xact_lock($1)', [810_001])
+    const schema = (await client.query<{ schema: string | null }>('select current_schema() as schema')).rows[0]?.schema
+    if (!schema) throw new Error('Application migrations require a current PostgreSQL schema.')
+    // Independent test schemas can migrate together; retain the established
+    // lock for the normal public schema and serialize callers of each schema.
+    if (schema === 'public') await client.query('select pg_advisory_xact_lock($1)', [810_001])
+    else await client.query('select pg_advisory_xact_lock($1, hashtext($2))', [810_001, schema])
     await client.query(`
       create table if not exists application_migrations (
         version integer primary key,

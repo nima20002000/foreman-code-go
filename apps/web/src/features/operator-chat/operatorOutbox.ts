@@ -1,4 +1,6 @@
 import { SendOperatorMessageRequestSchema, type SendOperatorMessageRequest, type OperatorChatSettings } from '@graphql/contracts'
+import type { MessageAttachmentRef } from '@graphql/contracts/files'
+import { sameAttachmentRefs } from '../conversations/chatAttachmentAttempt'
 import { protectedKey } from '../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, sessionSignal, SessionChangedError } from '../../shared/api/sessionBoundary'
 
@@ -106,16 +108,18 @@ async function exclusive<T>(id: string, work: (key: string) => T): Promise<T> {
 
 /** Reserve once before submission. Every tab and every lost-response retry reuses that identity. */
 export function reserveOperatorMessage(id: string, content: string, route: string, settings?: OperatorChatSettings,
-  forkExpectedRevision?: number, binding?: Pick<SendOperatorMessageRequest, 'configurationVersionId' | 'defaultsRevision'>): Promise<SendOperatorMessageRequest> {
+  forkExpectedRevision?: number, binding?: Pick<SendOperatorMessageRequest, 'configurationVersionId' | 'defaultsRevision'>,
+  attachments: readonly MessageAttachmentRef[] = []): Promise<SendOperatorMessageRequest> {
   return exclusive(id, (key) => {
     const pending = readKey(key)
     if (pending.error) throw new Error(pending.error)
     if (pending.command) {
-      if (pending.command.content !== content) throw new Error('Retry the previous pending message before sending a different command. Your new draft is preserved.')
+      if (pending.command.content !== content || !sameAttachmentRefs(pending.command.attachments, attachments)) throw new Error('Retry the previous pending message before sending a different command. Your new draft is preserved.')
       return pending.command // Includes the originally accepted route context and configuration binding.
     }
     const command = SendOperatorMessageRequestSchema.parse({ requestId: crypto.randomUUID(), content, context: { route },
-      ...(settings ? { settings } : {}), ...(forkExpectedRevision === undefined ? {} : { forkExpectedRevision }), ...binding })
+      ...(settings ? { settings } : {}), ...(forkExpectedRevision === undefined ? {} : { forkExpectedRevision }), ...binding,
+      ...(attachments.length ? { attachments: attachments.map((pin) => ({ ...pin })) } : {}) })
     writeKey(key, command, { uncertain: false, rejected: 0, inFlight: [] })
     return command
   })

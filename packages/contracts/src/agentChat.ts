@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MessageAttachmentFields } from "./files.js";
 import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
 
 import {
@@ -20,7 +21,7 @@ import {
 export const AgentChatIntentSchema = z.enum([
   /** Run after the current turn finishes (or immediately when idle). */
   "next_turn",
-  /** Add input to the active turn. Only valid when capabilities.steer is not "unavailable". */
+  /** Add text to the active turn. Attachments require a new turn; capabilities.steer must be available. */
   "steer",
   /** Interrupt the active turn, wait for native settlement, then submit this input once. */
   "interrupt_and_send",
@@ -191,15 +192,22 @@ export type AgentChatQuery = z.infer<typeof AgentChatQuerySchema>;
 export const SendAgentChatMessageRequestSchema = z.object({
   /** Idempotency key. A replay with the same key and input returns the stored receipt; never re-sends. */
   requestId: IdSchema,
+  ...MessageAttachmentFields,
   context: AgentChatQuerySchema,
-  content: z.string().trim().min(1).max(32000),
-  intent: AgentChatIntentSchema.default("next_turn"),
+  content: z.string().trim().max(32000),
+  intent: AgentChatIntentSchema.default("next_turn")
+    .describe("steer supports text only; send attachments with next_turn or interrupt_and_send"),
   /** Null = the client saw no conversation (first message). A mismatch returns 409 context_stale. */
   expectedConversationId: IdSchema.nullable(),
   /** Required for steer when capabilities.steer is "native_expected_turn". */
   expectedNativeTurnId: IdSchema.optional(),
-}).strict();
-export type SendAgentChatMessageRequest = z.infer<typeof SendAgentChatMessageRequestSchema>;
+}).strict().refine((value) => value.content.length > 0 || value.attachments.length > 0, {
+  path: ["content"], message: "Message requires text or an attachment.",
+}).refine((value) => value.intent !== "steer" || value.attachments.length === 0, {
+  path: ["attachments"], message: "Attachment steering is not supported. Send attachments in a new turn.",
+});
+export type SendAgentChatMessageRequest = Omit<z.infer<typeof SendAgentChatMessageRequestSchema>, "attachments">
+  & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };
 /** Legacy urgent receipts did not retain the original target. This is readback, not target verification. */
 export const AgentChatReplayWarningSchema = z.object({
   code: z.literal("AGENT_CHAT_LEGACY_TARGET_UNVERIFIABLE"),

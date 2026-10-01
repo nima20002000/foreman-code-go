@@ -33,6 +33,7 @@ const cleanups: Array<() => Promise<void>> = []
 const calls: Array<{ method: string; params: Obj }> = []
 let ignoreOverride = false
 let configured = true
+let codexServers: string[] = ['graphql']
 const inherited = { model: 'unrelated/model', plugin: ['keep-this-plugin'], mcp: {
   graphql: { type: 'local', command: ['fixture-app-launcher'], enabled: true },
   docs: { type: 'remote', url: 'https://docs.invalid/mcp', enabled: true, headers: { 'X-Example': 'keep' } },
@@ -79,7 +80,7 @@ function closeChild(child: ReturnType<typeof childProcess>) {
 function installCodexWire() {
   vi.mocked(spawnOwnedStdioProcess).mockImplementation((options) => {
     const servers: Obj = { docs: { enabled: true }, disabled: { enabled: false } }
-    if (configured) servers.graphql = { enabled: ignoreOverride || !options.args.includes('mcp_servers.graphql.enabled=false') }
+    for (const name of codexServers) servers[name] = { enabled: ignoreOverride || !options.args.includes(`mcp_servers.${name}.enabled=false`) }
     let resolveClosed!: (exit: Awaited<ReturnType<typeof spawnOwnedStdioProcess>['closed']>) => void
     const closed = new Promise<Awaited<ReturnType<typeof spawnOwnedStdioProcess>['closed']>>((resolve) => { resolveClosed = resolve })
     const child = childProcess((text) => {
@@ -162,15 +163,15 @@ function installOpenCodeWire(start: WorkflowNativeSessionStart) {
   return { source, sessions, effective: () => effective, status: () => status }
 }
 beforeEach(() => {
-  vi.resetAllMocks(); calls.length = 0; ignoreOverride = false; configured = true
+  vi.resetAllMocks(); calls.length = 0; ignoreOverride = false; configured = true; codexServers = ['graphql']
   vi.stubEnv('GRAPHQL_MCP_TOKEN', 'must-never-reach-chat')
   vi.stubEnv('DATABASE_URL', 'must-never-reach-chat')
   vi.stubEnv('OPENCODE_CONFIG_CONTENT', JSON.stringify(inherited))
   vi.mocked(runCommand).mockImplementation(async (_binary, args) => {
     if (args[0] === '--version') return { exitCode: 0, stdout: '1.18.31', stderr: '' }
-    if (args[0] === 'mcp' && args[1] === 'list' && !configured) return { exitCode: 0, stdout: '[]', stderr: '' }
+    if (args[0] === 'mcp' && args[1] === 'list') return { exitCode: 0, stdout: JSON.stringify(codexServers.map((name) => ({ name }))), stderr: '' }
     assert.deepEqual(args.slice(0, 2), ['mcp', 'get'])
-    if (!configured) return { exitCode: 1, stdout: '', stderr: '' }
+    if (!codexServers.includes(args[2]!) && args[2] !== 'docs') return { exitCode: 1, stdout: '', stderr: '' }
     const launcher = appLauncherConnection()
     return { exitCode: 0, stdout: JSON.stringify({ name: args[2], enabled: true, required: args[2] === 'graphql',
       transport: { type: 'stdio', command: launcher.executable, args: launcher.arguments, env_vars: launcher.environmentVariables } }), stderr: '' }
@@ -231,7 +232,8 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
           assert.deepEqual(object(wire!.effective().mcp).docs, inherited.mcp.docs)
           assert.deepEqual(wire!.effective().plugin, inherited.plugin)
           assert.equal(object(object(wire!.effective().mcp).graphql).enabled, false)
-          assert.deepEqual(wire!.status(), { graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' } })
+          assert.deepEqual(wire!.status(), { graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' },
+            'graphql-app': { status: 'disabled' }, 'graphql-operator': { status: 'disabled' } })
           if (operation !== 'attach') assert.deepEqual(wire!.sessions.get('run-source'), wire!.source, 'Fork/create must leave the Run source untouched.')
           assert.ok(calls.findIndex((call) => call.method === 'GET /mcp') < calls.findIndex((call) => call.method.includes('/session')))
         }
@@ -264,13 +266,34 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
   }
 
   it('Codex: an installation without App MCP still starts without inventing a transport-less server entry', async () => {
-    configured = false; installCodexWire()
+    configured = false; codexServers = []; installCodexWire()
     const manager = new CodexAppServerSessionManager('not-executed', undefined, undefined, undefined, 'none')
     cleanups.push(() => manager.dispose())
     await manager.createSession(input('codex'))
     assert.deepEqual(vi.mocked(spawnOwnedStdioProcess).mock.calls[0]![0].args, ['app-server', '--stdio'])
     assert.ok(calls.some((call) => call.method === 'config/read'))
+    assert.equal(object(calls.find((call) => call.method === 'thread/start')!.params.config)['mcp_servers.graphql.enabled'], undefined)
   })
+
+  for (const [layout, names] of ([
+    ['legacy only', ['graphql-app', 'graphql-operator']],
+    ['unified only', ['graphql']],
+    ['neither', []],
+    ['both', ['graphql', 'graphql-app', 'graphql-operator']],
+  ] satisfies Array<[string, string[]]>)) {
+    it(`Codex: ${layout} config disables only present App MCP entries`, async () => {
+      codexServers = [...names]; configured = names.includes('graphql'); installCodexWire()
+      const manager = new CodexAppServerSessionManager('not-executed', undefined, undefined, undefined, 'none')
+      cleanups.push(() => manager.dispose())
+      await manager.createSession(input('codex'))
+      const expected = names.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`])
+      assert.deepEqual(vi.mocked(spawnOwnedStdioProcess).mock.calls[0]![0].args, ['app-server', '--stdio', ...expected])
+      const config = object(calls.find((call) => call.method === 'thread/start')!.params.config)
+      for (const name of ['graphql', 'graphql-app', 'graphql-operator']) {
+        assert.equal(config[`mcp_servers.${name}.enabled`], names.includes(name) ? false : undefined)
+      }
+    })
+  }
 
   it('Codex: ordinary workflow mode still requires its scoped credential and has no chat override', async () => {
     installCodexWire()
@@ -341,7 +364,8 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
     await manager.restartForCredential({ agentId: ownerAgentId, variables: {} })
     assert.equal(server.generation, generation + 1)
     assert.equal(vi.mocked(spawnNativeProcess).mock.calls.length, 2)
-    assert.deepEqual(wire.status(), { graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' } })
+    assert.deepEqual(wire.status(), { graphql: { status: 'disabled' }, docs: { status: 'connected' }, disabled: { status: 'disabled' },
+      'graphql-app': { status: 'disabled' }, 'graphql-operator': { status: 'disabled' } })
     assert.deepEqual(start, before)
     assert.equal(calls.filter((call) => call.method === 'POST /session').length, 1)
     for (const call of vi.mocked(spawnNativeProcess).mock.calls) {
@@ -357,9 +381,10 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
   it('OpenCode: chat overlay is narrow, idempotent, and live status cannot contradict disabled config', () => {
     const before = JSON.stringify(inherited), overlay = buildOpenCodeChatConfigContent(before, 'graphql')
     assert.equal(overlay, buildOpenCodeChatConfigContent(overlay, 'graphql'))
-    assert.deepEqual(JSON.parse(overlay), { ...inherited, mcp: { ...inherited.mcp, graphql: { ...inherited.mcp.graphql, enabled: false } } })
+    assert.deepEqual(JSON.parse(overlay), { ...inherited, mcp: { ...inherited.mcp, graphql: { ...inherited.mcp.graphql, enabled: false },
+      'graphql-app': { enabled: false }, 'graphql-operator': { enabled: false } } })
     assert.equal(JSON.stringify(inherited), before)
-    assertOpenCodeChatMcpDisabled({}, {}, 'graphql')
+    assert.throws(() => assertOpenCodeChatMcpDisabled({}, {}, 'graphql'), errorCode('OPENCODE_APP_MCP_UNAVAILABLE'))
     assertOpenCodeChatMcpDisabled(JSON.parse(overlay), { graphql: { status: 'disabled' } }, 'graphql')
     for (const status of ['connected', 'failed', 'needs_auth', undefined]) {
       assert.throws(() => assertOpenCodeChatMcpDisabled(JSON.parse(overlay), { graphql: { status } }, 'graphql'), errorCode('OPENCODE_APP_MCP_UNAVAILABLE'))

@@ -6,6 +6,15 @@ import { runActionsClient } from './client'
 import { useActionLifetime } from './state'
 import type { ActionRun } from './policy'
 
+export function StopReceipt({ scope }: { scope: RepeatGraphScopeV3 }) {
+  const { journal } = useBoardStopOutbox(scope)
+  const receipt = journal?.receipt
+  return receipt ? <p role="status">Stop receipt: {receipt.status}{receipt.replayed ? ' (replayed)' : ''}.{' '}
+    {receipt.status === 'not_owner' ? 'This backend did not prove ownership; native Stop is not confirmed.'
+      : receipt.processStopped ? 'Native process closure was observed.' : 'Native process closure is not confirmed.'}
+    {' '}Stop accepted is not cleanup settled.</p> : null
+}
+
 export function StopControl({ scope, run, permitted, available, refresh }: {
   scope: RepeatGraphScopeV3; run: ActionRun; permitted: boolean; available: boolean; refresh(): void
 }) {
@@ -50,10 +59,7 @@ export function StopControl({ scope, run, permitted, available, refresh }: {
       onClick={() => stop.mutate()}>{stop.isPending ? 'Sending exact Stop…' : outbox.journal ? 'Reconcile Stop' : 'Stop this Run'}</button>
     {reason ? <p>{reason}</p> : null}
     {stop.isError ? <p role="alert">Stop is not confirmed: {stop.error.message} Any reserved command remains retained; no replacement Run is started.</p> : null}
-    {receipt ? <p role="status">Stop receipt: {receipt.status}{receipt.replayed ? ' (replayed)' : ''}.{' '}
-      {receipt.status === 'not_owner' ? 'This backend did not prove ownership; native Stop is not confirmed.'
-        : receipt.processStopped ? 'Native process closure was observed.' : 'Native process closure is not confirmed.'}
-      {' '}Stop accepted is not cleanup settled.</p> : null}
+    {receipt ? <StopReceipt scope={scope} /> : null}
     {outbox.journal?.receipt && outbox.journal.receipt.status !== 'not_owner' ? <button type="button"
       disabled={run.executionState !== 'completed' || run.cleanupPending || settlement.isPending || stop.isPending}
       onClick={() => settlement.mutate()}>Verify cleanup settlement</button> : null}

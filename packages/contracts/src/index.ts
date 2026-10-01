@@ -1,5 +1,6 @@
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { z } from "zod";
+import { FileWithRevisionSchema, MessageAttachmentFields } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 export type { Id, Timestamp } from "./schemaPrimitives.js";
@@ -29,6 +30,7 @@ export * from "./runLiveActivity.js";
 
 export * from "./harnessEditing.js";
 export * from "./harnessCompatibility.js";
+export * from "./harnessQualification.js";
 export * from "./approvalTopology.js";
 export * from "./graphqlMcpTools.js";
 
@@ -792,6 +794,9 @@ export const MessageSchema = z
     afterActivitySequence: z.string().regex(/^[0-9]+$/).optional(),
     role: MessageRoleSchema,
     content: z.string(),
+    /** Pinned input and published-output metadata. The ten-file limit applies to sends, not readback.
+     * Lifecycle state is resolved at read time, not frozen on send. */
+    attachments: z.array(FileWithRevisionSchema).optional(),
     ...OptionalTimestampFields,
   })
   .strict();
@@ -1488,7 +1493,8 @@ export const ListOperatorConversationsResponseSchema = z.object({ conversations:
 export const GetOperatorConversationResponseSchema = OperatorConversationStateSchema;
 export const SendOperatorMessageRequestSchema = z.object({
   requestId: IdSchema,
-  content: z.string().trim().min(1),
+  ...MessageAttachmentFields,
+  content: z.string().trim(),
   context: OperatorConversationContextSchema.optional(),
   settings: OperatorChatSettingsSchema.optional(),
   forkExpectedRevision: z.number().int().nonnegative().optional(),
@@ -1498,13 +1504,16 @@ export const SendOperatorMessageRequestSchema = z.object({
   defaultsRevision: z.number().int().nonnegative().optional(),
   /** Read an existing receipt without creating or relaunching native work. Not part of command identity. */
   recovery: z.literal("receipt").optional(),
-}).strict();
+}).strict().refine((value) => value.content.length > 0 || value.attachments.length > 0, {
+  path: ["content"], message: "Message requires text or an attachment.",
+});
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
 export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
 export const RespondOperatorInteractionRequestSchema = z.object({
   requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
 }).strict();
-export type SendOperatorMessageRequest = z.infer<typeof SendOperatorMessageRequestSchema>;
+export type SendOperatorMessageRequest = Omit<z.infer<typeof SendOperatorMessageRequestSchema>, "attachments">
+  & { attachments?: z.input<typeof MessageAttachmentFields.attachments> };
 export type RespondOperatorInteractionRequest = z.infer<typeof RespondOperatorInteractionRequestSchema>;
 export const CancelOperatorTurnResponseSchema = z.object({ state: OperatorConversationStateSchema }).strict();
 export const OperatorConversationStreamEventSchema = z.object({

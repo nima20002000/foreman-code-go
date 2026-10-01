@@ -11,6 +11,9 @@ import {
   type OperatorConversationHistoryPage, type OperatorConversationHistoryQuery,
 } from '@graphql/contracts/operator-chat'
 import type pg from 'pg'
+import { messageAttachmentIdentity } from '@graphql/contracts/files'
+
+import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
@@ -77,7 +80,9 @@ export function commandPayload(input: SendOperatorMessageRequest) {
     ...(input.forkExpectedRevision === undefined ? {} : { forkExpectedRevision: input.forkExpectedRevision }),
     ...(input.context && Object.keys(input.context).length ? {
     context: Object.fromEntries(Object.entries(input.context).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))),
-  } : {}) }
+  } : {}),
+    // Omission and [] retain the byte-for-byte identity of existing text-only receipts.
+    ...(input.attachments?.length ? { attachmentIdentity: messageAttachmentIdentity({ requestId: input.requestId, attachments: input.attachments }) } : {}) }
 }
 export function commandHash(input: SendOperatorMessageRequest): string {
   return createHash('sha256').update(JSON.stringify(commandPayload(input))).digest('hex')
@@ -157,7 +162,7 @@ export class PostgresOperatorConversationRepository {
     const row = result.rows[0]
     if (!row) return undefined
     const configuration = OperatorConfigurationVersionSchema.parse(row.configuration)
-    return OperatorConversationStateSchema.parse({ conversation: conversation(row), messages: row.messages,
+    return OperatorConversationStateSchema.parse({ conversation: conversation(row), messages: await hydrateMessageAttachments(query, id, row.messages),
       ...(row.parent_conversation_id && row.handoff_source_harness && row.handoff_source_sequence ? { handoff: {
         parentConversationId: row.parent_conversation_id, sourceHarness: row.handoff_source_harness,
         sourceMessageSequence: row.handoff_source_sequence, omittedMessages: row.handoff_omitted_messages,
@@ -182,7 +187,7 @@ export class PostgresOperatorConversationRepository {
     const { before, limit } = OperatorConversationHistoryQuerySchema.parse(input)
     const result = await this.pool.query<{
       id: string; revision: number | string; active_request_id: string | null;
-      entries: unknown[]; next_cursor: string | null;
+      entries: Array<{ message: unknown; sequence: string; receipt: unknown }>; next_cursor: string | null;
     }>(`with candidates as (
         select m.*,row_number() over (order by m.sequence desc) as ordinal,
           sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
@@ -208,8 +213,9 @@ export class PostgresOperatorConversationRepository {
     if (!row) return undefined
     // One oversized message is returned over HTTP so the cursor always advances;
     // it is never put in a live SSE snapshot.
+    const messages = await hydrateMessageAttachments(this.pool, id, row.entries.map((entry) => entry.message))
     return OperatorConversationHistoryPageSchema.parse({ conversationId: row.id, revision: Number(row.revision),
-      activeRequestId: row.active_request_id, entries: row.entries, nextCursor: row.next_cursor })
+      activeRequestId: row.active_request_id, entries: row.entries.map((entry, index) => ({ ...entry, message: messages[index] })), nextCursor: row.next_cursor })
   }
 
   async handoffHistory(principalId: string, requestedSource?: string, before?: string) {
@@ -333,6 +339,9 @@ export class PostgresOperatorConversationRepository {
         await client.query('commit')
         return this.beginTurn(childId, input, ownerId, undefined, undefined, false, validate)
       }
+      // A new child has no allocations. Handoff history is text-only, never file adoption.
+      if (input.attachments?.length) throw new DomainError(
+        'MESSAGE_ATTACHMENT_CONVERSATION_REQUIRED', 'Files cannot be carried into a new conversation. Send them in their original conversation.', 409)
       if ((input.configurationVersionId !== undefined && input.configurationVersionId !== source.operator_configuration_version_id)
         || (expectedConfigurationId !== undefined && expectedConfigurationId !== source.operator_configuration_version_id)) {
         throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The source configuration changed before admission. Review the conversation before sending a new command.', 409)
@@ -395,7 +404,7 @@ export class PostgresOperatorConversationRepository {
       const prior = (await client.query<{ input_hash: string; payload: { content: string; context?: unknown; acceptedConfigurationVersionId?: string }; retryable: boolean; operator_configuration_version_id: string | null }>(
         'select input_hash,payload,retryable,operator_configuration_version_id from operator_conversation_turns where conversation_id=$1 and request_id=$2', [id, input.requestId])).rows[0]
       if (prior && (prior.input_hash === 'legacy'
-        ? prior.payload.content !== input.content || Object.keys(input.context ?? {}).length > 0 || Boolean(input.settings) || Boolean(input.configurationVersionId)
+        ? prior.payload.content !== input.content || Object.keys(input.context ?? {}).length > 0 || Boolean(input.settings) || Boolean(input.configurationVersionId) || Boolean(input.attachments?.length)
         : prior.input_hash !== commandHash(input))) {
         throw new DomainError('COMMAND_ID_CONFLICT', 'This request ID was already used with a different message or route context.', 409)
       }
@@ -451,13 +460,16 @@ export class PostgresOperatorConversationRepository {
           if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
           validate?.(current)
         }
+        // Receipt-only replay above does not require still-live bytes. A fresh admission or
+        // definitely-failed relaunch does; hold lifecycle locks through message/receipt commit.
+        await validateMessageAttachments(client, id, input.attachments)
         if (!prior) {
           await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash,operator_configuration_version_id)
             values ($1,$2,$3::jsonb,$4,$5)`, [id, input.requestId, JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: row.operator_configuration_version_id }), commandHash(input),row.operator_configuration_version_id])
           const now = new Date().toISOString()
           const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'user', requestId: input.requestId, content: input.content, createdAt: now, updatedAt: now })
           await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)
-            values ($1,$2,'user',$3,$4,$5::jsonb)`, [message.id, id, input.content, input.requestId, JSON.stringify(message)])
+            values ($1,$2,'user',$3,$4,$5::jsonb)`, [message.id, id, input.content, input.requestId, JSON.stringify(withMessageAttachmentRefs(message, input.attachments))])
         }
         await client.query('update operator_conversation_turns set retryable=false,result=null where conversation_id=$1 and request_id=$2', [id, input.requestId])
         const title = ConversationSchema.parse(row.record).title

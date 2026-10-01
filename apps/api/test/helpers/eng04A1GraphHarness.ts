@@ -6,6 +6,7 @@ import {
   type CurrentFixtureForm, type RepeatDecisionV1, type RepeatOccurrenceV1,
 } from '@graphql/contracts/wave25'
 import { buildRepeatGraph, type RepeatGraphStore } from '../../src/modules/runs/repeatGraph.js'
+import type { RepeatRunRepository } from '../../src/modules/runs/repeatPostgres.js'
 import {
   inactiveRepeatResolution, repeatTerminalResolution,
   type RepeatExecutionDriver, type RepeatGraphState,
@@ -106,7 +107,13 @@ export function graphHarness(f: A1Scenario, options: {
     executions.set(execution.id, stored); refs.set(execution.id, ref); slots.set(repeatSlotId(f.run.id, ref), execution.id)
     return stored
   }
-  const store: RepeatGraphStore & { resolveExcluded(): Promise<void>; completeRun(): Promise<void> } = {
+  const unsupportedWork = async (): Promise<never> => { throw new Error('Unexpected work handoff') }
+  const store: RepeatGraphStore & Pick<RepeatRunRepository, 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
+    | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'completeWorkRun'>
+    & { resolveExcluded(): Promise<void>; completeRun(): Promise<void> } = {
+    ensureWorkEntry: unsupportedWork, admitWorkActivation: unsupportedWork, acceptWorkTerminal: unsupportedWork,
+    admitWorkRequest: unsupportedWork, returnWork: unsupportedWork, recordWorkUnresolved: unsupportedWork,
+    completeWorkRun: unsupportedWork,
     async admit(ref, allocate) {
       controller.signal.throwIfAborted(); assertRepeatRef(version, f.scope, ref)
       const rows = scopeRows(ref), admission = decideRepeatAdmission(version, ref, rows)

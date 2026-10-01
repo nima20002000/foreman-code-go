@@ -38,7 +38,7 @@ describe('ENG04 existing journal, SQL-shaped only', () => {
     assert.equal(receipt.kind, 'events'); assert.equal(db.state.head, 2); assert.equal(db.state.domain, 2)
     assert.equal(domainSources(db).length, 2); assert.equal(db.state.sources.length, 6); assert.equal(db.state.effects.length, 2)
     const insert = db.calls.findIndex(q => q.startsWith('insert into run_graph_effects'))
-    const check = db.calls.findIndex(q => q.includes('join run_graph_sources s'))
+    const check = db.calls.findIndex(q => q.includes('join run_graph_sources s') && q.includes('join run_graph_effects e'))
     assert.ok(insert < check && check < db.calls.indexOf('commit'))
   })
   it('duplicate source/effect skips mutation and consumes no cursor', async () => {

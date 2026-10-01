@@ -1,6 +1,6 @@
 import {
   GraphNodeStateSchema, PublicGraphProjectionSchema, InputBindingSchema, RUN_GRAPH_LIMITS,
-  repeatGraphTopologyV3, type PublicGraphProjection, type RunGraphScope,
+  repeatGraphTopologyV3, type PublicGraphProjection, type RunGraphScope, type WorkflowVersionV3,
 } from '@graphql/contracts/wave25'
 import { assertGraphTransaction, type GraphTransactionSql } from './connection.js'
 import { readRepeatGraphPinsLocked } from './repeatProjectionRows.js'
@@ -8,6 +8,7 @@ import { readCurrentGraphExchanges } from '../interactions/wave25/currentExchang
 import { publicNodeState, type PublicExecution } from './publicLifecycle.js'
 import { readPublicNodeProjection } from './publicProjection.js'
 import { readPublicRunStateLocked } from './publicRunState.js'
+import { readPublicAttentionCounts } from './currentAttention.js'
 import { RunGraphError } from './errors.js'
 import type { CurrentNativeActivity } from './nativeActivitySelection.js'
 
@@ -21,10 +22,15 @@ export function compactNodeState(workflowNodeId: string, current: CompactExecuti
 
 /** The same physical read model feeds G1's final projection delta and snapshots.
  * No native response, elapsed-time or missing-row inference occurs here. */
-export async function readPublicProjectionLocked(sql: GraphTransactionSql, scope: RunGraphScope): Promise<PublicGraphProjection> {
+export async function readPublicProjectionLocked(sql: GraphTransactionSql, scope: RunGraphScope,
+  pinnedVersion?: WorkflowVersionV3): Promise<PublicGraphProjection> {
   assertGraphTransaction(sql)
-  const { version } = await readRepeatGraphPinsLocked(sql, scope)
-  const nodes = await readPublicNodeProjection(sql, scope, version.definition.nodes.map((node) => node.id))
+  const version = pinnedVersion ?? (await readRepeatGraphPinsLocked(sql, scope)).version
+  const nodeIds = version.definition.nodes.map((node) => node.id)
+  const attention = await readPublicAttentionCounts(sql, scope.runId)
+  for (const id of nodeIds) if (!attention.has(id)) attention.set(id, { pendingInteractionCount: 0,
+    unsettledReviewCount: 0, cleanupPending: false, deliveryBlocked: false })
+  const nodes = await readPublicNodeProjection(sql, scope, nodeIds, {}, attention)
   const currentIds = nodes.flatMap((node) => node.state.execution ? [node.state.execution.executionId] : [])
   // Carries remain qualified evidence, never masquerade as a canvas execution edge.
   const rows = await sql.query<{ record: { bindingId: string; recipient: unknown; inputDigest: string;
@@ -39,7 +45,7 @@ export async function readPublicProjectionLocked(sql: GraphTransactionSql, scope
     acceptedResultDigest: record.source.acceptedResultDigest, recipientInputDigest: record.inputDigest,
     inputOrdinal: record.ordinal, boundAt: bound_at instanceof Date ? bound_at.toISOString() : bound_at,
   }))
-  return PublicGraphProjectionSchema.parse({ run: await readPublicRunStateLocked(sql, scope), nodes, inputBindings,
+  return PublicGraphProjectionSchema.parse({ run: await readPublicRunStateLocked(sql, scope, attention), nodes, inputBindings,
     ...await readCurrentGraphExchanges(sql, scope) })
 }
 
@@ -48,6 +54,6 @@ export function createCompactSnapshotAssembler(_readExchanges: ReadCurrentGraphE
   void _readExchanges
   return async (sql: GraphTransactionSql, scope: RunGraphScope) => {
     const { version } = await readRepeatGraphPinsLocked(sql, scope)
-    return { topology: repeatGraphTopologyV3(version), state: await readPublicProjectionLocked(sql, scope) }
+    return { topology: repeatGraphTopologyV3(version), state: await readPublicProjectionLocked(sql, scope, version) }
   }
 }

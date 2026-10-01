@@ -1,8 +1,8 @@
 import { chatStoragePrefix, identityChangedEvent, identityEpochKey, rotateProtectedSession } from './protectedChatStorage'
+import { rotateSessionController, sessionControllerSignal } from './sessionController'
 
 /** A document-lifetime boundary. Old requests cannot enter a new Operator session. */
 let generation = 0
-let controller = new AbortController()
 let switching = false
 
 export class SessionChangedError extends Error {
@@ -16,20 +16,18 @@ export function sessionGeneration(): number { return generation }
 export function assertSession(expected: number): void {
   if (expected !== generation) throw new SessionChangedError()
 }
-export function sessionSignal(): AbortSignal { return controller.signal }
+export function sessionSignal(): AbortSignal { return sessionControllerSignal() }
 export function sessionIsSwitching(): boolean { return switching }
 
 export function beginSessionChange(): number {
   switching = true
   rotateProtectedSession()
-  controller.abort(new SessionChangedError())
-  controller = new AbortController()
+  rotateSessionController(new SessionChangedError())
   return ++generation
 }
 
 export function finishSessionChange(): void {
-  controller.abort(new SessionChangedError())
-  controller = new AbortController()
+  rotateSessionController(new SessionChangedError())
   ++generation
   switching = false
 }
@@ -48,7 +46,7 @@ export function clearProtectedStorage(storage: Pick<Storage, 'length' | 'key' | 
 if (typeof window !== 'undefined') window.addEventListener('storage', (event) => {
   if (event.key !== identityEpochKey || event.oldValue === event.newValue) return
   switching = true
-  controller.abort(new SessionChangedError())
+  rotateSessionController(new SessionChangedError())
   ++generation
   window.dispatchEvent(new Event(identityChangedEvent))
   // Cookies are shared by tabs. Old closures and cached data must not survive enrollment elsewhere.

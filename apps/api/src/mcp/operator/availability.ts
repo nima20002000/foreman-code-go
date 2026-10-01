@@ -118,7 +118,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
-  if (['harness_list','harness_get','harness_defaults_update','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_handoff_history_get'].includes(name)) scope = 'global'
+  if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_handoff_history_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get') scope = 'global'
   if (name === 'run_start') scope = 'workflow'
@@ -174,6 +174,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name.startsWith('run_') && !service.runs) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false
+  if ((name === 'harness_qualifications_list' || name === 'harness_qualification_run') && !service.harnessQualifications) return false
   if (name.startsWith('agent_chat_') && !service.agentChat) return false
   if ((name === 'operator_mcp_setup_get' || name.startsWith('operator_chat_') || name === 'operator_handoff_history_get')
     && !service.operatorChat) return false

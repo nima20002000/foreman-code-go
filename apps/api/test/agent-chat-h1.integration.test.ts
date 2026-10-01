@@ -75,9 +75,11 @@ describe.skipIf(!postgresEnabled)('H1 persisted creation / authenticated HTTP-MC
   beforeEach(async () => {
     await pool.query(`delete from operator_conversations where kind='agent' and workspace_id=$1`, [saved.scope.workspaceId])
     vi.mocked(qualifyNativeCodexModel).mockReset().mockResolvedValue(undefined)
-    vi.mocked(runCommand).mockReset().mockResolvedValue({ exitCode: 0, stderr: '', stdout: JSON.stringify({
-      name: 'graphql', enabled: false, transport: { type: 'stdio', command: 'not-executed', args: [], env_vars: [] },
-    }) })
+    vi.mocked(runCommand).mockReset().mockImplementation(async (_binary, args) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(
+      args[1] === 'list' ? [{ name: 'graphql' }] : {
+        name: 'graphql', enabled: false, transport: { type: 'stdio', command: 'not-executed', args: [], env_vars: [] },
+      },
+    ) }))
   })
   afterAll(async () => { await database?.close() })
 

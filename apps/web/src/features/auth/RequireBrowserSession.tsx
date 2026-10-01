@@ -7,6 +7,7 @@ import { useBrowserAccessQuery } from '../../shared/api/settingsExperience'
 import { Button } from '../../shared/ui/nocturne'
 import { SignOutButton } from './SignOutButton'
 import { RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
+import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
 import './auth.css'
 
 export function RequireBrowserSession({ children }: { children: ReactNode }) {
@@ -27,9 +28,10 @@ export function RequireBrowserSession({ children }: { children: ReactNode }) {
     void navigate({ to: '/sign-in', search: { returnTo: safeAuthReturnTo(location.href) }, replace: true })
   }, [location.href, navigate, needsSignIn])
   if (needsSignIn) return null
+  const denied = ApiError.is(session.error) && session.error.status === 403
+  let content = children
   if (session.isError) {
-    const denied = ApiError.is(session.error) && session.error.status === 403
-    return <main className="auth-screen"><section className="auth-card" role="alert">
+    content = <main className="auth-screen"><section className="auth-card" role="alert">
       <h1>{denied ? 'Access denied' : 'Cannot reach the server'}</h1>
       <p>{denied ? 'You are signed in, but this account no longer has active Operator access.'
         : 'Your sign-in could not be checked. This is a server or connection problem, not a rejected password.'}</p>
@@ -39,6 +41,9 @@ export function RequireBrowserSession({ children }: { children: ReactNode }) {
       </div>
     </section></main>
   }
+  if (session.isError && (denied || !session.data)) return content
   if (session.isPending || !session.data) return <main className="auth-screen" role="status">Checking your session…</main>
-  return <RuntimeInstanceBoundary>{children}</RuntimeInstanceBoundary>
+  // A failed background check blocks the UI, not the authenticated draft lifetime.
+  // A definite denial/sign-out still unmounts it; the provider also fences session changes.
+  return <RuntimeInstanceBoundary><ChatAttachmentBoundary>{content}</ChatAttachmentBoundary></RuntimeInstanceBoundary>
 }

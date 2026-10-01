@@ -1,5 +1,5 @@
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { acknowledgementId } from '../src/modules/interactions/wave25/nativeEvidence.js'
 import { deliverApproval } from '../src/modules/interactions/wave25/service.js'
 import { normalizedHistory } from '../src/modules/harnesses/opencodeProtocol.js'
@@ -142,23 +142,25 @@ async function runCase(variant: Br3002Case, mode: 'live' | 'lost' | 'reordered',
   }
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterAll(() => vi.restoreAllMocks())
 
 describe.skipIf(!postgresEnabled)('BR3-002 actual OpenCode / ReviewerDispatcher / owned PostgreSQL settlement', () => {
-  for (const variant of br3002Cases) it(`${variant.name}: live, lost-live and reordered-live have one stable policy result`, async () => {
+  // Every scenario owns its schema, engine, provider fixture and instance-scoped spies.
+  // Concurrent cases avoid serializing thousands of independent PostgreSQL round trips.
+  for (const variant of br3002Cases) it.concurrent(`${variant.name}: live, lost-live and reordered-live have one stable policy result`, async () => {
     const live = await runCase(variant, 'live')
     expect(await runCase(variant, 'lost')).toEqual(live)
     expect(await runCase(variant, 'reordered')).toEqual(live)
   }, 180000)
 
-  it('requires a durable decision even for a successful stop terminal', async () => {
+  it.concurrent('requires a durable decision even for a successful stop terminal', async () => {
     const variant = br3002Cases[0]!
     const live = await runCase(variant, 'live', false)
     expect(await runCase(variant, 'lost', false)).toEqual(live)
     expect(live).toMatchObject({ state: 'failed', outcome: 'succeeded', settlements: 1, approvalReplies: 0, resumeReceipts: 0 })
   }, 120000)
 
-  it('rejects contradictory terminal evidence rather than overwriting the first failed receipt', async () => {
+  it.concurrent('rejects contradictory terminal evidence rather than overwriting the first failed receipt', async () => {
     const f = await br1002OpenCodeRuntime('orchestrator')
     let cuts: ReturnType<typeof br3002Cuts> | undefined, dispatch: Promise<unknown> | undefined
     try {
@@ -199,7 +201,7 @@ describe.skipIf(!postgresEnabled)('BR3-002 actual OpenCode / ReviewerDispatcher 
 
   for (const fault of ['job-owner', 'writer-owner', 'expired-job', 'expired-writer', 'old-generation',
     'old-connection', 'native-session', 'correlation', 'provider-version', 'Stop'] as const) {
-    it(`cannot settle or deliver a decided review across ${fault}`, async () => {
+    it.concurrent(`cannot settle or deliver a decided review across ${fault}`, async () => {
       const f = await br1002OpenCodeRuntime('orchestrator')
       let cuts: ReturnType<typeof br3002Cuts> | undefined, dispatch: Promise<unknown> | undefined
       try {

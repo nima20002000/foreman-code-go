@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   app: undefined as ReturnType<typeof Fastify> | undefined,
   calls: [] as string[],
   finishRecovery: undefined as (() => void) | undefined,
+  listeners: new Map<string, () => void>(),
 }))
 vi.mock('node:process', () => ({ loadEnvFile: () => undefined }))
 vi.mock('node:fs/promises', () => ({ mkdir: async () => undefined, realpath: async (path: string) => path }))
@@ -18,6 +19,9 @@ vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: 
   setup: async () => undefined, ping: async () => undefined,
   close: async () => { state.calls.push('checkpoints closed') },
 }) }))
+vi.mock('../src/modules/files/production.js', () => ({ registerProductionFileStorage: () => {
+  expect(state.listeners.has('SIGTERM')).toBe(true)
+} }))
 vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
   app: state.app,
   initialize: async () => undefined,
@@ -30,13 +34,12 @@ vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
 
 it('handles SIGTERM while startup recovery is still running and closes all resources', async () => {
   state.app = Fastify()
-  const listeners = new Map<string, () => void>()
   const once = vi.spyOn(process, 'once').mockImplementation(function (this: NodeJS.Process, event: string | symbol, listener: (...args: unknown[]) => void) {
-    if (event === 'SIGTERM' || event === 'SIGINT') listeners.set(event, listener)
+    if (event === 'SIGTERM' || event === 'SIGINT') state.listeners.set(event, listener)
     return this
   })
   vi.spyOn(state.app, 'listen').mockImplementation(async () => {
-    expect(listeners.has('SIGTERM')).toBe(true)
+    expect(state.listeners.has('SIGTERM')).toBe(true)
     await state.app!.ready()
     state.calls.push('listening')
     return 'http://localhost:0'
@@ -44,7 +47,7 @@ it('handles SIGTERM while startup recovery is still running and closes all resou
   try {
     await import('../src/server.js')
     await vi.waitFor(() => expect(state.calls).toContain('recovery started'))
-    listeners.get('SIGTERM')!()
+    state.listeners.get('SIGTERM')!()
     await vi.waitFor(() => expect(state.calls).toContain('database closed'))
     await delay(5)
     expect(state.calls).toEqual(['listening', 'recovery started', 'native shutdown', 'checkpoints closed', 'database closed'])

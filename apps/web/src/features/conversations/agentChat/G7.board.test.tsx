@@ -51,7 +51,7 @@ describe('G7 T-03/T-06/T-08/RISK-01 mounted Board action area', () => {
     expect(transcript).not.toContainElement(actions)
     expect(actions.parentElement).toBe(transcript.closest('.conversation-viewport')!.parentElement)
     expect(within(transcript).getByText(/No partial assistant text has been received/)).toBeInTheDocument()
-    for (const name of ['Queue message', 'Steer', 'Interrupt and send', 'Stop chat']) {
+    for (const name of ['Attach files', 'Queue message', 'Steer', 'Interrupt and send', 'Stop chat']) {
       const control = within(actions).getByRole('button', { name })
       expect(control).toBeEnabled()
       await userEvent.tab()

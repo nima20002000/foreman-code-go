@@ -28,6 +28,10 @@
       "types": "./dist/wave25/index.d.ts",
       "import": "./dist/wave25/index.js"
     },
+    "./harness-qualification": {
+      "types": "./dist/harnessQualification.d.ts",
+      "import": "./dist/harnessQualification.js"
+    },
     "./management": {
       "types": "./dist/management/index.d.ts",
       "import": "./dist/management/index.js"
@@ -39,6 +43,22 @@
     "./runtime-identity-node": {
       "types": "./dist/runtimeIdentityNode.d.ts",
       "import": "./dist/runtimeIdentityNode.js"
+    },
+    "./files": {
+      "types": "./dist/files.d.ts",
+      "import": "./dist/files.js"
+    },
+    "./schedules": {
+      "types": "./dist/schedules.d.ts",
+      "import": "./dist/schedules.js"
+    },
+    "./run-snapshots": {
+      "types": "./dist/runSnapshots.d.ts",
+      "import": "./dist/runSnapshots.js"
+    },
+    "./selected-run-chat": {
+      "types": "./dist/selectedRunChat.d.ts",
+      "import": "./dist/selectedRunChat.js"
     }
   },
   "scripts": {

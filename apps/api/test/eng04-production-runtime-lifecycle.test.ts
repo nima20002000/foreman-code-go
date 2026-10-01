@@ -169,6 +169,7 @@ async function fixture() {
       if (sql.startsWith('update runs set execution_state')) { transaction.run = JSON.parse(String(values[2])); return rows([{}]) }
       if (sql.startsWith('update runs set stop_requested_at')) { transaction.stopped = true; return rows([{}]) }
       if (sql.startsWith('insert into run_cleanup_intents')) { transaction.cleanup = true; return rows([{}]) }
+      if (sql.startsWith('insert into run_activity') && sql.includes("'run_stop_requested'")) return rows([{}])
       throw new Error(`Unimplemented fixture SQL: ${sql}`)
     }
   }
@@ -254,11 +255,14 @@ test('ENG04 lifecycle: Stop commits fence, cleanup intent and source in one tran
     assert.equal(f.flags.authorityCalls, 4)
     assert.equal(f.saved().stopEffect?.entityId, f.owner.runId)
     const count = f.statements.filter((sql) => sql.startsWith('insert into run_cleanup_intents')).length
+    const activityCount = f.statements.filter((sql) => sql.startsWith('insert into run_activity')).length
+    assert.equal(activityCount, 1)
     // Synthetic independent cleanup completion; Stop replay cannot undo it.
     f.saved().cleanup = false
     await f.requestRepeatRunStop(f.pool, f.owner.runId, f.authorize)
     assert.equal(f.saved().cleanup, false); assert.equal(f.saved().head, 2)
     assert.equal(f.statements.filter((sql) => sql.startsWith('insert into run_cleanup_intents')).length, count)
+    assert.equal(f.statements.filter((sql) => sql.startsWith('insert into run_activity')).length, activityCount)
   } finally { await f.connection.close() }
 })
 

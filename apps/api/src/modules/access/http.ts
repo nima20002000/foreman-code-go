@@ -43,8 +43,16 @@ function cookieToken(value: string | undefined): string | undefined {
 
 function actionFor(request: FastifyRequest) {
   const url = request.url.split('?')[0] ?? request.url
+  if (/^\/api\/workspaces\/[^/]+\/reference-files(?:\/|$)/.test(url)) {
+    return request.method === 'GET' ? 'workspaces:read' as const : 'workspaces:update' as const
+  }
+  if (/^\/api\/workspaces\/[^/]+\/workflows\/[^/]+\/reference-files(?:\/|$)/.test(url)) {
+    return request.method === 'GET' ? 'workflows:read' as const : 'workflows:update' as const
+  }
   if (url.startsWith('/api/operator/conversations')) {
     if (['GET', 'HEAD'].includes(request.method)) return 'operator_chat:read' as const
+    // Upload IDs are data, not chat actions (for example: uploads/cancel or uploads/responses).
+    if (/^\/api\/operator\/conversations\/[^/]+\/files(?:\/|$)/.test(url)) return 'operator_chat:write' as const
     if (url.endsWith('/cancel')) return 'operator_chat:cancel' as const
     if (url.endsWith('/responses')) return 'operator_chat:respond' as const
     return 'operator_chat:write' as const
@@ -151,18 +159,19 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     // not these workspace-only route params. The shared chat service checks the full
     // resource before reads/mutations; SSE repeats that check after authenticating.
     const agentChat = /^\/api\/workspaces\/[^/]+\/agent-chat(?:\/|$)/.test(path)
+    const params = request.params as Record<string, string | undefined>
+    const resource = {
+      ...(params.workspaceId ? { workspaceId: params.workspaceId } : {}),
+      ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+      ...(params.runId ? { runId: params.runId } : {}),
+    }
     request.reauthorizeOperator = async () => {
       const current = await authenticate()
-      if (!agentChat) requireAuthorization(current, actionFor(request))
+      // Re-check against the same route resource; scoped grants never match an empty resource.
+      if (!agentChat) requireAuthorization(current, actionFor(request), resource)
       return current
     }
     if (!agentChat && !request.url.startsWith('/api/management/') && !request.url.startsWith('/api/auth/')) {
-      const params = request.params as Record<string, string | undefined>
-      const resource = {
-        ...(params.workspaceId ? { workspaceId: params.workspaceId } : {}),
-        ...(params.workflowId ? { workflowId: params.workflowId } : {}),
-        ...(params.runId ? { runId: params.runId } : {}),
-      }
       requireAuthorization(principal, actionFor(request), resource)
       if (request.method === 'GET' && /^\/api\/workspaces\/[^/]+\/runs\/[^/]+(?:\?.*)?$/.test(request.url)) {
         requireAuthorization(principal, 'workspace_locations:read', resource)

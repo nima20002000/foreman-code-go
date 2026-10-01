@@ -6,6 +6,7 @@ import { useManagedWorkspaceQuery } from '../shared/api/query'
 import '../shared/ui/resourceDirectory.css'
 
 import { AgentsDirectory } from '../features/agents'
+import { ProjectFilesSection } from '../features/project-files'
 import { WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { useApprovalInboxStore } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
@@ -159,6 +160,7 @@ export function SettingsRouteEntry() {
                 </Card>
               </li>
             </ul>
+            <ProjectFilesSection workspaceId={workspaceId} />
             <WorkflowDirectory workspaceId={workspaceId} headingLevel={2} />
           </div>
         ),

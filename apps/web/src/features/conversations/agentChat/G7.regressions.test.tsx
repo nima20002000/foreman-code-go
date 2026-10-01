@@ -43,7 +43,7 @@ describe('G7 contextual notices and first-message availability (React + MSW, not
     const key = agentChatContextKey(state.context)
     useConversationDraftStore.getState().setDraft(key, 'Preserve this selection draft')
     const mounted = await mount(state)
-    expect(screen.getByText('No stored session for this Run')).toBeInTheDocument()
+    expect(screen.getByText('Selected Run — chat unavailable')).toBeInTheDocument()
     expect(screen.getByText(/No chat exists for this Run selection/)).toBeInTheDocument()
     expect(screen.queryByText('Start a conversation')).not.toBeInTheDocument()
     expect(screen.queryByText(/This conversation cannot be resumed/)).not.toBeInTheDocument()

@@ -19,10 +19,10 @@ describe.skipIf(process.platform === 'win32')('Codex installation qualification 
     assert((await calls(f.directory)).some((entry) => Array.isArray(entry.cli) && entry.cli.includes('generate-json-schema')))
   })
 
-  it('F27: an arbitrary expected version cannot bypass the exact qualification pin', async () => {
+  it('F27: an arbitrary expected version cannot bypass qualification', async () => {
     await assert.rejects(qualifyCodex(f.binary, 'codex-cli 99.0.0', f.directory, { ...process.env }, false),
       (error: unknown) => errorCode(error) === 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
-    assert.equal((await calls(f.directory)).length, 0)
+    assert.equal((await calls(f.directory)).length, 1)
   })
 
   it('selects a registered installed release but still requires its measured schema', async () => {
@@ -33,7 +33,7 @@ describe.skipIf(process.platform === 'win32')('Codex installation qualification 
     await writeFile(join(f.directory, 'version.json'), JSON.stringify('codex-cli 99.0.0'))
     const priorCalls = (await calls(f.directory)).length
     await assert.rejects(qualifyCodex(f.binary, undefined, f.directory, { ...process.env }, false),
-      (error: unknown) => errorCode(error) === 'CODEX_APP_SERVER_VERSION_UNQUALIFIED')
+      (error: unknown) => errorCode(error) === 'HARNESS_UNQUALIFIED')
     assert.equal((await calls(f.directory)).length, priorCalls + 1)
   })
 

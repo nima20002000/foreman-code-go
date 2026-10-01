@@ -11,6 +11,7 @@ import type { AgentChatService } from '../modules/conversations/agentChat.js'
 import { DomainError } from '../modules/errors.js'
 import { agentChatStreamFrame } from '../modules/conversations/agentChatStream.js'
 import { createSseWriter } from './sseWriter.js'
+import { registerSelectedRunChatRoutes } from './selectedRunChat.js'
 
 interface WorkspaceParams { workspaceId: string }
 interface ConversationParams extends WorkspaceParams { conversationId: string }
@@ -22,6 +23,7 @@ const MAX_BOOTSTRAP_BYTES = 256 * 1024
 
 export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatService): void {
   const root = '/api/workspaces/:workspaceId/agent-chat'
+  registerSelectedRunChatRoutes(app, chat)
   const streams = new Map<() => void, string>()
   app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
 

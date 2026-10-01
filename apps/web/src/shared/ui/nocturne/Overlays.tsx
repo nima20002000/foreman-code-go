@@ -122,7 +122,7 @@ export function Tooltip({ content, children }: { content: string; children: Reac
     function escape(event: KeyboardEvent) {
       if (event.key !== 'Escape') return
       const anchor = ref.current
-      const focusedPopup = document.activeElement?.closest('[role="combobox"][aria-expanded="true"], [role="menu"]')
+      const focusedPopup = document.activeElement?.closest('[role="combobox"][aria-expanded="true"], [role="menu"], [role="dialog"]')
       const modal = Array.from(document.querySelectorAll('dialog[open]')).at(-1)
       const ownsFocus = Boolean(anchor?.contains(document.activeElement))
       const ownsHover = Boolean(anchor?.matches(':hover')) && !focusedPopup && (!modal || Boolean(anchor && modal.contains(anchor)))

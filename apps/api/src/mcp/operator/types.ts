@@ -1,3 +1,4 @@
+import type { FileReferenceService } from '../../modules/files/references/service.js'
 import type { RunGraphReadApi } from '../../modules/run-graph/readService.js'
 import type { OperatorExtensions } from './extensions.js'
 import type { HarnessMcpSettingsService } from '../../modules/harnesses/mcpSettings.js'
@@ -5,6 +6,7 @@ import type { HarnessDirectoryBrowser } from '../../modules/harnesses/directoryB
 import type { CodexPluginSettingsService } from '../../modules/harnesses/codexPluginSettings.js'
 import type { OperatorChatService } from '../../modules/conversations/operatorChat.js'
 import type { AgentChatService } from '../../modules/conversations/agentChat.js'
+import type { FileRetentionService } from '../../modules/files/retention.js'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
@@ -19,10 +21,12 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  fileReferences?: FileReferenceService
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService
   runGraph?: RunGraphReadApi
   operatorChat?: Pick<OperatorChatService, 'setup' | 'create' | 'get' | 'send' | 'handoffHistory'>
   agentChat?: AgentChatService
+  fileRetention?: FileRetentionService
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService }
   extensions?: OperatorExtensions
   workerToolsMcpImplemented?: boolean
@@ -31,6 +35,7 @@ export interface OperatorServices {
   workflows: WorkflowManagementService
   agents: AgentManagementService
   harnesses: HarnessCatalogService
+  harnessQualifications?: import('../../modules/harnesses/qualification/service.js').HarnessQualificationService
   settings?: FoundationSettingsManagementService
   runs: RunManagementService
   commands: PostgresCommandCoordinator

@@ -4,7 +4,7 @@ import type pg from 'pg'
 import type { z } from 'zod'
 
 import {
-  ExecutionLocationSchema, type AgentConfigurationVersion, type HarnessExecution, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference,
+  ExecutionLocationSchema, NativeSessionReferenceSchema, type AgentConfigurationVersion, type HarnessExecution, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference,
 } from '@graphql/contracts'
 import {
   AgentChatStateSchema, AgentChatStreamEventSchema, SendAgentChatMessageRequestSchema, AgentChatReadbackQuerySchema,
@@ -15,6 +15,15 @@ import {
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import { RepeatOccurrenceIdentityV1Schema } from '@graphql/contracts/wave25'
 
+import { SelectedRunChatKeySchema } from '@graphql/contracts/run-snapshots'
+import {
+  ReadSelectedRunChatRequestSchema, ReadSelectedRunChatResponseSchema, SendSelectedRunChatRequestSchema,
+  InterruptSelectedRunChatRequestSchema, type ReadSelectedRunChatResponse,
+} from '@graphql/contracts/selected-run-chat'
+import {
+  assertRunChatConversation, findRunChatConversation, resolveRunChatSelection, runChatStorageKey,
+  staleRunChat, withRunChatAuthority, type RunChatAuthorityCheck,
+} from './selectedRunChat.js'
 import { AgentChatCommands } from './agentChatCommands.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
@@ -66,6 +75,8 @@ interface Runtime {
 
 interface Resolution {
   context: AgentChatContext
+  key?: string
+  executionId?: string
   row?: AgentConversationRow
   blocked?: { reason: AgentChatBlockedReason; message: string }
   /** How a first message would create its native session. */
@@ -190,36 +201,51 @@ export class AgentChatService {
     // before command reservation or any native/database mutation, also on replay.
     if (action !== 'agent_chat:read') this.authorize(principal, 'agent_chat:read', { workspaceId, workflowId: row.workflow_id,
       ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) })
+    if (action !== 'agent_chat:read' && row.record.origin.kind === 'run_execution'
+      && row.native_session_id === row.record.origin.sourceNativeSessionId) {
+      throw new DomainError('AGENT_CHAT_UNAVAILABLE', 'A Run source session cannot be controlled as a chat session.', 409)
+    }
     return row
   }
 
   // ---------------------------------------------------------------- context
 
-  private async resolve(context: AgentChatContext): Promise<Resolution> {
-    const key = agentChatKey(context)
-    const row = await this.repository.byKey(key)
-    const blocked = (reason: AgentChatBlockedReason, message: string): Resolution => ({ context, ...(row ? { row } : {}), blocked: { reason, message } })
+  private async resolve(context: AgentChatContext, executionId?: string, selectedRun = false): Promise<Resolution> {
+    let key = agentChatKey(context)
+    let row = selectedRun && context.runId && executionId
+      ? await findRunChatConversation(this.pool, context, executionId) : await this.repository.byKey(key)
+    const blocked = (reason: AgentChatBlockedReason, message: string): Resolution => ({ context, key,
+      ...(executionId ? { executionId } : {}), ...(row ? { row } : {}), blocked: { reason, message } })
     if (context.runId) {
       const run = await this.runs.getForWorkspace(context.workspaceId, context.runId).catch(() => undefined)
-      if (!run || run.workflowId !== context.workflowId) return blocked('context_stale', 'The selected Run does not belong to this workflow.')
+      if (!run || run.id !== context.runId || run.workflowId !== context.workflowId) return blocked('context_stale', 'The selected Run does not belong to this workflow.')
       const version = await this.workflows.getSavedVersion(run.workflowVersionId)
       if (!version?.definition.nodes.some((node) => node.id === context.workflowNodeId && node.agentId === context.agentId)) {
         return blocked('agent_missing', 'This Agent is not part of the selected Run.')
       }
-      if (!TERMINAL_RUN_STATES.has(run.executionState)) {
+      if (!selectedRun && !TERMINAL_RUN_STATES.has(run.executionState)) {
         return blocked('run_active', 'This Agent belongs to a Run that is still working. Chat opens when the Run finishes.')
       }
-      if (row) {
+      if (row && !selectedRun) {
         const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
         const unavailable = this.sessionUnavailable(row, configuration)
-        return { context, row, ...(configuration ? { configuration } : {}), ...(unavailable ? { blocked: unavailable } : {}) }
+        return { context, key, row, ...(configuration ? { configuration } : {}), ...(unavailable ? { blocked: unavailable } : {}) }
+      }
+      if (row) {
+        assertRunChatConversation(row, context, executionId)
+        // A continued conversation stays on its original execution, including after another attempt.
+        executionId ??= row.origin_execution_id ?? undefined
       }
       const block = version.definition.repeat?.blocks.find((entry) => entry.nodeIds.includes(context.workflowNodeId))
       let source: HarnessExecution | undefined
       let sourceOccurrence = 0
       for await (const page of this.runs.executionPages(run.id)) {
         for (const execution of page) {
-          if (execution.runId !== run.id || execution.workflowNodeId !== context.workflowNodeId || execution.agentId !== context.agentId) continue
+          if (executionId && execution.id !== executionId) continue
+          if (execution.runId !== run.id || execution.workflowNodeId !== context.workflowNodeId || execution.agentId !== context.agentId) {
+            if (executionId) staleRunChat()
+            continue
+          }
           let occurrenceIndex = 0
           if (block) {
             const input = execution.input
@@ -233,21 +259,45 @@ export class AgentChatService {
             }
             occurrenceIndex = parsed.data.occurrenceIndex
           }
-          // Most recent executed business occurrence, then its last technical attempt. Never fall back
-          // to an older occurrence/attempt just because the selected one has no native session.
+          // The legacy unpinned entrypoint retains its latest-occurrence policy. SCH-06 always
+          // supplies an explicit execution after snapshot resolution; it never takes this fallback.
           if (!source || occurrenceIndex > sourceOccurrence || occurrenceIndex === sourceOccurrence && execution.attempt > source.attempt) {
             source = execution; sourceOccurrence = occurrenceIndex
           }
         }
       }
-      if (!source?.nativeSessionId || !source.workingDirectory || source.state !== 'completed') {
-        return blocked('native_session_missing', 'This Run has no stored native session for this Agent. Chat with the Agent outside the Run instead.')
+      if (!source) {
+        if (executionId) staleRunChat()
+        return blocked('native_session_missing', 'This Run has no stored execution for this Agent.')
       }
-      const configuration = await this.workflows.getAgentConfiguration(source.agentConfigurationVersionId)
+      executionId = source.id
+      row ??= await findRunChatConversation(this.pool, context, executionId)
+      if (row) assertRunChatConversation(row, context, executionId, source)
+      key = row?.agent_key ?? runChatStorageKey(context, executionId)
+      const configuration = await this.workflows.getAgentConfiguration(row?.agent_configuration_version_id ?? source.agentConfigurationVersionId)
       if (!configuration) return blocked('agent_missing', 'The Agent configuration used by this Run is unavailable.')
-      return { context, configuration, create: {
+      if (configuration.id !== source.agentConfigurationVersionId || configuration.agentId !== context.agentId
+        || row && row.harness !== configuration.harness.harness) staleRunChat()
+      if (!TERMINAL_RUN_STATES.has(run.executionState)) {
+        return { ...blocked('run_active', 'This Agent belongs to a Run that is still working. Chat opens when the Run finishes.'), configuration }
+      }
+      if (row) {
+        const unavailable = this.sessionUnavailable(row, configuration)
+          ?? (!row.native_session_id && (!source.nativeSessionId || !source.workingDirectory || source.state !== 'completed'
+            || configuration.harness.harness === 'codex' && configuration.harness.advanced?.sessionPersistence === 'ephemeral')
+            ? { reason: 'native_session_missing' as const, message: 'The Run source cannot be forked. Stored chat messages remain readable; no replacement session will be created.' }
+            : undefined)
+        return { context, key, executionId, row, configuration, ...(unavailable ? { blocked: unavailable } : {}) }
+      }
+      if (!source.nativeSessionId || !source.workingDirectory || source.state !== 'completed') {
+        return { ...blocked('native_session_missing', 'This execution has no resumable stored native session. No other execution was selected.'), configuration }
+      }
+      if (configuration.harness.harness === 'codex' && configuration.harness.advanced?.sessionPersistence === 'ephemeral') {
+        return { ...blocked('native_session_missing', 'This Run used an ephemeral Codex session; a durable chat fork is unavailable.'), configuration }
+      }
+      return { context, key, executionId, configuration, create: {
         agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness,
-        origin: { kind: 'run_execution', runId: run.id, executionId: source.id, sourceNativeSessionId: source.nativeSessionId },
+        origin: { kind: 'run_execution', runId: run.id, executionId, sourceNativeSessionId: source.nativeSessionId },
         workingDirectory: source.workingDirectory, runtimeDirectory: '',
       } }
     }
@@ -288,6 +338,14 @@ export class AgentChatService {
   }
 
   private sessionUnavailable(row: AgentConversationRow, configuration: AgentConfigurationVersion | undefined): Resolution['blocked'] {
+    if (!configuration) return { reason: 'agent_missing', message: 'The pinned Agent configuration is unavailable; the transcript remains readable.' }
+    if (!row.native_session_id && (row.provider_version || row.record.startupDelivered || row.record.startupReceipt)) {
+      return { reason: 'native_session_missing', message: 'This conversation lost its stored native session identity. The transcript remains readable; a replacement session will not be created.' }
+    }
+    if (row.native_session_id && !row.provider_version) return { reason: 'native_session_missing', message: 'The stored native session has no provider version and cannot be resumed.' }
+    if (row.record.origin.kind === 'run_execution' && row.native_session_id === row.record.origin.sourceNativeSessionId) {
+      return { reason: 'harness_unavailable', message: 'Chat cannot use the Run-owned native session directly. A separate native fork is required.' }
+    }
     if (row.record.sessionUnavailable) return { reason: row.record.sessionUnavailableReason ?? 'native_session_missing', message: row.record.sessionUnavailable }
     const runtime = this.runtimes.get(row.id)
     if (runtime?.retiring) return { reason: 'harness_unavailable', message: 'Native cleanup is unconfirmed. This conversation cannot start more work until its owner is safely disposed.' }
@@ -323,6 +381,12 @@ export class AgentChatService {
   private async state(resolution: Resolution): Promise<AgentChatState> {
     const { context, blocked } = resolution
     const capabilities = this.capabilities(resolution.configuration, resolution.row)
+    if (blocked && ['native_session_missing', 'harness_unavailable', 'agent_missing'].includes(blocked.reason)) {
+      capabilities.resume = false; capabilities.queueNextTurn = false; capabilities.interruptAndSend = false
+      capabilities.steer = 'unavailable'
+      capabilities.unavailable = { resume: blocked.message, queueNextTurn: blocked.message,
+        interruptAndSend: blocked.message, steer: blocked.message }
+    }
     const availability = blocked ? { canSend: false, reason: blocked.reason, message: blocked.message } : { canSend: true, message: 'GraphQL workflow tools are not available in chat. The scoped GraphQL App MCP server is disabled for chat only; other accepted Agent settings are retained.' }
     if (!resolution.row) {
       return AgentChatStateSchema.parse({ context, conversation: null, sessionState: 'none', availability, capabilities,
@@ -339,7 +403,9 @@ export class AgentChatService {
     }
     const activities = (await this.activity.page(row.id, { limit: 100 })).activities
     return AgentChatStateSchema.parse({
-      context, conversation: agentConversation(row), sessionState: this.sessionUnavailable(row, resolution.configuration) ? 'unavailable' : this.sessionState(row), availability, capabilities,
+      context, conversation: agentConversation(row), sessionState: this.sessionUnavailable(row, resolution.configuration)
+        || blocked && ['native_session_missing', 'harness_unavailable', 'agent_missing'].includes(blocked.reason)
+        ? 'unavailable' : this.sessionState(row), availability, capabilities,
       activeTurn: row.active_request_id ? { requestId: row.active_request_id,
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}), startedAt: row.updated_at.toISOString() } : null,
       turns: loaded.turns, messages: loaded.messages, hasEarlierMessages: loaded.hasEarlierMessages, activities,
@@ -359,7 +425,10 @@ export class AgentChatService {
     const row = await this.conversation(workspaceId, id, principal, 'agent_chat:read')
     const context: AgentChatContext = { workspaceId, workflowId: row.workflow_id, workflowNodeId: row.workflow_node_id,
       agentId: row.agent_id, ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) }
-    return this.state(await this.resolve(context))
+    const resolution = await this.resolve(context, row.origin_execution_id ?? undefined,
+      !!context.runId && !!row.origin_execution_id && row.agent_key === runChatStorageKey(context, row.origin_execution_id))
+    if (resolution.row?.id !== id) staleRunChat()
+    return this.state(resolution)
   }
   async history(principal: ManagementPrincipal, workspaceId: string, id: string, before: string | undefined, limit: number) {
     await this.conversation(workspaceId, id, principal, 'agent_chat:read')
@@ -375,46 +444,109 @@ export class AgentChatService {
     await this.conversation(workspaceId, id, principal, 'agent_chat:read')
   }
 
+  /** Snapshot-selected read. It never creates, attaches, forks or probes a native session. */
+  async readSelectedRun(principal: ManagementPrincipal, raw: unknown): Promise<ReadSelectedRunChatResponse> {
+    const input = ReadSelectedRunChatRequestSchema.parse(raw)
+    return withRunChatAuthority(this.pool, principal, input.selection, ['agent_chat:read'], async (client) => {
+      const selected = await resolveRunChatSelection(client, this.runs, input.selection)
+      if (selected.kind !== 'selected') return ReadSelectedRunChatResponseSchema.parse(selected)
+      const resolution = await this.resolve(selected.context, selected.selection.executionId, true)
+      if (resolution.blocked?.reason === 'context_stale') staleRunChat()
+      const state = await this.state(resolution)
+      const id = state.conversation?.id
+      return ReadSelectedRunChatResponseSchema.parse({ kind: 'selected', selection: selected.selection, state,
+        key: id ? SelectedRunChatKeySchema.parse({ ...selected.selection, agentId: selected.context.agentId, conversationId: id }) : null,
+        ...(id && input.history ? { history: await this.history(principal, input.selection.workspaceId, id, input.history.before, input.history.limit) } : {}),
+        ...(id && input.receipts ? { receipts: await this.receipts(principal, input.selection.workspaceId, id, input.receipts.before, input.receipts.limit) } : {}),
+      })
+    })
+  }
+
+  sendSelectedRun(principal: ManagementPrincipal, raw: unknown) {
+    return this.command(async () => {
+      const input = SendSelectedRunChatRequestSchema.parse(raw)
+      return withRunChatAuthority(this.pool, principal, input.selection, ['agent_chat:read', 'agent_chat:write'], async (client, assertCurrent) => {
+        const selected = await resolveRunChatSelection(client, this.runs, input.selection)
+        if (selected.kind !== 'selected') throw new DomainError('AGENT_CHAT_UNAVAILABLE', 'The selected Run has no resolvable historical chat.', 409)
+        const { workspaceId, ...context } = selected.context
+        return this.sendMessage(principal, workspaceId, { ...input.message, context }, selected.selection.executionId, assertCurrent)
+      })
+    })
+  }
+
+  interruptSelectedRun(principal: ManagementPrincipal, raw: unknown, source: 'http' | 'mcp' = 'http'): Promise<AgentChatState> {
+    return this.command(async () => {
+      const input = InterruptSelectedRunChatRequestSchema.parse(raw)
+      return withRunChatAuthority(this.pool, principal, input.key, ['agent_chat:read', 'agent_chat:cancel'], async (client, assertCurrent) => {
+        const selected = await resolveRunChatSelection(client, this.runs, input.key)
+        if (selected.kind !== 'selected' || selected.context.agentId !== input.key.agentId) staleRunChat()
+        const row = await findRunChatConversation(client, selected.context, input.key.executionId)
+        if (!row || row.id !== input.key.conversationId) staleRunChat()
+        // Validate configuration/source identity too, before interrupt's durable command receipt.
+        const resolution = await this.resolve(selected.context, input.key.executionId, true)
+        if (resolution.row?.id !== row.id || resolution.blocked?.reason === 'context_stale') staleRunChat()
+        if (row.record.origin.kind === 'run_execution' && row.native_session_id === row.record.origin.sourceNativeSessionId) {
+          throw new DomainError('AGENT_CHAT_UNAVAILABLE', 'A Run source session cannot be controlled as a chat session.', 409)
+        }
+        await assertCurrent()
+        return this.interrupt(principal, input.key.workspaceId, row.id, input.request, source)
+      })
+    })
+  }
+
   // ---------------------------------------------------------------- commands
 
   send(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest) {
     return this.command(() => this.sendMessage(principal, workspaceId, value))
   }
-  private async sendMessage(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest) {
+  private async sendMessage(principal: ManagementPrincipal, workspaceId: string, value: SendAgentChatMessageRequest, executionId?: string, assertCurrent: RunChatAuthorityCheck = async () => {}) {
     this.assertOpen()
     const input = SendAgentChatMessageRequestSchema.parse(value)
     const context: AgentChatContext = { workspaceId, ...input.context }
     this.authorize(principal, 'agent_chat:write', context)
     this.authorize(principal, 'agent_chat:read', context)
-    const resolution = await this.resolve(context)
-    const key = agentChatKey(context)
+    let selectedRun = executionId !== undefined
+    if (input.expectedConversationId !== null) {
+      const expected = await this.repository.get(input.expectedConversationId)
+      if (!expected) staleRunChat()
+      assertRunChatConversation(expected, context, executionId)
+      selectedRun ||= !!context.runId && !!expected.origin_execution_id
+        && expected.agent_key === runChatStorageKey(context, expected.origin_execution_id)
+      executionId ??= expected.origin_execution_id ?? undefined
+    }
+    const resolution = await this.resolve(context, executionId, selectedRun)
+    if (input.expectedConversationId !== null && resolution.row?.id !== input.expectedConversationId
+      || resolution.blocked?.reason === 'context_stale') staleRunChat()
+    const key = resolution.key ?? agentChatKey(context)
+    await assertCurrent()
     if (resolution.row) {
       const prior = await this.repository.turn(resolution.row.id, input.requestId)
       if (prior) {
         // Same key and input returns the stored receipt; a different input is a conflict. Never re-sends.
-        const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued' })
-        return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true,
+        const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', assertCurrent })
+        return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true,
           ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
       }
     }
     if (resolution.blocked) {
-      throw new DomainError(resolution.blocked.reason === 'context_stale' ? 'AGENT_CHAT_CONTEXT_STALE' : 'AGENT_CHAT_UNAVAILABLE',
+      throw new DomainError('AGENT_CHAT_UNAVAILABLE',
         resolution.blocked.message, 409, { reason: resolution.blocked.reason })
     }
     const row = resolution.row
-    if (input.intent === 'steer') return this.steer(principal, context, key, input, resolution)
+    if (input.intent === 'steer') return this.steer(principal, context, key, input, resolution, selectedRun, assertCurrent)
     if (input.intent === 'interrupt_and_send' && !row) throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'There is no active turn to interrupt.', 409)
     const create = resolution.create ? { ...resolution.create, context } : undefined
-    const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ...(create ? { create } : {}) })
-    if (admitted.replayed) return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true,
+    const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id, assertCurrent,
+      ...(create ? { create } : {}) })
+    if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true,
       ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
     this.events.publish(admitted.conversationId, 'turn', { requestId: input.requestId, delivery: admitted.turn.delivery })
     if (input.intent === 'interrupt_and_send') await this.interruptActive(admitted.conversationId, false, admitted.interruptTarget)
     this.pump(admitted.conversationId)
-    return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: false }
+    return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: false }
   }
 
-  private async steer(_principal: ManagementPrincipal, context: AgentChatContext, key: string, input: SendAgentChatMessageRequest, resolution: Resolution) {
+  private async steer(_principal: ManagementPrincipal, context: AgentChatContext, key: string, input: SendAgentChatMessageRequest, resolution: Resolution, selectedRun: boolean, assertCurrent: RunChatAuthorityCheck = async () => {}) {
     const row = resolution.row
     const runtime = row ? this.runtimes.get(row.id) : undefined
     if (!row || !row.active_request_id || !row.active_native_turn_id || !runtime?.session) {
@@ -428,8 +560,9 @@ export class AgentChatService {
     }
     const target = input.expectedNativeTurnId
     return this.control(row.id, async () => {
-      const admitted = await this.repository.admit({ key, request: input, context, delivery: 'submitting', targetNativeTurnId: target })
-      if (admitted.replayed) return { state: await this.state(await this.resolve(context)), turn: admitted.turn, replayed: true }
+      await assertCurrent()
+      const admitted = await this.repository.admit({ key, request: input, context, delivery: 'submitting', targetNativeTurnId: target, assertCurrent })
+      if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true }
       try {
         const steered = await runtime.manager.steerTurn!(runtime.session!, {
           prompt: input.content, clientCorrelationId: agentChatCorrelation(row.id, input.requestId), expectedTurnId: target,
@@ -446,7 +579,7 @@ export class AgentChatService {
       }
       this.events.publish(row.id, 'turn', { requestId: input.requestId })
       const turn = (await this.repository.turn(row.id, input.requestId))!
-      return { state: await this.state(await this.resolve(context)), turn, replayed: false }
+      return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn, replayed: false }
     })
   }
 
@@ -596,8 +729,12 @@ export class AgentChatService {
     this.runtimes.set(row.id, runtime)
     if (row.native_session_id && row.provider_version) {
       // Resume the exact stored session. Its startup instructions are already in native history.
-      runtime.session = await runtime.manager.attachSession({ harness: row.harness, providerVersion: row.provider_version,
+      const attached = await runtime.manager.attachSession({ harness: row.harness, providerVersion: row.provider_version,
         nativeSessionId: row.native_session_id }, this.startInput(row, configuration, correlationId, true), signal)
+      if (attached.nativeSessionId !== row.native_session_id || attached.harness !== row.harness) {
+        throw new DomainError('AGENT_CHAT_SESSION_ID_MISMATCH', 'The native adapter returned a different chat session. No turn was sent.', 409)
+      }
+      runtime.session = attached
     } else {
       if (!row.active_request_id || !await this.repository.beginSessionCreation(row.id, row.active_request_id)) {
         throw new DomainError('AGENT_CHAT_SESSION_CREATION_UNCERTAIN', 'A native session may already exist. A replacement will not be created.', 409)
@@ -607,8 +744,13 @@ export class AgentChatService {
           const origin = row.record.origin
           if (!runtime.manager.forkSession) throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'This harness cannot continue a Run session in chat.', 409)
           const providerVersion = await this.sourceProviderVersion(origin, runtime)
-          runtime.session = await runtime.manager.forkSession({ harness: row.harness, providerVersion, nativeSessionId: origin.sourceNativeSessionId },
+          const forked = await runtime.manager.forkSession({ harness: row.harness, providerVersion, nativeSessionId: origin.sourceNativeSessionId },
             this.startInput(row, configuration, correlationId, true), signal)
+          if (forked.nativeSessionId === origin.sourceNativeSessionId || forked.harness !== row.harness) {
+            // Do not adopt or close a returned source/foreign session, even during failure cleanup.
+            throw new DomainError('AGENT_CHAT_FORK_UNAVAILABLE', 'The harness did not create an independent chat fork. The Run session will not be changed.', 409)
+          }
+          runtime.session = forked
           await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
           await this.repository.markStartupDelivered(row.id)
         } else {
@@ -627,9 +769,22 @@ export class AgentChatService {
     return runtime
   }
   private async sourceProviderVersion(origin: Extract<AgentChatOrigin, { kind: 'run_execution' }>, runtime: Runtime): Promise<string> {
-    const lane = (await this.pool.query<{ record: { providerVersion?: string } }>(
-      'select record from native_session_lanes where native_session_id=$1 order by updated_at desc limit 1', [origin.sourceNativeSessionId])).rows[0]
-    if (lane?.record.providerVersion) return lane.record.providerVersion
+    // Provider metadata belongs to the same physical Run execution, never an unrelated
+    // lane with a colliding native id (nor an Agent's most recently updated session).
+    const row = (await this.pool.query<{ reference: unknown }>(`
+      select s.reference from execution_native_sessions s
+      join harness_executions e on e.id=s.execution_id
+      where s.execution_id=$1 and e.run_id=$2`, [origin.executionId, origin.runId])).rows[0]
+    if (row) {
+      const reference = NativeSessionReferenceSchema.safeParse(row.reference)
+      if (!reference.success || reference.data.nativeSessionId !== origin.sourceNativeSessionId
+        || reference.data.harness !== runtime.manager.harness) {
+        throw new DomainError('AGENT_CHAT_SESSION_ID_MISMATCH', 'The stored Run source session does not match this execution.', 409)
+      }
+      return reference.data.providerVersion
+    }
+    // Legacy executions may predate the native reference table. The exact source id still
+    // goes to forkSession, which must prove it exists; no replacement create is attempted.
     return (await runtime.manager.capabilities(this.lifetime.signal)).providerVersion
   }
 

@@ -39,7 +39,7 @@ it('only an explicit OpenCode upstream refresh runs the qualified CLI cache upda
 
 it('rejects an unqualified OpenCode version before updating its cache', async () => {
   const { service, calls, options } = await fixture('1.18.30')
-  await expect(service.refreshOptions('opencode', 'upstream')).rejects.toMatchObject({ code: 'OPENCODE_SERVER_VERSION_UNQUALIFIED' })
+  await expect(service.refreshOptions('opencode', 'upstream')).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
   expect(await readFile(calls, 'utf8')).toBe('--version\n')
   expect(options).not.toHaveBeenCalled()
 })

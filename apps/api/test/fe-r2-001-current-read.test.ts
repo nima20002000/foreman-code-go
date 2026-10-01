@@ -14,8 +14,8 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
     expect(f.db.calls.at(-1)).toBe('commit')
     expect(f.db.calls.filter((q) => q.startsWith('begin '))).toHaveLength(1)
     expect(f.db.calls.some((q) => /insert |update |from run_activity|harness_native_events|input_json|result_json|\boffset\b/i.test(q))).toBe(false)
-    expect(f.db.calls.some((q) => q.startsWith('select record,source_digest,semantic_digest,sequence::text from run_graph_public_projection'))).toBe(true)
-    expect(f.db.calls.some((q) => q.startsWith('select first_sequence::text,source_digest,semantic_digest from run_graph_sources'))).toBe(true)
+    expect(f.db.calls.some((q) => q.startsWith('select p.record,p.source_digest,p.semantic_digest,p.sequence::text,'))).toBe(true)
+    expect(f.db.calls.some((q) => q.includes('left join run_graph_sources s') && q.includes('s.source_revision=p.sequence'))).toBe(true)
     expect(value).not.toHaveProperty('activity'); expect(value).not.toHaveProperty('liveActivity')
     const latest = f.db.calls.find((q) => q.startsWith('select distinct on (e.workflow_node_id) e.id'))!
     expect(latest).toContain('order by e.workflow_node_id,w.activation_sequence desc nulls last, coalesce(o.occurrence_index,0) desc,x.technical_attempt desc,x.execution_id desc limit 1001')

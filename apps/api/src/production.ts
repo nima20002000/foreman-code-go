@@ -15,6 +15,8 @@ import { resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
+import { FileRetentionService } from './modules/files/retention.js'
+import { registerFileRetentionRoutes } from './routes/fileRetention.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
 import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
 import { HarnessMcpSettingsService } from './modules/harnesses/mcpSettings.js'
@@ -36,19 +38,27 @@ import {
   ensureOperatorRuntimeDirectory,
   OperatorChatService,
   PostgresOperatorConversationRepository,
-  type NativeManagerResolver,
 } from './modules/conversations/operatorChat.js'
-import { OPERATOR_MCP_ENVIRONMENT_VARIABLE, PostgresOperatorChatAuthority } from './modules/conversations/operatorChatAuthority.js'
+import { PostgresOperatorChatAuthority } from './modules/conversations/operatorChatAuthority.js'
 import { AgentChatService, type AgentChatManagerFactory } from './modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from './modules/conversations/agentChatRepository.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
 import { createHarnessCompatibility } from './modules/harnesses/compatibility/service.js'
+import { HarnessQualificationRepository } from './modules/harnesses/qualification/repository.js'
+import { HarnessQualificationRegistry } from './modules/harnesses/qualification/registry.js'
+import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
+import { clearQualificationGate, installQualificationGate } from './modules/harnesses/qualification/gate.js'
+import type { QualificationSuite } from './modules/harnesses/qualification/types.js'
+import type { CompatibilityHarness } from '@graphql/contracts'
 import { CodexAppServerSessionManager } from './modules/harnesses/codexAppServer.js'
+import { productionCodexChatFiles, type ProductionCodexChatFiles } from './modules/harnesses/codexFiles/production.js'
 import { codexMcpInspectorAdapter } from './modules/harnesses/codexMcpInspectorAdapter.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from './modules/harnesses/mcpDetection.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './modules/harnesses/opencodeServer.js'
+import { productionOpenCodeChatFiles } from './modules/harnesses/opencodeFiles/production.js'
+import { productionOperatorManagers } from './modules/harnesses/operatorFiles/managers.js'
 import { openCodeMcpInspectorAdapter } from './modules/harnesses/opencodeMcpInspectorAdapter.js'
 import { ExecutionReadinessService } from './modules/harnesses/executionReadiness.js'
 import { NativeRollout } from './modules/harnesses/nativeRollout.js'
@@ -96,6 +106,9 @@ export function buildProductionApp(
   // The shared API logger by default; tests pass false.
   logger: boolean | FastifyBaseLogger = componentLogger('http'),
   createCurrentProduction?: CurrentRunProductionFactory,
+  // Trusted FIL-10 admission + execution-host ports; never populated from HTTP fields.
+  codexChatFiles?: ProductionCodexChatFiles,
+  qualificationSuites?: Record<CompatibilityHarness, QualificationSuite>,
 ) {
   const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
   const processRegistry = new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
@@ -119,7 +132,18 @@ export function buildProductionApp(
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
-  const harnessCompatibility = createHarnessCompatibility(config.harnesses)
+  const qualificationRepository = new HarnessQualificationRepository(database.pool)
+  const qualificationRegistry = qualificationSuites ? new HarnessQualificationRegistry(qualificationRepository, {
+    codex: qualificationSuites.codex.revision, opencode: qualificationSuites.opencode.revision,
+  }) : undefined
+  const harnessQualifications = qualificationSuites && qualificationRegistry ? new HarnessQualificationService(
+    qualificationRepository, qualificationRegistry, qualificationSuites,
+    { codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary }, commands, settings,
+    undefined, (harness) => harnessCompatibility.refreshAfterQualification(harness),
+  ) : undefined
+  const harnessCompatibility = createHarnessCompatibility(config.harnesses, harnessQualifications
+    ? (harness) => { void harnessQualifications.begin(harness).catch(() => undefined) }
+    : undefined)
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
   const nativeConfigurations = new NativeConfigurationService(
@@ -229,34 +253,10 @@ export function buildProductionApp(
   registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
-  const resolveOperatorManager: NativeManagerResolver = (configuration, conversationId) => {
-    const existing = operatorManagers.get(conversationId)
-    if (existing) return existing
-    let manager: NativeHarnessSessionManager
-    if (configuration.harness.harness === 'codex') {
-      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined,
-        processRegistry.scope(`conversation:${conversationId}`))
-    } else {
-      const server = new ManagedOpenCodeServer({
-        binary: config.harnesses.openCodeBinary,
-        workingDirectory: operatorWorkingDirectory,
-        ownerAgentId: configuration.operatorId,
-        processRecovery: processRegistry.scope(`conversation:${conversationId}`),
-        credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
-        ...(configuration.harness.advanced ? { advancedConfiguration: configuration.harness.advanced } : {}),
-      })
-      manager = new OpenCodeNativeSessionManager({
-        server,
-        ownerAgentId: configuration.operatorId,
-        responseJournal,
-        expectedAppMcpEndpoint: appMcpEndpoint,
-        credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE,
-      })
-    }
-    operatorManagers.set(conversationId, manager)
-    return manager
-  }
-  resolveOperatorManager.release = (conversationId) => { operatorManagers.delete(conversationId) }
+  const resolveOperatorManager = productionOperatorManagers({
+    app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
+    endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers,
+  })
   const chatAuthority = new PostgresOperatorChatAuthority(
     database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
   )
@@ -271,15 +271,22 @@ export function buildProductionApp(
     // Chat processes have their own owner scope; they never share a workflow execution's manager.
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
-    const manager = harness.harness === 'codex'
-      ? new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none')
-      : new OpenCodeNativeSessionManager({
-        server: new ManagedOpenCodeServer({
-          binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId, processRecovery: recovery, appMcpAccess: 'none',
-          ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
-        }),
-        ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint, appMcpAccess: 'none',
+    let manager: NativeHarnessSessionManager
+    if (harness.harness === 'codex') {
+      manager = new CodexAppServerSessionManager(config.harnesses.codexBinary, undefined, undefined, recovery, 'none',
+        codexChatFiles ? productionCodexChatFiles(() => app, conversationId, codexChatFiles) : undefined)
+    } else {
+      const server = new ManagedOpenCodeServer({
+        binary: config.harnesses.openCodeBinary, workingDirectory, ownerAgentId: configuration.agentId,
+        processRecovery: recovery, appMcpAccess: 'none',
+        ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
       })
+      manager = new OpenCodeNativeSessionManager({
+        server,
+        ownerAgentId: configuration.agentId, responseJournal, expectedAppMcpEndpoint: appMcpEndpoint, appMcpAccess: 'none',
+        chatFiles: productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost),
+      })
+    }
     agentChatManagers.set(conversationId, manager)
     return manager
   }
@@ -323,6 +330,7 @@ export function buildProductionApp(
   })
 
   const operatorServices = {
+    fileRetention: new FileRetentionService(database.pool, commands),
     executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
     operatorChat: chat,
     agentChat,
@@ -331,6 +339,7 @@ export function buildProductionApp(
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
+    ...(harnessQualifications ? { harnessQualifications } : {}),
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
     commands,
@@ -382,6 +391,7 @@ export function buildProductionApp(
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
+  registerFileRetentionRoutes(app, operatorServices.fileRetention)
   let httpClosing = false
   let initialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
@@ -398,6 +408,7 @@ export function buildProductionApp(
   const lifecycle = new RuntimeShutdown({
     stop: [
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
+      { name: 'harness qualification gate', run: async () => { if (qualificationRegistry) clearQualificationGate() } },
       { name: 'native MCP settings', run: () => harnessSettings.mcp.shutdown() },
       { name: 'Codex plugin settings', run: () => harnessSettings.plugins.shutdown() },
       { name: 'harness qualification checks', run: () => Promise.all([harnessCatalog.shutdownChecks(), nativeConfigurations.shutdownChecks()]).then(() => undefined) },
@@ -478,6 +489,10 @@ export function buildProductionApp(
       // Optional discovery warmups used to block startup on native auth/network.
       // Qualification still runs at every existing on-demand configuration/execution gate.
       // The bounded compatibility diagnostic creates no native session or model turn.
+      if (qualificationRegistry && harnessQualifications) {
+        await qualificationRegistry.load()
+        installQualificationGate(qualificationRegistry, harnessQualifications)
+      }
       harnessCompatibility.start()
       assertOpen()
       initialized = true

@@ -5,15 +5,15 @@ import { randomBytes } from 'node:crypto'
 import type { OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 
 import { HarnessExecutionError } from './errors.js'
+import { requireHarnessQualification } from './qualification/gate.js'
 import type { NativeMcpEntryEvidence } from './mcpDetection.js'
 import { inspectOpenCodeMcpConfiguration } from './opencodeMcpConfiguration.js'
 import type { ChildProcessEnvironment } from './port.js'
 import { PROCESS_SHUTDOWN_GRACE_MS, runCommand, signalTree } from './process.js'
 import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 import { credentialReferences, digest, object, parseConfigObject } from './opencodeProtocol.js'
-import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN } from './appMcpLauncher.js'
+import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
 
-export const QUALIFIED_OPENCODE_VERSION = '1.18.31'
 const STARTUP_TIMEOUT_MS = 30_000
 const REQUEST_TIMEOUT_MS = 30_000
 const APP_CREDENTIAL_ENV = APP_MCP_TOKEN
@@ -33,6 +33,7 @@ export interface OpenCodeServerController {
   readonly credentialEnvironmentFingerprint?: string | undefined
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
+  readonly nativePid?: number | undefined
   /** Provenance from unexpanded configuration, never from resolved secret values. */
   readonly mcpCredentialReferences?: Readonly<Record<string, string>>
   inspectMcpConfiguration?(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined>
@@ -77,7 +78,7 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 
 /** One process and one serialized lifecycle for one logical Agent credential owner. */
 export class ManagedOpenCodeServer implements OpenCodeServerController {
-  readonly expectedVersion = QUALIFIED_OPENCODE_VERSION
+  expectedVersion = ''
   readonly advancedConfiguration: OpenCodeAdvancedConfiguration | undefined
   generation = 0
   private desiredEnvironment: ChildProcessEnvironment | undefined
@@ -106,6 +107,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
+  get nativePid(): number | undefined { return this.child?.pid }
   get disabledAppMcpServerName(): string | undefined {
     return this.options.appMcpAccess === 'none' ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
   }
@@ -282,8 +284,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       const version = await runCommand(this.options.binary, ['--version'], this.options.workingDirectory, abort.signal)
       abort.signal.throwIfAborted()
       const installed = (version.stdout || version.stderr).trim()
-      if (version.exitCode !== 0 || installed !== this.expectedVersion) {
-        throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', `OpenCode server mode requires exactly ${this.expectedVersion}; found ${installed || 'unavailable'}.`)
+      if (version.exitCode === 0) {
+        await requireHarnessQualification('opencode', installed, this.options.binary)
+        this.expectedVersion = installed
+      }
+      if (version.exitCode !== 0) {
+        throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The installed OpenCode version could not be read.')
       }
       this.password = randomBytes(32).toString('hex')
       const environment: NodeJS.ProcessEnv = inheritedAgentEnvironment()
@@ -407,12 +413,16 @@ export function buildOpenCodeConfigContent(inherited: string | undefined, advanc
   })
 }
 
-/** Inline runtime overlay; the accepted snapshot and every other MCP entry are untouched. */
+/** Inline runtime overlay; the accepted snapshot and unrelated MCP entries are untouched. */
 export function buildOpenCodeChatConfigContent(inherited: string | undefined, serverName: string): string {
   const base = inherited ? parseConfigObject(inherited) : {}
   const servers = base.mcp === undefined ? {} : chatMcpObject(base.mcp)
-  const entry = Object.hasOwn(servers, serverName) ? chatMcpObject(servers[serverName]) : {}
-  return JSON.stringify({ ...base, mcp: { ...servers, [serverName]: { ...entry, enabled: false } } })
+  const mcp = { ...servers }
+  for (const name of chatExcludedAppMcpServerNames(serverName)) {
+    const entry = Object.hasOwn(servers, name) ? chatMcpObject(servers[name]) : {}
+    mcp[name] = { ...entry, enabled: false }
+  }
+  return JSON.stringify({ ...base, mcp })
 }
 
 /** Config alone is insufficient: a live client must not still expose the excluded server. */
@@ -420,9 +430,11 @@ export function assertOpenCodeChatMcpDisabled(configuration: unknown, status: un
   const config = chatMcpObject(configuration)
   const servers = config.mcp === undefined ? {} : chatMcpObject(config.mcp)
   const statuses = chatMcpObject(status)
-  if ((Object.hasOwn(servers, serverName) && chatMcpObject(servers[serverName]).enabled !== false)
-    || (Object.hasOwn(statuses, serverName) && chatMcpObject(statuses[serverName]).status !== 'disabled')) {
-    throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'GraphQL workflow tools are not available in chat; native launch did not confirm the App MCP entry was disabled.')
+  if (chatMcpObject(servers[serverName] ?? {}).enabled !== false
+    || chatExcludedAppMcpServerNames(serverName).some((name) =>
+      (Object.hasOwn(servers, name) && chatMcpObject(servers[name]).enabled !== false)
+      || (Object.hasOwn(statuses, name) && chatMcpObject(statuses[name]).status !== 'disabled'))) {
+    throw new HarnessExecutionError('OPENCODE_APP_MCP_UNAVAILABLE', 'GraphQL workflow or Operator tools are not available in chat; native launch did not confirm their MCP entries were disabled.')
   }
 }
 

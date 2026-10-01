@@ -2,9 +2,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { HttpResponse, http } from 'msw'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { routeTree } from '../app/router'
+import { server } from '../mocks/server'
 import { setMockScenario } from '../shared/mocks/scenarios'
 
 function renderRoute(path: string) {
@@ -26,6 +28,17 @@ afterEach(() => {
 })
 
 describe('workspace section routes', () => {
+  beforeEach(() => {
+    server.use(
+      http.get('*/api/workspaces/:workspaceId/reference-files', () => HttpResponse.json({
+        items: [], pageInfo: { nextCursor: null },
+      })),
+      http.get('*/api/management/file-retention', () => HttpResponse.json({
+        preference: { ownerPrincipalId: 'retention-owner', durationSeconds: 604_800, revision: 0 },
+      })),
+    )
+  })
+
   beforeAll(() => {
     vi.stubGlobal(
       'ResizeObserver',
@@ -151,6 +164,13 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
   })
 
+  it('mounts chat retention on the authenticated account page', async () => {
+    renderRoute('/account')
+    expect(await screen.findByRole('heading', { name: 'Profile', level: 1 })).toBeVisible()
+    const retention = await screen.findByRole('region', { name: 'Chat retention' })
+    expect(within(retention).getByRole('spinbutton', { name: 'Duration' })).toHaveValue(7)
+  })
+
   it('asks for workspace choice at the old global approval URL instead of opening a wider queue', async () => {
     renderRoute('/approvals?interactionId=unscoped-request')
     expect(await screen.findByRole('heading', { name: 'Workspaces', level: 1 })).toBeVisible()
@@ -165,6 +185,18 @@ describe('workspace section routes', () => {
     expect(screen.queryByRole('button', { name: /Approvals Review requests in this workspace/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'App connections' })).not.toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Harness availability' })).toBeVisible()
+  })
+
+  it('mounts project files in the selected workspace settings', async () => {
+    const requestedWorkspaces: string[] = []
+    server.use(http.get('*/api/workspaces/:workspaceId/reference-files', ({ params }) => {
+      requestedWorkspaces.push(String(params.workspaceId))
+      return HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })
+    }))
+    renderRoute('/workspaces/workspace-1/settings')
+    const files = await screen.findByRole('region', { name: 'Project files' })
+    expect(await within(files).findByText('No files.')).toBeVisible()
+    expect(requestedWorkspaces).toEqual(['workspace-1'])
   })
 
   it('confirms workspace removal in settings and returns to the workspace list', async () => {

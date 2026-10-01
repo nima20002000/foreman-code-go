@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { CompatibilityHarness, HarnessCompatibility, HarnessCompatibilityList } from '@graphql/contracts'
+import type { CompatibilityHarness, HarnessCompatibility, HarnessCompatibilityList, HarnessQualificationListSchema } from '@graphql/contracts'
+import type { z } from 'zod'
 import { server } from '../../mocks/server'
 import { ToastProvider } from '../../shared/ui/nocturne'
 import { harnessCompatibilityKey } from '../../shared/api/harnessCompatibility'
+import { harnessQualificationKey } from '../../shared/api/harnessQualification'
 import { HarnessCompatibilityPanel } from './HarnessCompatibilityPanel'
 
 function report(harness: CompatibilityHarness, status: HarnessCompatibility['status'] = 'probe-failed'): HarnessCompatibility {
@@ -38,8 +40,55 @@ function mount(value: HarnessCompatibilityList, harness: CompatibilityHarness = 
   return client
 }
 const both = (): HarnessCompatibilityList => ({ canRetry: true, harnesses: [report('codex'), report('opencode', 'known-compatible')] })
+type Qualification = z.infer<typeof HarnessQualificationListSchema>['qualifications'][number]
+const qualification = (status: Qualification['status'], failureReason: string | null = null): Qualification => ({
+  harness: 'codex', version: '0.158.0', binarySha256: 'a'.repeat(64), status,
+  profile: status === 'qualified' || status === 'baseline' ? 'codex-0.156' : null,
+  suiteRevision: 'suite-v1', checks: [], failureReason,
+  startedAt: status === 'qualifying' ? '2026-09-28T10:00:00.000Z' : null,
+  checkedAt: status === 'qualifying' ? null : '2026-09-28T10:01:00.000Z',
+})
 
 describe('Harness Settings compatibility feedback', () => {
+  it('shows the installed version and trust from qualification, not the diagnostic probe', async () => {
+    server.use(http.get('*/api/management/harnesses/qualifications', () => HttpResponse.json({ qualifications: [qualification('qualified')] })))
+    mount(both())
+    const row = await screen.findByLabelText('Codex qualification')
+    expect(await within(row).findByText('Installed 0.158.0')).toBeInTheDocument()
+    expect(within(row).getByRole('status')).toHaveTextContent('Trusted')
+    expect(within(row).getByRole('button', { name: 'Check' })).toBeEnabled()
+  })
+  it('checks once, disables the button while qualifying, and reads back a failure', async () => {
+    let current = qualification('unqualified')
+    let posts = 0
+    server.use(
+      http.get('*/api/management/harnesses/qualifications', () => HttpResponse.json({ qualifications: [current] })),
+      http.post('*/api/management/harnesses/codex/qualification', () => {
+        posts++
+        current = qualification('qualifying')
+        return HttpResponse.json(current, { status: 202 })
+      }),
+    )
+    const client = mount(both())
+    const row = await screen.findByLabelText('Codex qualification')
+    expect(await within(row).findByText('Failed')).toBeInTheDocument()
+    fireEvent.click(within(row).getByRole('button', { name: 'Check' }))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Checking…'))
+    expect(within(row).getByRole('button', { name: 'Check' })).toBeDisabled()
+    expect(posts).toBe(1)
+    current = qualification('failed', 'Live turn failed.')
+    await act(async () => { await client.invalidateQueries({ queryKey: harnessQualificationKey }) })
+    expect(await within(row).findByText('Live turn failed.')).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: 'Check' })).toBeEnabled()
+  })
+  it('shows a denied qualification request without claiming trust', async () => {
+    server.use(http.post('*/api/management/harnesses/codex/qualification', () => HttpResponse.json({ error: { code: 'ACCESS_DENIED', message: 'Forbidden.' } }, { status: 403 })))
+    mount(both())
+    const row = await screen.findByLabelText('Codex qualification')
+    fireEvent.click(within(row).getByRole('button', { name: 'Check' }))
+    expect(await within(row).findByRole('alert')).toHaveTextContent('Forbidden.')
+    expect(within(row).getByRole('status')).toHaveTextContent('Failed')
+  })
   it('explains an out-of-sync API without showing a contract error as page content', async () => {
     server.use(http.get('*/api/management/harnesses/compatibility', () => HttpResponse.json({
       error: { code: 'INVALID_REQUEST', message: 'The request does not match its shared contract.' },

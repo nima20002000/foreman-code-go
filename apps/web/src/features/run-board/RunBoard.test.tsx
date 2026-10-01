@@ -1,0 +1,289 @@
+import { useEffect, useLayoutEffect, useState } from 'react'
+import { URL } from 'node:url'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider, useLocation } from '@tanstack/react-router'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import type { RunBoardSnapshotGetResult } from '@graphql/contracts/run-snapshots'
+import { server } from '../../mocks/server'
+import { runsSelectorApi } from '../runs-selector/client'
+import { runsSelectorKeys } from '../runs-selector/query'
+import { RunsSelectorSearchSchema } from '../runs-selector/search'
+import { useSelectedRun, type SelectedRunState } from '../runs-selector/useSelectedRun'
+import { RunBoardSlot } from './RunBoardSlot'
+import { deferred, reply, runA, runB, runsUrl, scope } from './testFixtures'
+import { installFlowLayout } from './testFlowLayout'
+
+const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'
+const clients: QueryClient[] = []
+const releases: (() => void)[] = []
+const editorMounted = vi.fn(), editorUnmounted = vi.fn(), authoringShortcut = vi.fn()
+let latest: SelectedRunState | undefined
+let unexpected: string[] = []
+
+/** A persistent editor owner with both a local geometry buffer and uncontrolled
+ * text. Tests the slot's lifetime contract without booting the whole authoring
+ * service/Run inspector. No production editor or React Flow module is mocked.
+ */
+function EditorProbe() {
+  const [x, setX] = useState(901)
+  useEffect(() => { editorMounted(); return () => { editorUnmounted() } }, [])
+  return <section aria-label="Current editable workflow">
+    <input aria-label="Draft name" defaultValue="X today" />
+    <input aria-label="Buffered draft x" type="number" value={x} onChange={(event) => setX(Number(event.target.value))} />
+    <button type="button">Save</button><button type="button">Start</button>
+  </section>
+}
+function Harness() {
+  const location = useLocation()
+  const search = location.search as Record<string, unknown>
+  const selection = useSelectedRun({ workspaceId: decodeURIComponent(location.pathname.split('/')[2]!),
+    workflowId: typeof search.workflowId === 'string' ? search.workflowId : scope.workflowId })
+  useLayoutEffect(() => { latest = selection }, [selection])
+  return <div onKeyDown={authoringShortcut}>
+    <output aria-label="Selected Run">{selection.identity.runId ?? 'current'}</output>
+    <RunBoardSlot selection={selection}><EditorProbe /></RunBoardSlot>
+  </div>
+}
+async function mount(entry = runsUrl('run-a')) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
+  clients.push(client)
+  const root = createRootRoute({ component: Outlet })
+  const route = createRoute({ getParentRoute: () => root, path: '/workspaces/$workspaceId',
+    validateSearch: RunsSelectorSearchSchema, component: Harness })
+  const router = createRouter({ routeTree: root.addChildren([route]), history: createMemoryHistory({ initialEntries: [entry] }),
+    defaultPendingMinMs: 0 })
+  await router.load()
+  const result = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+  await screen.findByLabelText('Selected Run')
+  await waitFor(() => expect(latest).toBeDefined())
+  return { ...result, client, router }
+}
+async function select(runId: string | null) { await act(async () => { await latest!.selectRun(runId) }) }
+function hold(result: RunBoardSnapshotGetResult) {
+  const gate = deferred<void>()
+  const release = () => gate.resolve()
+  releases.push(release)
+  return { release, response: async () => { await gate.promise; return HttpResponse.json(result) } }
+}
+function withoutCancellation() {
+  const actual = runsSelectorApi.snapshot
+  const completed: string[] = []
+  vi.spyOn(runsSelectorApi, 'snapshot').mockImplementation(async (input) => {
+    // Deliberately drop AbortSignal, but retain the real HTTP client and schema
+    // checks. A passing race test must not depend solely on transport abort.
+    const result = await actual(input)
+    completed.push(input.runId)
+    return result
+  })
+  return completed
+}
+const savedNode = (name: string) => screen.findByRole('img', { name: `${name}, saved agent, read only` })
+const noGraph = () => expect(screen.queryByTestId('run-board-canvas')).not.toBeInTheDocument()
+const denied = (status: number) => HttpResponse.json({ error: { code: 'DENIED', message: 'Unavailable' } }, { status })
+
+beforeEach(() => {
+  latest = undefined; unexpected = []
+  editorMounted.mockClear(); editorUnmounted.mockClear(); authoringShortcut.mockClear()
+  installFlowLayout()
+  server.use(
+    http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), {
+      workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
+    }))),
+    http.all('*/api/*', ({ request }) => {
+      unexpected.push(`${request.method} ${new URL(request.url).pathname}`)
+      return HttpResponse.json({ error: { code: 'UNEXPECTED', message: 'Only snapshot reads are allowed in this test.' } }, { status: 500 })
+    }),
+  )
+})
+afterEach(async () => {
+  cleanup()
+  await act(async () => { for (const release of releases.splice(0)) release() })
+  for (const client of clients.splice(0)) client.clear()
+  vi.unstubAllGlobals()
+  expect(unexpected).toEqual([])
+})
+
+describe('selected saved Run board (real Router, Query, HTTP/MSW and canvas)', () => {
+  it('shows removed agent Y, the old name, exact layout/sizes and every saved edge in A; B has no Y', async () => {
+    const { container } = await mount()
+    const y = await savedNode('Y')
+    expect(y).toHaveStyle({ transform: 'translate(500px,230px)', width: '260px', height: '160px' })
+    const x = await savedNode('X before rename')
+    expect(x).toHaveStyle({ transform: 'translate(-80px,40px)' })
+    expect(x).toHaveAttribute('title', expect.stringContaining('config-x-old'))
+    await waitFor(() => expect(container.querySelectorAll('.react-flow__edge')).toHaveLength(3))
+    const handoff = container.querySelector('.react-flow__edge[data-id="edge-xy"]')!
+    const approval = container.querySelector('.react-flow__edge[data-id="approval-xy"]')!
+    expect(handoff).toHaveAttribute('aria-label', 'Handoff from X before rename to Y: Old handoff, read only')
+    expect(approval.querySelector('.n-signal-edge')).toHaveAttribute('data-kind', 'approval')
+    expect(handoff.querySelector('path.n-signal-edge-base')?.getAttribute('d'))
+      .not.toBe(approval.querySelector('path.n-signal-edge-base')?.getAttribute('d'))
+
+    await select('run-b')
+    expect(await savedNode('X in B')).toHaveStyle({ transform: 'translate(100px,300px)' })
+    expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'X before rename, saved agent, read only' })).not.toBeInTheDocument()
+    await waitFor(() => expect(container.querySelectorAll('.react-flow__edge')).toHaveLength(1))
+    expect(container.querySelector('.react-flow__edge')).toHaveAttribute('data-id', 'edge-xz')
+  })
+
+  it('clears the rendered A graph immediately while B is loading', async () => {
+    await mount(); await savedNode('Y')
+    const b = hold(reply('run-b'))
+    server.use(http.get(snapshotRoute, () => b.response()))
+    await select('run-b')
+    const board = screen.getByRole('region', { name: 'Selected Run board' })
+    expect(within(board).getByRole('status')).toHaveTextContent('Loading…')
+    expect(board).toHaveAttribute('aria-busy', 'true')
+    noGraph()
+    expect(screen.queryByRole('region', { name: 'Current editable workflow' })).not.toBeInTheDocument()
+    b.release()
+    await savedNode('X in B')
+  })
+
+  it('ignores a late A response while B is selected even when the transport does not abort', async () => {
+    const completed = withoutCancellation()
+    const a = hold(reply('run-a'))
+    let requestedA = false
+    server.use(http.get(snapshotRoute, ({ params }) => {
+      if (params.runId === 'run-a') { requestedA = true; return a.response() }
+      return HttpResponse.json(reply('run-b'))
+    }))
+    await mount(); await waitFor(() => expect(requestedA).toBe(true))
+    const firstA = latest!.capture()
+    await select('run-b'); await savedNode('X in B')
+    a.release()
+    await waitFor(() => expect(completed).toContain('run-a'))
+    expect(latest!.isCurrent(firstA)).toBe(false)
+    expect(screen.queryByRole('img', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-run-id', 'run-b')
+    expect(await savedNode('X in B')).toBeInTheDocument()
+  })
+
+  it('fences the first A and B during rapid A -> B -> A, waiting for the new A visit', async () => {
+    const completed = withoutCancellation()
+    const first = hold(reply('run-a')), b = hold(reply('run-b')), second = hold(reply('run-a'))
+    const seen: string[] = []
+    server.use(http.get(snapshotRoute, ({ params }) => {
+      const id = String(params.runId)
+      seen.push(id)
+      return id === 'run-b' ? b.response() : seen.filter((item) => item === 'run-a').length === 1 ? first.response() : second.response()
+    }))
+    await mount(); await waitFor(() => expect(seen).toEqual(['run-a']))
+    const ticket = latest!.capture()
+    await select('run-b'); await waitFor(() => expect(seen).toEqual(['run-a', 'run-b']))
+    await select('run-a'); await waitFor(() => expect(seen).toEqual(['run-a', 'run-b', 'run-a']))
+    expect(latest!.generation.id).not.toBe(ticket.id)
+    expect(latest!.isCurrent(ticket)).toBe(false)
+    b.release(); first.release()
+    await waitFor(() => expect(completed).toHaveLength(2))
+    noGraph()
+    expect(within(screen.getByRole('region', { name: 'Selected Run board' })).getByRole('status')).toHaveTextContent('Loading…')
+    second.release()
+    await savedNode('Y')
+    expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-generation', latest!.generation.id)
+    expect(screen.queryByRole('img', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
+  })
+
+  it('renders one short unavailable line for a legacy Run, never today’s graph', async () => {
+    await mount(runsUrl('legacy'))
+    expect(await screen.findByText('Snapshot unavailable')).toBeInTheDocument()
+    noGraph()
+    const region = screen.getByRole('region', { name: 'Selected Run board' })
+    expect(region).toHaveTextContent(/^Snapshot unavailable$/)
+    expect(screen.queryByRole('region', { name: 'Current editable workflow' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+  })
+
+  it('retains the same editor instance, unsaved text and buffered geometry across history and back/forward', async () => {
+    const { router } = await mount(runsUrl(null))
+    noGraph()
+    const name = screen.getByRole('textbox', { name: 'Draft name' })
+    const x = screen.getByRole('spinbutton', { name: 'Buffered draft x' })
+    fireEvent.change(name, { target: { value: 'Unsaved title' } })
+    fireEvent.change(x, { target: { value: '1234' } })
+    await select('run-a'); await savedNode('Y')
+    expect(name.closest('.run-board-current')).toHaveAttribute('hidden')
+    expect(name.closest('.run-board-current')).toHaveAttribute('inert')
+    expect(editorMounted).toHaveBeenCalledTimes(1)
+    expect(editorUnmounted).not.toHaveBeenCalled()
+    await select('run-b'); await savedNode('X in B')
+    await select('legacy'); await screen.findByText('Snapshot unavailable')
+    await select(null)
+    expect(screen.getByRole('textbox', { name: 'Draft name' })).toBe(name)
+    expect(name).toHaveValue('Unsaved title')
+    expect(screen.getByRole('spinbutton', { name: 'Buffered draft x' })).toBe(x)
+    expect(x).toHaveValue(1234)
+    expect(editorUnmounted).not.toHaveBeenCalled()
+    await act(async () => { router.history.back() })
+    await screen.findByText('Snapshot unavailable')
+    await act(async () => { router.history.forward() })
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Draft name' })).toBe(name))
+    expect(name).toHaveValue('Unsaved title')
+    expect(x).toHaveValue(1234)
+  })
+
+  it.each([401, 403, 404])('removes a previously loaded graph after a %s read denial', async (status) => {
+    const { client } = await mount(); await savedNode('Y')
+    server.use(http.get(snapshotRoute, () => denied(status)))
+    await act(async () => { await client.refetchQueries({ queryKey: runsSelectorKeys.snapshot(latest!) }) })
+    await screen.findByText(status === 401 ? 'Sign in' : status === 403 ? 'No access' : 'Run not found')
+    noGraph()
+    expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+  })
+
+  it('fails closed on a mixed-scope snapshot response instead of rendering it', async () => {
+    server.use(http.get(snapshotRoute, () => HttpResponse.json(reply('run-a', { ...scope, workspaceId: 'other-workspace' }))))
+    await mount(); await screen.findByText('Load failed')
+    noGraph()
+    expect(latest!.identity).toEqual({ ...scope, runId: 'run-a' })
+  })
+
+  it('uses the new scope and a fresh generation even when both workflows have the same Run id', async () => {
+    const { router } = await mount(); await savedNode('Y')
+    const pending = hold(reply('run-a', { workspaceId: 'other-workspace', workflowId: 'other-workflow' }))
+    server.use(http.get(snapshotRoute, () => pending.response()))
+    await act(async () => { await router.navigate({ href: runsUrl('run-a', { workspaceId: 'other-workspace', workflowId: 'other-workflow' }) }) })
+    noGraph()
+    expect(latest!.identity.workspaceId).toBe('other-workspace')
+    pending.release()
+    await savedNode('Y')
+  })
+
+  it('has only view controls at 320px; keyboard/drag cannot edit, delete, save or Start', async () => {
+    const frozenBefore = JSON.stringify(runA)
+    const { container } = await mount(); const y = await savedNode('Y')
+    const canvas = screen.getByTestId('run-board-canvas')
+    expect(canvas.getBoundingClientRect().width).toBe(320)
+    expect(screen.queryByRole('button', { name: /Start|Save|Settings|Chat|interactive/i })).not.toBeInTheDocument()
+    const controls = container.querySelector('.react-flow__controls')!
+    expect(within(controls as HTMLElement).getAllByRole('button')).toHaveLength(3)
+    expect(container.querySelector('.react-flow__controls-interactive')).not.toBeInTheDocument()
+    expect(y).not.toHaveClass('draggable')
+    expect(y.querySelector('.run-board-node-visual')).toHaveAttribute('inert')
+    for (const key of ['ArrowRight', 'Delete', 'Backspace', 'Enter', ' ']) fireEvent.keyDown(y, { key })
+    fireEvent.keyDown(y, { key: 's', ctrlKey: true })
+    const down = new MouseEvent('mousedown', { bubbles: true, clientX: 100, clientY: 100, buttons: 1, button: 0 })
+    Object.defineProperty(down, 'view', { value: y.ownerDocument.defaultView })
+    fireEvent(y, down)
+    fireEvent.mouseMove(window, { clientX: 240, clientY: 230, buttons: 1 })
+    const up = new MouseEvent('mouseup', { bubbles: true })
+    Object.defineProperty(up, 'view', { value: y.ownerDocument.defaultView })
+    fireEvent(window, up)
+    expect(y).toHaveStyle({ transform: 'translate(500px,230px)' })
+    expect(authoringShortcut).not.toHaveBeenCalled()
+    expect(JSON.stringify(runA)).toBe(frozenBefore)
+    await userEvent.click(within(controls as HTMLElement).getAllByRole('button')[2]!)
+    expect(await savedNode('Y')).toBe(y)
+    expect(container.querySelector('.react-flow__viewport')?.getAttribute('style')).not.toMatch(/NaN|Infinity/)
+  })
+
+  it('does not manufacture nodes for a valid empty snapshot', async () => {
+    server.use(http.get(snapshotRoute, () => HttpResponse.json({ snapshot: { ...runB, runId: 'run-a', nodes: [], edges: [] } })))
+    await mount(); await screen.findByText('No nodes')
+    noGraph()
+  })
+})

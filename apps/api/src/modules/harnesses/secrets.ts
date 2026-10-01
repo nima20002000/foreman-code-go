@@ -1,3 +1,6 @@
+import { accessSync, constants } from 'node:fs'
+import { delimiter, dirname, resolve } from 'node:path'
+
 /** Deliberate application-secret delivery boundary, not a host sandbox. */
 export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...source, NO_COLOR: '1' }
@@ -5,6 +8,25 @@ export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.en
     if (key.startsWith('OPERATOR_') || key.startsWith('GRAPHQL_OPERATOR_') || key.startsWith('GRAPHQL_APP_') || key === 'GRAPHQL_MCP_TOKEN'
       || key === 'DATABASE_URL' || key === 'TEST_DATABASE_URL' || key === 'PGPASSWORD') delete environment[key]
   }
+  return environment
+}
+
+/** Keep a native CLI's helper lookups on the same installation as its executable. */
+export function nativeAgentEnvironment(binary: string, cwd: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  // Callers have already applied their own credential policy and may have added
+  // a scoped Agent token. Only PATH changes at the process boundary.
+  const environment = { ...source }
+  const paths = (environment.PATH ?? '').split(delimiter).filter((entry) =>
+    entry && !/(?:^|[\\/])node_modules[\\/]\.bin(?:[\\/]|$)/i.test(entry))
+  let directory: string | undefined
+  if (binary.includes('/') || binary.includes('\\')) directory = dirname(resolve(cwd, binary))
+  else {
+    const entry = paths.find((candidate) => {
+      try { accessSync(resolve(cwd, candidate, binary), constants.X_OK); return true } catch { return false }
+    })
+    if (entry) directory = resolve(cwd, entry)
+  }
+  environment.PATH = [...new Set(directory ? [directory, ...paths] : paths)].join(delimiter)
   return environment
 }
 

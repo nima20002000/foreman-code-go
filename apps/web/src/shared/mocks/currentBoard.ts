@@ -1,6 +1,7 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
 import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@graphql/contracts'
+import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
 import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, BrowserAccessSessionSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@graphql/contracts/management'
 import {
   CurrentManagedWorkflowSchema, CurrentWorkspaceDetailsSchema, CurrentWorkflowCreateInputSchema,
@@ -116,6 +117,14 @@ export function createCurrentBoardMock(options: {
     try {
       if (method === 'GET' && path === publicPrefix) return HttpResponse.json(details())
       if (method === 'GET' && path === `${publicPrefix}/agents`) return HttpResponse.json({ agents })
+      const selectedChat = path.match(/^\/api\/workspaces\/[^/]+\/agent-chat\/workflows\/([^/]+)\/runs\/([^/]+)\/nodes\/([^/]+)$/)
+      if (method === 'GET' && selectedChat) {
+        // This Board fixture has Run facts but no selected-chat backing state.
+        // Answer the mounted history panel explicitly instead of leaving its read unhandled.
+        return HttpResponse.json(ReadSelectedRunChatResponseSchema.parse({ kind: 'unavailable',
+          target: { workspaceId, workflowId: selectedChat[1], runId: selectedChat[2], workflowNodeId: selectedChat[3] },
+          reason: 'execution_missing' }))
+      }
       if (method === 'GET' && path === prefix) return HttpResponse.json(managedWorkspace())
       if (method === 'GET' && path === `${prefix}/agents`) return HttpResponse.json({ items: catalog, pageInfo })
       if (method === 'POST' && path === `${prefix}/agents`) {

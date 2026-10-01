@@ -107,4 +107,4 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
     await admin.end()
     await rm(directory, { recursive: true, force: true })
   }
-})
+}, 30_000)

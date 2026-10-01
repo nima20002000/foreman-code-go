@@ -6,7 +6,7 @@ import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 import { CodexAppServerSessionManager } from './codexAppServer.js'
 import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
-import { QUALIFIED_OPENCODE_VERSION } from './opencodeTransport.js'
+import { requireHarnessQualification } from './qualification/gate.js'
 import { harnessSettingSupport } from './operatorOptions.js'
 import { runCommand } from './process.js'
 import { HarnessExecutionError } from './errors.js'
@@ -52,9 +52,10 @@ export class NativeConfigurationService {
           if (harness !== 'opencode') throw new HarnessExecutionError('CODEX_MODEL_REFRESH_UNSUPPORTED', 'Codex has no upstream catalog refresh command.')
           const signal = AbortSignal.timeout(60_000)
           const version = await runCommand(this.openCodeBinary, ['--version'], this.directory, signal)
-          if (version.exitCode !== 0 || (version.stdout || version.stderr).trim() !== QUALIFIED_OPENCODE_VERSION) {
+          if (version.exitCode !== 0) {
             throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The configured OpenCode CLI is not the qualified release.')
           }
+          await requireHarnessQualification('opencode', (version.stdout || version.stderr).trim(), this.openCodeBinary)
           // Update the shared registry without loading plugins; the fresh /provider read still filters connected providers.
           const result = await runCommand(this.openCodeBinary, ['models', '--refresh', '--pure'], this.directory, signal)
           if (result.exitCode !== 0) throw new HarnessExecutionError('OPENCODE_MODEL_REFRESH_UNAVAILABLE', 'OpenCode could not refresh its models.dev cache.')

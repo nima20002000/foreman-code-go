@@ -11,6 +11,8 @@ export const APP_MCP_TOKEN = 'GRAPHQL_MCP_TOKEN'
 export const APP_MCP_PATH = '/mcp'
 /** Pre-unification entries. Recognized only so they can be reported and removed. */
 export const LEGACY_APP_MCP_SERVER_NAMES = ['graphql-app', 'graphql-operator'] as const
+export const chatExcludedAppMcpServerNames = (serverName: string): readonly string[] =>
+  [...new Set([serverName, APP_MCP_SERVER_NAME, ...LEGACY_APP_MCP_SERVER_NAMES])]
 export const appLauncherPath = () => join(homedir(), '.local', 'share', 'graphql', 'mcp', 'launcher.mjs')
 export function appLauncherConnection(): Extract<HarnessMcpConnection, { transport: 'stdio' }> {
   return { transport: 'stdio', executable: process.execPath, arguments: [appLauncherPath()], environmentVariables: [APP_MCP_TOKEN] }

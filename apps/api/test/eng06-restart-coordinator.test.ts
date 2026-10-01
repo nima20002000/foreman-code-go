@@ -11,7 +11,7 @@ type EngineArgs = ConstructorParameters<typeof LangGraphWorkflowEngine>
 function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
   const db = recoveryDatabase(options), calls: string[] = []
   const snapshot = { run: { id: db.owner.runId, executionState: 'running', outcome: 'pending' },
-    version: {}, cleanupPending: false, stopRequested: false }
+    version: { definition: {} }, cleanupPending: false, stopRequested: false }
   const runs = {
     repeatRepositoryFactory: () => ({}),
     getExecution: async () => db.state.execution,

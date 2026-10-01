@@ -4,7 +4,7 @@ import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { readCurrentNativeActivities, selectCurrentNodeActivity } from './currentActivity.js'
 import type { CurrentNativeActivity } from './nativeActivitySelection.js'
-import { publicNodeAttention, readPublicAttentionCounts, type PublicAttentionOverlay } from './currentAttention.js'
+import { publicNodeAttention, readPublicAttentionCounts, type PublicAttentionCount, type PublicAttentionOverlay } from './currentAttention.js'
 import { publicNodeState, publicReviewUnsettled, type PublicExecution } from './publicLifecycle.js'
 import { RunGraphError } from './errors.js'
 
@@ -23,7 +23,8 @@ export interface PublicProjectionOverlay extends PublicAttentionOverlay {
  * Overlays let a producer compute its post-mutation facts without writing before
  * its source/effect guards. No native writes, lease acquisition or external I/O occurs. */
 export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: RunGraphScope,
-  nodeIds: readonly string[], overlay: PublicProjectionOverlay = {}): Promise<PublicNode[]> {
+  nodeIds: readonly string[], overlay: PublicProjectionOverlay = {},
+  attention?: ReadonlyMap<string, PublicAttentionCount>): Promise<PublicNode[]> {
   assertGraphTransaction(sql)
   if (nodeIds.length > 1000 || new Set(nodeIds).size !== nodeIds.length) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const row = (await sql.query<{ closed: boolean; cleanup_pending: boolean }>(`select r.stop_requested_at is not null
@@ -97,7 +98,7 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
   }
   native = native.filter((item) => item.key.workKind === 'review'
     || executions.get(item.key.execution.workflowNodeId)?.execution.executionId === item.key.execution.executionId)
-  const counts = await readPublicAttentionCounts(sql, scope.runId, nodeIds, overlay)
+  const counts = attention ?? await readPublicAttentionCounts(sql, scope.runId, nodeIds, overlay)
   return nodeIds.map((id) => {
     const execution = executions.get(id), resolution = resolutions.get(id), count = counts.get(id)!
     if (resolution?.execution && (!execution || canonicalGraphJson(resolution.execution) !== canonicalGraphJson(execution.execution))) {

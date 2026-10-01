@@ -7,6 +7,8 @@ import { delimiter, isAbsolute, join, resolve } from 'node:path'
 import { z } from 'zod'
 
 import { HarnessExecutionError } from './errors.js'
+import { requireHarnessQualification } from './qualification/gate.js'
+import { harnessProfile } from './qualification/profiles.js'
 import { isObject, object, type CodexProtocol, type JsonObject, type RpcRequest } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
 
@@ -26,7 +28,7 @@ const qualifiedSchemas: Record<string, { stableGitBlob: string; referenceManifes
     referenceManifestSha256: 'ba31111b6547fcb05e28987ed7310991e017321eda0f7604333b2f9784130ae0',
   },
 }
-export function isQualifiedCodexVersion(value: string): boolean { return Object.hasOwn(qualifiedSchemas, value) }
+export function isQualifiedCodexVersion(value: string): boolean { return harnessProfile('codex', value) !== null }
 const BUNDLE = 'codex_app_server_protocol.schemas.json'
 
 export function canonical(value: unknown): string {
@@ -161,6 +163,15 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
     compile(`ServerRequest:${method}`, branch('ServerRequest', method))
     compile(type, definition(type))
   }
+  // Older schema fixtures and native releases without dynamic tools keep their
+  // existing protocol. A bundle that advertises the response must also carry
+  // the matching request branch before file calls can be accepted.
+  // Real Codex bundles keep this type at the top level even when a v2 namespace exists.
+  const dynamicToolResponse = (isObject(definitions.v2) ? definitions.v2.DynamicToolCallResponse : undefined) ?? definitions.DynamicToolCallResponse
+  if (dynamicToolResponse) {
+    compile('ServerRequest:item/tool/call', branch('ServerRequest', 'item/tool/call'))
+    compile('DynamicToolCallResponse', definition('DynamicToolCallResponse'))
+  }
   for (const method of ['turn/started', 'turn/completed', 'item/started', 'item/completed', 'serverRequest/resolved']) {
     compile(`ServerNotification:${method}`, branch('ServerNotification', method))
   }
@@ -182,7 +193,7 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
       check(type, definition(type), value)
     },
     serverResponse: (method, value) => {
-      const type = serverResponseTypes[method]
+      const type = method === 'item/tool/call' && dynamicToolResponse ? 'DynamicToolCallResponse' : serverResponseTypes[method]
       if (!type) throw new Error('Unqualified native response.')
       check(type, definition(type), value)
     },
@@ -219,16 +230,14 @@ export async function qualifyCodex(
   binary: string, expectedVersion: string | undefined, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal,
 ): Promise<QualifiedCodex> {
-  if (expectedVersion !== undefined && !qualifiedSchemas[expectedVersion]) {
-    throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'A different provider version needs a new protocol qualification.')
-  }
   const resolved = await executable(binary, cwd, environment)
   const fingerprint = await identity(resolved)
   const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment)
   const version = await command(['--version'])
   const actual = (version.stdout || version.stderr).trim()
   const schema = qualifiedSchemas[actual]
-  if (version.exitCode !== 0 || !schema || (expectedVersion !== undefined && actual !== expectedVersion)) {
+  if (version.exitCode === 0) await requireHarnessQualification('codex', actual, resolved)
+  if (version.exitCode !== 0 || (expectedVersion !== undefined && actual !== expectedVersion)) {
     throw new HarnessExecutionError('CODEX_APP_SERVER_VERSION_UNQUALIFIED', 'The installed Codex version has no qualified protocol profile.')
   }
   if (requireAuthentication) {
@@ -248,7 +257,7 @@ export async function qualifyCodex(
     const sorted = JSON.parse(canonical(JSON.parse(stableBytes.toString('utf8')))) as unknown
     const formatted = JSON.stringify(sorted, null, 2)
     const candidates = [stableBytes, Buffer.from(formatted), Buffer.from(formatted + '\n')]
-    if (!candidates.some((bytes) => gitBlob(bytes) === schema.stableGitBlob)) {
+    if (schema && !candidates.some((bytes) => gitBlob(bytes) === schema.stableGitBlob)) {
       throw new HarnessExecutionError('CODEX_SCHEMA_UNQUALIFIED', `The installed stable protocol does not match upstream ${actual}.`)
     }
     const generated = await command(['app-server', 'generate-json-schema', '--experimental', '--out', experimental])
@@ -259,10 +268,11 @@ export async function qualifyCodex(
     const result: QualifiedCodex = {
       binary: resolved, identity: fingerprint, protocol, providerVersion: actual,
       schemaManifestSha256: measuredManifest,
-      stableSchemaGitBlob: schema.stableGitBlob,
-      referenceSchemaManifestSha256: schema.referenceManifestSha256,
+      stableSchemaGitBlob: schema?.stableGitBlob ?? '',
+      referenceSchemaManifestSha256: schema?.referenceManifestSha256 ?? '',
     }
     await assertCodexUnchanged(result)
+    await requireHarnessQualification('codex', actual, resolved)
     return result
   } catch (error) {
     if (error instanceof HarnessExecutionError) throw error

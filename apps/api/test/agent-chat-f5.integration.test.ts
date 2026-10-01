@@ -174,6 +174,8 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
       assert.equal(replay.statusCode, 200, replay.body)
       assert.equal(replay.json().replayed, true)
       assert.deepEqual(await counts(), after)
+      // The crash-left receipts above bypass service admission; explicitly run startup recovery.
+      await f.service.recover()
       const state = await f.read()
       assert.equal(state.turns.length, 100)
       assert.equal(state.turns.some((turn) => turn.requestId === winner.requestId), true)

@@ -2,9 +2,14 @@ import { OperatorActivitySchema } from '@graphql/contracts'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
+import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
 
 import { useConversationDraftStore } from '../conversations'
-import { cancelOperatorTurn, createOperatorConversation, getOperatorConversation,
+import { ChatAttachmentControl, useConversationAttachments } from '../attachments'
+import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
+import { containsAttachmentRefs, messageAttachmentRefs, prepareChatAttachments } from '../conversations/chatAttachmentAttempt'
+import { settingsExperienceKeys } from '../../shared/api/settingsExperience'
+import { apiClient, cancelOperatorTurn, createOperatorConversation, getOperatorConversation,
   sendOperatorMessage, respondOperatorInteraction } from '../../shared/api/client'
 import { ApiError } from '../../shared/api/client'
 import { deleteOperatorConversation, restoreOperatorConversation, listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
@@ -26,6 +31,7 @@ import { acknowledgeOperatorMessage, assertOperatorMessageReserved, beginOperato
   readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
 import { projectOperatorActivity, projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
+import { useOperatorAttachmentReceipts } from './useOperatorAttachmentReceipts'
 import { OperatorTranscript } from './OperatorTranscript'
 import { OperatorApprovalCard } from './OperatorApprovalCard'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
@@ -48,8 +54,16 @@ function currentSession(generation: number): boolean {
   return !sessionIsSwitching() && sessionGeneration() === generation
 }
 
-export function OperatorChat({ settingsWarning }: { settingsWarning?: string } = {}) {
+export function OperatorChat(props: { settingsWarning?: string } = {}) {
+  return <ChatAttachmentBoundary><OperatorChatContent {...props} /></ChatAttachmentBoundary>
+}
+
+function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) {
   const enabled = useOperatorChatVisibility()
+  const browserAccess = useQuery({ queryKey: settingsExperienceKeys.access(), enabled: false,
+    queryFn: ({ signal }) => apiClient.request('/api/auth/session', BrowserAccessSessionSchema, { signal }),
+  })
+  const attachmentReceipts = useOperatorAttachmentReceipts()
   const { panelRef, size, grip, moveGrip } = useOperatorChatResize()
   const historyLimit = useRef(10)
   const creating = useRef(false)
@@ -98,6 +112,13 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
     }, retry: false, refetchInterval: 3_000 })
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
+  const fileConversation = selectedId && !accessDenied && selected.data?.conversation.id === selectedId ? selected.data.conversation : undefined
+  const owner = !browserAccess.isError && browserAccess.data?.principal
+  const attachments = useConversationAttachments(enabled && fileConversation?.scope === 'application' && owner
+    && Date.parse(owner.expiresAt) > Date.now() ? { kind: 'temporary', chat: { kind: 'operator',
+      conversationId: fileConversation.id, operatorId: fileConversation.agentId, ownerPrincipalId: owner.id,
+    } } : null)
+  const attachmentReceiptPending = Boolean(selectedId && attachmentReceipts.blocksSend(selectedId, attachments.readyRefs))
   const pending = selectedId && !accessDenied && enabled && !sessionIsSwitching() ? readPendingOperatorMessage(selectedId) : {}
   const setup = useOperatorChatSetup(enabled && open && !pending.command, preferences.query.data?.revision,
     { ...(selectedId ? { conversationId: selectedId } : {}), ...(preferences.settings ? { harness: preferences.settings.harness } : {}) })
@@ -144,8 +165,21 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       refreshOutbox((value) => value + 1)
       if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
       assertOperatorMessageReserved(id, command)
+      const confirmed = (result: Awaited<ReturnType<typeof sendOperatorMessage>>) => {
+        if (command.attachments?.length) {
+          const message = result.state.messages.find((entry) => entry.role === 'user' && entry.requestId === command.requestId)
+          if (result.state.conversation.id !== id || !message || message.conversationId !== id
+            || message.content.trim() !== command.content.trim() || !containsAttachmentRefs(messageAttachmentRefs(message), command.attachments)) {
+            throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The file message receipt was not confirmed. Retry the pending message.' })
+          }
+          if (result.state.turnState === 'uncertain' && (!result.state.activeRequestId || result.state.activeRequestId === command.requestId)) {
+            throw new ApiError({ code: 'OPERATOR_DELIVERY_UNCONFIRMED', message: 'Delivery is unknown. Your draft is kept.' }, 409)
+          }
+        }
+        return result
+      }
       if (input.recoverFirst) {
-        try { return await sendOperatorMessage(id, { ...command, recovery: 'receipt' }) }
+        try { return confirmed(await sendOperatorMessage(id, { ...command, recovery: 'receipt' })) }
         catch (error) {
           if (!ApiError.is(error) || error.code !== 'OPERATOR_RECEIPT_NOT_FOUND') throw error
           // A read-only miss is not an abandonment receipt. Reuse the original
@@ -154,16 +188,20 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
           assertOperatorMessageReserved(id, command)
         }
       }
-      return sendOperatorMessage(id, command)
+      return confirmed(await sendOperatorMessage(id, command))
     },
     onSuccess: async (result, input) => {
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
       const targetId = result.state.conversation.id
+      // Acceptance, not winning the cross-tab outbox deletion, consumes the snapshot.
+      attachmentReceipts.confirm(input.command.requestId, result.state)
       let acknowledged = false
       try {
         acknowledged = await acknowledgeOperatorMessage(input.id, input.command.requestId)
         if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
-        if (acknowledged) clearDraft(input.id, input.command.content)
+        if (acknowledged) {
+          clearDraft(input.id, input.command.content)
+        }
       } catch (error) {
         if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
         setPreparationError({ id: input.id, message: error instanceof Error ? error.message : 'The message receipt could not be saved.' })
@@ -181,7 +219,8 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
       try { await recordOperatorMessageFailure(input.id, input.command.requestId,
         error instanceof Error ? error.message : 'Message delivery failed.', ApiError.is(error)
-          && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT'].includes(error.code), input.attemptId) } catch { /* The current error remains visible. */ }
+          && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT', 'MESSAGE_ATTACHMENT_NOT_FOUND',
+            'MESSAGE_ATTACHMENT_NOT_READY', 'MESSAGE_ATTACHMENT_UNAVAILABLE', 'MESSAGE_ATTACHMENT_CONVERSATION_REQUIRED'].includes(error.code), input.attemptId) } catch { /* The current error remains visible. */ }
       if (currentSession(input.generation) && input.epoch === identityEpoch()) refreshOutbox((value) => value + 1)
     },
     // A later 4xx cannot prove an earlier lost delivery was not accepted.
@@ -356,8 +395,16 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       await createConversation()
       return
     }
-    if (!setupReady || !settingsReady || !selectedId || archived || active || accessDenied || pending.command || pending.error
+    if (!setupReady || !settingsReady || !selectedId || archived || active || accessDenied || pending.command || pending.error || attachmentReceiptPending
       || reservations.current.has(selectedId) || (send.isPending && send.variables?.id === selectedId)) return
+    if ((useConversationDraftStore.getState().drafts[selectedId] ?? '').trim() !== content.trim()) return
+    const attachmentAttempt = prepareChatAttachments(attachments)
+    if (!attachmentAttempt || (!content.trim() && !attachmentAttempt.attachments.length)
+      || attachmentReceipts.blocksSend(selectedId, attachmentAttempt.attachments)) return
+    if (attachmentAttempt.attachments.length && pendingHandoff) {
+      setPreparationError({ id: selectedId, message: 'Start the new chat before attaching files.' })
+      return
+    }
     const id = selectedId
     const generation = sessionGeneration()
     const epoch = identityEpoch()
@@ -367,8 +414,9 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
       const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings,
         pendingHandoff ? conversation?.revision : undefined,
         { configurationVersionId: conversation?.conversation.operatorConfigurationVersionId,
-          defaultsRevision: preferences.query.data?.revision })
+          defaultsRevision: preferences.query.data?.revision }, attachmentAttempt.attachments)
       if (!currentSession(generation) || epoch !== identityEpoch()) return
+      attachmentReceipts.remember(id, command, attachmentAttempt)
       setPreparationError(undefined)
       send.mutate({ id, command, generation, epoch, navigationGeneration })
     } catch (error) {
@@ -466,14 +514,15 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
               }}>Retry pending message</Button> : null}
               {pending.command && pending.definitiveFailure ? <Button variant="ghost" disabled={pending.inFlight || (send.isPending && send.variables?.id === selectedId)} onClick={() => {
                 void discardDefinitivelyRejectedOperatorMessage(conversation.conversation.id, pending.command!.requestId).then((discarded) => {
-                  if (discarded) { send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
+                  if (discarded) { attachmentReceipts.forget(pending.command!.requestId); send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
                 }).catch((error: unknown) => setPreparationError({ id: conversation.conversation.id,
                   message: error instanceof Error ? error.message : 'The saved attempt could not be cleared.' }))
               }}>Clear rejected attempt and keep draft</Button> : null}
             </div> : null}
             <footer className="operator-chat-controls">
+              {attachmentReceiptPending && !pending.command ? <Button size="sm" onClick={attachmentReceipts.reconcile}>Check previous message</Button> : null}
               <p className="operator-chat-handoff">Access edits apply to new chats and harness handoffs. This chat keeps its pinned access policy.</p>
-              {pendingHandoff ? <p className="operator-chat-handoff" role="status">Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</p> : null}
+              {pendingHandoff ? <p className="operator-chat-handoff" role="status">{attachments.hasAttachments ? 'Files stay in this chat. Start a new chat to attach files.' : <>Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</>}</p> : null}
               {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
                 action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>
                 {preferencesDenied ? 'Check your browser enrollment and permissions.' : preferences.query.data ? 'Last saved settings are still available.' : preferences.query.error.message}
@@ -492,8 +541,10 @@ export function OperatorChat({ settingsWarning }: { settingsWarning?: string } =
                 access={preferences.harness ? <OperatorAccessPicker value={preferences.harness} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
                   saving={preferences.form.isSaving} saveError={preferences.form.error}
                   onChange={preferences.changeAccess} /> : undefined}
+                hasAttachments={attachments.hasAttachments}
+                attachmentControl={<ChatAttachmentControl draft={attachments} disabled={Boolean(archived || active || pending.command) || preparingId === selectedId} />}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
-                sendDisabled={!setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
+                sendDisabled={attachmentReceiptPending || attachments.hasBlockingAttachments || (attachments.hasAttachments && pendingHandoff) || !setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
                 onCancel={requestId && conversation.turnState !== 'canceling' ? () => cancel.mutate({ id: conversation.conversation.id, requestId, generation: sessionGeneration() }) : undefined} />
             </footer>
