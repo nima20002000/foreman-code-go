@@ -1,11 +1,11 @@
-import { DevicePairingRequestSchema, MainIdentityProofRequestSchema, type DevicePairingRequest, type MainIdentityProofRequest, type MainSignedIdentityProof } from '@graphql/contracts/device-identity'
+import { DevicePairingRequestSchema, MainEnrollmentProofRequestSchema, type DevicePairingRequest, type MainEnrollmentProofRequest, type MainSignedEnrollmentProof } from '@graphql/contracts/device-identity'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { DEVICE_FRAME_BYTES, DEVICE_PROTOCOL_VERSION } from '@graphql/contracts/device-connection'
 
 /** Separate device-only HTTP listener: never delegates to browser, MCP or full API. */
 export function deviceHttpHandler(options: {
   mainId: string; mainPublicKeyFingerprint: string; appVersion: string
-  signMainIdentityProof(request: MainIdentityProofRequest): Promise<MainSignedIdentityProof>
+  signMainEnrollmentProof(request: MainEnrollmentProofRequest): Promise<MainSignedEnrollmentProof>
   pair(input: DevicePairingRequest): Promise<unknown>
 }) {
   return (request: IncomingMessage, response: ServerResponse) => {
@@ -29,9 +29,9 @@ export function deviceHttpHandler(options: {
       cleanup()
       if (request.url === '/device/challenge') {
         try {
-          const proofRequest = MainIdentityProofRequestSchema.parse(JSON.parse(Buffer.concat(chunks).toString()))
+          const proofRequest = MainEnrollmentProofRequestSchema.parse(JSON.parse(Buffer.concat(chunks).toString()))
           if (proofRequest.mainId !== options.mainId) { reply(409, { error: 'wrong-main' }); return }
-          void options.signMainIdentityProof(proofRequest).then((proof) => reply(200, proof)).catch(() => reply(503, { error: 'main-identity-unavailable' }))
+          void options.signMainEnrollmentProof(proofRequest).then((proof) => reply(200, proof)).catch(() => reply(503, { error: 'main-identity-unavailable' }))
         } catch { reply(400, { error: 'invalid-challenge-request' }) }
         return
       }
