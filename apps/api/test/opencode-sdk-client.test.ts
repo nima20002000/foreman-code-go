@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import { createOpenCodeSdkClient } from '../src/modules/harnesses/opencodeSdkClient.js'
+import { callOpenCodeSdk, createOpenCodeSdkClient } from '../src/modules/harnesses/opencodeSdkClient.js'
 import type { OpenCodeHttpEvidence } from '../src/modules/harnesses/opencodeClient.js'
 import type { OpenCodeServerController } from '../src/modules/harnesses/opencodeTransport.js'
 
@@ -36,7 +36,9 @@ it('SDK prompt ACK and lost accepted-body parse never retry native POST', async 
   }
   const client = createOpenCodeSdkClient({ server, ownerAgentId: 'owner', directory: '/work', generation: 1, onEvidence: value => evidence.push(value) })
   await client.session.promptAsync({ sessionID: 'root', messageID: 'exact', parts: [{ type: 'text', text: 'hello' }] })
-  await assert.rejects(client.session.create({ title: 'fixture' }))
+  await assert.rejects(callOpenCodeSdk({ server, ownerAgentId: 'owner', directory: '/work', generation: 1, onEvidence: value => evidence.push(value) },
+    sdk => sdk.session.create({ title: 'fixture' })), /parsed acknowledgement is unavailable/)
   assert.equal(posts, 2)
-  assert.deepEqual(evidence.map(value => value.status), [204, 200])
+  assert.deepEqual(evidence.map(value => value.status), [204, 200, 200])
+  assert.equal(evidence.at(-1)?.bodyValidity, 'invalid')
 })
