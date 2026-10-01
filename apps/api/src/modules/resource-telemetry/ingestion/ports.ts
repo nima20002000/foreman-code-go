@@ -12,6 +12,8 @@ export interface TelemetryOwnershipView {
   state: 'active' | 'ended' | 'closure-unconfirmed' | 'closed'
   /** Internal authorization inputs only; never returned on the wire. */
   sharedOwners: readonly TelemetryOwner[]
+  /** False when a remote source cannot enumerate every component of a reported shared value. */
+  sharedOwnersComplete?: boolean
 }
 /** Passive projection of existing accepted placement/attempt/lease/observed host. */
 export interface TelemetryOwnershipAuthority {

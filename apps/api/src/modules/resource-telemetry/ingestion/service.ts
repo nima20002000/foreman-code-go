@@ -338,11 +338,11 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
       && telemetryCanonical(item.identity.host) === telemetryCanonical(selector.host))
     const noSample = (reason: TelemetryReason): TelemetryReadResult =>
       ({ kind: 'no-sample', selector, selectorKey: key, reason, identity: null })
-    let lifecycle: TelemetrySample['ownershipState'] = 'active', shared = false
+    let lifecycle: TelemetrySample['ownershipState'] = 'active', shared = false, sharedOwnersComplete = true
     if (selector.scope === 'owned') {
       const owner = await this.ports.ownership.resolve(selector, signal)
       if (!owner || telemetrySelectorKey(owner.selector) !== key) return noSample('ownership-unavailable')
-      lifecycle = owner.state; shared = owner.sharedOwners.length > 0
+      lifecycle = owner.state; shared = owner.sharedOwners.length > 0; sharedOwnersComplete = owner.sharedOwnersComplete !== false
       for (const sharedOwner of owner.sharedOwners) if (!await this.ports.reads.allowSharedOwner(principal, sharedOwner, signal)) return noSample('shared-restricted')
     }
     if (!state) return noSample('not-yet-sampled')
@@ -355,13 +355,13 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     if (selector.scope === 'owned') {
       const currentOwner = await this.ports.ownership.resolve(selector, signal)
       if (!currentOwner || telemetrySelectorKey(currentOwner.selector) !== key) return noSample('ownership-unavailable')
-      lifecycle = currentOwner.state; shared = currentOwner.sharedOwners.length > 0
+      lifecycle = currentOwner.state; shared = currentOwner.sharedOwners.length > 0; sharedOwnersComplete = currentOwner.sharedOwnersComplete !== false
       for (const owner of currentOwner.sharedOwners) if (!await this.ports.reads.allowSharedOwner(principal, owner, signal)) return noSample('shared-restricted')
       if (!this.#principalActive(principal) || state.retired || !await this.ports.reads.allow(principal, selector, signal)) return denied
     }
     const cached = state.rows.get(key)
     if (!cached || 'reason' in cached) return noSample(lifecycle === 'ended' || lifecycle === 'closed' ? lifecycle : cached?.reason ?? 'not-yet-sampled')
-    if (shared && !cached.latest.coverage.shared) return noSample('shared-restricted')
+    if (shared !== cached.latest.coverage.shared || cached.latest.coverage.shared && !sharedOwnersComplete) return noSample('shared-restricted')
     const age = this.ports.clock.monotonicMs() - cached.issuedMonoMs
     const current = structuredClone(cached.latest)
     current.serverNowUnixMs = this.ports.clock.unixMs(); current.ageUpperBoundMs = age
