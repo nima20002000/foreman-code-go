@@ -21,14 +21,19 @@ async function main() {
   }
   // The human must explicitly stop/drain via W08/service policy first. An active
   // installation cannot be updated by this CLI, even with an approval flag.
+  let updateUnlock;
   const approveStop = async () => {
     if (options['--approve-stopped-update'] !== 'yes') return false;
-    const unlock = await acquireWorkerLock(state); await unlock(); return true;
+    updateUnlock = await acquireWorkerLock(state); return true;
   };
-  if (command === 'install') {
-    const result = await installVersion({ root, artifact: options['--artifact'], approvedManifestSha256: options['--manifest-sha256'], facts: await hostFacts(process.env.HOME ?? '', [root, state]), expected: { protocolVersion: 1, identityFormat: 1 }, updatePolicy: approveStop });
-    console.log(JSON.stringify(result));
-  } else if (command === 'rollback') await rollbackVersion({ root, approveStop });
-  else throw new WorkerError('installer_command_invalid');
+  const facts = await hostFacts(process.env.HOME ?? '', [root, state]);
+  const expected = { protocolVersion: 1, identityFormat: 1 };
+  try {
+    if (command === 'install') {
+      const result = await installVersion({ root, artifact: options['--artifact'], approvedManifestSha256: options['--manifest-sha256'], facts, expected, updatePolicy: approveStop });
+      console.log(JSON.stringify(result));
+    } else if (command === 'rollback') await rollbackVersion({ root, approveStop, facts, expected });
+    else throw new WorkerError('installer_command_invalid');
+  } finally { await updateUnlock?.(); }
 }
 main().catch((error) => { console.error(error instanceof WorkerError ? error.code : 'installation_failed'); process.exitCode = 1; });

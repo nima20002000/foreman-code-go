@@ -113,12 +113,13 @@ export async function installVersion({ root, artifact, approvedManifestSha256, f
   });
 }
 
-export async function rollbackVersion({ root, approveStop }) {
+export async function rollbackVersion({ root, approveStop, facts, expected }) {
   return withInstallLock(root, async () => {
     if (!approveStop || await approveStop() !== true) throw new WorkerError('update_not_approved');
     const previous = await readlink(join(root, 'previous'));
     if (!/^versions\/\d+\.\d+\.\d+-[a-f0-9]{64}$/.test(previous)) throw new WorkerError('rollback_invalid');
-    await verifyRelease(join(root, previous), previous.slice(-64));
+    const manifest = await verifyRelease(join(root, previous), previous.slice(-64));
+    validateManifest(manifest, facts, expected);
     await switchLink(root, 'current', previous);
   });
 }

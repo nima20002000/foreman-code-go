@@ -35,7 +35,7 @@ test('verified update and rollback preserve identity outside versions; repeated 
   await assert.rejects(installVersion(f), /update_not_approved/);
   await installVersion({ ...f, updatePolicy: async () => true });
   assert.notEqual(await readlink(join(f.root, 'current')), first);
-  await rollbackVersion({ root: f.root, approveStop: async () => true });
+  await rollbackVersion({ root: f.root, approveStop: async () => true, facts, expected });
   assert.equal(await readlink(join(f.root, 'current')), first);
   assert.equal(await readFile(join(f.root, 'identity.json'), 'utf8'), 'unchanged');
 });
@@ -121,7 +121,7 @@ test('rollback verifies retained bytes and cannot reactivate tampered code', asy
   await installVersion({ ...f, updatePolicy: async () => true });
   const current = await readlink(join(f.root, 'current'));
   await writeFile(join(f.root, first, 'src/cli.mjs'), 'tampered');
-  await assert.rejects(rollbackVersion({ root: f.root, approveStop: async () => true }), /artifact_checksum_mismatch/);
+  await assert.rejects(rollbackVersion({ root: f.root, approveStop: async () => true, facts, expected }), /artifact_checksum_mismatch/);
   assert.equal(await readlink(join(f.root, 'current')), current);
 });
 
