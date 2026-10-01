@@ -2,7 +2,7 @@ import { SingleWriterSessionManager } from '../src/modules/interactions/sessionW
 import { nativeLanes } from './helpers/nativeLanes.js'
 import { describe, expect, it, vi } from 'vitest'
 import { OperatorConfigurationVersionSchema } from '@graphql/contracts'
-import { allocateClaudeNativeHarness } from '../src/modules/harnesses/claudeSdk/composition.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { primeInitialNativeStream } from '../src/modules/harnesses/claudeSdk/initialStream.js'
 import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
@@ -22,7 +22,7 @@ const scope = { deviceId: 'synthetic-device', profilePath: '/synthetic-profile',
 const start = { kind: 'operator' as const, correlationId: 'conversation:request-1', configuration, workingDirectory: scope.cwd }
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r }); return { promise, resolve } }
 async function drain<T>(input: AsyncIterable<T>): Promise<T[]> { const out: T[] = []; for await (const value of input) out.push(value); return out }
-function fixture(liveCallbacks?: ClaudeLiveCallbackReader) {
+function fixture(liveCallbacks?: ClaudeLiveCallbackReader, role: 'workflow' | 'operator' | 'agent-chat' = 'operator') {
   const frames = new ClaudeBoundedQueue<unknown>(64)
   const inputReady = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
   const query = vi.fn<ClaudeSdkClient['query']>((input) => {
@@ -35,7 +35,8 @@ function fixture(liveCallbacks?: ClaudeLiveCallbackReader) {
   const client: ClaudeSdkClient = { sdkVersion: '0.3.284', query, getSessionInfo: async (sessionId) => ({ sessionId }),
     getSessionMessages: history, forkSession: fork }
   const runner = createClaudeSdkRunner({ loadClient: async () => client })
-  const allocated = allocateClaudeNativeHarness({ harness: 'claude', role: 'operator', workingDirectory: scope.cwd,
+  const factories = new NativeHarnessFactories({ codexBinary: '/forbidden-codex', openCodeBinary: '/forbidden-opencode' })
+  const allocated = factories.allocate({ harness: 'claude', role, workingDirectory: scope.cwd,
     ownerAgentId: 'operator', appMcpAccess: 'none', runner, scope, sdkOptions: { includePartialMessages: true },
     qualification: { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: true, history: true, interactions: true },
     ...(liveCallbacks ? { liveCallbacks } : {}), ownerForStart: () => ({ ownerId: 'conversation', attemptId: 'request-1', generation: 'lease-1' }),
@@ -46,7 +47,7 @@ function fixture(liveCallbacks?: ClaudeLiveCallbackReader) {
   const result = (uuid: string, failed = false) => frames.offer({ type: 'result', uuid: `result-${uuid}`, session_id: 'observed-session',
     user_message_uuid: uuid, subtype: failed ? 'error_during_execution' : 'success', is_error: failed, result: 'answer' })
   const next = async () => (await (await inputReady.promise).next()).value!
-  return { manager: allocated.manager, runner, query, frames, history, fork, init, reply, result, next }
+  return { manager: allocated.manager, factories, runner, query, frames, history, fork, init, reply, result, next }
 }
 
 describe('Claude actual initial factory replay: ten admitted-boundary cases', () => {
@@ -176,4 +177,24 @@ it('common writer persists observed SID before message receipt and exposes the o
   expect((await lanes.getLane('claude', 'observed-session'))?.observedStatus).toBe('idle')
   expect((await lanes.getLane('claude', 'observed-session'))?.currentTurnOrMessageId).toBe(received[0])
   await writer.dispose()
+})
+
+// Selected-Run chat retains the agent-chat role; provenance does not grant
+// workflow or Operator credentials. This checks common allocation only.
+it('keeps workflow, Operator, Agent and selected-Run chat managers independently owned', async () => {
+  const owners = [fixture(undefined, 'workflow'), fixture(undefined, 'operator'),
+    fixture(undefined, 'agent-chat'), fixture(undefined, 'agent-chat')]
+  expect(new Set(owners.map(owner => owner.manager)).size).toBe(4)
+  for (const owner of owners) {
+    expect(owner.query).not.toHaveBeenCalled()
+    expect(() => owner.factories.inspector(owner.manager)).toThrow('no MCP inspector')
+  }
+  await owners[0]!.manager.dispose?.()
+  const agent = owners[2]!
+  const output = drain(agent.manager.startInitialTurn(start, { prompt: 'still owned',
+    clientCorrelationId: start.correlationId, onSessionObserved: async () => undefined }))
+  const input = await agent.next()
+  agent.init(); agent.reply(input.uuid); agent.result(input.uuid)
+  expect((await output).some(event => event.type === 'claude.text')).toBe(true)
+  await Promise.all(owners.slice(1).map(owner => owner.manager.dispose?.()))
 })

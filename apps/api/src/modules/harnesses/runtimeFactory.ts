@@ -1,3 +1,4 @@
+import { allocateClaudeNativeHarness, type ClaudeNativeAllocation, type ClaudeNativeAllocationResult } from './claudeSdk/composition.js'
 import type { HarnessConfiguration, OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
 import { HarnessInstanceRegistry, localHarnessDrivers, type ConfiguredHarnessInstance } from './instanceRegistry.js'
@@ -91,7 +92,29 @@ export class NativeHarnessFactories {
     }
   }
 
-  allocate(input: NativeHarnessAllocation): NativeHarnessAllocationResult {
+  allocate(input: ClaudeNativeAllocation): ClaudeNativeAllocationResult
+  allocate(input: NativeHarnessAllocation): NativeHarnessAllocationResult
+  allocate(input: NativeHarnessAllocation | ClaudeNativeAllocation): NativeHarnessAllocationResult | ClaudeNativeAllocationResult {
+    if (input.harness === 'claude') {
+      const auxiliary = input.role === 'diagnostics' || input.role === 'qualification'
+      if (auxiliary && this.auxiliaryClosing) throw new DomainError(
+        'NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)
+      const recovery = input.processRecovery ?? (auxiliary
+        ? this.config.auxiliaryRecovery?.(input.role as 'diagnostics' | 'qualification') : undefined)
+      // The domain owner supplies the exact admitted scope, qualified policy and
+      // runner. There is no default profile or implicit native SDK fallback.
+      const result = allocateClaudeNativeHarness({ ...input, ...(recovery ? { processRecovery: recovery } : {}) })
+      if (auxiliary) {
+        this.auxiliaries.set(result.manager, { recovery, admitted: false })
+        const inspector = result.inspector
+        if (inspector) result.inspector = { inspect: (request) => {
+          this.admitAuxiliary(result.manager)
+          return inspector.inspect(request)
+        } }
+      }
+      if (result.inspector) this.inspectors.set(result.manager, result.inspector)
+      return result
+    }
     if (!input.selection && (input.role === 'diagnostics' || input.role === 'qualification') && this.config.selectDefault) {
       input = { ...input, selection: this.config.selectDefault(input.harness) }
     }
