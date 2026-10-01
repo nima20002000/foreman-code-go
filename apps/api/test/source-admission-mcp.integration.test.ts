@@ -125,7 +125,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).isError).toBe(true)
     expect((await client.callTool({ name: 'source_approve', arguments: approve })).isError).toBe(true)
     await access.revoke(owner.principal.id)
-    expect((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).isError).toBe(true)
+    await expect(access.authenticate(operator.token)).rejects.toMatchObject({ code: 'AUTH_REVOKED', status: 401 })
+    await expect(client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).rejects.toThrow('Unauthorized')
   } finally {
     for (const client of clients) await client.close().catch(() => undefined)
     await app?.close(); await pool.end(); await admin.query(`drop schema "${schema}" cascade`); await admin.end(); await rm(directory, { recursive: true, force: true })

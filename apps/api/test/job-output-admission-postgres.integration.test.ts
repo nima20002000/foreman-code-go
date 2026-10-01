@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import pg from 'pg'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import Fastify, {type FastifyInstance} from 'fastify'
 import { beforeAll, afterAll, describe, it, expect } from 'vitest'
 import { deviceIdentityMigration } from '../src/modules/devices/migration.js'
@@ -45,7 +46,7 @@ function queue() {
 describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer receipts',()=>{
   let admin:pg.Pool,pool:pg.Pool,storage:string,staging:string,endpoint:DeviceEndpoint,ownership:JobOwnership|undefined
   let actual:ReturnType<typeof createAdmittedJobOutputs>,access:PostgresDeviceAccessService,binding:DeviceSessionBinding,credential:string,endpointTask:Promise<void>
-  let app:FastifyInstance,incoming:ReturnType<typeof queue>,outgoing:ReturnType<typeof queue>
+  let app:FastifyInstance,address:string,mcpClient:Client|undefined,incoming:ReturnType<typeof queue>,outgoing:ReturnType<typeof queue>
   const job=jobExecution(),body=Buffer.from('{"actual":"canonical"}'),mainId=randomUUID(),operatorToken=`fixture-${randomUUID()}`
   beforeAll(async()=>{
     const url=new URL(databaseUrl!)
@@ -114,15 +115,18 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     await pool.query('insert into job_dispatch_intents values($1,$2::jsonb,$3::jsonb,1,$4,$5,null)',[job.id,JSON.stringify(intent),JSON.stringify(receipt),ownerFence.ownerId,ownerFence.fence])
     app=Fastify();app.setErrorHandler((error,_request,reply)=>{void reply.code(error instanceof DomainError?error.status:500).send({error:error instanceof DomainError?error.code:'ERROR'})})
     registerJobOutputMetadataEndpoints(app,{access,endpoint,admission:actual.admission,artifacts:actual.artifacts})
+    address=await app.listen({host:'127.0.0.1',port:0})
   },60000)
-  afterAll(async()=>{await app?.close();endpoint?.close();incoming?.end();await endpointTask?.catch(()=>{});await actual?.receiver.close();await ownership?.release();await pool?.end();if(storage)await rm(storage,{recursive:true,force:true});if(staging)await rm(staging,{recursive:true,force:true});if(admin){try{await admin.query(`drop schema ${schema} cascade`)}finally{await admin.end()}}})
+  afterAll(async()=>{await mcpClient?.close();await app?.close();endpoint?.close();incoming?.end();await endpointTask?.catch(()=>{});await actual?.receiver.close();await ownership?.release();await pool?.end();if(storage)await rm(storage,{recursive:true,force:true});if(staging)await rm(staging,{recursive:true,force:true});if(admin){try{await admin.query(`drop schema ${schema} cascade`)}finally{await admin.end()}}})
   it('issues persisted original main transfer through HTTP/MCP, denies Operator and publishes actual sender bytes once',async()=>{
     const input={workspaceId:job.workspaceId,executionId:job.id,attemptId:job.attemptId,owner:job.owner,commandId:randomUUID(),path:'dist/report.json',mediaType:'application/json' as const,sha256:hash(body),byteSize:body.length}
     expect((await app.inject({method:'POST',url:'/device/job-outputs/admit',headers:{authorization:`Bearer ${operatorToken}`},payload:input})).statusCode).toBe(403)
     expect((await app.inject({method:'POST',url:'/device/mcp/job-outputs',headers:{authorization:`Bearer ${operatorToken}`,accept:'application/json, text/event-stream'},payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'job_output_admit',arguments:input}}})).statusCode).toBe(403)
     const first=await app.inject({method:'POST',url:'/device/job-outputs/admit',headers:{authorization:`Bearer ${credential}`},payload:input});expect(first.statusCode).toBe(200);const intent=first.json()
-    const mcp=await app.inject({method:'POST',url:'/device/mcp/job-outputs',headers:{authorization:`Bearer ${credential}`,accept:'application/json, text/event-stream'},payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'job_output_admit',arguments:input}}})
-    const line=mcp.body.split('\n').find(value=>value.startsWith('data: '));expect(JSON.parse(line?line.slice(6):mcp.body).result.structuredContent).toEqual(intent)
+    mcpClient=new Client({name:'job-output-fixture',version:'1.0.0'})
+    await mcpClient.connect(new StreamableHTTPClientTransport(new URL('/device/mcp/job-outputs',address),{authProvider:{token:async()=>credential}}))
+    const mcp=await mcpClient.callTool({name:'job_output_admit',arguments:input})
+    expect(mcp.isError,JSON.stringify(mcp)).not.toBe(true);expect(mcp.structuredContent).toEqual(intent)
     const channel={request:async(_namespace:string,payload:unknown,options?:{bytes?:Uint8Array})=>actual.extension.handle!(payload,{binding,signal:AbortSignal.timeout(10000),...(options?.bytes?{bytes:options.bytes}:{})})}
     const sender=new ResumableByteTransferSender(new WorkerJobOutputReceiver(channel),{read:async(_intent,offset,length)=>body.subarray(offset,offset+length)},{current:async()=>outputTransferContext(binding),retryable:()=>false})
     const verified=await sender.send(intent,AbortSignal.timeout(10000));expect(verified.sha256).toBe(input.sha256)
