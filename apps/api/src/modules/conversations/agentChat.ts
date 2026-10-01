@@ -37,7 +37,9 @@ import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
-import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
+import { completedNativeAssistantMessage } from './operatorText.js'
+import { createNativeTextStream } from './nativeTextStream.js'
+import type { ActivityScope } from '@graphql/contracts/activity'
 import {
   agentChatCorrelation, agentChatKey, agentConversation, type AgentConversationRow, type AgentChatInterruptTarget, type NewAgentConversation, PostgresAgentChatRepository,
 } from './agentChatRepository.js'
@@ -808,6 +810,7 @@ export class AgentChatService {
     let submitted = false
     let creatingSession = false
     let runtime: Runtime | undefined
+    let textStream: ReturnType<typeof createNativeTextStream> | undefined
     let prepared!: () => void
     const preparation = { requestId: turn.requestId, done: new Promise<void>((resolve) => { prepared = resolve }) }
     this.preparations.set(id, preparation)
@@ -833,8 +836,24 @@ export class AgentChatService {
       if (fresh.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
       signal.throwIfAborted()
       const prompt = this.prompt(fresh, configuration, content)
-      const partKinds = new Map<string, string>()
+      let scope: ActivityScope = { kind: 'agent_chat', conversationId: id, workspaceId: fresh.workspace_id,
+        workflowId: fresh.workflow_id, nodeId: fresh.workflow_node_id, agentId: fresh.agent_id }
+      if (fresh.origin_run_id) {
+        const loaded = await this.repository.state(id)
+        if (!loaded || loaded.row.active_request_id !== turn.requestId || loaded.row.native_session_id !== session.nativeSessionId
+          || loaded.row.origin_run_id !== fresh.origin_run_id || loaded.row.origin_execution_id !== fresh.origin_execution_id) return
+        scope = agentActivitySnapshot(loaded).scope
+      }
       let nativeTurnId: string | null = null
+      const streamSignal = AbortSignal.any([signal, observer.signal])
+      textStream = createNativeTextStream({
+        signal: streamSignal, harness: runtime.manager.harness,
+        owner: () => ({ scope: { ...scope, requestId: turn.requestId }, requestId: turn.requestId,
+          sessionId: session.nativeSessionId, ...(nativeTurnId ? { turnId: nativeTurnId } : {}) }),
+        publish: (operation) => this.events.publish(id, 'delta', { partId: operation.identity.partId,
+          text: operation.text, mode: operation.mode, requestId: turn.requestId }),
+        reconcile: () => this.events.publish(id, 'state', { requestId: turn.requestId, snapshotRequired: true }),
+      })
       const currentEvent = openCodeTurnEvents(session.nativeSessionId, () => nativeTurnId)
       const redact = nativePersistenceRedactor([])
       finishPreparation()
@@ -845,15 +864,17 @@ export class AgentChatService {
           nativeTurnId = id_; submitted = true
           await this.repository.accepted(id, turn.requestId, id_)
           this.scheduleReconcile(id)
+          textStream?.flush()
           this.events.publish(id, 'turn', { requestId: turn.requestId, delivery: 'accepted', nativeTurnId: id_ })
           // Re-read the captured target under the control fence, also for a late callback.
           void this.interruptActive(id, false, { requestId: turn.requestId, nativeTurnId: id_ }).catch(() => undefined)
         },
-      }, AbortSignal.any([signal, observer.signal]))) {
+      }, streamSignal)) {
         submitted = true
         if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
-        await this.record(id, turn.requestId, runtime, event, redact)
-        for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: turn.requestId })
+        textStream.before(event)
+        if (await this.record(id, turn.requestId, runtime, event, redact)) textStream.push(event)
+        else textStream.rejected(event)
         if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
           // Share the response lock so an older observation cannot overwrite its next approval.
           await this.control(id, async () => {
@@ -863,8 +884,10 @@ export class AgentChatService {
           })
         }
       }
+      textStream.flush()
       await this.observe(id, turn.requestId, runtime!, correlationId)
     } catch (error) {
+      if (signal.aborted || observer.signal.aborted) textStream?.dispose(); else textStream?.flush()
       if (error instanceof RejectedSessionCreation) {
         // Retire the matching creation marker and terminal receipt in ONE ownership-fenced commit.
         // finish() also honors a Stop that committed while disposal was being confirmed.
@@ -893,6 +916,7 @@ export class AgentChatService {
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
       }
     } finally {
+      textStream?.dispose()
       finishPreparation()
       if (runtime?.observer?.controller === observer) delete runtime.observer
     }
@@ -905,10 +929,13 @@ export class AgentChatService {
       if (accepted) this.events.publish(id, 'activity', accepted)
     }
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
-    if (message && await this.messages.appendAssistantMessage(id, requestId, message.id, message.text,
+    if (!message) return true
+    if (await this.messages.appendAssistantMessage(id, requestId, message.id, message.text,
       message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined)) {
       this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
+      return true
     }
+    return false
   }
 
   /** Settle from native history: identity must match, and only terminal evidence completes a turn. */
