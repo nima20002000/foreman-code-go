@@ -1,12 +1,20 @@
 import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
-import { FileRevisionSchema, type FileRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
+import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { checkFileCondition, type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileService,
   type OpenCodeRegisteredFile } from './types.js'
 
 const CHUNK_BYTES = 65_536
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 export const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
+
+function documentRevision(value: FileWithRevision): FileRevision {
+  checkFileCondition(value.file.scope.kind !== 'job_execution' && value.revision.origin !== 'job_output',
+    'FILE_ATTACHMENT_INVALID', 'Only document revisions can be delivered as native attachments.')
+  const document = FileRevisionSchema.safeParse(value.revision)
+  checkFileCondition(document.success, 'FILE_ATTACHMENT_INVALID', 'The attachment is not a supported document revision.')
+  return document.data
+}
 
 /** Native delivery is a sequence of authorized pinned range reads, NOT an API storage-path read. */
 export async function readPinnedAttachment(service: OpenCodeFileService, token: string,
@@ -25,7 +33,7 @@ export async function readPinnedInput(read: OpenCodeAcceptedFileReader,
     signal.throwIfAborted()
     const result = await read({ ...ref, offset, length: CHUNK_BYTES }, signal)
     checkFileCondition(result.status === 'ready', 'FILE_ATTACHMENT_UNAVAILABLE', 'An attachment is unavailable.')
-    const value = FileRevisionSchema.parse(result.revision)
+    const value = documentRevision(result)
     checkFileCondition(value.fileId === ref.fileId && value.revisionId === ref.revisionId
       && Number.isSafeInteger(value.byteSize) && value.byteSize >= 0 && value.byteSize <= maxBytes,
     'FILE_ATTACHMENT_INVALID', 'The attachment does not match its bounded pinned revision.')
@@ -50,11 +58,13 @@ export async function readPinnedInput(read: OpenCodeAcceptedFileReader,
     'FILE_ATTACHMENT_CHANGED', 'The attachment checksum does not match its revision.')
   // A final read rechecks revocation/expiry even for a one-range file.
   const current = await read({ ...ref, offset: revision.byteSize, length: 1 }, signal)
-  checkFileCondition(current.status === 'ready' && current.revision.fileId === ref.fileId
-    && current.revision.revisionId === ref.revisionId && current.revision.sha256 === revision.sha256
-    && current.revision.filename === revision.filename && current.revision.mediaType === revision.mediaType
+  checkFileCondition(current.status === 'ready', 'FILE_ATTACHMENT_UNAVAILABLE', 'The attachment became unavailable during delivery.')
+  const currentDocument = documentRevision(current)
+  checkFileCondition(currentDocument.fileId === ref.fileId
+    && currentDocument.revisionId === ref.revisionId && currentDocument.sha256 === revision.sha256
+    && currentDocument.filename === revision.filename && currentDocument.mediaType === revision.mediaType
     && current.offset === revision.byteSize
-    && current.revision.byteSize === revision.byteSize && current.byteLength === 0 && current.eof,
+    && currentDocument.byteSize === revision.byteSize && current.byteLength === 0 && current.eof,
   'FILE_ATTACHMENT_UNAVAILABLE', 'The attachment became unavailable during delivery.')
   return { revision, bytes }
 }

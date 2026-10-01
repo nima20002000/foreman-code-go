@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { setImmediate as immediate } from 'node:timers/promises'
+import { AgentFileReadResultSchema, FILE_EXTENSIONS_BY_MEDIA_TYPE, FILE_MEDIA_TYPES, FileWithRevisionSchema } from '@graphql/contracts/files'
 import { CodexFileTurn } from '../src/modules/harnesses/codexFiles/turn.js'
 import { assertRegisteredCodexCopy, collectCodexFileBytes, sha256 } from '../src/modules/harnesses/codexFiles/bytes.js'
 import type { AcceptedCodexFileTurn, CodexFileServices, CodexFileHostLease, CodexFileCall } from '../src/modules/harnesses/codexFiles/port.js'
@@ -577,4 +578,59 @@ test('copy reauthorizes after slow host materialization before revealing a writa
   assert.equal(result.success, false)
   assert.ok(!JSON.stringify(result).includes('execution-only'))
   assert.ok(!f.calls.includes('publish')); await f.turn.close()
+})
+
+
+test('Job revisions never enter native attachment bytes or image preparation', async () => {
+  const f = fixture()
+  const bytes = Buffer.from('job output')
+  const job = FileWithRevisionSchema.parse({
+    file: { ...f.value().file, scope: { kind: 'job_execution', workspaceId: 'workspace', jobExecutionId: 'job' } },
+    revision: { ...f.value().revision, byteClass: 'ci-output', filename: 'job.zip', mediaType: 'application/zip',
+      byteSize: bytes.length, sha256: sha256(bytes), origin: 'job_output' },
+  })
+  let read = false, image = false
+  const stream = new Readable({ read() { read = true; this.push(bytes); this.push(null) } })
+  f.dependencies.source.open = async () => ({ value: job, stream })
+  f.dependencies.prepareImage = async () => { image = true; throw new Error('Unexpected image preparation') }
+  await assert.rejects(f.prepare(), /CODEX_FILE_DOCUMENT_REQUIRED/)
+  assert.equal(read, false)
+  assert.equal(image, false)
+  assert.equal(stream.destroyed, true)
+  assert.equal(f.registrations.size, 0)
+  assert.equal(f.issued.length, 0)
+})
+
+test('Job read results are denied before native tool output or writable host effects', async () => {
+  const f = fixture()
+  const turn = await f.prepare()
+  await turn.activate('turn-a')
+  const bytes = Buffer.from('JOB')
+  const jobRead = AgentFileReadResultSchema.parse({
+    status: 'ready', file: { ...f.value().file,
+      scope: { kind: 'job_execution', workspaceId: 'workspace', jobExecutionId: 'job' } },
+    revision: { ...f.value().revision, byteClass: 'ci-output', filename: 'job.zip', mediaType: 'application/zip',
+      byteSize: bytes.length, sha256: sha256(bytes), origin: 'job_output' },
+    readAt: now.toISOString(), offset: 0, byteLength: bytes.length, contentBase64: bytes.toString('base64'), eof: true,
+  })
+  f.dependencies.files.read = async () => jobRead
+  const deniedRead = await turn.call(f.request('files_read', { ...ref, offset: 0, length: 4 }))
+  assert.equal(deniedRead.success, false)
+  assert(!JSON.stringify(deniedRead).includes(bytes.toString('base64')))
+  assert.equal((await turn.call(f.copyRequest())).success, false)
+  assert(!f.calls.includes('beginWrite'))
+  assert(!f.calls.includes('materialize:write'))
+  await turn.close()
+})
+
+
+for (const mediaType of FILE_MEDIA_TYPES) test(`native preparation retains document media ${mediaType}`, async () => {
+  const f = fixture({ mediaType, filename: `input.${FILE_EXTENSIONS_BY_MEDIA_TYPE[mediaType][0]}` })
+  if (mediaType.startsWith('image/')) f.dependencies.prepareImage = async (bytes) => ({
+    bytes, mediaType: mediaType === 'image/jpeg' ? 'image/jpeg' : mediaType === 'image/webp' ? 'image/webp' : 'image/png',
+    firstFrameOnly: mediaType === 'image/gif',
+  })
+  const turn = await f.prepare()
+  assert.equal((await turn.nativeInput('Read the document'))[0]?.type, 'text')
+  await turn.close()
 })

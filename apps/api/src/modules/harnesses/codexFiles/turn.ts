@@ -32,7 +32,7 @@ const textResult = (value: unknown, extra?: string): CodexFileCallResult => ({ s
 const refused = (): CodexFileCallResult => ({ success: false,
   contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }],
 })
-interface Delivery { ref: MessageAttachmentRef; revision: FileWithRevision['revision']; filename: string; copy: RegisteredCodexCopy; image?: RegisteredCodexCopy; firstFrameOnly: boolean }
+interface Delivery { ref: MessageAttachmentRef; revision: FileRevision; filename: string; copy: RegisteredCodexCopy; image?: RegisteredCodexCopy; firstFrameOnly: boolean }
 interface WorkingCopy { copy?: RegisteredCodexCopy; writeId: string; completed: boolean; busy: boolean }
 
 export interface CodexFileTurnDependencies {
@@ -79,30 +79,29 @@ export class CodexFileTurn {
       for (const ref of turn.#accepted.attachments) {
         signal?.throwIfAborted()
         const opened = await dependencies.source.open(ref)
-        let data: Buffer
+        let data: Buffer, document: FileRevision
         try {
-          turn.assertAttachment(ref, opened.value)
+          document = turn.assertAttachment(ref, opened.value)
           data = await collectCodexFileBytes(opened.stream, dependencies.limits.fileBytes, signal)
         } finally { opened.stream.destroy() }
-        if (data.length !== opened.value.revision.byteSize || sha256(data) !== opened.value.revision.sha256) fail('CODEX_FILE_BYTES_CHANGED')
+        if (data.length !== document.byteSize || sha256(data) !== document.sha256) fail('CODEX_FILE_BYTES_CHANGED')
         // All turn inputs are read-only detached copies, even in project Write mode.
         // The agent explicitly obtains an editable registered copy through FIL-05.
-        const document = FileRevisionSchema.parse(opened.value.revision)
         const copy = await turn.materialize(document.filename, document.mediaType, data, false)
-        const delivery: Delivery = { ref: { ...ref }, revision: structuredClone(opened.value.revision), filename: opened.value.revision.filename, copy, firstFrameOnly: false }
+        const delivery: Delivery = { ref: { ...ref }, revision: structuredClone(document), filename: document.filename, copy, firstFrameOnly: false }
         if (document.mediaType.startsWith('image/')) {
           if (!dependencies.prepareImage) fail('CODEX_IMAGE_CAPABILITY_REQUIRED')
           const image = await dependencies.prepareImage!(Buffer.from(data), document.mediaType)
           if (!['image/png', 'image/jpeg', 'image/webp'].includes(image.mediaType)) fail('CODEX_IMAGE_PREPARATION_INVALID')
           const imageBytes = Buffer.from(image.bytes)
-          delivery.image = image.mediaType === opened.value.revision.mediaType && sha256(imageBytes) === sha256(data)
+          delivery.image = image.mediaType === document.mediaType && sha256(imageBytes) === sha256(data)
             ? copy : await turn.materialize(`preview.${image.mediaType === 'image/jpeg' ? 'jpg' : image.mediaType.slice(6)}`,
               image.mediaType, imageBytes, false)
           delivery.firstFrameOnly = image.firstFrameOnly
         }
         const current = await dependencies.source.recheck(ref)
-        turn.assertAttachment(ref, current)
-        if (!sameScope(current.revision, opened.value.revision)) fail('CODEX_FILE_BYTES_CHANGED')
+        const currentDocument = turn.assertAttachment(ref, current)
+        if (!sameScope(currentDocument, document)) fail('CODEX_FILE_BYTES_CHANGED')
         turn.#deliveries.push(delivery)
       }
       signal?.throwIfAborted()
@@ -131,7 +130,15 @@ export class CodexFileTurn {
   }
 
   private now(): Date { return this.#dependencies.clock?.() ?? new Date() }
-  private assertAttachment(ref: MessageAttachmentRef, value: FileWithRevision): void {
+  private documentRevision(value: FileWithRevision): FileRevision {
+    if (value.file.scope.kind === 'job_execution' || value.revision.origin === 'job_output') fail('CODEX_FILE_DOCUMENT_REQUIRED')
+    const document = FileRevisionSchema.safeParse(value.revision)
+    if (!document.success) fail('CODEX_FILE_DOCUMENT_REQUIRED')
+    return document.data
+  }
+
+  private assertAttachment(ref: MessageAttachmentRef, value: FileWithRevision): FileRevision {
+    if (value.file.scope.kind === 'job_execution' || value.revision.origin === 'job_output') fail('CODEX_FILE_DOCUMENT_REQUIRED')
     if (pins(ref) !== pins(value.revision) || value.file.fileId !== ref.fileId
       || !sameScope(value.file.scope, this.#accepted.scope)) fail('CODEX_FILE_SCOPE_INVALID')
     if (value.file.state !== 'ready' || !('expiresAt' in value.file)
@@ -140,6 +147,7 @@ export class CodexFileTurn {
     if (!Number.isSafeInteger(value.revision.byteSize) || value.revision.byteSize < 0
       || value.revision.byteSize > this.#dependencies.limits.fileBytes
       || !/^[a-f0-9]{64}$/.test(value.revision.sha256)) fail('CODEX_FILE_BYTES_CHANGED')
+    return this.documentRevision(value)
   }
 
   private async materialize(filename: string, mediaType: FileRevision['mediaType'], data: Buffer,
@@ -168,8 +176,8 @@ export class CodexFileTurn {
     if (this.#closing) fail('CODEX_FILE_TURN_CLOSED')
     for (const delivery of this.#deliveries) {
       const current = await this.#dependencies.source.recheck(delivery.ref)
-      this.assertAttachment(delivery.ref, current)
-      if (!sameScope(current.revision, delivery.revision)) fail('CODEX_FILE_BYTES_CHANGED')
+      const currentDocument = this.assertAttachment(delivery.ref, current)
+      if (!sameScope(currentDocument, delivery.revision)) fail('CODEX_FILE_BYTES_CHANGED')
     }
     const lines = this.#deliveries.map(({ ref, filename, copy, firstFrameOnly }) => JSON.stringify({
       filename, path: copy.executionPath, ...ref, ...(firstFrameOnly ? { image: 'first frame' } : {}),
@@ -229,7 +237,11 @@ export class CodexFileTurn {
         this.#accepted.scope))) return refused()
     switch (tool) {
       case 'files.list': return textResult(await files.list(token, arguments_))
-      case 'files.read': return textResult(await files.read(token, arguments_))
+      case 'files.read': {
+        const result = this.#dependencies.parseRead(arguments_, await files.read(token, arguments_))
+        if (result.status === 'ready') this.documentRevision(result)
+        return textResult(result)
+      }
       case 'files.write_working_copy':
       case 'files.apply_format_edit': {
         const id = arguments_ && typeof arguments_ === 'object' ? Reflect.get(arguments_, 'artifactId') as unknown : undefined
@@ -292,14 +304,15 @@ export class CodexFileTurn {
   private async readPinned(token: string, ref: MessageAttachmentRef): Promise<{ bytes: Buffer; mediaType: FileRevision['mediaType'] }> {
     const { files, limits, parseRead } = this.#dependencies
     const chunks: Buffer[] = []
-    let offset = 0, revision: FileWithRevision['revision'] | undefined
+    let offset = 0, revision: FileRevision | undefined
     for (;;) {
       const request = { ...ref, offset, length: limits.readBytes }
       const result = parseRead(request, await files.read(token, request))
       if (result.status !== 'ready') fail('CODEX_FILE_UNAVAILABLE')
-      const ready = result as Extract<typeof result, { status: 'ready' }>
-      if (revision && !sameScope(revision, ready.revision)) fail('CODEX_FILE_BYTES_CHANGED')
-      revision = FileRevisionSchema.parse(ready.revision)
+      const ready = result
+      const document = this.documentRevision(ready)
+      if (revision && !sameScope(revision, document)) fail('CODEX_FILE_BYTES_CHANGED')
+      revision = document
       const data = Buffer.from(ready.contentBase64, 'base64')
       if (data.length !== ready.byteLength || ready.offset !== offset || pins(ref) !== pins(ready.revision)
         || data.length > limits.readBytes || (!data.length && !ready.eof)) fail('CODEX_FILE_RANGE_INVALID')
