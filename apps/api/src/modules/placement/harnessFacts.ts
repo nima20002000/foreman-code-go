@@ -51,7 +51,7 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     checks: row!.checks, failureReason: row!.failure_reason,
     startedAt: row!.started_at instanceof Date ? row!.started_at.toISOString() : row!.started_at,
     checkedAt: row!.checked_at instanceof Date ? row!.checked_at.toISOString() : row!.checked_at })
-  if (qualification.profile !== QUALIFICATION_TARGET_PROFILE[harness] || !qualification.checks.length || qualification.checks.some(check => !check.passed)) unavailable()
+  if (qualification.profile !== QUALIFICATION_TARGET_PROFILE[harness] || !qualification.checkedAt || !qualification.checks.length || qualification.checks.some(check => !check.passed)) unavailable()
   if (payload.profileProofDigest && payload.profileProofDigest !== placementDigest(profileProof)
     || payload.qualificationDigest && payload.qualificationDigest !== placementDigest(qualification)) unavailable()
   return { override, profileProof, installation, qualification }
