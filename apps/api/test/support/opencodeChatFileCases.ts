@@ -164,6 +164,28 @@ export function registerOpenCodeChatFileCases(test: (name: string, body: () => P
       } finally { await f.close() }
     })
   }
+  test('cleanup failure does not block ledger adoption after terminal authority revocation', async () => {
+    const f = await fixture()
+    try {
+      await f.prepare(); await f.acknowledge()
+      const id = await copy(f)
+      f.backend.losePublishAck()
+      await assert.rejects(f.turn.publish(f.backend.token, publishInput(id), fileSignal()), /lost publish ack/)
+      f.backend.failRemove(true); f.backend.failAdopt(true)
+      await assert.rejects(f.turn.finish('terminal', fileSignal()), AggregateError)
+      assert.equal(f.backend.revocations, 1)
+      f.backend.failAdopt(false)
+      await assert.rejects(f.turn.retryCleanup(fileSignal()), AggregateError)
+      assert.equal(f.backend.messages.get('message-a')?.length, 1)
+      assert(f.backend.hostFiles.size > 0)
+      assert.throws(() => f.turn.assertCredential(f.backend.token), hasFileCode('FILE_TURN_CLOSED'))
+      f.backend.failRemove(false)
+      await f.turn.retryCleanup(fileSignal())
+      assert.equal(f.backend.messages.get('message-a')?.length, 1)
+      assert.equal(f.backend.hostFiles.size, 0)
+      assert.equal(f.backend.issued.length, 1)
+    } finally { await f.close() }
+  })
   test('read mode preserves mutation denials without granting writable input paths', async () => {
     const f = await fixture('read')
     try {

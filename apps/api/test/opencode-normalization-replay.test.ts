@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { it } from 'vitest'
 import { nativeMessageId, normalizedHistory, object } from '../src/modules/harnesses/opencodeProtocol.js'
 import { OPENCODE_RECONCILIATION_EVENT } from '../src/modules/harnesses/opencodeReconciliation.js'
-import { FixtureServer, manager, permission, sessionFor } from './opencode-fixtures.js'
+import { FixtureServer, json, manager, permission, sessionFor } from './opencode-fixtures.js'
 
 /** Hand-authored regression evidence, NOT a captured/native qualification.
  * Frames model OpenCode 1.18.31 HTTP/SSE; no SDK or binary digest was captured.
@@ -115,5 +115,69 @@ it('does not settle child-before-parent evidence while a late child approval rem
     assert.equal(object(waiting.pendingInteractions[0]!.request).sessionID, 'child')
     server.permissions = []
     assert.equal((await native.reconcile(session, 'child-first')).terminalResult?.outcome, 'succeeded')
+  } finally { await native.dispose() }
+})
+
+it('retains part-before-message identity and suppresses repeated frame IDs without exposing hidden deltas', async () => {
+  const server = new FixtureServer(), native = manager(server)
+  try {
+    const session = await sessionFor(native)
+    server.onPrompt = () => {
+      const answer = server.assistant(nativeMessageId('ordered'), 'visible')
+      const part = answer.parts[0]!
+      server.emit('message.part.updated', { part }, 'part-before-message')
+      server.emit('message.part.updated', { part }, 'part-before-message')
+      server.emit('message.updated', { info: answer.info }, 'assistant-message')
+      const delta = { sessionID: session.nativeSessionId, messageID: answer.info.id, partID: part.id, delta: ' text' }
+      server.emit('message.part.delta', delta, 'exact-delta')
+      server.emit('message.part.delta', delta, 'exact-delta')
+      server.emit('message.part.delta', { ...delta, partID: 'unknown', delta: 'private-unknown' }, 'unknown-delta')
+      server.emit('message.part.updated', { part: { id: 'reason', sessionID: session.nativeSessionId,
+        messageID: answer.info.id, type: 'reasoning', text: 'private-reasoning' } }, 'reasoning-snapshot')
+      server.emit('message.part.delta', { ...delta, partID: 'reason', delta: 'private-reasoning' }, 'reasoning-delta')
+      server.statuses.delete(session.nativeSessionId)
+      server.emit('session.idle', { sessionID: session.nativeSessionId }, 'idle')
+    }
+    const events = []
+    for await (const event of native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'ordered' })) events.push(event)
+    const live = events.filter((event) => !event.connectionId?.startsWith('history-'))
+    assert.equal(live.filter((event) => event.payload.nativeEventId === 'part-before-message').length, 1)
+    assert.equal(live.filter((event) => event.payload.nativeEventId === 'exact-delta').length, 1)
+    assert(live.findIndex((event) => event.payload.nativeEventId === 'part-before-message')
+      < live.findIndex((event) => event.payload.nativeEventId === 'assistant-message'))
+    assert.equal(JSON.stringify(events).includes('private-'), false)
+    assert.equal((await native.reconcile(session, 'ordered')).terminalResult?.outcome, 'succeeded')
+  } finally { await native.dispose() }
+})
+
+for (const cursor of ['missing', 'looping'] as const) {
+  it(`fails closed when rooted history has a ${cursor} cursor`, async () => {
+    const server = new FixtureServer(), native = manager(server)
+    try {
+      const session = await sessionFor(native)
+      server.user('unreachable')
+      const newer = server.user('different', 'unrelated')
+      const answer = server.assistant(String(newer.info.id), 'wrong answer')
+      server.beforeRequest = (path) => {
+        const url = new URL(path, 'http://fixture.invalid')
+        if (url.pathname.endsWith('/message')) return json([newer, answer], 200,
+          cursor === 'looping' ? { 'x-next-cursor': 'same-cursor' } : {})
+      }
+      await assert.rejects(native.reconcile(session, 'unreachable'), cursor === 'looping'
+        ? /bounded progress/ : (error: unknown) => object(error).code === 'OPENCODE_TURN_HISTORY_INCOMPLETE')
+      assert.equal(server.calls.filter((call) => call.path.includes('/prompt_async')).length, 0)
+    } finally { await native.dispose() }
+  })
+}
+
+it('idle interrupted fallback does not mint assistant-source reconciliation proof', async () => {
+  const server = new FixtureServer(), native = manager(server)
+  try {
+    const session = await sessionFor(native)
+    server.user('unfinished')
+    const result = await native.reconcile(session, 'unfinished')
+    assert.equal(object(object(result.terminalResult).error).code, 'OPENCODE_TURN_INTERRUPTED')
+    assert.equal(result.events.some((event) => event.type === OPENCODE_RECONCILIATION_EVENT), false)
+    assert.equal(result.nativeMessageId, undefined)
   } finally { await native.dispose() }
 })
