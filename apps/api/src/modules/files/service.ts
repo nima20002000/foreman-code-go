@@ -51,9 +51,10 @@ export class FileStorageService<Target> {
   }
 
   private mutation(principal: ManagementPrincipal, target: Target, scope: FileScope,
-    source: FileMutationSource): FileMutationContext | undefined {
-    if (scope.kind === 'temporary') return undefined
+    source: FileMutationSource, guard?: FileMutationContext): FileMutationContext | undefined {
+    if (scope.kind === 'temporary') return guard
     return { source, authorize: async (query) => {
+      await guard?.authorize(query)
       const current = await this.authorization.resolve(principal, target, 'write', query)
       if (fileScopeIdentity(current) !== fileScopeIdentity(scope)) {
         throw new DomainError('FILE_SCOPE_CHANGED', 'The reference scope changed during the upload.', 409)
@@ -67,15 +68,15 @@ export class FileStorageService<Target> {
 
   /** Trusted FIL-05 seam, never bound to an HTTP input. Origin and identity are server-derived. */
   async allocateAgentResult(principal: ManagementPrincipal, target: Target, input: unknown,
-    origin: 'agent_copy' | 'agent_output', publicationIdentity: string) {
+    origin: 'agent_copy' | 'agent_output', publicationIdentity: string, commitAuthorization?: FileMutationContext) {
     if (!publicationIdentity || !['agent_copy', 'agent_output'].includes(origin)) {
       throw new DomainError('FILE_PUBLICATION_INVALID', 'A bound agent publication is required.', 400)
     }
-    return this.allocateWithOrigin(principal, target, input, origin, publicationIdentity)
+    return this.allocateWithOrigin(principal, target, input, origin, publicationIdentity, 'http', commitAuthorization)
   }
 
   private async allocateWithOrigin(principal: ManagementPrincipal, target: Target, input: unknown,
-    origin: 'upload' | 'agent_copy' | 'agent_output', publicationIdentity?: string, source: FileMutationSource = 'http') {
+    origin: 'upload' | 'agent_copy' | 'agent_output', publicationIdentity?: string, source: FileMutationSource = 'http', commitAuthorization?: FileMutationContext) {
     const scope = await this.authorization.resolve(principal, target, 'write')
     if (origin !== 'upload' && scope.kind !== 'temporary') {
       throw new DomainError('FILE_REFERENCE_READ_ONLY', 'Agent results cannot be written to permanent reference files.', 403)
@@ -111,15 +112,15 @@ export class FileStorageService<Target> {
       const allocation = build(scope.kind === 'temporary' ? await this.retentionForOwner(principal.id) : undefined)
       await session.create(allocation)
       return this.result(allocation, false)
-    }, this.mutation(principal, target, scope, source))
+    }, this.mutation(principal, target, scope, source, commitAuthorization))
   }
 
   async upload(principal: ManagementPrincipal, target: Target, requestId: string, source: Readable,
-    options: { signal?: AbortSignal; reauthorize?: () => Promise<ManagementPrincipal>; source?: FileMutationSource } = {}) {
+    options: { signal?: AbortSignal; reauthorize?: () => Promise<ManagementPrincipal>; source?: FileMutationSource; commitAuthorization?: FileMutationContext } = {}) {
     const scope = await this.authorization.resolve(principal, target, 'write')
     const initial = await this.repository.withAllocation(principal.id, requestId, async (session) => {
       const allocation = await this.allocation(session, scope); this.live(allocation); return allocation
-    }, this.mutation(principal, target, scope, options.source ?? 'http'))
+    }, this.mutation(principal, target, scope, options.source ?? 'http', options.commitAuthorization))
     // No pooled connection/transaction is held while reading the network body.
     const candidate = await this.bytes.receive(initial.stored.storageKey, source, initial.stored.value.revision, options.signal)
     try {
@@ -132,11 +133,11 @@ export class FileStorageService<Target> {
         if (allocation.state === 'finalized') return this.result(allocation, true)
         await this.bytes.stage(candidate, allocation.stored.value.revision)
         return this.result(await session.setState('staged'), allocation.state === 'staged')
-      }, this.mutation(currentPrincipal, target, currentScope, options.source ?? 'http'))
+      }, this.mutation(currentPrincipal, target, currentScope, options.source ?? 'http', options.commitAuthorization))
     } finally { await this.bytes.discard(candidate) }
   }
 
-  async finalize(principal: ManagementPrincipal, target: Target, requestId: string, source: FileMutationSource = 'http') {
+  async finalize(principal: ManagementPrincipal, target: Target, requestId: string, source: FileMutationSource = 'http', commitAuthorization?: FileMutationContext) {
     const scope = await this.authorization.resolve(principal, target, 'write')
     return this.repository.withAllocation(principal.id, requestId, async (session) => {
       const allocation = await this.allocation(session, scope); this.live(allocation)
@@ -148,7 +149,7 @@ export class FileStorageService<Target> {
       // 'allocated' is also recoverable: a prior process may have published staging before its SQL acknowledgement.
       await this.bytes.finalize(allocation.stored.storageKey, allocation.stored.value.revision)
       return this.result(await session.setState('finalized'), false)
-    }, this.mutation(principal, target, scope, source))
+    }, this.mutation(principal, target, scope, source, commitAuthorization))
   }
 
   async list(principal: ManagementPrincipal, target: Target, query: unknown) {
