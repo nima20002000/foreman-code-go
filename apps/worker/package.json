@@ -1,0 +1,17 @@
+{
+  "name": "@graphql/worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node ../../scripts/heavy-job.mjs -- node --test test/*.test.mjs",
+    "build:artifact": "node ../../scripts/build-worker-artifact.mjs"
+  },
+  "dependencies": {
+    "@graphql/contracts": "workspace:*",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.7"
+  }
+}
