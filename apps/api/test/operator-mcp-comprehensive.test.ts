@@ -75,6 +75,7 @@ describe('current device and Operator control MCP parity', () => {
       readMainIdentity: async () => ({ mainId: registration.mainId, mainPublicKey: 'public-key', mainPublicKeyFingerprint: 'b'.repeat(64) }),
       list: async () => [saved], revoke,
       createPairingGrant: grant,
+      createSetupCode: vi.fn(), readSetupOptions: vi.fn(),
     }
     const activitySnapshot = ActivitySnapshotV1Schema.parse({ schemaVersion: 1,
       scope: { kind: 'operator_chat', conversationId: 'conversation' }, revision: '7',
