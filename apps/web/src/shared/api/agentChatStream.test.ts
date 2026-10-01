@@ -97,3 +97,17 @@ describe('stream generation barriers', () => {
     vi.useRealTimers(); vi.unstubAllGlobals()
   })
 })
+
+
+it('does not notify or create a retry timer after a listener disposes the subscription', () => {
+  installChatSource(); vi.useFakeTimers()
+  const calls = { snapshot: vi.fn(), event: vi.fn(), refetch: vi.fn(), connection: vi.fn() }
+  const state = agentChatFixtures.active
+  const close = subscribeAgentChat('workspace-fixture', state.conversation.id, { ...calls, snapshot: () => close() })
+  AgentChatTestSource.instances[0]!.snapshot(state)
+  expect(calls.connection).not.toHaveBeenCalledWith('connected')
+  const stop = subscribeAgentChat('workspace-fixture', state.conversation.id, { ...calls, refetch: () => stop() })
+  AgentChatTestSource.instances[1]!.fail()
+  expect(vi.getTimerCount()).toBe(0)
+  vi.useRealTimers(); vi.unstubAllGlobals()
+})

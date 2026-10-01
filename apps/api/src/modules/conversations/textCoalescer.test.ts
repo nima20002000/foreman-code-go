@@ -73,3 +73,16 @@ describe('bounded source IDs', () => {
     stream.dispose()
   })
 })
+
+
+it('disposal from a flushed callback prevents the next replacement or timer from publishing', () => {
+  vi.useFakeTimers()
+  const publish = vi.fn()
+  const stream = createTextCoalescer((operation) => { publish(operation); stream.dispose() }, vi.fn())
+  stream.push(operation(1, 'pending'))
+  stream.push(operation(2, 'final', { mode: 'replace', final: true }))
+  stream.push(operation(3, 'late'))
+  vi.runAllTimers()
+  expect(publish.mock.calls.map(([op]) => op.text)).toEqual(['pending'])
+  expect(vi.getTimerCount()).toBe(0)
+})

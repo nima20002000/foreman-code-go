@@ -24,25 +24,26 @@ export function createTextCoalescer(publish: (operation: ActivityTextOperation) 
     if (previous?.final) return
     const eventKey = operation.source?.eventId ? JSON.stringify([key, operation.source.eventId]) : undefined
     if (eventKey && seen.has(eventKey)) return
-    if (eventKey && seen.size >= limits.items && operation.mode === 'append') { flush(); reconcile(); return }
+    if (eventKey && seen.size >= limits.items && operation.mode === 'append') { flush(); if (!disposed) reconcile(); return }
     if (eventKey && seen.size < limits.items) seen.add(eventKey)
-    if (!previous && states.size >= limits.items) { flush(); reconcile(); return }
+    if (!previous && states.size >= limits.items) { flush(); if (!disposed) reconcile(); return }
     if (operation.source?.connectionId && operation.source.sequence !== undefined && previous?.connectionId === operation.source.connectionId
       && previous.sequence !== undefined && operation.source.sequence <= previous.sequence) return
     // Across a connection change, final snapshots remain authoritative; provisional deltas need readback.
     if (previous?.connectionId && operation.source && previous.connectionId !== operation.source.connectionId && operation.mode === 'append') {
-      flush(); reconcile(); return
+      flush(); if (!disposed) reconcile(); return
     }
     states.set(key, { final: operation.final, connectionId: operation.source?.connectionId, sequence: operation.source?.sequence })
     const bytes = Buffer.byteLength(operation.text)
     if (operation.mode === 'replace' || operation.final || !operation.source?.connectionId || operation.source.sequence === undefined || bytes > limits.bytes) {
-      flush(); publish(operation); return
+      flush(); if (!disposed) publish(operation); return
     }
     const compatible = pending && keyOf(pending) === key && pending.mode === 'append'
       && pending.source?.connectionId === operation.source.connectionId
       && pending.source.sequence !== undefined && pending.source.sequence + 1 === operation.source.sequence
       && Buffer.byteLength(pending.text) + bytes <= limits.bytes
     if (!compatible) flush()
+    if (disposed) return
     pending = compatible ? { ...operation, text: pending!.text + operation.text } : operation
     timer ??= setTimeout(flush, limits.latencyMs)
   }

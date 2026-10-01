@@ -25,13 +25,16 @@ export function subscribeAgentChat(workspaceId: string, conversationId: string, 
     if (!valid()) return
     disconnect()
     listeners.connection(offline() ? 'offline' : 'reconnecting')
+    if (!valid()) return
     listeners.refetch()
+    if (!valid()) return
     if (!offline()) timer = setTimeout(connect, Math.min(30_000, 500 * 2 ** Math.min(failures++, 6)))
   }
   function connect() {
     if (!valid()) return
     if (offline()) { listeners.connection('offline'); return }
     listeners.connection(failures ? 'reconnecting' : 'connecting')
+    if (!valid()) return
     const current = new EventSource(`${agentChatConversationPath(workspaceId, conversationId)}/events`)
     source = current
     // The frozen seam doesn't promise resumable SSE cursors. Every connection must start with
@@ -54,12 +57,12 @@ export function subscribeAgentChat(workspaceId: string, conversationId: string, 
         if (!parsed.success || parsed.data.conversation?.id !== conversationId) { retry(); return }
         ready = true; failures = 0
         listeners.snapshot(parsed.data)
-        listeners.connection('connected')
+        if (valid() && source === current) listeners.connection('connected')
       } else if (!ready && event.type === 'state' && event.data.snapshotRequired === true) {
         // The server's snapshot exceeded its byte budget: the stream is live, read state over HTTP.
         ready = true; failures = 0
         listeners.refetch()
-        listeners.connection('connected')
+        if (valid() && source === current) listeners.connection('connected')
       } else {
         if (!ready) { retry(); return }
         // data is deliberately opaque in the frozen contract. The consumer reads a full,

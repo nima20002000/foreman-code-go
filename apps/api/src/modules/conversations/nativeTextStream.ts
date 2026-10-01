@@ -57,16 +57,16 @@ export function createNativeTextStream(input: {
     },
     push(event: NativeHarnessEvent) {
       if (disposed) return
-      if (kinds.size >= TEXT_STREAM_LIMITS.items) { stream.flush(); input.reconcile(); return }
+      if (kinds.size >= TEXT_STREAM_LIMITS.items) { stream.flush(); if (!disposed) input.reconcile(); return }
       for (const operation of normalize(event)) {
         if (operation) stream.push(operation)
-        else { stream.flush(); input.reconcile() }
+        else { stream.flush(); if (!disposed) input.reconcile() }
       }
     },
     rejected(event: NativeHarnessEvent) {
       if (disposed) return
       for (const operation of normalize(event)) if (operation?.final) stream.seal(operation)
-      input.reconcile()
+      if (!disposed) input.reconcile()
     },
     flush: stream.flush,
     dispose,
