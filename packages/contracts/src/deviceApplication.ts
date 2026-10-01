@@ -36,7 +36,7 @@ export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescri
     if (!/^[a-z][a-z0-9:-]{0,63}$/.test(descriptor.namespace) || seen.has(descriptor.namespace)
       || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1
       || !['client', 'server', 'duplex'].includes(descriptor.role)
-      || !Number.isSafeInteger(descriptor.maxJsonBytes) || descriptor.maxJsonBytes < 16 || descriptor.maxJsonBytes > DEVICE_APPLICATION_JSON_BYTES
+      || !Number.isSafeInteger(descriptor.maxJsonBytes) || descriptor.maxJsonBytes < 256 || descriptor.maxJsonBytes > DEVICE_APPLICATION_JSON_BYTES
       || !Number.isSafeInteger(descriptor.maxBinaryBytes) || descriptor.maxBinaryBytes < 0 || descriptor.maxBinaryBytes > DEVICE_APPLICATION_BINARY_BYTES) throw new Error('Invalid device extension')
     seen.add(descriptor.namespace)
     return { namespace: descriptor.namespace, version: descriptor.version, role: descriptor.role, maxJsonBytes: descriptor.maxJsonBytes, maxBinaryBytes: descriptor.maxBinaryBytes }

@@ -33,6 +33,9 @@ export function deviceNegotiationHash(extensions: DeviceNegotiatedExtension[]) {
 /** One reader per authenticated epoch. Chunk ACKs attest receipt only, never task acceptance. */
 export class DeviceApplicationChannel {
   private readonly abort = new AbortController()
+  private readonly extensions: DeviceNegotiatedExtension[]
+  private readonly registrations: DeviceExtensionRegistration[]
+  private readonly binding: Readonly<DeviceSessionBinding>
   private readonly pending = new Map<string, Pending>()
   private readonly assemblies = new Map<string, Assembly>()
   private readonly handlers = new Map<string, AbortController>()
@@ -48,15 +51,18 @@ export class DeviceApplicationChannel {
     /** Main live device authorization, separate from the handler's operation authority. */
     revalidate?(): Promise<void>
   }) {
+    this.extensions = options.extensions.map((item) => Object.freeze({ ...item }))
+    this.registrations = options.registrations.map((item) => Object.freeze({ ...item }))
+    this.binding = Object.freeze({ ...options.binding })
     const close = () => this.close(new DeviceConnectionError('transport'))
     options.signal.addEventListener('abort', close, { once: true })
     this.detach = () => options.signal.removeEventListener('abort', close)
     if (options.signal.aborted) close()
   }
-  capabilities(): DeviceNegotiatedExtension[] { return this.options.extensions.map((item) => ({ ...item })) }
+  capabilities(): DeviceNegotiatedExtension[] { return this.extensions.map((item) => ({ ...item })) }
   private current() { if (this.abort.signal.aborted) throw this.failure ?? new DeviceConnectionError('transport') }
   private negotiated(namespace: string, outgoing: boolean) {
-    const extension = this.options.extensions.find((item) => item.namespace === namespace)
+    const extension = this.extensions.find((item) => item.namespace === namespace)
     const allowed = extension && (this.options.side === 'main' ? outgoing ? extension.mainCanRequest : extension.workerCanRequest : outgoing ? extension.workerCanRequest : extension.mainCanRequest)
     if (!extension || !allowed) throw new DeviceApplicationError('unavailable')
     return extension
@@ -105,7 +111,7 @@ export class DeviceApplicationChannel {
   }
   private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'], payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal) {
     this.current()
-    const extension = this.options.extensions.find((item) => item.namespace === namespace)!
+    const extension = this.extensions.find((item) => item.namespace === namespace)!
     const json = Buffer.from(JSON.stringify(payload === undefined ? null : payload))
     if (json.byteLength > extension.maxJsonBytes || (bytes?.byteLength ?? 0) > extension.maxBinaryBytes) throw new DeviceApplicationError('payload-too-large')
     const size = json.byteLength + (bytes?.byteLength ?? 0)
@@ -143,7 +149,7 @@ export class DeviceApplicationChannel {
     if (frame.type === 'application-open') {
       if (typeof frame.namespace !== 'string' || !['request', 'response', 'error'].includes(String(frame.kind))) throw new DeviceConnectionError('malformed-frame')
       const kind = frame.kind as Assembly['kind']
-      const extension = kind === 'request' ? this.negotiated(frame.namespace, false) : this.options.extensions.find((item) => item.namespace === frame.namespace)
+      const extension = kind === 'request' ? this.negotiated(frame.namespace, false) : this.extensions.find((item) => item.namespace === frame.namespace)
       if (kind !== 'request' && !this.pending.has(id)) { this.trySendCancel(id); return }
       if (!extension || frame.version !== extension.version || (kind !== 'request' && this.pending.get(id)?.namespace !== frame.namespace)) throw new DeviceConnectionError('malformed-frame')
       const jsonBytes = Number(frame.jsonBytes), binaryBytes = Number(frame.binaryBytes), total = jsonBytes + binaryBytes
@@ -182,11 +188,11 @@ export class DeviceApplicationChannel {
         return
       }
       await this.authorized()
-      const registration = this.options.registrations.find((item) => item.namespace === assembly.namespace)
+      const registration = this.registrations.find((item) => item.namespace === assembly.namespace)
       if (!registration?.handle || assembly.abort.signal.aborted) return
       let result: DeviceApplicationResult
       try {
-        result = await withDeviceDeadline(registration.handle(payload, { binding: Object.freeze({ ...this.options.binding }), signal: assembly.abort.signal, ...(bytes ? { bytes } : {}) }), assembly.abort.signal, 900_000)
+        result = await withDeviceDeadline(registration.handle(payload, { binding: Object.freeze({ ...this.binding }), signal: assembly.abort.signal, ...(bytes ? { bytes } : {}) }), assembly.abort.signal, 900_000)
         await this.authorized()
       } catch (error) {
         if (assembly.abort.signal.aborted || this.abort.signal.aborted) return
@@ -206,7 +212,7 @@ export class DeviceApplicationChannel {
     let lastHeartbeat = Date.now(), timer: ReturnType<typeof setInterval> | undefined
     const worker = this.options.side === 'worker'
     if (worker) {
-      const ping = () => { try { this.current(); sendFrame(this.options.socket, { type: 'ping', connectionEpoch: this.options.binding.connectionEpoch }) } catch (error) { this.close(error as Error) } }
+      const ping = () => { try { this.current(); sendFrame(this.options.socket, { type: 'ping', connectionEpoch: this.binding.connectionEpoch }) } catch (error) { this.close(error as Error) } }
       ping(); timer = setInterval(ping, heartbeatMs)
     }
     try {
@@ -215,9 +221,9 @@ export class DeviceApplicationChannel {
         if (next.done) throw new DeviceConnectionError('transport')
         const frame = readFrame(next.value)
         if (frame.type === (worker ? 'pong' : 'ping')) {
-          if (frame.connectionEpoch !== this.options.binding.connectionEpoch) throw new DeviceConnectionError('malformed-frame')
+          if (frame.connectionEpoch !== this.binding.connectionEpoch) throw new DeviceConnectionError('malformed-frame')
           await this.authorized(); lastHeartbeat = Date.now()
-          if (!worker) sendFrame(this.options.socket, { type: 'pong', connectionEpoch: this.options.binding.connectionEpoch })
+          if (!worker) sendFrame(this.options.socket, { type: 'pong', connectionEpoch: this.binding.connectionEpoch })
         } else if (frame.type === 'blocked') throw new DeviceConnectionError(classify(frame.code))
         else this.receive(frame)
       }

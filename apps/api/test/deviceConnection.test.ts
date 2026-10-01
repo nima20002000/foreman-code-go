@@ -1,4 +1,4 @@
-import { deviceNegotiationHash } from '../src/modules/devices/deviceApplicationChannel.js'
+import { deviceNegotiationHash, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
 import { mainIdentityProofMessage } from '@graphql/contracts/device-identity-node'
 import type { MainIdentityProofRequest } from '@graphql/contracts/device-identity'
@@ -31,10 +31,10 @@ const hello = { ...identity, connectionEpoch: '55555555-5555-4555-8555-555555555
 const welcome = { ...hello, type: 'welcome', connectionEpoch: '66666666-6666-4666-8666-666666666666', capabilities: { heartbeat: true, dispatch: false, transfer: false } }
 const signedWelcome = async (sent: Record<string, unknown>, epoch = welcome.connectionEpoch) => ({ ...welcome, connectionEpoch: epoch, connectionGeneration: sent.connectionGeneration, mainIdentityProof: await proof({ audience: 'graphql-worker-main-v1', ...identity, nonce: sent.nonce as string, connectionGeneration: sent.connectionGeneration as number, connectionEpoch: sent.connectionEpoch as string, mainConnectionEpoch: epoch, protocolVersion: 1, workerApplicationVersion: 'build', negotiationHash: deviceNegotiationHash([]) }) })
 const flush = async () => { for (let i = 0; i < 80; i++) await Promise.resolve() }
-const makeEndpoint = () => {
+const makeEndpoint = (extensions?: DeviceExtensionRegistration[], handshakeMs = 100) => {
   const presence = vi.fn()
   const auth = { authenticateDevice: vi.fn(async () => principal), revalidateDevice: vi.fn(async () => {}) }
-  const endpoint = new DeviceEndpoint({ mainId: identity.mainId, appVersion: 'build', signMainIdentityProof: proof, auth, reconcile: async () => {}, presence, handshakeMs: 100, heartbeatMs: 100 })
+  const endpoint = new DeviceEndpoint({ mainId: identity.mainId, appVersion: 'build', signMainIdentityProof: proof, auth, reconcile: async () => {}, presence, handshakeMs, heartbeatMs: 100, ...(extensions ? { extensions } : {}) })
   return { endpoint, auth, presence }
 }
 afterEach(() => { vi.useRealTimers() })
@@ -112,13 +112,15 @@ describe('device-only carrier and lifecycle', () => {
     expect(supervisor.status()).toMatchObject({ desired: true, phase: 'blocked', failure: 'wrong-main' }); expect(connect).toHaveBeenCalledTimes(1)
     await supervisor.stop(); expect(supervisor.status()).toMatchObject({ desired: false, phase: 'disconnected' })
   })
-  it.each(['missing', 'nonce', 'boot', 'generation', 'epoch', 'auth', 'key', 'signature', 'fingerprint'])('blocks tampered or absent selected-main proof: %s', async (field) => {
+  it.each(['missing', 'nonce', 'boot', 'generation', 'epoch', 'auth', 'key', 'signature', 'fingerprint', 'negotiation', 'negotiation-removed'])('blocks tampered or absent selected-main proof: %s', async (field) => {
     const socket = new Socket(); const reconcile = vi.fn(async () => {})
     const supervisor = new DeviceConnectionSupervisor({ identity, appVersion: 'build', mainPublicKeyFingerprint: fingerprint, connect: async () => adaptDeviceSocket(socket), reconcile })
     supervisor.start(); await flush()
     const response = await signedWelcome(socket.sent[0]!)
     const altered = response as unknown as { mainIdentityProof?: { request: Record<string, unknown>; signature: string; mainPublicKeyFingerprint: string } }
     if (field === 'missing') delete altered.mainIdentityProof
+    else if (field === 'negotiation') altered.mainIdentityProof!.request.negotiationHash = 'a'.repeat(64)
+    else if (field === 'negotiation-removed') delete altered.mainIdentityProof!.request.negotiationHash
     else if (field === 'signature') altered.mainIdentityProof!.signature = 'A'.repeat(86)
     else if (field === 'fingerprint') altered.mainIdentityProof!.mainPublicKeyFingerprint = 'a'.repeat(64)
     else { const key = { nonce: 'nonce', boot: 'bootId', generation: 'connectionGeneration', epoch: 'mainConnectionEpoch', auth: 'authorizationRevision', key: 'keyRevision' }[field]!; altered.mainIdentityProof!.request[key] = field === 'nonce' ? 'a'.repeat(43) : field === 'boot' || field === 'epoch' ? '99999999-9999-4999-8999-999999999999' : 99 }
@@ -173,6 +175,32 @@ describe('pinned ws adapter on disposable loopback transport', () => {
     } finally {
       endpoint.close(); client.terminate(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve()))
     }
+  })
+  it('negotiates signed actual duplex handlers and binds both request directions to the authenticated epoch', async () => {
+    const mainHandler = vi.fn(async (payload: unknown) => ({ payload: { mainReceipt: payload } }))
+    const mainExtension: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 2048, maxBinaryBytes: 0, handle: mainHandler }
+    const { endpoint, presence } = makeEndpoint([mainExtension], 2000)
+    const server = createServer(), carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
+    server.on('upgrade', deviceUpgradeHandler(endpoint, carrier)); server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing address')
+    const workerHandler = vi.fn(async (payload: unknown, context: { binding: typeof identity & { connectionEpoch: string; connectionGeneration: number } }) => {
+      if ((payload as { grant?: string }).grant !== 'exact-operation') throw { code: 'forbidden' }
+      return { payload: { receipt: 'actual-handler', epoch: context.binding.connectionEpoch } }
+    })
+    const connect = deviceConnector({ url: 'wss://main/device/connect', credential: 'device', create: (_url, options) => new WebSocket(`ws://127.0.0.1:${address.port}/device/connect`, options) })
+    const worker = new DeviceConnectionSupervisor({ identity, appVersion: 'build', mainPublicKeyFingerprint: fingerprint, connect, reconcile: async () => {}, heartbeatMs: 20, extensions: [{ ...mainExtension, handle: workerHandler }] })
+    try {
+      worker.start(); await vi.waitFor(() => expect(worker.status().phase).toBe('ready'), { timeout: 2000, interval: 10 })
+      await vi.waitFor(() => expect(endpoint.capabilities(identity.deviceId)).toHaveLength(1))
+      expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'ready', dispatch: true, transfer: false })
+      await expect(endpoint.request(identity.deviceId, 'execution-v1', { grant: 'heartbeat-only' })).rejects.toThrow('forbidden')
+      const response = await endpoint.request(identity.deviceId, 'execution-v1', { grant: 'exact-operation' })
+      expect(response.payload).toMatchObject({ receipt: 'actual-handler' })
+      const context = workerHandler.mock.calls.at(-1)![1]
+      expect(context.binding).toMatchObject(identity); expect((response.payload as { epoch: string }).epoch).toBe(context.binding.connectionEpoch)
+      expect(await worker.request('execution-v1', { report: 'accepted-job-only' })).toEqual({ payload: { mainReceipt: { report: 'accepted-job-only' } } })
+      expect(mainHandler).toHaveBeenCalledOnce()
+    } finally { await worker.stop(); endpoint.close(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
   it('maps pre-upgrade rejection into blocked auth without a retry storm', async () => {
     const { endpoint, auth } = makeEndpoint(); auth.authenticateDevice.mockRejectedValue({ code: 'revoked' })

@@ -37,7 +37,7 @@ describe('authenticated namespace carrier mechanics', () => {
     expect(negotiateDeviceExtensions([client], [{ ...client, role: 'server' }])).toEqual([{ namespace: 'execution-v1', version: 1, mainCanRequest: true, workerCanRequest: false, maxJsonBytes: 1024, maxBinaryBytes: 0 }])
   })
   it('correlates bounded chunked JSON plus full 1MiB binary with actual handler receipt', async () => {
-    const bytes = new Uint8Array(1_048_576).fill(42), observed = vi.fn()
+    const bytes = Uint8Array.from({ length: 1_048_576 }, (_, index) => index % 256), observed = vi.fn()
     const pair = setup(async (payload, context) => { observed(context); return { payload, ...(context.bytes ? { bytes: context.bytes } : {}) } })
     try {
       const response = await pair.main.request('execution-v1', { text: 'payload'.repeat(20_000) }, { bytes })
@@ -102,6 +102,17 @@ describe('authenticated namespace carrier mechanics', () => {
       await vi.advanceTimersByTimeAsync(450)
       expect(pair.rawMain.frames.filter((frame) => JSON.parse(frame).type === 'pong').length).toBeGreaterThan(3)
       release(); expect(await result).toEqual({ payload: null })
+    } finally { await pair.close(); expect(vi.getTimerCount()).toBe(0) }
+  })
+  it('times out a slow chunk reader without mistaking queued bytes for handler admission', async () => {
+    vi.useFakeTimers(); const handler = vi.fn(async () => ({ payload: 'receipt' })), pair = setup(handler)
+    const send = pair.rawWorker.send.bind(pair.rawWorker)
+    pair.rawWorker.send = (text) => { if (JSON.parse(text).type !== 'application-ack') send(text) }
+    try {
+      const pending = pair.main.request('execution-v1', { dispatch: true }); void pending.catch(() => {})
+      await flush(); await vi.advanceTimersByTimeAsync(10_001); await expect(pending).rejects.toThrow('timeout')
+      expect(handler).not.toHaveBeenCalled(); await flush(); pair.rawWorker.send = send
+      expect(await pair.main.request('execution-v1', { dispatch: true })).toEqual({ payload: 'receipt' })
     } finally { await pair.close(); expect(vi.getTimerCount()).toBe(0) }
   })
   it('bounds concurrent requests even across awaited live authorization', async () => {
