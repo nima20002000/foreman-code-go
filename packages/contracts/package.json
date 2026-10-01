@@ -91,6 +91,10 @@
     "./harness-registry": {
       "types": "./dist/harnessRegistry.d.ts",
       "import": "./dist/harnessRegistry.js"
+    },
+    "./source-materialization": {
+      "types": "./dist/sourceMaterialization.d.ts",
+      "import": "./dist/sourceMaterialization.js"
     }
   },
   "scripts": {
