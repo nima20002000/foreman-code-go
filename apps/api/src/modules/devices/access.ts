@@ -52,10 +52,8 @@ export class PostgresDeviceAccessService {
           const previous = existing.rows[0].record
           if (previous.status !== 'revoked' || previous.authorizationRevision !== input.expectedAuthorizationRevision) throw new DeviceAccessError('conflict')
           registration = { ...registration, deviceId: previous.deviceId, keyRevision: previous.keyRevision + (previous.publicKeyFingerprint === fingerprint ? 0 : 1), authorizationRevision: previous.authorizationRevision + 1 }
-          await client.query('delete from device_pairing_grants where device_id=$1', [previous.deviceId])
-          await client.query('delete from device_registrations where id=$1', [previous.deviceId])
         }
-        await client.query('insert into device_registrations(id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,$4,$5)', [registration.deviceId, this.mainId, registration.workerInstallationId, input.publicKey, registration])
+        await client.query('insert into device_registrations(id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,$4,$5) on conflict(id) do update set public_key=excluded.public_key,record=excluded.record,credential_hash=null,credential_expires_at=null', [registration.deviceId, this.mainId, registration.workerInstallationId, input.publicKey, registration])
         await client.query('insert into device_pairing_grants(id,token_hash,device_id,authorization_revision,expires_at,principal_id) values($1,$2,$3,$4,$5,$6)', [randomUUID(), digest(grant), registration.deviceId, registration.authorizationRevision, expiresAt, principal.id])
         return { registration, expiresAt }
       } })
