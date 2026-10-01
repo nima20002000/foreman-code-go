@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { it } from 'vitest'
 import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { FixtureServer, json, permission, sessionFor } from './opencode-fixtures.js'
-import { nativeMessageId } from '../src/modules/harnesses/opencodeProtocol.js'
+import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
 import { sdkQualificationClient } from './support/opencodeSdkQualification.js'
 
 async function replay(sdk: boolean) {
@@ -118,7 +118,7 @@ it('uses the selected SDK history/cursor methods for a root and selected answer 
     for (let index = 0; index < 250; index++) server.user(`unrelated-${index}`, `unrelated input ${index}`)
     const history = await native.reconcile(session, 'older-sdk-root')
     assert.equal(history.terminalResult?.outcome, 'succeeded')
-    assert.equal(history.terminalResult?.output?.text, 'selected older answer')
+    assert.equal(object(history.terminalResult?.output).text, 'selected older answer')
     assert(calls.includes('message'))
     assert(calls.filter(value => value === 'messages').length >= 2)
     assert(server.calls.some(value => value.path.includes('before=opaque-page%3A')))
