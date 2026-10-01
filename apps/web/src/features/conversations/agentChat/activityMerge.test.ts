@@ -54,3 +54,9 @@ describe('live tool and large revision history', () => {
     expect(merged.size).toBe(1); expect(merged.get(activityScopeKey(scope))!.revision).toBe('5')
   })
 })
+
+it('independent source revisions cannot lower current owners when an unrelated counter increases', () => {
+  const current = snapshot('10'); current.sourceRevisions = [{ source: 'execution', id: 'attempt-A', revision: '7' }]
+  const olderDependency = snapshot('11'); olderDependency.sourceRevisions = [{ source: 'execution', id: 'attempt-A', revision: '6' }]
+  expect(reconcileActivitySnapshot(current, olderDependency, scope)!.revision).toBe('10')
+})
