@@ -1,6 +1,6 @@
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
-import type { NativeProcessRecovery } from './recovery/processRegistry.js'
+import { nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets } from './secrets.js'
 
 export type JsonObject = Record<string, unknown>
@@ -166,6 +166,17 @@ export class CodexStdioTransport {
     // A failed cleanup stays fenced, but the next explicit close must retry it.
     void attempt.catch(() => { if (this.closePromise === attempt) this.closePromise = undefined })
     return attempt
+  }
+
+  /** Current writable callback channel only; this snapshot is not delivery evidence. */
+  isConnected(): boolean {
+    const child = this.owned?.child
+    if (this.stopped || !child) return false
+    try {
+      const outcome = nativeProcessExit(child, { exitCode: child.exitCode, exitSignal: child.signalCode })
+      if (outcome.exitCode !== null || outcome.exitSignal !== null) return false
+    } catch { return false }
+    return child.stdin.writable && !child.stdin.destroyed && !child.stdin.writableEnded
   }
 
   private assertConnected(code = 'CODEX_APP_SERVER_DISCONNECTED'): void {

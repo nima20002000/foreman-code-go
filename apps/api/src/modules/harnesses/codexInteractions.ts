@@ -15,12 +15,13 @@ export function codexRequestKey(generation: number, id: RequestId): string {
 /** Pure translation of an already schema-validated callback. No callbacks,
  * delivery receipts, grants or durable pending state are reconstructed here. */
 export function translateCodexInteraction(context: {
-  session: NativeSessionReference; configuration: CodexHarnessConfiguration; generation: number
+  session: NativeSessionReference; configuration: CodexHarnessConfiguration; connectionId: string; generation: number
 }, request: RpcRequest) {
   const params = request.params ?? {}
   const turnId = text(params.turnId)
   if (!turnId || params.threadId !== context.session.nativeSessionId) return undefined
-  const nativeRequestId = `${context.session.nativeSessionId}:${turnId}:${request.method}:${codexRequestKey(context.generation, request.id)}`
+  // Native RPC IDs may repeat after cold attach; connection identity fences new opaque IDs.
+  const nativeRequestId = `${context.session.nativeSessionId}:${turnId}:${request.method}:${context.connectionId}:${codexRequestKey(context.generation, request.id)}`
   const responses: Map<string, { option: ApprovalResponseOption; nativeResponse: JsonObject }> = new Map()
   const add = (option: Omit<ApprovalResponseOption, 'optionId'>, nativeResponse: JsonObject) => {
     if ((context.configuration.advanced?.sessionPersistence ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION.sessionPersistence) === 'ephemeral' && option.semantic === 'allow_session') return

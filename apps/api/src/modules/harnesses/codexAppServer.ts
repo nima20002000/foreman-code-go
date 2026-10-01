@@ -28,11 +28,13 @@ import {
 } from './codexProtocol.js'
 import { translateCodexInteraction } from './codexInteractions.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
+import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { harnessProfile } from './qualification/profiles.js'
 import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
 
 /** Structural client boundary shared by native production and recorded replay. */
 export type CodexTransport = Pick<CodexStdioTransport, 'start' | 'request' | 'respond' | 'reject' | 'close'>
+  & { isConnected?(): boolean }
 interface CodexSessionOperations {
   transport: (...args: ConstructorParameters<typeof CodexStdioTransport>) => CodexTransport
   qualify: typeof qualifyCodex
@@ -76,12 +78,20 @@ interface WaitingRequest {
   requestId: RequestId
   method: string
   generation: number
+  transport: CodexTransport
   signature: string
   responses: Map<string, { option: ApprovalResponseOption; nativeResponse: JsonObject }>
   delivery: Delivery
   selectedOptionId?: string
   resolution: Promise<'resolved' | 'cleared'>
   resolve(value: 'resolved' | 'cleared'): void
+}
+interface ResolvedRequest {
+  signature: string
+  nativeRequestId: string | undefined
+  nativeTurnId: string | undefined
+  method: string
+  generation: number
 }
 interface TurnSnapshot {
   activeTurnId: string | undefined
@@ -131,7 +141,7 @@ interface Runtime extends TurnSnapshot {
   fileRequests: Map<string, { signature: string; pending: boolean }>
   cancellation: { turnId: string; promise: Promise<boolean> } | undefined
   interactions: Map<string, WaitingRequest>
-  resolvedRequests: Map<string, string>
+  resolvedRequests: Map<string, ResolvedRequest>
   events: NativeHarnessEvent[]
   eventSizes: number[]
   eventBytes: number
@@ -807,6 +817,43 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return first ? structuredClone(first.pending) : undefined
   }
 
+  /** Inspects only this manager's current exact native callback; never reconstructs one from history. */
+  async inspectResponseAvailability(session: NativeSessionReference, query: NativeResponseAvailabilityQuery,
+    signal?: AbortSignal): Promise<NativeResponseAvailability> {
+    signal?.throwIfAborted()
+    const unavailable = (reason: NativeResponseAvailability['reason']) => unavailableNativeResponse(session, query, reason)
+    if (this.shutdownController.signal.aborted) return unavailable('session_closed')
+    if (session.harness !== 'codex' || harnessProfile('codex', session.providerVersion) === null
+      || this.expectedVersion !== undefined && session.providerVersion !== this.expectedVersion) return unavailable('unqualified')
+    const runtime = this.runtimes.get(session.nativeSessionId)
+    if (!runtime) return unavailable('callback_lost')
+    if (runtime.session.providerVersion !== session.providerVersion) return unavailable('identity_mismatch')
+    if (runtime.closed || runtime.disposed) return unavailable('session_closed')
+    const waiting = [...runtime.interactions.values()].find((entry) => entry.pending.turn.nativeRequestId === query.nativeRequestId)
+    if (!waiting) {
+      const consumed = [...runtime.resolvedRequests.values()].find((entry) => entry.nativeRequestId === query.nativeRequestId)
+      if (consumed && (consumed.method !== query.nativeRequestType
+        || query.expectedNativeTurnId !== undefined && consumed.nativeTurnId !== query.expectedNativeTurnId)) return unavailable('identity_mismatch')
+      return unavailable(consumed ? 'request_consumed' : 'callback_lost')
+    }
+    const turnId = waiting.pending.turn.nativeTurnId
+    if (waiting.method !== query.nativeRequestType || waiting.pending.nativeRequestType !== query.nativeRequestType
+      || waiting.pending.session.harness !== session.harness || waiting.pending.session.nativeSessionId !== session.nativeSessionId || waiting.pending.session.providerVersion !== session.providerVersion
+      || query.expectedNativeTurnId !== undefined && turnId !== query.expectedNativeTurnId) return unavailable('identity_mismatch')
+    if (waiting.generation !== runtime.generation || waiting.transport !== runtime.transport
+      || runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) !== waiting) {
+      return { ...unavailable('callback_lost'), state: 'recovery_required' }
+    }
+    if (!turnId || turnId !== runtime.activeTurnId || runtime.terminalResult) return unavailable('identity_mismatch')
+    if (runtime.phase !== 'active' || runtime.starting || !runtime.qualified.schemaManifestSha256
+      || runtime.qualified.providerVersion !== session.providerVersion) return unavailable('unqualified')
+    if (!this.transports.has(runtime.transport) || runtime.transport.isConnected?.() !== true) return unavailable('callback_lost')
+    const current = { ...unavailable('callback_lost'), nativeTurnId: turnId,
+      generation: `${runtime.connectionId}:${runtime.generation}`, qualified: true }
+    if (waiting.delivery !== 'pending') return { ...current, state: 'recovery_required', reason: 'response_in_flight' }
+    return { ...current, state: 'available', path: 'live_callback', reason: 'live_callback' }
+  }
+
   async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
     const runtime = this.requireRuntime(session)
     if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
@@ -814,7 +861,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!waiting) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The addressed native request is not pending in this session.')
     const stored = waiting.responses.get(option.optionId)
     if (!stored) throw new HarnessExecutionError('NATIVE_RESPONSE_OPTION_INVALID', 'The selected response was not offered for this native request.')
-    if (waiting.delivery !== 'pending' || waiting.generation !== runtime.generation || runtime.closed) {
+    if (waiting.delivery !== 'pending' || waiting.generation !== runtime.generation || waiting.transport !== runtime.transport || runtime.closed) {
       throw new HarnessExecutionError('NATIVE_RESPONSE_RECONCILIATION_REQUIRED', 'A submitted, disconnected, or uncertain native response cannot be retransmitted.')
     }
     signal?.throwIfAborted()
@@ -1695,7 +1742,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const resolved = runtime.resolvedRequests.get(key)
     if (existing || resolved) {
       // Do not send an error using a still-live original request ID.
-      if ((existing?.signature ?? resolved) !== signature) this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
+      if ((existing?.signature ?? resolved?.signature) !== signature) this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
       return
     }
     if (runtime.interactions.size >= MAX_INTERACTIONS) {
@@ -1762,12 +1809,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private translateRequest(runtime: Runtime, request: RpcRequest, signature: string): WaitingRequest | undefined {
     const translated = translateCodexInteraction({ session: runtime.session, configuration: runtime.configuration,
-      generation: runtime.generation }, request)
+      connectionId: runtime.connectionId, generation: runtime.generation }, request)
     if (!translated) return undefined
     const { pending, responses } = translated
     let resolve!: WaitingRequest['resolve']
     const resolution = new Promise<'resolved' | 'cleared'>((complete) => { resolve = complete })
-    return { pending, requestId: request.id, method: request.method, generation: runtime.generation,
+    return { pending, requestId: request.id, method: request.method, generation: runtime.generation, transport: runtime.transport,
       signature, responses, delivery: 'pending', resolution, resolve }
   }
 
@@ -1832,7 +1879,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private resolveInteraction(runtime: Runtime, key: string, waiting: WaitingRequest, result: 'resolved' | 'cleared'): void {
     if (runtime.interactions.get(key) !== waiting) return
     runtime.interactions.delete(key)
-    runtime.resolvedRequests.set(key, waiting.signature)
+    runtime.resolvedRequests.set(key, { signature: waiting.signature,
+      nativeRequestId: waiting.pending.turn.nativeRequestId, nativeTurnId: waiting.pending.turn.nativeTurnId,
+      method: waiting.method, generation: waiting.generation })
     if (runtime.resolvedRequests.size > MAX_EVENTS) runtime.resolvedRequests.delete(runtime.resolvedRequests.keys().next().value!)
     waiting.resolve(result)
     // Native "resolved" means answered OR cleared, not proof of a permission grant.
