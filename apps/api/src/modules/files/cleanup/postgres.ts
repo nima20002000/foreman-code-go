@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import type { ArtifactPhysicalDeletionOwnership } from '../distributed/cleanup.js'
 
 import { PostgresFileArtifactCleanupRepository } from './artifacts.js'
 
@@ -34,7 +35,7 @@ function matches(row: Row | undefined, expected: FileCleanupCandidate): row is R
  * and the bounded objects/staging walk finds failed deletions, old revisions and late upload residue. */
 export class PostgresFileCleanupRepository implements FileCleanupRepository {
   readonly artifacts: PostgresFileArtifactCleanupRepository
-  constructor(private readonly pool: pg.Pool) {
+  constructor(private readonly pool: pg.Pool, private readonly physicalOwnership?: ArtifactPhysicalDeletionOwnership) {
     this.artifacts = new PostgresFileArtifactCleanupRepository(pool)
   }
 
@@ -113,6 +114,9 @@ export class PostgresFileCleanupRepository implements FileCleanupRepository {
       await begin()
       const current = await read()
       if (!matches(current, expected) || (current.state !== 'expired' && current.state !== 'removed')) return 'stale'
+      check()
+      // Holds defer physical deletion only. The already committed tombstone still denies access.
+      if (this.physicalOwnership && !await this.physicalOwnership.assertCanDelete(expected, client)) return 'busy'
       check()
       const complete = await removeBytes()
       await commit()
