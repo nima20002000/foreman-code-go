@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { AcceptedNodePlacementSchema, PlacementDigestSchema } from './nodePlacement.js'
+import { JobArtifactMediaTypeSchema, JobArtifactRetentionSchema } from './jobArtifacts.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 
 export const JOB_CONTRACT_VERSION = 1 as const
@@ -20,10 +21,10 @@ export const JobPolicySchema = z.object({
   queueTimeoutMs: z.number().int().positive(), preparationTimeoutMs: z.number().int().positive(), executionTimeoutMs: z.number().int().positive(),
   cancellationGraceMs: z.number().int().nonnegative(), maxLogChunkBytes: z.number().int().positive().max(65536),
   maxLogBytes: z.number().int().positive(), maxWorkerSpoolBytes: z.number().int().positive(),
-  logOverflow: z.enum(['stop', 'explicit-truncation']), maxOutputBytes: z.number().int().positive(), retentionSeconds: z.number().int().positive(),
+  logOverflow: z.enum(['stop', 'explicit-truncation']), maxOutputBytes: z.number().int().positive(), retentionSeconds: JobArtifactRetentionSchema,
 }).strict()
 export const JobOutputSpecSchema = z.object({
-  path: RelativePath, required: z.boolean(), mediaType: z.enum(['text/plain', 'application/json', 'text/html', 'application/zip', 'application/gzip', 'application/octet-stream']),
+  path: RelativePath, required: z.boolean(), mediaType: JobArtifactMediaTypeSchema,
 }).strict()
 /** Job targets reuse W08 identity/root binding without inventing a Run or Agent. */
 const placement = AcceptedNodePlacementSchema.shape
@@ -57,11 +58,16 @@ export const JobProcessStateSchema = z.object({
   phase: z.enum(['queued', 'preparing', 'running', 'terminal']),
   outcome: z.enum(['succeeded', 'build_failed', 'cancelled', 'timed_out', 'preparation_failed', 'spawn_failed']).nullable(),
   exitCode: z.number().int().nullable(), signal: z.string().nullable(), processStopped: z.boolean(),
-}).strict()
+}).strict().superRefine((process,context)=>{
+  if((process.phase==='terminal') !== (process.outcome!==null) || (process.phase!=='terminal' && (process.exitCode!==null || process.signal!==null || process.processStopped))) {
+    context.addIssue({code:'custom',message:'Process evidence does not match its phase.'})
+  }
+  if(process.outcome==='succeeded' && (process.exitCode!==0 || process.signal!==null)) context.addIssue({code:'custom',message:'Successful process evidence requires exit zero and no signal.'})
+})
 export const JobExecutionSchema = z.object({
   schemaVersion: z.literal(1), id: IdSchema, workspaceId: IdSchema, acceptedSpec: AcceptedJobSpecSchema,
   operationId: IdSchema, attemptId: IdSchema, owner: z.object({ grantId: IdSchema, epoch: z.string().regex(/^[1-9][0-9]*$/) }).strict(),
-  workflow: z.object({ runId: IdSchema, nodeId: IdSchema, nodeExecutionId: IdSchema }).strict().nullable(),
+  workflow: z.object({ workflowId: IdSchema, runId: IdSchema, nodeId: IdSchema, nodeExecutionId: IdSchema }).strict().nullable(),
   process: JobProcessStateSchema, transport: z.enum(['connected', 'offline', 'unknown']),
   publication: z.enum(['pending', 'collecting', 'complete', 'failed', 'expired']),
   startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(), lastSeenAt: TimestampSchema.nullable(),
