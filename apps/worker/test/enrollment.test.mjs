@@ -4,10 +4,12 @@ import { createRequire } from 'node:module';
 import { mkdtemp, writeFile, readFile, rm, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID, sign, verify, X509Certificate } from 'node:crypto';
+import { rootCertificates } from 'node:tls';
 const require = createRequire(new URL('../../api/package.json', import.meta.url));
 const { tsImport } = await import(require.resolve('tsx/esm/api'));
-const { enrollWorker, boundedPost, pairingErrorMessage } = await tsImport('../src/enrollment.mjs', import.meta.url);
+const { enrollWorker, enrollWorkerCode, boundedPost, pairingErrorMessage } = await tsImport('../src/enrollment.mjs', import.meta.url);
+const { encodeWorkerEnrollmentCode } = await tsImport('../../../packages/contracts/src/deviceSetup.ts', import.meta.url);
 const { loadOrCreateWorkerIdentity, publicKeyFingerprint, mainEnrollmentProofMessage, mainIdentityProofMessage, pairingProof } = await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
 
 async function fixture(t) {
@@ -68,6 +70,39 @@ test('bounded enrollment response classifies overflow, HTTP, JSON and network fa
 function mainProof(f, body) {
   return { request: body, mainApplicationVersion: '0.1.0', mainPublicKey: f.publicKey, mainPublicKeyFingerprint: f.input.mainPublicKeyFingerprint, signature: sign(null, Buffer.from(mainEnrollmentProofMessage(body, '0.1.0')), f.key.privateKey).toString('base64url') };
 }
+
+test('private setup code delegates fresh proof and persists only target-scoped public trust', async (t) => {
+  const f = await fixture(t);
+  const certificatePem = rootCertificates.find(value => new X509Certificate(value).ca);
+  const tlsTrust = { certificatePem, sha256: createHash('sha256').update(new X509Certificate(certificatePem).raw).digest('hex') };
+  const enrollmentCode = encodeWorkerEnrollmentCode({ version: 1, kind: 'enrollment', workerInstallationId: f.identity.workerInstallationId,
+    publicKeyFingerprint: f.identity.publicKeyFingerprint, enrollment: f.input, expiresAt: '2099-01-01T00:00:00.000Z', tlsTrust });
+  const calls = [];
+  const result = await enrollWorkerCode({ ...f, enrollmentCode, post: async (url, body) => {
+    calls.push(url);
+    if (url.endsWith('/device/challenge')) { assert.equal(body.grant, undefined); return mainProof(f, body); }
+    assert.equal(body.requestId, f.input.requestId);
+    assert.equal(body.grant, f.input.grant);
+    return { registration: { mainId: f.input.mainId, deviceId: randomUUID(), workerInstallationId: f.identity.workerInstallationId,
+      publicKeyFingerprint: f.identity.publicKeyFingerprint, keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'] },
+      credential: 'b'.repeat(64), expiresAt: '2026-12-01T00:00:00.000Z' };
+  } });
+  assert.deepEqual(calls, ['https://main.example/device/challenge', 'https://main.example/device/pair']);
+  const persisted = JSON.parse(await readFile(join(f.stateDirectory, 'pairing.json'), 'utf8'));
+  assert.deepEqual(persisted.tlsTrust, tlsTrust);
+  assert.equal(persisted.endpoint, f.input.endpoint);
+  assert.equal(JSON.stringify(result).includes(enrollmentCode), false);
+  assert.equal(JSON.stringify(result).includes('b'.repeat(64)), false);
+});
+
+test('private setup code for another installation rejects before any transport', async (t) => {
+  const f = await fixture(t); let calls = 0;
+  const enrollmentCode = encodeWorkerEnrollmentCode({ version: 1, kind: 'enrollment', workerInstallationId: randomUUID(),
+    publicKeyFingerprint: f.identity.publicKeyFingerprint, enrollment: f.input, expiresAt: '2099-01-01T00:00:00.000Z' });
+  await assert.rejects(enrollWorkerCode({ ...f, enrollmentCode, post: async () => { calls++; } }), { code: 'setup_code_identity_mismatch' });
+  assert.equal(calls, 0);
+  await assert.rejects(readFile(join(f.stateDirectory, 'pairing.json')), { code: 'ENOENT' });
+});
 
 test('missing, malformed JSON, schema and nonprivate enrollment files are actionable local errors with no network calls', async (t) => {
   const f = await fixture(t); let calls = 0;

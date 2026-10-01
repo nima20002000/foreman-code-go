@@ -28,7 +28,7 @@ async function fixture(caller:ManagementPrincipal) {
   registerOperatorHttpSecurity(app,access)
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof DomainError?error.status:400).send({error:{code:error instanceof DomainError?error.code:'INVALID_REQUEST'}}))
   const readMainIdentity=vi.fn(async(actor:ManagementPrincipal)=>{requireAuthorization(actor,'settings:read');return mainIdentity})
-  const devices={readMainIdentity,list:vi.fn(async()=>[]),createPairingGrant:vi.fn(),revoke:vi.fn()}
+  const devices={readMainIdentity,list:vi.fn(async()=>[]),createSetupCode:vi.fn(),readSetupOptions:vi.fn(),createPairingGrant:vi.fn(),revoke:vi.fn()}
   registerDeviceManagementRoutes(app,devices,async request=>requirePrincipal(request))
   const get=vi.fn(async(actor:ManagementPrincipal,host:Parameters<typeof HarnessRegistryReadbackSchema.parse>[0])=>{
     requireAuthorization(actor,'harnesses:read')

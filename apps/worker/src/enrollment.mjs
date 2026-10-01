@@ -70,11 +70,11 @@ export async function boundedPost(url, body, fetchRequest = fetch) {
 
 /** App-specific CA is passed only to this request, with normal TLS hostname and
  * chain validation. No redirects or response text reaches diagnostics. */
-export function scopedEnrollmentPost(tlsTrust) {
+export function scopedEnrollmentPost(tlsTrust,requestFactory=httpsRequest) {
   const tls=deviceTlsOptions(tlsTrust);
   return (url,body)=>new Promise((resolve,reject)=>{
     const bytes=Buffer.from(JSON.stringify(body));
-    const request=httpsRequest(url,{method:'POST',...tls,headers:{'content-type':'application/json','content-length':bytes.length},signal:AbortSignal.timeout(10000)},response=>{
+    const request=requestFactory(url,{method:'POST',...tls,headers:{'content-type':'application/json','content-length':bytes.length},signal:AbortSignal.timeout(10000)},response=>{
       if(!response.statusCode||response.statusCode<200||response.statusCode>=300){response.destroy();reject(new WorkerError(`enrollment_http_${response.statusCode??500}`));return;}
       let size=0;const chunks=[];
       response.on('data',chunk=>{size+=chunk.length;if(size>16384){response.destroy();reject(new WorkerError('enrollment_response_too_large'));}else chunks.push(Buffer.from(chunk));});
