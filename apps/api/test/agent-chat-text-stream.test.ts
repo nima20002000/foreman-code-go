@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NativeHarnessEvent } from '@graphql/contracts'
+import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { fixture } from './helpers/agentChatF1.js'
 
 /** Real Agent service/pump and scripted repository, controlled provider and text-commit port.
@@ -7,9 +8,10 @@ import { fixture } from './helpers/agentChatF1.js'
 describe('Agent chat production text stream', () => {
   it('orders provisional text before its committed empty final and drops delayed deltas', async () => {
     const f = fixture(), timeline: string[] = []
-    const start = f.manager.startTurn.bind(f.manager)
+    const manager: NativeHarnessSessionManager = f.manager
+    const start = manager.startTurn.bind(manager)
     f.service['messages'].appendAssistantMessage = async () => { timeline.push('commit'); return true }
-    f.manager.startTurn = async function* (session, input, signal) {
+    manager.startTurn = async function* (session, input, signal) {
       yield* start(session, input, signal)
       const event = (sequence: number, text: string): NativeHarnessEvent => ({ connectionId: 'connection-a', sequence,
         occurredAt: new Date().toISOString(), type: 'assistant.delta', payload: { itemId: 'item-a', text } })
@@ -26,9 +28,10 @@ describe('Agent chat production text stream', () => {
   })
   it('never advertises a declined final mutation or appends a later delta to it', async () => {
     const f = fixture(), deltas: unknown[] = []
-    const start = f.manager.startTurn.bind(f.manager)
+    const manager: NativeHarnessSessionManager = f.manager
+    const start = manager.startTurn.bind(manager)
     f.service['messages'].appendAssistantMessage = async () => false
-    f.manager.startTurn = async function* (session, input, signal) {
+    manager.startTurn = async function* (session, input, signal) {
       yield* start(session, input, signal)
       yield { sequence: 1, occurredAt: new Date().toISOString(), type: 'item.completed',
         payload: { item: { id: 'item-a', type: 'agentMessage', text: 'uncommitted' } } }
