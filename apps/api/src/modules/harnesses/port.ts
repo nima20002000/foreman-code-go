@@ -1,3 +1,5 @@
+import type { NativeMessageSubmission } from '@graphql/contracts'
+export type { NativeMessageSubmission } from '@graphql/contracts'
 import type {
   AgentHarness,
   ExecutionResult,
@@ -55,13 +57,6 @@ export interface OperatorNativeSessionStart {
 
 export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
 
-export interface NativeMessageSubmission {
-  kind: 'message'
-  nativeSessionId: string
-  /** Provider-observed consumed input message identity, not a native turn ID. */
-  nativeMessageId: string
-  clientCorrelationId: string
-}
 
 export interface NativeTurnInput {
   prompt: string
@@ -72,6 +67,12 @@ export interface NativeTurnInput {
 }
 
 /** Input added to the exact active turn; the provider rejects it when that turn is no longer active. */
+/** Providers that report their native session only after first input use this admitted atomic lifecycle. */
+export interface NativeInitialTurnInput extends NativeTurnInput {
+  /** Persist the actual provider identity before exposing input ACKs, callbacks or output. */
+  onSessionObserved(session: NativeSessionReference): Promise<void>
+}
+
 export interface NativeSteerInput {
   prompt: string
   clientCorrelationId: string
@@ -129,6 +130,8 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   /** Verify and rebind a persisted provider identity; never create a replacement session. */
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
+  /** One first prompt under existing app admission; never a planned/local native session ID. */
+  startInitialTurn?(start: NativeSessionStart, input: NativeInitialTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
   /** Add input to the exact active turn. Absent when the provider has no expected-turn precondition. */
   steerTurn?(session: NativeSessionReference, input: NativeSteerInput, signal?: AbortSignal): Promise<{ nativeTurnId: string }>
   /** Read-only receipt lookup; must not replace the runtime's active turn/correlation or replay input. */

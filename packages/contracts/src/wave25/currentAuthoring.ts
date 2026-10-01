@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CurrentAgentWorkflowNodeSchema } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
 import { GraphIdSchema } from './protocol.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
@@ -29,9 +30,9 @@ export const CurrentWorkflowSaveInputSchema = CurrentWorkflowValidateInputSchema
   // executable revision and cannot accompany a meaningful publication.
   expectedGeometry: z.array(z.object({
     id: GraphIdSchema,
-    position: WorkflowDefinitionV3Schema.shape.nodes.element.shape.position,
-    width: WorkflowDefinitionV3Schema.shape.nodes.element.shape.width,
-    height: WorkflowDefinitionV3Schema.shape.nodes.element.shape.height,
+    position: CurrentAgentWorkflowNodeSchema.shape.position,
+    width: CurrentAgentWorkflowNodeSchema.shape.width,
+    height: CurrentAgentWorkflowNodeSchema.shape.height,
   }).strict()).optional(),
 }).strict()
 export type CurrentWorkflowSaveRequest = z.input<typeof CurrentWorkflowSaveInputSchema>

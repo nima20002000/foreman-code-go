@@ -28,9 +28,9 @@ describe('Operator MCP permission boundaries', () => {
     delete c.services.settings
     expect(operatorToolAvailable(c,'agent_defaults_get')).toBe(false)
   })
-  it('has unique tool names and does not expose Operator self-approval', () => {
+  it('has unique tool names and keeps workflow self-approval separate from native chat replies', () => {
     expect(new Set(OPERATOR_TOOL_ACTIONS.map(t=>t.name)).size).toBe(OPERATOR_TOOL_ACTIONS.length)
-    expect(OPERATOR_TOOL_ACTIONS.some(t=>t.name.startsWith('operator_chat_respond'))).toBe(false)
+    expect(OPERATOR_TOOL_ACTIONS.find(t=>t.name==='operator_chat_respond')?.action).toBe('operator_chat:respond')
     expect(OPERATOR_TOOL_ACTIONS.map(t=>String(t.name))).not.toContain('interaction_respond')
   })
 })

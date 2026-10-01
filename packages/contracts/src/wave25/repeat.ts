@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { AgentConfigurationVersionSchema, TimestampSchema } from '../index.js'
 import { canonicalGraphJson } from './json.js'
 import {
-  GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema,
+  GraphDigestSchema, extendGraphExecutionIdentitySchema, GraphIdSchema,
 } from './graphPrimitives.js'
 import {
   ChoiceOutcomeSchema, ChoiceTargetSchema,
@@ -127,9 +127,9 @@ export const RepeatOccurrenceIdentityV1Schema = z.object({
 export type RepeatOccurrenceIdentityV1 = z.infer<typeof RepeatOccurrenceIdentityV1Schema>
 
 /** attempt belongs to an execution INSIDE an occurrence, never to the repeat counter. */
-export const RepeatExecutionIdentityV1Schema = GraphExecutionIdentitySchema.extend({
+export const RepeatExecutionIdentityV1Schema = extendGraphExecutionIdentitySchema({
   occurrence: RepeatOccurrenceIdentityV1Schema,
-}).strict()
+})
 export type RepeatExecutionIdentityV1 = z.infer<typeof RepeatExecutionIdentityV1Schema>
 
 /** Immutable private input reference. Payload and exact selected bindings live in durable storage. */
@@ -188,8 +188,10 @@ export function validateRepeatDecisionV1(versionValue: unknown, decisionValue: u
   if (!block || scope.workflowVersionId !== version.id || scope.workspaceId !== version.workspaceId
     || scope.workflowId !== version.workflowId || occurrenceIndex > block.maxOccurrences) throw new Error('REPEAT_DECISION_SCOPE_INVALID')
   const exit = version.definition.nodes.find((node) => node.id === block.exitNodeId)!
-  if (decision.exitExecution.workflowNodeId !== exit.id || decision.exitExecution.agentId !== exit.agentId
-    || decision.exitExecution.agentConfigurationVersionId !== version.agentConfigurationVersionIds[exit.agentId]) throw new Error('REPEAT_EXIT_EXECUTION_PIN_INVALID')
+  if (decision.exitExecution.workflowNodeId !== exit.id || (decision.exitExecution.kind==='job'
+      ? exit.kind!=='job'||decision.exitExecution.jobDefinitionId!==exit.jobDefinitionId||decision.exitExecution.jobDefinitionVersionId!==exit.jobDefinitionVersionId
+      : exit.kind==='job'||decision.exitExecution.agentId!==exit.agentId||decision.exitExecution.agentConfigurationVersionId!==version.agentConfigurationVersionIds[exit.agentId])
+) throw new Error('REPEAT_EXIT_EXECUTION_PIN_INVALID')
   const envelope = parseRepeatExitResultV1(acceptedResult, exit.choice!)
   if (decision.outcome !== envelope.routing.outcome || canonicalGraphJson(decision.resultData) !== canonicalGraphJson(envelope.data)) throw new Error('REPEAT_ACCEPTED_RESULT_MISMATCH')
   const early = decision.outcome === block.earlyExitOutcome

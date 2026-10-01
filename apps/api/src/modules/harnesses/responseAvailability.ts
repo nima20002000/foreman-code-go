@@ -56,5 +56,5 @@ export async function inspectNativeResponse(manager: NativeHarnessSessionManager
 export function pendingResponseQuery(pending: PendingNativeInteraction): NativeResponseAvailabilityQuery | undefined {
   if (!pending.turn.nativeRequestId) return undefined
   return { nativeRequestId: pending.turn.nativeRequestId, nativeRequestType: pending.nativeRequestType,
-    expectedNativeTurnId: pending.turn.nativeTurnId }
+    ...(pending.turn.nativeTurnId ? { expectedNativeTurnId: pending.turn.nativeTurnId } : {}) }
 }

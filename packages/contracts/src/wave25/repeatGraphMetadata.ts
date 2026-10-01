@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import {
-  GraphDigestSchema, GraphEvidenceSchema, GraphExecutionIdentitySchema, GraphIdSchema,
+  GraphDigestSchema, GraphEvidenceSchema, extendGraphExecutionIdentitySchema, GraphIdSchema,
   GraphRunStateSchema, GraphSequenceSchema, NodeResolutionSchema, RUN_GRAPH_LIMITS,
   RunGraphScopeSchema, PublicGraphTopologySchema, PublicGraphProjectionSchema,
   GraphResetReasonSchema, RUN_GRAPH_ROUTES, RUN_GRAPH_MCP_TOOLS, GraphFactSchema,
@@ -30,10 +30,10 @@ export const RepeatGraphRefV3Schema = z.object({
   nodeId: GraphIdSchema, occurrence: RepeatOccurrenceIdentityV1Schema.nullable(),
 }).strict()
 export type RepeatGraphRefV3 = z.infer<typeof RepeatGraphRefV3Schema>
-export const RepeatGraphExecutionIdentityV3Schema = GraphExecutionIdentitySchema.extend({
+export const RepeatGraphExecutionIdentityV3Schema = extendGraphExecutionIdentitySchema({
   // Null is the outside DAG. Never replace it with a technical-attempt ordinal.
   occurrence: RepeatOccurrenceIdentityV1Schema.nullable(),
-}).strict()
+})
 export type RepeatGraphExecutionIdentityV3 = z.infer<typeof RepeatGraphExecutionIdentityV3Schema>
 export const RepeatGraphRunStateV3Schema = GraphRunStateSchema
 export const RepeatGraphExecutionV3Schema = z.object({
@@ -318,10 +318,10 @@ export const RepeatGraphStateV3Schema = z.object({
 export type RepeatGraphStateV3 = z.infer<typeof RepeatGraphStateV3Schema>
 export const RepeatGraphTopologyV3Schema = PublicGraphTopologySchema.safeExtend({
   repeat: RepeatPlanV1Schema.optional(),
-  nodes: z.array(PublicGraphTopologySchema.shape.nodes.element.extend({
+  nodes: z.array(z.union(PublicGraphTopologySchema.shape.nodes.element.options.map(schema=>schema.extend({
     choice: z.object({ outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict())
       .min(1).max(RUN_GRAPH_LIMITS.relationships) }).strict().optional(),
-  })).min(1).max(RUN_GRAPH_LIMITS.nodes),
+  })))).min(1).max(RUN_GRAPH_LIMITS.nodes),
 }).superRefine((value, context) => {
   const nodes = new Set(value.nodes.map((node) => node.workflowNodeId))
   if ((value.repeat?.blocks ?? []).some((block) => block.nodeIds.some((id) => !nodes.has(id)))) {
@@ -380,7 +380,7 @@ function assertTopologyFact(topology: RepeatGraphTopologyV3, fact: RepeatGraphFa
   if (GraphFactSchema.safeParse(fact).success) {
     for (const identity of graphFactExecutions(fact as GraphFact)) {
       const node = topology.nodes.find((item) => item.workflowNodeId === identity.workflowNodeId)
-      if (!node || node.agentId !== identity.agentId || node.agentConfigurationVersionId !== identity.agentConfigurationVersionId) fail()
+      if (!node || (identity.kind==='job'?node.kind!=='job'||node.jobDefinitionId!==identity.jobDefinitionId||node.jobDefinitionVersionId!==identity.jobDefinitionVersionId:node.kind==='job'||node.agentId!==identity.agentId||node.agentConfigurationVersionId!==identity.agentConfigurationVersionId)) fail()
     }
     if (fact.type === 'input.bound') {
       const edge = topology.relationships.find((item) => item.relationshipId === fact.binding.relationshipId)
@@ -390,7 +390,7 @@ function assertTopologyFact(topology: RepeatGraphTopologyV3, fact: RepeatGraphFa
   }
   for (const identity of repeatGraphFactIdentities(fact)) {
     const node = ref(identity.workflowNodeId, identity.occurrence)
-    if (node.agentId !== identity.agentId || node.agentConfigurationVersionId !== identity.agentConfigurationVersionId) fail()
+    if ((identity.kind==='job'?node.kind!=='job'||node.jobDefinitionId!==identity.jobDefinitionId||node.jobDefinitionVersionId!==identity.jobDefinitionVersionId:node.kind==='job'||node.agentId!==identity.agentId||node.agentConfigurationVersionId!==identity.agentConfigurationVersionId)) fail()
   }
   if (fact.type === 'repeat.occurrence' || fact.type === 'repeat.decision') {
     const occurrence = fact.type === 'repeat.occurrence' ? fact.occurrence : fact.decision.occurrence
@@ -438,7 +438,7 @@ export function repeatGraphTopologyV3(versionValue: unknown): RepeatGraphTopolog
   const version = WorkflowVersionV3Schema.parse(versionValue)
   return RepeatGraphTopologyV3Schema.parse({
     entryNodeId: version.entryNodeId, ...(version.definition.repeat ? { repeat: version.definition.repeat } : {}),
-    nodes: version.definition.nodes.map((node) => ({ workflowNodeId: node.id, agentId: node.agentId,
+    nodes: version.definition.nodes.map((node) => node.kind==='job'?{kind:'job',workflowNodeId:node.id,jobDefinitionId:node.jobDefinitionId,jobDefinitionVersionId:node.jobDefinitionVersionId,...(node.choice?{choice:node.choice}:{})}:({ workflowNodeId: node.id, agentId: node.agentId,
       agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId], productRole: 'unknown',
       ...(node.choice ? { choice: node.choice } : {}) })),
     relationships: version.definition.edges.map((edge) => ({ relationshipId: edge.id, kind: edge.kind, source: edge.source, target: edge.target })),

@@ -37,6 +37,8 @@ export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
+  "sources:read", "sources:approve", "source_roots:read", "source_roots:bind",
+  "job_definitions:read", "job_definitions:write", "jobs:start", "jobs:read", "jobs:cancel", "job_logs:read", "job_artifacts:read",
   "agents:create",
   "agents:update",
   "agents:archive",
@@ -388,7 +390,7 @@ const ExecutionLimitsOperationSchema = z.object({
 }).strict();
 const RequiredAgentCountOperationSchema = z.object({
   type: z.literal("workflow.set_required_agent_count"),
-  requiredAgentCount: z.number().int().positive().max(10_000),
+  requiredAgentCount: z.number().int().nonnegative().max(10_000),
 }).strict();
 
 const NodeReplaceOperationSchema = z.object({
@@ -638,10 +640,13 @@ export const REPEAT_OPERATOR_TOOL_NAMES = [
 export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
 
 export const OperatorToolNameSchema = z.enum([
+  "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list",
+  "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get",
+  "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_start","job_get","job_list","job_cancel","job_logs_read","job_artifacts_list","job_artifact_read",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
-  "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_handoff_history_get",
+  "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_chat_cancel", "operator_chat_respond", "operator_handoff_history_get",
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
   "workspace_defaults_update",

@@ -17,12 +17,12 @@ export const QualifiedJobRuntimeSchema=JobRuntimeLimitsSchema.extend({policyId:I
 }).strict()
 export const JobRuntimeFingerprintSchema=z.object({schemaVersion:z.literal(1),profileId:IdSchema,profileRevision:z.number().int().positive(),specDigest:Digest,
   hostRef:JobTargetSchema.shape.hostRef,registration:JobTargetSchema.shape.registration,mainInstallationId:IdSchema,bootId:z.uuid(),
-  root:SourceRootRecordSchema,runtimeExecutable:z.string().startsWith('/'),runtimeBinarySha256:Digest,ociExecutable:z.string().startsWith('/'),ociBinarySha256:Digest,
+  root:SourceRootRecordSchema,runtimeExecutable:z.string().startsWith('/'),runtimeBinarySha256:Digest,ociExecutable:z.string().startsWith('/'),ociBinarySha256:Digest,configurationDigest:Digest,
   imageDigest:z.string().regex(/^sha256:[a-f0-9]{64}$/),toolchainDigest:Digest,limits:JobRuntimeLimitsSchema,
 }).strict()
 export const JobRuntimeApprovalSchema=z.object({schemaVersion:z.literal(1),id:z.uuid(),qualificationId:z.uuid(),workspaceId:IdSchema,profileId:IdSchema,profileRevision:z.number().int().positive(),
   fingerprint:JobRuntimeFingerprintSchema,fingerprintDigest:Digest,requestedByPrincipalId:IdSchema,
-  status:z.enum(['awaiting-approval','approved','qualifying','complete','failed','cancelled']),approvedByPrincipalId:IdSchema.nullable(),approvedAt:TimestampSchema.nullable(),expiresAt:TimestampSchema,
+  status:z.enum(['awaiting-approval','approved','qualifying','complete','failed','cancelled','recovery-required']),approvedByPrincipalId:IdSchema.nullable(),approvedAt:TimestampSchema.nullable(),expiresAt:TimestampSchema,
 }).strict()
 /** A host producer supplies actual measured evidence. Public save input admits no ready/approval/proof fields. */
 export const JobRuntimeMeasurementSchema=z.object({schemaVersion:z.literal(1),qualificationId:z.uuid(),profileId:IdSchema,profileRevision:z.number().int().positive(),specDigest:Digest,
@@ -30,15 +30,16 @@ export const JobRuntimeMeasurementSchema=z.object({schemaVersion:z.literal(1),qu
   runtime:QualifiedJobRuntimeSchema,runtimeBinarySha256:Digest,ociBinarySha256:Digest,runtimeExecutable:z.string().startsWith('/'),
   environment:z.record(z.enum(['PATH','XDG_RUNTIME_DIR','LANG']),z.string()),
   fingerprint:JobRuntimeFingerprintSchema,fingerprintDigest:Digest,approvalId:z.uuid(),
-  origin:z.literal('real-runtime'),checkedAt:TimestampSchema,
+  origin:z.literal('real-runtime'),checkedAt:TimestampSchema,expiresAt:TimestampSchema,
   checks:z.array(z.object({id:z.enum(['rootless','cgroup-v2','filesystem-quota','descendant-containment','network-none','image-toolchain','credential-isolation']),passed:z.boolean(),evidenceDigest:Digest}).strict()).min(7).max(7),
 }).strict().superRefine((value,ctx)=>{
+  if(Date.parse(value.expiresAt)<=Date.parse(value.checkedAt))ctx.addIssue({code:'custom',path:['expiresAt'],message:'Qualification evidence must expire after its actual check.'})
   if(new Set(value.checks.map(check=>check.id)).size!==7||value.checks.some(check=>!check.passed))ctx.addIssue({code:'custom',path:['checks'],message:'Every exact real-runtime qualification check must pass.'})
   if(value.runtime.policyId!==value.profileId||value.runtime.policyRevision!==value.profileRevision||value.runtime.qualificationId!==value.qualificationId)ctx.addIssue({code:'custom',message:'Qualification identity differs from its actual profile.'})
 })
 export const JobRuntimeProfileSchema=z.object({schemaVersion:z.literal(1),id:IdSchema,workspaceId:IdSchema,revision:z.number().int().positive(),name:z.string().trim().min(1).max(200),
   root:SourceRootRecordSchema,policy:JobPolicySchema,limits:JobRuntimeLimitsSchema,specDigest:Digest,
-  status:z.enum(['unqualified','awaiting-approval','qualifying','qualified','failed','revoked']),
+  status:z.enum(['unqualified','awaiting-approval','qualifying','qualified','failed','revoked','recovery-required']),
   measurement:JobRuntimeMeasurementSchema.nullable(),createdAt:TimestampSchema,updatedAt:TimestampSchema,
 }).strict()
 export const JobRuntimeProfileSaveSchema=z.object({commandId:IdSchema,id:IdSchema.optional(),expectedRevision:z.number().int().positive().nullable(),name:z.string().trim().min(1).max(200),spec:JobRuntimeProfileInputSchema}).strict()
@@ -50,3 +51,6 @@ export type QualifiedJobRuntime=z.infer<typeof QualifiedJobRuntimeSchema>
 
 export type JobRuntimeFingerprint=z.infer<typeof JobRuntimeFingerprintSchema>
 export type JobRuntimeApproval=z.infer<typeof JobRuntimeApprovalSchema>
+
+export const JobRuntimeQualificationReadSchema=z.object({approval:JobRuntimeApprovalSchema,measurement:JobRuntimeMeasurementSchema.nullable(),profile:JobRuntimeProfileSchema,readiness:z.object({ready:z.boolean(),reasons:z.array(z.string()),sideEffects:z.literal(false)}).strict()}).strict()
+export const JobRuntimeQualificationCommandSchema=z.object({commandId:IdSchema}).strict()

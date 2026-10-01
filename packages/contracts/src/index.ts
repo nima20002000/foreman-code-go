@@ -12,7 +12,7 @@ export type { Id, Timestamp } from "./schemaPrimitives.js";
 import {
   ApprovalHandlerSchema, AcceptedWorkflowApprovalConfigurationSchema,
   ExecutionConditionSchema,
-  CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
+  CurrentAgentWorkflowNodeFields, CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
   WorkflowDefinitionV3Schema, ExecutionSemanticsVersionSchema,
 } from "./wave25/workflowShape.js";
 export {
@@ -700,7 +700,7 @@ export type Agent = z.infer<typeof AgentSchema>;
 
 /** Generic presentation names refer to the one current shape, never retired validators. */
 export const WorkflowNodeSchema = CurrentWorkflowNodeSchema;
-export const WorkflowNodeFields = CurrentWorkflowNodeSchema.shape;
+export const WorkflowNodeFields = CurrentAgentWorkflowNodeFields;
 export const WorkflowEdgeSchema = CurrentWorkflowRelationshipSchema;
 export const WorkflowDefinitionFields = CurrentWorkflowDefinitionBaseSchema.omit({ nodes: true, edges: true }).shape;
 export type WorkflowNode = z.infer<typeof CurrentWorkflowNodeSchema>;
@@ -1527,8 +1527,9 @@ export const SendOperatorMessageRequestSchema = z.object({
   path: ["content"], message: "Message requires text or an attachment.",
 });
 export const SendOperatorMessageResponseSchema = z.object({ state: OperatorConversationStateSchema, replayed: z.boolean() }).strict();
-export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema }).strict();
+export const CancelOperatorTurnRequestSchema = z.object({ requestId: IdSchema, commandId: z.string().min(8).max(200).optional() }).strict();
 export const RespondOperatorInteractionRequestSchema = z.object({
+  commandId: z.string().min(8).max(200).optional(),
   requestId: IdSchema, nativeRequestId: IdSchema, optionId: IdSchema,
 }).strict();
 export type SendOperatorMessageRequest = Omit<z.infer<typeof SendOperatorMessageRequestSchema>, "attachments">

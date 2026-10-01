@@ -66,7 +66,7 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
   })
   app.post<{ Params: ConversationParams; Body: unknown }>('/api/operator/conversations/:conversationId/cancel', async (request) => {
     const input = CancelOperatorTurnRequestSchema.parse(request.body)
-    return CancelOperatorTurnResponseSchema.parse({ state: await chat.cancel(request.params.conversationId, input.requestId, requirePrincipal(request)) })
+    return CancelOperatorTurnResponseSchema.parse({ state: await chat.cancel(request.params.conversationId, input.requestId, requirePrincipal(request), input.commandId) })
   })
   app.post<{ Params: ConversationParams; Body: unknown }>('/api/operator/conversations/:conversationId/responses', async (request) => {
     const input = RespondOperatorInteractionRequestSchema.parse(request.body)
