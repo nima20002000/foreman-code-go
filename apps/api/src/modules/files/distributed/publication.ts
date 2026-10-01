@@ -1,6 +1,6 @@
 import type { Readable } from 'node:stream'
 import { VerifiedTransferReceiptSchema, type TransferContext, type VerifiedTransferReceipt } from '@graphql/contracts/byte-transfer'
-import type { ArtifactAttempt } from '@graphql/contracts/artifact-edges'
+import { ArtifactAttemptSchema, type ArtifactAttempt } from '@graphql/contracts/artifact-edges'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema } from '@graphql/contracts/files'
 import type { TemporaryFileService } from '../service.js'
 import type { FileToolContext, AuthorizedFileCaller } from '../tools/types.js'
@@ -31,6 +31,7 @@ export class DistributedArtifactPublicationService {
   /** Main-only seam. Public HTTP/MCP adapters must derive accepted identity before calling. */
   async publishAccepted(accepted: AcceptedArtifactPublication, transferId: string, raw: unknown,
     source: 'http' | 'mcp' = 'http') {
+    accepted = { ...accepted, attempt: ArtifactAttemptSchema.parse(accepted.attempt) }
     const input = AgentFilePublishInputSchema.parse(raw)
     const caller = await this.authority.authorize(accepted)
     if (!caller.context.allowMutation || !caller.context.allowedTools.includes('files.publish_result')
@@ -51,8 +52,12 @@ export class DistributedArtifactPublicationService {
     }
     const receipt = VerifiedTransferReceiptSchema.parse(original?.transferReceipt
       ?? await this.transfers.resolveVerifiedReceipt(transferId, accepted.transferContext))
+    const committed = original && (await this.files.repository.read(original.ref.fileId, original.ref.revisionId))?.value.file.state === 'ready'
     const intent = receipt.intent
-    if (intent.direction !== 'to-main' || intent.byteClass !== 'artifact' || receipt.transferId !== transferId
+    if (intent.mainId !== accepted.transferContext.mainId || intent.deviceId !== accepted.transferContext.deviceId
+      || intent.workerInstallationId !== accepted.transferContext.workerInstallationId
+      || intent.keyRevision !== accepted.transferContext.keyRevision || intent.authorizationRevision !== accepted.transferContext.authorizationRevision
+      || intent.direction !== 'to-main' || intent.byteClass !== 'artifact' || receipt.transferId !== transferId
       || intent.executionId !== accepted.attempt.executionId || intent.attemptId !== accepted.attempt.attemptId
       || intent.placementHash !== accepted.attempt.placementHash
       || receipt.sha256 !== intent.sha256 || receipt.byteSize !== intent.byteSize) {
@@ -64,13 +69,14 @@ export class DistributedArtifactPublicationService {
         throw new DomainError('FILE_PUBLICATION_CONFLICT', 'Publication sender authority changed.', 409)
       }
       if (query) await this.authority.assertSourceLive(accepted, receipt, query)
-      if (Date.parse(intent.expiresAt) <= this.clock().getTime()) throw new DomainError('FILE_EXPIRED', 'The original transfer expired.', 410)
+      if (!committed && Date.parse(intent.expiresAt) <= this.clock().getTime()) throw new DomainError('FILE_EXPIRED', 'The original transfer expired.', 410)
       return current
     }
     const guard = { source, authorize: async (query: FileQuery) => { await check(query) } }
     const identity = digest(JSON.stringify([caller.binding, accepted.attempt, receipt.transferId, receipt.receiptId,
       intent.rootId, intent.rootBindingRevision, receipt.sha256, receipt.byteSize, input.artifactId]))
     // Canonical allocation preserves identity on retries, and rejects changed bytes/metadata/scope.
+    await check()
     const allocated = await this.files.allocateAgentResult(caller.principal, targetOf(caller.context), {
       requestId, filename: input.filename, mediaType: input.mediaType, sha256: receipt.sha256, byteSize: receipt.byteSize,
     }, 'agent_output', identity, guard)

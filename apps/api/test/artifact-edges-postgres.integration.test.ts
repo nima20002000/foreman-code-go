@@ -29,6 +29,7 @@ describe.skipIf(!databaseUrl)('W09 canonical edge database fault fixtures', () =
       create table file_revisions(file_id text references files(file_id),revision_id text,sha256 text,byte_size bigint,unique(file_id,revision_id));
       create table file_tool_publications(file_id text,revision_id text,owner_principal_id text,request_id text,binding text);
       create table file_allocations(owner_principal_id text,request_id text,state text);
+      create table file_tool_read_provenance(binding text,run_id text,execution_id text,file_id text,revision_id text,read_at timestamptz);
       create table grants(grant_id text primary key,revoked boolean); insert into grants values ('grant',false);`)
     await pool.query(artifactEdgeMigrationSql); repository = new PostgresArtifactEdgeRepository(pool)
   })

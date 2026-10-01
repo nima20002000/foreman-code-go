@@ -58,6 +58,10 @@ describe('revision-pinned artifact edges', () => {
     t.f.bytes.download = async (...args) => { const stream = await download(...args); t.revoke(); return stream }
     await expect(t.service.readAccepted(t.b.edgeId, t.b.consumer, t.b.receiver, 0, 4)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     expect(t.reads).toHaveLength(0)
+    const expired = await fixture(); await expired.service.pinAccepted(expired.b)
+    const originalDownload = expired.f.bytes.download.bind(expired.f.bytes)
+    expired.f.bytes.download = async (...args) => { const stream = await originalDownload(...args); expired.f.advance(366 * 24 * 3600 * 1000); return stream }
+    await expect(expired.service.readAccepted(expired.b.edgeId, expired.b.consumer, expired.b.receiver, 0, 4)).rejects.toMatchObject({ code: 'FILE_BYTES_UNAVAILABLE' })
     const e = await fixture(); await e.service.pinAccepted(e.b)
     e.f.repository.values.get(e.b.pins.fileId)!.value.file.state = 'removed'
     await expect(e.service.readAccepted(e.b.edgeId, e.b.consumer, e.b.receiver, 0, 4)).rejects.toMatchObject({ code: 'FILE_BYTES_UNAVAILABLE' })
@@ -117,6 +121,7 @@ describe('verified transfer publication through the existing ledger', () => {
     const input = { commandId: randomUUID(), artifactId: randomUUID(), scope: context.scope, filename: 'result.md', mediaType: 'text/markdown' }
     const first = await service.publishAccepted(accepted, receipt.transferId, input)
     reader.openVerified.mockRejectedValue(new Error('staging reclaimed'))
+    f.advance(120_000) // transfer staging deadline expired, canonical file retention is unchanged
     const replay = await service.publishAccepted(accepted, receipt.transferId, input, 'mcp')
     expect(replay).toMatchObject({ replayed: true, value: { revision: { revisionId: first.value.revision.revisionId } } })
     expect(links.size).toBe(1); expect(f.repository.allocations.size).toBe(1)
