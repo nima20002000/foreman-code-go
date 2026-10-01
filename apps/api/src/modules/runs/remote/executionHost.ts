@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema, type NativeSessionReference, type HarnessExecutionRequest } from '@graphql/contracts'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent } from '@graphql/contracts/node-placement'
-import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
+import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation, type RemoteApplicationAccess } from '@graphql/contracts/remote-execution'
 import { RemoteExecutionRpcRequestSchema } from '@graphql/contracts/remote-execution-rpc'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
 import type { NativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
@@ -20,7 +20,7 @@ export interface RemoteExecutionHostPorts {
   authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control'): Promise<void>
   /** Host-local credentials and sandbox policy; never copied from main. */
   attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest): Promise<RuntimeLeafAttestation>
-  preflight(request: HarnessExecutionRequest): Promise<ChildProcessEnvironment | void>
+  preflight(request: HarnessExecutionRequest, applicationAccess?: RemoteApplicationAccess): Promise<ChildProcessEnvironment | void>
   nativeEvidence(intent: DispatchIntent, session: NativeSessionReference): Promise<RemoteNativeIdentity>
   /** W11/provider closure verification; terminal observation alone is insufficient. */
   verifyOwnerRenewal?(transition: RemoteOwnerReconciliation, receipt: RemoteOperationReceipt): Promise<void>
@@ -72,7 +72,7 @@ export class RemoteExecutionHost {
       harness: configuration.harness.harness, configuration, workingDirectory: placement.destination.canonicalCwd })
     return resolved.manager[method]()
   }
-  async prepare(raw: { intent: unknown; placement: unknown; request: unknown }) {
+  async prepare(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
       || placement.mainId !== this.ports.connection.mainId || placement.bindingHash !== intent.bindingHash
@@ -93,7 +93,11 @@ export class RemoteExecutionHost {
     const controller = new AbortController()
     this.launchControllers.set(intent.operationId, controller)
     try {
-      const environment = await this.ports.preflight(request)
+      const access = raw.applicationAccess
+      if (access && (access.executionId !== intent.executionId || access.agentId !== request.configuration.agentId || access.operationId !== intent.operationId
+        || access.attemptId !== intent.attemptId || access.bindingHash !== intent.bindingHash)) throw new Error('Wrong main worker MCP lease binding')
+      const environment = await this.ports.preflight(request, access)
+      if ((environment?.variables.GRAPHQL_MCP_TOKEN ?? undefined) !== access?.token) throw new Error('Worker must reuse the exact main-owned application lease')
       if (environment && environment.agentId !== request.configuration.agentId) throw new Error('Wrong worker-local credential owner')
       await this.ports.authorize(intent, placement, 'start')
       const before = await this.ports.journal.status(intent.operationId)

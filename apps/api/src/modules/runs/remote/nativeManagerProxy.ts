@@ -61,9 +61,12 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   async capabilities(signal?: AbortSignal) { return NativeHarnessCapabilitiesSchema.parse(await this.request('capabilities', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async inspectMcp(signal?: AbortSignal) { return McpDetectionSchema.parse(await this.request('inspect-mcp', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async createSession(input: NativeSessionStart, signal?: AbortSignal) {
-    if (input.kind === 'operator' || input.environment) throw new Error('Remote workflow credentials must be prepared on the original worker')
+    if (input.kind === 'operator') throw new Error('Remote proxy owns workflow execution only')
+    if (input.environment && (input.environment.agentId !== this.options.configuration.agentId || Object.keys(input.environment.variables).some(key => key !== 'GRAPHQL_MCP_TOKEN'))) throw new Error('Only the exact scoped main application lease may cross the worker carrier')
+    const token = input.environment?.variables.GRAPHQL_MCP_TOKEN
+    const applicationAccess = token ? { kind: 'scoped-worker-mcp', token, executionId: this.intent.executionId, agentId: this.options.configuration.agentId, operationId: this.intent.operationId, attemptId: this.intent.attemptId, bindingHash: this.intent.bindingHash } : undefined
     if (input.request.executionId !== this.intent.executionId || input.correlationId !== `execution:${this.intent.executionId}`) throw new Error('Remote session execution mismatch')
-    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement, request: input.request }, signal))
+    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement, request: input.request, ...(applicationAccess ? { applicationAccess } : {}) }, signal))
     await this.status(value.status)
     this.session = value.session
     return value.session

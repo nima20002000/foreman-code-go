@@ -3,6 +3,12 @@ import { ExecutionResultSchema } from './index.js'
 import { DispatchIntentSchema, OwnerControlSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 
+/** Ephemeral exact main-owned worker MCP lease; never journaled or logged. */
+export const RemoteApplicationAccessSchema = z.object({
+  kind: z.literal('scoped-worker-mcp'), token: z.string().min(1).max(4096),
+  executionId: z.string().min(1), agentId: z.string().min(1), operationId: z.string().min(1), attemptId: z.string().min(1), bindingHash: PlacementDigestSchema,
+}).strict()
+export type RemoteApplicationAccess = z.infer<typeof RemoteApplicationAccessSchema>
 export const RemoteOperationPhaseSchema = z.enum(['received', 'native_entry_attempted', 'start_acknowledged', 'running', 'stop_requested', 'confirmed_terminal', 'uncertain'])
 export const RemoteNativeIdentitySchema = z.object({
   sessionId: z.string().min(1), turnId: z.string().min(1).optional(),

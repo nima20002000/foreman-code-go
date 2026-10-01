@@ -15,7 +15,7 @@ const roots: string[] = []
 const journals: RemoteOperationJournal[] = []
 const hosts: RemoteExecutionHost[] = []
 afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
-async function setup() {
+async function setup(expectedToken?: string) {
   const root = await mkdtemp(join(tmpdir(), 'w08-host-')); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root, 'journal'), { initializeNewInstallation: true })
   journals.push(journal)
@@ -31,7 +31,7 @@ async function setup() {
   const session = { harness: 'codex' as const, providerVersion: 'test', nativeSessionId: 'native-session' }
   const manager: NativeHarnessSessionManager = { harness: 'codex', capabilities: async () => { throw new Error('unused') }, inspectMcp: async () => { throw new Error('unused') }, createSession: async () => { state.starts++; return session }, attachSession: async () => session,
     startTurn: async function* (_session, turn) { state.turns++; await turn.onSubmitted?.('native-turn'); yield { sequence: 1, type: 'event', occurredAt: '2026-10-01T00:00:00.000Z', payload: {} } }, pending: async () => undefined, respond: async () => { state.responds++ }, cancel: async () => { state.cancels++; return false }, history: async () => ({ events: [], pendingInteractions: [] }), reconcile: async () => ({ events: [], pendingInteractions: [] }), close: async () => {} }
-  const host = new RemoteExecutionHost({ journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers: new ExecutionScopedNativeSessionManagerResolver(() => manager), authorize: async () => { if (!state.allowed) throw new Error('revoked') }, attestRuntimeLeaf: async (intent, placement, request) => ({ executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory, directoryIdentityHash: digest, materializationId: placement.source.materializationId, materializationDigest: placement.source.materializationDigest }), preflight: async () => {}, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null })
+  const host = new RemoteExecutionHost({ journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers: new ExecutionScopedNativeSessionManagerResolver(() => manager), authorize: async () => { if (!state.allowed) throw new Error('revoked') }, attestRuntimeLeaf: async (intent, placement, request) => ({ executionId: intent.executionId, attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, canonicalRuntimeDirectory: request.runtimeDirectory, directoryIdentityHash: digest, materializationId: placement.source.materializationId, materializationDigest: placement.source.materializationDigest }), preflight: async (_request,access) => { if (expectedToken) { expect(access?.token).toBe(expectedToken); return {agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:expectedToken}} } }, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null })
   hosts.push(host)
   return { host, manager, session, journal, intent, placement, request, state }
 }
@@ -46,6 +46,16 @@ describe('actual worker native-port adapter', () => {
     const session = await proxy.createSession({ request, correlationId: 'execution:execution' })
     expect(await proxy.cancel(session)).toBe(false)
     expect(state.starts).toBe(1); expect(state.cancels).toBe(1); expect(observed).toEqual(['start_acknowledged', 'stop_requested'])
+  })
+  it('reuses only the exact ephemeral main worker MCP lease without journaling it', async () => {
+    const token = 'test-exact-main-lease', { host, intent, placement, request, journal, state } = await setup(token)
+    const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration: request.configuration,
+      transport: { request: (_method, frame) => host.handle(frame) }, observeReceipt: async () => {},
+      controlFor: async ({ native }) => ({ schemaVersion:1,protocolVersion:1,commandId:'stop',operationId:intent.operationId,attemptId:intent.attemptId,executionId:intent.executionId,bindingHash:intent.bindingHash,owner:intent.owner,native,action:{kind:'stop'} }) })
+    await expect(proxy.createSession({request,correlationId:'execution:execution',environment:{agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:token,OPENAI_API_KEY:'must-stay-host-local'}}})).rejects.toThrow('Only the exact scoped')
+    expect(state.starts).toBe(0)
+    await proxy.createSession({request,correlationId:'execution:execution',environment:{agentId:'agent',variables:{GRAPHQL_MCP_TOKEN:token}}})
+    expect(state.starts).toBe(1);expect(JSON.stringify(await journal.status(intent.operationId))).not.toContain(token)
   })
   it('Stop delivered before Start persists a negative fence before any native manager launch', async () => { const { host, intent, placement, request, state } = await setup(); await host.control({ schemaVersion: 1, protocolVersion: 1, commandId: 'stop', operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner, action: { kind: 'stop' } }, { intent, placement }); await expect(host.prepare({ intent, placement, request })).rejects.toThrow('reconciliation'); expect(state.starts).toBe(0) })
   it('Stop during delayed native creation aborts the owned launch signal and retains uncertainty', async () => {
