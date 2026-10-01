@@ -10,8 +10,8 @@ export class HostHarnessProfileEvidenceRepository {
     if (row && (row.instance_id !== instanceId || Number(row.instance_revision) !== revision)) throw new DomainError('COMMAND_ID_CONFLICT', 'This native check identity belongs to another instance revision.', 409)
     return row ? HostHarnessProfileEvidenceSchema.parse(row.record) : null
   }
-  async latest(instanceId: string, revision: number): Promise<HostHarnessProfileEvidence | null> {
-    const result = await this.pool.query<{ record: unknown }>('select record from harness_instance_profile_evidence where instance_id=$1 and instance_revision=$2 order by created_at desc,check_id desc limit 1', [instanceId, revision])
+  async latest(instanceId: string, revision: number, client?: pg.ClientBase): Promise<HostHarnessProfileEvidence | null> {
+    const result = await (client ?? this.pool).query<{ record: unknown }>('select record from harness_instance_profile_evidence where instance_id=$1 and instance_revision=$2 order by created_at desc,check_id desc limit 1', [instanceId, revision])
     return result.rows[0] ? HostHarnessProfileEvidenceSchema.parse(result.rows[0].record) : null
   }
   async append(client: pg.ClientBase, checkId: string, value: HostHarnessOverride, proof: HostHarnessProfileEvidence): Promise<void> {

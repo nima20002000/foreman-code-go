@@ -24,7 +24,7 @@ export class HostHarnessOverrideService {
   constructor(private readonly repository: HarnessInstanceSettingsRepository,
     private readonly commands: PostgresCommandCoordinator,
     private readonly authority: HostHarnessOverrideAuthority,
-    private readonly evidence: (value: HostHarnessOverride) => Promise<HostHarnessOverrideEvidence | null>,
+    private readonly evidence: (value: HostHarnessOverride, client?: pg.PoolClient) => Promise<HostHarnessOverrideEvidence | null>,
     private readonly profileChecks?: HostHarnessInstanceProfileChecks,
   ) {}
   get qualificationSupported(): boolean { return Boolean(this.profileChecks) }
@@ -39,10 +39,10 @@ export class HostHarnessOverrideService {
       throw error
     }
   }
-  private async describe(value: HostHarnessOverride): Promise<HostHarnessOverride> {
+  private async describe(value: HostHarnessOverride, client?: pg.PoolClient): Promise<HostHarnessOverride> {
     if (!value.enabled) return { ...value, qualification: 'disabled' }
     // Missing/remote failed evidence remains unavailable, never substitutes local discovery.
-    const evidence = await this.evidence(value).catch(() => null)
+    const evidence = await this.evidence(value, client).catch(() => null)
     const qualification = !evidence ? 'unqualified' : harnessHostKey(evidence.target.hostRef) !== harnessHostKey(value.target.hostRef)
       || evidence.target.applicationInstallationId !== value.target.applicationInstallationId
       || evidence.target.harnessInstallationId !== value.target.harnessInstallationId
@@ -62,7 +62,7 @@ export class HostHarnessOverrideService {
     return this.repository.readAuthorized(async client => {
       await this.authority.authorize(principal, 'harnesses:read', input.hostRef, input.applicationInstallationId, client)
       const overrides = await this.repository.list(input.hostRef, input.applicationInstallationId, client)
-      return { overrides: await Promise.all(overrides.map(value => this.describe(value))) }
+      return { overrides: await Promise.all(overrides.map(value => this.describe(value, client))) }
     })
   }
   async save(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HostHarnessOverrideSave) {
