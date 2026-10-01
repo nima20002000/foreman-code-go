@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
 import { DevicePairingGrantInputSchema, DevicePairingGrantResultSchema, DeviceRevokeInputSchema, DeviceRegistrationSchema, DeviceListResultSchema, MainDeviceIdentityPublicSchema } from '@graphql/contracts/device-identity'
 import { HostHarnessInstanceCheckInputSchema, HostHarnessInstanceCheckResultSchema, type HostHarnessInstanceCheckInput, HostHarnessOverrideListSchema, HostHarnessOverrideListInputSchema, HostHarnessOverrideSaveSchema, HostHarnessOverrideSaveResultSchema, type HostHarnessOverrideListInput, type HostHarnessOverrideSave, HarnessHostReferenceSchema, HarnessRegistryReadbackSchema } from '@graphql/contracts/harness-registry'
+import { DeviceSetupApproveInputSchema, DeviceSetupApproveResultSchema, DeviceSetupOptionsSchema } from '@graphql/contracts/device-setup'
 import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
 import { apiClient, ApiError } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
@@ -11,6 +12,7 @@ export const computerSettingsKeys = {
   root: ['workbench', 'computer-settings'] as const,
   main: () => [...computerSettingsKeys.root, sessionGeneration(), 'main'] as const,
   devices: (mainId: string) => [...computerSettingsKeys.root, sessionGeneration(), mainId, 'devices'] as const,
+  setupOptions: (mainId: string) => [...computerSettingsKeys.root, sessionGeneration(), mainId, 'setup-options'] as const,
   inventory: (host: CanonicalMachineReference, applicationInstallationId?: string) => [...computerSettingsKeys.root, sessionGeneration(), host, applicationInstallationId ?? null, 'harness-registry'] as const,
 }
 export function useSelectedMainQuery() {
@@ -49,6 +51,25 @@ export function useCreateComputerPairingGrant(mainId: string) {
       const result = await apiClient.request('/api/devices/pairing-grants', DevicePairingGrantResultSchema,
         { method: 'POST', body: DevicePairingGrantInputSchema.parse(input) })
       if (result.registration.mainId !== mainId) throw new Error('Pairing grant belongs to a different main.')
+      return result
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: computerSettingsKeys.root }),
+  })
+}
+/** The device endpoint is server-configured; it is never derived from the browser address. */
+export function useComputerSetupOptionsQuery(mainId: string) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: computerSettingsKeys.setupOptions(mainId), enabled: !sessionIsSwitching(), retry: false,
+    queryFn: ({ signal }) => apiClient.request('/api/devices/setup-options', DeviceSetupOptionsSchema, { signal }) })
+}
+/** The result carries a private enrollment code; keep it in the mutation result only. */
+export function useApproveComputerSetup(mainId: string) {
+  const client = useQueryClient()
+  return useMutation({ mutationKey: [...computerSettingsKeys.root, sessionGeneration(), mainId, 'setup-code'],
+    mutationFn: async (input: z.input<typeof DeviceSetupApproveInputSchema>) => {
+      const result = await apiClient.request('/api/devices/setup-codes', DeviceSetupApproveResultSchema,
+        { method: 'POST', body: DeviceSetupApproveInputSchema.parse(input) })
+      if (result.registration.mainId !== mainId) throw new Error('Computer approval belongs to a different main.')
       return result
     },
     onSuccess: () => client.invalidateQueries({ queryKey: computerSettingsKeys.root }),

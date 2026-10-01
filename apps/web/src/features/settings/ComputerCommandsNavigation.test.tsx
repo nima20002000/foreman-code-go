@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event'
 import type { DeviceRegistration } from '@graphql/contracts/device-identity'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it } from 'vitest'
+import { encodeWorkerIdentityRequest } from '@graphql/contracts/device-setup'
 import { server } from '../../mocks/server'
 import { UnsavedChangesProvider } from '../../shared/ui/UnsavedChangesProvider'
 import { ComputerPairingForm } from './ComputerPairingForm'
@@ -16,7 +17,7 @@ const deviceId = '22222222-2222-4222-8222-222222222222'
 const registration: DeviceRegistration = { mainId, deviceId, workerInstallationId: deviceId, publicKeyFingerprint: 'a'.repeat(64),
   keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'] }
 const commands = [
-  { kind: 'pairing', path: '/api/devices/pairing-grants', label: 'Create one-use pairing grant', reconcile: 'Reconcile original pairing command' },
+  { kind: 'pairing', path: '/api/devices/setup-codes', label: 'Approve this computer', reconcile: 'Reconcile original pairing command' },
   { kind: 'revoke', path: '/api/devices/revoke', label: 'Revoke worker access', reconcile: 'Reconcile original revoke command' },
 ] as const
 type Command = typeof commands[number]
@@ -39,14 +40,18 @@ async function mount(command: Command) {
     history: createMemoryHistory({ initialEntries: ['/settings/computers'] }) })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   clients.push(client)
+  if (command.kind === 'pairing') server.use(
+    http.get('/api/devices/setup-options', () => HttpResponse.json({ endpoint: 'wss://192.168.1.10:8443/device/connect', available: true, reason: null })),
+    http.get('/api/devices/main', () => HttpResponse.json({ mainId, mainPublicKey: 'main-key', mainPublicKeyFingerprint: 'b'.repeat(64) })),
+    http.get('/api/devices', () => HttpResponse.json({ devices: [] })))
   await router.load()
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   await screen.findByRole('button', { name: command.label })
   const user = userEvent.setup()
   if (command.kind === 'pairing') {
-    await user.type(screen.getByRole('textbox', { name: 'Worker application installation ID' }), deviceId)
-    await user.type(screen.getByRole('textbox', { name: 'Worker public key' }), 'public-key')
-    await user.type(screen.getByRole('textbox', { name: 'Verified worker public key fingerprint' }), 'a'.repeat(64))
+    await user.click(screen.getByRole('textbox', { name: 'Computer request code' }))
+    await user.paste(encodeWorkerIdentityRequest({ version: 1, kind: 'identity-request', workerInstallationId: deviceId, publicKey: 'public-key', publicKeyFingerprint: 'a'.repeat(64) }))
+    await waitFor(() => expect(screen.getByRole('button', { name: command.label })).toBeEnabled())
   }
   return { router, user, updateRegistration }
 }
@@ -63,7 +68,7 @@ it.each(commands)('holds pending $kind navigation and reconciles the same comman
     }
     if (requests.length === 2) return HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Reconciliation denied.' } }, { status: 403 })
     return HttpResponse.json(command.kind === 'pairing'
-      ? { registration: { ...registration, status: 'pending' }, grant: 'a'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString() }
+      ? { registration: { ...registration, status: 'pending' }, enrollmentCode: 'GQLWE1.secret', expiresAt: new Date(Date.now() + 60_000).toISOString() }
       : { ...registration, status: 'revoked', authorizationRevision: 2 })
   }))
   const { router, user, updateRegistration } = await mount(command)

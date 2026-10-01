@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ReactNode } from 'react'
 import { server } from '../../mocks/server'
-import { computerSettingsKeys, useRegisteredComputersQuery, useHostHarnessRegistryQuery, useCreateComputerPairingGrant } from './computerSettings'
+import { computerSettingsKeys, useRegisteredComputersQuery, useHostHarnessRegistryQuery, useCreateComputerPairingGrant, useApproveComputerSetup, useComputerSetupOptionsQuery } from './computerSettings'
 import { beginSessionChange, finishSessionChange } from './sessionBoundary'
 
 const mainId = '11111111-1111-4111-8111-111111111111'
@@ -48,6 +48,22 @@ describe('computer HTTP query boundary', () => {
       await expect(grant.result.current.mutateAsync({ workerInstallationId: deviceId, publicKey: 'public-key', expectedFingerprint: 'a'.repeat(64), scopes: ['connect', 'heartbeat'], commandId: 'original-command' })).rejects.toThrow('different main')
     })
     expect(grant.result.current.data).toBeUndefined()
+  })
+  it('does not expose a setup approval returned for another main', async () => {
+    server.use(http.post('/api/devices/setup-codes', () => HttpResponse.json({ registration: { ...registration, mainId: deviceId, status: 'pending' }, enrollmentCode: 'GQLWE1.secret', expiresAt: '2099-10-01T00:00:00.000Z' })))
+    const { Wrapper } = wrapper()
+    const approval = renderHook(() => useApproveComputerSetup(mainId), { wrapper: Wrapper })
+    await act(async () => {
+      await expect(approval.result.current.mutateAsync({ commandId: 'original-command', identityRequestCode: 'GQLWR1.x', endpoint: 'wss://192.168.1.10:8443/device/connect', scopes: ['connect', 'heartbeat'] })).rejects.toThrow('different main')
+    })
+    expect(approval.result.current.data).toBeUndefined()
+  })
+  it('reads the server-configured setup endpoint without guessing one', async () => {
+    server.use(http.get('/api/devices/setup-options', () => HttpResponse.json({ endpoint: null, available: false, reason: 'listener-unconfigured' })))
+    const { Wrapper } = wrapper()
+    const query = renderHook(() => useComputerSetupOptionsQuery(mainId), { wrapper: Wrapper })
+    await waitFor(() => expect(query.result.current.isSuccess).toBe(true))
+    expect(query.result.current.data).toEqual({ endpoint: null, available: false, reason: 'listener-unconfigured' })
   })
   it('rejects a late grant after an authentication session switch', async () => {
     let resolve!: () => void
