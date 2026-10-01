@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'vitest'
 
 import { assertCodexUnchanged, canonical, qualifyCodex, QUALIFIED_CODEX_VERSION, type QualifiedCodex } from '../src/modules/harnesses/codexProtocol.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { calls, errorCode, fixture, fixtureProtocol, type Fixture } from './fixtures/codex-test-helpers.js'
 
 let f: Fixture
@@ -12,6 +13,16 @@ let f: Fixture
 describe.skipIf(process.platform === 'win32')('Codex installation qualification (unmocked)', () => {
   beforeEach(async () => { f = await fixture() })
   afterEach(async () => { await rm(f.directory, { recursive: true, force: true }) })
+
+  it.skipIf(process.platform !== 'linux')('attributes model-free qualification commands to the existing recovery owner', async () => {
+    const registry = new NativeProcessRegistry(join(f.directory, 'qualification-recovery'))
+    const owner = 'codex-qualification-owner'
+    const scope = registry.scope(owner)
+    assert.equal(await registry.closeOwner(owner), false)
+    await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true, undefined, scope),
+      (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
+    assert.equal(await registry.closeOwner(owner), true)
+  })
 
   it('F28: the right version and authentication cannot substitute for an installed schema measurement', async () => {
     await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true),

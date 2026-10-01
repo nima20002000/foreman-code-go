@@ -1,6 +1,6 @@
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
-import type { NativeProcessRecovery } from './recovery/processRegistry.js'
+import { nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets } from './secrets.js'
 
 export type JsonObject = Record<string, unknown>
@@ -113,6 +113,7 @@ export class CodexStdioTransport {
     const id = this.nextId++
     const message: RpcRequest = { id, method, ...(params === undefined ? {} : { params }) }
     this.protocol.request(message)
+    const frame = this.encode({ ...message })
     if (this.operations.size + this.uncertainOperations.size >= MAX_OPERATIONS) {
       throw new HarnessExecutionError('CODEX_OPERATION_LIMIT', 'Too many unresolved provider operations; reconcile before submitting more.')
     }
@@ -129,7 +130,7 @@ export class CodexStdioTransport {
       // Once write is attempted, neither EPIPE nor abort proves non-delivery.
       operation.submitted = true
       try {
-        this.owned!.child.stdin.write(JSON.stringify(message) + '\n', (error) => {
+        this.owned!.child.stdin.write(frame, (error) => {
           if (error) this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_UNCERTAIN')
         })
       } catch {
@@ -143,6 +144,11 @@ export class CodexStdioTransport {
       throw new HarnessExecutionError('NATIVE_RESPONSE_INVALID', 'The response does not match the qualified native schema; nothing was submitted.')
     }
     this.assertConnected('NATIVE_RESPONSE_DELIVERY_FAILED')
+    try { this.encode({ id, result }) } catch {
+      throw new HarnessExecutionError('NATIVE_RESPONSE_INVALID', 'The native response exceeds the bounded frame size; nothing was submitted.')
+    }
+    if (this.writes.size >= MAX_OPERATIONS) throw new HarnessExecutionError(
+      'NATIVE_RESPONSE_DELIVERY_FAILED', 'Too many outstanding provider writes; nothing was submitted.')
     try { await this.write({ id, result }) } catch {
       throw new HarnessExecutionError('NATIVE_RESPONSE_DELIVERY_UNCERTAIN', 'The native response may have been submitted; wait for native resolution before retrying.')
     }
@@ -162,6 +168,17 @@ export class CodexStdioTransport {
     return attempt
   }
 
+  /** Current writable callback channel only; this snapshot is not delivery evidence. */
+  isConnected(): boolean {
+    const child = this.owned?.child
+    if (this.stopped || !child) return false
+    try {
+      const outcome = nativeProcessExit(child, { exitCode: child.exitCode, exitSignal: child.signalCode })
+      if (outcome.exitCode !== null || outcome.exitSignal !== null) return false
+    } catch { return false }
+    return child.stdin.writable && !child.stdin.destroyed && !child.stdin.writableEnded
+  }
+
   private assertConnected(code = 'CODEX_APP_SERVER_DISCONNECTED'): void {
     if (this.stopped || !this.owned || this.owned.child.stdin.destroyed) {
       throw new HarnessExecutionError(code, 'Codex app-server is not connected.')
@@ -170,6 +187,9 @@ export class CodexStdioTransport {
 
   private write(message: JsonObject): Promise<void> {
     this.assertConnected()
+    const frame = this.encode(message)
+    if (this.writes.size >= MAX_OPERATIONS) throw new HarnessExecutionError(
+      'CODEX_WRITE_LIMIT', 'Too many outstanding provider writes; wait for delivery before submitting more.')
     return new Promise<void>((resolve, reject) => {
       let settled = false
       const finish = (error?: Error | null) => {
@@ -182,10 +202,18 @@ export class CodexStdioTransport {
       }
       const timer = setTimeout(() => finish(new Error('Provider write timed out.')), this.timeoutMs)
       this.writes.add(finish)
-      try { this.owned!.child.stdin.write(JSON.stringify(message) + '\n', finish) } catch (error) {
+      try { this.owned!.child.stdin.write(frame, finish) } catch (error) {
         finish(error instanceof Error ? error : new Error('Provider write failed.'))
       }
     })
+  }
+
+  /** Reject oversized output before any write, so delivery is definitely absent. */
+  private encode(message: JsonObject): string {
+    const frame = JSON.stringify(message) + '\n'
+    if (Buffer.byteLength(frame) > MAX_FRAME_BYTES) throw new HarnessExecutionError(
+      'CODEX_OUTBOUND_FRAME_LIMIT', 'The provider request exceeds the bounded frame size; nothing was submitted.')
+    return frame
   }
 
   private settleFailure(id: RequestId, code: string): void {

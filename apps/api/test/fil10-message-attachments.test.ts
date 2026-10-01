@@ -7,6 +7,7 @@ import { messageAttachmentIdentity, type MessageAttachmentRef } from '@graphql/c
 
 import { agentChatInputHash } from '../src/modules/conversations/agentChatRepository.js'
 import { commandHash, commandPayload } from '../src/modules/conversations/operatorChatRepository.js'
+import { bindingIdentity } from '../src/modules/files/tools/context.js'
 import { hydrateMessageAttachments, validateMessageAttachments, withMessageAttachmentRefs } from '../src/modules/conversations/messageAttachments.js'
 
 const first = { fileId: 'file-1', revisionId: 'revision-1' }
@@ -97,6 +98,31 @@ describe('FIL-10 message metadata and lifecycle adapter', () => {
     await validateMessageAttachments(db, 'chat', [])
     expect(await hydrateMessageAttachments(db, 'chat', [legacy])).toEqual([legacy])
     expect(query).not.toHaveBeenCalled()
+  })
+  it('discovers upload-free receipt messages for finalized Codex ledger recovery', async () => {
+    const stored = { ...message(), requestId: 'send' }
+    const query = vi.fn(async (sql: string) => ({ rows: sql.includes('operator_conversation_turns') ? [{
+      message_id: stored.id, native_turn_id: 'turn', owner_principal_id: 'owner', native_session_id: 'thread',
+      kind: 'agent', operator_id: null, workspace_id: 'workspace', workflow_id: 'workflow', agent_id: 'agent',
+      origin_run_id: null, origin_execution_id: null,
+    }] : sql.includes('file_tool_publications') ? [{
+      binding: bindingIdentity({ ownerPrincipalId: 'owner', nativeSessionId: 'thread', turnId: 'turn', messageId: stored.id,
+        allowMutation: false, allowedTools: [], scope: { kind: 'temporary', chat: {
+          kind: 'agent', agentId: 'agent', workspaceId: 'workspace', workflowId: 'workflow', conversationId: 'chat',
+        } } }), owner_principal_id: 'owner', file_id: first.fileId, revision_id: first.revisionId,
+    }] : [{ ...row(), chat_kind: 'agent', operator_id: null, agent_id: 'agent', workspace_id: 'workspace', workflow_id: 'workflow' }] }))
+    const loaded = await hydrateMessageAttachments({ query } as unknown as Pick<pg.PoolClient, 'query'>, 'chat', [stored])
+    expect(loaded[0]!.attachments![0]!.revision).toMatchObject(first)
+    expect(query.mock.calls[0]![0]).toContain('operator_conversation_turns')
+    expect(query).toHaveBeenCalledTimes(3)
+  })
+  it('does not query file relations for a receipt without an eligible persisted Codex turn', async () => {
+    const { db, query } = queryable()
+    const stored = { ...message(), requestId: 'send' }
+    expect(await hydrateMessageAttachments(db, 'chat', [stored])).toEqual([stored])
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query.mock.calls[0]![0]).toContain("to_regclass('file_tool_publications')")
+    expect(query.mock.calls[0]![0]).not.toContain('from file_tool_publications')
   })
   it('stores pins only, then returns metadata for the pinned revision, never the newer head', async () => {
     const { db, query } = queryable()

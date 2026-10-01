@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'vitest'
 
 import { CodexRpcError, CodexStdioTransport, type CodexProtocol } from '../src/modules/harnesses/codexStdioTransport.js'
-import { fixture, until, type Fixture } from './fixtures/codex-test-helpers.js'
+import { errorCode, fixture, until, type Fixture } from './fixtures/codex-test-helpers.js'
 
 // Transport fault tests intentionally isolate framing, IO and correlation from
 // schema conversion. codex-protocol.test.ts exercises the qualified schema gate.
@@ -55,6 +55,33 @@ void (async () => {
     assert.deepEqual(await value.request('test/echo', { alive: true }), { alive: true })
     assert.deepEqual(observed, [])
   }, 15_000)
+
+  it('reports current callback-channel connectivity without submitting a native message', async () => {
+    const value = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, protocol,
+      async () => undefined, () => undefined, () => undefined)
+    transports.push(value)
+    assert.equal(value.isConnected(), false)
+    await value.start()
+    assert.equal(value.isConnected(), true)
+    await value.close()
+    assert.equal(value.isConnected(), false)
+  })
+
+  it('rejects oversized outbound requests and responses before native submission', async () => {
+    const value = await transport()
+    const controller = new AbortController()
+    const oversized = { text: 'x'.repeat(4 * 1024 * 1024) }
+    const cases = [
+      { result: value.request('test/echo', oversized, controller.signal), code: 'CODEX_OUTBOUND_FRAME_LIMIT' },
+      { result: value.respond(999, 'test/response', oversized), code: 'NATIVE_RESPONSE_INVALID' },
+    ]
+    for (const { result, code } of cases) {
+      await assert.rejects(result, (error: unknown) => error instanceof Error
+        && errorCode(error) === code && error.message.includes('nothing was submitted'))
+    }
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+    assert.deepEqual(await value.request('test/echo', { alive: true }), { alive: true })
+  })
 
   it('F13: successful and failed RPCs remove every abort listener', async () => {
     const value = await transport()

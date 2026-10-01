@@ -111,12 +111,12 @@ export async function hydrateMessageAttachments(query: Queryable, conversationId
   }
   const pins = (message: typeof messages[number]) => mergeMessagePins(message.attachmentRefs ?? [], message.publicationRefs ?? [])
   const rows = await readPins(query, conversationId, messages.flatMap(pins))
-  // Input pins identify candidate messages; the recovery query verifies exact
-  // Codex receipt/session/sender bindings, independent of current token authority.
-  const candidates = messages.filter((message) => message.role === 'user' && message.attachmentRefs?.some((ref) => {
-    const scope = rows.get(identity(ref))?.file.scope
-    return scope?.kind === 'temporary'
-  })).map((message) => message.id)
+  // New receipt-bearing user messages can publish inherited references without
+  // uploads. Legacy unreceipted text stays independent of the file migration;
+  // the recovery reader verifies persisted native identity for this bounded page.
+  const candidates = messages.filter((message) => message.role === 'user'
+    && (message.requestId !== undefined || (message.attachmentRefs?.length ?? 0) > 0))
+    .map((message) => message.id)
   const recovered = await readCodexMessagePublications(query, conversationId, candidates)
   const missing = [...recovered.values()].flat().filter((ref) => !rows.has(identity(ref)))
   for (const [key, value] of await readPins(query, conversationId, missing)) rows.set(key, value)
