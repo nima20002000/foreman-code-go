@@ -18,6 +18,7 @@ import { reviewFailureLifecycleMigration } from './reviewFailureLifecycleMigrati
 import { browserAuthMigration } from './browserAuthMigration.js'
 import { skillsLibraryMigration } from './skillsLibraryMigration.js'
 import { currentApprovalPublicationMigration } from './currentApprovalPublicationMigration.js'
+import { activitySnapshotMigration } from './activitySnapshotMigration.js'
 import { agentChatMigration } from './agentChatMigration.js'
 
 import { lifecycleMigration } from './lifecycleMigration.js'
@@ -738,6 +739,7 @@ export const migrations = [
   currentApprovalPublicationMigration,
   reviewCleanupEntryReceiptMigration,
   agentChatMigration,
+  activitySnapshotMigration,
   workHandoffMigration,
   workNoticeMigration,
   runActivitiesMigration,

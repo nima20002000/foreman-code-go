@@ -558,7 +558,6 @@ export class PostgresOperatorConversationRepository {
   /** Codex messages are immutable; OpenCode public parts keep their first position while streaming. */
   async appendAssistantMessage(id: string, requestId: string, nativeMessageId: string, content: string,
     nativePart?: { parentMessageId: string; complete: boolean }, precedingActivityId?: string | null): Promise<boolean> {
-    if (!content && !nativePart) return false
     const client = await this.pool.connect()
     try {
       await client.query('begin')
@@ -600,7 +599,7 @@ export class PostgresOperatorConversationRepository {
         const now = new Date().toISOString()
         const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, requestId, role: 'assistant', content,
           nativeMessageId, afterActivitySequence: activity,
-          ...(nativePart ? { nativeParentMessageId: nativePart.parentMessageId, nativeMessageComplete: nativePart.complete } : {}),
+          ...(nativePart ? { nativeParentMessageId: nativePart.parentMessageId, nativeMessageComplete: nativePart.complete } : { nativeMessageComplete: true }),
           createdAt: now, updatedAt: now })
         await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
           values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id,id,content,nativeMessageId,JSON.stringify(message)])
@@ -623,13 +622,13 @@ export class PostgresOperatorConversationRepository {
       if (result.outcome === 'succeeded' && nativeMessageId) {
         const output = result.output
         const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
-          ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : '' : ''
+          ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : undefined : undefined
         // OpenCode's terminal result repeats the text of its already persisted
         // native parts. A real parent message ID must not create a second answer.
         const prior = await client.query(`select 1 from operator_conversation_messages
           where conversation_id=$1 and (native_message_id=$2 or
             (record->>'nativeParentMessageId'=$2 and record->>'requestId'=$3)) limit 1`, [id,nativeMessageId,requestId])
-        if (content && !prior.rowCount) {
+        if (content !== undefined && !prior.rowCount) {
           const activity = await client.query<{ sequence: string }>(
             'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id,requestId])
           const now = new Date().toISOString()
