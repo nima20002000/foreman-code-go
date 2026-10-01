@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { authorizeDevice, revokeDevice, type DevicePrincipal, type DeviceRegistration } from './deviceIdentity.js'
-import { loadOrCreateWorkerIdentity } from './deviceIdentityNode.js'
+import { loadOrCreateWorkerIdentity, loadWorkerPairing, persistWorkerPairing, updateWorkerEndpoint } from './deviceIdentityNode.js'
 
 describe('device authority and durable local identity', () => {
   it('fences revoked, wrong-main, expired and stale authorization revisions', () => {
@@ -34,4 +34,24 @@ describe('device authority and durable local identity', () => {
       await expect(loadOrCreateWorkerIdentity(directory)).rejects.toThrow('corrupt')
     } finally { await rm(directory, { recursive: true, force: true }) }
   })
+  it('recovers identical pairing writes and keeps authority pinned across endpoint edits', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'device-pairing-'))
+    try {
+      const identity = await loadOrCreateWorkerIdentity(directory)
+      const configuration = { formatVersion: 1 as const, mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: identity.workerInstallationId,
+        keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://main.example/device', mainPublicKeyFingerprint: 'a'.repeat(64),
+        credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00Z' }
+      await persistWorkerPairing(directory, configuration)
+      await persistWorkerPairing(directory, configuration)
+      await expect(persistWorkerPairing(directory, { ...configuration, mainId: randomUUID() })).rejects.toThrow('explicit unpairing')
+      await updateWorkerEndpoint(directory, 'wss://other-endpoint.example/device')
+      const recovered = await loadWorkerPairing(directory)
+      expect(recovered.mainId).toBe(configuration.mainId)
+      expect(recovered.mainPublicKeyFingerprint).toBe(configuration.mainPublicKeyFingerprint)
+      expect(recovered.endpoint).toBe('wss://other-endpoint.example/device')
+      await rm(join(directory, 'identity.json'))
+      await expect(loadOrCreateWorkerIdentity(directory)).rejects.toThrow('explicit recovery')
+    } finally { await rm(directory, { recursive: true, force: true }) }
+  })
+
 })
