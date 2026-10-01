@@ -35,14 +35,9 @@ export * from "./harnessQualification.js";
 export * from "./approvalTopology.js";
 export * from "./graphqlMcpTools.js";
 
-/** Runner-owned directory inherited by every workflow and Agent in a workspace. */
-export const ExecutionLocationSchema = z
-  .object({
-    runnerId: IdSchema,
-    rootPath: z.string().min(1).refine((value) => !value.includes("\0"), "rootPath cannot contain NUL"),
-  })
-  .strict();
-export type ExecutionLocation = z.infer<typeof ExecutionLocationSchema>;
+import { ExecutionLocationSchema } from "./executionLocation.js";
+export { ExecutionLocationSchema } from "./executionLocation.js";
+export type { ExecutionLocation } from "./executionLocation.js";
 
 /** Immutable location accepted together with a new Run. */
 export const RunExecutionLocationSchema = ExecutionLocationSchema.extend({

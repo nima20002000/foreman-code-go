@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ExecutionLocationSchema } from './index.js'
+import { ExecutionLocationSchema } from './executionLocation.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { WorkspaceRootSelectionSchema, WorkspaceRootPolicySchema, WorkspaceRootAttestationSchema, WorkspaceRootBrowseResultSchema } from './workspaceRootPolicies.js'
 
