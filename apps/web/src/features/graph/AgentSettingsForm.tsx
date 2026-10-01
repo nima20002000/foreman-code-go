@@ -1,4 +1,6 @@
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { SavedNodePlacementSchema, type SavedNodePlacement } from '@graphql/contracts/node-placement'
+import { NodePlacementField, type NodePlacementOption } from '../node-placement/NodePlacementField'
 import type { AgentForm } from './nextDraft/agentForm'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { useEffect, useRef, useState } from 'react'
@@ -20,10 +22,14 @@ import { AgentSkillsField } from '../skills/AgentSkillsField'
 import './agentSettingsPanel.css'
 
 export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
-  executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
+  nodePlacement, placementOptions, placementOptionsState, placementStage, executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
 }: {
   /** Inside an agent popover: the popover owns the title and close button. */
   embedded?: boolean
+  nodePlacement?: SavedNodePlacement
+  placementOptions?: readonly NodePlacementOption[]
+  placementOptionsState?: 'ready' | 'loading' | 'unavailable'
+  placementStage?: 'draft' | 'saved'
   retainedForm?: AgentForm
   onFormChange?(form: AgentForm): void
   onDiscardForm?(): void
@@ -35,7 +41,7 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
   creationDefaults?: HarnessDefaults
   onClose(): void
   onRemove?(): void
-  onSave(agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy, nodeGraphqlTools: GraphqlToolOverride | undefined): void
+  onSave(agent: Agent, initialPrompt: string | undefined, executionPolicy: WorkflowExecutionPolicy, nodeGraphqlTools: GraphqlToolOverride | undefined, placement?: SavedNodePlacement): void
   executionPolicy?: WorkflowExecutionPolicy
   workflowNodeCount?: number
   workspaceId?: string
@@ -58,12 +64,14 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
     return createHarnessEditor(agent.harnessConfiguration ?? configuredHarness(agent, harness,
       initialModel(agent, harness), agent.effort ?? 'medium', agent.fastMode ?? false, 'read-only', creationDefaults))
   })
-  const base = JSON.stringify({ agent, initialPrompt, nodeGraphqlTools })
+  const [localPlacement, setLocalPlacement] = useState(nodePlacement)
+  const base = JSON.stringify({ agent, initialPrompt, nodeGraphqlTools, nodePlacement })
   const retained = retainedForm && sameWorkflowValue(JSON.parse(retainedForm.base), JSON.parse(base)) ? retainedForm : undefined
   const name = retained?.name ?? localName, prompt = retained?.prompt ?? localPrompt, editor = retained?.editor ?? localEditor
+  const placement = retained ? retained.placement : localPlacement
   const graphqlTools = retained?.graphqlTools ?? localGraphqlTools
   const instructions = retained?.instructions ?? localInstructions, skills = retained?.skills ?? localSkills
-  const changeForm = (patch: Partial<AgentForm>) => onFormChange?.({ base, name, prompt, editor, graphqlTools, instructions, skills, ...patch })
+  const changeForm = (patch: Partial<AgentForm>) => onFormChange?.({ base, name, prompt, editor, graphqlTools, instructions, skills, ...(placement ? { placement } : {}), ...patch })
   const setName = (value: string) => { if (onFormChange) changeForm({ name: value }); else setLocalName(value) }
   const setPrompt = (value: string) => { if (onFormChange) changeForm({ prompt: value }); else setLocalPrompt(value) }
   const setGraphqlTools = (value: NonNullable<AgentForm['graphqlTools']>) => { if (onFormChange) changeForm({ graphqlTools: value }); else setLocalGraphqlTools(value) }
@@ -75,11 +83,11 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
   }
   const initialSnapshot = useRef<string | undefined>(undefined)
   if (!initialSnapshot.current) initialSnapshot.current = JSON.stringify({ name: agent.name, prompt: initialPrompt ?? '', editor: localEditor, graphqlTools: localGraphqlTools,
-    instructions: agent.prompt?.system ?? '', skills: agent.assignedSkills ?? [] })
+    instructions: agent.prompt?.system ?? '', skills: agent.assignedSkills ?? [], placement: nodePlacement })
   const defaultsQuery = useHarnessDefaultsQuery({ enabled: !creationDefaults })
   const providerDefaults = creationDefaults ?? defaultsQuery.data?.defaults
   const configuration = withAdvancedDefaults(editor.configuration)
-  const currentSnapshot = JSON.stringify({ name, prompt, editor, graphqlTools, instructions, skills })
+  const currentSnapshot = JSON.stringify({ name, prompt, editor, graphqlTools, instructions, skills, placement })
   const isDirty = currentSnapshot !== initialSnapshot.current
   const nameError = fieldMessage(issues, 'name')
   const clearErrors = () => { setError(undefined); setIssues([]) }
@@ -104,13 +112,14 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
           throw failure
         }
       })()
+      if (placement) SavedNodePlacementSchema.parse(placement)
       initialSnapshot.current = currentSnapshot
       onSave({ ...agent, name: name.trim(), harness: nextConfiguration.harness, model: nextConfiguration.model,
         effort: legacyEffortForHarness(nextConfiguration), fastMode: nextConfiguration.harness === 'codex' ? nextConfiguration.serviceTier === 'priority' : undefined,
         harnessConfiguration: nextConfiguration,
         ...(graphqlTools.defaults ? { graphqlTools: graphqlTools.defaults } : {}),
         prompt: instructions.trim() ? { system: instructions.trim() } : {}, assignedSkills: skills,
-      }, prompt.trim() || undefined, executionPolicy, graphqlTools.override)
+      }, prompt.trim() || undefined, executionPolicy, graphqlTools.override, placement)
     } catch (failure) {
       initialSnapshot.current = previousSnapshot
       const nextIssues = validationIssues(failure)
@@ -150,6 +159,7 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
       <div className={`agent-settings-row agent-settings-row-runtime agent-settings-row-${configuration.harness}`}>
         <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration} />
       </div>
+      {(nodePlacement || placementOptions) ? <NodePlacementField value={placement} options={placementOptions ?? []} optionsState={placementOptionsState} stage={!sameWorkflowValue(placement, nodePlacement) ? 'editing' : placementStage} onChange={(next) => { if (onFormChange) changeForm({ placement: next }); else setLocalPlacement(next); clearErrors() }} /> : null}
       {workspaceId ? <AgentSkillsField workspaceId={workspaceId} value={skills} onChange={(next) => { setSkills(next); clearErrors() }} /> : null}
     </div> : <div className="agent-settings-advanced-view">
       <Textarea label="Agent instructions" className="agent-settings-prompt" rows={4} value={instructions}

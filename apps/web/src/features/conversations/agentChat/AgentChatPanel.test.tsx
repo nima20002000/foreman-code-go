@@ -219,7 +219,10 @@ describe('AgentChatPanel commands and drafts', () => {
   })
 
   it('unknown delivery requires the explicit new-message warning and a fresh requestId', async () => {
-    const mounted = mountChat(agentChatFixtures.unknownDelivery); await mounted.ready()
+    const state: AgentChatState = structuredClone(agentChatFixtures.unknownDelivery)
+    state.messages[0]!.originalInput = { requestId: state.turns[0]!.requestId, content: 'Summarize the repository.', attachments: [] }
+    state.messages[0]!.content = 'Displayed text is not the admitted send input.'
+    const mounted = mountChat(state); await mounted.ready()
     await userEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
     const warning = screen.getByRole('alertdialog')
     expect(within(warning).getByText(/original message may already have been accepted/)).toBeInTheDocument()
@@ -480,4 +483,25 @@ describe('AgentChatPanel live reads and interaction', () => {
     expect(sent(mounted.mock)).toHaveLength(0)
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Offline draft')
   })
+})
+
+it('cold readback keeps completed parent/unresolved child work visible instead of labeling the chat idle', async () => {
+  installChatSource()
+  const state = structuredClone(agentChatFixtures.idleAfterCompletion)
+  state.activitySnapshot = { schemaVersion: 1, revision: String(state.revision), scope: { kind: 'agent_chat', conversationId: state.conversation.id,
+    workspaceId: state.context.workspaceId, workflowId: state.context.workflowId, nodeId: state.context.workflowNodeId, agentId: state.context.agentId },
+  active: [{ ref: { kind: 'subagent', itemId: 'child' }, phase: 'active', outcome: null, delivery: null, evidence: 'unknown', startedAt: null }],
+  queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
+  const view = mountChat(state); await view.ready()
+  expect(screen.getByText('Unfinished work unconfirmed')).toBeInTheDocument()
+  expect(screen.getByText('Some tools or subagents have no confirmed outcome.')).toBeInTheDocument()
+})
+it('keeps a persisted unavailable question visible with disabled reply options and the qualified recovery message', async () => {
+  installChatSource()
+  const state = approvalState()
+  state.responseAvailability = { ...state.responseAvailability!, available: false, status: 'recovery_required', path: null,
+    reason: 'callback_lost', message: 'The native callback was lost after restart. No reply will be sent automatically.' }
+  const view = mountChat(state); await view.ready()
+  expect(screen.getByText(state.responseAvailability.message)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /approve once/i })).toBeDisabled()
 })

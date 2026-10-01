@@ -1,0 +1,59 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import type { JobWorkflowExecutionReference } from '@graphql/contracts/job-workflow'
+import type { JobExecution } from '@graphql/contracts/jobs'
+import { Alert, Badge, Button, Card, CardBody, PageHeader } from '../../shared/ui/nocturne'
+import { jobsClient } from './client'
+import { useJobArtifacts, useJobExecution, jobKeys } from './query'
+import { jobError, processLabel } from './model'
+import { JobLogs } from './JobLogs'
+import { ArtifactDownload } from './ArtifactDownload'
+import { JobSpecFacts } from './JobSpecFacts'
+
+export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow, expectedDefinitionVersionId }: { workspaceId: string; executionId: string; onRerun?: (execution: JobExecution) => void; expectedWorkflow?: JobWorkflowExecutionReference; expectedDefinitionVersionId?: string }) {
+  const result = useJobExecution(workspaceId, executionId)
+  const artifacts = useJobArtifacts(workspaceId, executionId, Boolean(result.data))
+  const cache = useQueryClient()
+  const cancel = useMutation({ mutationFn: (commandId: string) => jobsClient.cancel(workspaceId, executionId, commandId),
+    onSuccess: execution => { cache.setQueryData(jobKeys.execution(workspaceId, executionId), execution); void cache.invalidateQueries({ queryKey: jobKeys.history(workspaceId) }) }, retry: false })
+  if (result.error) return <Alert title="Result unavailable" tone="danger">{jobError(result.error)}</Alert>
+  if (!result.data) return <p role="status">Loading job execution…</p>
+  const execution = result.data
+  if (expectedDefinitionVersionId && execution.acceptedSpec.definitionVersionId !== expectedDefinitionVersionId
+    || expectedWorkflow && (execution.id !== expectedWorkflow.jobExecutionId || execution.workflow?.workflowId !== expectedWorkflow.workflowId
+      || execution.workflow.runId !== expectedWorkflow.runId || execution.workflow.nodeId !== expectedWorkflow.nodeId
+      || execution.workflow.nodeExecutionId !== expectedWorkflow.nodeExecutionId)) {
+    return <Alert title="Run job result identity mismatch" tone="warning">The returned result does not match this saved node and Run execution. No substitute result is displayed.</Alert>
+  }
+  return <div className="jobs-page">
+    <PageHeader title="Job result" description={execution.id} actions={<>{onRerun && <Button onClick={() => onRerun(execution)}>Review rerun</Button>}{!execution.process.processStopped && <Button variant="danger" loading={cancel.isPending} disabled={Boolean(execution.cancelRequestedAt)} onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Request cancellation</Button>}</>} />
+    <div className="job-status" aria-label="Independent job statuses">
+      <Badge tone={execution.process.outcome === 'succeeded' ? 'success' : ['build_failed', 'preparation_failed', 'spawn_failed', 'timed_out'].includes(execution.process.outcome ?? '') ? 'danger' : 'neutral'}>Process: {processLabel(execution)}</Badge>
+      <Badge tone={execution.transport === 'offline' ? 'warning' : 'neutral'}>Transport: {execution.transport}</Badge>
+      <Badge tone={execution.publication === 'failed' ? 'danger' : 'neutral'}>Artifacts: {execution.publication}</Badge>
+    </div>
+    {execution.transport !== 'connected' && <Alert title="Computer connection lost" tone="warning">Connection unavailable. The process may still be running. Reconnect to read persisted observations.</Alert>}
+    {cancel.error && <Alert title="Cancellation not confirmed" tone="warning">Cancellation acknowledgment unavailable: {jobError(cancel.error)} <Button onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Retry same cancellation request</Button></Alert>}
+    <dl className="job-facts"><dt>Exit / signal</dt><dd>{execution.process.exitCode ?? 'Not observed'} / {execution.process.signal ?? 'None observed'}</dd>
+      <dt>Started / finished</dt><dd>{execution.startedAt ?? 'Not observed'} / {execution.finishedAt ?? 'Not observed'}</dd>
+      <dt>Elapsed</dt><dd>{execution.startedAt ? `${Math.max(0, Date.parse(execution.finishedAt ?? execution.updatedAt) - Date.parse(execution.startedAt))} ms${execution.finishedAt ? '' : ' through last result update'}` : execution.process.phase === 'queued' || execution.process.phase === 'preparing' ? `Not started yet (${execution.process.phase})` : 'Start time not recorded'}</dd>
+      {execution.resultIssue && <><dt>Result issue</dt><dd>{execution.resultIssue}</dd></>}
+      {execution.workflow && <><dt>Parent Run / node</dt><dd><a href={`/workspaces/${encodeURIComponent(workspaceId)}?workflowId=${encodeURIComponent(execution.workflow.workflowId)}&selectedRunId=${encodeURIComponent(execution.workflow.runId)}`}>{execution.workflow.runId}</a> / {execution.workflow.nodeId} / {execution.workflow.nodeExecutionId}</dd></>}
+    </dl>
+    <JobLogs key={`${execution.id}:${execution.attemptId}`} workspaceId={workspaceId} executionId={execution.id} attemptId={execution.attemptId} enabled={!result.isError} />
+    <section aria-label="Job artifacts"><h2>Artifacts</h2>{Boolean(artifacts.error) && <Alert title="Artifacts unavailable" tone="danger">{jobError(artifacts.error)}</Alert>}
+      {execution.acceptedSpec.outputs.map(output => {
+        const artifact = artifacts.data?.find(item => item.path === output.path)
+        return <Card key={output.path}><CardBody><strong className="job-wrap">{output.path}</strong><p>{artifact ? artifact.state : artifacts.isError ? 'Artifact history unavailable' : artifacts.isPending ? 'Loading publication…' : execution.publication === 'complete' ? output.required ? 'Required artifact missing' : 'Optional output absent' : 'Awaiting publication'}</p>
+          {artifact && <dl className="job-facts"><dt>File / revision</dt><dd>{artifact.fileId} / {artifact.revisionId}</dd><dt>Digest / size</dt><dd>{artifact.sha256} / {artifact.byteSize} bytes</dd></dl>}
+          {artifact && <ArtifactDownload workspaceId={workspaceId} artifact={artifact} />}
+        </CardBody></Card>
+      })}
+      {!execution.acceptedSpec.outputs.length && <p>No outputs requested.</p>}
+    </section>
+    <Card><CardBody><details><summary>Accepted specification and technical facts</summary>
+      <dl className="job-facts"><dt>Definition at acceptance</dt><dd>{execution.acceptedSpec.definitionId} · revision {execution.acceptedSpec.definitionRevision} · version {execution.acceptedSpec.definitionVersionId}</dd>
+        <dt>Accepted specification</dt><dd>{execution.acceptedSpec.specDigest}</dd><dt>Phase</dt><dd>{execution.process.phase}</dd><dt>Process stopped</dt><dd>{execution.process.processStopped ? 'Confirmed' : 'Unconfirmed'}</dd>
+        <dt>Transport last seen</dt><dd>{execution.lastSeenAt ?? 'Not observed'}</dd><dt>Accepted at</dt><dd>{execution.createdAt}</dd><dt>Last result update</dt><dd>{execution.updatedAt}</dd><dt>Cancel requested</dt><dd>{execution.cancelRequestedAt ?? 'No request'}</dd></dl>
+      <JobSpecFacts spec={execution.acceptedSpec} /></details></CardBody></Card>
+  </div>
+}

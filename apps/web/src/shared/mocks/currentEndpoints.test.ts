@@ -1,3 +1,4 @@
+import { nativeNode } from './nativeFixtureTypes'
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
@@ -29,7 +30,7 @@ async function savedInput(commandId: string) {
   const saved = CurrentWorkflowReadResultSchema.parse(await request(`${workflowPath}/definition`))
   const workspace = ManagedWorkspaceSchema.parse(await request(workspacePath))
   const graph = structuredClone(managed.workflow)
-  graph.nodes[0]!.initialPrompt = `Updated by ${commandId}`
+  nativeNode(graph.nodes[0]!).initialPrompt = `Updated by ${commandId}`
   return CurrentWorkflowSaveInputSchema.parse({ workspaceId, workflowId, commandId, executionSemanticsVersion: 3,
     expectedRevision: managed.revision, expectedWorkflowVersionId: saved.currentVersionId,
     expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
@@ -52,7 +53,7 @@ describe('current Board endpoints in the shared MSW stack', () => {
     const saved = CurrentWorkflowSaveResultSchema.parse(await request(`${workflowPath}/definition`, 'PUT', input))
     expect(saved.replayed).toBe(false)
     expect(saved.value.revision).toBe(input.expectedRevision + 1)
-    expect(saved.value.version.definition.nodes[0]!.initialPrompt).toBe(input.graph.nodes[0]!.initialPrompt)
+    expect(nativeNode(saved.value.version.definition.nodes[0]!).initialPrompt).toBe(nativeNode(input.graph.nodes[0]!).initialPrompt)
     const replay = CurrentWorkflowSaveResultSchema.parse(await request(`${workflowPath}/definition`, 'PUT', input))
     expect(replay).toEqual({ value: saved.value, replayed: true })
     const reopened = CurrentWorkflowReadResultSchema.parse(await request(`${workflowPath}/definition`))
@@ -81,7 +82,7 @@ describe('current Board endpoints in the shared MSW stack', () => {
     expect(discarded.intent!.state).toBe('discarded')
     const saved = CurrentWorkflowReadResultSchema.parse(await request(`${workflowPath}/definition`))
     expect(saved.revision).toBe(input.expectedRevision)
-    expect(saved.version.definition.nodes[0]!.initialPrompt).not.toBe(stage.graph.nodes[0]!.initialPrompt)
+    expect(nativeNode(saved.version.definition.nodes[0]!).initialPrompt).not.toBe(nativeNode(stage.graph.nodes[0]!).initialPrompt)
   })
 
   it('keeps rename/archive, list and immutable definition reads on one revision authority', async () => {

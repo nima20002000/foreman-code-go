@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { FileWithRevisionSchema, temporaryFileExpiresAt, type FileMediaType, type FileScope, type FileState, type FileWithRevision } from '@graphql/contracts/files'
+import { FileWithRevisionSchema, FileRevisionSchema, temporaryFileExpiresAt, type FileMediaType, type FileScope, type FileState } from '@graphql/contracts/files'
 
 export const TEST_DOWNLOAD_PATH = '/api/operator/conversations/conversation-a/files/{fileId}/revisions/{revisionId}/content'
 export const TEST_HANDLER_PATH = '*/api/operator/conversations/conversation-a/files/:fileId/revisions/:revisionId/content'
@@ -36,7 +36,7 @@ export function fixture(options: {
   mediaType?: FileMediaType; filename?: string; state?: FileState; scope?: FileScope;
   fileId?: string; revisionId?: string; currentRevisionId?: string; createdAt?: string;
   retentionDurationSeconds?: number; bytes?: Uint8Array;
-} = {}): FileWithRevision {
+} = {}) {
   const mediaType = options.mediaType ?? 'text/markdown'
   const filename = options.filename ?? MIME_CASES.find(([mime]) => mime === mediaType)![1]
   const fileId = options.fileId ?? 'file-a'
@@ -45,7 +45,7 @@ export function fixture(options: {
   const createdAt = options.createdAt ?? new Date(Date.now() - 60_000).toISOString()
   const retentionDurationSeconds = options.retentionDurationSeconds ?? 3 * 24 * 60 * 60
   const bytes = options.bytes ?? fixtureBytes(mediaType)
-  return FileWithRevisionSchema.parse({
+  const file=FileWithRevisionSchema.parse({
     file: {
       fileId, currentRevisionId: options.currentRevisionId ?? revisionId, scope,
       state: options.state ?? 'ready', createdAt,
@@ -55,4 +55,5 @@ export function fixture(options: {
     },
     revision: { fileId, revisionId, filename, mediaType, byteSize: bytes.byteLength, sha256: hash(bytes), origin: 'upload', createdAt },
   })
+  return {...file,revision:FileRevisionSchema.parse(file.revision)}
 }

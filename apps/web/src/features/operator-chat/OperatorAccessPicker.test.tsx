@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { OperatorAccessPicker } from './OperatorAccessPicker'
 
 describe('Operator access picker', () => {
@@ -70,4 +71,17 @@ describe('Operator access picker', () => {
       permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }],
     }) }))
   })
+})
+
+it('shows pinned Claude access without exposing another provider’s permission editor', async () => {
+  const onChange = vi.fn().mockResolvedValue(true)
+  render(<OperatorAccessPicker value={savedClaudeConfiguration} disabled={false} onChange={onChange} />)
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Operator access: Claude · Read only' }))
+  expect(screen.getByRole('dialog', { name: 'Operator access' })).toBeVisible()
+  expect(screen.getByText('Claude access')).toBeVisible()
+  expect(screen.getByText('Read: allow')).toBeVisible()
+  expect(screen.getByText('Bash: ask')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Add rule' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('menu', { name: 'Codex sandbox' })).not.toBeInTheDocument()
+  expect(onChange).not.toHaveBeenCalled()
 })

@@ -73,7 +73,9 @@ describe("immutable Run-admission board snapshots", () => {
     const parsed = RunBoardSnapshotSchema.parse(withApproval);
     if (parsed.kind !== "available") throw new Error("Expected available fixture");
     expect(parsed.edges).toEqual(withApproval.edges.map((value) => CurrentWorkflowRelationshipSchema.parse(value)));
-    expect(parsed.nodes[0]?.agentId).toBe(parsed.nodes[1]?.agentId);
+    const [first, second] = parsed.nodes;
+    if (!first || !second || first.kind === "job" || second.kind === "job") throw new Error("Expected Agent fixture");
+    expect(first.agentId).toBe(second.agentId);
     expect(parsed.nodes[0]?.id).not.toBe(parsed.nodes[1]?.id);
   });
   it("deep-clones and freezes the admitted board independently of later workflow/Agent edits", () => {

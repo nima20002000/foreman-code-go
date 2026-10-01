@@ -1,0 +1,49 @@
+import { useEffect, useRef, useState } from 'react'
+import { Button, Checkbox, SearchField, Alert } from '../../shared/ui/nocturne'
+import { useJobLogs } from './query'
+import { jobAccessLost, jobError, plainLog } from './model'
+
+export function JobLogs({ workspaceId, executionId, attemptId, enabled }: { workspaceId: string; executionId: string; attemptId: string; enabled: boolean }) {
+  const query = useJobLogs(workspaceId, executionId, attemptId, enabled)
+  const [follow, setFollow] = useState(true)
+  const [search, setSearch] = useState('')
+  const [copyNotice, setCopyNotice] = useState('')
+  const viewport = useRef<HTMLDivElement>(null)
+  const chunks = query.chunks.map(chunk => ({ ...chunk, text: plainLog(chunk.text) }))
+  const filtered = chunks.filter(chunk => chunk.text.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
+  useEffect(() => {
+    if (follow && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight
+  }, [follow, query.dataUpdatedAt])
+  const { isError, isFetching, hasNextPage, fetchNextPage, refetch } = query
+  useEffect(() => {
+    if (!enabled || isError) return
+    const timer = window.setInterval(() => {
+      if (isFetching) return
+      if (hasNextPage && follow) void fetchNextPage()
+      else void refetch()
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [enabled, follow, isError, isFetching, hasNextPage, fetchNextPage, refetch])
+  const pages = query.pages
+  return <section aria-label="Job logs" className="job-logs">
+    <h2>Logs</h2>
+    <div className="job-toolbar">
+      <SearchField label="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} hint="Searches only the loaded window, up to 250 chunks." />
+      <Checkbox label="Follow tail" checked={follow} onChange={event => setFollow(event.target.checked)} />
+      <Button disabled={!query.hasNextPage || query.isFetching || !enabled} onClick={() => { void query.fetchNextPage() }}>Load next log page</Button>
+      <Button disabled={query.isFetching || !enabled || jobAccessLost(query.error)} onClick={() => { void query.refetch() }}>Reconnect / refresh loaded logs</Button>
+      <Button disabled={!chunks.length} onClick={() => { void (navigator.clipboard?.writeText(filtered.map(chunk => `[${chunk.stream} #${chunk.sequence}] ${chunk.text}`).join('\n')) ?? Promise.reject(new Error('Copy unavailable'))).then(() => setCopyNotice('Loaded text copied.'), () => setCopyNotice('Copy unavailable. Select the log text to copy.')) }}>Copy loaded text</Button>
+    </div>
+    <p role="status">{copyNotice || `${chunks.length} loaded chunks. Older chunks leave this bounded window as new pages load.`}</p>
+    {Boolean(query.error) && <Alert title="Logs unavailable" tone="danger">{jobError(query.error)}</Alert>}
+    {pages.some(page => page.truncated) && <Alert title="Logs truncated" tone="warning">Logs were truncated under the accepted log policy. This is not the full output.</Alert>}
+    {pages.flatMap((page, index) => page.gap ? [<Alert title="Log gap" tone="warning" key={index}>Log gap: sequences {page.gap.from}–{page.gap.to} unavailable.</Alert>] : [])}
+    <div ref={viewport} className="job-log-window" tabIndex={0} aria-label="Loaded stdout and stderr" onScroll={() => {
+      const element = viewport.current
+      if (element && element.scrollHeight - element.scrollTop - element.clientHeight > 24) setFollow(false)
+    }}>
+      {filtered.map(chunk => <div key={`${chunk.attemptId}:${chunk.sequence}`} className="job-log-chunk"><span className="job-log-stream">{chunk.stream} #{chunk.sequence}</span><pre>{chunk.text}</pre></div>)}
+      {!query.isError && !filtered.length && <p>{query.isPending ? 'Loading logs…' : search ? 'No match in loaded logs.' : 'No persisted output loaded.'}</p>}
+    </div>
+  </section>
+}

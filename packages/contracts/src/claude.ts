@@ -41,3 +41,10 @@ export const ClaudeQuestionInputSchema = z.object({ questions: z.array(z.object(
 export type ClaudeQuestionInput = z.infer<typeof ClaudeQuestionInputSchema>;
 export const ClaudeQuestionAnswersSchema = z.record(z.string(), z.object({ selected: z.array(z.string()).max(20), freeText: z.string().max(10_000).optional() }).strict());
 export type ClaudeQuestionAnswers = z.infer<typeof ClaudeQuestionAnswersSchema>;
+
+/** Positive native input identity; never a substitute native turn or assistant output identity. */
+export const NativeMessageSubmissionSchema = z.object({
+  kind: z.literal('message'), nativeSessionId: z.string().min(1), nativeMessageId: z.string().min(1),
+  clientCorrelationId: z.string().min(1),
+}).strict();
+export type NativeMessageSubmission = z.infer<typeof NativeMessageSubmissionSchema>;

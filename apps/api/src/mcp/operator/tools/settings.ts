@@ -1,3 +1,4 @@
+import { registerOperatorControlTools } from './operatorControls.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { OperatorChatSetupSchema, CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
@@ -17,6 +18,7 @@ import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
 
 export function registerSettingsTools(server: McpServer, context: OperatorRequestContext): void {
+  registerOperatorControlTools(server, context)
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_create')) server.registerTool('operator_chat_create', {
     description: 'Create an owner-bound Operator conversation using the current saved Operator defaults. Requires operator_chat:write.',
     inputSchema: CreateOperatorConversationRequestSchema, outputSchema: CreateOperatorConversationResponseSchema,

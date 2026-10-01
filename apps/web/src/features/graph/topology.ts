@@ -6,7 +6,7 @@ import type { GraphMapperOptions, GraphNode, GraphProjection } from './types'
 
 /** No runtime, selection, menu, or animation input is accepted by the static projector. */
 export type GraphTopologyActions = Pick<GraphMapperOptions,
-  'onSelectAgent' | 'onOpenNodeSettings' | 'onRemoveNode' | 'onSaveNodeSettings' | 'onResizeNode' | 'onRemoveEdge'>
+  'onOpenJobNode' | 'onSelectAgent' | 'onOpenNodeSettings' | 'onRemoveNode' | 'onSaveNodeSettings' | 'onResizeNode' | 'onRemoveEdge'>
 
 function editableAgent(agent: Agent): Agent {
   const metadata = { ...agent }
@@ -21,7 +21,13 @@ function editableAgent(agent: Agent): Agent {
 }
 
 function retainNode(previous: GraphNode | undefined, next: GraphNode): GraphNode {
-  if (!previous) return next
+  if (!previous || previous.type!==next.type) return next
+  if(next.type==='job') {
+    if(previous.type!=='job')return next
+    const candidate={...next,position:sameFields(previous.position,next.position)?previous.position:next.position,style:previous.style&&next.style&&sameFields(previous.style,next.style)?previous.style:next.style,data:sameFields(previous.data,next.data)?previous.data:next.data}
+    return sameFields(previous,candidate)?previous:candidate
+  }
+  if(previous.type==='job')return next
   const policy = sameFields(previous.data.executionPolicy, next.data.executionPolicy)
     ? previous.data.executionPolicy : next.data.executionPolicy
   const data = { ...next.data, executionPolicy: policy,
@@ -50,7 +56,7 @@ export function createGraphTopologyProjector(project = workflowToGraph) {
   return (workflow: WorkflowDefinitionV3, incomingAgents: readonly Agent[], actions: GraphTopologyActions = {}): GraphProjection => {
     // Pick actions explicitly: structurally assignable wider option objects cannot leak runtime fields.
     const staticActions: GraphTopologyActions = {
-      onSelectAgent: actions.onSelectAgent, onOpenNodeSettings: actions.onOpenNodeSettings,
+      onOpenJobNode:actions.onOpenJobNode,onSelectAgent: actions.onSelectAgent, onOpenNodeSettings: actions.onOpenNodeSettings,
       onRemoveNode: actions.onRemoveNode, onSaveNodeSettings: actions.onSaveNodeSettings,
       onResizeNode: actions.onResizeNode, onRemoveEdge: actions.onRemoveEdge,
     }
@@ -72,7 +78,7 @@ export function createGraphTopologyProjector(project = workflowToGraph) {
     const next = project({ workflow, agents: nextAgents }, staticActions)
     const nodesById = new Map(graph.nodes.map((node) => [node.id, node]))
     const edgesById = new Map(graph.edges.map((edge) => [edge.id, edge]))
-    const nodes = retainArray(graph.nodes, next.nodes.map((node) => retainNode(nodesById.get(node.id), {
+    const nodes = retainArray(graph.nodes, next.nodes.map((node) => retainNode(nodesById.get(node.id), node.type==='job'?node:{
       ...node, data: { ...node.data, harnessLabel: nextLabels.get(node.data.agentId) },
     })))
     const edges = retainArray(graph.edges, next.edges.map((edge) => {

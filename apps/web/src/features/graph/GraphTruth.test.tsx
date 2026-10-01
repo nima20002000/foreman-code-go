@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type RunNodeLiveActivity } from '@graphql/contracts'
@@ -11,7 +12,7 @@ import { useGraphPresentationStore } from './useGraphPresentation'
 import type { GraphPresentationState, GraphPresentationStore } from './presentationStore'
 import { createGraphTopologyProjector } from './topology'
 import { makeScaleGraph, makeSyntheticRun } from './fixtures/scaleData'
-import type { GraphNode } from './types'
+import type { AgentGraphNode } from './types'
 import type { GraphRuntimeScope } from './runtimeIndex'
 import { queryKeys } from '../../shared/api/query'
 import { shareRunResponseOrSelection } from '../../shared/api/runLiveCache'
@@ -28,9 +29,9 @@ const scope: GraphRuntimeScope = { workspaceId: 'synthetic-workspace', workflowI
 const key = queryKeys.run(scope.workspaceId, scope.runId!)
 const source = makeScaleGraph(1)
 const topology = createGraphTopologyProjector()(source.workflow, source.agents)
-const props = { id: 'synthetic-node-0', type: 'agent', data: topology.nodes[0].data,
+const props = { id: 'synthetic-node-0', type: 'agent', data: nativeNode(topology.nodes[0]).data,
   selected: false, isConnectable: false, dragging: false, draggable: false, selectable: true,
-  deletable: false, zIndex: 0, positionAbsoluteX: 0, positionAbsoluteY: 0 } as NodeProps<GraphNode>
+  deletable: false, zIndex: 0, positionAbsoluteX: 0, positionAbsoluteY: 0 } as NodeProps<AgentGraphNode>
 
 function Capture({ capture }: { capture: (store: GraphPresentationStore) => void }) {
   capture(useGraphPresentationStore())
@@ -93,7 +94,7 @@ describe('mounted frontend truth boundary', () => {
 
   it('keeps unsupported detached legacy execution facts unavailable even without a selected Run', () => {
     const app = mount(undefined, { ...props.data,
-      runState: 'interrupted' as unknown as GraphNode['data']['runState'] }, { ...scope, runId: undefined })
+      runState: 'interrupted' as unknown as AgentGraphNode['data']['runState'] }, { ...scope, runId: undefined })
     try { expectUnavailable() } finally { app.dispose() }
   })
 

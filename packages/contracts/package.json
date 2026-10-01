@@ -163,6 +163,30 @@
     "./command-identity-node": {
       "types": "./dist/commandIdentityNode.d.ts",
       "import": "./dist/commandIdentityNode.js"
+    },
+    "./claude-qualification": {
+      "types": "./dist/claudeQualification.d.ts",
+      "import": "./dist/claudeQualification.js"
+    },
+    "./resource-telemetry": {
+      "types": "./dist/resourceTelemetry.d.ts",
+      "import": "./dist/resourceTelemetry.js"
+    },
+    "./resource-telemetry-fixtures": {
+      "types": "./dist/resourceTelemetryFixtures.d.ts",
+      "import": "./dist/resourceTelemetryFixtures.js"
+    },
+    "./job-run-cleanup": {
+      "types": "./dist/jobRunCleanup.d.ts",
+      "import": "./dist/jobRunCleanup.js"
+    },
+    "./job-inputs": {
+      "types": "./dist/jobInputs.d.ts",
+      "import": "./dist/jobInputs.js"
+    },
+    "./job-inputs-node": {
+      "types": "./dist/jobInputsNode.d.ts",
+      "import": "./dist/jobInputsNode.js"
     }
   },
   "scripts": {

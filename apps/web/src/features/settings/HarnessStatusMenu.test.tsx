@@ -13,7 +13,7 @@ describe('HarnessStatusMenu', () => {
       defaultsRevision: 1, checkedAt: new Date().toISOString(), reason: null, limitation: 'Saved defaults only.',
     })))
     renderWithRouter(<HarnessStatusMenu />)
-    for (const name of ['Codex', 'OpenCode']) {
+    for (const name of ['Codex', 'OpenCode', 'Claude']) {
       const link = await screen.findByRole('link', { name: `${name}: ${label}` })
       expect(link).toHaveAttribute('href', expect.stringContaining(`/settings/harnesses?harness=${name.toLowerCase()}`))
       expect(link.querySelector('.harness-status-light')).toHaveClass(`harness-status-light--${status}`)

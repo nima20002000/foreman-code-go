@@ -13,8 +13,8 @@ const typeLabels: Record<FileMediaType, string> = {
   'application/zip': 'ZIP archive',
 }
 
-export function fileTypeLabel(mediaType: FileMediaType): string {
-  return typeLabels[mediaType]
+export function fileTypeLabel(mediaType: string): string {
+  return typeLabels[mediaType as FileMediaType] ?? 'Binary file'
 }
 
 export function isRasterImage(mediaType: string): boolean {

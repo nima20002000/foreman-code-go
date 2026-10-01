@@ -7,6 +7,7 @@ import {
   IdSchema,
 } from '@graphql/contracts'
 import { z } from 'zod'
+import { InteractionActivityProjectionSchema } from '@graphql/contracts/interaction-activity'
 import { AppInteractionListInputSchema } from '../../modules/interactions/app.js'
 
 export const AppContextSchema = z.object({
@@ -33,7 +34,7 @@ export const AppContextSchema = z.object({
 }).strict()
 
 export const InteractionGetInputSchema = z.object({ interactionId: IdSchema }).strict()
-export const InteractionGetOutputSchema = z.object({ interaction: DurableInteractionSchema }).strict()
+export const InteractionGetOutputSchema = z.object({ interaction: DurableInteractionSchema, activity: InteractionActivityProjectionSchema.optional() }).strict()
 
 export {
   AppInteractionListInputSchema,

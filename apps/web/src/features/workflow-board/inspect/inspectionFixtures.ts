@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { AgentSchema, RunActivitySchema } from '@graphql/contracts'
 import {
   CurrentRunDetailsSchema, RunExecutionBindingSchema, RunExecutionDetailSchema,
@@ -13,7 +14,7 @@ import { digestCurrentValue } from '../runDetailsClient'
  * empty: recorded executions must come from the authenticated history endpoints. */
 export async function inspectionBoardFixture(suffix = 'inspect') {
   const source = makeCurrentWorkflowFixture(suffix, 'repeat')
-  const first = source.version.definition.nodes[0]!, second = source.version.definition.nodes[1]!
+  const first = nativeNode(source.version.definition.nodes[0]!), second = nativeNode(source.version.definition.nodes[1]!)
   const { repeat: _repeat, ...ordinary } = source.version.definition
   void _repeat
   const before = WorkflowVersionV3Schema.parse({ ...source.version, id: `version-${suffix}-before`, version: 1,
@@ -57,9 +58,9 @@ export async function inspectionBoardFixture(suffix = 'inspect') {
   }
   const runs = { before: install(before, 'before'), repeated: install(repeated, 'repeat'), after: install(after, 'after') }
   async function execution(owner: typeof runs.before, index: number, repetition?: number, attempt = 1): Promise<RunInspectionFixture> {
-    const node = owner.version.definition.nodes[index]!
+    const node = nativeNode(owner.version.definition.nodes[index]!)
     const identity = { workflowNodeId: node.id, executionId: `exec-${owner.run.id}-${index}-${repetition ?? 'ordinary'}-${attempt}`,
-      agentId: node.agentId, agentConfigurationVersionId: owner.version.agentConfigurationVersionIds[node.agentId]!, attempt }
+      agentId: nativeNode(node).agentId, agentConfigurationVersionId: owner.version.agentConfigurationVersionIds[nativeNode(node).agentId]!, attempt }
     const occurrence = repetition === undefined ? undefined : { scope: owner.scope, blockId: 'repair',
       occurrenceId: `occ-${owner.run.id}-${repetition}`, occurrenceIndex: repetition }
     const value: RunExecutionDetail['acceptedInput']['value'] = {
@@ -73,7 +74,7 @@ export async function inspectionBoardFixture(suffix = 'inspect') {
     }
     // The non-entry step consumes its exact predecessor in the same occurrence.
     if (index > 0) {
-      const senderNode = owner.version.definition.nodes[0]!
+      const senderNode = nativeNode(owner.version.definition.nodes[0]!)
       const result = { outcome: 'succeeded' as const, output: { text: `Exact predecessor of ${identity.executionId}` } }
       value.predecessors.push({
         relationshipId: owner.version.definition.edges.find((edge) => edge.target === node.id)!.id,

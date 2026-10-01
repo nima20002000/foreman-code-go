@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { routeTree } from '../app/router'
 import { server } from '../mocks/server'
 import { setMockScenario } from '../shared/mocks/scenarios'
+import { mainRoot } from '../features/settings/workspaceBoundLocation.fixtures'
 
 function renderRoute(path: string) {
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) })
@@ -257,14 +258,21 @@ describe('workspace section routes', () => {
     expect(screen.getByRole('link', { name: /Browsers/ })).toBeVisible()
   })
 
-  it('opens the workspace folder picker without navigating away from Settings', async () => {
+  it('opens the approved execution folder picker without navigating away from Settings', async () => {
+    server.use(
+      http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({ evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } })),
+      http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),
+    )
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
 
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
-    await user.click(await screen.findByRole('button', { name: /Execution location|Choose workspace folder/ }))
+    const executionLocation = await screen.findByLabelText('Execution location', { selector: 'button' })
+    expect(executionLocation).toBe(screen.getByRole('button', { name: 'Execution location' }))
+    await user.click(executionLocation)
 
-    expect(await screen.findByRole('dialog', { name: 'Choose folder' })).toBeVisible()
+    expect(await screen.findByRole('dialog', { name: 'Execution folder' })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Computer and approved base folder' })).toBeVisible()
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
   })
 })

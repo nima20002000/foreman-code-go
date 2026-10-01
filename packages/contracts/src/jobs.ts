@@ -1,3 +1,4 @@
+import type { JobWorkflowExecutionReference } from './jobWorkflow.js'
 import { z } from 'zod'
 import { AcceptedNodePlacementSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { JobArtifactMediaTypeSchema, JobArtifactRetentionSchema } from './jobArtifacts.js'
@@ -108,6 +109,8 @@ export type JobValidation = z.infer<typeof JobValidationSchema>
 export interface JobsService {
   listDefinitions(workspaceId: string): Promise<JobDefinition[]>
   getDefinition(workspaceId: string, id: string): Promise<JobDefinition>
+  getWorkflowExecutionReference(workspaceId:string,runId:string,nodeExecutionId:string):Promise<JobWorkflowExecutionReference>
+  getDefinitionVersion(workspaceId:string,id:string,versionId:string):Promise<JobDefinition>
   saveDefinition(workspaceId: string, input: JobDefinitionSave): Promise<JobDefinition>
   validate(workspaceId: string, spec: JobDefinitionSpec): Promise<JobValidation>
   start(workspaceId: string, input: JobStart): Promise<JobExecution>

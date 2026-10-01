@@ -1,0 +1,25 @@
+import type { ActivityNativeIdentity, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import { operatorActivity, type OperatorActivityChange } from './operatorActivity.js'
+const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+
+/** Late item settlement never relaxes the owning adapter's root terminal guard. No root/message terminal is returned. */
+export function knownNativeActivity(event: NativeHarnessEvent, harness: NativeSessionReference['harness']):
+  { change: Omit<OperatorActivityChange, 'requestId'>; native: ActivityNativeIdentity } | undefined {
+  let normalized = event
+  if (event.type === 'native.unlinked_notification') {
+    if (event.payload.method !== 'item/completed') return undefined
+    normalized = { ...event, type: 'item.completed', payload: record(event.payload.params) }
+  }
+  const change = operatorActivity(normalized, harness, 'known-native-source')
+  if (!change || change.kind === 'thinking' || !['completed', 'failed', 'canceled'].includes(change.status)) return undefined
+  const part = record(normalized.payload.part)
+  const sessionId = normalized.payload.threadId ?? normalized.payload.nativeSessionId ?? part.sessionID
+  const turnId = normalized.payload.turnId ?? normalized.payload.nativeTurnId
+  if (typeof sessionId !== 'string' || !sessionId || typeof turnId !== 'string' || !turnId) return undefined
+  const generation = event.payload.nativeGeneration ?? event.payload.runtimeGeneration
+  const { requestId: _, ...facts } = change
+  void _
+  return { change: facts, native: { harness, sessionId, turnId, itemId: change.id,
+    ...(typeof generation === 'string' ? { generation } : typeof generation === 'number' && Number.isSafeInteger(generation)
+      ? { generation: String(generation) } : {}) } }
+}

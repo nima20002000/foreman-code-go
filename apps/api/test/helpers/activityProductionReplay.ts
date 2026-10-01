@@ -1,0 +1,207 @@
+import { createHash, randomUUID } from 'node:crypto'
+import type { CodexSessionDependencies, CodexTransport } from '../../src/modules/harnesses/codexAppServer.js'
+import { QUALIFIED_CODEX_VERSION } from '../../src/modules/harnesses/codexProtocol.js'
+import { CodexRpcError, type JsonObject, type RpcRequest } from '../../src/modules/harnesses/codexStdioTransport.js'
+import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
+import type { ProductionHarnessInfrastructure } from '../../src/modules/harnesses/productionInfrastructure.js'
+import { fixtureProtocol } from '../fixtures/codex-test-helpers.js'
+
+interface Turn extends JsonObject { id: string; status: string; items: JsonObject[] }
+interface Thread extends JsonObject { id: string; turns: Turn[]; settings: JsonObject; ephemeral: boolean }
+interface Channel { connected: boolean; request(request: RpcRequest): Promise<void>; notify(method: string, payload: JsonObject): void; disconnect(error: Error): void }
+const outcome = (stdout: string, exitCode = 0) => ({ exitCode, exitSignal: null, stdout, stderr: '' })
+
+/** Hand-authored Codex 0.154.0 protocol scenarios. Injected below the actual production adapter;
+ * no provider binary, login, model call, ambient credential or private service object is used. */
+export class ActivityProductionReplay {
+  readonly threads = new Map<string, Thread>()
+  readonly channels = new Map<string, Channel>()
+  readonly starts: Array<{ sessionId: string; nativeTurnId: string; correlationId: string; promptDigest: string }> = []
+  readonly toolReplies = new Map<string | number, JsonObject>()
+  readonly responses: Array<{ sessionId: string; rpcId: string | number }> = []
+  readonly calls: Array<{ method: string; sessionId?: string }> = []
+  readonly closes: string[] = []
+  readonly requests = new Map<string | number, string>()
+  private counter = 0
+  private readonly inFlight = new Set<Promise<void>>()
+  private readonly auxiliary = new Set<string>()
+  nextResponse: 'acknowledged' | 'uncertain' = 'acknowledged'
+  nextStart: 'active' | 'complete' | 'approval' | 'reject' | 'uncertain' = 'active'
+
+  private transport: NonNullable<Extract<CodexSessionDependencies, { mode: 'replay' }>['transport']> = (
+    _binary, _cwd, _environment, _protocol, onRequest, onNotification, onDisconnect,
+  ): CodexTransport => {
+    let sessionId: string | undefined
+    const channel: Channel = { connected: true, request: onRequest, notify: onNotification, disconnect: onDisconnect }
+    const bind = (thread: Thread) => { sessionId = thread.id; this.channels.set(thread.id, channel) }
+    const threadResponse = (thread: Thread, params: JsonObject) => ({ thread: { id: thread.id, turns: thread.turns, ephemeral: thread.ephemeral }, ...this.settings(params) })
+    return {
+      isConnected: () => channel.connected,
+      start: async () => {},
+      request: async (method, params = {}) => {
+        this.calls.push({ method, ...(sessionId ? { sessionId } : {}) })
+        if (method === 'thread/start' || method === 'thread/fork') {
+          const original = method === 'thread/fork' ? this.threads.get(String(params.threadId)) : undefined
+          if (method === 'thread/fork' && !original) throw new Error('Replay fork must identify the exact source session.')
+          const thread: Thread = { id: `recorded-thread-${++this.counter}`, turns: original ? structuredClone(original.turns) : [],
+            settings: this.settings(params), ephemeral: params.ephemeral === true }
+          this.threads.set(thread.id, thread); bind(thread)
+          return threadResponse(thread, params)
+        }
+        if (method === 'thread/resume') {
+          const thread = this.threads.get(String(params.threadId))
+          if (!thread) throw new Error('Replay cannot replace an unknown native session.')
+          bind(thread); return threadResponse(thread, params)
+        }
+        const thread = sessionId ? this.threads.get(sessionId) : this.threads.get(String(params.threadId))
+        if (method === 'thread/read') {
+          if (!thread || thread.id !== params.threadId) throw new Error('Replay history must retain exact native session.')
+          return { thread: { ...structuredClone(thread), turns: params.includeTurns ? structuredClone(thread.turns) : [] } }
+        }
+        if (method === 'thread/turns/list') {
+          if (!thread || thread.id !== params.threadId) throw new Error('Replay page scope changed.')
+          return { data: [...structuredClone(thread.turns)].reverse(), nextCursor: null, prevCursor: null }
+        }
+        if (method === 'turn/start') {
+          if (!thread || params.threadId !== thread.id || !Array.isArray(params.input)) throw new Error('Replay turn admission is unscoped.')
+          const mode = this.nextStart; this.nextStart = 'active'
+          if (mode === 'reject') throw new CodexRpcError(method, 'recorded-rejection', false, 'CODEX_REQUEST_FAILED')
+          const turn: Turn = { id: `recorded-turn-${thread.turns.length + 1}`, status: 'inProgress', itemsView: 'full',
+            error: null, startedAt: 1, completedAt: null, durationMs: null,
+            items: [{ id: params.clientUserMessageId, type: 'userMessage', content: params.input }] }
+          thread.turns.push(turn)
+          this.starts.push({ sessionId: thread.id, nativeTurnId: turn.id, correlationId: String(params.clientUserMessageId),
+            promptDigest: createHash('sha256').update(JSON.stringify(params.input)).digest('hex') })
+          if (mode === 'uncertain') {
+            throw new CodexRpcError(method, 'recorded-uncertainty', true, 'CODEX_REQUEST_UNCERTAIN')
+          }
+          if (mode === 'complete' || mode === 'approval') {
+            const task = new Promise<void>((resolve, reject) => setImmediate(() => {
+              if (mode === 'complete') { this.complete(thread.id, turn.id, 'recorded workflow final'); resolve() }
+              else this.ask(thread.id, turn.id).then(resolve, reject)
+            }))
+            this.inFlight.add(task); void task.finally(() => this.inFlight.delete(task)).catch(() => {})
+          }
+          return { turn: structuredClone(turn) }
+        }
+        if (method === 'turn/interrupt') {
+          if (!thread) throw new Error('Replay interrupt has no native owner.')
+          const turn = thread.turns.find((entry) => entry.id === params.turnId)
+          if (!turn || turn.status !== 'inProgress') return {}
+          turn.status = 'interrupted'; turn.completedAt = 2
+          channel.notify('turn/completed', { threadId: thread.id, turn: structuredClone(turn) }); return {}
+        }
+        if (method === 'config/read') return { config: { approval_policy: 'on-request' }, origins: {}, layers: [] }
+        if (method === 'mcpServerStatus/list') return { data: [], nextCursor: null }
+        if (method === 'model/list') return { data: [{ id: 'test-model' }], nextCursor: null }
+        if (method === 'config/mcpServer/reload') return {}
+        throw new Error(`Unrecorded replay operation: ${method}`)
+      },
+      respond: async (rpcId, _method, result) => {
+        if (!sessionId || !channel.connected || this.requests.get(rpcId) !== sessionId) throw new Error('Replay response lost its exact callback.')
+        this.responses.push({ sessionId, rpcId }); this.requests.delete(rpcId)
+        if (result && typeof result === 'object' && !Array.isArray(result)) this.toolReplies.set(rpcId, result as JsonObject)
+        if (this.nextResponse === 'uncertain') {
+          this.nextResponse = 'acknowledged'
+          throw new CodexRpcError('native/respond', rpcId, true, 'CODEX_RESPONSE_UNCERTAIN')
+        }
+      },
+      reject: async () => { throw new Error('Unexpected automatic native rejection in manual replay.') },
+      close: async () => { if (channel.connected && sessionId) this.closes.push(sessionId); channel.connected = false },
+    }
+  }
+
+  private settings(params: JsonObject): JsonObject {
+    const config = params.config && typeof params.config === 'object' ? params.config as JsonObject : {}
+    return { model: params.model ?? 'test-model', modelProvider: 'openai', cwd: params.cwd,
+      reasoningEffort: config.model_reasoning_effort ?? 'low', serviceTier: params.serviceTier === 'fast' ? 'fast' : null,
+      approvalPolicy: params.approvalPolicy, approvalsReviewer: params.approvalsReviewer,
+      sandbox: params.sandbox === 'workspace-write' ? { type: 'workspaceWrite', writableRoots: (config.sandbox_workspace_write as JsonObject)?.writable_roots ?? [],
+        networkAccess: (config.sandbox_workspace_write as JsonObject)?.network_access ?? false, excludeTmpdirEnvVar: (config.sandbox_workspace_write as JsonObject)?.exclude_tmpdir_env_var ?? false, excludeSlashTmp: (config.sandbox_workspace_write as JsonObject)?.exclude_slash_tmp ?? false }
+        : { type: 'readOnly', networkAccess: false } }
+  }
+  append(sessionId: string, nativeTurnId: string, text: string, itemId = 'recorded-answer') {
+    this.channels.get(sessionId)!.notify('item/agentMessage/delta', { threadId: sessionId, turnId: nativeTurnId, itemId, delta: text })
+  }
+  complete(sessionId: string, nativeTurnId: string, text: string, itemId = 'recorded-answer') {
+    const thread = this.threads.get(sessionId)!, turn = thread.turns.find((entry) => entry.id === nativeTurnId)!
+    const item = { type: 'agentMessage', id: itemId, text, phase: 'final_answer' }
+    turn.items = [...turn.items.filter((entry) => entry.id !== itemId), item]
+    turn.status = 'completed'; turn.completedAt = 2
+    const channel = this.channels.get(sessionId)!
+    channel.notify('item/completed', { threadId: sessionId, turnId: nativeTurnId, item })
+    channel.notify('turn/completed', { threadId: sessionId, turn: structuredClone(turn) })
+  }
+  finalText(sessionId: string, nativeTurnId: string, text: string, itemId = 'recorded-answer') {
+    const thread = this.threads.get(sessionId)!, turn = thread.turns.find((entry) => entry.id === nativeTurnId)!
+    const item = { type: 'agentMessage', id: itemId, text, phase: 'final_answer' }
+    turn.items = [...turn.items.filter((entry) => entry.id !== itemId), item]
+    this.channels.get(sessionId)!.notify('item/completed', { threadId: sessionId, turnId: nativeTurnId, item })
+  }
+  async fileTool(sessionId: string, nativeTurnId: string, tool: string, arguments_: Record<string, unknown>, callId = randomUUID()) {
+    const rpcId = `recorded-file-rpc-${++this.counter}`
+    this.requests.set(rpcId, sessionId)
+    await this.channels.get(sessionId)!.request({ id: rpcId, method: 'item/tool/call',
+      params: { threadId: sessionId, turnId: nativeTurnId, callId, tool, arguments: arguments_ } })
+    const response = this.toolReplies.get(rpcId)
+    if (!response) throw new Error('Native file tool returned no qualified response.')
+    return { response, callId }
+  }
+  commandRunning(sessionId: string, nativeTurnId: string) {
+    const thread = this.threads.get(sessionId)!, turn = thread.turns.find((entry) => entry.id === nativeTurnId)!
+    const item = { type: 'commandExecution', id: 'recorded-command', command: 'recorded readonly command',
+      cwd: thread.settings.cwd, status: 'inProgress', aggregatedOutput: '' }
+    turn.items = [...turn.items.filter((entry) => entry.id !== item.id), item]
+    this.channels.get(sessionId)!.notify('item/started', { threadId: sessionId, turnId: nativeTurnId, item })
+  }
+  commandCompleted(sessionId: string, nativeTurnId: string) {
+    const thread = this.threads.get(sessionId)!, turn = thread.turns.find((entry) => entry.id === nativeTurnId)!
+    const item = { type: 'commandExecution', id: 'recorded-command', command: 'recorded readonly command',
+      cwd: thread.settings.cwd, status: 'completed', exitCode: 0, aggregatedOutput: '' }
+    turn.items = [...turn.items.filter((entry) => entry.id !== item.id), item]
+    this.channels.get(sessionId)!.notify('item/completed', { threadId: sessionId, turnId: nativeTurnId, item })
+  }
+  async ask(sessionId: string, nativeTurnId: string, rpcId: string | number = `recorded-ask-${++this.counter}`) {
+    this.requests.set(rpcId, sessionId)
+    await this.channels.get(sessionId)!.request({ id: rpcId, method: 'item/commandExecution/requestApproval',
+      params: { threadId: sessionId, turnId: nativeTurnId, itemId: 'recorded-command', command: 'recorded readonly command',
+        cwd: this.threads.get(sessionId)!.settings.cwd } })
+  }
+  disconnect(sessionId: string) {
+    const channel = this.channels.get(sessionId)!
+    channel.connected = false; channel.disconnect(new Error('Recorded connection loss after commit.'))
+  }
+  async drain() { await Promise.allSettled([...this.inFlight]) }
+
+  infrastructure(): ProductionHarnessInfrastructure {
+    const command: Extract<CodexSessionDependencies, { mode: 'replay' }>['runCommand'] = async (_binary, args) => {
+      if (args[0] === 'mcp' && args[1] === 'get') return outcome(JSON.stringify({ name: 'graphql', enabled: true, required: true,
+        transport: { type: 'stdio', command: process.execPath, args: [appLauncherPath()], env_vars: ['GRAPHQL_MCP_TOKEN'] } }))
+      if (args[0] === 'mcp' && args[1] === 'list') return outcome('[{"name":"graphql"}]')
+      if (args[0] === 'debug' && args[1] === 'models') return outcome(JSON.stringify({ models: [{ slug: 'test-model', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] }))
+      throw new Error(`Unexpected replay CLI operation: ${args.join(' ')}`)
+    }
+    const qualify: Extract<CodexSessionDependencies, { mode: 'replay' }>['qualify'] = async (binary) => ({ binary,
+      identity: 'recorded-launcher', protocol: fixtureProtocol, providerVersion: QUALIFIED_CODEX_VERSION,
+      schemaManifestSha256: 'synthetic-recorded-schema', stableSchemaGitBlob: 'synthetic-stable', referenceSchemaManifestSha256: 'synthetic-reference' })
+    const environment: Extract<CodexSessionDependencies, { mode: 'replay' }>['environment'] = (input, stripped = []) => {
+      const values: NodeJS.ProcessEnv = {}
+      for (const [key, value] of Object.entries(input?.variables ?? {})) if (!stripped.includes(key)) values[key] = value
+      return values
+    }
+    const operations = { qualify, assertUnchanged: async () => {}, environment, runCommand: command, qualifyModel: async () => {} }
+    const codex: Extract<CodexSessionDependencies, { mode: 'replay' }> = { mode: 'replay', ...operations,
+      transport: this.transport, id: randomUUID, now: () => new Date('2026-10-01T00:00:00Z'), schedule: setTimeout,
+      cancelTimer: clearTimeout, withDiagnostics: async (_pin, run) => run(operations) }
+    const unavailable = async (): Promise<never> => { throw new Error('Unrecorded auxiliary replay operation.') }
+    return { mode: 'replay', codex, openCodeServer: () => { throw new Error('Unexpected OpenCode replay allocation.') },
+      openCodeClient: () => { throw new Error('Unexpected OpenCode replay client.') },
+      auxiliary: { command, recovery: { scope: (owner) => ({ root: '/recorded-no-process-registry', owner }),
+        reserveLaunch: (owner) => { const launchId = randomUUID(); this.auxiliary.add(launchId); return { root: '/recorded-no-process-registry', owner, launchId } },
+        abandonReservedLaunch: async (scope) => { if (!scope.launchId) return false; return this.auxiliary.delete(scope.launchId) },
+        closeOwner: async () => true }, plugins: { recoveryIdentity: '', list: unavailable, detail: unavailable, change: unavailable },
+        mcp: { codex: { read: unavailable, apply: unavailable }, opencode: { read: unavailable, apply: unavailable } },
+        compatibility: { probe: { inspect: unavailable, probe: unavailable, assertUnchanged: unavailable },
+          cache: { load: async () => null, save: async () => {} } } } }
+  }
+}

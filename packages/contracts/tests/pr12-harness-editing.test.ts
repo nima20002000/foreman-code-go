@@ -10,6 +10,7 @@ describe('PR12 provider editing contracts', () => {
     const legacy = structuredClone(DEFAULT_HARNESS_DEFAULTS[harness]);
     delete legacy.advanced;
     const normalized = withAdvancedDefaults(legacy);
+    if (normalized.harness === "claude") throw new Error("Expected original provider fixture");
     expect(normalized.advanced).toBeDefined();
     expect(HarnessConfigurationSchema.safeParse(normalized).success).toBe(true);
     expect(legacy.advanced).toBeUndefined();

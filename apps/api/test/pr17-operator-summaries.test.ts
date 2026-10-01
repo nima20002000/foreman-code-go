@@ -27,6 +27,15 @@ describe('PR17 owner-scoped lightweight navigation', () => {
     expect(query.mock.calls[0]![1]).toEqual([owner.id, null, false])
     expect(result).toEqual([{ conversationId: 'owned-chat', title: 'Owned chat', turnState: 'active', revision: 7, activeRequestId: 'request', needsAttention: true }])
   })
+  it('reports persisted unresolved background work independently of the message/activity page', async () => {
+    const { query, chat } = fixture()
+    query.mockResolvedValue({ rows: [{ id: 'owned-chat', title: 'Owned chat', turn_state: 'idle', revision: '8', active_request_id: null,
+      needs_attention: false, background_activity: 'unknown' }] })
+    expect(await chat.summaries(owner)).toMatchObject([{ backgroundActivity: 'unknown', activeRequestId: null, turnState: 'idle' }])
+    const sql = query.mock.calls[0]![0]
+    expect(sql).toContain('a.conversation_id=c.id'); expect(sql).toContain("a.record->>'status'='unknown'")
+    expect(sql).toContain('c.owner_principal_id=$1'); expect(sql).not.toContain('jsonb_agg')
+  })
   it('bounds the database projection and reports whether more chats exist', async () => {
     const { chat, query } = fixture()
     query.mockResolvedValue({ rows: ['first', 'second'].map((id) => ({ id, title: id, turn_state: 'idle', revision: '1', active_request_id: null, needs_attention: false })) })

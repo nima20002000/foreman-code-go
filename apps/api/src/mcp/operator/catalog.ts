@@ -10,6 +10,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'operator_mcp_setup_get', action: 'harnesses:read' },
   { name: 'operator_chat_create', action: 'operator_chat:write' },
   { name: 'operator_chat_get', action: 'operator_chat:read' },
+  { name: 'operator_chat_cancel', action: 'operator_chat:cancel' },
+  { name: 'operator_chat_respond', action: 'operator_chat:respond' },
   { name: 'operator_chat_send', action: 'operator_chat:write' },
   { name: 'operator_handoff_history_get', action: 'operator_handoff:read' },
   { name: 'agent_chat_read', action: 'agent_chat:read' },

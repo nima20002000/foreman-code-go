@@ -1,3 +1,5 @@
+import type { ActivitySnapshotV1 } from '@graphql/contracts/activity'
+import { reconcileActivitySnapshot } from '../conversations/agentChat/activityMerge'
 import { RepeatGraphScopeV3Schema, RunActivitiesPageSchema, type RunActivitiesPage, type RunActivityPublic } from '@graphql/contracts/wave25'
 import { apiClient, ApiError, type RequestOptions } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -24,6 +26,10 @@ export async function readRunActivities(scope: RunActivityScope, cursor: string 
     || page.scope.runId !== scope.runId || page.scope.workflowVersionId !== scope.workflowVersionId) {
     throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Activities belong to a different Run or saved version.' })
   }
+  const projection = page.activitySnapshot
+  if (projection && (projection.scope.kind !== 'workflow_run' || projection.scope.runId !== scope.runId || projection.scope.workflowVersionId !== scope.workflowVersionId
+    || projection.scope.workspaceId !== scope.workspaceId || projection.scope.workflowId !== scope.workflowId)) throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Activity projection belongs to another Run.' })
+  options?.signal?.throwIfAborted()
   assertSession(generation)
   return page
 }
@@ -40,7 +46,7 @@ export function mergeRunActivities(previous: readonly RunActivityPublic[], next:
   return [...bySequence.values()].sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : 1).slice(-1000)
 }
 
-export type RunActivityFeed = { items: RunActivityPublic[]; olderCursor: string | null;
+export type RunActivityFeed = { activitySnapshot?: ActivitySnapshotV1; items: RunActivityPublic[]; olderCursor: string | null;
   nextCursor: string; retainedFrom: string }
 
 /** A query refetch catches every new page through its frozen high-water mark.
@@ -49,14 +55,15 @@ export async function readRunActivityFeed(scope: RunActivityScope, previous?: Ru
   options?: RequestOptions): Promise<RunActivityFeed> {
   if (!previous) {
     const page = await readRunActivities(scope, null, options)
-    return { items: page.items, olderCursor: page.olderCursor,
+    return { ...(page.activitySnapshot ? { activitySnapshot: reconcileActivitySnapshot(undefined, page.activitySnapshot, page.activitySnapshot.scope)! } : {}), items: page.items, olderCursor: page.olderCursor,
       nextCursor: page.nextCursor, retainedFrom: page.retainedFrom }
   }
   let cursor = previous.nextCursor
   let result = previous
   for (let count = 0; count < 20; count++) {
     const page = await readRunActivities(scope, cursor, options)
-    result = { items: mergeRunActivities(result.items, page.items)
+    const activitySnapshot = page.activitySnapshot ? reconcileActivitySnapshot(result.activitySnapshot, page.activitySnapshot, result.activitySnapshot?.scope ?? page.activitySnapshot.scope) : result.activitySnapshot
+    result = { ...(activitySnapshot ? { activitySnapshot } : {}), items: mergeRunActivities(result.items, page.items)
       .filter((item) => BigInt(item.sequence) >= BigInt(page.retainedFrom)),
     olderCursor: result.olderCursor, nextCursor: page.nextCursor, retainedFrom: page.retainedFrom }
     cursor = page.nextCursor

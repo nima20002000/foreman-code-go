@@ -1,3 +1,4 @@
+import { readActivityAcknowledgment } from './activityAcknowledgment.js'
 import {
   DurableInteractionSchema,
   InteractionRecoveryQuerySchema,
@@ -48,6 +49,8 @@ const VISIBLE_SCOPE = `($8::jsonb is null or exists (
 
 /** Transactional durable interaction primitives; routing/dispatch intentionally lives elsewhere. */
 export class PostgresInteractionRepository {
+  activityAcknowledgment(interaction: DurableInteraction) { return readActivityAcknowledgment(this.pool, interaction) }
+
   readonly delivery: PostgresInteractionDeliveryRepository
   readonly coordination: PostgresInteractionCoordinationRepository
 

@@ -47,8 +47,9 @@ function SnapshotAgents({ selection, snapshot, workflowNodeId }: { selection: Se
   const panelKey = JSON.stringify([selection.identity, selection.generation.id, instance])
   const choice = usePanelChoice((state) => state.choices[panelKey]) ?? emptyChoice
   useEffect(() => () => usePanelChoice.getState().close(panelKey), [panelKey])
+  const agents = snapshot.nodes.filter((item) => item.kind !== 'job')
   const requestedNode = choice.nodeId ?? workflowNodeId
-  const node = requestedNode ? snapshot.nodes.find((item) => item.id === requestedNode) : snapshot.nodes[0]
+  const node = requestedNode ? agents.find((item) => item.id === requestedNode) : agents[0]
   const current = useCallback(() => selection.isCurrent(selection.generation)
     && (usePanelChoice.getState().choices[panelKey]?.revision ?? 0) === choice.revision,
   [selection, panelKey, choice.revision])
@@ -57,10 +58,10 @@ function SnapshotAgents({ selection, snapshot, workflowNodeId }: { selection: Se
   }
   return <section className="selected-run-chat" aria-label="Selected Run chat" data-run-id={snapshot.runId}>
     <Select label="Agent" value={node?.id ?? ''} options={[...(!node ? [{ value: '', label: 'Select agent' }] : []),
-      ...snapshot.nodes.map((item) => ({ value: item.id, label: item.name }))]}
+      ...agents.map((item) => ({ value: item.id, label: item.name }))]}
       onChange={(event) => choose(event.currentTarget.value)} />
     {node ? <ResolveSelectedChat key={`${node.id}:${choice.revision}`} selection={selection} node={node}
-      executionId={choice.executionId} isCurrent={current} onExecution={(id) => choose(node.id, id)} /> : <p role="status">{snapshot.nodes.length ? 'Agent unavailable' : 'No agents'}</p>}
+      executionId={choice.executionId} isCurrent={current} onExecution={(id) => choose(node.id, id)} /> : <p role="status">{requestedNode ? 'Agent unavailable' : 'No agents'}</p>}
   </section>
 }
 
@@ -70,7 +71,7 @@ type SelectedIdentity = Pick<Extract<ReadSelectedRunChatResponse, { kind: 'selec
 type Lookup = SelectedIdentity | Exclude<ReadSelectedRunChatResponse, { kind: 'selected' }>
 
 function ResolveSelectedChat({ selection, node, executionId, isCurrent, onExecution }: {
-  selection: SelectedRunState; node: RunBoardNodeSnapshot; executionId?: string; isCurrent(): boolean; onExecution(id?: string): void
+  selection: SelectedRunState; node: Exclude<RunBoardNodeSnapshot, { kind: 'job' }>; executionId?: string; isCurrent(): boolean; onExecution(id?: string): void
 }) {
   const cache = useQueryClient(), instance = useId(), generation = sessionGeneration()
   const visit = useMemo(() => createChatVisit(isCurrent), [isCurrent])

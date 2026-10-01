@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HttpResponse, http } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fileStateAt, type FileWithRevision } from '@graphql/contracts/files'
+import { fileStateAt, FileRevisionSchema, type FileWithRevision } from '@graphql/contracts/files'
 import { server } from '../../mocks/server'
 import { beginSessionChange, finishSessionChange } from '../../shared/api/sessionBoundary'
 import { FileCard } from './FileCard'
@@ -38,7 +38,7 @@ function serve(file: FileWithRevision, onRequest?: (revisionId: string) => void)
   })))
   server.use(http.get(TEST_HANDLER_PATH, ({ params }) => {
     onRequest?.(String(params.revisionId))
-    return new HttpResponse(fixtureBytes(file.revision.mediaType).buffer, { headers: { 'Content-Type': file.revision.mediaType } })
+    return new HttpResponse(fixtureBytes(FileRevisionSchema.parse(file.revision).mediaType).buffer, { headers: { 'Content-Type': file.revision.mediaType } })
   }))
 }
 

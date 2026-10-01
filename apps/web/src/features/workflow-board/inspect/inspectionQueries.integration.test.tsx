@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { webcrypto } from 'node:crypto'
 import type { ReactNode } from 'react'
@@ -50,7 +51,7 @@ async function manyExecutions(count: number) {
 async function joinWithBindingPages(): Promise<RunExecutionDetail> {
   const owner = fixture.runs.after
   const original = fixture.mock.inspection.get(owner.run.id)![0]!
-  const first = owner.version.definition.nodes[0]!, join = owner.version.definition.nodes[1]!
+  const first = nativeNode(owner.version.definition.nodes[0]!), join = nativeNode(owner.version.definition.nodes[1]!)
   const additions = Array.from({ length: 11 }, (_, i) => ({
     id: `source-node-${i}`, agentId: `source-agent-${i}`, name: `Predecessor ${i}`,
   }))
@@ -82,7 +83,7 @@ async function joinWithBindingPages(): Promise<RunExecutionDetail> {
   const detail = RunExecutionDetailSchema.parse({
     ...original.detail, acceptedInput: { value, digest: await digestCurrentValue(value) },
   })
-  const { executionId, workflowNodeId, agentId, agentConfigurationVersionId, attempt } = detail.execution
+  const { executionId, workflowNodeId, agentId, agentConfigurationVersionId, attempt } = nativeNode(detail.execution)
   const bindings = value.predecessors.map((source, ordinal) => RunExecutionBindingSchema.parse({
     bindingId: `joined-binding-${ordinal}`, recipient: { executionId, workflowNodeId, agentId, agentConfigurationVersionId, attempt },
     recipientOccurrence: null, inputDigest: detail.acceptedInput.digest, ordinal, kind: 'predecessor', source,

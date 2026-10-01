@@ -38,6 +38,9 @@ export function approvalState(): AgentChatState {
     turn: { nativeTurnId: 'turn-1', nativeRequestId: 'native-approval-1' }, nativeRequestType: 'item/commandExecution/requestApproval',
     request: { command: ['read', 'README.md'] }, responseOptions: CODEX_APPROVAL_OPTIONS_FIXTURE,
   }
+  state.responseAvailability = { nativeSessionId: state.pendingInteraction.session.nativeSessionId, nativeRequestId: state.pendingInteraction.turn.nativeRequestId!,
+    nativeTurnId: state.pendingInteraction.turn.nativeTurnId, nativeRequestType: state.pendingInteraction.nativeRequestType, available: true,
+    status: 'available', path: 'live_callback', reason: 'live_callback', message: 'Native reply callback is available.' }
   return state
 }
 export function mountChat(initial: AgentChatState = agentChatFixtures.empty, actions?: ManagementAction[]) {

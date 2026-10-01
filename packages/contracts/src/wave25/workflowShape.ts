@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js'
+import { JobWorkflowNodeSchema } from '../jobWorkflow.js'
+import { SavedNodePlacementSchema } from '../nodePlacement.js'
 import { GraphqlToolOverrideSchema } from '../graphqlMcpTools.js'
+import { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
+export { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
+export type { WorkflowChoice } from './choice.js'
 
 /** Leaf schemas: do not import the root, management or saved DTO entrypoints.
  * Both public management DTOs and the execution validators use these same
@@ -69,24 +74,10 @@ export const WorkflowExecutionPolicySchema = z
   .strict();
 export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
 
-export const ChoiceOutcomeSchema = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
-export const ChoiceTargetSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('edge'), relationshipId: IdSchema }).strict(),
-  z.object({ kind: z.literal('branch_end') }).strict(),
-])
-export const WorkflowChoiceSchema = z.object({
-  outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict()).min(1).max(16),
-}).strict().superRefine((value, context) => {
-  const outcomes = new Set<string>()
-  for (const [index, declaration] of value.outcomes.entries()) {
-    if (outcomes.has(declaration.outcome)) context.addIssue({ code: 'custom', path: ['outcomes', index], message: 'outcomes must be unique' })
-    outcomes.add(declaration.outcome)
-  }
-})
-export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
-
 const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
-export const CurrentWorkflowNodeSchema = z.object({
+export const CurrentAgentWorkflowNodeFields = {
+  kind: z.literal('agent').optional(),
+  placement: SavedNodePlacementSchema.optional(),
   id: GraphIdSchema, agentId: GraphIdSchema,
   name: z.string().trim().min(1).optional(), label: z.string().trim().min(1).optional(),
   description: z.string().optional(), initialPrompt: z.string().trim().min(1).optional(),
@@ -95,9 +86,11 @@ export const CurrentWorkflowNodeSchema = z.object({
   join: z.object({ mode: z.literal('all') }).strict().optional(), choice: WorkflowChoiceSchema.optional(),
   /** Changes the Agent's default GraphQL MCP tools for this node only. */
   graphqlTools: GraphqlToolOverrideSchema.optional(),
-}).strict().superRefine((node, context) => {
+}
+export const CurrentAgentWorkflowNodeSchema = z.object(CurrentAgentWorkflowNodeFields).strict().superRefine((node, context) => {
   if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
 })
+export const CurrentWorkflowNodeSchema = z.union([CurrentAgentWorkflowNodeSchema, JobWorkflowNodeSchema])
 export const CurrentWorkflowRelationshipSchema = z.object({
   id: GraphIdSchema, source: GraphIdSchema, target: GraphIdSchema,
   sourceHandle: Handle, targetHandle: Handle, label: z.string().optional(), kind: z.enum(['execution', 'approval']),
@@ -112,7 +105,7 @@ export const CurrentWorkflowDefinitionBaseSchema = z.object({
   id: GraphIdSchema, workspaceId: GraphIdSchema, name: z.string().trim().min(1), description: z.string().optional(),
   executionSemanticsVersion: CurrentExecutionSemanticsSchema, entryNodeId: GraphIdSchema.nullable(),
   executionCondition: ExecutionConditionSchema, approval: WorkflowApprovalConfigurationSchema.optional(),
-  requiredAgentCount: z.number().int().positive().max(10000).optional(),
+  requiredAgentCount: z.number().int().nonnegative().max(10000).optional(),
   nodes: z.array(CurrentWorkflowNodeSchema).max(1000), edges: z.array(CurrentWorkflowRelationshipSchema).max(8000),
   version: z.number().int().positive().optional(), executionPolicy: WorkflowExecutionPolicySchema.optional(),
   createdAt: TimestampSchema.optional(), updatedAt: TimestampSchema.optional(),

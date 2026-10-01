@@ -7,9 +7,9 @@ import { shareRunResponseOrSelection } from '../../shared/api/runLiveCache'
 import { GraphRuntimeContext } from './graphContexts'
 import { selectGraphNodeActivity } from './runtimeIndex'
 
-export function useGraphNodeRuntime(workflowNodeId: string, agentId: string) {
+export function useGraphNodeRuntime(workflowNodeId: string, agentId: string | undefined) {
   const scope = useContext(GraphRuntimeContext)
-  const select = useCallback((response: GetRunResponse) => scope
+  const select = useCallback((response: GetRunResponse) => scope && agentId
     ? selectGraphNodeActivity(response, scope, workflowNodeId, agentId) : undefined,
   [scope, workflowNodeId, agentId])
   const query = useQuery<GetRunResponse, Error, RunNodeLiveActivity | undefined>({

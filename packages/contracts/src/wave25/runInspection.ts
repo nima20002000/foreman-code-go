@@ -3,7 +3,7 @@ import {
   ExecutionResultSchema, HarnessExecutionStateSchema, RunExecutionStateSchema, RunOutcomeSchema,
   RunInputSchema, RunStopCauseSchema, TimestampSchema,
 } from '../index.js'
-import { GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema } from './graphPrimitives.js'
+import { GraphDigestSchema, GraphExecutionIdentitySchema, extendGraphExecutionIdentitySchema, GraphIdSchema } from './graphPrimitives.js'
 import { AcceptedCurrentNodeResultSchema, CurrentRunScopeSchema } from './currentWorkflowFoundation.js'
 import { RepeatExecutionIdentityV1Schema, RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema } from './repeat.js'
 import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from './saved.js'
@@ -58,14 +58,14 @@ export const RunInspectionRunSchema = CurrentRunScopeSchema.extend({
   createdAt: TimestampSchema, startedAt: TimestampSchema.optional(), finishedAt: TimestampSchema.optional(),
   stopCause: RunStopCauseSchema.optional(), cleanupPending: z.boolean(),
 }).strict()
-export const RunExecutionSummarySchema = GraphExecutionIdentitySchema.extend({
+export const RunExecutionSummarySchema = extendGraphExecutionIdentitySchema({
   state: HarnessExecutionStateSchema,
   createdAt: TimestampSchema, startedAt: TimestampSchema.optional(), finishedAt: TimestampSchema.optional(),
   /** Omitted outside a REAL configured repeat occurrence; attempt is not occurrenceIndex. */
   occurrence: RepeatOccurrenceIdentityV1Schema.optional(),
   /** Discovery only. The exact detail verifies the accepted result and canonical receipt. */
   acceptedResultAvailable: z.boolean(),
-}).strict()
+})
 export type RunExecutionSummary = z.infer<typeof RunExecutionSummarySchema>
 const PageInfo = z.object({ nextCursor: Cursor.nullable() }).strict()
 export const RunExecutionsPageSchema = z.object({

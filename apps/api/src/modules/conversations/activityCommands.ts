@@ -1,0 +1,49 @@
+import type pg from 'pg'
+import type { ActivityScope, ActivitySourceRevision, InteractionSummary } from '@graphql/contracts'
+import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema } from '@graphql/contracts/interaction-activity'
+
+interface Receipt { principal_id: string; operation: string; command_id: string; revision: string; status: string; control: unknown; acknowledgment?: unknown }
+export function projectActivityCommands(conversationId: string, scope: ActivityScope, rows: readonly Receipt[], scopeRevision: string) {
+  const summaries = new Map<string, InteractionSummary>()
+  const sourceRevisions: ActivitySourceRevision[] = []
+  for (const row of rows.slice(0, 200)) {
+    const commandRevision: ActivitySourceRevision = { source: 'command', id: JSON.stringify([row.principal_id, row.operation, row.command_id]), revision: row.revision }
+    sourceRevisions.push(commandRevision)
+    const parsed = AcceptedChatResponseControlSchema.safeParse(row.control)
+    if (!parsed.success) continue // Legacy receipts carry no accepted native-response identity.
+    const control = parsed.data
+    if (control.conversationId !== conversationId || JSON.stringify(control.scope) !== JSON.stringify(scope)) continue
+    const evidence = ChatResponseAcknowledgmentSchema.safeParse(row.acknowledgment)
+    const acknowledged = evidence.success && control.native.providerVersion !== undefined
+      && evidence.data.providerVersion === control.native.providerVersion && evidence.data.harness === control.native.harness
+      && evidence.data.nativeSessionId === control.native.sessionId && evidence.data.nativeRequestId === control.native.requestId
+      && evidence.data.nativeRequestType === control.native.requestType && evidence.data.optionId === control.choice.optionId
+      && evidence.data.semantic === control.choice.semantic
+    const id = JSON.stringify(['chat-interaction', conversationId, control.modelRequestId, control.native.requestId])
+    const previous = summaries.get(id)
+    const delivery = acknowledged ? 'delivered' : row.status === 'uncertain' ? 'uncertain' : row.status === 'rejected' ? 'failed' : 'answer_recorded'
+    const combinedDelivery = previous?.providerAcknowledged || acknowledged ? 'delivered' : previous?.delivery === 'uncertain' || delivery === 'uncertain' ? 'uncertain'
+      : previous?.delivery === 'answer_recorded' || delivery === 'answer_recorded' ? 'answer_recorded' : 'failed'
+    summaries.set(id, { id, revision: scopeRevision,
+      sourceRevisions: previous ? [...(previous.sourceRevisions ?? []), commandRevision] : [{ source: 'scope', id: conversationId, revision: scopeRevision }, commandRevision], owner: { kind: 'chat_request', conversationId, requestId: control.modelRequestId },
+      native: { harness: control.native.harness, sessionId: control.native.sessionId, turnId: control.native.turnId, requestId: control.native.requestId },
+      delivery: combinedDelivery,
+      answerRecorded: true, providerAcknowledged: Boolean(previous?.providerAcknowledged || acknowledged), workerAcknowledged: false, responseAvailability: 'unknown' })
+  }
+  return { summaries: [...summaries.values()], sourceRevisions, hasMore: rows.length > 200 }
+}
+/** One component of the same conversation snapshot transaction; stored state snapshots are deliberately not selected. */
+export async function readActivityCommands(query: Pick<pg.PoolClient, 'query'>, conversationId: string, scope: ActivityScope, scopeRevision: string) {
+  const rows = (await query.query<Receipt>(`with open as (
+    select principal_id,operation,command_id,activity_record_revision::text as revision,created_at,
+      result->>'status' as status,result->'acceptedControl' as control,result->'providerAcknowledgment' as acknowledgment from management_command_receipts
+      where target_key=$1 and operation in ('agent_chat_control','operator_chat_control') and result->>'status' in ('pending','uncertain')
+      order by created_at,principal_id,command_id limit 201
+  ), recent as (
+    select principal_id,operation,command_id,activity_record_revision::text as revision,created_at,
+      result->>'status' as status,result->'acceptedControl' as control,result->'providerAcknowledgment' as acknowledgment from management_command_receipts
+      where target_key=$1 and operation in ('agent_chat_control','operator_chat_control') and result->>'status' not in ('pending','uncertain')
+      order by created_at desc,principal_id,command_id limit greatest(0,201-(select count(*) from open))
+  ) select * from (select * from open union all select * from recent) visible order by created_at,principal_id,command_id`, [conversationId])).rows
+  return projectActivityCommands(conversationId, scope, rows, scopeRevision)
+}

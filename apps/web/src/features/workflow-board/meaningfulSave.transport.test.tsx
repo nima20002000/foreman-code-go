@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -42,7 +43,7 @@ function change(f: Fixture, kind: EditKind = 'update-agent', graphChange = true)
         harnessConfiguration: DEFAULT_HARNESS_DEFAULTS.codex, prompt: {}, assignedSkills: [] }
       agentEdits[agent.id] = agent
       graph = { ...graph, nodes: [...graph.nodes, { id: 'new-node', agentId: agent.id, name: agent.name, position: { x: 500, y: 200 } }],
-        edges: [...graph.edges, { id: 'new-handoff', source: graph.nodes[0]!.id, target: 'new-node', kind: 'execution' }] }
+        edges: [...graph.edges, { id: 'new-handoff', source: nativeNode(graph.nodes[0]!).id, target: 'new-node', kind: 'execution' }] }
     }
     return { ...current, graph, agentEdits, history: [...current.history, current.graph] }
   }))
@@ -141,7 +142,7 @@ describe('meaningful Save through the real Board transport', () => {
     expect(readEditOutbox(f.key)).toBeUndefined()
     const after = await readSaved(f), id = before.agents[0]!.agent.id
     expect(after.agents[0]!.agent.name).toBe(submitted.agentEdits![id]!.name)
-    expect(after.definition.version.definition.nodes[0]!.initialPrompt).toBe(submitted.graph.nodes[0]!.initialPrompt)
+    expect(nativeNode(after.definition.version.definition.nodes[0]!).initialPrompt).toBe(nativeNode(submitted.graph.nodes[0]!).initialPrompt)
     expect(after.definition.version.agentConfigurationVersionIds[id]).toBe(after.agents[0]!.agent.configurationVersionId)
     expect(draft(f).context.draft.baseWorkflowVersionId).toBe(after.definition.currentVersionId)
     expect(wire.writes().map((call) => call.path)).toEqual([`${f.path}/definition/edits`, `${f.path}/definition/edits`])
@@ -171,7 +172,7 @@ describe('meaningful Save through the real Board transport', () => {
     const otherVersion = structuredClone(f.mock.versions.get(run.workflowVersionId)!)
     expect(f.mock.details().runs.filter((item) => item.workflowId === f.workflowId)).toEqual([])
     expect(f.mock.details().runs.filter((item) => item.workflowId !== f.workflowId)).toHaveLength(1)
-    for (const workflow of f.mock.workflows.values()) expect(workflow.nodes.some((node) => node.agentId === before.agents[0]!.agent.id)).toBe(true)
+    for (const workflow of f.mock.workflows.values()) expect(workflow.nodes.some((node) => nativeNode(node).agentId === before.agents[0]!.agent.id)).toBe(true)
     await user.click(saveBar().getByRole('button', { name: 'Save changes' }))
     const dialog = await saveDialog()
     expect(dialog).toHaveTextContent('1 affected Run requires Stop or cleanup across 1 workflow')

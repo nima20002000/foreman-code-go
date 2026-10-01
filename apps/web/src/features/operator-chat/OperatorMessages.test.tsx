@@ -9,6 +9,37 @@ const thinking: OperatorActivity = { id: 'native-thought', requestId: 'turn', se
 const tool: OperatorActivity = { ...thinking, id: 'native-read', sequence: '2', kind: 'file_read', title: 'Read file', input: 'note.txt', output: 'file content' }
 
 describe('Operator message ownership', () => {
+  it('keeps saved reasoning beside its original turn when reading multiple loaded turns', () => {
+    const reasoning = (id: string, requestId: string, content: string): Message => ({ id, conversationId: 'chat', requestId, role: 'assistant', activityChannel: 'reasoning', content })
+    render(<OperatorMessages messages={[
+      reasoning('leading', 'older', 'Earlier saved reasoning'),
+      { ...user, content: 'First question' }, reasoning('reasoning-1', 'turn', 'First turn reasoning'),
+      { id: 'answer-1', conversationId: 'chat', requestId: 'turn', role: 'assistant', content: 'First answer' },
+      { ...user, id: 'user-2', requestId: 'turn-2', content: 'Second question' }, reasoning('reasoning-2', 'turn-2', 'Second turn reasoning'),
+      { id: 'answer-2', conversationId: 'chat', requestId: 'turn-2', role: 'assistant', content: 'Second answer' },
+    ]} activities={[]} onBrowse={() => {}} />)
+    for (const toggle of screen.getAllByRole('button', { name: 'Thinking' })) fireEvent.click(toggle)
+    const rows = within(screen.getByRole('list', { name: 'Conversation history' })).getAllByRole('listitem')
+    expect(rows.map(row => row.textContent)).toEqual([
+      expect.stringContaining('Earlier saved reasoning'), expect.stringContaining('First question'),
+      expect.stringContaining('First turn reasoning'), expect.stringContaining('First answer'),
+      expect.stringContaining('Second question'), expect.stringContaining('Second turn reasoning'), expect.stringContaining('Second answer'),
+    ])
+  })
+
+  it('preserves the earlier reasoning disclosure when a later saved turn arrives', () => {
+    const saved: Message[] = [user, { id: 'reasoning', conversationId: 'chat', requestId: 'turn', role: 'assistant', activityChannel: 'reasoning', content: 'Saved reasoning' },
+      { id: 'answer', conversationId: 'chat', requestId: 'turn', role: 'assistant', content: 'Saved answer' }]
+    const view = render(<OperatorMessages messages={saved} activities={[]} onBrowse={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Thinking' }))
+    view.rerender(<OperatorMessages messages={[...saved, { ...user, id: 'next-user', requestId: 'next', content: 'Next question' },
+      { id: 'next-reasoning', conversationId: 'chat', requestId: 'next', role: 'assistant', activityChannel: 'reasoning', content: 'Next reasoning' }]}
+      activities={[]} onBrowse={() => {}} />)
+    expect(screen.getAllByRole('button', { name: 'Thinking' })[0]).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('region', { name: 'Thinking summary' })).toHaveTextContent('Saved reasoning')
+    expect(screen.getAllByRole('button', { name: 'Thinking' })[1]).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('puts thinking and tools inside the assistant container through streaming and final persistence', () => {
     const props = { messages: [user], activities: [thinking, tool], activeRequestId: 'turn', working: true, partialText: 'The file', onBrowse() {} }
     const view = render(<OperatorMessages {...props} />)

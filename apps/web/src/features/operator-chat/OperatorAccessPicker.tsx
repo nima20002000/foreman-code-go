@@ -32,6 +32,7 @@ export function OperatorAccessPicker({ value, disabled, saving = false, saveErro
   const id = useId()
   const label = value.harness === 'codex'
     ? sandboxChoices.find((choice) => choice.value === value.sandbox)?.label ?? value.sandbox
+    : value.harness === 'claude' ? `Claude · ${sandboxChoices.find((choice) => choice.value === value.sandbox)?.label ?? value.sandbox}`
     : `${value.advanced?.permissionRules.length ?? 0} OpenCode rule${value.advanced?.permissionRules.length === 1 ? '' : 's'}`
   function toggle() {
     if (!open && value.harness === 'opencode') setRules(structuredClone(value.advanced?.permissionRules ?? []))
@@ -97,6 +98,11 @@ export function OperatorAccessPicker({ value, disabled, saving = false, saveErro
             {(withAdvancedDefaults(value).advanced?.approvalPolicy ?? 'on-request') === policy ? <Icon name="check" size={14} /> : null}
           </button>)}
           </div> : null}</div>
+      </> : value.harness === 'claude' ? <>
+        <strong>Claude access</strong><p>Sandbox: {sandboxChoices.find((choice) => choice.value === value.sandbox)?.label ?? value.sandbox}</p>
+        <p>Access is pinned in the accepted Operator configuration. Use Operator settings to change access. Tool approvals use app routing.</p>
+        <p>Enabled tools: {value.tools.join(', ') || 'None'}</p>
+        {value.permissionRules.map((rule) => <p key={rule.tool}>{rule.tool}: {rule.effect}</p>)}
       </> : <>
         <p>OpenCode permissions control whether tools ask, run, or are denied. They are not a filesystem sandbox. Last matching rule wins.</p>
         <div className="operator-access-rules">

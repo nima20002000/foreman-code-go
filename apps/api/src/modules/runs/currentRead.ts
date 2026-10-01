@@ -1,3 +1,4 @@
+import { readRunActivitySnapshot } from './activitySnapshot.js'
 import type pg from 'pg'
 import { RunActivitySchema } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -54,7 +55,9 @@ export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrinci
     const cleanup = (await sql.query<{ pending: boolean }>(
       'select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as pending', [runId])).rows[0]
     if (!cleanup || typeof cleanup.pending !== 'boolean') throw new DomainError('RUN_DETAIL_INVALID', 'Cleanup status is unavailable.', 409)
-    const detail = { run, executions, activity, activityPageInfo: { hasEarlier: activityRows.length > 100 }, cleanupPending: cleanup.pending }
+    const activitySnapshot = await readRunActivitySnapshot(sql as unknown as Pick<pg.PoolClient, 'query'>,
+      { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId }, snapshot.version)
+    const detail = { run, executions, activity, activitySnapshot, activityPageInfo: { hasEarlier: activityRows.length > 100 }, cleanupPending: cleanup.pending }
     if (graphJsonBytes(detail) > RUN_GRAPH_LIMITS.snapshotBytes) throw new DomainError('RUN_DETAIL_TOO_LARGE', 'Use bounded graph metadata and activity pages for this Run.', 409)
     const parsed = SavedRunDetailsSchema.parse(detail)
     // Redaction uses the live grants locked on this same read, not the possibly

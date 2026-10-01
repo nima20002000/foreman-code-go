@@ -51,9 +51,9 @@ export type AgentCreateInput = z.infer<typeof AgentCreateInputSchema>;
 export type AgentUpdateInput = z.infer<typeof AgentUpdateInputSchema>;
 export type AgentCloneInput = z.infer<typeof AgentCloneInputSchema>;
 
-export const HarnessOptionsInputSchema = z.object({ harness: z.enum(["codex", "opencode"]) }).strict();
+export const HarnessOptionsInputSchema = z.object({ harness: z.enum(["codex", "opencode", "claude"]) }).strict();
 export const HarnessOptionsRefreshInputSchema = z.object({
-  harness: z.enum(["codex", "opencode"]), refresh: z.enum(["catalog", "upstream"]).default("catalog"),
+  harness: z.enum(["codex", "opencode", "claude"]), refresh: z.enum(["catalog", "upstream"]).default("catalog"),
 }).strict();
 export const OpenCodeModelsRefreshInputSchema = z.object({ harness: z.literal("opencode") }).strict();
 export const HarnessModelOptionSchema = z.object({
@@ -61,7 +61,7 @@ export const HarnessModelOptionSchema = z.object({
   reasoningEfforts: z.array(z.string()), variants: z.array(z.string()), serviceTiers: z.array(z.string()),
 }).strict();
 export const HarnessOptionsResultSchema = z.object({
-  harness: z.enum(["codex", "opencode"]), providerVersion: z.string().min(1),
+  harness: z.enum(["codex", "opencode", "claude"]), providerVersion: z.string().min(1),
   authenticated: z.boolean(), models: z.array(HarnessModelOptionSchema), nativeAgents: z.array(z.string()),
   settings: z.array(z.object({
     field: z.string(), support: z.enum(["supported", "conditional", "metadata_only", "unsupported"]),
@@ -70,7 +70,7 @@ export const HarnessOptionsResultSchema = z.object({
   restrictions: z.array(z.string()), checkedAt: TimestampSchema,
 }).strict();
 export type HarnessOptions = z.infer<typeof HarnessOptionsResultSchema>;
-export const HarnessMcpDetectionInputSchema = z.object({ ...Workspace, harness: z.enum(["codex", "opencode"]) }).strict();
+export const HarnessMcpDetectionInputSchema = z.object({ ...Workspace, harness: z.enum(["codex", "opencode", "claude"]) }).strict();
 export const HarnessMcpDetectionResultSchema = ScopedMcpDetectionSchema;
 export const NativeConfigurationCheckInputSchema = z.object({ configuration: Configuration }).strict();
 export const NativeConfigurationCheckResultSchema = z.object({

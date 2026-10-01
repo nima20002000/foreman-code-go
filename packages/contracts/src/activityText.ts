@@ -5,6 +5,7 @@ export interface ActivityTextIdentity {
   scope: ActivityScope
   requestId?: string
   attemptKey?: string
+  generation?: string
   sessionId: string
   turnId?: string
   itemId: string
@@ -13,6 +14,7 @@ export interface ActivityTextIdentity {
   channel: 'assistant' | 'user' | 'reasoning'
 }
 export interface ActivityTextOperation {
+  observedAt?: string
   identity: ActivityTextIdentity
   mode: 'append' | 'replace'
   text: string

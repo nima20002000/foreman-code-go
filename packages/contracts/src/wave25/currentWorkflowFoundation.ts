@@ -11,7 +11,7 @@ import { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } fr
 export { ExecutionSemanticsVersionSchema as CurrentExecutionSemanticsSchema } from './workflowShape.js'
 
 import { CurrentWorkflowDefinitionBaseSchema, WorkHandoffPolicyV1Schema, type RepeatPlanV1 } from './workflowShape.js'
-export { CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema } from './workflowShape.js'
+export { CurrentAgentWorkflowNodeSchema, CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema } from './workflowShape.js'
 
 /** Extracted current topology/lifecycle rules. No old WorkflowVersion validator,
  * validation projection, complexity-selected semantics or legacy dispatch. */
@@ -34,6 +34,7 @@ type Version = z.infer<typeof CurrentWorkflowVersionBaseSchema>
 export function validateCurrentWorkflowTopology(version: Version, context: z.RefinementCtx): void {
   const issue = (message: string, path: (string | number)[] = ['definition']) => context.addIssue({ code: 'custom', path, message })
   const graph = version.definition
+  if(graph.handoffs&&graph.nodes.some(node=>node.kind==='job'))issue('JOB_HANDOFF_POLICY_UNSUPPORTED: noninteractive job nodes use DAG or explicit finite repeat dependencies.')
   if (graph.id !== version.workflowId || graph.workspaceId !== version.workspaceId || graph.version !== version.version) issue('immutable scope/version mismatch')
   if (graph.entryNodeId !== version.entryNodeId) issue('authored and immutable entry must match', ['entryNodeId'])
   if (!graph.executionPolicy) context.addIssue({ code: 'custom', path: ['definition', 'executionPolicy'],
@@ -43,13 +44,12 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
     message: `Increase “Maximum node executions” to at least ${graph.nodes.length}.`,
     params: { issueCode: 'EXECUTION_LIMIT_TOO_LOW', minimum: graph.nodes.length, actual: graph.executionPolicy.maxNodeExecutions },
   })
-  if (graph.requiredAgentCount !== undefined && graph.requiredAgentCount !== graph.nodes.length) issue('requiredAgentCount does not match the topology')
+  if (graph.requiredAgentCount !== undefined && graph.requiredAgentCount !== new Set(graph.nodes.filter(node => node.kind !== 'job').map(node => node.agentId)).size) issue('requiredAgentCount does not match the topology')
   if (canonicalGraphJson(graph.approval ?? null) !== canonicalGraphJson(version.approval)) issue('definition and immutable approval assignment must match')
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
   const edges = new Map(graph.edges.map((edge) => [edge.id, edge]))
   if (nodes.size !== graph.nodes.length || edges.size !== graph.edges.length) issue('node and relationship IDs must be unique')
   if (!nodes.has(version.entryNodeId)) issue('entry must reference an existing node', ['entryNodeId'])
-  if (new Set(graph.nodes.map((node) => node.agentId)).size !== graph.nodes.length) issue('an Agent may occur only once in this topology')
   const execution = graph.edges.filter((edge) => edge.kind === 'execution')
   const outgoing = new Map<string, string[]>()
   const indegree = new Map(graph.nodes.map((node) => [node.id, 0]))
@@ -61,6 +61,7 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
       outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target])
       indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1)
     } else {
+      if(nodes.get(edge.source)?.kind==='job'||nodes.get(edge.target)?.kind==='job')issue('job nodes do not request or perform native approvals')
       if (reviewers.has(edge.target)) issue('an App-routed requester has at most one reviewer')
       reviewers.add(edge.target)
     }
@@ -84,9 +85,9 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
     reachable.add(id); visit.push(...(outgoing.get(id) ?? []))
   }
   for (const edge of execution) if (!reachable.has(edge.source) && reachable.has(edge.target)) issue('an excluded component cannot supply a selected-component dependency')
-  if (Object.keys(version.agentConfigurationVersionIds).length !== graph.nodes.length) issue('configuration pins must describe exactly this topology')
+  if (Object.keys(version.agentConfigurationVersionIds).length !== new Set(graph.nodes.filter(node => node.kind !== 'job').map(node => node.agentId)).size) issue('configuration pins must describe exactly this topology')
   for (const node of graph.nodes) {
-    if (!version.agentConfigurationVersionIds[node.agentId]) issue('each Agent requires an immutable configuration pin')
+    if (node.kind !== 'job' && !version.agentConfigurationVersionIds[node.agentId]) issue('each Agent requires an immutable configuration pin')
     if (!node.choice) continue
     const selected = new Set<string>()
     for (const declaration of node.choice.outcomes) {
@@ -108,8 +109,9 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
   const configs = new Map(configurations.map((configuration) => [configuration.id, configuration]))
   const nodes = version.definition.nodes
   if (configs.size !== configurations.length) fail('configuration IDs must be unique')
-  if (Object.keys(version.agentConfigurationVersionIds).length !== nodes.length || configurations.length !== nodes.length) fail('configuration pins must describe exactly this topology')
+  if (Object.keys(version.agentConfigurationVersionIds).length !== new Set(nodes.filter(node => node.kind !== 'job').map(node => node.agentId)).size || configurations.length !== new Set(nodes.filter(node => node.kind !== 'job').map(node => node.agentId)).size) fail('configuration pins must describe exactly this topology')
   for (const node of nodes) {
+    if (node.kind === 'job') continue
     const configuration = configs.get(version.agentConfigurationVersionIds[node.agentId]!)
     if (!configuration || configuration.workspaceId !== version.workspaceId || configuration.agentId !== node.agentId || !configuration.productRole) fail('an exact scoped configuration with a pinned product role is required')
     const outside = configuration?.productRole && node.graphqlTools
@@ -118,12 +120,12 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
   }
   const role = (nodeId: string) => {
     const node = nodes.find((candidate) => candidate.id === nodeId)
-    return node && configs.get(version.agentConfigurationVersionIds[node.agentId]!)?.productRole
+    return node && node.kind !== 'job' && configs.get(version.agentConfigurationVersionIds[node.agentId]!)?.productRole
   }
   const orchestrators = nodes.filter((node) => role(node.id) === 'orchestrator')
   if (!nodes.length) fail('an executable workflow needs an entry node')
   if (nodes.length === 1 && version.entryNodeId !== nodes[0]?.id) fail('a sole node starts itself')
-  if (orchestrators.length ? role(version.entryNodeId) !== 'orchestrator' : role(version.entryNodeId) !== 'coder') fail('entry must use the pinned Orchestrator role when present, otherwise the Worker (coder) role')
+  if (orchestrators.length ? role(version.entryNodeId) !== 'orchestrator' : nodes.find(node => node.id === version.entryNodeId)?.kind !== 'job' && role(version.entryNodeId) !== 'coder') fail('entry must use the pinned Orchestrator role when present, otherwise the Worker (coder) role')
   for (const configuration of configurations) {
     if (!HarnessWorkflowCompatibilitySchema.safeParse({ configuration: configuration.harness,
       workflowApprovalHandler: version.approval.handler, designatedOrchestrator: version.approval.handler === 'orchestrator'
@@ -135,7 +137,7 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
     return
   }
   const entry = nodes.find((node) => node.id === version.entryNodeId)
-  if (entry?.agentId !== version.approval.designatedOrchestratorAgentId || role(version.entryNodeId) !== 'orchestrator') fail('the supported initialized reviewer must be the explicit entry Orchestrator')
+  if ((entry?.kind === 'job' || entry?.agentId !== version.approval.designatedOrchestratorAgentId) || role(version.entryNodeId) !== 'orchestrator') fail('the supported initialized reviewer must be the explicit entry Orchestrator')
   for (const edge of approvals) if (edge.source !== version.entryNodeId || edge.target === version.entryNodeId) fail('independent or recursive reviewer startup is unsupported')
   // Match repeatReviewerOccurrence: an outside reviewer is reusable, but an
   // in-block reviewer has no exported execution binding for another scope.
@@ -154,6 +156,7 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
     }
   }
   for (const node of nodes) {
+    if (node.kind === 'job') continue
     const configuration = configs.get(version.agentConfigurationVersionIds[node.agentId]!)
     const nativeSelfReview = configuration?.harness.harness === 'codex'
       && configuration.harness.advanced?.approvalPolicy === 'on-request' && configuration.harness.advanced.approvalsReviewer === 'auto_review'

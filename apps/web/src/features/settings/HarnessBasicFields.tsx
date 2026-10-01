@@ -3,16 +3,20 @@ import { changeCodexSandbox, type CodexHarnessConfiguration, type HarnessConfigu
 import { Alert, Button, Combobox, ConfirmDialog, Select, Switch } from '../../shared/ui/nocturne'
 import { useNativeHarnessOptions, useRefreshNativeHarness } from '../../shared/api/harnessSettings'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
+import { ClaudeConfigurationFields } from './ClaudeConfigurationFields'
 import { nativeOptionsWithSaved, selectNativeModel, supportedEfforts } from './harnessModelSelection'
 
 type Props = { value: HarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[] }
-export function HarnessBasicFields({ value, onChange, issues = [], includeSandbox = true }: Props & { includeSandbox?: boolean }) {
+export function HarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string }) {
   const query = useNativeHarnessOptions(value.harness)
   const refresh = useRefreshNativeHarness(value.harness)
   const selected = query.data?.models.find((item) => item.id === value.model)
   const models: Array<{ value: string; label: string; description: string; disabled?: boolean }> = query.data?.models.map((item) => ({ value: item.id, label: item.name || item.id, description: item.id })) ?? []
   if (!models.some((item) => item.value === value.model)) models.unshift({ value: value.model, label: value.model,
     description: query.isPending ? 'Loading native models…' : 'Saved model · not in the native catalog', disabled: true })
+  if (value.harness === 'claude') return <ClaudeConfigurationFields value={value} onChange={onChange}
+    models={query.data?.models ?? []} qualified={qualified} pending={checking || query.isPending}
+    error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} />
   return <div className="harness-basic-fields">
     <Combobox label="Model" value={value.model} options={models} error={fieldMessage(issues, 'model')}
       onValueChange={(id) => { const model = query.data?.models.find((item) => item.id === id); if (model) onChange(selectNativeModel(value, model)) }} />
@@ -39,6 +43,7 @@ function HarnessModelOptions({ value, onChange, issues = [] }: Props) {
   const query = useNativeHarnessOptions(value.harness)
   const errorId = useId()
   if (value.harness === 'opencode') return <Switch label="Show thinking" checked={value.thinking} onChange={(event) => onChange({ ...value, thinking: event.target.checked })} />
+  if (value.harness !== 'codex') return null
   const supported = query.data?.models.find((item) => item.id === value.model)?.serviceTiers.includes('priority') === true
   const error = fieldMessage(issues, 'serviceTier') ?? (query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)
   return <div><Switch label="Fast mode" checked={value.serviceTier === 'priority'} disabled={!supported && value.serviceTier !== 'priority'}

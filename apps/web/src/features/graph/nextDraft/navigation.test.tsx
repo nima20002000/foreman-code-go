@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -68,8 +69,8 @@ it('discarding a semantic edit preserves independent node layout', async () => {
   })))
   await confirmDiscard(user)
   const draft = useGraphDraftStore.getState().nextDrafts[key]!
-  expect(draft.graph.nodes[0]?.initialPrompt).toBeUndefined()
-  expect(draft.graph.nodes[0]?.position).toEqual(position)
+  expect(nativeNode(draft.graph.nodes[0])?.initialPrompt).toBeUndefined()
+  expect(nativeNode(draft.graph.nodes[0])?.position).toEqual(position)
   expect(draft.context.draft.revision).toBe(7)
 })
 it('principal teardown purges the unified local draft store', () => {
@@ -104,7 +105,7 @@ it.each(['navigation', 'reload'])('quietly retains unfinished agent settings acr
   expect(screen.queryByText(/Draft restored/)).not.toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
   const draft = useGraphDraftStore.getState().nextDrafts[key]!
-  expect(draft.graph.nodes[0]?.name).toBe('Continue here')
+  expect(nativeNode(draft.graph.nodes[0])?.name).toBe('Continue here')
   expect(draft.graph.description).toBe('Local workflow edit')
   expect(draft.context.draft.revision).toBe(7)
 })

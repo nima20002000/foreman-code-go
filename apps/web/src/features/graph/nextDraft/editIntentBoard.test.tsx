@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -63,7 +64,7 @@ beforeEach(() => {
   vi.spyOn(nextDraftApi, 'context').mockResolvedValue(fixture())
   vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(empty)
   vi.spyOn(nextDraftApi, 'pins').mockImplementation(async (_workspaceId, graph, _stagedAgents, agents) => ({
-    expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map(({ agentId }) => {
+    expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map(nativeNode).map(({ agentId }) => {
       const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId
       if (!pin) throw new Error(`Fixture lacks the displayed configuration for ${agentId}`)
       return [agentId, pin]
@@ -80,8 +81,8 @@ it('shows both exact board actions; Discard does not Stop, publish, or erase ind
   expect(screen.getByRole('button', { name: /^Save changes$/ })).toBeInTheDocument()
   await confirmDiscard(user)
   const edit = useGraphDraftStore.getState().nextDrafts[key]!
-  expect(edit.graph.nodes[0]?.initialPrompt).toBeUndefined()
-  expect(edit.graph.nodes[0]?.position).toEqual({ x: 802, y: -71 }); expect(edit.context.draft.revision).toBe(7)
+  expect(nativeNode(edit.graph.nodes[0])?.initialPrompt).toBeUndefined()
+  expect(nativeNode(edit.graph.nodes[0])?.position).toEqual({ x: 802, y: -71 }); expect(edit.context.draft.revision).toBe(7)
   expect(stage).not.toHaveBeenCalled(); expect(advance).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled()
 })
 it('recovers a dropped Stage reply after full form-memory loss and retries the same payload, without Start', async () => {
@@ -112,7 +113,7 @@ it('recovers a dropped Stage reply after full form-memory loss and retries the s
   expect(stage.mock.calls.length).toBeGreaterThan(1)
   for (const [replay] of stage.mock.calls) expect(replay).toEqual(request)
   expect(advance.mock.calls[0]![0]).toMatchObject({ intentId: 'private-intent', commandId: 'exact-advance', action: 'stop_and_save' })
-  expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0]?.initialPrompt).toBe('Retained exact instruction')
+  expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0])?.initialPrompt).toBe('Retained exact instruction')
   expect(screen.getByText(/ · another workflow/)).toBeInTheDocument()
   expect(start).not.toHaveBeenCalled()
 })
@@ -147,6 +148,6 @@ it('duplicate clicks share one stage/advance; private Discard reconciles without
   await waitFor(() => expect(discard).toHaveBeenCalledOnce())
   expect(discard.mock.calls[0]![0]).toMatchObject({ intentId: 'private-intent', commandId: 'exact-discard', action: 'discard_edits' })
   expect(advance).toHaveBeenCalledOnce()
-  expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0]?.position).toEqual({ x: 802, y: -71 })
+  expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0])?.position).toEqual({ x: 802, y: -71 })
   expect(readEditOutbox(key)).toBeUndefined()
 })

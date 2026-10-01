@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 // @vitest-environment jsdom
 import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -107,11 +108,11 @@ function shapeGraph(base: WorkflowDefinitionV3, shape: Shape, mock: Mock): Workf
   const edges = pairs.map(([from, to], i) => ({ id: `handoff-${i}`, source: nodes[from!]!.id, target: nodes[to!]!.id, kind: 'execution' as const }))
   const graph: WorkflowDefinitionV3 = { ...base, nodes, edges, entryNodeId: nodes[0]!.id, approval: { handler: 'user' },
     executionPolicy: { maxParallelism: 4, maxNodeExecutions: 40 } }
-  if (shape === 'conditional') graph.nodes[0]!.choice = { outcomes: edges.map((edge, i) => ({ outcome: i ? 'right' : 'left', target: { kind: 'edge', relationshipId: edge.id } })) }
-  if (shape === 'repeat-ready') graph.nodes[1]!.choice = { outcomes: [
+  if (shape === 'conditional') nativeNode(graph.nodes[0]!).choice = { outcomes: edges.map((edge, i) => ({ outcome: i ? 'right' : 'left', target: { kind: 'edge', relationshipId: edge.id } })) }
+  if (shape === 'repeat-ready') nativeNode(graph.nodes[1]!).choice = { outcomes: [
     { outcome: 'again', target: { kind: 'branch_end' } }, { outcome: 'done', target: { kind: 'branch_end' } },
   ] }
-  if (shape === 'approval') graph.nodes[1]!.initialPrompt = 'Request the configured user approval before a sensitive operation.'
+  if (shape === 'approval') nativeNode(graph.nodes[1]!).initialPrompt = 'Request the configured user approval before a sensitive operation.'
   return graph
 }
 function stageShape(key: string, shape: Shape, mock: Mock) {
@@ -189,8 +190,8 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const mock = newBoardMock(), user = userEvent.setup()
     await mount(mock)
     const { key } = await create(mock, user)
-    await user.click(control('Add agent to graph'))
-    const picker = screen.getByRole('complementary', { name: 'Add agents to the board' })
+    await user.click(control('Add agent or job to graph'))
+    const picker = screen.getByRole('complementary', { name: 'Add node' })
     const worker = within(picker).getByRole('button', { name: 'Worker' })
     await waitFor(() => expect(worker).toBeEnabled())
     await user.click(worker); await user.click(worker)
@@ -206,7 +207,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
     await user.keyboard('{Control>}y{/Control}{Control>}y{/Control}')
     await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes).toHaveLength(2))
-    await user.click(within(picker).getByRole('button', { name: 'Close agent picker' }))
+    await user.click(within(picker).getByRole('button', { name: 'Close node picker' }))
     stageShape(key, 'sequential', mock)
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, edges: [] })))
     const canvas = within(screen.getByLabelText('Editable workflow graph'))
@@ -225,12 +226,12 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const { id, key } = await create(mock, user)
     if (shape === 'single') {
       // Exercise real keyboard-accessible attach + entry controls from the empty Board.
-      await user.click(control('Add agent to graph'))
-      const add = within(screen.getByRole('complementary', { name: 'Add agents to the board' }))
+      await user.click(control('Add agent or job to graph'))
+      const add = within(screen.getByRole('complementary', { name: 'Add node' }))
       await user.selectOptions(add.getByRole('combobox', { name: 'Existing agent' }), mock.agents[0]!.id)
       await user.click(add.getByRole('button', { name: 'Add to workflow' }))
       await user.click(control('Workflow settings'))
-      const node = useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!
+      const node = nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!)
       const settings = within(screen.getByRole('complementary', { name: 'Workflow settings' }))
       await user.selectOptions(settings.getByRole('combobox', { name: 'Starts the workflow' }), node.id)
       await user.click(settings.getByRole('button', { name: 'Close panel' }))
@@ -281,8 +282,8 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     await user.click(within(repeat).getByRole('button', { name: 'Add repeat' }))
     const graph = useGraphDraftStore.getState().nextDrafts[key]!.graph
     for (const node of graph.nodes) await user.click(within(repeat).getByRole('checkbox', { name: node.name! }))
-    await user.selectOptions(within(repeat).getByRole('combobox', { name: 'Entry node' }), graph.nodes[0]!.id)
-    await user.selectOptions(within(repeat).getByRole('combobox', { name: 'Exit node' }), graph.nodes[1]!.id)
+    await user.selectOptions(within(repeat).getByRole('combobox', { name: 'Entry node' }), nativeNode(graph.nodes[0]!).id)
+    await user.selectOptions(within(repeat).getByRole('combobox', { name: 'Exit node' }), nativeNode(graph.nodes[1]!).id)
     await user.selectOptions(within(repeat).getByRole('combobox', { name: 'Repeat outcome' }), 'again')
     await user.selectOptions(within(repeat).getByRole('combobox', { name: 'Early-exit outcome' }), 'done')
     const repeated = await save(mock, user, 2)
@@ -373,12 +374,12 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     mock.settle(run.id); await mounted.query.invalidateQueries()
     await waitFor(() => expect(readBoardStop(scope)).toBeUndefined())
     await user.click(screen.getByRole('button', { name: 'Close runs' }))
-    const node = useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!
+    const node = nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!)
     act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, nodes: [{ ...node, initialPrompt: 'Unpublished change', position: { x: 300, y: -99 } }] })))
     await user.click(screen.getByRole('button', { name: 'Discard changes' }))
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
-    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).toMatchObject({ position: { x: 300, y: -99 } })
-    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).not.toHaveProperty('initialPrompt')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0])).toMatchObject({ position: { x: 300, y: -99 } })
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0])).not.toHaveProperty('initialPrompt')
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
     expect(mock.versions.size).toBe(1); expect(mock.controls.stopCalls).toBe(1)
     expect(within(authoring()).queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
@@ -402,7 +403,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(retained).toBeDefined()
     expect(mock.controls.stopCalls).toBe(0); expect(mock.versions.size).toBe(1)
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(true)
-    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!.initialPrompt).toBe('Next pinned instructions')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!).initialPrompt).toBe('Next pinned instructions')
     expect(mock.calls.slice(beforeEdit).some((call) => call.method === 'PUT' && call.path.endsWith('/definition'))).toBe(false)
     const saveAgain = screen.getByRole('button', { name: 'Stop affected Runs and save' })
     await waitFor(() => expect(saveAgain).toBeEnabled())
@@ -420,6 +421,6 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     mock.settle(run.id); await mounted.query.invalidateQueries()
     await waitFor(() => expect(mock.versions.size).toBe(2))
     expect(mock.runs.size).toBe(1); expect(mock.runs.get(run.id)!.run.executionState).toBe('completed')
-    expect([...mock.versions.values()].at(-1)!.definition.nodes[0]!.initialPrompt).toBe('Next pinned instructions')
+    expect(nativeNode([...mock.versions.values()].at(-1)!.definition.nodes[0]!).initialPrompt).toBe('Next pinned instructions')
   }, 15_000)
 })

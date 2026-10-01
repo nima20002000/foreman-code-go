@@ -1,3 +1,4 @@
+import { ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
 import { z } from "zod";
@@ -145,10 +146,12 @@ export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfi
 export const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
   ManagementOpenCodeHarnessConfigurationSchema,
+  ClaudeHarnessConfigurationSchema,
 ]);
 export const ManagementHarnessDefaultsSchema = z.object({
   codex: CodexHarnessConfigurationSchema,
   opencode: ManagementOpenCodeHarnessConfigurationSchema,
+  claude: ClaudeHarnessConfigurationSchema.optional(),
 }).strict();
 
 export const CommandIdSchema = z.string().trim().min(8).max(200);
@@ -328,7 +331,7 @@ const AgentAddOperationSchema = z.object({
   nodeName: z.string().trim().min(1).max(200).optional(),
   productRole: z.enum(["orchestrator", "coder"]).optional(),
   /** Omit to copy the role template. A different harness requires an explicit configuration. */
-  harness: z.enum(["codex", "opencode"]).optional(),
+  harness: z.enum(["codex", "opencode", "claude"]).optional(),
   configuration: ManagementHarnessConfigurationSchema.optional(),
   prompt: AgentSchema.shape.prompt,
   assignedSkills: AgentSchema.shape.assignedSkills,
@@ -387,7 +390,7 @@ const ExecutionLimitsOperationSchema = z.object({
 }).strict();
 const RequiredAgentCountOperationSchema = z.object({
   type: z.literal("workflow.set_required_agent_count"),
-  requiredAgentCount: z.number().int().positive().max(10_000),
+  requiredAgentCount: z.number().int().nonnegative().max(10_000),
 }).strict();
 
 const NodeReplaceOperationSchema = z.object({
@@ -545,9 +548,9 @@ export const HarnessConfigurationCheckResultSchema = z.object({
   checkedAt: TimestampSchema,
 }).strict();
 
-export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode"]) }).strict();
+export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode", "claude"]) }).strict();
 export const HarnessCatalogEntrySchema = z.object({
-  harness: z.enum(["codex", "opencode"]),
+  harness: z.enum(["codex", "opencode", "claude"]),
   defaults: ManagementHarnessConfigurationSchema,
   defaultsRevision: ExpectedRevisionSchema,
   capability: HarnessQualificationSchema.nullable(),
@@ -638,10 +641,12 @@ export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
 
 export const OperatorToolNameSchema = z.enum([
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list",
+  "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get",
+  "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_start","job_get","job_list","job_cancel","job_logs_read","job_artifacts_list","job_artifact_read",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
-  "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_handoff_history_get",
+  "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_chat_cancel", "operator_chat_respond", "operator_handoff_history_get",
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
   "workspace_defaults_update",

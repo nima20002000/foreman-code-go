@@ -1,8 +1,9 @@
+import type { JobWorkflowAdmissionReference } from '@graphql/contracts/job-workflow'
 import { createContext, forwardRef, memo, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Background, ConnectionMode, ReactFlow, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
 import { WorkflowRelationshipSchema, type WorkflowDefinitionV3, type WorkflowRelationship } from '@graphql/contracts/wave25'
 import type { Agent } from '@graphql/contracts'
-import { AgentNodeView, AgentPopover, IconButton, Icon, type AgentPanel } from '../../../shared/ui/nocturne'
+import { AgentNodeView, AgentPopover, Dialog, IconButton, Icon, type AgentPanel } from '../../../shared/ui/nocturne'
 import { createGraphTopologyProjector } from '../topology'
 import { createGraphGeometryAdapter, type GraphGeometryChange } from '../geometry'
 import { useGraphDraftStore } from '../store'
@@ -10,7 +11,7 @@ import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPres
 import { AgentHandles } from '../AgentHandles'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../signalEdge'
 import { SignalEdgeShape } from '../SignalEdgeShape'
-import type { GraphNode } from '../types'
+import type { GraphNode, AgentGraphNode, JobGraphNode } from '../types'
 import { nodeTitle, putRelationship, removeRelationship, setWorkConnectionLimit } from './model'
 import { WorkConnectionLimitEditor } from './WorkConnectionLimitEditor'
 import type { EditGraph } from './AuthoringFields'
@@ -21,7 +22,8 @@ import '@xyflow/react/dist/style.css'
 export type OpenAgentPanel = { nodeId: string; panel: AgentPanel }
 export type AgentPanels = { chat: ReactNode; settings: ReactNode; info: ReactNode }
 /** A selected Run supplies its pinned identity, including nodes no longer present in the draft. */
-export type AgentPanelRenderer = (nodeId: string, pinned?: { agentId: string; name: string }) => AgentPanels
+export type PinnedPanelNode = {kind?:'agent';agentId:string;name:string}|{kind:'job';jobDefinitionId:string;jobDefinitionRevision:number;jobDefinitionVersionId:string;name:string;workflowExecution?:JobWorkflowAdmissionReference}
+export type AgentPanelRenderer = (nodeId: string, pinned?: PinnedPanelNode) => AgentPanels
 type Canvas = {
   draftKey: string
   inspect: (action: () => void) => void
@@ -33,7 +35,7 @@ type Canvas = {
 const CanvasContext = createContext<Canvas>({ draftKey: '', inspect: (action) => action(), setOpen: () => undefined,
   panels: () => ({ chat: null, settings: null, info: null }) })
 
-const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<GraphNode>) {
+const DraftAgent = memo(function DraftAgent({ id, data, selected }: NodeProps<AgentGraphNode>) {
   const { draftKey, inspect, open, setOpen, panels, selectNode } = useContext(CanvasContext)
   const entry = useGraphDraftStore((state) => state.nextDrafts[draftKey]?.graph.entryNodeId === id)
   const presentation = useGraphPresentationStore()
@@ -95,7 +97,17 @@ const TypedEdge = memo(function TypedEdge({ id, source, target, data }: EdgeProp
     </foreignObject> : null}
   </g>
 })
-const nodeTypes = { agent: DraftAgent }, edgeTypes = { typed: TypedEdge }
+const DraftJob=memo(function DraftJob({id,data,selected}:NodeProps<JobGraphNode>) {
+  const {draftKey,inspect,open,setOpen,panels,selectNode}=useContext(CanvasContext)
+  const entry=useGraphDraftStore(state=>state.nextDrafts[draftKey]?.graph.entryNodeId===id)
+  const core=useRef<HTMLButtonElement>(null),panel=open?.nodeId===id?open.panel:undefined
+  return <><AgentNodeView ref={core} name={data.label} harnessLabel="Job" statusLabel="Saved job" selected={selected} entry={entry} openPanel={panel}
+    ariaLabel={`${data.label}, job, saved revision ${data.jobDefinitionRevision}`}
+    onSelect={()=>inspect(()=>{selectNode?.(id);setOpen({nodeId:id,panel:'info'})})}
+><AgentHandles name={data.label}/></AgentNodeView>
+    {panel?<Dialog open className="job-dialog" title={data.label} description="Noninteractive job" onOpenChange={value=>{if(!value)inspect(()=>setOpen(undefined))}}>{panels(id).info}{panels(id).settings}</Dialog>:null}</>
+})
+const nodeTypes = { agent: DraftAgent, job: DraftJob }, edgeTypes = { typed: TypedEdge }
 const fitViewOptions = { padding: 0.25, minZoom: 0.5, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
 export type DraftCanvasHandle = { flush(): void; cancel(): void }

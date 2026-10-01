@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { webcrypto } from 'node:crypto'
 import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -127,7 +128,7 @@ describe('Run inspection inside the one mounted Board', () => {
     expect(screen.getByTestId('unified-workflow-board')).toBe(boardElement)
     expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(authoring)
     expect(useGraphDraftStore.getState().nextDrafts[key]!.instanceId).toBe(instanceId)
-    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!.initialPrompt).toBe('Keep this unpublished next draft')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!).initialPrompt).toBe('Keep this unpublished next draft')
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   }, 10_000)
 

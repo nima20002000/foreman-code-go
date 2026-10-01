@@ -91,13 +91,16 @@ describe('FIL-10 attachment contracts and receipt compatibility', () => {
 })
 
 describe('FIL-10 message metadata and lifecycle adapter', () => {
-  it('keeps old text-only records and readback unchanged without querying files', async () => {
+  it('keeps text-only readback unchanged without looking up file metadata', async () => {
     const { db, query } = queryable()
     const legacy = { id: 'message', conversationId: 'chat', role: 'user', content: 'hello' }
     expect(message()).toEqual(legacy)
     await validateMessageAttachments(db, 'chat', [])
-    expect(await hydrateMessageAttachments(db, 'chat', [legacy])).toEqual([legacy])
-    expect(query).not.toHaveBeenCalled()
+    expect(await hydrateMessageAttachments(db, 'chat', [legacy])).toEqual([{ ...legacy, originalInput: null }])
+    // User receipts remain eligible for upload-free output recovery, even without input pins.
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(query.mock.calls.some(([sql]) => sql.includes('jsonb_to_recordset'))).toBe(false)
+    expect(query.mock.calls.every(([sql]) => sql.includes('operator_conversation_turns'))).toBe(true)
   })
   it('discovers upload-free receipt messages for finalized Codex ledger recovery', async () => {
     const stored = { ...message(), requestId: 'send' }
@@ -135,8 +138,8 @@ describe('FIL-10 message metadata and lifecycle adapter', () => {
       file: { state: 'ready', expiresAt: '2026-09-27T00:00:00.000Z', currentRevisionId: 'newer-revision' },
       revision: { ...first, filename: 'same.md', mediaType: 'text/markdown', byteSize: 5 },
     })
-    // One batched pin lookup plus one batched Codex publication-recovery lookup.
-    expect(query).toHaveBeenCalledTimes(2)
+    // One lookup each for pins, exact original admission, and publication recovery.
+    expect(query).toHaveBeenCalledTimes(3)
     expect(query.mock.calls[0]![0]).not.toContain('storage_key')
   })
   it('deduplicates page lookups by both IDs while retaining message order and historical revisions', async () => {
@@ -144,7 +147,7 @@ describe('FIL-10 message metadata and lifecycle adapter', () => {
     const { db, query } = queryable([row(first), row(historical)])
     const loaded = await hydrateMessageAttachments(db, 'chat', [message('a', [first]), message('b', [historical]), message('c', [first])])
     expect(loaded.map((entry) => entry.attachments![0]!.revision.revisionId)).toEqual(['revision-1', 'older', 'revision-1'])
-    expect(query).toHaveBeenCalledTimes(2)
+    expect(query).toHaveBeenCalledTimes(3)
   })
   for (const state of ['pending', 'expired', 'removed'] as const) {
     it(`rejects ${state} at admission, but retains its metadata on old messages`, async () => {

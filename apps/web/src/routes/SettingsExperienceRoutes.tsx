@@ -1,6 +1,10 @@
 import { Link, Navigate, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
+import { ComputerSettings } from '../features/settings/ComputerSettings'
+import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
+import { Alert } from '../shared/ui/nocturne'
+import { HarnessComputerScope } from '../features/settings/HarnessComputerScope'
 import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSettings'
 import { WorkspaceDefaultsSettings } from '../features/settings/WorkspaceDefaultsSettings'
 import { AccountAccess } from '../features/auth/AccountAccess'
@@ -31,11 +35,11 @@ export function HarnessSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/harnesses' })
   const navigate = useNavigate({ from: '/settings/harnesses' })
   useEffect(() => {
-    if (search.harness === 'opencode' && search.section === 'plugins') void navigate({ search: { harness: 'opencode', section: 'model' }, replace: true })
-  }, [search.harness, search.section, navigate])
-  return <SettingsShell back={search.harness ? <Link to="/settings/harnesses" search={{}} className="settings-back-link" aria-label="Back to harnesses"><span aria-hidden="true">←</span> Harnesses</Link> : undefined}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.harness === 'opencode' && search.section === 'plugins' ? 'model' : search.section ?? 'model'}
-    onSelectHarness={(harness) => void navigate({ search: harness ? { harness, section: 'model' } : {} })}
-    onSectionChange={(section) => void navigate({ search: { ...search, section } })} /></SettingsShell>
+    if (search.harness === 'opencode' && search.section === 'plugins') void navigate({ search: { ...search, harness: 'opencode', section: 'model' }, replace: true })
+  }, [search, navigate])
+  return <SettingsShell back={search.harness ? <Link to="/settings/harnesses" search={{ computer: search.computer }} className="settings-back-link" aria-label="Back to harnesses"><span aria-hidden="true">←</span> Harnesses</Link> : undefined}><HarnessComputerScope selectedComputer={search.computer} onSelectComputer={(computer) => void navigate({ search: { ...search, computer } })}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.harness === 'opencode' && search.section === 'plugins' ? 'model' : search.section ?? 'model'}
+    onSelectHarness={(harness) => void navigate({ search: harness ? { ...search, harness, section: 'model' } : { computer: search.computer } })}
+    onSectionChange={(section) => void navigate({ search: { ...search, section } })} /></HarnessComputerScope></SettingsShell>
 }
 const skillsBack = <Link to="/settings/skills" className="settings-back-link" aria-label="Back to skills"><span aria-hidden="true">←</span> Skills</Link>
 export function SkillsSettingsRouteEntry() {
@@ -67,4 +71,16 @@ export function AccountRouteEntry() {
   return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="account" slots={{ main:
     <div className="settings-page settings-experience"><AccountAccess /></div>,
   }} />
+}
+
+export function ComputersSettingsRouteEntry() {
+  const navigate = useNavigate()
+  return <SettingsShell><ComputerSettings onSelectComputer={(deviceId) => void navigate({ to: '/settings/computers/$deviceId', params: { deviceId } })} /></SettingsShell>
+}
+export function ComputerDetailsSettingsRouteEntry() {
+  const params = useParams({ strict: false })
+  const device = DeviceRegistrationSchema.shape.deviceId.safeParse(params.deviceId)
+  return <SettingsShell back={<Link to="/settings/computers" className="settings-back-link"><span aria-hidden="true">←</span> Computers</Link>}>
+    {device.success ? <ComputerSettings key={device.data} deviceId={device.data} /> : <Alert tone="danger" title="The computer address is invalid." />}
+  </SettingsShell>
 }

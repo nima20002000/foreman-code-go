@@ -54,14 +54,14 @@ export function agentNodeFacts(agent: AgentFactsSource, role?: string): {
   const productRole = role ?? agent.productRole
   const roleLabel = productRole === 'orchestrator' ? 'Orchestrator' : productRole === 'coder' ? 'Worker'
     : productRole ? cap(productRole) : 'Agent'
-  const effort = configuration ? configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.variant || 'default' : agent.effort
+  const effort = configuration ? configuration.harness === 'codex' ? configuration.reasoningEffort : configuration.harness === 'opencode' ? configuration.variant || 'default' : undefined : harness === 'claude' ? undefined : agent.effort
   const meta = [
     ...(effort ? [{ label: configuration?.harness === 'opencode' ? 'Variant' : 'Effort', value: cap(String(effort)) }] : []),
     { label: 'Role', value: roleLabel },
   ]
   const lower = `${productRole ?? ''}`.toLowerCase()
   return {
-    harness, harnessLabel: harness === 'codex' ? 'Codex' : harness === 'opencode' ? 'OpenCode' : agent.harnessSummary?.label ?? 'Harness not set',
+    harness, harnessLabel: harness === 'codex' ? 'Codex' : harness === 'opencode' ? 'OpenCode' : harness === 'claude' ? 'Claude' : agent.harnessSummary?.label ?? 'Harness not set',
     model: configuration?.model ?? agent.model, roleLabel, meta,
     icon: lower.includes('review') ? 'eye' : lower.includes('orchestrat') ? 'workflow' : lower.includes('cod') ? 'code' : 'bot',
   }
@@ -76,7 +76,7 @@ export function agentSettingRows(agent: Agent): { label: string; value: string; 
     { label: 'Harness', value: facts.harnessLabel },
     { label: 'Model', value: facts.model ?? 'Not set' },
     ...facts.meta.filter((item) => item.label !== 'Role'),
-    ...(configuration?.harness === 'codex' ? [{ label: 'Sandbox', value: sandboxLabels[configuration.sandbox] }] : []),
+    ...(configuration && configuration.harness !== 'opencode' ? [{ label: 'Sandbox', value: sandboxLabels[configuration.sandbox] }] : []),
     ...(configuration?.harness === 'opencode' ? [{ label: 'Permissions', value: configuration.autoApprove ? 'Approves automatically' : 'Asks when needed' }] : []),
   ]
 }

@@ -256,6 +256,16 @@ export function GlobalSettingsRouteEntry() {
                 </Card>
               </li>
             </ul>
+            <h2 className="settings-group-heading" id="settings-computers-heading">Computers</h2>
+            <ul className="settings-card-list" aria-labelledby="settings-computers-heading">
+              <li>
+                <Card className="settings-card">
+                  <Link to="/settings/computers" className="settings-card-open">
+                    <SettingsCardBody icon="settings" title="Computers" description="Registered computers and harness profiles" />
+                  </Link>
+                </Card>
+              </li>
+            </ul>
             <h2 className="settings-group-heading" id="settings-library-heading">Library</h2>
             <ul className="settings-card-list" aria-labelledby="settings-library-heading">
               <li>

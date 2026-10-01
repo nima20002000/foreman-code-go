@@ -11,7 +11,7 @@ export function AgentPickerPanel({ children, close }: { children: ReactNode; clo
     setPosition({ left: Math.max(0, Math.min(left, parent.clientWidth - element.offsetWidth)),
       top: Math.max(0, Math.min(top, parent.clientHeight - element.offsetHeight)) })
   }
-  return <aside ref={panel} className="board-agent-picker" aria-label="Add agents to the board"
+  return <aside ref={panel} className="board-agent-picker" aria-label="Add node"
     style={position ? { ...position, right: 'auto' } : undefined}
     onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close() } }}>
     <header>
@@ -29,8 +29,8 @@ export function AgentPickerPanel({ children, close }: { children: ReactNode; clo
           event.preventDefault(); event.stopPropagation()
           move(panel.current.offsetLeft + (event.key === 'ArrowLeft' ? -20 : event.key === 'ArrowRight' ? 20 : 0),
             panel.current.offsetTop + (event.key === 'ArrowUp' ? -20 : event.key === 'ArrowDown' ? 20 : 0))
-        }}>Add agents to the board</button></h2>
-      <IconButton label="Close agent picker" variant="ghost" onClick={close}><Icon name="close" size={16} /></IconButton>
+        }}>Add node</button></h2>
+      <IconButton label="Close node picker" variant="ghost" onClick={close}><Icon name="close" size={16} /></IconButton>
     </header>
     <div className="board-agent-picker-content">{children}</div>
   </aside>

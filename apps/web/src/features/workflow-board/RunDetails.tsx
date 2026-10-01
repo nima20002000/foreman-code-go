@@ -1,3 +1,4 @@
+import { PinnedNodePlacement } from '../node-placement/PinnedNodePlacement'
 import { useProtectedAccessError } from '../auth/useProtectedAccessError'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -39,6 +40,8 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
   const version = pinned.isError || pinnedDenied || runDenied || canonicalDenied ? undefined : pinned.data?.version
   const configurationKey = `${identity}:configuration`
   const configurationOpen = useInspectionPresentation((state) => !!state.open[configurationKey])
+  const computersKey = `${identity}:computers`
+  const computersOpen = useInspectionPresentation((state) => !!state.open[computersKey])
   const snapshot = canonical.isError || canonical.isPaused || canonicalDenied || runDenied ? undefined : canonical.data
   // Only a terminal/cleanup transition needs a fresh private Run read for the
   // pre-existing Stop settlement fence. Never poll execution/activity arrays.
@@ -127,6 +130,13 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
         {version ? <JsonValue label="Pinned WorkflowVersion" value={version} /> : null}
       </> : null}
     </details>
+    {detail && version && !denied && !pinnedDenied ? <details key={`computers:${identity}`} open={computersOpen}
+      onToggle={(event) => useInspectionPresentation.getState().setOpen(computersKey, event.currentTarget.open)}>
+      <summary>Accepted node computers</summary>
+      {computersOpen ? version.definition.nodes.map((node) => <section key={`${identity}:${node.id}`} aria-label={`Computer evidence for ${node.name ?? node.label}`}>
+        <h3>{node.name ?? node.label}</h3><PinnedNodePlacement scope={scope} nodeId={node.id} />
+      </section>) : null}
+    </details> : null}
     {!denied && !pinnedDenied ? <Activities key={JSON.stringify(scope)} scope={scope} /> : null}
     {version ? <ExecutionInspector scope={scope} version={version} /> : pinned.isPending ? <p role="status">Loading the pinned version before inspection…</p>
       : <Alert tone="warning" title="Run inspection is unavailable until its immutable version is verified.">

@@ -1,13 +1,15 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
 import { ChatAttachmentBoundary } from '../ChatAttachmentBoundary'
 import { prepareChatAttachments } from '../chatAttachmentAttempt'
-import { Alert, Button, ConfirmDialog, LoadingState } from '../../../shared/ui/nocturne'
+import { Alert, Button, CodeBlock, Dialog, LoadingState } from '../../../shared/ui/nocturne'
+import { createFileCardHttpClient, MessageFileCards } from '../../file-cards'
 import { ApiError } from '../../../shared/api/client'
 import { ConversationComposer } from '../ConversationComposer'
 import { ConversationViewport } from '../ConversationViewport'
 import { useConversationDraftStore } from '../conversationDraftStore'
+import { chatBackgroundWork } from '../chatWorkStatus'
 import { AgentChatTranscript } from './AgentChatTranscript'
 import { chatBusy, deliveryLabels, intentLabels, intentUnavailable } from './model'
 import type { SelectedChatBinding } from './selectedRunChatModel'
@@ -32,6 +34,10 @@ export function AgentConversation(props: AgentConversationProps) {
 function AgentConversationContent({ context, name, runActivity, onNewConversation, selected }: AgentConversationProps) {
   const chat = useAgentChat(context, selected), state = chat.state
   const conversation = state?.conversation
+  const conversationId = conversation?.id
+  const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
+    download: `/api/workspaces/${encodeURIComponent(context.workspaceId)}/agent-chat/conversations/${encodeURIComponent(conversationId)}/files/{fileId}/revisions/{revisionId}/content`,
+  }) : undefined, [context.workspaceId, conversationId])
   const attachments = useConversationAttachments(conversation ? { kind: 'temporary', chat: {
     kind: 'agent', conversationId: conversation.id, agentId: conversation.agentId,
     workspaceId: conversation.workspaceId, workflowId: conversation.workflowId,
@@ -72,9 +78,13 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const interruptReason = writeReason ?? (state ? intentUnavailable(state, 'interrupt_and_send') : 'Loading this conversation…')
   const cancelReason = chat.blocked('agent_chat:cancel')
   const responseReason = chat.blocked('agent_chat:respond')
+    ?? (state?.pendingInteraction && (!state.pendingInteraction.turn.nativeRequestId || state.pendingInteraction.session.nativeSessionId !== state.conversation?.nativeSession?.nativeSessionId || state.activeTurn?.nativeTurnId && state.pendingInteraction.turn.nativeTurnId !== state.activeTurn.nativeTurnId) ? 'The original native request is not available.' : undefined)
+    ?? (state?.pendingInteraction && !state.responseAvailability?.available ? state.responseAvailability?.message ?? 'Refresh this conversation to check reply availability.' : undefined)
+    ?? (state?.responseAvailability && (state.responseAvailability.nativeRequestId !== state.pendingInteraction?.turn.nativeRequestId || state.responseAvailability.nativeSessionId !== state.pendingInteraction?.session.nativeSessionId || state.responseAvailability.nativeRequestType !== state.pendingInteraction?.nativeRequestType) ? 'Refresh this conversation before replying.' : undefined)
   const stopReason = cancelReason ?? (state?.capabilities.interruptAndSend ? undefined
     : state?.capabilities.unavailable.interruptAndSend ?? 'Interrupting is unavailable.')
   const busy = !!state && chatBusy(state), hasQueue = state?.turns.some((turn) => turn.delivery === 'queued')
+  const background = state && !busy ? chatBackgroundWork(state.activitySnapshot) : undefined
   const empty = (!draft.trim() && !attachments.hasAttachments) || attachments.hasBlockingAttachments || draft.length > 32_000
   const latest = chat.latestCommand
   const receipt = chat.latestReceipt
@@ -96,12 +106,15 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     && (!state.conversation || state.capabilities.resume || busy) : !!state.conversation || state.availability.canSend)
   const canStop = !!state && (busy || hasQueue) && state.availability.reason !== 'run_active' && !sessionMissing
     && (state.capabilities.interruptAndSend || !!state.capabilities.unavailable.interruptAndSend)
-  const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.nativeMessageComplete !== false).at(-1)
+  const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.activityChannel !== 'reasoning' && message.nativeMessageComplete !== false).at(-1)
+  const resendFiles = sendAgain && state ? [...state.messages, ...(chat.history.data?.pages.flatMap((batch) => batch.pages.flatMap((page) => page.messages)) ?? [])]
+    .flatMap((message) => message.attachments ?? []) : []
   const legacyNotices = <div className="agent-chat-notices">
     {runActivity}
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
-      : stateLabels[state.sessionState]}</p> : null}
+      : state.sessionState === 'idle' && background ? background.label : stateLabels[state.sessionState]}</p> : null}
+    {background ? <p role="status">{background.message}</p> : null}
     {!chat.online ? <Alert tone="warning" title="You are offline" live>Your draft is kept. No messages will be sent automatically when you reconnect.</Alert>
       : state?.conversation && chat.connection !== 'connected' ? <Alert tone="warning" title={chat.connection === 'unavailable' ? 'Live updates unavailable' : 'Connecting to live activity'} live>
         {chat.connection === 'unavailable' ? 'Checking the latest saved state while live updates are unavailable.' : 'Reconnecting and checking the latest saved state. Messages are not resent.'}
@@ -149,9 +162,10 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     <p className="agent-chat-session-label" role="status" title={state?.availability.message ?? nextReason}>
       {chat.query.isError ? 'Chat unavailable' : !state ? 'Loading…' : sessionMissing ? 'Session unavailable'
         : !state.availability.canSend ? state.availability.reason === 'run_active' ? 'Run active · read only' : 'Chat unavailable'
-          : busy ? 'Working' : 'Ready'}
+          : busy ? 'Working' : background?.label ?? 'Ready'}
     </p>
     {chat.query.isError ? <Button size="sm" onClick={chat.refresh}>Retry</Button> : null}
+    {background ? <p role="status">{background.message}</p> : null}
     {!chat.online ? <p role="status">Offline · draft kept</p> : null}
     {receipt ? <p role="status">{deliveryLabels[currentReceipt?.delivery ?? receipt.delivery]}</p> : null}
     {error ? <p role="alert" title={error instanceof Error ? error.message : undefined}>Command unconfirmed</p> : null}
@@ -160,7 +174,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   return <div className="agent-conversation" data-testid="agent-conversation" data-chat-key={chat.draftKey}>
     {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} commands={chat.commands} history={chat.history}
       notices={notices} cancelReason={cancelReason} responseReason={responseReason} resendReason={nextReason}
-      onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
+      onRefresh={chat.refresh} refreshing={chat.query.isFetching} onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
       : <ConversationViewport revision="loading">{() => notices}</ConversationViewport>}
     {showComposer || canStop ? <div className="agent-chat-composer-controls" role="group" aria-label="Chat actions" aria-describedby={reasonId}>
       {showComposer ? <ConversationComposer conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}
@@ -177,10 +191,22 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       </div> : null}
     </div> : null}
     <div className="n-sr-only" aria-live="polite" aria-atomic="true">{latestReply ? `New reply from ${name}: ${latestReply.content}` : ''}</div>
-    <ConfirmDialog open={sendAgain !== undefined} onOpenChange={(open) => { if (!open) setSendAgain(undefined) }}
+    <Dialog open={sendAgain !== undefined} onOpenChange={(open) => { if (!open) setSendAgain(undefined) }}
       title="Send again as a new message?" description="The original message may already have been accepted. This creates a new message and can repeat work. It is not a retry or a resume."
-      confirmLabel="Send as new message" error={nextReason} pending={chat.pending} onConfirm={() => {
-        if (sendAgain !== undefined && chat.send(sendAgain.content, 'next_turn', false, true, { attachments: sendAgain.attachments ?? [] })) { setSendAgain(undefined); focus() }
-      }} />
+      dismissible={!chat.pending} busy={chat.pending} role="alertdialog" size="sm">
+      {sendAgain ? <div className="n-stack">
+        <CodeBlock label="Original message text" code={sendAgain.content} />
+        <p>Only the original file pins below will be sent. Displayed output files are excluded.</p>
+        {sendAgain.attachments?.length ? <>
+          <CodeBlock label="Original file pins" language="json" code={JSON.stringify(sendAgain.attachments, null, 2)} />
+          {resendFileClient ? <MessageFileCards attachments={sendAgain.attachments} files={resendFiles} client={resendFileClient} /> : null}
+        </> : <p>No original files. This new message will contain text only.</p>}
+        {nextReason ? <p className="n-field-error" role="alert">{nextReason}</p> : null}
+        <div className="n-actions"><Button disabled={chat.pending} onClick={() => setSendAgain(undefined)}>Keep it</Button>
+          <Button variant="danger" loading={chat.pending} disabled={!!nextReason} onClick={() => {
+            if (chat.send(sendAgain.content, 'next_turn', false, true, { attachments: sendAgain.attachments ?? [] })) { setSendAgain(undefined); focus() }
+          }}>Send as new message</Button></div>
+      </div> : null}
+    </Dialog>
   </div>
 }

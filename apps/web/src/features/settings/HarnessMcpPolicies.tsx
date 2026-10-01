@@ -7,8 +7,9 @@ import { HarnessTokenList } from './HarnessTokenList'
 
 export function HarnessMcpPolicies({ editor, onChange }: { editor: HarnessEditor; onChange(value: HarnessEditor): void }) {
   const value = withAdvancedDefaults(editor.configuration)
-  const servers = useNativeMcpServers(value.harness)
+  const servers = useNativeMcpServers(value.harness, value.harness !== 'claude')
   const [expanded, setExpanded] = useState<string>()
+  if (value.harness === 'claude') return <p>Claude MCP servers and tool approval rules are pinned in the accepted configuration. Native connection overrides are excluded.</p>
   const policies = value.harness === 'codex' ? value.advanced!.mcpServers : value.advanced!.mcp.serverEnabled
   const names = [...new Set([...Object.keys(policies), ...(servers.data?.servers.map((server) => server.name) ?? [])])].sort()
   const setPolicy = (name: string, enabled?: boolean) => {
@@ -17,7 +18,7 @@ export function HarnessMcpPolicies({ editor, onChange }: { editor: HarnessEditor
       if (enabled === undefined) delete next[name]
       else next[name] = { ...next[name], enabled, required: enabled ? next[name]?.required ?? false : false }
       onChange({ ...editor, configuration: { ...value, advanced: { ...value.advanced!, mcpServers: next } }, mcpText: JSON.stringify(next, null, 2) })
-    } else {
+    } else if (value.harness === 'opencode') {
       const next = { ...value.advanced!.mcp.serverEnabled }
       if (enabled === undefined) delete next[name]
       else next[name] = enabled

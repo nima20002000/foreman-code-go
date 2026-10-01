@@ -24,8 +24,8 @@ export function projectRunBoard(snapshot: AvailableRunBoardSnapshot): { nodes: S
     initialWidth: node.size.width, initialHeight: node.size.height,
     style: { width: node.size.width, height: node.size.height }, data: { snapshot: node },
     draggable: false, connectable: false, selectable: false, deletable: false, focusable: true,
-    ariaRole: 'img', ariaLabel: `${node.name}, saved agent, read only`,
-    domAttributes: { title: `${node.name}\nAgent: ${node.agentId}\nConfiguration: ${node.agentConfigurationVersionId}` },
+    ariaRole: 'img', ariaLabel: `${node.name}, saved ${node.kind==='job'?'job':'agent'}, read only`,
+    domAttributes: { title: node.kind==='job'?`${node.name}\nJob: ${node.jobDefinitionId}\nRevision: ${node.jobDefinitionRevision}`:`${node.name}\nAgent: ${node.agentId}\nConfiguration: ${node.agentConfigurationVersionId}` },
   }))
   const lanes = new Map<string, number>()
   const edges: SavedBoardEdge[] = snapshot.edges.map((edge) => {

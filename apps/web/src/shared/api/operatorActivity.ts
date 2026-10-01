@@ -14,7 +14,7 @@ export function mergeOperatorActivity(...sources: readonly (readonly OperatorAct
   for (const source of sources) for (const entry of source) {
     const key = `${entry.requestId}:${entry.id}`
     const prior = entries.get(key)
-    if (!prior || entry.revision >= prior.revision) entries.set(key, entry)
+    if (!prior || entry.revision > prior.revision) entries.set(key, entry)
   }
   return [...entries.values()].sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0)
 }

@@ -4,6 +4,7 @@ import type {
 } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ConversationRow, PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
+import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 
 export function deferred<T = void>() {
@@ -43,7 +44,13 @@ export function memoryConversation(configuration: OperatorConfigurationVersion, 
     ...(row.response_delivery ? { responseDelivery: row.response_delivery } : {}),
     ...(row.last_result ? { lastResult: row.last_result } : {}) })
   const repository = {
-    active: async () => structuredClone(row), get: async () => state(), configuration: async () => configuration,
+    activity: { append: async () => undefined, settleKnownByNative: async () => undefined, unfinishedOwners: async () => ({ owners: [], hasMore: false }) },
+    active: async () => structuredClone(row), get: async () => state(),
+    getWithActivity: async () => ({ ...state(), activitySnapshot: { schemaVersion: 1, scope: { kind: 'operator_chat', conversationId: id }, revision: String(row.revision), active: [], queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } } }),
+    // Lifecycle unit fixture; receipt SQL/idempotency is exercised by operator-chat-commands and production replay tests.
+    createControlCommands: () => ({ execute: async (_principal: unknown, _source: unknown, _id: string, _key: string, _input: unknown, perform: (mark: () => void) => Promise<unknown>) => perform(() => {}), drain: async () => {} }),
+    appendAssistantTextOperation: async (id: string, request: string, operation: ActivityTextOperation) => { void id; void request; void operation; return { status: 'committed' as const, revision: String(row.revision), messageRevision: String(row.revision) } },
+    configuration: async () => configuration,
     hasTurn: async (_id: string, requestId: string) => receipts.has(requestId),
     hasMessages: async () => false,
     harnessForMessage: async () => configuration.harness,

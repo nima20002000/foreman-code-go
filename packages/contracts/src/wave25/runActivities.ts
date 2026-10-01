@@ -1,3 +1,4 @@
+import { ActivitySnapshotV1Schema } from '../activity.js'
 import { z } from 'zod'
 import { GraphIdSchema, GraphSequenceSchema, RunGraphScopeSchema } from './graphPrimitives.js'
 import { TimestampSchema } from '../schemaPrimitives.js'
@@ -54,6 +55,7 @@ export const RunActivityPublicSchema = z.object({
 export type RunActivityPublic = z.infer<typeof RunActivityPublicSchema>
 
 export const RunActivitiesPageSchema = z.object({
+  activitySnapshot: ActivitySnapshotV1Schema.optional(),
   scope: RunGraphScopeSchema, items: z.array(RunActivityPublicSchema).max(100),
   mode: z.enum(['initial', 'older', 'newer']),
   highWater: GraphSequenceSchema, retainedFrom: GraphSequenceSchema,
