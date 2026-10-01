@@ -14,9 +14,8 @@ import type { FileToolOperation } from '../tools/types.js'
 
 export type ClaudeFileSdk = { createSdkMcpServer: typeof createSdkMcpServer; tool: typeof tool }
 /** Resolves evidence captured by the native owner, never fields from tool arguments.
- * SDK 0.3.284 supplies `extra: unknown`; it does not declare native message,
- * session, tool-use or child identity on an SDK MCP callback. Implementations
- * must fail closed unless their provider evidence identifies this exact call.
+ * SDK 0.3.284 supplies `extra: unknown`; its installed provider-owned tool-use
+ * metadata must resolve through the manager's unique observed root context.
  */
 export interface ClaudeFileCallResolver {
   resolve(operation: FileToolOperation, extra: unknown): Promise<ClaudeCallbackIdentity | undefined>
@@ -66,9 +65,11 @@ export function createClaudeFileMcpServer(input: {
   }
   const sdk = input.sdk
   const definitions = [
-    sdk.tool('files.list', 'List metadata in the admitted conversation scope.', AgentFileListInputSchema.shape,
+    sdk.tool('files.list', 'List metadata in the admitted conversation scope.',
+      { ...AgentFileListInputSchema.shape, limit: AgentFileListInputSchema.shape.limit.unwrap().optional() },
       (args, extra) => invoke('files.list', args, extra), { annotations: { readOnlyHint: true, openWorldHint: false } }),
-    sdk.tool('files.read', 'Read bounded bytes of exact file and revision pins.', AgentFileReadInputSchema.shape,
+    sdk.tool('files.read', 'Read bounded bytes of exact file and revision pins.',
+      { ...AgentFileReadInputSchema.shape, offset: AgentFileReadInputSchema.shape.offset.unwrap().optional(), length: AgentFileReadInputSchema.shape.length.unwrap().optional() },
       (args, extra) => invoke('files.read', args, extra), { annotations: { readOnlyHint: true, openWorldHint: false } }),
     ...(input.allowMutation ? [
       sdk.tool('files.create_working_copy', 'Create a temporary owned artifact from authorized pinned bytes.', AgentFileCreateWorkingCopyInputSchema.shape,
