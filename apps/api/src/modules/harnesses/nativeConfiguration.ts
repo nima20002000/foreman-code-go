@@ -4,8 +4,7 @@ import {
 import { HarnessOptionsResultSchema } from '@graphql/contracts/management'
 import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
-import { CodexAppServerSessionManager } from './codexAppServer.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeServer.js'
+import { NativeHarnessFactories } from './runtimeFactory.js'
 import { requireHarnessQualification } from './qualification/gate.js'
 import { harnessSettingSupport } from './operatorOptions.js'
 import { runCommand } from './process.js'
@@ -16,7 +15,11 @@ export class NativeConfigurationService {
   private readonly configurationChecks = new QualificationCache<Awaited<ReturnType<NativeConfigurationService['inspectConfiguration']>>>()
   invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear() }
   async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }
-  constructor(private readonly codexBinary: string, private readonly openCodeBinary: string, private readonly directory: string) {}
+  private readonly factories: NativeHarnessFactories
+  constructor(private readonly codexBinary: string, private readonly openCodeBinary: string, private readonly directory: string, factories?: NativeHarnessFactories, _claude?: unknown, private readonly command: typeof runCommand = runCommand) {
+    void _claude
+    this.factories = factories ?? new NativeHarnessFactories({ codexBinary, openCodeBinary })
+  }
 
   async qualifyConfiguration(input: HarnessConfiguration) {
     const value = HarnessConfigurationSchema.parse(input)
@@ -26,18 +29,7 @@ export class NativeConfigurationService {
 
   private async inspectConfiguration(value: HarnessConfiguration) {
     const signal = AbortSignal.timeout(60_000)
-    if (value.harness === 'codex') {
-      const manager = new CodexAppServerSessionManager(this.codexBinary)
-      try { return await manager.qualifyConfiguration(value, this.directory, signal) }
-      finally { await manager.shutdown() }
-    }
-    const manager = new OpenCodeNativeSessionManager({
-      server: new ManagedOpenCodeServer({ binary: this.openCodeBinary, workingDirectory: this.directory,
-        ownerAgentId: 'configuration-check', ...(value.advanced ? { advancedConfiguration: value.advanced } : {}) }),
-      ownerAgentId: 'configuration-check',
-    })
-    try { return await manager.qualifyConfiguration(value, this.directory, signal) }
-    finally { await manager.dispose() }
+    return this.factories.qualifyConfiguration(value, this.directory, signal)
   }
 
   async options(harness: 'codex' | 'opencode') {
@@ -51,13 +43,13 @@ export class NativeConfigurationService {
         if (refresh === 'upstream') {
           if (harness !== 'opencode') throw new HarnessExecutionError('CODEX_MODEL_REFRESH_UNSUPPORTED', 'Codex has no upstream catalog refresh command.')
           const signal = AbortSignal.timeout(60_000)
-          const version = await runCommand(this.openCodeBinary, ['--version'], this.directory, signal)
+          const version = await this.command(this.openCodeBinary, ['--version'], this.directory, signal)
           if (version.exitCode !== 0) {
             throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'The configured OpenCode CLI is not the qualified release.')
           }
           await requireHarnessQualification('opencode', (version.stdout || version.stderr).trim(), this.openCodeBinary)
           // Update the shared registry without loading plugins; the fresh /provider read still filters connected providers.
-          const result = await runCommand(this.openCodeBinary, ['models', '--refresh', '--pure'], this.directory, signal)
+          const result = await this.command(this.openCodeBinary, ['models', '--refresh', '--pure'], this.directory, signal)
           if (result.exitCode !== 0) throw new HarnessExecutionError('OPENCODE_MODEL_REFRESH_UNAVAILABLE', 'OpenCode could not refresh its models.dev cache.')
         }
       } finally { this.invalidateOptions() }
@@ -68,16 +60,20 @@ export class NativeConfigurationService {
   private async discoverOptions(harness: 'codex' | 'opencode') {
     const signal = AbortSignal.timeout(60_000)
     if (harness === 'codex') {
-      const manager = new CodexAppServerSessionManager(this.codexBinary)
+      const allocated = this.factories.allocate({ harness: 'codex', role: 'diagnostics',
+        workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none' })
+      if (allocated.harness !== 'codex') throw new Error('The Codex driver returned another harness.')
+      const manager = allocated.manager
       try {
         const options = await manager.discoverModels(this.directory, signal)
         return HarnessOptionsResultSchema.parse({ harness, ...options, authenticated: true, nativeAgents: [],
           settings: harnessSettingSupport(harness), restrictions: ['Global qualification directory; workspace MCP diagnostics are separate.', 'No native session or model turn was created.'], checkedAt: new Date().toISOString() })
-      } finally { await manager.shutdown() }
+      } finally { await manager.dispose() }
     }
-    const manager = new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({
-      binary: this.openCodeBinary, workingDirectory: this.directory, ownerAgentId: 'catalog-inspection',
-    }), ownerAgentId: 'catalog-inspection' })
+    const allocated = this.factories.allocate({ harness: 'opencode', role: 'diagnostics',
+      workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none' })
+    if (allocated.harness !== 'opencode') throw new Error('The OpenCode driver returned another harness.')
+    const manager = allocated.manager
     try {
       const options = await manager.discoverOptions(this.directory, signal)
       return HarnessOptionsResultSchema.parse({ harness, ...options, settings: harnessSettingSupport(harness),
