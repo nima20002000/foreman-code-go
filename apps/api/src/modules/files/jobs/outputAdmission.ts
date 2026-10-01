@@ -94,10 +94,18 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
       || root.snapshotId!==execution.acceptedSpec.source.snapshotId || root.manifestDigest!==execution.acceptedSpec.source.manifestDigest
       || root.workspaceId!==execution.workspaceId || root.locationRevision!==Number(target.destination.locationRevision)
       || source.rootPolicyId!==target.destination.rootPolicyId || source.rootPolicyRevision!==target.destination.rootPolicyRevision) throw new DomainError('JOB_OUTPUT_SOURCE_CONFLICT','The exact source/root/attempt binding differs from admission.',409)
-    const bound=(await sql.query<{record:unknown;current_binding_revision:string}>(`select b.record,c.current_binding_revision::text
-      from source_root_bindings b join source_root_catalog c on c.root_id=b.root_id
-      where b.root_id=$1 and b.binding_revision=$2 and b.workspace_id=$3 for share of b,c`,[root.rootId,root.bindingRevision,execution.workspaceId])).rows[0]
-    if (!bound || Number(bound.current_binding_revision)!==root.bindingRevision || !isDeepStrictEqual(SourceRootRecordSchema.parse(bound.record).binding,root)) throw new DomainError('JOB_OUTPUT_ROOT_REVOKED','The exact approved root binding is no longer current.',403)
+    // A newer source selection does not revoke this accepted immutable binding.
+    // The original policy must remain explicitly unrevoked; publication authority
+    // separately rechecks the live caller, host and accepted source/root scope.
+    const bound=(await sql.query<{record:unknown;revoked_at:Date|null}>(`select b.record,p.revoked_at
+      from source_root_bindings b join workspace_root_policies p on p.workspace_id=b.workspace_id
+        and p.root_policy_id=$4 and p.root_policy_revision=$5
+      where b.root_id=$1 and b.binding_revision=$2 and b.workspace_id=$3 for share of b,p`,
+    [root.rootId,root.bindingRevision,execution.workspaceId,source.rootPolicyId,source.rootPolicyRevision])).rows[0]
+    const acceptedRoot=bound && SourceRootRecordSchema.parse(bound.record)
+    if (!bound || bound.revoked_at || !acceptedRoot || !isDeepStrictEqual(acceptedRoot.binding,root)
+      || acceptedRoot.selection.rootPolicyId!==source.rootPolicyId || acceptedRoot.selection.rootPolicyRevision!==source.rootPolicyRevision)
+      throw new DomainError('JOB_OUTPUT_ROOT_REVOKED','The exact approved root binding is missing, changed or revoked.',403)
     const snapshot=(await sql.query<{record:unknown;availability:string}>(`select record,availability from source_snapshots
       where workspace_id=$1 and snapshot_id=$2 and approved_source_id=$3 and manifest_digest=$4 for share`,
     [execution.workspaceId,root.snapshotId,execution.acceptedSpec.source.approvedSourceId,root.manifestDigest])).rows[0]
@@ -112,7 +120,7 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
     const result=await sql.query<{result:unknown}>(`select result from management_command_receipts where principal_id=$1 and operation=$2 and command_id=$3`,[principalId,OPERATION,input.commandId])
     return result.rows[0]?JobOutputAdmissionSchema.parse(result.rows[0].result):undefined
   }
-  private async match(sql: JobSql, record: JobOutputAdmission, input: JobOutputPublicationInput, execution: JobExecution, facts: Awaited<ReturnType<PostgresJobOutputAdmission['assertContext']>>) {
+  private async match(sql: JobSql, record: JobOutputAdmission, input: JobOutputPublicationInput, execution: JobExecution, facts: Awaited<ReturnType<PostgresJobOutputAdmission['assertContext']>>, allowFinalizedReplay = true) {
     if (!isDeepStrictEqual(record.input,input) || record.inputHash!==commandInputHash(input) || record.specDigest!==execution.acceptedSpec.specDigest
       || record.materializationId!==execution.acceptedSpec.source.materializationId || record.materializationDigest!==execution.acceptedSpec.source.materializationDigest
       || record.nativeIdentityDigest!==commandInputHash(facts.receipt.native).slice(7) || record.closureEvidenceDigest!==facts.receipt.terminal!.closureEvidenceDigest
@@ -123,7 +131,8 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
         and f.scope_kind='job_execution' and f.workspace_id=$5 and f.job_execution_id=$6 and r.sha256=$7 and r.byte_size=$8 for share of f`,
     [record.principalId,`ci:publish:${commandInputHash(input.commandId).slice(7)}`,record.fileId,record.revisionId,input.workspaceId,input.executionId,input.sha256,input.byteSize])).rows[0]
     if (!canonical || canonical.allocation_state==='canceled' || !['pending','ready'].includes(canonical.state) || canonical.expires_at.getTime()<=this.clock().getTime()) throw new DomainError('FILE_EXPIRED','The original output allocation is expired, removed or unavailable.',410)
-    if (Date.parse(record.intent.expiresAt)<=this.clock().getTime() || Date.parse(record.allocationExpiresAt)<=this.clock().getTime()) throw new DomainError('FILE_EXPIRED','The original output admission expired.',410)
+    const finalizedReplay=allowFinalizedReplay && canonical.state==='ready' && canonical.allocation_state==='finalized'
+    if ((!finalizedReplay && Date.parse(record.intent.expiresAt)<=this.clock().getTime()) || Date.parse(record.allocationExpiresAt)<=this.clock().getTime()) throw new DomainError('FILE_EXPIRED','The original output admission expired.',410)
   }
   async admit(raw: unknown, source: FileMutationSource = 'device'): Promise<TransferIntent> {
     const input=JobOutputPublicationInputSchema.parse(raw)
@@ -180,7 +189,7 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
       const result=await sql.query<{result:unknown}>(`select result from management_command_receipts where operation=$1 and result #>> '{intent,transferId}'=$2`,[OPERATION,intent.transferId])
       if(result.rows.length!==1)throw new DomainError('JOB_OUTPUT_ADMISSION_MISSING','This transfer identity was not issued by main.',403)
       const record=JobOutputAdmissionSchema.parse(result.rows[0]!.result),current=await this.authority.authorizePublication(sql,record.input),facts=await this.assertContext(sql,record.input,current.execution)
-      await this.match(sql,record,record.input,current.execution,facts)
+      await this.match(sql,record,record.input,current.execution,facts,false)
       if(!isDeepStrictEqual(record.intent,intent) || !isDeepStrictEqual(outputTransferContext(facts.binding),context))throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Transfer identity or current connection differs from main admission.',403)
     })
   }
