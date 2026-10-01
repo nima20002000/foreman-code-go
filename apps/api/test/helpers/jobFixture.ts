@@ -1,3 +1,4 @@
+import { jobDigest } from '../../src/modules/jobs/service.js'
 import { JobDefinitionSpecSchema, type JobExecution } from '@graphql/contracts/jobs'
 export function jobSpec() {
   const digest='1'.repeat(64),mainId='11111111-1111-4111-8111-111111111111'
@@ -7,5 +8,6 @@ export function jobSpec() {
 }
 export function jobExecution():JobExecution {
   const spec=jobSpec(),digest='1'.repeat(64),now='2026-10-01T00:00:00.000Z'
-  return {schemaVersion:1,id:'job-fixture',workspaceId:'workspace-fixture',acceptedSpec:{...spec,source:{...spec.source,materializationId:'11111111-1111-4111-8111-111111111111',materializationDigest:digest},definitionId:'definition-fixture',definitionRevision:1,definitionVersionId:'version-fixture',scriptDigest:digest,outputSpecDigest:digest,specDigest:digest,bindingHash:digest},operationId:'operation-fixture',attemptId:'attempt-fixture',owner:{grantId:'grant-fixture',epoch:'1'},workflow:null,process:{phase:'queued',outcome:null,exitCode:null,signal:null,processStopped:false},transport:'unknown',publication:'pending',startedAt:null,finishedAt:null,lastSeenAt:null,resultIssue:null,cancelRequestedAt:null,createdAt:now,updatedAt:now}
+  const source={...spec.source,materializationId:'11111111-1111-4111-8111-111111111111',materializationDigest:digest}
+  return {schemaVersion:1,id:'job-fixture',workspaceId:'workspace-fixture',acceptedSpec:{...spec,workflowInput:null,source,definitionId:'definition-fixture',definitionRevision:1,definitionVersionId:'version-fixture',scriptDigest:jobDigest(spec.argv),outputSpecDigest:jobDigest(spec.outputs),specDigest:jobDigest({...spec,source,workflowInput:null}),bindingHash:jobDigest({target:spec.target,source})},operationId:'operation-fixture',attemptId:'attempt-fixture',owner:{grantId:'grant-fixture',epoch:'1'},workflow:null,process:{phase:'queued',outcome:null,exitCode:null,signal:null,processStopped:false},transport:'unknown',publication:'pending',startedAt:null,finishedAt:null,lastSeenAt:null,resultIssue:null,cancelRequestedAt:null,createdAt:now,updatedAt:now}
 }

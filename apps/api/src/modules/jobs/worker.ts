@@ -21,7 +21,7 @@ export class JobWorkerService {
       const execution=await this.repository.execution(sql,workspaceId,id,true)
       if(execution.attemptId!==fence.attemptId||execution.owner.grantId!==fence.owner.grantId||execution.owner.epoch!==fence.owner.epoch) throw new DomainError('JOB_STALE_ATTEMPT','The job attempt or ownership fence is stale.',409)
       await this.authority.require(sql,execution,fence)
-      const value=await work(sql,execution); await sql.query('commit'); return value
+      const value=await work(sql,execution); await this.authority.require(sql,execution,fence); await sql.query('commit'); return value
     } catch(error) {
       await sql.query('rollback').catch((failure:unknown)=>{releaseError=failure instanceof Error?failure:new Error('Worker rollback failed.')}); throw error
     } finally {sql.release(releaseError)}

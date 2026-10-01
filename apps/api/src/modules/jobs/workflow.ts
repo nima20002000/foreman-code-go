@@ -1,5 +1,7 @@
 import { JobExecutionSchema, type JobDefinition, type JobExecution } from '@graphql/contracts/jobs'
 import { JobWorkflowNodeSchema, JobWorkflowExecutionReferenceSchema, JobWorkflowAdmissionReferenceSchema, type JobWorkflowAdmissionReference, type JobWorkflowExecutionReference } from '@graphql/contracts/job-workflow'
+import type { RunInput } from '@graphql/contracts'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
@@ -8,7 +10,7 @@ import { JobService } from './service.js'
 /** Shared Run owner authority validates the exact saved node, occurrence, input and budget
  * inside the existing graph transaction. A job relationship is not a launch capability. */
 export interface WorkflowJobAuthority {
-  require(sql:GraphTransactionSql,reference:JobWorkflowAdmissionReference):Promise<{principal:ManagementPrincipal;definition:JobDefinition;node:unknown}>
+  require(sql:GraphTransactionSql,reference:JobWorkflowAdmissionReference):Promise<{principal:ManagementPrincipal;definition:JobDefinition;node:unknown;input:RunInput}>
   acceptResult(sql:GraphTransactionSql,reference:JobWorkflowExecutionReference,execution:JobExecution):Promise<void>
 }
 export class WorkflowJobService {
@@ -16,15 +18,15 @@ export class WorkflowJobService {
   async admit(sql:GraphTransactionSql,raw:JobWorkflowAdmissionReference) {
     assertGraphTransaction(sql)
     const reference=JobWorkflowAdmissionReferenceSchema.parse(raw)
-    const {principal,definition,node:rawNode}=await this.authority.require(sql,reference)
+    const {principal,definition,node:rawNode,input}=await this.authority.require(sql,reference)
     const node=JobWorkflowNodeSchema.parse(rawNode)
     if(node.id!==reference.nodeId||definition.workspaceId!==reference.workspaceId||node.jobDefinitionId!==definition.id||node.jobDefinitionRevision!==definition.revision||node.jobDefinitionVersionId!==definition.versionId) {
       throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The saved job node does not match its immutable definition version.',409)
     }
     const existing=(await sql.query<{job_execution_id:string}>(`select job_execution_id from workflow_job_executions where run_id=$1 and node_execution_id=$2 for update`,[reference.runId,reference.nodeExecutionId])).rows[0]
     if(existing) return this.jobs.repository.execution(sql,reference.workspaceId,existing.job_execution_id)
-    const execution=await this.jobs.admit(sql,principal,definition,{workflowId:reference.workflowId,runId:reference.runId,nodeId:reference.nodeId,nodeExecutionId:reference.nodeExecutionId})
-    await sql.query(`insert into workflow_job_executions(run_id,node_execution_id,job_execution_id,reference) values($1,$2,$3,$4::jsonb)`,[reference.runId,reference.nodeExecutionId,execution.id,JSON.stringify({...reference,jobExecutionId:execution.id})])
+    const execution=await this.jobs.admit(sql,principal,definition,{workflowId:reference.workflowId,runId:reference.runId,nodeId:reference.nodeId,nodeExecutionId:reference.nodeExecutionId},input)
+    await sql.query(`insert into workflow_job_executions(run_id,node_execution_id,job_execution_id,reference,input_json) values($1,$2,$3,$4::jsonb,$5)`,[reference.runId,reference.nodeExecutionId,execution.id,JSON.stringify({...reference,jobExecutionId:execution.id}),canonicalGraphJson(input,4*1024*1024)])
     return execution
   }
   async acceptResult(sql:GraphTransactionSql,raw:JobWorkflowExecutionReference):Promise<JobExecution> {

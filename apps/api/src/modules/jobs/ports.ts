@@ -6,7 +6,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 export interface JobDispatchPort {
   accept(client: JobSql, input: { workspaceId: string; executionId: string; attemptId:string; spec: AcceptedJobSpec;
     workflow: JobExecution['workflow']; principal: ManagementPrincipal }): Promise<Pick<JobExecution, 'operationId' | 'attemptId' | 'owner'>>
-  cancel(client: JobSql, execution: JobExecution, commandId: string): Promise<void>
+  cancel(client: JobSql, execution: JobExecution, commandId: string, principal:ManagementPrincipal): Promise<void>
   /** Called after COMMIT only. A lost wakeup is recovered by W08's durable dispatch. */
   wake(executionId: string): Promise<void>
 }

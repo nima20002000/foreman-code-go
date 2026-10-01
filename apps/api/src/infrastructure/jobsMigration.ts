@@ -16,7 +16,7 @@ create function preserve_job_definition_version() returns trigger language plpgs
 create trigger job_definition_version_immutable before update or delete on job_definition_versions for each row execute function preserve_job_definition_version();
 create table job_dispatch_intents (
  execution_id text primary key, workspace_id text not null references workspaces(id), intent jsonb not null,
- owner_id text, owner_fence text, receipt_sequence bigint not null default 0, last_receipt jsonb, delivery_attempted boolean not null default false, cancel_command_id text
+ owner_id text, owner_fence text, receipt_sequence bigint not null default 0, last_receipt jsonb, delivery_attempted boolean not null default false, cancel_command_id text,cancel_principal_id text references management_principals(id)
 );
 create table job_executions (
  id text primary key, workspace_id text not null references workspaces(id),
@@ -30,7 +30,7 @@ create table job_executions (
 );
 create table workflow_job_executions (
  run_id text not null references runs(id), node_execution_id text not null,
- job_execution_id text not null unique references job_executions(id), reference jsonb not null,
+ job_execution_id text not null unique references job_executions(id), reference jsonb not null,input_json text not null check(octet_length(input_json)<=4194304),
  accepted boolean not null default false, primary key(run_id,node_execution_id)
 );
 alter table job_dispatch_intents add foreign key(execution_id) references job_executions(id) deferrable initially deferred;
