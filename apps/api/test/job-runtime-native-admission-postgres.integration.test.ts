@@ -3,6 +3,7 @@ import pg from 'pg'
 import { Client,StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { beforeAll,afterAll,describe,it,expect } from 'vitest'
 import { buildApp } from '../src/app.js'
+import { registerJobRuntimeProfileRoutes } from '../src/routes/jobRuntimeProfiles.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -56,6 +57,7 @@ describe.skipIf(!url)('Main qualification admission PostgreSQL and authenticated
     await pool.query('insert into management_command_receipts values($1,$2,$3,$4,$5,$6::jsonb)',[principal.id,'job.runtime-profile.approve','browser-receipt',profile.workspaceId,'fixture',JSON.stringify(approved)])
     const commands=new PostgresCommandCoordinator(pool),service=new JobRuntimeProfiles(pool,commands,{} as PostgresSourceService,{capture:async()=>{throw new Error('No capture in readback')},run:async()=>{throw new Error('No native entry in readback')},revalidate:async()=>({ready:false,reasons:['UNQUALIFIED']})})
     app=buildApp({readiness:{database:{ping:async()=>{}},checkpoints:{ping:async()=>{}}},operator:{access:new PostgresAccessService(pool),services:{commands,jobRuntimeProfiles:service} as OperatorServices}})
+    registerJobRuntimeProfileRoutes(app,service)
     address=await app.listen({host:'127.0.0.1',port:0})
   },60000)
   afterAll(async()=>{await Promise.allSettled(clients.map(c=>c.close()));await app?.close();await pool?.end();if(admin){await admin.query(`drop schema ${schema} cascade`);await admin.end()}})
