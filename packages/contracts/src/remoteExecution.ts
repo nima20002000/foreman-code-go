@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ExecutionResultSchema } from './index.js'
 import { DispatchIntentSchema, OwnerControlSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 
@@ -19,6 +20,7 @@ export const RemoteTerminalEvidenceSchema = z.object({
   /** W11/provider recovery attestation, never PID absence or a missed heartbeat. */
   closureEvidenceDigest: PlacementDigestSchema,
   resultDigest: PlacementDigestSchema.optional(),
+  result: z.lazy(() => ExecutionResultSchema).optional(), artifactDigests: z.array(PlacementDigestSchema).max(128).optional(),
 }).strict()
 export type RemoteTerminalEvidence = z.infer<typeof RemoteTerminalEvidenceSchema>
 export const RemoteInteractionTargetSchema = z.object({ interactionId: z.string().min(1), interactionRevision: z.string().regex(/^[1-9][0-9]*$/), nativeInteractionId: z.string().min(1), native: RemoteNativeIdentitySchema }).strict()
@@ -39,11 +41,10 @@ export type RemoteOperationReceipt = z.infer<typeof RemoteOperationReceiptSchema
 export type RemoteOperationStatus = { status: 'known'; receipt: RemoteOperationReceipt }
   | { status: 'unknown'; reason: 'journal_absence_requires_reconciliation' }
 /** Grant renewal is for this original physical execution, never another start. */
-export interface RemoteOwnerReconciliation {
-  commandId: string
-  operationId: string
-  previousOwner: { grantId: string; epoch: string }
-  nextOwner: { grantId: string; epoch: string }
-  native: RemoteNativeIdentity
-  evidenceDigest: string
-}
+export const RemoteOwnerReconciliationSchema = z.object({
+  commandId: z.string().min(1), operationId: z.string().min(1),
+  previousOwner: z.object({ grantId: z.string().min(1), epoch: z.string().regex(/^[1-9][0-9]*$/) }).strict(),
+  nextOwner: z.object({ grantId: z.string().min(1), epoch: z.string().regex(/^[1-9][0-9]*$/) }).strict(),
+  native: RemoteNativeIdentitySchema, evidenceDigest: PlacementDigestSchema,
+}).strict()
+export type RemoteOwnerReconciliation = z.infer<typeof RemoteOwnerReconciliationSchema>

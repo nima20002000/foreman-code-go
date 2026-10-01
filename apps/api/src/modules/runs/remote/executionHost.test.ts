@@ -3,18 +3,22 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, type AgentConfigurationVersion } from '@graphql/contracts'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
 import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { RemoteOperationJournal } from './operationJournal.js'
+import { RemoteNativeSessionManager } from './nativeManagerProxy.js'
 import { RemoteExecutionHost } from './executionHost.js'
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
+const journals: RemoteOperationJournal[] = []
+const hosts: RemoteExecutionHost[] = []
+afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'w08-host-')); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root, 'journal'), { initializeNewInstallation: true })
+  journals.push(journal)
   const mainId = randomUUID(), deviceId = randomUUID(), installationId = randomUUID(), digest = 'a'.repeat(64)
   const configuration: AgentConfigurationVersion = { id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1, prompt: { system: 'test' }, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS.codex, contentHash: 'sha256:test', createdAt: '2026-10-01T00:00:00.000Z' }
   const placement = freezePlacement({ schemaVersion: 1, mainId, runId: 'run', nodeId: 'node', hostRef: { kind: 'device', mainId, deviceId }, registration: { workerInstallationId: installationId, keyRevision: 1, authorizationRevision: 1 }, mainInstallationId: 'main-installation',
@@ -23,16 +27,52 @@ async function setup() {
   const input = { value: 'accepted' }, inputDigest = `sha256:${createHash('sha256').update(canonicalGraphJson(input)).digest('hex')}`
   const intent = deriveDispatch(placement, { executionId: 'execution', occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1, attemptId: 'attempt', operationId: 'operation', inputDigest, owner: { grantId: 'grant', epoch: '1' } })
   const request = { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/project', runtimeDirectory: '/runtime', configuration, input }
-  const state = { starts: 0, turns: 0, cancels: 0, allowed: true }
+  const state = { starts: 0, turns: 0, cancels: 0, responds: 0, allowed: true }
   const session = { harness: 'codex' as const, providerVersion: 'test', nativeSessionId: 'native-session' }
   const manager: NativeHarnessSessionManager = { harness: 'codex', capabilities: async () => { throw new Error('unused') }, inspectMcp: async () => { throw new Error('unused') }, createSession: async () => { state.starts++; return session }, attachSession: async () => session,
-    startTurn: async function* (_session, turn) { state.turns++; await turn.onSubmitted?.('native-turn'); yield { sequence: 1, type: 'event', occurredAt: '2026-10-01T00:00:00.000Z', payload: {} } }, pending: async () => undefined, respond: async () => {}, cancel: async () => { state.cancels++; return false }, history: async () => ({ events: [], pendingInteractions: [] }), reconcile: async () => ({ events: [], pendingInteractions: [] }), close: async () => {} }
+    startTurn: async function* (_session, turn) { state.turns++; await turn.onSubmitted?.('native-turn'); yield { sequence: 1, type: 'event', occurredAt: '2026-10-01T00:00:00.000Z', payload: {} } }, pending: async () => undefined, respond: async () => { state.responds++ }, cancel: async () => { state.cancels++; return false }, history: async () => ({ events: [], pendingInteractions: [] }), reconcile: async () => ({ events: [], pendingInteractions: [] }), close: async () => {} }
   const host = new RemoteExecutionHost({ journal, connection: { mainId, deviceId, workerInstallationId: installationId, bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }, incarnationId: randomUUID(), managers: new ExecutionScopedNativeSessionManagerResolver(() => manager), authorize: async () => { if (!state.allowed) throw new Error('revoked') }, preflight: async () => {}, nativeEvidence: async () => ({ sessionId: 'native-session', processIdentityDigest: digest }), settle: async () => null })
-  return { host, journal, intent, placement, request, state }
+  hosts.push(host)
+  return { host, manager, session, journal, intent, placement, request, state }
 }
 describe('actual worker native-port adapter', () => {
-  it('uses the native manager once across duplicated delivery and turn requests', async () => { const { host, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); await host.prepare({ intent, placement, request }); expect(state.starts).toBe(1); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); expect(state.turns).toBe(1) })
+  it('uses the native manager once across duplicated delivery and turn requests', async () => { const { host, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); await host.prepare({ intent, placement, request }); expect(state.starts).toBe(1); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); expect(state.turns).toBe(1); await host.drain() })
+  it('routes the main native port through the shared bound RPC and observes requested cancellation', async () => {
+    const { host, intent, placement, request, state } = await setup()
+    const observed: string[] = []
+    const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration: request.configuration,
+      transport: { request: (_method, frame) => host.handle(frame) }, observeReceipt: async receipt => { observed.push(receipt.phase) },
+      controlFor: async ({ native }) => ({ schemaVersion: 1, protocolVersion: 1, commandId: 'proxy-stop', operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner, native, action: { kind: 'stop' } }) })
+    const session = await proxy.createSession({ request, correlationId: 'execution:execution' })
+    expect(await proxy.cancel(session)).toBe(false)
+    expect(state.starts).toBe(1); expect(state.cancels).toBe(1); expect(observed).toEqual(['start_acknowledged', 'stop_requested'])
+  })
   it('Stop delivered before Start persists a negative fence before any native manager launch', async () => { const { host, intent, placement, request, state } = await setup(); await host.control({ schemaVersion: 1, protocolVersion: 1, commandId: 'stop', operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner, action: { kind: 'stop' } }, { intent, placement }); await expect(host.prepare({ intent, placement, request })).rejects.toThrow('reconciliation'); expect(state.starts).toBe(0) })
+  it('Stop during delayed native creation aborts the owned launch signal and retains uncertainty', async () => {
+    const { host, manager, session, journal, intent, placement, request, state } = await setup()
+    let enter!: () => void, release!: () => void
+    const entered = new Promise<void>(resolve => { enter = resolve }), released = new Promise<void>(resolve => { release = resolve })
+    manager.createSession = async (_input, signal) => { enter(); await released; signal?.throwIfAborted(); state.starts++; return session }
+    const pending = host.prepare({ intent, placement, request }); await entered
+    await host.control({ schemaVersion: 1, protocolVersion: 1, commandId: 'stop-during-start', operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner, action: { kind: 'stop' } })
+    release(); await expect(pending).rejects.toThrow()
+    expect(state.starts).toBe(0)
+    const status = await journal.status('operation'); expect(status.status === 'known' && status.receipt.phase).toBe('uncertain'); expect(status.status === 'known' && status.receipt.stopFence).toBe(true)
+  })
+  it('validates native offered responses before reserving one exact idempotent answer', async () => {
+    const { host, manager, session, journal, intent, placement, request, state } = await setup()
+    await host.prepare({ intent, placement, request }); await host.startTurn('operation', 'prompt', 'execution:execution'); await host.drain()
+    const option = CODEX_APPROVAL_OPTIONS_FIXTURE[0]!
+    manager.pending = async () => ({ session, turn: { nativeTurnId: 'native-turn', nativeRequestId: 'native-question' }, nativeRequestType: 'question', request: {}, responseOptions: [option] })
+    const status = await journal.status('operation')
+    if (status.status !== 'known') throw new Error('missing receipt')
+    const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'response', operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner,
+      native: status.receipt.native, action: { kind: 'respond', interactionId: 'interaction', interactionRevision: '1', nativeInteractionId: 'native-question', response: option } }
+    await expect(host.control({ ...command, action: { ...command.action, response: { ...option, optionId: 'unoffered' } } })).rejects.toThrow('not offered')
+    expect(state.responds).toBe(0)
+    await host.control(command); await host.control(command)
+    expect(state.responds).toBe(1)
+  })
   it('revocation fences and requests physical cancellation without inventing closure', async () => { const { host, journal, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); state.allowed = false; await host.refreshAuthority(); expect(state.cancels).toBe(1); const status = await journal.status('operation'); expect(status.status === 'known' && status.receipt.stopFence).toBe(true); expect(status.status === 'known' && status.receipt.phase).toBe('stop_requested') })
   it('rejects placement/input drift and revoked authority before native work', async () => { const { host, intent, placement, request, state } = await setup(); await expect(host.prepare({ intent, placement, request: { ...request, input: { edited: true } } })).rejects.toThrow('binding mismatch'); state.allowed = false; await expect(host.prepare({ intent, placement, request })).rejects.toThrow('revoked'); expect(state.starts).toBe(0) })
 })

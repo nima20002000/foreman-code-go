@@ -3,11 +3,11 @@ import { z } from 'zod'
 import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema, NativeHarnessCapabilitiesSchema,
   McpDetectionSchema, ExecutionResultSchema, ApprovalResponseSemanticSchema, AgentHarnessSchema, type AgentConfigurationVersion, type AgentHarness, type NativeSessionReference } from '@graphql/contracts'
 import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
-import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteOwnerControl, type RemoteNativeIdentity } from '@graphql/contracts/remote-execution'
+import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteOwnerControl, type RemoteNativeIdentity, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
 
 export interface RemoteNativeTransport {
-  request(method: 'prepare' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'status' | 'reconcile-response', payload: unknown, signal?: AbortSignal): Promise<unknown>
+  request(method: 'prepare' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'status' | 'reconcile-response' | 'renew-owner', payload: unknown, signal?: AbortSignal): Promise<unknown>
 }
 const StatusSchema = z.discriminatedUnion('status', [z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(), z.object({ status: z.literal('unknown'), reason: z.literal('journal_absence_requires_reconciliation') }).strict()])
 const HistorySchema = z.object({ correlationId: z.string().optional(), nativeTurnId: z.string().optional(), nativeMessageId: z.string().optional(),
@@ -30,18 +30,19 @@ export interface RemoteNativeManagerOptions {
 /** Main-side native port, bound once to the accepted host/attempt. No provider credential crosses it. */
 export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   readonly harness: AgentHarness
+  private intent: DispatchIntent
   private session?: NativeSessionReference
   private receipt?: RemoteOperationReceipt
-  constructor(private readonly options: RemoteNativeManagerOptions) { this.harness = options.harness }
+  constructor(private readonly options: RemoteNativeManagerOptions) { this.harness = options.harness; this.intent = structuredClone(options.intent) }
   private request(method: Parameters<RemoteNativeTransport['request']>[0], payload: Record<string, unknown>, signal?: AbortSignal) {
     const { operationId: _operationId, ...fields } = payload
     void _operationId
-    return this.options.transport.request(method, { method, intent: this.options.intent, placement: this.options.placement, ...fields }, signal)
+    return this.options.transport.request(method, { method, intent: this.intent, placement: this.options.placement, ...fields }, signal)
   }
   private async status(raw: unknown) {
     const status = StatusSchema.parse(raw)
     if (status.status !== 'known') throw new Error('Original worker journal requires reconciliation')
-    const receipt = status.receipt, intent = this.options.intent
+    const receipt = status.receipt, intent = this.intent
     if (receipt.intent.operationId !== intent.operationId || receipt.intent.attemptId !== intent.attemptId
       || receipt.intent.executionId !== intent.executionId || receipt.intent.bindingHash !== intent.bindingHash) throw new Error('Remote receipt binding mismatch')
     await this.options.observeReceipt(receipt)
@@ -51,30 +52,36 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private assertSession(session: NativeSessionReference) {
     if (!this.session || this.session.nativeSessionId !== session.nativeSessionId || this.session.harness !== session.harness) throw new Error('Wrong remote native session')
   }
-  async capabilities(signal?: AbortSignal) { return NativeHarnessCapabilitiesSchema.parse(await this.request('capabilities', { intent: this.options.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
-  async inspectMcp(signal?: AbortSignal) { return McpDetectionSchema.parse(await this.request('inspect-mcp', { intent: this.options.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
+  async renewOwner(transition: RemoteOwnerReconciliation, signal?: AbortSignal) {
+    const next = { ...this.intent, owner: transition.nextOwner }
+    const raw = await this.options.transport.request('renew-owner', { method: 'renew-owner', intent: next, placement: this.options.placement, transition }, signal)
+    this.intent = next
+    return this.status(raw)
+  }
+  async capabilities(signal?: AbortSignal) { return NativeHarnessCapabilitiesSchema.parse(await this.request('capabilities', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
+  async inspectMcp(signal?: AbortSignal) { return McpDetectionSchema.parse(await this.request('inspect-mcp', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async createSession(input: NativeSessionStart, signal?: AbortSignal) {
     if (input.kind === 'operator' || input.environment) throw new Error('Remote workflow credentials must be prepared on the original worker')
-    if (input.request.executionId !== this.options.intent.executionId || input.correlationId !== `execution:${this.options.intent.executionId}`) throw new Error('Remote session execution mismatch')
-    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.options.intent, placement: this.options.placement, request: input.request }, signal))
+    if (input.request.executionId !== this.intent.executionId || input.correlationId !== `execution:${this.intent.executionId}`) throw new Error('Remote session execution mismatch')
+    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement, request: input.request }, signal))
     await this.status(value.status)
     this.session = value.session
     return value.session
   }
   async attachSession(session: NativeSessionReference, _input: NativeSessionStart, signal?: AbortSignal) {
     // Attachment is observation of this exact original session; worker recovery must already have proven/rebound it.
-    const receipt = await this.status(await this.request('status', { operationId: this.options.intent.operationId }, signal))
+    const receipt = await this.status(await this.request('status', { operationId: this.intent.operationId }, signal))
     if (receipt.native?.sessionId !== session.nativeSessionId || session.harness !== this.harness) throw new Error('Original remote session recovery required')
     this.session = session
     return session
   }
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.assertSession(session)
-    await this.status(await this.request('start-turn', { operationId: this.options.intent.operationId, prompt: input.prompt, correlationId: input.clientCorrelationId }, signal))
+    await this.status(await this.request('start-turn', { operationId: this.intent.operationId, prompt: input.prompt, correlationId: input.clientCorrelationId }, signal))
     let sequence = -1, submitted = false
     while (true) {
       signal?.throwIfAborted()
-      const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.options.intent.operationId }, signal))
+      const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
       const receipt = await this.status(value.status)
       if (!submitted && receipt.native?.turnId) { await input.onSubmitted?.(receipt.native.turnId); submitted = true }
       for (const event of value.history.events) { if (event.sequence > sequence) { sequence = event.sequence; yield event } }
@@ -83,24 +90,24 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       await delay(100, undefined, { signal })
     }
   }
-  async pending(session: NativeSessionReference, signal?: AbortSignal) { this.assertSession(session); const raw = await this.request('pending', { operationId: this.options.intent.operationId }, signal); return raw == null ? undefined : PendingNativeInteractionSchema.parse(raw) }
+  async pending(session: NativeSessionReference, signal?: AbortSignal) { this.assertSession(session); const raw = await this.request('pending', { operationId: this.intent.operationId }, signal); return raw == null ? undefined : PendingNativeInteractionSchema.parse(raw) }
   async respond(session: NativeSessionReference, nativeRequestId: string, option: Parameters<NativeHarnessSessionManager['respond']>[2], signal?: AbortSignal) {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original remote native ownership missing')
     const command = await this.options.controlFor({ kind: 'respond', native: this.receipt.native, nativeRequestId, option })
-    await this.request('control', { command, intent: this.options.intent, placement: this.options.placement }, signal)
+    await this.status(await this.request('control', { command, intent: this.intent, placement: this.options.placement }, signal))
   }
   async cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string) {
     this.assertSession(session)
     if (!this.receipt?.native || (nativeTurnId && nativeTurnId !== this.receipt.native.turnId)) throw new Error('Wrong remote cancel turn')
     const command = await this.options.controlFor({ kind: 'stop', native: this.receipt.native })
-    await this.request('control', { command, intent: this.options.intent, placement: this.options.placement }, signal)
+    await this.status(await this.request('control', { command, intent: this.intent, placement: this.options.placement }, signal))
     // Requested cancellation is not confirmed physical closure.
-    return false
+    return this.receipt?.phase === 'confirmed_terminal' && this.receipt.terminal?.kind === 'cancelled'
   }
   async history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
     this.assertSession(session)
-    const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.options.intent.operationId }, signal))
+    const value = z.object({ history: HistorySchema, status: StatusSchema }).strict().parse(await this.request('history', { operationId: this.intent.operationId }, signal))
     await this.status(value.status)
     return this.projectHistory(value.history)
   }
@@ -120,7 +127,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       ...(history.canceledRequestIds === undefined ? {} : { canceledRequestIds: history.canceledRequestIds }) }
   }
   async reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal) {
-    if (correlationId !== `execution:${this.options.intent.executionId}`) throw new Error('Wrong remote reconciliation correlation')
+    if (correlationId !== `execution:${this.intent.executionId}`) throw new Error('Wrong remote reconciliation correlation')
     return this.history(session, signal)
   }
   async reconcileResponse(session: NativeSessionReference, response: Parameters<NonNullable<NativeHarnessSessionManager['reconcileResponse']>>[1], signal?: AbortSignal) {
@@ -129,6 +136,6 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     await this.status(value.status)
     return this.projectHistory(value.history)
   }
-  async close(session: NativeSessionReference) { this.assertSession(session); await this.cancel(session) }
+  async close(session: NativeSessionReference) { this.assertSession(session); if (this.receipt?.phase !== 'confirmed_terminal') await this.cancel(session) }
   async closeForRestart(session: NativeSessionReference) { this.assertSession(session) }
 }

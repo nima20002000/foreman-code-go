@@ -1,6 +1,8 @@
 # Remote operation ownership checkpoint
 
-This journal is a worker-side durability boundary, not a scheduler and not a database client. Production wiring must use the W07 authenticated application carrier, accepted placement/operation scopes, existing main Run owner, W01 native managers, and W11 recovery/closure evidence. These files do not establish that a native two-host Run has executed.
+This journal is a worker-side durability boundary, not a scheduler and not a database client. Production wiring must use the W07 authenticated application carrier, accepted placement/operation scopes, existing main Run owner, W01 native managers, and W11 recovery/closure evidence. `RemoteExecutionHost` invokes the existing execution-scoped real native manager port on the worker. `RemoteNativeSessionManager` implements that same port on main over the W07 `execution-v1` extension. The shared RPC schema requires exact accepted intent/placement on every frame; session prepare, one-use turn start, read-only history/pending/capability/response reconciliation, and idempotent exact controls are separate methods. Main supplies immutable configuration/input, not provider credentials. Host-local preflight and current scoped authorization run before native effects. `observeReceipt` on the proxy must call the authoritative verified bridge before engine capture acceptance.
+
+Main migration `284401` and `remote/persistence.ts` persist accepted receipt sequences through the existing Run owner transaction, recheck live authority before commit, retain only 32 hashed rejected reports per operation, and expose original-host readback. Owner reconciliation is separate append-only evidence, preserving W08-A's immutable initial dispatch. These files do not establish that a native two-host Run has executed.
 
 | Phase | Durable fact | Permitted next action |
 | --- | --- | --- |
@@ -31,3 +33,13 @@ Recovery calls, through the authenticated scoped application carrier (not SSH or
 Redacted example: `{operationId:"op-…", attemptId:"attempt-…", bindingHash:"<sha256>", phase:"uncertain", entryAttempted:true, native:{sessionId:"session-…",turnId:"turn-…",processIdentityDigest:"<sha256>"}, uncertainty:"provider acknowledgment unavailable; original owner retained"}`. No provider login, application credential, DATABASE_URL or admin token belongs in a receipt.
 
 Remaining release gates: root's main persistence/transaction and HTTP/MCP permission/denial/readback integration; W07's scoped dispatch/control/status carrier (current canonical carrier exposes no execution dispatch); HRT-B/W01 native manager ownership bridge; W11 validated process-tree/provider closure; W09 real edge/artifact publication; orchestrator-only actual PC→laptop and fault suites. No remote command-line executable or real-device recovery is claimed by this checkpoint.
+
+Focused verification commands (no integration or device mutation):
+
+```sh
+corepack pnpm install --frozen-lockfile
+corepack pnpm --filter @graphql/contracts build
+corepack pnpm --filter @graphql/api typecheck
+corepack pnpm --filter @graphql/api exec eslint src/modules/runs/remote/*.ts src/infrastructure/remoteExecutionMigration.ts --max-warnings 0
+corepack pnpm --filter @graphql/api exec vitest run src/modules/runs/remote/operationJournal.test.ts src/modules/runs/remote/resultBridge.test.ts src/modules/runs/remote/executionHost.test.ts src/modules/runs/remote/persistence.test.ts --maxWorkers=1
+```

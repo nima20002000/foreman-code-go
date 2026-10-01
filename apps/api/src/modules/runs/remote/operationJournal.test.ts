@@ -7,14 +7,15 @@ import { RemoteOperationJournal } from './operationJournal.js'
 import type { DispatchIntent } from '@graphql/contracts/node-placement'
 import type { RemoteOwnerControl } from '@graphql/contracts/remote-execution'
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
+const journals: RemoteOperationJournal[] = []
+afterEach(async () => { await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 const digest = 'a'.repeat(64)
 const intent: DispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: randomUUID(), runId: 'run', nodeId: 'node', executionId: 'execution', occurrenceId: 'occurrence', occurrenceIndex: 0, technicalAttempt: 1,
   attemptId: 'attempt', operationId: 'operation', bindingHash: digest, inputDigest: `sha256:${digest}`, owner: { grantId: 'grant', epoch: '1' } }
 const connection = { mainId: intent.mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
 const native = { sessionId: 'session', turnId: 'turn', processIdentityDigest: digest }
 const stop: RemoteOwnerControl = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop', operationId: 'operation', attemptId: 'attempt', executionId: 'execution', bindingHash: digest, owner: intent.owner, action: { kind: 'stop' } }
-async function setup() { const root = await mkdtemp(join(tmpdir(), 'w08-journal-')); roots.push(root); const path = join(root, 'journal.json'); const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); return { path, journal } }
+async function setup() { const root = await mkdtemp(join(tmpdir(), 'w08-journal-')); roots.push(root); const path = join(root, 'journal.json'); const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal); return { path, journal } }
 describe('durable remote ownership', () => {
   it('duplicate delivery and concurrent reservations authorize one entry', async () => {
     const { journal } = await setup()
@@ -24,15 +25,18 @@ describe('durable remote ownership', () => {
     expect(reservations.filter(value => value.reserved)).toHaveLength(1)
     await expect(journal.accept({ ...intent, bindingHash: 'b'.repeat(64) }, connection, randomUUID())).rejects.toThrow('binding conflict')
   })
+  it('rejects a different operation ID for the same immutable execution attempt', async () => { const { journal } = await setup(); await journal.accept(intent, connection, randomUUID()); await expect(journal.accept({ ...intent, operationId: 'replacement-operation' }, connection, randomUUID())).rejects.toThrow('already bound') })
   it('reopens receipt/entry/provider acceptance without automatically reentering', async () => {
     const { path, journal } = await setup()
     await journal.accept(intent, connection, randomUUID()); await journal.reserveEntry('operation')
-    await journal.close(); let recovered = await RemoteOperationJournal.open(path)
+    await journal.close(); let recovered = await RemoteOperationJournal.open(path); journals.push(recovered)
     expect((await recovered.reserveEntry('operation')).reserved).toBe(false)
     await recovered.uncertain('operation', 'start acknowledgment lost')
     expect((await recovered.reserveEntry('operation')).reserved).toBe(false)
     await recovered.acknowledgeStart('operation', native)
-    await recovered.close(); recovered = await RemoteOperationJournal.open(path)
+    await recovered.confirmRecovered('operation', native)
+    expect((await recovered.reserveEntry('operation')).reserved).toBe(false)
+    await recovered.close(); recovered = await RemoteOperationJournal.open(path); journals.push(recovered)
     expect((await recovered.status('operation')).status).toBe('known')
     expect((await recovered.reserveEntry('operation')).reserved).toBe(false)
   })
@@ -41,7 +45,7 @@ describe('durable remote ownership', () => {
     await journal.accept(intent, connection, randomUUID())
     const result = await journal.control(stop)
     expect(result.receipt.phase).toBe('stop_requested'); expect(result.dispatch).toBe(false)
-    await journal.close(); const recovered = await RemoteOperationJournal.open(path)
+    await journal.close(); const recovered = await RemoteOperationJournal.open(path); journals.push(recovered); journals.push(recovered)
     expect((await recovered.reserveEntry('operation')).reserved).toBe(false)
     await recovered.terminal('operation', { kind: 'not_started', closureEvidenceDigest: digest })
     expect((await recovered.control(stop)).dispatch).toBe(false)
@@ -75,14 +79,16 @@ describe('durable remote ownership', () => {
     expect((await journal.control(response)).dispatch).toBe(true)
     expect((await journal.control(response)).dispatch).toBe(false)
     await expect(journal.control({ ...response, commandId: 'another-command' })).rejects.toThrow('already reserved')
+    await journal.interaction('operation', { interactionId: 'question', interactionRevision: '3', nativeInteractionId: 'native-question', native })
+    await expect(journal.control({ ...response, commandId: 'new-revision', action: { kind: 'respond', interactionId: 'question', interactionRevision: '3', nativeInteractionId: 'native-question', response: {} } })).rejects.toThrow('already reserved')
   })
   it('absence, corruption and capacity exhaustion never authorize replacement work', async () => {
     const { path, journal } = await setup(); expect(await journal.status('missing')).toEqual({ status: 'unknown', reason: 'journal_absence_requires_reconciliation' })
     await expect(RemoteOperationJournal.open(`${path}.missing`)).rejects.toThrow('recovery required')
     await journal.close(); await writeFile(path, '{broken'); await expect(RemoteOperationJournal.open(path)).rejects.toThrow('recovery required')
     const other = await RemoteOperationJournal.open(`${path}.bounded`, { initializeNewInstallation: true, capacity: 1 })
-    await other.accept(intent, connection, randomUUID())
-    await expect(other.accept({ ...intent, operationId: 'other' }, connection, randomUUID())).rejects.toThrow('full')
+    journals.push(other); await other.accept(intent, connection, randomUUID())
+    await expect(other.accept({ ...intent, operationId: 'other', executionId: 'other-execution', attemptId: 'other-attempt' }, connection, randomUUID())).rejects.toThrow('full')
   })
   it('audits explicit original-execution owner renewal without granting another entry', async () => {
     const { journal } = await setup(); await journal.accept(intent, connection, randomUUID()); await journal.reserveEntry('operation'); await journal.acknowledgeStart('operation', native)

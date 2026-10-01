@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto'
 import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema, type NativeSessionReference, type HarnessExecutionRequest } from '@graphql/contracts'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent } from '@graphql/contracts/node-placement'
-import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
 import { RemoteExecutionRpcRequestSchema } from '@graphql/contracts/remote-execution-rpc'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
 import type { NativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
-import type { NativeHarnessSessionManager, NativeHistory } from '../../harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeHistory, ChildProcessEnvironment } from '../../harnesses/port.js'
 import { readPlacement } from '../../placement/binding.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 
@@ -18,15 +18,17 @@ export interface RemoteExecutionHostPorts {
   managers: NativeSessionManagerResolver
   authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control'): Promise<void>
   /** Host-local credentials and sandbox policy; never copied from main. */
-  preflight(request: HarnessExecutionRequest): Promise<void>
+  preflight(request: HarnessExecutionRequest): Promise<ChildProcessEnvironment | void>
   nativeEvidence(intent: DispatchIntent, session: NativeSessionReference): Promise<RemoteNativeIdentity>
   /** W11/provider closure verification; terminal observation alone is insufficient. */
+  verifyOwnerRenewal?(transition: RemoteOwnerReconciliation, receipt: RemoteOperationReceipt): Promise<void>
   verifyRecovery?(receipt: RemoteOperationReceipt, session: NativeSessionReference, evidenceDigest: string): Promise<void>
-  settle(intent: DispatchIntent, history: NativeHistory): Promise<RemoteTerminalEvidence | null>
+  settle(intent: DispatchIntent, history: NativeHistory, owner: { manager: NativeHarnessSessionManager; session: NativeSessionReference; request: HarnessExecutionRequest }): Promise<RemoteTerminalEvidence | null>
 }
 interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void> }
 /** Worker-only authenticated extension handler. No DB, scheduler, HTTP server or production composition. */
 export class RemoteExecutionHost {
+  private readonly launchControllers = new Map<string, AbortController>()
   private readonly bindings = new Map<string, { intent: DispatchIntent; placement: AcceptedNodePlacement }>()
   private readonly residents = new Map<string, Resident>()
   constructor(private readonly ports: RemoteExecutionHostPorts) {}
@@ -37,6 +39,17 @@ export class RemoteExecutionHost {
       || placement.mainId !== this.ports.connection.mainId || frame.intent.bindingHash !== placement.bindingHash
       || frame.intent.runId !== placement.runId || frame.intent.nodeId !== placement.nodeId) throw new Error('RPC ownership mismatch')
     const recorded = await this.ports.journal.status(frame.intent.operationId)
+    if (frame.method === 'renew-owner') {
+      if (recorded.status !== 'known' || !this.ports.verifyOwnerRenewal || !isDeepStrictEqual(frame.intent.owner, frame.transition.nextOwner)
+        || !isDeepStrictEqual({ ...recorded.receipt.intent, owner: frame.transition.nextOwner }, frame.intent)) throw new Error('Original owner renewal binding mismatch')
+      await this.ports.authorize(frame.intent, placement, 'control')
+      await this.ports.verifyOwnerRenewal(frame.transition, recorded.receipt)
+      await this.ports.journal.reconcileOwner(frame.transition)
+      this.bindings.set(frame.intent.operationId, { intent: frame.intent, placement })
+      const resident = this.residents.get(frame.intent.operationId)
+      if (resident) resident.intent = frame.intent
+      return this.ports.journal.status(frame.intent.operationId)
+    }
     if (recorded.status === 'known' && !isDeepStrictEqual(recorded.receipt.intent, frame.intent)) throw new Error('RPC stale execution owner')
     await this.ports.authorize(frame.intent, placement, frame.method === 'control' ? 'control' : ['prepare', 'start-turn'].includes(frame.method) ? 'start' : 'read')
     if (frame.method === 'prepare') return this.prepare(frame)
@@ -73,20 +86,23 @@ export class RemoteExecutionHost {
     if (existing) return { session: existing.session, status: await this.ports.journal.status(intent.operationId) }
     const reservation = await this.ports.journal.reserveEntry(intent.operationId)
     if (!reservation.reserved) throw new Error('Original native execution requires reconciliation')
+    const controller = new AbortController()
+    this.launchControllers.set(intent.operationId, controller)
     try {
-      await this.ports.preflight(request)
+      const environment = await this.ports.preflight(request)
+      if (environment && environment.agentId !== request.configuration.agentId) throw new Error('Wrong worker-local credential owner')
       await this.ports.authorize(intent, placement, 'start')
       const before = await this.ports.journal.status(intent.operationId)
       if (before.status !== 'known' || before.receipt.stopFence) throw new Error('Remote launch stopped before native submission')
       const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: request.configuration.agentId,
         harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
       resolved.beginStart?.()
-      const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}` })
+      const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`, ...(environment ? { environment } : {}) }, controller.signal)
       resolved.markResident?.()
       const native = await this.ports.nativeEvidence(intent, session)
       if (native.sessionId !== session.nativeSessionId) throw new Error('Native session attestation mismatch')
       const receipt = await this.ports.journal.acknowledgeStart(intent.operationId, native)
-      const resident = { intent, placement, request, manager: resolved.manager, session, controller: new AbortController() }
+      const resident = { intent, placement, request, manager: resolved.manager, session, controller }
       this.residents.set(intent.operationId, resident)
       if (receipt.stopFence) await resident.manager.cancel(session)
       return { session, status: await this.ports.journal.status(intent.operationId) }
@@ -103,13 +119,15 @@ export class RemoteExecutionHost {
     await this.ports.verifyRecovery(status.receipt, raw.session, raw.evidenceDigest)
     const resolved = this.ports.managers.resolve({ executionId: raw.intent.executionId, agentId: request.configuration.agentId,
       harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
-    resolved.beginStart?.()
+    if (resolved.processState === 'needs_start') resolved.beginStart?.()
     const session = await resolved.manager.attachSession(raw.session, { request, correlationId: `execution:${raw.intent.executionId}`, instructionsDelivered: true })
     if (session.nativeSessionId !== raw.session.nativeSessionId) throw new Error('Recovery replaced original session')
     resolved.markResident?.()
     this.bindings.set(raw.intent.operationId, { intent: raw.intent, placement })
     this.residents.set(raw.intent.operationId, { intent: raw.intent, placement, request, manager: resolved.manager, session, controller: new AbortController() })
-    return { session, status }
+    await this.ports.journal.confirmRecovered(raw.intent.operationId, status.receipt.native)
+    if (status.receipt.stopFence) await resolved.manager.cancel(session, undefined, status.receipt.native.turnId)
+    return { session, status: await this.ports.journal.status(raw.intent.operationId) }
   }
   /** Invoke on credential policy refresh/revocation; offline requested cancellation stays non-terminal. */
   async refreshAuthority() {
@@ -142,12 +160,12 @@ export class RemoteExecutionHost {
         for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId,
           onSubmitted: async turnId => { await this.ports.journal.acknowledgeTurn(operationId, turnId); const current = await this.ports.journal.status(operationId); if (current.status === 'known' && current.receipt.stopFence) await resident.manager.cancel(resident.session, undefined, turnId); else await this.ports.journal.markRunning(operationId) } }, resident.controller.signal)) { void event }
         await this.settle(resident, correlationId)
-      } catch { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') }
+      } catch { try { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') } catch { /* A faulted journal already denies entry and requires recovery. */ } }
     })()
     return this.ports.journal.status(operationId)
   }
   private async settle(resident: Resident, correlationId: string) {
-    const evidence = await this.ports.settle(resident.intent, await resident.manager.reconcile(resident.session, correlationId))
+    const evidence = await this.ports.settle(resident.intent, await resident.manager.reconcile(resident.session, correlationId), resident)
     if (evidence) await this.ports.journal.terminal(resident.intent.operationId, evidence)
   }
   async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp') {
@@ -173,17 +191,21 @@ export class RemoteExecutionHost {
     const resident = this.residents.get(command.operationId)
     if (!resident) {
       if (command.action.kind !== 'stop') throw new Error('Original native question unavailable')
-      return this.ports.journal.control(command)
+      await this.ports.journal.control(command)
+      this.launchControllers.get(command.operationId)?.abort()
+      return this.ports.journal.status(command.operationId)
     }
     const previous = await this.ports.journal.status(command.operationId)
-    if (previous.status === 'known' && previous.receipt.controls.some(value => value.commandId === command.commandId)) return this.ports.journal.control(command)
+    if (previous.status === 'known' && previous.receipt.controls.some(value => value.commandId === command.commandId)) { await this.ports.journal.control(command); return this.ports.journal.status(command.operationId) }
     if (command.action.kind === 'respond') {
       const pending = await resident.manager.pending(resident.session)
       if (!pending || pending.turn.nativeRequestId !== command.action.nativeInteractionId || pending.session.nativeSessionId !== command.native?.sessionId || pending.turn.nativeTurnId !== command.native?.turnId) throw new Error('Original native question no longer pending')
+      const selectedOption = ApprovalResponseOptionSchema.parse(command.action.response)
+      if (!pending.responseOptions.some(option => isDeepStrictEqual(option, selectedOption))) throw new Error('Response option is not offered by the original native question')
       await this.ports.journal.interaction(command.operationId, { interactionId: command.action.interactionId, interactionRevision: command.action.interactionRevision, nativeInteractionId: command.action.nativeInteractionId, native: command.native! })
     }
     const recorded = await this.ports.journal.control(command)
-    if (!recorded.dispatch) return recorded.receipt
+    if (!recorded.dispatch) return this.ports.journal.status(command.operationId)
     await this.ports.authorize(resident.intent, resident.placement, 'control')
     try {
       if (command.action.kind === 'stop') { resident.controller.abort(); resident.manager.stopAutomaticResponses?.(resident.session); await resident.manager.cancel(resident.session, undefined, recorded.receipt.native?.turnId) }
@@ -192,5 +214,6 @@ export class RemoteExecutionHost {
     } catch { await this.ports.journal.uncertain(command.operationId, 'Native control acknowledgment unavailable') }
     return this.ports.journal.status(command.operationId)
   }
+  async drain() { await Promise.all([...this.residents.values()].flatMap(resident => resident.turn ? [resident.turn] : [])) }
   status(operationId: string) { return this.ports.journal.status(operationId) }
 }

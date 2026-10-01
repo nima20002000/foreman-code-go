@@ -11,6 +11,7 @@ export interface RemoteCommitAuthority {
   /** Evaluated by main in the same transaction as canonical acceptance/edge publication. */
   grantIsLive: boolean
   lastSequence: number
+  lastReceipt: RemoteOperationReceipt | null
   native: RemoteNativeIdentity | null
   terminal: RemoteTerminalEvidence | null
 }
@@ -47,6 +48,7 @@ export class VerifiedRemoteEvidence {
         : null
       if (reason) {
         // An identical committed terminal report converges without another publication.
+        if (reason === 'stale_sequence' && authority?.lastReceipt && isDeepStrictEqual(receipt, authority.lastReceipt)) return 'duplicate' as const
         if (reason === 'stale_sequence' && authority?.terminal != null
           && receipt.phase === 'confirmed_terminal' && isDeepStrictEqual(receipt.terminal, authority.terminal)) return 'duplicate' as const
         await transaction.reject(receipt, reason)

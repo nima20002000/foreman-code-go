@@ -1,4 +1,4 @@
-import { open, readFile, rename, mkdir, unlink } from 'node:fs/promises'
+import { open, readFile, rename, mkdir, unlink, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -6,13 +6,12 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@graphql/contracts/node-placement'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
-import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema,
+import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationStatus, type RemoteOwnerControl,
   type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
 
 const JournalSchema = z.object({ schemaVersion: z.literal(1), receipts: z.array(RemoteOperationReceiptSchema),
-  reconciliations: z.array(z.object({ commandId: z.string(), operationId: z.string(), previousOwner: z.object({ grantId: z.string(), epoch: z.string() }),
-    nextOwner: z.object({ grantId: z.string(), epoch: z.string() }), native: RemoteNativeIdentitySchema, evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(128) }).strict()
+  reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128) }).strict()
 const same = isDeepStrictEqual
 
 /** Single worker owner; the caller must hold the worker installation's exclusive service lock.
@@ -20,6 +19,7 @@ const same = isDeepStrictEqual
  * No eviction: full journals reject new work, preserving unresolved ownership and terminal tombstones.
  */
 export class RemoteOperationJournal {
+  private closed = false
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
   private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number, private readonly lock: FileHandle) {}
@@ -33,6 +33,7 @@ export class RemoteOperationJournal {
       await lock.writeFile(randomUUID()); await lock.sync()
       let data: z.infer<typeof JournalSchema>
       try {
+        if ((await stat(path)).size > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
         const serialized = await readFile(path, 'utf8')
         if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
         data = JournalSchema.parse(JSON.parse(serialized))
@@ -47,6 +48,8 @@ export class RemoteOperationJournal {
     } catch (error) { await lock.close(); await unlink(`${path}.owner-lock`); throw error }
   }
   async close() {
+    if (this.closed) return
+    this.closed = true
     await this.tail
     this.faulted = true
     await this.lock.close()
@@ -64,6 +67,7 @@ export class RemoteOperationJournal {
     try { await directory.sync() } finally { await directory.close() }
   }
   private change<T>(apply: (data: z.infer<typeof JournalSchema>) => T): Promise<T> {
+    if (this.closed) return Promise.reject(new Error('Journal closed: recovery required'))
     const task = this.tail.then(async () => {
       if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
       const next = structuredClone(this.data)
@@ -94,6 +98,7 @@ export class RemoteOperationJournal {
         if (!same(existing.intent, intent)) throw new Error('Operation binding conflict')
         return existing
       }
+      if (data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
       if (data.receipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
       const receipt = RemoteOperationReceiptSchema.parse({ schemaVersion: 1, intent, connection, workerIncarnationId,
@@ -137,6 +142,17 @@ export class RemoteOperationJournal {
       receipt.native.turnId = turnId; receipt.sequence++; return receipt
     })
   }
+  confirmRecovered(operationId: string, native: RemoteNativeIdentity) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (!receipt.native || !same(receipt.native, native)) throw new Error('Original recovered native identity required')
+      if (receipt.phase !== 'confirmed_terminal') {
+        receipt.phase = receipt.stopFence ? 'stop_requested' : receipt.native.turnId && receipt.turnEntryAttempted ? 'running' : 'start_acknowledged'
+        delete receipt.uncertainty; receipt.sequence++
+      }
+      return receipt
+    })
+  }
   markRunning(operationId: string) {
     return this.change(data => {
       const receipt = this.receipt(data, operationId)
@@ -168,8 +184,8 @@ export class RemoteOperationJournal {
         const target = receipt.interaction
         if (receipt.stopFence || receipt.phase !== 'running' || !target || target.interactionId !== command.action.interactionId
           || target.interactionRevision !== command.action.interactionRevision || target.nativeInteractionId !== command.action.nativeInteractionId) throw new Error('Response is not currently eligible')
-        if (receipt.controls.some(value => value.action.kind === 'respond' && value.action.interactionId === target.interactionId
-          && value.action.interactionRevision === target.interactionRevision)) throw new Error('Interaction response already reserved')
+        if (receipt.controls.some(value => value.action.kind === 'respond' && value.action.nativeInteractionId === target.nativeInteractionId
+          && value.native?.sessionId === target.native.sessionId && value.native?.turnId === target.native.turnId)) throw new Error('Interaction response already reserved')
       }
       if (receipt.controls.length >= 128) throw new Error('Control journal full')
       receipt.controls.push(command)
@@ -206,6 +222,7 @@ export class RemoteOperationJournal {
   }
   reconcileOwner(transition: RemoteOwnerReconciliation) {
     return this.change(data => {
+      transition = RemoteOwnerReconciliationSchema.parse(transition)
       const prior = data.reconciliations.find(value => value.commandId === transition.commandId)
       if (prior) { if (!same(prior, transition)) throw new Error('Reconciliation command conflict'); return this.receipt(data, transition.operationId) }
       const receipt = this.receipt(data, transition.operationId)
