@@ -4,6 +4,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { OperatorConversationStateSchema } from '@graphql/contracts'
 import { OperatorChatCommands } from '../src/modules/conversations/operatorChatCommands.js'
 import { DomainError } from '../src/modules/errors.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 const principal: ManagementPrincipal = { id: 'operator-control-owner', name: 'Owner', audience: 'operator', revokedAt: null,
   expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['operator_chat:read', 'operator_chat:respond', 'operator_chat:cancel'], scope: {} }] }
 const initial = OperatorConversationStateSchema.parse({ conversation: { id: 'conversation', agentId: 'operator', scope: 'application',
@@ -42,6 +43,38 @@ it('never records authorization loss after dispatch as definite native rejection
   })
   for (const source of ['http', 'mcp'] as const) await expect(commands.execute(principal, source, 'conversation', 'caller-key',
     { kind: 'respond' }, perform, async () => initial)).rejects.toMatchObject({ code: 'OPERATOR_CHAT_CONTROL_UNCONFIRMED' })
+  expect([...memory.records.values()][0]!.result.status).toBe('uncertain')
+  expect(perform).toHaveBeenCalledTimes(1)
+})
+it.each(['NATIVE_RESPONSE_DELIVERY_FAILED', 'NATIVE_RESPONSE_INVALID'])('records Codex pre-write %s as rejected and permits a new explicit command', async (code) => {
+  const memory = ledger(), commands = new OperatorChatCommands(memory.pool)
+  const input = { kind: 'respond', requestId: 'model-request', nativeRequestId: 'native-question', optionId: 'approve-once' }
+  const perform = vi.fn(async (markDispatchAttempt: () => void) => {
+    markDispatchAttempt()
+    throw new HarnessExecutionError(code, 'Nothing was submitted.')
+  })
+  for (const source of ['http', 'mcp'] as const) await expect(new OperatorChatCommands(memory.pool).execute(principal, source,
+    'conversation', 'failed-command', input, perform, async () => initial)).rejects.toMatchObject({ code: 'NATIVE_RESPONSE_DELIVERY_FAILED', status: 409 })
+  expect([...memory.records.values()][0]!.result.status).toBe('rejected')
+  expect(perform).toHaveBeenCalledTimes(1)
+  const retry = vi.fn(async (markDispatchAttempt: () => void) => { markDispatchAttempt(); return initial })
+  await expect(commands.execute(principal, 'mcp', 'conversation', 'new-explicit-command', input, retry, async () => initial)).resolves.toEqual(initial)
+  expect(retry).toHaveBeenCalledTimes(1)
+  expect([...memory.records.values()][1]!.result.status).toBe('completed')
+})
+it.each([
+  new HarnessExecutionError('NATIVE_RESPONSE_DELIVERY_UNCERTAIN', 'The write may have reached the provider.'),
+  new HarnessExecutionError('CODEX_APP_SERVER_TIMEOUT', 'Delivery has not been disproved.'),
+  new HarnessExecutionError('NATIVE_RESPONSE_CLEARED', 'Acceptance was not confirmed.'),
+  { result: { error: { code: 'NATIVE_RESPONSE_DELIVERY_FAILED' } } },
+])('fences ambiguous %j without repeating the native response', async (error) => {
+  const memory = ledger()
+  const perform = vi.fn(async (markDispatchAttempt: () => void) => {
+    markDispatchAttempt()
+    throw error
+  })
+  for (const source of ['http', 'mcp'] as const) await expect(new OperatorChatCommands(memory.pool).execute(principal, source,
+    'conversation', 'caller-key', { kind: 'respond' }, perform, async () => initial)).rejects.toMatchObject({ code: 'OPERATOR_CHAT_CONTROL_UNCONFIRMED' })
   expect([...memory.records.values()][0]!.result.status).toBe('uncertain')
   expect(perform).toHaveBeenCalledTimes(1)
 })

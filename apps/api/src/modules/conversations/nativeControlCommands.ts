@@ -5,6 +5,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { HarnessExecutionError } from '../harnesses/errors.js'
 
 type Outcome<State> = { acceptedControl?: AcceptedChatResponseControl; providerAcknowledgment?: ChatResponseAcknowledgment } & (
   | { status: 'pending' | 'uncertain' }
@@ -92,13 +93,14 @@ export class NativeConversationControlCommands<State> {
     try {
       outcome = { status: 'completed', state: this.contract.parse(await perform(() => { dispatchAttempted = true })) }
     } catch (error) {
-      // Domain validation failures are replayable rejections. Transport/storage
+      // Domain validation failures are replayable rejections. Unclassified transport/storage
       // errors do not prove that the external effect failed; never retry them.
       if (error instanceof DomainError && !dispatchAttempted) outcome = { status: 'rejected', error: {
         code: error.code, message: error.message, status: error.status,
         ...(error.details ? { details: error.details } : {}),
       } }
-      else if (error && typeof error === 'object' && 'certainty' in error && error.certainty === 'definite') {
+      else if (error && typeof error === 'object' && 'certainty' in error && error.certainty === 'definite'
+        || error instanceof HarnessExecutionError && ['NATIVE_RESPONSE_DELIVERY_FAILED', 'NATIVE_RESPONSE_INVALID'].includes(error.result.error?.code ?? '')) {
         outcome = { status: 'rejected', error: { code: 'NATIVE_RESPONSE_DELIVERY_FAILED',
           message: 'The native provider definitely rejected this control.', status: 409 } }
       } else outcome = { status: 'uncertain' }
