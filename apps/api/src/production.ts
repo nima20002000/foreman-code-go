@@ -16,6 +16,11 @@ import { resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
+import { registerProductionFileStorage } from './modules/files/production.js'
+import type { TemporaryFileService } from './modules/files/service.js'
+import { defaultFileStorageRoot } from './modules/files/storage.js'
+import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
+import { codexChatHostDirectory, localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
 import { FileRetentionService } from './modules/files/retention.js'
 import { registerFileRetentionRoutes } from './routes/fileRetention.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
@@ -111,6 +116,12 @@ export function buildProductionApp(
     || !infrastructure.auxiliary.command || !infrastructure.auxiliary.recovery || qualificationSuites)) {
     throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay must inject settings and probes and cannot run installed CLI qualification.', 500)
   }
+  let fileStorage: TemporaryFileService | undefined
+  const fileStorageRoot = config.fileStorageRoot ?? defaultFileStorageRoot()
+  const chatFileAdmissions = codexChatFiles ?? postgresCodexChatFiles(database.pool, () => {
+    if (!fileStorage) throw new Error('Production file storage is not registered.')
+    return fileStorage
+  }, () => localCodexChatHost(fileStorageRoot), codexChatHostDirectory(fileStorageRoot))
   const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
   const processRegistry = infrastructure?.auxiliary?.recovery
     ?? new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
@@ -289,7 +300,7 @@ export function buildProductionApp(
         enabled: true, configuration: harness },
       processRecovery: recovery, appMcpAccess: 'none',
       ...(harness.harness === 'codex' ? { harness: 'codex' as const,
-        ...(codexChatFiles ? { chatFiles: productionCodexChatFiles(() => app, conversationId, codexChatFiles) } : {}) }
+        chatFiles: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions) }
         : { harness: 'opencode' as const,
           ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
           chatFiles: (server) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost) }),
@@ -548,5 +559,9 @@ export function buildProductionApp(
     applicationClose ??= Promise.resolve().then(() => app.close())
     return applicationClose
   }
-  return { app, engine, initialize, reconcile, shutdown, drainShutdown }
+  return { app, engine, initialize, reconcile, shutdown, drainShutdown,
+    registerFileStorage: () => {
+      fileStorage ??= registerProductionFileStorage(app, database.pool, config)
+      return fileStorage
+    } }
 }
