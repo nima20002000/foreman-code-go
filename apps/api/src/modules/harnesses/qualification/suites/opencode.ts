@@ -1,3 +1,4 @@
+import { closeQualificationResources } from '../cleanup.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -29,6 +30,8 @@ export const opencodeQualificationSuite: QualificationSuite = {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)
     const app = Fastify({ logger: false })
+    const releaseServer = input.ownCleanup?.(() => server.dispose())
+    const releaseApp = input.ownCleanup?.(() => app.close())
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
     let sessionId: string | undefined
     let mcpName: string | undefined
@@ -175,8 +178,10 @@ export const opencodeQualificationSuite: QualificationSuite = {
     try { return await collectChecks({ ...input, signal }, checks, evidence) }
     finally {
       if (mcpReady && mcpName) await request(`/mcp/${encodeURIComponent(mcpName)}/disconnect`, {}).catch(() => undefined)
-      await server.dispose()
-      await app.close()
+      await closeQualificationResources([
+        { close: () => server.dispose(), release: releaseServer },
+        { close: () => app.close(), release: releaseApp },
+      ])
     }
   },
 }

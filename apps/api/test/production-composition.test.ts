@@ -1,6 +1,6 @@
 import {
   CODEX_APPROVAL_OPTIONS_FIXTURE,
-  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
+  DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DEFAULT_HARNESS_DEFAULTS,
   DurableInteractionSchema,
   type AgentConfigurationVersion,
   type DurableInteraction,
@@ -150,8 +150,8 @@ it.each(['codex', 'opencode'] as const)('constructs separate native %s managers 
   const configuration = {
     id: 'config-1', agentId: 'agent-1',
     harness: harness === 'opencode'
-      ? { harness, advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION }
-      : { harness },
+      ? { ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: DEFAULT_OPENCODE_ADVANCED_CONFIGURATION }
+      : DEFAULT_HARNESS_DEFAULTS.codex,
   } as AgentConfigurationVersion
   const context = { executionId: 'execution-1', agentId: 'agent-1', workingDirectory: '/accepted/project', harness, configuration }
   const first = managers.resolve(context)
