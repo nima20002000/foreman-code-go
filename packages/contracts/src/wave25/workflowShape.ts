@@ -88,7 +88,7 @@ export const WorkflowChoiceSchema = z.object({
 export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
 
 const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
-export const CurrentAgentWorkflowNodeSchema = z.object({
+export const CurrentAgentWorkflowNodeFields = {
   kind: z.literal('agent').optional(),
   placement: SavedNodePlacementSchema.optional(),
   id: GraphIdSchema, agentId: GraphIdSchema,
@@ -99,7 +99,8 @@ export const CurrentAgentWorkflowNodeSchema = z.object({
   join: z.object({ mode: z.literal('all') }).strict().optional(), choice: WorkflowChoiceSchema.optional(),
   /** Changes the Agent's default GraphQL MCP tools for this node only. */
   graphqlTools: GraphqlToolOverrideSchema.optional(),
-}).strict().superRefine((node, context) => {
+}
+export const CurrentAgentWorkflowNodeSchema = z.object(CurrentAgentWorkflowNodeFields).strict().superRefine((node, context) => {
   if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
 })
 export const CurrentWorkflowNodeSchema = z.union([CurrentAgentWorkflowNodeSchema, JobWorkflowNodeSchema])

@@ -33,10 +33,19 @@ export type NativeInteractionResponseAvailability = z.infer<typeof NativeInterac
 export const AcceptedChatResponseControlSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('respond'), conversationId: z.string().min(1), modelRequestId: z.string().min(1),
   scope: ActivityScopeSchema,
-  native: z.object({ harness: z.string().min(1), providerVersion: z.string().min(1).optional(), sessionId: z.string().min(1), turnId: z.string().min(1),
+  native: z.object({ harness: z.string().min(1), providerVersion: z.string().min(1).optional(), sessionId: z.string().min(1),
+    turnId: z.string().min(1).optional(), messageId: z.string().min(1).optional(), generation: z.string().min(1).optional(),
     requestId: z.string().min(1), requestType: z.string().min(1) }).strict(),
   choice: z.object({ optionId: z.string().min(1), semantic: z.string().min(1) }).strict(),
 }).strict().superRefine((value, context) => {
+  const native = value.native
+  if (native.harness === 'claude') {
+    if (!native.messageId || !native.generation || native.turnId !== undefined) {
+      context.addIssue({ code: 'custom', path: ['native'], message: 'Claude control requires its observed message identity and callback generation.' })
+    }
+  } else if (!native.turnId || native.messageId !== undefined || native.generation !== undefined) {
+    context.addIssue({ code: 'custom', path: ['native'], message: 'This native provider requires its observed turn identity.' })
+  }
   if (!['operator_chat', 'agent_chat', 'selected_run_chat'].includes(value.scope.kind)
     || !('conversationId' in value.scope) || value.scope.conversationId !== value.conversationId) {
     context.addIssue({ code: 'custom', message: 'Control metadata must retain the exact conversation scope.' })

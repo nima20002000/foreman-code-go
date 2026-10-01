@@ -25,7 +25,6 @@ function fixture() {
     workflowVersionId: version.id, runId: base.run.id, executionSemanticsVersion: 3 }
   const occurrence = { contractVersion: 1 as const, identity: { scope, blockId: 'repair', occurrenceId: 'occ-1', occurrenceIndex: 1 },
     input: { bindingId: 'entry-input-1', inputDigest: digest, previous: null } }
-  if(exit.kind==='job')throw new Error('Agent fixture expected')
   const identity = { workflowNodeId: exit.id, agentId: exit.agentId, agentConfigurationVersionId: version.agentConfigurationVersionIds[exit.agentId]!,
     executionId: 'exit-execution-1', attempt: 1, occurrence: occurrence.identity }
   const snapshot = RepeatGraphSnapshotV3Schema.parse({ kind: 'snapshot', protocolVersion: 1, scope, asOfSequence: '1', retentionFloor: '0',

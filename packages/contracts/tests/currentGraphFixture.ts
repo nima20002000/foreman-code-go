@@ -9,7 +9,7 @@ export function makeCurrentGraphFixture(suffix = 'graph-wire', form: CurrentFixt
     historyCoverage: 'from_admission',
     topology: {
       entryNodeId: fixture.version.entryNodeId,
-      nodes: fixture.version.definition.nodes.filter(node=>node.kind!=='job').map((node) => ({ workflowNodeId: node.id, agentId: node.agentId,
+      nodes: fixture.version.definition.nodes.map((node) => ({ workflowNodeId: node.id, agentId: node.agentId,
         agentConfigurationVersionId: fixture.version.agentConfigurationVersionIds[node.agentId],
         productRole: fixture.configurations.find((configuration) => configuration.agentId === node.agentId)?.productRole ?? 'unknown' })),
       relationships: fixture.version.definition.edges.map((edge) => ({ relationshipId: edge.id,
