@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { normalizeCodexNotification, type CodexNotificationEnvelope } from '../src/modules/harnesses/codexNormalization.js'
+import { codexNormalizationEnvelopes, codexNormalizationTranscript } from './fixtures/codex-normalization-transcript.js'
 import { codexRequestKey, translateCodexInteraction } from '../src/modules/harnesses/codexInteractions.js'
 
 const owner = { threadId: 'root', turnId: 'parent-turn', runtimeGeneration: 3, terminal: false }
@@ -14,6 +15,11 @@ const approval = (method: string, params: Record<string, unknown> = {}, id: stri
   translateCodexInteraction(context, { id, method, params: { threadId: 'root', turnId: 'parent-turn', ...params } })
 
 describe('Codex validated-envelope normalization', () => {
+  it('replays source-pinned synthetic frames without converting child or stale completion into root terminal', () => {
+    const results = codexNormalizationEnvelopes().map((frame) => normalizeCodexNotification(codexNormalizationTranscript.owner, frame))
+    expect(results.map((result) => result.kind)).toEqual(['unlinked', 'delta', 'item', 'ignored', 'turn'])
+    expect(results.filter((result) => result.kind === 'turn' && result.terminal)).toHaveLength(1)
+  })
   it('retains child-before-parent terminal identity without completing the parent or inventing linkage', () => {
     const input = envelope('turn/completed', { threadId: 'child', turn: { id: 'child-turn', status: 'completed', items: [] } })
     const result = normalizeCodexNotification(owner, input)
