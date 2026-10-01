@@ -515,7 +515,7 @@ export class ApprovalExecutionCoordinator {
       if (!lease || !manager || lease.guard.signal.aborted) return []
       const session = owned.session, generation = owned.generation
       return [{ execution: structuredClone(owned.execution), session: structuredClone(session), manager,
-        generation, signal: lease.guard.signal, writer: { id: lease.fence.id, token: lease.fence.token },
+        generation, signal: lease.guard.signal, writer: { id: lease.fence.id, token: lease.fence.token, connectionGeneration: lease.previous.connectionGeneration },
         assertCurrent: () => {
           if (this.ownedSessions.get(owned.execution.id) !== owned || owned.generation !== generation || owned.session !== session
             || owned.failed || owned.cleanup || owned.controller.signal.aborted) throw new DomainError('WORKER_EXECUTION_IDENTITY_INVALID', 'The captured native manager lifetime is no longer current.', 409)

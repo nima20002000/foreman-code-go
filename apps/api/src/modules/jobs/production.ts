@@ -41,7 +41,9 @@ export interface ProductionJobInfrastructure {
  * Missing installer/host bytes remain unavailable, never a qualified default. */
 export async function createProductionJobs(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; storageRoot: string;
-  endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure }) {
+  endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure;
+  activeNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['activeNativeSession']>;
+  captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']> }) {
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
   const host = createInstalledJobRuntimeHost({ identity: input.pool,

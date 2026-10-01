@@ -19,7 +19,7 @@ import type { WorkspaceRootHostPort } from './rootPolicyPorts.js'
 import { PostgresWorkspaceRootPolicies, workspaceRootHostScope } from './rootPolicies.js'
 import { InstalledWorkspaceRootHosts } from './rootHosts.js'
 import { RegisteredWorkspaceSourceRoots } from './registeredSourceRoots.js'
-import { InstalledSourceExecutionHosts, type RemoteSourceMaterializationHost } from './executionHosts.js'
+import { InstalledSourceExecutionHosts, type RemoteSourceMaterializationHost, type SourceActiveNativeSessionReader, type SourceNativeSessionCaptureReader } from './executionHosts.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { PostgresSourceService } from './service.js'
 import { JobSourceAttemptAuthority } from '../jobs/sourceAuthority.js'
@@ -35,7 +35,8 @@ import { DomainError } from '../errors.js'
  * Construction does not fabricate an allowlist or authorize native execution. */
 export async function createProductionSources(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; endpoint(): DeviceEndpoint;
-  dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost }) {
+  dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost;
+  activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader }) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
   const hosts: WorkspaceRootHostPort = {
     authorize: async (sql, _principal, host, installationId) => {
@@ -106,7 +107,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     return Boolean(await input.dispatch().readAcceptedClosureReceipt(sql, { workspaceId: execution.workspaceId, executionId: execution.id,
       attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner }))
   }
-  const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed)
+  const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed, input.activeNativeSession)
   const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint)
   const carrier: MainWorkerCarrier = { capture(deviceId) {
     const channel = input.endpoint().captureRequest(deviceId, SOURCE_OPERATION_EXTENSION.namespace)
@@ -119,7 +120,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       } }
   } }
   const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new ExistingByteTransferSourcePackageSender(snapshots, transfers))
-  const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote)
+  const executions = new InstalledSourceExecutionHosts(input.mainId, snapshots, attempts, remote, input.captureNativeSession)
   const sources = new PostgresSourceService(input.pool, input.commands, input.locations, snapshots, input.mainId, roots, executions, {
     async confirmedClosed(record) {
       const sql = await input.pool.connect()

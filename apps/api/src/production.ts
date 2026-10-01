@@ -1,3 +1,6 @@
+import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { readSourceActiveNativeSession } from './modules/sources/activeNativeSession.js'
+import type { SourceActiveNativeSessionReader, SourceNativeSessionCaptureReader } from './modules/sources/executionHosts.js'
 import { EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
 import { WORKER_MCP_EXTENSION } from '@graphql/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
@@ -897,8 +900,35 @@ export function buildProductionApp(
       const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
       assertOpen()
+      const activeNativeSession: SourceActiveNativeSessionReader = async (sql, record) => {
+        const captures = approvals.passiveOwnedNativeSessions().filter(value => value.execution.id === record.receipt.executionId)
+        if (captures.length !== 1) return null
+        return readSourceActiveNativeSession(sql, record, captures[0]!)
+      }
+      const captureNativeSession: SourceNativeSessionCaptureReader = async record => {
+        const captures = approvals.passiveOwnedNativeSessions().filter(value => value.execution.id === record.receipt.executionId)
+        if (captures.length !== 1) return null
+        const capture = captures[0]!
+        const readCurrent = async () => {
+          capture.signal.throwIfAborted(); capture.assertCurrent()
+          const sql = await database.pool.connect()
+          try {
+            await sql.query('begin')
+            const proof = await readSourceActiveNativeSession(sql, record, capture)
+            capture.signal.throwIfAborted(); capture.assertCurrent()
+            await sql.query('commit')
+            return proof
+          } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+        }
+        const proof = await readCurrent()
+        if (!proof) return null
+        return { proof, signal: capture.signal, async assertCurrent() {
+          if (!sameWorkflowValue(await readCurrent(), proof)) throw new DomainError('SOURCE_NATIVE_SESSION_CONFLICT', 'The original entered native owner or source lane is no longer current.', 409)
+        } }
+      }
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
+        activeNativeSession, captureNativeSession,
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
