@@ -1,3 +1,4 @@
+import { readRunJobCleanup } from './runCleanup.js'
 import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
@@ -53,9 +54,12 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
         owner.assertOwned();await owner.readOneShotFence(sql)
         if(execution.workflow?.runId!==owner.runId||execution.workflow.workflowId!==version.workflowId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The settled Job belongs to another Run.',409)
         const row=(await sql.query<{last_receipt:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select last_receipt,delivery_attempted,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
-        if(row && !row.delivery_attempted && row.last_receipt===null && row.cancel_command_id && row.cancel_principal_id && row.cancel_action && execution.process.outcome==='cancelled' && execution.process.processStopped && execution.startedAt===null && execution.finishedAt && execution.publication==='complete') {
-          const actor=await readLiveManagementPrincipal(sql,row.cancel_principal_id)
-          requireAuthorization(actor,row.cancel_action,{workspaceId:execution.workspaceId,workflowId:version.workflowId,runId:owner.runId})
+        if(row && !row.delivery_attempted && row.last_receipt===null && row.cancel_command_id && execution.process.outcome==='cancelled' && execution.process.processStopped && execution.startedAt===null && execution.finishedAt && execution.publication==='complete') {
+          if(!await readRunJobCleanup(sql,execution)) {
+            if(!row.cancel_principal_id||!row.cancel_action)throw new DomainError('JOB_STOP_AUTHORITY_MISSING','The original main cancellation authority is missing.',409)
+            const actor=await readLiveManagementPrincipal(sql,row.cancel_principal_id)
+            requireAuthorization(actor,row.cancel_action,{workspaceId:execution.workspaceId,workflowId:version.workflowId,runId:owner.runId})
+          }
           return // Durable main cancellation before delivery is positive no-launch evidence, not a fabricated worker receipt.
         }
         const receipt=RemoteJobOperationReceiptSchema.parse(row?.last_receipt)
@@ -86,12 +90,9 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
         }} catch(error) {
           if(signal.aborted) {
             await owner.oneShotConnection().transaction(async sql=>{
-              const intent=(await sql.query<{principal_id:string;command_id:string}>('select principal_id,command_id from workflow_stop_intents where run_id=$1 order by command_id limit 1',[owner.runId])).rows[0]
-              if(!intent)throw new DomainError('JOB_STOP_AUTHORITY_MISSING','A workflow job stop requires its real persisted Run Stop authority.',409)
-              const principal=await readLiveManagementPrincipal(sql,intent.principal_id)
-              requireAuthorization(principal,'runs:stop',{workspaceId:execution.workspaceId,workflowId:version.workflowId,runId:owner.runId})
-              const current=await input.jobs.repository.execution(sql,execution.workspaceId,execution.id,true)
-              if(current.process.phase!=='terminal')await input.dispatch.cancel(sql,current,intent.command_id,principal,'runs:stop')
+              const current=await input.jobs.repository.execution(sql,execution.workspaceId,execution.id)
+              const reason=signal.reason instanceof DomainError&&signal.reason.code==='ENGINE_RESTART'?'engine-restart':signal.reason instanceof DomainError&&signal.reason.code.startsWith('AUTH_')?'authority-revoked':'run-failure'
+              if(current.process.phase!=='terminal')await input.dispatch.cancelForRunCleanup(sql,current,owner,reason)
             })
             await input.dispatch.wake(execution.id)
           }

@@ -13,4 +13,11 @@ alter table job_dispatch_intents add constraint job_cleanup_actual_subject check
  and cancel_cleanup->>'runId'=intent->'subject'->>'runId'
  and cancel_cleanup->>'workflowId'=intent->'subject'->>'workflowId'
  and cancel_cleanup->>'workspaceId'=workspace_id) is true));
+create function preserve_job_run_cleanup() returns trigger language plpgsql as $$ begin
+ if old.cancel_cleanup is not null and new.cancel_cleanup is distinct from old.cancel_cleanup then
+  raise exception 'JOB_CLEANUP_IMMUTABLE';
+ end if;
+ return new;
+end $$;
+create trigger job_run_cleanup_immutable before update on job_dispatch_intents for each row execute function preserve_job_run_cleanup();
 `}

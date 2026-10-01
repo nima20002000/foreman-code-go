@@ -31,8 +31,8 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
     writer=await access.issue({name:'CI writer fixture',audience:'operator',expiresAt:new Date(Date.now()+3600000),grants:[{actions:['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read','capabilities:read'],scope:{workspaceIds:[workspaceId]}}]})
     reader=await access.issue({name:'CI reader fixture',audience:'operator',expiresAt:new Date(Date.now()+3600000),grants:[{actions:['job_definitions:read','jobs:read','job_logs:read','job_artifacts:read','capabilities:read'],scope:{workspaceIds:[workspaceId]}}]})
     jobs=new JobService(database.pool,commands,{
-      preparation:{adoptFinalBinding:async()=>{},choices:async()=>({targets:[],sources:[],policies:[]}),validate:async()=>({valid:true,reasons:[],sideEffects:false}),accept:async(_sql,_principal,_workspace,spec)=>({...spec,source:{...spec.source,materializationId:randomUUID(),materializationDigest:'1'.repeat(64)}})},
-      dispatch:{accept:async(_sql,input)=>({operationId:input.operationId,attemptId:input.attemptId,owner:{grantId:randomUUID(),epoch:'1'}}),cancel:async()=>{},wake:async()=>{}},
+      preparation:{revalidateAccepted:async()=>{},adoptFinalBinding:async()=>{},choices:async()=>({targets:[],sources:[],policies:[]}),validate:async()=>({valid:true,reasons:[],sideEffects:false}),accept:async(_sql,_principal,_workspace,spec)=>({...spec,source:{...spec.source,materializationId:randomUUID(),materializationDigest:'1'.repeat(64)}})},
+      dispatch:{accept:async(_sql,input)=>({operationId:input.operationId,attemptId:input.attemptId,owner:{grantId:randomUUID(),epoch:'1'}}),cancelForRunCleanup:async()=>{throw new Error('No Run cleanup in this admission fixture')},cancel:async()=>{},wake:async()=>{}},
       artifacts:{list:async()=>[],read:async()=>{throw new Error('No physical artifact fixture')}},
     })
     worker=new JobWorkerService(database.pool,{require:async()=>{},verifyPublication:async()=>{}})
