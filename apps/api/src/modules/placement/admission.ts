@@ -20,9 +20,9 @@ export interface PlacementCommitFence {
    * existing admission transaction. No remote filesystem IO inside this callback. */
   assertCurrent(placement: AcceptedNodePlacement): Promise<void>
 }
-export async function preparePlacement(port: PlacementValidationPort, saved: SavedNodePlacement,
-  identity: Pick<AcceptedNodePlacement, 'mainId' | 'mainInstallationId' | 'runId' | 'nodeId' | 'labelAtAcceptance'>,
-  expectedPayload: AcceptedNodePlacement['payload'], access: 'read-only' | 'read-write'): Promise<AcceptedNodePlacement> {
+export async function preparePlacementForRun(port: PlacementValidationPort, saved: SavedNodePlacement,
+  identity: Pick<AcceptedNodePlacement, 'mainId' | 'mainInstallationId' | 'nodeId' | 'labelAtAcceptance'>,
+  expectedPayload: AcceptedNodePlacement['payload'], access: 'read-only' | 'read-write'): Promise<(runId: string) => AcceptedNodePlacement> {
   saved = SavedNodePlacementSchema.parse(structuredClone(saved))
   identity = structuredClone(identity)
   expectedPayload = structuredClone(expectedPayload)
@@ -44,8 +44,17 @@ export async function preparePlacement(port: PlacementValidationPort, saved: Sav
     if (!registration || registration.status !== 'paired' || registration.mainId !== identity.mainId
       || registration.deviceId !== saved.hostRef.deviceId) fail()
   } else if (registration !== null) fail()
-  return freezePlacement({ schemaVersion: 1, ...identity, hostRef: saved.hostRef,
+  const pins = { schemaVersion: 1 as const, ...identity, hostRef: saved.hostRef,
     registration: registration === null ? null : { workerInstallationId: registration.workerInstallationId,
       keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision },
-    destination, source: evidence.source, payload: expectedPayload })
+    destination, source: evidence.source, payload: expectedPayload }
+  return (runId) => freezePlacement({ ...pins, runId })
+}
+
+export async function preparePlacement(port: PlacementValidationPort, saved: SavedNodePlacement,
+  identity: Pick<AcceptedNodePlacement, 'mainId' | 'mainInstallationId' | 'runId' | 'nodeId' | 'labelAtAcceptance'>,
+  expectedPayload: AcceptedNodePlacement['payload'], access: 'read-only' | 'read-write'): Promise<AcceptedNodePlacement> {
+  const { runId, ...node } = structuredClone(identity)
+  const bind = await preparePlacementForRun(port, saved, node, expectedPayload, access)
+  return bind(runId)
 }
