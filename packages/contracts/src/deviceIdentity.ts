@@ -68,6 +68,16 @@ export const MainSignedIdentityProofSchema = z.object({ request: MainIdentityPro
 }).strict()
 export type MainSignedIdentityProof = z.infer<typeof MainSignedIdentityProofSchema>
 
+/** Public selected-main enrollment proof cannot certify an authenticated session. */
+export const MainEnrollmentProofRequestSchema = z.object({
+  audience: z.literal('graphql-worker-main-enrollment-v1'), mainId: z.uuid(),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/), workerInstallationId: z.uuid(),
+  protocolVersion: z.number().int().positive(), workerApplicationVersion: z.string().min(1).max(128),
+}).strict()
+export type MainEnrollmentProofRequest = z.infer<typeof MainEnrollmentProofRequestSchema>
+export const MainSignedEnrollmentProofSchema = MainSignedIdentityProofSchema.extend({ request: MainEnrollmentProofRequestSchema })
+export type MainSignedEnrollmentProof = z.infer<typeof MainSignedEnrollmentProofSchema>
+
 export const WorkerEnrollmentInputSchema = z.object({ mainId: z.uuid(),
   mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/), endpoint: WorkerPairingConfigurationSchema.shape.endpoint,
   grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/), requestId: z.uuid(),
