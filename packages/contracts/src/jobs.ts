@@ -26,7 +26,16 @@ export const JobOutputSpecSchema = z.object({
   path: RelativePath, required: z.boolean(), mediaType: z.enum(['text/plain', 'application/json', 'text/html', 'application/zip', 'application/gzip', 'application/octet-stream']),
 }).strict()
 /** Job targets reuse W08 identity/root binding without inventing a Run or Agent. */
-export const JobTargetSchema = AcceptedNodePlacementSchema.omit({ runId: true, nodeId: true, payload: true, source: true, bindingHash: true })
+const placement = AcceptedNodePlacementSchema.shape
+export const JobTargetSchema = z.object({
+  schemaVersion: placement.schemaVersion, mainId: placement.mainId, hostRef: placement.hostRef,
+  labelAtAcceptance: placement.labelAtAcceptance, registration: placement.registration,
+  mainInstallationId: placement.mainInstallationId, destination: placement.destination,
+}).strict().superRefine((value, context) => {
+  if (value.mainId !== value.hostRef.mainId || (value.hostRef.kind === 'device') !== (value.registration !== null)) {
+    context.addIssue({code:'custom',message:'Job target main/registration identity mismatch.'})
+  }
+})
 export const JobDefinitionSpecSchema = z.object({
   source: JobSourceSchema, target: JobTargetSchema, argv: z.array(z.string().max(8192)).min(1).max(128),
   relativeCwd: RelativePath.optional(), inputs: z.array(JobInputRevisionSchema).max(128),
@@ -46,7 +55,7 @@ export const AcceptedJobSpecSchema = JobDefinitionSpecSchema.extend({
 }).strict()
 export const JobProcessStateSchema = z.object({
   phase: z.enum(['queued', 'preparing', 'running', 'terminal']),
-  outcome: z.enum(['succeeded', 'build_failed', 'cancelled', 'timed_out', 'preparation_failed']).nullable(),
+  outcome: z.enum(['succeeded', 'build_failed', 'cancelled', 'timed_out', 'preparation_failed', 'spawn_failed']).nullable(),
   exitCode: z.number().int().nullable(), signal: z.string().nullable(), processStopped: z.boolean(),
 }).strict()
 export const JobExecutionSchema = z.object({
@@ -55,6 +64,8 @@ export const JobExecutionSchema = z.object({
   workflow: z.object({ runId: IdSchema, nodeId: IdSchema, nodeExecutionId: IdSchema }).strict().nullable(),
   process: JobProcessStateSchema, transport: z.enum(['connected', 'offline', 'unknown']),
   publication: z.enum(['pending', 'collecting', 'complete', 'failed', 'expired']),
+  startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(), lastSeenAt: TimestampSchema.nullable(),
+  resultIssue: z.enum(['missing_output', 'corrupt_output', 'publication_failed', 'log_overflow']).nullable(),
   cancelRequestedAt: TimestampSchema.nullable(), createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict()
 export const JobLogChunkSchema = z.object({
@@ -92,3 +103,8 @@ export interface JobsService {
   readLogs(workspaceId: string, id: string, afterSequence: number, limit: number): Promise<JobLogPage>
   listArtifacts(workspaceId: string, id: string): Promise<JobArtifact[]>
 }
+export const JobAuthoringChoicesSchema = z.object({
+  targets: z.array(z.object({id:IdSchema,label:z.string(),target:JobTargetSchema,ready:z.boolean(),reasons:z.array(z.string())}).strict()),
+  sources: z.array(JobSourceSchema), policies: z.array(JobPolicySchema),
+}).strict()
+export type JobAuthoringChoices = z.infer<typeof JobAuthoringChoicesSchema>
