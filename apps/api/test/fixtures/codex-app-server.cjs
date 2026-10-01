@@ -140,7 +140,9 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     else replyThread(message.id, params)
   } else if (message.method === 'thread/read') {
     const persisted = read(`state-${params.threadId}.json`, current)
-    result(message.id, { thread: params.includeTurns ? persisted : { ...persisted, turns: [] } })
+    const reply = () => result(message.id, { thread: params.includeTurns ? persisted : { ...persisted, turns: [] } })
+    if (flag('read-delay')) setTimeout(reply, 250)
+    else reply()
   }
   else if (message.method === 'thread/turns/list') result(message.id, { data: [...current.turns].reverse(), nextCursor: null, prevCursor: null })
   else if (message.method === 'turn/start') {
