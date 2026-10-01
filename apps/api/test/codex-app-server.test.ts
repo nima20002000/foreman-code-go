@@ -618,6 +618,29 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'usable' }))
   })
 
+  it('detaches an idle pending iterator without cancelling the native turn', async () => {
+    const session = await manager.createSession(source)
+    const iterator = manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'subscriber-close' })[Symbol.asyncIterator]()
+    const first = await iterator.next()
+    // Drain the start/initial item events so next is waiting for new provider IO.
+    const history = await manager.history(session)
+    const last = history.events.at(-1)!.sequence
+    let current = first.done ? last : first.value.sequence
+    while (current < last) {
+      const next = await iterator.next()
+      assert.equal(next.done, false)
+      if (!next.done) current = next.value.sequence
+    }
+    const pending = iterator.next()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await iterator.return?.()
+    assert.equal((await pending).done, true)
+    assert.equal((await wire('turn/interrupt')).length, 0)
+    await assertCode(collect(manager.startTurn(session, { prompt: 'duplicate', clientCorrelationId: 'duplicate' })), 'CODEX_TURN_ACTIVE')
+    await finish(f.directory, session.nativeSessionId)
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'turn.completed'))
+  })
+
   it('keeps the stream reservation until the previous iterator drains its terminal events', async () => {
     const session = await manager.createSession(source)
     const iterator = manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'old' })[Symbol.asyncIterator]()
