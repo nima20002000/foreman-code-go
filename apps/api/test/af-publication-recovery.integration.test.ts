@@ -9,6 +9,9 @@ import { withAfMcp } from './helpers/afMcp.js'
 import { AgentChatStateSchema } from '@graphql/contracts/agent-chat'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { bindingIdentity } from '../src/modules/files/tools/context.js'
+import { PostgresFileToolRepository } from '../src/modules/files/tools/postgres.js'
+import type { FileToolContext } from '../src/modules/files/tools/types.js'
+import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
 import { createChatFileBackend } from './support/opencodeChatFileFixture.js'
 
 const signal = () => AbortSignal.timeout(30_000)
@@ -210,36 +213,25 @@ describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', 
       // Every read constructs a new repository; recovery uses only finalized DB facts.
       expect(await f.readPins(t.active.turn.messageId)).toEqual(original)
       expect(await f.readPins(t.active.turn.messageId)).toEqual(original)
-      const accepted = t.admission.accepted
-      const bound = { ownerPrincipalId: accepted.ownerPrincipalId, scope: accepted.scope,
-        nativeSessionId: accepted.nativeSessionId, turnId: t.active.turn.nativeTurnId!,
-        messageId: t.active.turn.messageId, allowMutation: accepted.allowMutation, allowedTools: [...accepted.allowedTools] }
-      const originalBinding = bindingIdentity(bound)
-      const foreignBindings = [
-        { ...bound, ownerPrincipalId: 'foreign-owner' }, { ...bound, nativeSessionId: 'foreign-thread' },
-        { ...bound, turnId: 'foreign-turn' }, { ...bound, messageId: 'foreign-message' },
-        { ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, conversationId: 'foreign-conversation' } } },
-        ...(bound.scope.chat.kind === 'agent' ? [
-          { ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, runId: 'foreign-run', executionId: 'foreign-execution' } } },
-          ...(selectedRun ? [
-            { ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, runId: 'foreign-run' } } },
-            { ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, executionId: 'foreign-execution' } } },
-          ] : []),
-        ] : []),
-      ]
-      for (const foreign of foreignBindings) {
-        await f.database.pool.query('update file_tool_publications set binding=$2 where file_id=$1',
-          [original[0]!.fileId, bindingIdentity(foreign)])
-        expect(await f.readPins(t.active.turn.messageId)).toEqual([])
-      }
-      await f.database.pool.query('update file_tool_publications set binding=$2 where file_id=$1',
-        [original[0]!.fileId, originalBinding])
+      // Published facts are immutable even to a later application writer.
+      await expect(f.database.pool.query('update file_tool_publications set binding=$2 where file_id=$1',
+        [original[0]!.fileId, '0'.repeat(64)])).rejects.toThrow('append-only')
+      expect(await f.readPins(t.active.turn.messageId)).toEqual(original)
       await withAfMcp(f, async (_writer, reader) => {
         const denied = await reader.callTool({ name: 'agent_chat_read', arguments: { workspaceId: 'foreign-workspace', query: f.context } })
         expect(denied.isError).toBe(true)
         expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
-        const result = await reader.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.context } })
-        const readback = AgentChatStateSchema.parse(result.structuredContent)
+        const result = await reader.callTool({ name: 'agent_chat_read', arguments: f.selection
+          ? { workspaceId: f.workspaceId, selection: { workflowId: f.selection.workflowId, runId: f.selection.runId,
+            workflowNodeId: f.selection.workflowNodeId, executionId: f.selection.executionId } }
+          : { workspaceId: f.workspaceId, query: f.context } })
+        let readback
+        if (f.selection) {
+          const selected = ReadSelectedRunChatResponseSchema.parse(result.structuredContent)
+          if (selected.kind !== 'selected') throw new Error('Expected the exact selected Run chat')
+          expect(selected.selection).toEqual(f.selection)
+          readback = selected.state
+        } else readback = AgentChatStateSchema.parse(result.structuredContent)
         expect(readback.messages.find((message) => message.id === t.active.turn.messageId)?.attachments?.map((file) => ({
           fileId: file.file.fileId, revisionId: file.revision.revisionId,
         }))).toEqual(original)
@@ -255,6 +247,43 @@ describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', 
       expect(upload).toHaveBeenCalledTimes(1)
       expect(f.native.starts).toBe(starts)
       await t.bridge.close()
+    })
+
+    it(`AF-03: cold ${selectedRun ? 'selected-Run' : 'Agent'} readback excludes every foreign immutable publication binding`, async () => {
+      const f = await afPublicationFixture('codex', selectedRun)
+      const foreignContexts: Array<(bound: FileToolContext) => FileToolContext> = [
+        bound => ({ ...bound, ownerPrincipalId: 'foreign-owner' }),
+        bound => ({ ...bound, nativeSessionId: 'foreign-thread' }),
+        bound => ({ ...bound, turnId: 'foreign-turn' }),
+        bound => ({ ...bound, messageId: 'foreign-message' }),
+        bound => ({ ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, conversationId: 'foreign-conversation' } } }),
+        bound => ({ ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, runId: 'foreign-run', executionId: 'foreign-execution' } } }),
+        ...(selectedRun ? [
+          (bound: FileToolContext) => ({ ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, runId: 'foreign-run' } } }),
+          (bound: FileToolContext) => ({ ...bound, scope: { ...bound.scope, chat: { ...bound.scope.chat, executionId: 'foreign-execution' } } }),
+        ] : []),
+      ]
+      for (const foreign of foreignContexts) {
+        const t = await codex(f, 0, 'lose_close')
+        const append = PostgresFileToolRepository.prototype.linkPublication
+        // Inject stale/foreign receipt identity BEFORE the real append-only insert;
+        // authentication, allocation, finalization and readback remain production.
+        const insertion = vi.spyOn(PostgresFileToolRepository.prototype, 'linkPublication')
+          .mockImplementationOnce(function (this: PostgresFileToolRepository, link) {
+            return append.call(this, { ...link, binding: bindingIdentity(foreign(link.context)) })
+          })
+        try { expect((await t.publish()).success).toBe(false) } finally { insertion.mockRestore() }
+        const receipts = await f.publications(t.active.turn.messageId)
+        expect(receipts).toHaveLength(1)
+        f.native.onFinish = undefined
+        f.native.finish(); await f.settle()
+        const starts = f.native.starts
+        expect(await f.readPins(t.active.turn.messageId)).toEqual([])
+        expect(await f.readPins(t.active.turn.messageId)).toEqual([])
+        expect(await f.publications(t.active.turn.messageId)).toEqual(receipts)
+        expect(f.native.starts).toBe(starts)
+        await t.bridge.close()
+      }
     })
   }
 

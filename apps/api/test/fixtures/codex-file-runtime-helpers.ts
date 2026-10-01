@@ -26,12 +26,10 @@ export async function fileRuntimeFixture() {
     const started = () => {`)
   replace("['wait', 'slow-start', 'late-start'].includes(prompt)",
     "['wait', 'slow-start', 'late-start'].includes(prompt) || flag('file-turn')")
-  replace("{ config: { approval_policy: 'on-request' }, origins: {}, layers: [] }", `{
-    config: { approval_policy: 'on-request', mcp_servers: Object.fromEntries(args.flatMap((arg) => {
-      const match = /^mcp_servers\\.([A-Za-z0-9_-]+)\\.enabled=false$/.exec(arg)
-      return match ? [[match[1], { enabled: false }]] : []
-    })) }, origins: {}, layers: [],
-  }`)
+  // The shared fixture now owns MCP configuration and exact CLI disable flags.
+  // Require that current surface rather than patching a retired response shape.
+  assert.equal(binary.split('enabled: processDisabledMcp.has(name) ? false : configured.enabled !== false').length, 2,
+    'missing/ambiguous shared fixture MCP disable seam')
   await writeFile(f.binary, binary)
   return f
 }

@@ -120,6 +120,8 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   const runExecution: HarnessExecution = { ...candidateFor(fixture), state: 'completed',
     nativeSessionId: 'publication-run-source', workingDirectory: project,
     result: { outcome: 'succeeded' }, finishedAt: fixture.createdAt }
+  const completedRun = selectedRun ? AcceptedWorkflowRunV3Schema.parse({ ...fixture.run,
+    executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded' }, finishedAt: fixture.createdAt }) : undefined
   if (selectedRun) await database.pool.query(`insert into harness_executions
     (id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)`,
   [runExecution.id, runExecution.runId, runExecution.workflowNodeId, runExecution.agentId, JSON.stringify(runExecution)])
@@ -127,7 +129,7 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   const agent = new AgentChatService(database.pool, repository, new PostgresOperatorConversationRepository(database.pool),
     new PostgresWorkflowRepository(database.pool), { // Only source execution/native I/O is synthetic; Run/execution FK rows are real.
       getForWorkspace: async (workspaceId, runId) => selectedRun && workspaceId === fixture.scope.workspaceId && runId === fixture.run.id
-        ? AcceptedWorkflowRunV3Schema.parse({ ...fixture.run, executionState: 'completed' }) : undefined,
+        ? completedRun : undefined,
       async *executionPages() { if (selectedRun) yield [runExecution] },
     },
     (id) => {
@@ -152,10 +154,17 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   const context = { workflowId: fixture.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId,
     ...(selectedRun ? { runId: fixture.run.id } : {}) }
   const workspaceId = fixture.scope.workspaceId
+  const selection = selectedRun ? { workspaceId, workflowId: context.workflowId,
+    runId: fixture.run.id, workflowNodeId: context.workflowNodeId, executionId: runExecution.id } : undefined
   const request = (conversationId: string | null, changes: Partial<SendAgentChatMessageRequest> = {}): SendAgentChatMessageRequest => ({
     requestId: randomUUID(), content: 'review', context, intent: 'next_turn', expectedConversationId: conversationId, ...changes,
   })
-  const created = await chat.send(owner.principal, workspaceId, request(null))
+  const send = (input: SendAgentChatMessageRequest) => selection
+    ? chat.sendSelectedRun(owner.principal, { selection, message: { requestId: input.requestId,
+      content: input.content, intent: input.intent, expectedConversationId: input.expectedConversationId,
+      ...(input.attachments ? { attachments: input.attachments } : {}) } })
+    : chat.send(owner.principal, workspaceId, input)
+  const created = await send(request(null))
   const conversationId = created.state.conversation!.id
   const settle = () => waitFor(async () => !(await repository.get(conversationId))?.active_request_id
     && !(await repository.state(conversationId))?.turns.some((turn) => ['queued', 'submitting', 'accepted'].includes(turn.delivery)))
@@ -179,7 +188,7 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   async function pause(attachments: MessageAttachmentRef[] = []) {
     native.holdNext = true
     const input = request(conversationId, { attachments })
-    await chat.send(owner.principal, workspaceId, input)
+    await send(input)
     await waitFor(async () => !!(await repository.turn(conversationId, input.requestId))?.nativeTurnId)
     const turn = (await repository.turn(conversationId, input.requestId))!
     const row = (await repository.get(conversationId))!
@@ -236,5 +245,5 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   }
   return { database, root, project, app, access, owner, reader, repository, chat, files, service, fixture,
     workspaceId, context, conversationId, native, request, upload, inheritedReference, references, pause, settle, stored, publications,
-    resolver, hosts, prepareCodex, readPins, nextTurn, runExecution }
+    resolver, hosts, prepareCodex, readPins, nextTurn, runExecution, selection }
 }
