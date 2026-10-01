@@ -1,0 +1,65 @@
+import type { FastifyInstance } from 'fastify'
+import type { McpServer } from '@modelcontextprotocol/server'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { WorkspaceRootListInputSchema, WorkspaceRootListResultSchema } from '@graphql/contracts/workspace-root-policies'
+import { WorkspaceBoundLocationGetInputSchema, WorkspaceBoundLocationValidateInputSchema, WorkspaceBoundLocationBrowseInputSchema,
+  WorkspaceBoundLocationSetInputSchema, WorkspaceBoundLocationValidationSchema, WorkspaceBoundLocationBrowseResultSchema,
+  WorkspaceBoundLocationReadbackSchema, WorkspaceBoundLocationSetResultSchema } from '@graphql/contracts/workspace-bound-location'
+import { requirePrincipal } from '../access/http.js'
+import { DomainError } from '../errors.js'
+import type { PostgresCommandCoordinator } from '../commands/postgres.js'
+import { toolFailure, toolResult } from '../../mcp/shared/results.js'
+import type { WorkspaceBoundLocationService } from './service.js'
+
+const TOOLS = { choices: 'workspace_root_choices_list', get: 'workspace_root_location_get',
+  validate: 'workspace_root_location_validate', browse: 'workspace_root_directories_list', set: 'workspace_root_location_set' } as const
+function scoped(workspaceId: string, raw: unknown) {
+  if (raw === undefined) return { workspaceId }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new DomainError('INVALID_REQUEST', 'Expected an object body.', 400)
+  const body = raw as Record<string, unknown>
+  if (body.workspaceId !== undefined && body.workspaceId !== workspaceId) throw new DomainError('RESOURCE_ID_MISMATCH', 'Workspace scope does not match the route.', 400)
+  return { ...body, workspaceId }
+}
+/** Existing authenticated management mount only. Main state changes remain in
+ * the original workspace.location.set command receipt/audit namespace. */
+export function registerWorkspaceRootRoutes(app: FastifyInstance, service: WorkspaceBoundLocationService): void {
+  type Request = { Params: { workspaceId: string }; Body: unknown; Querystring: Record<string, unknown> }
+  const base = '/api/management/workspaces/:workspaceId'
+  app.get<Request>(`${base}/root-policies`, async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    return service.choices(requirePrincipal(request), scoped(request.params.workspaceId, request.query))
+  })
+  app.get<Request>(`${base}/root-location`, async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
+    return service.get(requirePrincipal(request), scoped(request.params.workspaceId, request.query))
+  })
+  app.post<Request>(`${base}/root-location/validate`, request => service.validate(requirePrincipal(request), 'http', scoped(request.params.workspaceId, request.body)))
+  app.post<Request>(`${base}/root-location/browse`, request => service.browse(requirePrincipal(request), scoped(request.params.workspaceId, request.body)))
+  app.put<Request>(`${base}/root-location`, request => service.set(requirePrincipal(request), 'http', scoped(request.params.workspaceId, request.body)))
+}
+export function registerWorkspaceRootTools(server: McpServer, service: WorkspaceBoundLocationService, principal: ManagementPrincipal,
+  commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
+  const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+  const invoke = async (name: string, work: () => Promise<unknown>) => {
+    try { return toolResult(await work()) } catch (error) {
+      if (error instanceof DomainError && error.status === 403) await commands.recordDenied(principal.id, 'mcp', name, `mcp:${name}`)
+      return toolFailure(error)
+    }
+  }
+  server.registerTool(TOOLS.choices, { description: 'List persisted human-approved computer/base/root policies for an existing workspace, without filesystem probing. Requires scoped source_roots:read and workspace_locations:read. No Agent or workflow is required; metadata-only is not worker readiness.',
+    inputSchema: WorkspaceRootListInputSchema, outputSchema: WorkspaceRootListResultSchema, annotations: read }, input => invoke(TOOLS.choices, () => service.choices(principal, input)))
+  server.registerTool(TOOLS.get, { description: 'Read the current exact workspace root binding and location revision. Requires scoped source_roots:read and workspace_locations:read. Legacy locations explicitly lack root evidence; never infer a host from a path.',
+    inputSchema: WorkspaceBoundLocationGetInputSchema, outputSchema: WorkspaceBoundLocationReadbackSchema, annotations: read }, input => invoke(TOOLS.get, () => service.get(principal, input)))
+  server.registerTool(TOOLS.validate, { description: 'Validate a relative directory through its approved computer/base configuration with native component-safe attestation. Requires scoped source_roots:read, workspace_locations:read and workspace_locations:validate. Does not set a location or launch a harness.',
+    inputSchema: WorkspaceBoundLocationValidateInputSchema, outputSchema: WorkspaceBoundLocationValidationSchema, annotations: read }, input => invoke(TOOLS.validate, () => service.validate(principal, 'mcp', input)))
+  server.registerTool(TOOLS.browse, { description: 'Browse directories only within the selected approved native base and current root/config/location revisions. Requires scoped source_roots:read and workspace_locations:read/validate. Never sends caller absolute paths or follows escaped components.',
+    inputSchema: WorkspaceBoundLocationBrowseInputSchema, outputSchema: WorkspaceBoundLocationBrowseResultSchema, annotations: read }, input => invoke(TOOLS.browse, () => service.browse(principal, input)))
+  server.registerTool(TOOLS.set, { description: 'Revision-check and save an approved native workspace root binding using the existing location command receipt/audit path. Requires scoped source_roots:read/bind plus workspace_locations:read/validate/update. The server derives canonical path and registered application runner identity. Existing Runs retain accepted pins. Reuse commandId and exact input after unknown acknowledgment; never substitute another host.',
+    inputSchema: WorkspaceBoundLocationSetInputSchema, outputSchema: WorkspaceBoundLocationSetResultSchema,
+    annotations: { ...read, readOnlyHint: false } }, input => invoke(TOOLS.set, () => service.set(principal, 'mcp', input)))
+}
+export function workspaceRootCapabilityLimit(composed: boolean) {
+  return { feature: 'workspace_registered_roots', state: composed ? 'limited' as const : 'unsupported' as const,
+    detail: composed ? 'Independent workspace roots expose exact schemas through tools/list: workspace_root_choices_list/location_get require source_roots:read and workspace_locations:read; directories_list/location_validate additionally require workspace_locations:validate; location_set additionally requires source_roots:bind and workspace_locations:update. Main persists revision-fenced bindings; native roots come from human-approved host configuration.'
+      : 'Registered workspace root services are not composed.' }
+}
