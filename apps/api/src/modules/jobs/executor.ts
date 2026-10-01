@@ -1,3 +1,5 @@
+import { requireJobInputReceipt,JOB_INPUT_MANIFEST_CONTAINER_PATH,type JobAcceptedInputPort,type VerifiedJobSource } from './inputs.js'
+import type { JobInputDeliveryReceipt } from '@graphql/contracts/job-inputs'
 import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type PreparedJobSpec, type JobExecution } from '@graphql/contracts'
@@ -36,6 +38,8 @@ export interface JobLaunchPlan {
   identity: string
   execution: JobExecution
   privateRepositoryRoot: string
+  verifiedSource: VerifiedJobSource
+  inputs: JobInputDeliveryReceipt
   cwd: string
   argv: readonly string[]
   environment: Readonly<Record<string, string>>
@@ -60,6 +64,7 @@ export interface JobSupervisor {
 export interface JobExecutorPorts {
   authority: JobLaunchAuthority
   source: JobSourcePort
+  inputs: JobAcceptedInputPort
   supervisor: JobSupervisor
   /** Resolves only after the bounded W08 worker spool has durably accepted the chunk. */
   appendLog(chunk: { executionId: string; attemptId: string; sequence: number; stream: 'stdout' | 'stderr'; text: string; byteSize: number; createdAt: string }): Promise<void>
@@ -136,10 +141,12 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
         !source.privateRepositoryRoot.startsWith('/') || source.privateRepositoryRoot !== spec.target.destination.canonicalProjectRoot) {
         throw new Error('Accepted private source/root identity changed.')
       }
+      const inputs=requireJobInputReceipt(execution,source,await ports.inputs.prepare(execution,source,signal))
+      if(signal.aborted)throw new Error('Input delivery interrupted.')
       const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot
       if (cwd !== spec.target.destination.canonicalCwd) throw new Error('Accepted working directory changed.')
-      const prepared: JobLaunchPlan = { identity, execution, privateRepositoryRoot: source.privateRepositoryRoot, cwd, argv: spec.argv,
-        environment: { HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1' }, stdin: 'closed', pty: false, profile }
+      const prepared: JobLaunchPlan = { identity, execution, privateRepositoryRoot: source.privateRepositoryRoot, verifiedSource:{...source}, inputs, cwd, argv: spec.argv,
+        environment: { HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',GRAPHQL_JOB_INPUT_MANIFEST:JOB_INPUT_MANIFEST_CONTAINER_PATH }, stdin: 'closed', pty: false, profile }
       await ports.authority.recheck(execution)
       return prepared
     })

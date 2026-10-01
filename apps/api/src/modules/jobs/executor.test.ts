@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import { JOB_INPUT_DIRECTORY,type JobInputDeliveryReceipt } from '@graphql/contracts/job-inputs'
+import { jobInputSnapshotDigest } from '@graphql/contracts/job-inputs-node'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -43,10 +46,18 @@ function repin(job: JobExecution) {
   Object.assign(job.acceptedSpec, jobSpecDigests({ source, target, argv, inputs, policy, outputs, ...(relativeCwd ? { relativeCwd } : {}) }, workflowInput))
 }
 async function* chunks(value = '') { if (value) yield Buffer.from(value) }
+/** Trusted input adapter double for executor-only tests. Real copied bytes and
+ * inode checks are independently exercised in job-input-consumer.test.ts. */
+function inputReceipt(execution:JobExecution):JobInputDeliveryReceipt {
+  const spec=execution.acceptedSpec,workflow=Buffer.from(JSON.stringify(spec.workflowInput)),manifest=Buffer.from(JSON.stringify({version:1,inputSnapshotDigest:jobInputSnapshotDigest(execution),workflowInput:spec.workflowInput,files:spec.inputs.map(input=>({relativePath:`files/${input.path}`,fileId:input.fileId,revisionId:input.revisionId,sha256:input.sha256,byteSize:input.byteSize}))}))
+  const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex')
+  return {version:1,bindingId:'input-adapter-fixture',recipient:{workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest},inputSnapshotDigest:jobInputSnapshotDigest(execution),manifestSha256:hash(manifest),manifestByteSize:manifest.length,directory:{relativePath:JOB_INPUT_DIRECTORY,device:'1',inode:'2',mountId:'3'},files:[{relativePath:'manifest.json',sha256:hash(manifest),byteSize:manifest.length},{relativePath:'workflow-input.json',sha256:hash(workflow),byteSize:workflow.length},...spec.inputs.map(input=>({relativePath:`files/${input.path}`,sha256:input.sha256,byteSize:input.byteSize}))],readonlyMountRequired:true}
+}
 function ports(exit: { exitCode: number | null; signal: string | null; execError?: string; timedOut?: boolean } = { exitCode: 0, signal: null }): JobExecutorPorts {
   const process: JobSupervisedProcess = { stdout: chunks('stdout'), stderr: chunks('stderr'), exited: Promise.resolve(exit),
     stop: vi.fn(async () => true), proveStopped: vi.fn(async () => true) }
   return { authority: { recheck: vi.fn(async () => {}), claim: vi.fn(async () => 'launch' as const), launched: vi.fn(async () => {}) },
+    inputs:{prepare:vi.fn(async execution=>inputReceipt(execution))},
     source: { verify: vi.fn(async () => ({ privateRepositoryRoot: '/private/source', directoryIdentityHash: digest, privateGit: true as const, diskQuotaBytes: 1024 })) },
     supervisor: { qualifiedProfile: profile, launch: vi.fn(async () => process) }, appendLog: vi.fn(async () => {}), collectOutputs: vi.fn(async () => {}) }
 }
@@ -67,12 +78,13 @@ async function admit(workflowInput: RunInput | null) {
     source: { ...spec.source, materializationId: identity.executionId, materializationDigest: digest } }))
   const adoptFinalBinding = vi.fn(async () => {})
   const preparation = new JobPreparationService({
+    revalidateAccepted:async()=>{},
     choices: async () => ({ targets: [{ id, label: 'Approved main', target: definition.spec.target, ready: true, reasons: [] }],
       sources: [definition.spec.source], policies: [definition.spec.policy] }), materialize, adoptFinalBinding,
   })
   const accept = vi.fn<JobDispatchPort['accept']>(async (_sql, input) => ({ operationId: input.operationId, attemptId: input.attemptId, owner: { grantId: id, epoch: '1' } }))
   const service = new JobService({} as pg.Pool, {} as PostgresCommandCoordinator,
-    { preparation, dispatch: { accept, cancel: async () => {}, wake: async () => {} }, artifacts: { read: vi.fn(), list: async () => [] } })
+    { preparation, dispatch: { accept, cancelForRunCleanup:async()=>{throw new Error('No Run cleanup in this admission fixture')}, cancel: async () => {}, wake: async () => {} }, artifacts: { read: vi.fn(), list: async () => [] } })
   const workflow = workflowInput === null ? null : { workflowId: id, runId: id, nodeId: id, nodeExecutionId: id }
   const job = await service.admit(sql, principal, definition, workflow, workflowInput)
   return { job, definition, query, materialize, adoptFinalBinding, accept }
@@ -106,6 +118,16 @@ describe('real main admission to worker executor contract (SQL/source/supervisor
       expect(plan.cwd).toBe('/private/source/build')
       expect(plan.execution.acceptedSpec.inputs[0]!.path).toBe('inputs/config.json')
     })
+  it('denies refused immutable input delivery before native claim',async()=>{
+    const job=execution(),p=ports();p.inputs.prepare=vi.fn(async()=>{throw new Error('Exact file scope denied')})
+    expect((await executeJob(job,p,new AbortController().signal)).outcome).toBe('preparation_failed')
+    expect(p.authority.claim).not.toHaveBeenCalled();expect(p.supervisor.launch).not.toHaveBeenCalled()
+  })
+  it('denies switched input receipts before native claim',async()=>{
+    const job=execution(),p=ports();p.inputs.prepare=vi.fn(async()=>({...inputReceipt(job),recipient:{...inputReceipt(job).recipient,operationId:'switched'}}))
+    expect((await executeJob(job,p,new AbortController().signal)).outcome).toBe('preparation_failed')
+    expect(p.authority.claim).not.toHaveBeenCalled();expect(p.supervisor.launch).not.toHaveBeenCalled()
+  })
   it('rejects differing Run input before any source verification or launch claim', async () => {
     const { job } = await admit({ request: 'accepted' }), p = ports()
     job.acceptedSpec.workflowInput = { request: 'different' }
@@ -154,7 +176,7 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     expect(result.outcome).toBe('succeeded')
     const plan = vi.mocked(p.supervisor.launch).mock.calls[0]![0]
     expect(plan.argv[2]).toBe('$(touch /escape); &')
-    expect(plan.environment).toEqual({ HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1' })
+    expect(plan.environment).toEqual({ HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',GRAPHQL_JOB_INPUT_MANIFEST:'/workspace/.graphql-job-inputs/manifest.json' })
     expect(plan.stdin).toBe('closed')
     expect(plan.pty).toBe(false)
     const argv = podmanCreateArgv(plan)
