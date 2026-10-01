@@ -8,6 +8,8 @@ import { readDeclaredJobOutputs } from '../../jobs/executorOutputs.js'
 import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
 import { createCanonicalJobArtifactPort } from '../../files/jobs/factory.js'
+import { createAdmittedJobOutputs } from '../../files/jobs/admittedFactory.js'
+import { WorkerJobOutputApplication, WorkerJobOutputReceiver, type WorkerJobOutputChannel } from '../../files/jobs/outputChannel.js'
 import { VerifiedJobOutputReader, type AcceptedJobTransferResolver } from '../../files/jobs/transferReader.js'
 import type { JobOutputPublicationInput } from '../../files/jobs/port.js'
 import type { VerifiedArtifactReader } from '../../files/distributed/publication.js'
@@ -26,6 +28,18 @@ export function createJobCanonicalOutputs(input: { pool: pg.Pool; storageRoot: s
   return { artifacts, projectReceipt: (sql: JobSql, execution: JobExecution, receipt: RemoteJobOperationReceipt) =>
     projectJobReceiptLocked(sql, execution, receipt, artifacts) }
 }
+/** Main uses persisted admission, the actual W07 receiver and the locked job projector together. */
+export function createAdmittedJobCanonicalOutputs(input: Parameters<typeof createAdmittedJobOutputs>[0]) {
+  const outputs = createAdmittedJobOutputs(input)
+  return { ...outputs, projectReceipt: (sql: JobSql, execution: JobExecution, receipt: RemoteJobOperationReceipt) =>
+    projectJobReceiptLocked(sql, execution, receipt, outputs.artifacts) }
+}
+
+/** Worker metadata and sealed bytes share its existing selected-main signed carrier. */
+export function createWorkerJobOutputCollector(channel: WorkerJobOutputChannel, connection: TransferSenderConnection, journal: RemoteOperationJournal) {
+  return createRemoteJobOutputCollector(new WorkerJobOutputReceiver(channel), connection, new WorkerJobOutputApplication(channel), journal)
+}
+
 export interface JobOutputApplicationPort {
   /** Main mints and persists the output intent under genuine job publication authority. */
   admit(input: JobOutputPublicationInput): Promise<TransferIntent>
