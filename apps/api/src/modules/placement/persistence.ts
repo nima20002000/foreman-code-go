@@ -108,7 +108,8 @@ export async function readNativePlacement(sql: Pick<GraphTransactionSql, 'query'
   // Read the actual adopted source fact; never invent adoption from a digest.
   const sourceRow = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1', [binding.materialization.receipt.materializationId])).rows[0]
   if (!sourceRow) conflict()
-  const source = SourceMaterializationRecordSchema.parse({ ...(sourceRow!.record as object), state: sourceRow!.state })
+  const storedSource = SourceMaterializationRecordSchema.parse(sourceRow!.record)
+  const source = SourceMaterializationRecordSchema.parse({ ...storedSource, state: sourceRow!.state })
   if (source.finalDispatchBindingHash !== binding.bindingHash || sourceMaterializationDigest(source) !== sourceMaterializationDigest(binding.materialization)) conflict()
   return { ...binding, materialization: source }
 }
