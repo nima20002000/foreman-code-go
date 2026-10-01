@@ -111,6 +111,10 @@
     "./remote-execution": {
       "types": "./dist/remoteExecution.d.ts",
       "import": "./dist/remoteExecution.js"
+    },
+    "./jobs": {
+      "types": "./dist/jobs.d.ts",
+      "import": "./dist/jobs.js"
     }
   },
   "scripts": {
