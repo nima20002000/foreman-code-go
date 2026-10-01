@@ -1,3 +1,4 @@
+import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
 import { randomUUID } from 'node:crypto'
 import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
 import { JobRunCleanupSchema,type JobRunCleanup } from '@graphql/contracts/job-run-cleanup'
@@ -9,7 +10,15 @@ import { DomainError } from '../errors.js'
 import { canonical,JobRepository,type JobSql } from './repository.js'
 
 export function requireCleanupPins(execution:JobExecution,cleanup:JobRunCleanup) {
-  if(!execution.workflow||cleanup.workspaceId!==execution.workspaceId||cleanup.workflowId!==execution.workflow.workflowId||cleanup.runId!==execution.workflow.runId||cleanup.executionId!==execution.id||cleanup.attemptId!==execution.attemptId||cleanup.operationId!==execution.operationId||cleanup.bindingHash!==execution.acceptedSpec.bindingHash||canonical(cleanup.jobOwner)!==canonical(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Owned cleanup cannot stop another placement, attempt or operation.',409)
+  if(!execution.workflow||cleanup.workspaceId!==execution.workspaceId||cleanup.workflowId!==execution.workflow.workflowId||cleanup.runId!==execution.workflow.runId||cleanup.nodeId!==execution.workflow.nodeId||cleanup.nodeExecutionId!==execution.workflow.nodeExecutionId||cleanup.executionId!==execution.id||cleanup.attemptId!==execution.attemptId||cleanup.operationId!==execution.operationId||cleanup.bindingHash!==execution.acceptedSpec.bindingHash||canonical(cleanup.jobOwner)!==canonical(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Owned cleanup cannot stop another placement, attempt or operation.',409)
+}
+async function requireRunJobMapping(sql:JobSql,execution:JobExecution,workflowVersionId:string) {
+  const workflow=execution.workflow
+  if(!workflow)throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Manual jobs cannot borrow a Run-node mapping.',409)
+  const row=(await sql.query<{reference:unknown;run_id:string;node_execution_id:string;job_execution_id:string}>('select reference,run_id,node_execution_id,job_execution_id from workflow_job_executions where job_execution_id=$1',[execution.id])).rows[0]
+  if(!row||row.run_id!==workflow.runId||row.node_execution_id!==workflow.nodeExecutionId||row.job_execution_id!==execution.id)throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','The authoritative Run-node-to-Job relationship is missing.',409)
+  const reference=JobWorkflowExecutionReferenceSchema.parse(row.reference)
+  if(reference.workspaceId!==execution.workspaceId||reference.workflowId!==workflow.workflowId||reference.workflowVersionId!==workflowVersionId||reference.runId!==workflow.runId||reference.nodeId!==workflow.nodeId||reference.nodeExecutionId!==workflow.nodeExecutionId||reference.jobExecutionId!==execution.id)throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','The original accepted Run-node-to-Job relationship changed.',409)
 }
 /** Request is recorded before any native control. Existing Run cleanup must
  * already be persisted by the common lifecycle before it aborts job drivers. */
@@ -22,6 +31,7 @@ export async function requestRunJobCleanup(sql:GraphTransactionSql,execution:Job
     if(!row)throw new DomainError('JOB_CLEANUP_AUTHORITY_MISSING','Persist the real Run cleanup intent before aborting owned jobs.',409)
     const run=AcceptedWorkflowRunV3Schema.parse(row.record)
     if(run.workspaceId!==execution.workspaceId||run.workflowId!==execution.workflow!.workflowId)throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Cleanup must use the accepted Job Run scope.',409)
+    await requireRunJobMapping(sql,execution,run.workflowVersionId)
     return {run,fence,stopped:row.stopped,requestedAt:row.requested_at.toISOString()}
   }
   const actual=await readAuthority()
@@ -31,12 +41,13 @@ export async function requestRunJobCleanup(sql:GraphTransactionSql,execution:Job
   if(intent.subject.kind!=='workflow-node'||intent.subject.runId!==owner.runId||intent.bindingHash!==execution.acceptedSpec.bindingHash||intent.attemptId!==execution.attemptId||intent.operationId!==execution.operationId||canonical(intent.owner)!==canonical(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','The job cleanup target changed.',409)
   if(row.cancel_cleanup){const existing=JobRunCleanupSchema.parse(row.cancel_cleanup);requireCleanupPins(execution,existing);return existing}
   if(reason==='run-stop'&&!actual.stopped)throw new DomainError('JOB_CLEANUP_REASON_CONFLICT','A user Stop reason requires the actual persisted Run Stop.',409)
-  const cleanup=JobRunCleanupSchema.parse({schemaVersion:1,id:randomUUID(),commandId:row.cancel_command_id??randomUUID(),workspaceId:execution.workspaceId,workflowId:actual.run.workflowId,workflowVersionId:actual.run.workflowVersionId,runId:owner.runId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,jobOwner:execution.owner,runOwner:actual.fence,reason:actual.stopped?'run-stop':reason,cleanupRequestedAt:actual.requestedAt,requestedAt:new Date().toISOString()})
+  const cleanup=JobRunCleanupSchema.parse({schemaVersion:1,id:randomUUID(),commandId:row.cancel_command_id??randomUUID(),workspaceId:execution.workspaceId,workflowId:actual.run.workflowId,workflowVersionId:actual.run.workflowVersionId,runId:owner.runId,nodeId:execution.workflow.nodeId,nodeExecutionId:execution.workflow.nodeExecutionId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,jobOwner:execution.owner,runOwner:actual.fence,reason:actual.stopped?'run-stop':reason,cleanupRequestedAt:actual.requestedAt,requestedAt:new Date().toISOString()})
   beforeGraphCommit(sql,async()=>{const current=await readAuthority();if(canonical(current.fence)!==canonical(actual.fence)||current.run.workflowVersionId!==cleanup.workflowVersionId||current.requestedAt!==cleanup.cleanupRequestedAt)throw new DomainError('JOB_CLEANUP_AUTHORITY_CHANGED','The original Run cleanup authority changed before commit.',409)})
   await sql.query('update job_dispatch_intents set cancel_command_id=$2,cancel_cleanup=$3::jsonb where execution_id=$1',[execution.id,cleanup.commandId,JSON.stringify(cleanup)])
   const repository=new JobRepository(),current=await repository.execution(sql,execution.workspaceId,execution.id,true)
   requireCleanupPins(current,cleanup)
   if(current.process.phase!=='terminal'){current.cancelRequestedAt??=cleanup.requestedAt;current.updatedAt=cleanup.requestedAt;await repository.putExecution(sql,current)}
+  await requireRunJobMapping(sql,execution,cleanup.workflowVersionId)
   return cleanup
 }
 /** The committed receipt may outlive its Run owner session. Reconciliation only
@@ -52,5 +63,6 @@ export async function readRunJobCleanup(sql:JobSql,execution:JobExecution):Promi
   if(!run)throw new DomainError('JOB_CLEANUP_AUTHORITY_MISSING','The original Run cleanup authority disappeared.',409)
   const accepted=AcceptedWorkflowRunV3Schema.parse(run.record)
   if(accepted.workspaceId!==cleanup.workspaceId||accepted.workflowId!==cleanup.workflowId||accepted.workflowVersionId!==cleanup.workflowVersionId||run.requested_at.toISOString()!==cleanup.cleanupRequestedAt)throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','The original accepted Run cleanup scope changed.',409)
+  await requireRunJobMapping(sql,execution,cleanup.workflowVersionId)
   return cleanup
 }
