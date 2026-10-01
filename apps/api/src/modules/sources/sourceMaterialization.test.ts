@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rename, symlink, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { deflateSync } from 'node:zlib'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSourceManifest, sourceSha256, verifySourceManifest, sourcePath } from './manifest.js'
@@ -160,6 +161,14 @@ describe('capture semantics', () => {
     await qualifiedGit(f.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'submodule'])
     const subCommit = (await qualifiedGit(f.root, ['rev-parse', 'HEAD'])).toString().trim()
     await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit: subCommit, approvedPaths: ['asset.bin', 'module'], executablePolicy: 'strip', sink: sink() })).rejects.toThrow()
+  })
+  it('rejects corrupted Git objects even when the object filename still matches the accepted ref', async () => {
+    const f = await fixture(); await qualifiedGit(f.root, ['init', '--template=']); await writeFile(join(f.root, 'data.txt'), 'good')
+    await qualifiedGit(f.root, ['add', '.']); await qualifiedGit(f.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source'])
+    const commit = (await qualifiedGit(f.root, ['rev-parse', 'HEAD'])).toString().trim(), object = (await qualifiedGit(f.root, ['rev-parse', 'HEAD:data.txt'])).toString().trim()
+    const path = join(f.root, '.git', 'objects', object.slice(0, 2), object.slice(2))
+    await chmod(path, 0o600); await writeFile(path, deflateSync(Buffer.from('blob 4\0evil')))
+    await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit, approvedPaths: ['data.txt'], executablePolicy: 'strip', sink: sink() })).rejects.toThrow('Git object bytes')
   })
   it('rejects tracked secrets and missing explicit inclusion rather than omitting them', async () => {
     const f = await fixture(); await qualifiedGit(f.root, ['init', '--template=']); await writeFile(join(f.root, '.env'), 'secret')
