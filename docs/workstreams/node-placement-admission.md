@@ -18,15 +18,25 @@ registration, root allowlist, canonical symlinks, directory identity, execute/re
 and required write access. Passing unchecked worker JSON to this port violates
 the contract. Destination revalidation is required before native submission.
 
-`preparePlacement` verifies revisions, host, payload and CWD policy. The binding
-hash freezes all accepted source/configuration/root/harness/credential-reference
-pins. Filesystem identity includes canonical host, filesystem device and inode.
-`insertAcceptedPlacements` persists every node on the same branded transaction
-as accepted Run, canonical initialization and Start receipt. Its supplied fence
-must perform SQL-only live grant/registration/root/configuration revision checks
-both during insertion and before COMMIT. A saved placement without composition
-fails closed. Replay returns the existing Run before preparation; the original
-immutable placement evidence is read from `run_node_placements`.
+`AgentPlacementProducer` loads the immutable saved version/configurations and resolves
+actual W09 approved source/root pins plus W07 registration and HRT instance/profile
+facts. Unplaced local workflows retain the original admission path. Placed nodes
+require explicit saved source/root references; no newest-source selection is inferred.
+Accepted source is tagged `pending` with null materialization facts. The accepted
+binding freezes source/root/configuration/harness/profile/qualification references.
+`insertAcceptedPlacements` runs inside the existing Run/canonical/command receipt
+transaction. SQL-only live fences repeat before COMMIT.
+
+After a node becomes eligible, `RepeatRunRepository.insertExecution` invokes the
+placement callback inside the same owner/input-admission transaction. The producer
+creates a separate native owner grant and immutable operation/attempt intent; native
+directory setup remains forbidden there. Only after known admission COMMIT does
+`AgentExecutionPreparation` call W09 to copy the exact approved bytes. Its actual
+root and child CWD descriptor attestations become a separate `NativeExecutionPlacement`,
+adopted with the W09 final binding on the original owner transaction before native entry.
+The immutable initial intent keeps the accepted node hash. Its separate native hash
+covers receipt/reservation/source/CWD facts and excludes mutable source state and final
+adoption bookkeeping. A later source state update never rewrites accepted facts.
 
 Lazy occurrence dispatch derives only from accepted pins. `insertDispatchIntent`
 uses the existing Run owner/session fence and transaction, checks persisted
@@ -69,3 +79,24 @@ concurrent save/registration/root drift, faults before and after Run/intent COMM
 canonical receipt/intent completeness, schedule/repeat/continuation compatibility
 and native authorization. The real two-host bytes and process evidence gate,
 including uncertain ACK recovery without replacement execution, remains required.
+
+
+The resumed producer is mounted through `RepeatStartPublication.placementAdmission`
+and the existing repository services `admitPlacementExecutionLocked` /
+`preparePlacementExecution`. Both manual and schedule publication wrappers must
+preserve the placement admission field. HRT-C owns their production constructor
+mount; Root owns migration/export integration. Migration 284302 adds actual native
+owner grants and finalized source bindings, without historical backfill.
+
+`execution-authority-v1` is a private W07 worker-to-main request namespace. Its
+main handler reads exact persisted dispatch/placement, current root/source/profile,
+live accepted Run authority, device identity, native owner grant and original
+connection. Start additionally requires the existing committed entered native
+reservation. Successful replies issue no permit, allocation or lease. Its separate
+`read-facts` request returns the genuine adopted clone, immutable Agent configuration,
+exact host override/profile/installation and persisted native qualification. Worker
+clients reject binary payloads and identity drift. Native qualification requires
+exact resolved-launcher SHA/current suite/observed version/target profile/positive
+checks and a real check date; baseline or installer expectations are not proof.
+The compatibility lookup supports Codex/OpenCode. Claude requires its separate
+Claude proof schema rather than a fabricated compatibility qualification.
