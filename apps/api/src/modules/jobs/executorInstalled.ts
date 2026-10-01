@@ -1,0 +1,209 @@
+import { isDeepStrictEqual as same } from 'node:util'
+import { constants } from 'node:fs'
+import { open, realpath } from 'node:fs/promises'
+import { identity } from '../sources/privateFilesystem.js'
+import type { ChildProcess } from 'node:child_process'
+import { JobExecutionSchema, type JobExecution } from '@graphql/contracts/jobs'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { JobQualificationCandidate } from '@graphql/contracts/job-runtime'
+import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
+import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
+import { nativeAgentEnvironment } from '../harnesses/secrets.js'
+import { RemoteJobExecutionHost, type RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
+import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
+import { PodmanJobSupervisor, type PodmanCommandRunner } from './executorPodman.js'
+import type { OCIContainerOwnership } from './executorContainerOwner.js'
+import { assertJobRuntimeEntryContext } from './qualification.js'
+import type { QualifiedJobProfile } from './executor.js'
+
+export type InstalledJobExecutionHostInput = Omit<RemoteJobExecutionHostPorts, 'supervisor'> & {
+  configuration: InstalledRuntimeConfigurationLocation | null
+  registry: NativeProcessRegistry
+  currentBinding?(): Readonly<DeviceSessionBinding>
+}
+/** Actual Job execution, separate from diagnostics. HRT mounts handle on the
+ * existing channel and supplies W09's canonical source/input/output adapters.
+ * The caller opens the ORIGINAL journal without initializeNewInstallation.
+ */
+export function createInstalledJobExecutionHost(input: InstalledJobExecutionHostInput): RemoteJobExecutionHost {
+  const filesystems = new Map<string, { device: string; mountId: string }>()
+  const supervisors = new Map<string, Promise<PodmanJobSupervisor>>()
+  const supervisor = (execution: JobExecution) => {
+    let value = supervisors.get(execution.operationId)
+    if (!value) {
+      value = installedSupervisor(input, execution, filesystem => filesystems.set(execution.acceptedSpec.specDigest, filesystem))
+      supervisors.set(execution.operationId, value)
+    }
+    return value
+  }
+  return new RemoteJobExecutionHost({ ...input, supervisor, source: { async verify(spec, signal) {
+    const source = await input.source.verify(spec, signal)
+    const filesystem = filesystems.get(spec.specDigest)
+    if (!filesystem) throw new Error('Original installed Job admission missing')
+    const root = await open(source.privateRepositoryRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+    try {
+      signal.throwIfAborted()
+      if (await realpath(source.privateRepositoryRoot) !== source.privateRepositoryRoot) throw new Error('Private Job source retargeted')
+      const observed = await identity(root)
+      // W09 remains the source authority. This physical check prevents a nested
+      // mount from escaping the qualified bounded filesystem.
+      if (observed.device !== filesystem.device || observed.mountId !== filesystem.mountId) throw new Error('Private Job source escapes qualified filesystem')
+      return source
+    } finally { await root.close() }
+  } } })
+}
+
+async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: JobExecution, admitted: (filesystem: { device: string; mountId: string }) => void): Promise<PodmanJobSupervisor> {
+  const execution = JobExecutionSchema.parse(raw), target = execution.acceptedSpec.target, connection = input.connection
+  const unavailable: PodmanCommandRunner = { async run() { throw new Error('Original qualified OCI runtime unavailable') }, async attach() { throw new Error('Original qualified OCI runtime unavailable') } }
+  const observedHost = () => {
+    const binding = 'deviceId' in connection ? input.currentBinding?.() : null
+    if ('deviceId' in connection && (!binding || binding.mainId !== connection.mainId || binding.deviceId !== connection.deviceId ||
+      binding.workerInstallationId !== connection.workerInstallationId || binding.keyRevision !== connection.keyRevision ||
+      binding.authorizationRevision !== connection.authorizationRevision || binding.bootId !== connection.bootId)) throw new Error('Actual Job channel unavailable')
+    return { hostRef: target.hostRef, registration: target.registration, mainInstallationId: target.mainInstallationId, bootId: connection.bootId, connection: binding ?? null }
+  }
+  let candidate: JobQualificationCandidate, profile: QualifiedJobProfile, measurementExpiresAt: string
+  try {
+    const original = await input.journal.qualifiedJobRuntime(execution)
+    if (original.result?.outcome !== 'qualified') throw new Error('Original runtime measurement missing')
+    candidate = original.candidate; profile = original.result.measurement.runtime; measurementExpiresAt = original.result.measurement.expiresAt
+    const root = candidate.sourceParent, repository = target.destination.canonicalProjectRoot
+    if (bootIdentity() !== connection.bootId || candidate.fingerprint.bootId !== connection.bootId ||
+      target.destination.managedRuntimeRoot !== candidate.runtimeRoot || !repository.startsWith(`${root}/`) ||
+      repository.slice(root.length + 1).split('/').some(part => !part || part === '.' || part === '..') ||
+      !same(original.result.measurement.fingerprint, candidate.fingerprint) ||
+      original.result.measurement.fingerprintDigest !== original.admission.fingerprintDigest ||
+      original.result.measurement.qualificationId !== candidate.qualificationId ||
+      original.result.measurement.approvalId !== candidate.approvalId) throw new Error('Original measured Job placement changed')
+    await inspectInstalledJobRuntimeCandidate({ configuration: input.configuration, candidate, host: {
+      hostRef: target.hostRef, registration: target.registration, mainInstallationId: target.mainInstallationId, bootId: connection.bootId,
+      // Retained diagnostic connection is physical provenance only. Every fresh
+      // create/start below still requires the current authenticated Main channel.
+      connection: original.admission.connection,
+    } })
+  } catch {
+    // executeJob records a positive pre-entry preparation failure; never downgrade isolation.
+    return new PodmanJobSupervisor(null, unavailable, async () => { throw new Error('Job isolation unavailable') })
+  }
+  admitted(candidate.fingerprint.root.binding.filesystem)
+  const owner = `job:${execution.operationId}:${execution.owner.grantId}:${execution.owner.epoch}`
+  const launches = new Map<string, { scope: NativeProcessRecovery; child?: ChildProcess; closed: boolean }>()
+  const assertLocal = async () => {
+    await assertJobRuntimeEntryContext(candidate)
+    if (bootIdentity() !== connection.bootId) throw new Error('Original Job boot changed; no automatic reboot relaunch')
+    const status = await input.journal.jobStatus(execution.operationId)
+    if (status.status !== 'known' || !same(status.receipt.intent.owner, execution.owner) || !same(status.receipt.execution.acceptedSpec, execution.acceptedSpec) ||
+      !same(status.receipt.connection, connection) || !status.receipt.entryAttempted) throw new Error('Original Job native owner changed')
+  }
+  async function closeLaunch(id: string) {
+    const launch = launches.get(id)
+    if (!launch) throw new Error('Original guarded Job reservation missing')
+    if (launch.closed) return
+    if (!launch.child) {
+      if (!await input.registry.abandonReservedLaunch(launch.scope)) throw new Error('Job reservation closure unconfirmed')
+    } else await input.registry.closeRegistration(launch.scope, id)
+    const exit = launch.child ? nativeProcessExit(launch.child, { exitCode: null, exitSignal: null }) : null
+    await input.journal.jobProcessClosed(execution.operationId, id, exit ? { exitCode: exit.exitCode, signal: exit.exitSignal } : undefined)
+    launch.closed = true
+  }
+  const spawn = async (argv: string[]) => {
+    await assertLocal()
+    const exact = argv[0] === '--remote=false' ? argv : ['--remote=false', ...argv]
+    if (exact.some(value => value.includes('\0'))) throw new Error('Invalid Job runtime argv')
+    const binary = candidate.fingerprint.runtimeExecutable, env = candidate.controllerEnvironment
+    if (!same(nativeAgentEnvironment(binary, candidate.runtimeRoot, env), env)) throw new Error('Protected Job runtime environment changed')
+    const scope = input.registry.reserveLaunch(owner)
+    if (!scope.launchId) throw new Error('Original Job native scope missing')
+    const launch: { scope: NativeProcessRecovery; child?: ChildProcess; closed: boolean } = { scope, closed: false }
+    launches.set(scope.launchId, launch)
+    try {
+      await input.journal.jobReserveProcess(execution.operationId, { launchId: scope.launchId, binary, argv: exact })
+      const status = await input.journal.jobStatus(execution.operationId)
+      if (exact.includes('create') || exact[1] === 'start') {
+        if (Date.parse(measurementExpiresAt) <= Date.now()) throw new Error('Original Job qualification expired before native entry')
+        if (status.status !== 'known' || status.receipt.stopFence || status.receipt.terminal) throw new Error('Job entry fenced')
+        await input.authorize(status.receipt.intent, execution, 'start')
+        await inspectInstalledJobRuntimeCandidate({ configuration: input.configuration, candidate, host: observedHost() })
+      }
+      const child = spawnNativeProcess(binary, exact, { cwd: candidate.runtimeRoot, env, recovery: scope })
+      launch.child = child; child.stdin.end()
+      return { child, id: scope.launchId }
+    } catch (error) { await closeLaunch(scope.launchId); throw error }
+  }
+  const commands: PodmanCommandRunner = {
+    async attach(argv) {
+      const { child, id } = await spawn(argv)
+      // Physical closure is also joined by ownership.launchHelpers below.
+      child.once('close', () => { void closeLaunch(id).catch(() => {}) })
+      return child
+    },
+    async run(argv, timeoutMs = 30000) {
+      const { child, id } = await spawn(argv)
+      return new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
+        let text = '', bytes = 0, interrupted = false
+        const interrupt = (error: Error) => {
+          if (interrupted) return
+          interrupted = true
+          void closeLaunch(id).then(() => reject(error), reject)
+        }
+        const deadline = setTimeout(() => interrupt(new Error('Job runtime control deadline exceeded')), timeoutMs)
+        child.stdout.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) interrupt(new Error('Job control reply exceeded budget')); else text += chunk.toString('utf8') })
+        child.stderr.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) interrupt(new Error('Job control reply exceeded budget')) })
+        child.once('error', error => { clearTimeout(deadline); interrupt(error) })
+        child.once('close', () => {
+          clearTimeout(deadline)
+          if (interrupted) return
+          const exit = nativeProcessExit(child, { exitCode: null, exitSignal: null })
+          void closeLaunch(id).then(() => {
+            if (exit.exitCode === null) reject(new Error('Original Job runtime exit unconfirmed'))
+            else resolve({ exitCode: exit.exitCode, stdout: text })
+          }, reject)
+        })
+      })
+    },
+  }
+  const ownership: OCIContainerOwnership = {
+    scope: { subject: { kind: 'job', executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash },
+      // W08's admitted operation is the lease, not the diagnostic's human admission.
+      leaseId: execution.operationId, owner: execution.owner, observedDeviceId: target.hostRef.kind === 'device' ? target.hostRef.deviceId : null,
+      observedInstallationId: target.registration?.workerInstallationId ?? target.mainInstallationId, bootId: connection.bootId },
+    assertCurrent: assertLocal,
+    reserveContainerIntent: (identity, fingerprint) => input.journal.jobContainerIntent(execution.operationId, identity, fingerprint, candidate.operationId),
+    bindContainer: (identity, containerId) => input.journal.jobBindContainer(execution.operationId, identity, containerId),
+    async launchHelpers() {
+      // A stopped container must also join its original attached launcher. This
+      // never kills a PID inferred from absence or borrowed from another owner.
+      for (const [id, launch] of launches) if (!launch.closed && launch.child?.exitCode !== null && launch.child?.exitCode !== undefined) await closeLaunch(id)
+      const rows = input.registry.snapshot().launches.filter(row => row.owner === owner && row.lifecycle === 'active')
+      if (rows.some(row => !row.guardian || !row.boundary || row.bootId !== connection.bootId)) throw new Error('Original Job launcher boundary unavailable')
+      return rows.map(row => ({ kind: 'launcher' as const, process: { ...row.guardian!, bootId: row.bootId }, boundary: row.boundary! }))
+    },
+    async closeHelpers() {
+      const retained = await input.journal.jobNativeOwner(execution.operationId)
+      for (const launch of retained?.launches ?? []) {
+        if (launch.closed) continue
+        if (launches.has(launch.launchId)) await closeLaunch(launch.launchId)
+        else {
+          await input.registry.closeRegistration(input.registry.scope(owner), launch.launchId)
+          await input.journal.jobProcessClosed(execution.operationId, launch.launchId)
+        }
+      }
+      return input.registry.closeOwner(owner)
+    },
+    async readCertificate(containerId) {
+      const native = await input.journal.jobNativeOwner(execution.operationId)
+      if (!native?.container || native.container.containerId !== containerId) throw new Error('Original Job container evidence missing')
+      return native.container.certificate
+    },
+    publish: certificate => input.journal.jobCertificate(execution.operationId, certificate),
+  }
+  return new PodmanJobSupervisor(profile, commands, async current => {
+    if (!same(current.acceptedSpec, execution.acceptedSpec) || current.id !== execution.id || current.attemptId !== execution.attemptId) throw new Error('Original Job supervisor subject changed')
+    return ownership
+  }, {
+    async deadlineMs() { const owner = await input.journal.jobNativeOwner(execution.operationId); if (!owner?.container?.deadlineAt) throw new Error('Original Job deadline missing'); return Date.parse(owner.container.deadlineAt) },
+    markTimeout: () => input.journal.jobTimedOut(execution.operationId),
+    async isTimedOut() { return (await input.journal.jobNativeOwner(execution.operationId))?.timedOut ?? false },
+  })
+}

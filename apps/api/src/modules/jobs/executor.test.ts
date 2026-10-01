@@ -211,6 +211,12 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     p.collectOutputs = async () => { expect(proof).toContain('container-descendants-empty') }
     expect(await executeJob(execution(), p, cancel.signal)).toMatchObject({ outcome: 'cancelled', processStopped: true })
   })
+  it('bounded cancellation closes even when the exit transport never replies', async () => {
+    const p = ports(), cancel = new AbortController()
+    p.supervisor.launch = async () => ({ stdout: chunks(), stderr: chunks(), exited: new Promise(() => {}), proveStopped: async () => true, stop: async () => true })
+    p.authority.launched = async () => { cancel.abort() }
+    expect(await executeJob(execution(), p, cancel.signal)).toMatchObject({ outcome: 'cancelled', processStopped: true, exitCode: null })
+  })
   it('rejects accepted argv tampering and stale launch authority without spawning', async () => {
     const p = ports(); const job = execution(); job.acceptedSpec.argv.push('changed')
     expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')

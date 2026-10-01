@@ -141,16 +141,39 @@ function evidence(stdout: string, execution: JobExecution): ContainerEvidence {
 }
 
 /** Only use with a persisted, human-approved qualification record; never probes/installs/pulls. */
+export interface JobSupervisorDeadline {
+  deadlineMs(): Promise<number>
+  markTimeout(): Promise<void>
+  isTimedOut(): Promise<boolean>
+}
 export class PodmanJobSupervisor implements JobSupervisor {
+  private readonly watchdogs = new Map<string, ReturnType<typeof setTimeout>>()
+  private async watch(execution: JobExecution, stop: () => Promise<boolean>) {
+    const end = this.timing ? await this.timing.deadlineMs() : Date.now() + execution.acceptedSpec.policy.executionTimeoutMs
+    if (!this.watchdogs.has(execution.operationId)) {
+      const timer = setTimeout(() => {
+        void (async () => { try { await this.timing?.markTimeout() } finally { await stop() } })().catch(() => {})
+      }, Math.max(0, end - Date.now()))
+      timer.unref(); this.watchdogs.set(execution.operationId, timer)
+    }
+    return end
+  }
+  private clearWatch(execution: JobExecution) {
+    const timer = this.watchdogs.get(execution.operationId)
+    if (timer) clearTimeout(timer)
+    this.watchdogs.delete(execution.operationId)
+  }
   constructor(readonly qualifiedProfile: QualifiedJobProfile | null, private readonly commands: PodmanCommandRunner,
-    private readonly ownership: (execution: JobExecution) => Promise<OCIContainerOwnership>) {}
+    private readonly ownership: (execution: JobExecution) => Promise<OCIContainerOwnership>, private readonly timing?: JobSupervisorDeadline) {}
 
-  async reconcile(execution: JobExecution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; logGapPossible: true } | null> {
+  async reconcile(execution: JobExecution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; execError: boolean; timedOut: boolean; logGapPossible: true } | null> {
     const reply = await this.commands.run(['container', 'inspect', jobSupervisorIdentity(execution)])
     if (reply.exitCode !== 0) return null // Missing is uncertainty, never permission to relaunch.
     const row = evidence(reply.stdout, execution)
-    const stopped = !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
-    return { containerId: row.Id, stopped, exitCode: stopped ? row.State.ExitCode : null, logGapPossible: true }
+    if (row.State.Running) await this.watch(execution, () => this.stopExecution(execution, execution.acceptedSpec.policy.cancellationGraceMs, row.Id))
+    const inspectStopped = !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
+    const stopped = inspectStopped && await this.stopExecution(execution, 0, row.Id)
+    return { containerId: row.Id, stopped, exitCode: stopped ? row.State.ExitCode : null, execError: Boolean(row.State.Error), timedOut: await this.timing?.isTimedOut() ?? false, logGapPossible: true }
   }
 
   /** W08 recovery/control uses original execution scope, including after worker restart. */
@@ -159,14 +182,18 @@ export class PodmanJobSupervisor implements JobSupervisor {
       'graphql.job.identity': jobSupervisorIdentity(execution), 'graphql.job.spec': execution.acceptedSpec.specDigest,
       'graphql.job.attempt': execution.attemptId } }, this.commands, await this.ownership(execution))
     if (expectedContainerId) await owned.bind(expectedContainerId)
-    return owned.close(graceMs)
+    const stopped = await owned.close(graceMs)
+    if (stopped) this.clearWatch(execution)
+    return stopped
   }
 
   async launch(plan: JobLaunchPlan) {
     if (!this.qualifiedProfile || plan.profile !== this.qualifiedProfile) throw new Error('Qualified isolation unavailable.')
     await verifyJobInputDirectory(plan.execution, plan.verifiedSource, plan.inputs, AbortSignal.timeout(plan.execution.acceptedSpec.policy.preparationTimeoutMs))
+    const ownership = await this.ownership(plan.execution)
+    await ownership.reserveContainerIntent(plan.identity, plan.execution.acceptedSpec.specDigest)
     const owned = new OwnedOCIContainer({ identity: plan.identity, labels: { 'graphql.job.identity': plan.identity,
-      'graphql.job.spec': plan.execution.acceptedSpec.specDigest, 'graphql.job.attempt': plan.execution.attemptId } }, this.commands, await this.ownership(plan.execution))
+      'graphql.job.spec': plan.execution.acceptedSpec.specDigest, 'graphql.job.attempt': plan.execution.attemptId } }, this.commands, ownership)
     await ensureEmptyPodmanHooks(plan.execution.acceptedSpec.target.destination.managedRuntimeRoot)
     const created = await this.commands.run(podmanCreateArgv(plan), plan.execution.acceptedSpec.policy.preparationTimeoutMs)
     const containerId = created.stdout.trim()
@@ -181,29 +208,27 @@ export class PodmanJobSupervisor implements JobSupervisor {
     }
     await inspect()
     // Attachment carries only output; controller lifetime is provided by the W07 durable worker service.
+    const end = await this.watch(plan.execution, () => owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs))
+    if (end <= Date.now()) throw new Error('Original Job execution deadline exceeded before start')
     const attached = await this.commands.attach(['start', '--attach', '--sig-proxy=false', containerId])
     const { stdout, stderr } = attached
     if (!stdout || !stderr) throw new Error('Guarded container output pipes unavailable.')
     attached.once('error', error => stdout.destroy(error))
     const proveStopped = async () => {
       const row = await inspect()
-      return !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
+      return !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited' && await owned.close(0)
     }
     const stop = async (graceMs: number) => {
       const stopped = await owned.close(graceMs)
-      if (stopped) clearTimeout(deadline)
+      if (stopped) this.clearWatch(plan.execution)
       return stopped
     }
-    // Independent of attachment and main connectivity; uncertainty cannot clear this watchdog.
-    let deadlineFired = false
-    const deadline = setTimeout(() => { deadlineFired = true; void stop(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => {}) }, plan.execution.acceptedSpec.policy.executionTimeoutMs)
-    deadline.unref()
-    const exited = this.commands.run(['wait', '--condition=exited', containerId], plan.execution.acceptedSpec.policy.executionTimeoutMs + plan.execution.acceptedSpec.policy.cancellationGraceMs + 30000).then(async waited => {
+    const exited = this.commands.run(['wait', '--condition=exited', containerId], Math.max(1, end - Date.now()) + plan.execution.acceptedSpec.policy.cancellationGraceMs + 30000).then(async waited => {
       const row = await inspect()
       if (row.State.Running || row.State.Pid !== 0 || row.State.Status !== 'exited') throw new Error('Wait ended without stopped container proof.')
-      clearTimeout(deadline)
+      this.clearWatch(plan.execution)
       if (waited.exitCode !== 0 || Number(waited.stdout.trim()) !== row.State.ExitCode) throw new Error('Container wait evidence mismatch.')
-      return { exitCode: row.State.ExitCode, signal: null, ...(deadlineFired ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
+      return { exitCode: row.State.ExitCode, signal: null, ...(await this.timing?.isTimedOut() ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
     })
     void exited.catch(() => {})
     try { await owned.entered() } catch (error) { await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => false); throw error }
