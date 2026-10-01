@@ -54,9 +54,9 @@ export const AcceptedNodePlacementSchema = z.object({
 export type AcceptedNodePlacement = z.infer<typeof AcceptedNodePlacementSchema>
 export const DispatchIntentSchema = z.object({
   schemaVersion: z.literal(1), protocolVersion: z.literal(1), mainId: z.uuid(), runId: IdSchema,
-  nodeId: GraphIdSchema, executionId: IdSchema, occurrenceId: IdSchema,
-  occurrenceIndex: z.number().int().nonnegative(), attemptId: IdSchema, operationId: IdSchema,
-  bindingHash: PlacementDigestSchema, inputDigest: PlacementDigestSchema,
+  nodeId: GraphIdSchema, executionId: IdSchema, occurrenceId: IdSchema.nullable(),
+  occurrenceIndex: z.number().int().nonnegative(), technicalAttempt: z.number().int().positive(), attemptId: IdSchema, operationId: IdSchema,
+  bindingHash: PlacementDigestSchema, inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   owner: z.object({ grantId: IdSchema, epoch: Revision }).strict(),
 }).strict()
 export type DispatchIntent = z.infer<typeof DispatchIntentSchema>
