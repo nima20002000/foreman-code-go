@@ -50,6 +50,8 @@ await requirePinnedSource('apps/worker/artifacts/graphql-worker.service.in');
 await copyFile(join(root, 'apps/worker/artifacts/graphql-worker.service.in'), join(output, 'artifacts/graphql-worker.service.in'));
 await requirePinnedSource('apps/worker/artifacts/companion.html');
 await copyFile(join(root, 'apps/worker/artifacts/companion.html'), join(output, 'artifacts/companion.html'));
+await requirePinnedSource('apps/worker/artifacts/install.sh.in');
+await writeFile(join(output, 'install'), (await readFile(join(root, 'apps/worker/artifacts/install.sh.in'), 'utf8')).replaceAll('@NODE_VERSION@', target.node), { mode: 0o700 });
 if (runtime) await copyFile(runtimeFile, join(output, 'artifacts/node-runtime.json'));
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const files = [];
