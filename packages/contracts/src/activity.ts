@@ -37,8 +37,14 @@ export const WorkSummarySchema = z.object({
 export type WorkSummary = z.infer<typeof WorkSummarySchema>
 export const ActivitySourceSchema = z.object({ schemaVersion: z.literal(1), system: id, eventId: id.optional(), sequence: ActivityRevisionSchema.optional(), observedAt: timestamp.nullable() }).strict()
 export type ActivitySource = z.infer<typeof ActivitySourceSchema>
+export const ActivitySourceRevisionSchema = z.object({
+  source: z.enum(['scope', 'execution', 'run_activity', 'native_events', 'message', 'interaction', 'file', 'publication', 'command']), id, revision: ActivityRevisionSchema,
+}).strict()
+export type ActivitySourceRevision = z.infer<typeof ActivitySourceRevisionSchema>
+
+
 export const InteractionSummarySchema = z.object({
-  id, revision: ActivityRevisionSchema, owner: WorkRefSchema, native: ActivityNativeIdentitySchema.optional(),
+  id, revision: ActivityRevisionSchema, sourceRevisions: z.array(ActivitySourceRevisionSchema).optional(), owner: WorkRefSchema, native: ActivityNativeIdentitySchema.optional(),
   delivery: z.enum(['pending', 'answer_recorded', 'delivery_pending', 'uncertain', 'delivered', 'failed', 'canceled']),
   answerRecorded: z.boolean(), providerAcknowledged: z.boolean(), workerAcknowledged: z.boolean(),
   responseAvailability: z.enum(['available', 'recovery_required', 'unavailable', 'unknown']),
@@ -57,10 +63,6 @@ export const ActivityItemSchema = z.discriminatedUnion('kind', [
   z.object({ ...item, kind: z.literal('diagnostic'), code: id, message: z.string() }).strict(),
 ])
 export type ActivityItem = z.infer<typeof ActivityItemSchema>
-export const ActivitySourceRevisionSchema = z.object({
-  source: z.enum(['scope', 'execution', 'run_activity', 'native_events', 'message', 'interaction', 'file', 'publication']), id, revision: ActivityRevisionSchema,
-}).strict()
-export type ActivitySourceRevision = z.infer<typeof ActivitySourceRevisionSchema>
 
 export const ActivitySnapshotV1Schema = z.object({
   schemaVersion: z.literal(1), scope: ActivityScopeSchema, revision: ActivityRevisionSchema,
@@ -68,6 +70,7 @@ export const ActivitySnapshotV1Schema = z.object({
   active: z.array(WorkSummarySchema), queued: z.array(WorkRefSchema), latest: WorkRefSchema.nullable(),
   /** The active array is a bounded recovery window when additional unfinished work is known. */
   hasMoreActiveWork: z.literal(true).optional(),
+  hasMorePendingInteractions: z.literal(true).optional(),
   pendingInteractions: z.array(InteractionSummarySchema), activities: z.array(ActivityItemSchema),
   page: z.object({ before: z.string().nullable(), nextCursor: z.string().nullable(), hasMore: z.boolean() }).strict(),
 }).strict()

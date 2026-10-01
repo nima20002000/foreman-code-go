@@ -28,6 +28,7 @@ export function chatInteractionSummary(input: { conversationId: string; requestI
   const { pending, requestId } = input
   if (!pending?.turn.nativeRequestId || !requestId) return []
   return [InteractionSummarySchema.parse({ id: JSON.stringify(['chat-interaction', input.conversationId, requestId, pending.turn.nativeRequestId]), revision: input.revision,
+    sourceRevisions: [{ source: 'scope', id: input.conversationId, revision: input.revision }],
     owner: { kind: 'chat_request', conversationId: input.conversationId, requestId },
     native: { harness: pending.session.harness, sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId, requestId: pending.turn.nativeRequestId },
     delivery: input.responseDelivery === 'uncertain' ? 'uncertain' : input.responseDelivery === 'submitted' ? 'delivery_pending' : 'pending',

@@ -17,7 +17,7 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
     pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` }); repository = new PostgresOperatorActivityRepository(pool)
     await pool.query(`create table operator_conversations (id text primary key, active_request_id text, native_session_id text,
       active_native_turn_id text, deleted_at timestamptz, revision bigint not null default 0,
-      kind text not null default 'agent', record jsonb not null default '{}', active_phase text, cancel_requested boolean not null default false,
+      harness text not null default 'codex', kind text not null default 'agent', record jsonb not null default '{}', active_phase text, cancel_requested boolean not null default false,
       turn_state text not null default 'idle', last_error text, last_result jsonb, pending_interaction jsonb, updated_at timestamptz not null default now());
       create table operator_conversation_turns (conversation_id text, request_id text, intent text, delivery text, updated_at timestamptz);
       create table operator_conversation_activity (conversation_id text, request_id text, activity_id text,

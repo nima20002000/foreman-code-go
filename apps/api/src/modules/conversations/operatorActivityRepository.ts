@@ -1,10 +1,16 @@
-import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery } from '@graphql/contracts'
+import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery, ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@graphql/contracts'
 import type pg from 'pg'
+import { settleKnownActivity } from './settleKnownActivity.js'
+import { conversationActivityKey } from './activityIdentity.js'
+import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
 import type { OperatorActivityChange } from './operatorActivity.js'
 
 export interface ActivityMutationFence {
   connectionId?: string
   nativeGeneration?: string
+  native?: ActivityNativeIdentity
+  itemNative?: ActivityNativeIdentity
+  parent?: WorkRef
   nativeSessionId?: string
   nativeTurnId?: string
   source?: { eventId?: string; sequence?: string; nativeSequence?: string; transportSequence?: number; system?: string; observedAt?: string; connectionId?: string }
@@ -19,7 +25,15 @@ const changeSchema = OperatorActivitySchema.omit({ sequence: true, revision: tru
 export class PostgresOperatorActivityRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async append(conversationId: string, requestId: string, input: OperatorActivityChange, fence: ActivityMutationFence = {}): Promise<{ activity: OperatorActivity; revision: number } | undefined> {
+  settleKnownByNative(conversationId: string, change: Omit<OperatorActivityChange, 'requestId'>, actual: ActivityNativeIdentity) {
+    return settleKnownActivity(this.pool, conversationId, undefined, change, actual)
+  }
+
+  settleKnownActivity(conversationId: string, requestId: string, change: OperatorActivityChange, actual: ActivityNativeIdentity) {
+    return settleKnownActivity(this.pool, conversationId, requestId, change, actual)
+  }
+
+  async append(conversationId: string, requestId: string, input: OperatorActivityChange, fence: ActivityMutationFence = {}): Promise<{ activity: OperatorActivity; revision: number; scopeRevision: string; itemRevision: string } | undefined> {
     const value = changeSchema.parse(input)
     if (value.requestId !== requestId) throw new Error('Activity belongs to a different request.')
     for (const sequence of [fence.source?.sequence, fence.source?.nativeSequence]) {
@@ -28,20 +42,26 @@ export class PostgresOperatorActivityRepository {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
-      const owner = await client.query(`select id from operator_conversations where id=$1 and active_request_id=$2 and deleted_at is null
+      const owner = await client.query(`select id,harness from operator_conversations where id=$1 and active_request_id=$2 and deleted_at is null
         and ($3::text is null or native_session_id=$3) and ($4::text is null or active_native_turn_id=$4) for update`,
-      [conversationId, requestId, fence.nativeSessionId ?? null, fence.nativeTurnId ?? null])
-      if (!owner.rowCount) { await client.query('commit'); return undefined }
+      [conversationId, requestId, fence.nativeSessionId ?? fence.native?.sessionId ?? null, fence.nativeTurnId ?? fence.native?.turnId ?? null])
+      if (!owner.rowCount || fence.native && owner.rows[0]?.harness !== fence.native.harness) { await client.query('commit'); return undefined }
       const prior = (await client.query<{ record: OperatorActivityChange; source_provenance: ActivityMutationFence['source'] }>(
         `select record,source_provenance from operator_conversation_activity where conversation_id=$1 and request_id=$2 and activity_id=$3 for update`,
       [conversationId, requestId, value.id])).rows[0]
       const stored = prior?.source_provenance ?? {}
+      const native = fence.itemNative ?? fence.native
+      const ownerInputHash = fence.native ? (await client.query<{ input_hash: string }>(
+        'select input_hash from operator_conversation_turns where conversation_id=$1 and request_id=$2', [conversationId, requestId])).rows[0]?.input_hash : undefined
       const connectionId = fence.connectionId ?? fence.source?.connectionId
       const nativeSequence = fence.source?.nativeSequence ?? (connectionId === undefined ? fence.source?.sequence : undefined)
       const legacyTransport = connectionId !== undefined && fence.source?.sequence !== undefined ? Number(fence.source.sequence) : undefined
       const transportSequence = fence.source?.transportSequence ?? (Number.isSafeInteger(legacyTransport) ? legacyTransport : undefined)
       const source = { ...(fence.authoritativeReconciliation ? stored : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source,
-        connectionId, nativeSequence, transportSequence }
+        connectionId, nativeSequence, transportSequence,
+        ...(native ? { native: ActivityNativeIdentitySchema.parse(native) } : {}),
+        ...(fence.native ? { ownerNative: ActivityNativeIdentitySchema.parse(fence.native), ownerInputHash } : {}),
+        ...(fence.parent ? { parent: WorkRefSchema.parse(fence.parent) } : {}) }
       const previousNative = stored.nativeSequence ?? (stored.connectionId === undefined ? stored.sequence : undefined)
       const previousTransport = stored.transportSequence ?? (stored.connectionId !== undefined && stored.sequence !== undefined ? Number(stored.sequence) : undefined)
       const orderedNative = source.nativeSequence !== undefined && previousNative !== undefined
@@ -76,15 +96,17 @@ export class PostgresOperatorActivityRepository {
         returning record,sequence::text,revision::text`, [conversationId, requestId, value.id, JSON.stringify(merged), JSON.stringify(source)])).rows[0]!
       const revision = (await client.query<{ revision: string }>(`update operator_conversations set revision=revision+1 where id=$1 returning revision::text`, [conversationId])).rows[0]!.revision
       await client.query('commit')
-      return { activity: OperatorActivitySchema.parse({ ...(applied.record as object), sequence: applied.sequence, revision: Number(applied.revision) }), revision: Number(revision) }
+      return { activity: OperatorActivitySchema.parse({ ...(applied.record as object), sequence: applied.sequence, revision: Number(applied.revision) }), revision: Number(revision), scopeRevision: revision, itemRevision: applied.revision }
     } catch (error) {
       await client.query('rollback').catch(() => undefined)
       throw error
     } finally { client.release() }
   }
 
-  async page(conversationId: string, input: Partial<OperatorActivityQuery> = {}, query: Queryable = this.pool) {
+  async page(conversationId: string, input: Partial<OperatorActivityQuery> = {}, query: Queryable = this.pool): Promise<{ activities: OperatorActivity[]; nextCursor: string | null; itemRevisions: Record<string, string> }> {
     const { before, limit } = OperatorActivityQuerySchema.parse(input)
+    if (query === this.pool && before !== undefined) return withConversationPageRead(this.pool, (sql) => this.page(conversationId, input, sql))
+    await assertConversationCursor(query, conversationId, before, 'activity')
     const result = await query.query<{ record: unknown; sequence: string; revision: string }>(`
       select record,sequence::text,revision::text from operator_conversation_activity
       where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
@@ -94,10 +116,21 @@ export class PostgresOperatorActivityRepository {
       activities: rows.reverse().map((row) => ({ ...(row.record as object), sequence: row.sequence, revision: Number(row.revision) })),
       nextCursor: result.rows.length > limit ? result.rows[limit - 1]!.sequence : null,
     })
-    return { ...page, itemRevisions: Object.fromEntries(rows.map((row) => [(row.record as { id: string }).id, row.revision])) }
+    return { ...page, itemRevisions: Object.fromEntries(rows.map((row) => [conversationActivityKey((row.record as { requestId: string }).requestId, (row.record as { id: string }).id), row.revision])) }
   }
 
   /** The unfinished roster is independent of chronological history paging. */
+  async snapshotPage(conversationId: string, input: Partial<OperatorActivityQuery> = {}, query: Queryable = this.pool): Promise<Awaited<ReturnType<PostgresOperatorActivityRepository['page']>> & { itemProvenance: Record<string, unknown> }> {
+    if (query === this.pool) return withConversationPageRead(this.pool, (sql) => this.snapshotPage(conversationId, input, sql))
+    const page = await this.page(conversationId, input, query)
+    const keys = page.activities.map((activity) => ({ requestId: activity.requestId, id: activity.id }))
+    const rows = keys.length ? (await query.query<{ request_id: string; activity_id: string; source_provenance: unknown }>(`
+      select request_id,activity_id,source_provenance from operator_conversation_activity where conversation_id=$1
+        and exists(select 1 from jsonb_to_recordset($2::jsonb) as k("requestId" text,id text) where k."requestId"=request_id and k.id=activity_id)`,
+    [conversationId, JSON.stringify(keys)])).rows : []
+    return { ...page, itemProvenance: Object.fromEntries(rows.map((row) => [conversationActivityKey(row.request_id, row.activity_id), row.source_provenance])) }
+  }
+
   async unfinished(conversationId: string, query: Queryable = this.pool): Promise<{ activities: OperatorActivity[]; hasMore: boolean }> {
     const limit = 100
     const result = await query.query<{ record: unknown; sequence: string; revision: string }>(`
@@ -106,6 +139,22 @@ export class PostgresOperatorActivityRepository {
       order by sequence limit $2`, [conversationId, limit + 1])
     return { activities: result.rows.slice(0, limit).map((row) => OperatorActivitySchema.parse({ ...(row.record as object), sequence: row.sequence, revision: Number(row.revision) })),
       hasMore: result.rows.length > limit }
+  }
+
+  async unfinishedOwners(kind: 'agent' | 'operator') {
+    const rows = (await this.pool.query<{ conversation_id: string; request_id: string; activity_id: string; native: unknown; owner_native: unknown }>(`
+      select a.conversation_id,a.request_id,a.activity_id,a.source_provenance->'native' as native,a.source_provenance->'ownerNative' as owner_native
+      from operator_conversation_activity a join operator_conversations c on c.id=a.conversation_id
+        join operator_conversation_turns t on t.conversation_id=a.conversation_id and t.request_id=a.request_id
+      where c.kind=$1 and c.deleted_at is null and a.record->>'kind'<>'thinking' and a.record->>'status' in ('pending','running','unknown')
+        and a.source_provenance#>>'{ownerNative,turnId}' is not null
+        and a.source_provenance->>'ownerInputHash'=t.input_hash
+      order by a.sequence limit 101`, [kind])).rows
+    return { owners: rows.slice(0, 100).flatMap((row) => {
+      const native = ActivityNativeIdentitySchema.safeParse(row.native), owner = ActivityNativeIdentitySchema.safeParse(row.owner_native)
+      return native.success && owner.success ? [{ conversationId: row.conversation_id, requestId: row.request_id, activityId: row.activity_id,
+        native: native.data, ownerNative: owner.data }] : []
+    }), hasMore: rows.length > 100 }
   }
 
   async finish(conversationId: string, requestId: string, canceled: boolean, query: Queryable): Promise<void> {

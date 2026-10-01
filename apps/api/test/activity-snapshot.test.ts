@@ -25,10 +25,10 @@ describe('persisted Agent activity adapter', () => {
     const loaded = state(); loaded.row.active_request_id = null
     loaded.activityPage.activities.push({ id: 'child', requestId: 'A', sequence: '5', revision: 2, kind: 'subagent', title: 'Child', status: 'unknown', input: 'secret args', output: 'secret output' })
     loaded.unfinishedActivities.push(loaded.activityPage.activities[0]!)
-    loaded.activityPage.itemRevisions.child = '9007199254740993'
+    loaded.activityPage.itemRevisions[JSON.stringify(['A', 'child'])] = '9007199254740993'
     const snapshot = agentActivitySnapshot(loaded)
     expect(snapshot.activities[0]?.revision).toBe('9007199254740993')
-    expect(snapshot.active).toMatchObject([{ ref: { kind: 'subagent', itemId: 'child' }, evidence: 'unknown', outcome: null }])
+    expect(snapshot.active).toMatchObject([{ ref: { kind: 'subagent', itemId: JSON.stringify(['conversation-activity', 'conversation', 'A', 'child']) }, evidence: 'unknown', outcome: null }])
     expect(JSON.stringify(snapshot)).not.toContain('secret')
   })
   it('keeps an unfinished child active when chronological history contains only newer completions', () => {
@@ -37,7 +37,7 @@ describe('persisted Agent activity adapter', () => {
       sequence: String(index + 2), revision: 1, kind: 'tool', title: 'Completed', status: 'completed' }))
     loaded.unfinishedActivities = [{ id: 'old-child', requestId: 'A', sequence: '1', revision: 2, kind: 'subagent', title: 'Child', status: 'unknown' }]
     const snapshot = agentActivitySnapshot(loaded)
-    expect(snapshot.active).toMatchObject([{ ref: { kind: 'subagent', itemId: 'old-child' }, evidence: 'unknown', outcome: null }])
+    expect(snapshot.active).toMatchObject([{ ref: { kind: 'subagent', itemId: JSON.stringify(['conversation-activity', 'conversation', 'A', 'old-child']) }, evidence: 'unknown', outcome: null }])
     expect(snapshot.activities.some((entry) => entry.id === 'old-child')).toBe(false)
   })
   it('keeps immutable selected origin and rejects missing origin facts', () => {

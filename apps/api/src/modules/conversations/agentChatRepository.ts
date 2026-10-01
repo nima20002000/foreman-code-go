@@ -11,6 +11,9 @@ import {
 } from '@graphql/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
+import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
+import { readActivityCommands } from './activityCommands.js'
+import { agentActivityScope } from './activitySnapshot.js'
 import { readConversationPublicationReceipts, type ConversationPublicationReceipt } from './messagePublications.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { OPERATOR_SNAPSHOT_MESSAGE_BYTES, OPERATOR_HISTORY_PAGE_BYTES } from './operatorChatRepository.js'
@@ -126,6 +129,8 @@ export interface NewAgentConversation {
 
 export class PostgresAgentChatRepository {
   constructor(readonly pool: pg.Pool) {}
+
+  unfinishedActivityOwners() { return new PostgresOperatorActivityRepository(this.pool).unfinishedOwners('agent') }
 
   async byKey(key: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
     return (await query.query<AgentConversationRow>(
@@ -574,7 +579,7 @@ export class PostgresAgentChatRepository {
   }
 
   async state(id: string, options: { recoverOverflow?: boolean } = {}): Promise<{
-    publicationReceipts?: ConversationPublicationReceipt[]; row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>>
+    commandActivity?: Awaited<ReturnType<typeof readActivityCommands>>; publicationReceipts?: ConversationPublicationReceipt[]; row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>> & { itemProvenance?: Record<string, unknown> }
   } | undefined> {
     const client = await this.pool.connect()
     try {
@@ -622,7 +627,7 @@ export class PostgresAgentChatRepository {
       const messages = await hydrateMessageAttachments(client, id, recent.messages)
       const publicationReceipts = await readConversationPublicationReceipts(client, id, messages.filter((message) => message.role === 'user').map((message) => message.id))
       const activity = new PostgresOperatorActivityRepository(this.pool)
-      const activityPage = await activity.page(id, { limit: 100 }, client)
+      const activityPage = await activity.snapshotPage(id, { limit: 100 }, client)
       const unfinished = await activity.unfinished(id, client)
       const ownership = (await client.query<{ started_at: Date | null; latest_request_id: string | null }>(`select
         (select started_at from operator_conversation_turns where conversation_id=$1 and request_id=$2) as started_at,
@@ -631,25 +636,31 @@ export class PostgresAgentChatRepository {
       const selection = row.origin_run_id && row.origin_execution_id
         ? (await client.query<{ workflowVersionId: string; attemptKey: string }>(`select r.workflow_version_id as "workflowVersionId", e.attempt::text as "attemptKey"
             from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2`, [row.origin_run_id, row.origin_execution_id])).rows[0] ?? null : null
-      await client.query('commit')
-      return { publicationReceipts, row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
+      const loaded = { publicationReceipts, row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
         ...(overflow ? { hasMoreTurns: true as const } : {}),
         ...(unfinished.hasMore ? { hasMoreActivities: true as const } : {}) }
+      const commandActivity = await readActivityCommands(client, id, agentActivityScope(loaded), String(row.revision))
+      await client.query('commit')
+      return { ...loaded, commandActivity }
     } catch (error) {
       await client.query('rollback').catch(() => undefined)
       throw error
     } finally { client.release() }
   }
-  async receipts(id: string, before: string | undefined, limit: number) {
-    const rows = (await this.pool.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
+  async receipts(id: string, before: string | undefined, limit: number, query: Queryable = this.pool): Promise<{ turns: AgentChatTurn[]; nextCursor: string | null }> {
+    if (query === this.pool && before !== undefined) return withConversationPageRead(this.pool, (sql) => this.receipts(id, before, limit, sql))
+    await assertConversationCursor(query, id, before, 'turns')
+    const rows = (await query.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
       where conversation_id=$1 and intent is not null and ($2::bigint is null or turn_sequence<$2::bigint)
       order by operator_conversation_turns.turn_sequence desc limit ($3::integer+1)`, [id, before ?? null, limit])).rows
     const selected = rows.slice(0, limit)
     const nextCursor = rows.length > limit ? selected[selected.length - 1]!.turn_sequence : null
     return { turns: selected.reverse().map(turn), nextCursor }
   }
-  async history(id: string, before: string | undefined, limit: number) {
-    const page = (await this.pool.query<{ messages: unknown[]; next_cursor: string | null }>(`with candidates as (
+  async history(id: string, before: string | undefined, limit: number, query: Queryable = this.pool): Promise<{ messages: Message[]; nextCursor: string | null }> {
+    if (query === this.pool) return withConversationPageRead(this.pool, (sql) => this.history(id, before, limit, sql))
+    await assertConversationCursor(query, id, before, 'messages')
+    const page = (await query.query<{ messages: unknown[]; next_cursor: string | null }>(`with candidates as (
       select m.*,row_number() over (order by m.sequence desc) as ordinal,
         sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
       from (select record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) as record,sequence from operator_conversation_messages
@@ -662,7 +673,7 @@ export class PostgresAgentChatRepository {
     [id, before ?? null, limit, OPERATOR_HISTORY_PAGE_BYTES])).rows[0]!
     // One oversized message is allowed over HTTP/MCP readback, ensuring cursor progress
     // without truncating native content or putting it back in a live snapshot.
-    return { messages: await hydrateMessageAttachments(this.pool, id, page.messages), nextCursor: page.next_cursor }
+    return { messages: await hydrateMessageAttachments(query, id, page.messages), nextCursor: page.next_cursor }
   }
 
   private async bump(id: string, query: Queryable = this.pool): Promise<void> {

@@ -15,9 +15,11 @@ import { messageAttachmentIdentity } from '@graphql/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
+import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
 import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
 import { appendConversationTextOperation } from './conversationTextRepository.js'
 import type { ActivityMutationFence } from './operatorActivityRepository.js'
+import { OperatorChatCommands } from './operatorChatCommands.js'
 import { readOperatorActivitySnapshot } from './operatorActivitySnapshot.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
@@ -147,6 +149,8 @@ export class PostgresOperatorConversationRepository {
     }))
   }
 
+  createControlCommands() { return new OperatorChatCommands(this.pool) }
+
   appendAssistantTextOperation(id: string, requestId: string, operation: ActivityTextOperation, fence: ActivityMutationFence = {}) {
     return appendConversationTextOperation(this.pool, id, requestId, operation, fence)
   }
@@ -206,9 +210,11 @@ export class PostgresOperatorConversationRepository {
    * Receipts are joined to the exact accepted user message, including after the
    * active request clears or browser enrollment erases its local outbox.
    */
-  async history(id: string, input: Partial<OperatorConversationHistoryQuery> = {}): Promise<OperatorConversationHistoryPage | undefined> {
+  async history(id: string, input: Partial<OperatorConversationHistoryQuery> = {}, query: Queryable = this.pool): Promise<OperatorConversationHistoryPage | undefined> {
     const { before, limit } = OperatorConversationHistoryQuerySchema.parse(input)
-    const result = await this.pool.query<{
+    if (query === this.pool) return withConversationPageRead(this.pool, (sql) => this.history(id, input, sql))
+    await assertConversationCursor(query, id, before, 'messages')
+    const result = await query.query<{
       id: string; revision: number | string; active_request_id: string | null;
       entries: Array<{ message: unknown; sequence: string; receipt: unknown }>; next_cursor: string | null;
     }>(`with candidates as (
@@ -236,7 +242,7 @@ export class PostgresOperatorConversationRepository {
     if (!row) return undefined
     // One oversized message is returned over HTTP so the cursor always advances;
     // it is never put in a live SSE snapshot.
-    const messages = await hydrateMessageAttachments(this.pool, id, row.entries.map((entry) => entry.message))
+    const messages = await hydrateMessageAttachments(query, id, row.entries.map((entry) => entry.message))
     return OperatorConversationHistoryPageSchema.parse({ conversationId: row.id, revision: Number(row.revision),
       activeRequestId: row.active_request_id, entries: row.entries.map((entry, index) => ({ ...entry, message: messages[index] })), nextCursor: row.next_cursor })
   }

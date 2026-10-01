@@ -80,6 +80,7 @@ export class F1Store {
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql.startsWith('with open as ( select principal_id,operation,command_id')) return result() // No accepted controls in this fixture.
     if (sql.startsWith('select t.message_id,t.native_turn_id,')) return result() // No file publication receipts in this fixture.
     if (sql.startsWith('select (select started_at from operator_conversation_turns')) {
       const latest = [...this.turns.values()].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)).at(-1)

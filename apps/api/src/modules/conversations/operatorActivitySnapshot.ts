@@ -1,5 +1,7 @@
 import type pg from 'pg'
 import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type PendingNativeInteraction, type WorkRef, type WorkSummary } from '@graphql/contracts'
+import { readActivityCommands } from './activityCommands.js'
+import { conversationActivityId, conversationActivityKey, publicActivityProvenance } from './activityIdentity.js'
 import { chatInteractionSummary, conversationPublicationItems, conversationTextItems, messageSourceRevisions } from './activityItems.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { readConversationPublicationReceipts } from './messagePublications.js'
@@ -34,11 +36,11 @@ export async function readOperatorActivitySnapshot(pool: pg.Pool, query: Queryab
     evidence: row.turn_state === 'uncertain' ? 'reconciling' : 'confirmed', startedAt: activeReceipt?.started_at?.toISOString() ?? null,
     ...(native ? { native } : {}) }] : []
   const repository = new PostgresOperatorActivityRepository(pool)
-  const activityPage = await repository.page(id, { limit: 100 }, query)
+  const activityPage = await repository.snapshotPage(id, { limit: 100 }, query)
   const unfinished = await repository.unfinished(id, query)
   for (const activity of unfinished.activities) {
     if (activity.kind === 'thinking') continue
-    work.push({ ref: { kind: activity.kind === 'subagent' ? 'subagent' : 'tool', itemId: activity.id }, phase: 'active',
+    work.push({ ref: { kind: activity.kind === 'subagent' ? 'subagent' : 'tool', itemId: conversationActivityId(id, activity.requestId, activity.id) }, phase: 'active',
       outcome: null, delivery: null, evidence: activity.status === 'unknown' ? 'unknown' : 'confirmed', startedAt: null })
   }
   const messageRows = (await query.query<{ record: unknown }>(`select record || jsonb_build_object('revision',activity_record_revision::text,
@@ -48,16 +50,21 @@ export async function readOperatorActivitySnapshot(pool: pg.Pool, query: Queryab
     where bytes <= 262144 order by sequence`, [id])).rows
   const messages = await hydrateMessageAttachments(query, id, messageRows.map((entry) => entry.record))
   const publicationReceipts = await readConversationPublicationReceipts(query, id, messages.filter((message) => message.role === 'user').map((message) => message.id))
-  return ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope: { kind: 'operator_chat', conversationId: id }, revision: row.revision,
-    sourceRevisions: [{ source: 'scope', id, revision: row.revision }, ...messageSourceRevisions(messages), ...publicationReceipts.flatMap((receipt) => [{ source: 'publication', id: receipt.receiptId, revision: '0' },
+  const scope = { kind: 'operator_chat' as const, conversationId: id }
+  const commandActivity = await readActivityCommands(query, id, scope, row.revision)
+  return ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope, revision: row.revision,
+    sourceRevisions: [{ source: 'scope', id, revision: row.revision }, ...commandActivity.sourceRevisions, ...messageSourceRevisions(messages), ...publicationReceipts.flatMap((receipt) => [{ source: 'publication', id: receipt.receiptId, revision: '0' },
       { source: 'file', id: receipt.fileId, revision: receipt.fileActivityRevision }])],
     ...projectActivityStatus({ work, queued: [], latest: latest ? ref(latest.request_id) : null }),
     ...(unfinished.hasMore ? { hasMoreActiveWork: true } : {}),
-    pendingInteractions: chatInteractionSummary({ conversationId: id, requestId: row.active_request_id, revision: row.revision,
-      pending: row.pending_interaction, responseDelivery: row.response_delivery }),
-    activities: [...conversationPublicationItems(id, messages, publicationReceipts), ...conversationTextItems(id, messages, { harness: row.harness, sessionId: row.native_session_id,
+    ...(commandActivity.hasMore ? { hasMorePendingInteractions: true } : {}),
+    pendingInteractions: [...new Map([...chatInteractionSummary({ conversationId: id, requestId: row.active_request_id, revision: row.revision,
+      pending: row.pending_interaction, responseDelivery: row.response_delivery }), ...commandActivity.summaries].map((summary) => [summary.id, summary])).values()].filter((summary) => summary.delivery !== 'delivered'),
+    activities: [...commandActivity.summaries.map((summary) => ({ kind: 'interaction', id: summary.id, revision: summary.revision, order: '0',
+      owner: summary.owner, source: { schemaVersion: 1, system: 'management_command_receipt', observedAt: null },
+      evidence: summary.delivery === 'uncertain' ? 'reconciling' : 'confirmed', interaction: summary })), ...conversationPublicationItems(id, messages, publicationReceipts), ...conversationTextItems(id, messages, { harness: row.harness, sessionId: row.native_session_id,
       turnIdFor: (requestId) => receipts.find((receipt) => receipt.request_id === requestId)?.native_turn_id ?? undefined }),
-      ...activityPage.activities.map((activity) => ({ id: activity.id, revision: activityPage.itemRevisions[activity.id], order: activity.sequence,
+      ...activityPage.activities.map((activity) => ({ id: conversationActivityId(id, activity.requestId, activity.id), ...publicActivityProvenance(activityPage.itemProvenance[conversationActivityKey(activity.requestId, activity.id)]), revision: activityPage.itemRevisions[conversationActivityKey(activity.requestId, activity.id)], order: activity.sequence,
         orderSource: 'conversation_activity', owner: ref(activity.requestId), source: { schemaVersion: 1, system: 'conversation_record', observedAt: null },
         evidence: activity.status === 'unknown' ? 'unknown' : 'confirmed',
         ...(activity.kind === 'thinking' ? { kind: 'reasoning_summary', summary: activity.title }
