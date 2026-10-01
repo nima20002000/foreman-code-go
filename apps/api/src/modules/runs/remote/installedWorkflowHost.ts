@@ -373,7 +373,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       nativeSignal.throwIfAborted();current(owned.context.binding)
     }
     await assertCurrent()
-    return {executionId:owned.intent.executionId,runId:owned.intent.runId,attemptId:owned.intent.attemptId,operationId:owned.intent.operationId,
+    return {executionId:owned.intent.executionId,runId:owned.intent.runId,technicalAttempt:owned.intent.technicalAttempt,
+      attemptId:owned.intent.attemptId,operationId:owned.intent.operationId,
       materializationId:record.receipt.materializationId,sourceBindingHash:record.sourceBindingHash,finalDispatchBindingHash:owned.capture.facts.executionPlacement.bindingHash,
       session:structuredClone(session),owner:structuredClone(owned.intent.owner),signal:nativeSignal,assertCurrent}
   }
