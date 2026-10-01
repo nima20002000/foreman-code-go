@@ -26,7 +26,7 @@ function fixture() {
 }
 describe('host override settings authority and exact-profile availability', () => {
   it('saves immutable unqualified snapshots and reads persisted settings independently of global defaults', async () => {
-    const f = fixture(); const service = new HostHarnessOverrideService(f.repository, f.commands, { authorize: f.authorize })
+    const f = fixture(); const service = new HostHarnessOverrideService(f.repository, f.commands, { authorize: f.authorize }, async () => null)
     const args = input(); const saved = await service.save(principal, 'mcp', args)
     expect(saved.value).toMatchObject({ instanceId: args.instanceId, revision: 1, instanceRevision: '1', qualification: 'unqualified' })
     expect(() => requireQualifiedHostOverride(saved.value, { instanceRevision: '1', target: args.target })).toThrow('qualification')
@@ -35,7 +35,7 @@ describe('host override settings authority and exact-profile availability', () =
     expect(f.authorize).toHaveBeenLastCalledWith(principal, 'harnesses:read', args.target.hostRef, mainId, f.client)
   })
   it('rejects denied, revoked host and credential-bearing config before persistence', async () => {
-    const f = fixture(); const service = new HostHarnessOverrideService(f.repository, f.commands, { authorize: f.authorize })
+    const f = fixture(); const service = new HostHarnessOverrideService(f.repository, f.commands, { authorize: f.authorize }, async () => null)
     await expect(service.save({ ...principal, grants: [{ actions: ['harnesses:read'], scope: {} }] }, 'mcp', input())).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     expect(f.commands.recordDenied).toHaveBeenCalledWith(principal.id, 'mcp', 'harness_instance_save', expect.stringContaining('harness-instance:'))
     f.authorize.mockRejectedValueOnce(new Error('revoked'))

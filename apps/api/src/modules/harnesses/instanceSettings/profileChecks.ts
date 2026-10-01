@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { HostHarnessInstanceCheckInputSchema, HostHarnessProfileEvidenceSchema, type HostHarnessInstanceCheckInput, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import { HostHarnessProfileCheckRequestSchema, HostHarnessInstanceCheckInputSchema, HostHarnessProfileEvidenceSchema, type HostHarnessInstanceCheckInput, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { requireAuthorization } from '../../access/policy.js'
 import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
@@ -29,6 +29,7 @@ export class HostHarnessInstanceProfileChecks {
     private readonly qualifier: HostHarnessProfileQualifier) {}
   check(principal: ManagementPrincipal, source: 'http' | 'mcp', input: HostHarnessInstanceCheckInput) {
     if (this.stopping.signal.aborted) return Promise.reject(new DomainError('HARNESS_CHECK_SHUTTING_DOWN', 'Host profile checks are stopping.', 503))
+    if (this.flights.size >= 16) return Promise.reject(new DomainError('HARNESS_PROFILE_CHECK_BUSY', 'Host profile checks are busy; retry the same command.', 429))
     const flight = this.perform(principal, source, input)
     this.flights.add(flight)
     void flight.finally(() => this.flights.delete(flight)).catch(() => undefined)
@@ -45,8 +46,9 @@ export class HostHarnessInstanceProfileChecks {
       await this.authority.authorize(principal, 'harnesses:read', input.target.hostRef, input.target.applicationInstallationId, client)
       await this.authority.authorize(principal, 'harnesses:update', input.target.hostRef, input.target.applicationInstallationId, client)
     }
-    const selected = async (client: import('pg').PoolClient) => {
+    const selected = async (client: import('pg').PoolClient, lockRevision = false) => {
       await authorize(client)
+      if (lockRevision) await this.settings.lockRevision(client, input.instanceId)
       const value = await this.settings.latest(client, input.instanceId)
       if (!value || value.revision !== input.expectedRevision || !sameTarget(value.target, input.target)) throw new DomainError('REVISION_CONFLICT', 'The exact host instance changed before qualification.', 409)
       if (!value.enabled) throw new DomainError('HARNESS_INSTANCE_DISABLED', 'Disabled host instances cannot be qualified.', 409)
@@ -55,31 +57,40 @@ export class HostHarnessInstanceProfileChecks {
     const checkId = nativeProfileCheckId(input.target.hostRef.mainId, principal.id, input.commandId)
     const matches = (proof: HostHarnessProfileEvidence, value: HostHarnessOverride) => sameTarget(proof.target, value.target)
       && proof.instanceRevision === value.instanceRevision && proof.configurationFingerprint === value.configurationFingerprint && proof.driverId === value.driverId
-    const signal = AbortSignal.any([this.stopping.signal, AbortSignal.timeout(240_000)])
-    return this.commands.execute({ principal, source, operation: 'harness.instance.check', commandId: input.commandId,
+    const deadline = new AbortController()
+    const timer = setTimeout(() => deadline.abort(new DomainError('HARNESS_PROFILE_CHECK_TIMEOUT', 'Exact-host profile qualification exceeded its deadline.', 504)), 240_000)
+    timer.unref()
+    const signal = AbortSignal.any([this.stopping.signal, deadline.signal])
+    try { return await this.commands.execute({ principal, source, operation: 'harness.instance.check', commandId: input.commandId,
       targetKey: `harness-instance:${input.instanceId}`, payload: input, dedicatedConnection: true, authorize,
-      perform: async () => {
-        const value = await this.settings.readAuthorized(selected)
-        // Recover the same completed check after proof commit but before receipt commit; never repeat native effects.
-        const previous = await this.proofs.findCheck(checkId, value.instanceId, value.revision)
-        if (previous) {
-          if (!matches(previous, value)) throw new DomainError('COMMAND_ID_CONFLICT', 'The completed check belongs to different profile input.', 409)
-          return { override: value, proof: previous }
-        }
-        signal.throwIfAborted()
-        const proof = HostHarnessProfileEvidenceSchema.parse(await this.qualifier.qualify(value, { checkId, signal }))
-        signal.throwIfAborted()
-        if (!matches(proof, value)) {
-          throw new DomainError('HARNESS_PROFILE_EVIDENCE_MISMATCH', 'Native qualification did not match the exact selected host profile.', 409)
-        }
-        await this.settings.readAuthorized(async client => {
-          await this.settings.lockRevision(client, input.instanceId)
-          await selected(client)
+      perform: async client => {
+        // Force checks for the same instance run in order; a late older check cannot supersede a newer result.
+        const profileLock = `harness-instance-profile:${input.instanceId}`
+        await client.query('select pg_advisory_lock(hashtext($1))', [profileLock])
+        try {
           signal.throwIfAborted()
-          await this.proofs.append(client, checkId, value, proof)
-        })
-        return { override: value, proof }
+          const value = await this.settings.readAuthorized(selected)
+          HostHarnessProfileCheckRequestSchema.parse({ checkId, override: value })
+          // Recover the same completed check after proof commit but before receipt commit; never repeat native effects.
+          const previous = await this.proofs.findCheck(checkId, value.instanceId, value.revision)
+          if (previous) {
+            if (!matches(previous, value)) throw new DomainError('COMMAND_ID_CONFLICT', 'The completed check belongs to different profile input.', 409)
+            return { override: value, proof: previous }
+          }
+          signal.throwIfAborted()
+          const proof = HostHarnessProfileEvidenceSchema.parse(await this.qualifier.qualify(value, { checkId, signal }))
+          signal.throwIfAborted()
+          if (!matches(proof, value)) {
+            throw new DomainError('HARNESS_PROFILE_EVIDENCE_MISMATCH', 'Native qualification did not match the exact selected host profile.', 409)
+          }
+          await this.settings.readAuthorized(async client => {
+            await selected(client, true)
+            signal.throwIfAborted()
+            await this.proofs.append(client, checkId, value, proof)
+          })
+          return { override: value, proof }
+        } finally { await client.query('select pg_advisory_unlock(hashtext($1))', [profileLock]).catch(() => undefined) }
       },
-    })
+    }) } finally { clearTimeout(timer) }
   }
 }

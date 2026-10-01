@@ -66,13 +66,15 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
             if (!found) throw new Error('Missing env interpreter')
             evidence.interpreter = found
           }
-        } catch { evidence.status = 'missing-interpreter'; evidence.diagnostics.push(`Unavailable shebang interpreter: ${firstLine.slice(2).trim()}`); continue }
+        } catch { evidence.status = 'missing-interpreter'; evidence.diagnostics.push(`Unavailable shebang interpreter: ${interpreter}`); continue }
       }
       evidence.resolvedLauncher = resolved
       const fingerprints = []
       for (const payloadPath of [resolved, ...payloadPaths]) {
         const path = await realpath(payloadPath)
-        await access(path, constants.X_OK)
+        // The launcher must execute; payloads may be readable SDK/modules loaded by it.
+        await access(path, constants.R_OK)
+        if (!(await stat(path)).isFile()) throw new Error('Payload is not a file')
         const hash = createHash('sha256')
         for await (const chunk of createReadStream(path, { ...(signal ? { signal } : {}) })) hash.update(chunk)
         fingerprints.push({ path, fingerprint: hash.digest('hex') })

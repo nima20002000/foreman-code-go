@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { HarnessConfigurationSchema } from './index.js'
+import { HarnessConfigurationSchema, type HarnessConfiguration } from './index.js'
 import type { CanonicalMachineReference } from './deviceIdentity.js'
 
 export const HarnessHostReferenceSchema: z.ZodType<CanonicalMachineReference> = z.discriminatedUnion('kind', [
@@ -62,11 +62,22 @@ export const HostHarnessOverrideTargetSchema = z.object({
   hostRef: HarnessHostReferenceSchema, applicationInstallationId: z.uuid(), harnessInstallationId: Identity,
   installationFingerprint: Identity,
 }).strict()
+function validateHostEnvironment(configuration: HarnessConfiguration, context: z.RefinementCtx, prefix: string[]): void {
+  if (configuration.harness !== 'codex') return
+  for (const [key, text] of Object.entries(configuration.advanced?.shellEnvironment.set ?? {})) {
+    if (/(?:API.?KEY|TOKEN|PASSWORD|SECRET|AUTHORIZATION|CREDENTIAL|COOKIE|PRIVATE.?KEY)/i.test(key)
+      || /^(?:sk-proj-|sk-ant-|Bearer\s+)/i.test(text)
+      || /^[a-z][a-z0-9+.-]*:\/\/[^@\s]+:[^@\s]+@/i.test(text)) {
+      context.addIssue({ code: 'custom', path: [...prefix, 'advanced', 'shellEnvironment', 'set', key],
+        message: 'Credential environment values must stay in the target native credential store.' })
+    }
+  }
+}
 export const HostHarnessOverrideSaveSchema = z.object({
   commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().nonnegative(),
   target: HostHarnessOverrideTargetSchema, presetId: Identity, enabled: z.boolean(),
   configuration: z.lazy(() => HarnessConfigurationSchema),
-}).strict()
+}).strict().superRefine((value, context) => validateHostEnvironment(value.configuration, context, ['configuration']))
 export type HostHarnessOverrideSave = z.infer<typeof HostHarnessOverrideSaveSchema>
 export const HostHarnessOverrideSchema = z.object({
   instanceId: z.uuid(), revision: z.number().int().positive(), instanceRevision: Identity,
@@ -103,4 +114,4 @@ export const HostHarnessInstanceCheckResultSchema = z.object({
 export const HARNESS_PROFILE_CHECK_NAMESPACE = 'host-harness-check-v1' as const
 export const HostHarnessProfileCheckRequestSchema = z.object({
   checkId: z.uuid(), override: HostHarnessOverrideSchema,
-}).strict()
+}).strict().superRefine((value, context) => validateHostEnvironment(value.override.configuration, context, ['override', 'configuration']))
