@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { webcrypto } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
@@ -113,7 +114,7 @@ describe('authenticated current-semantics Run inspection', () => {
     })))
     await expect(readRunExecution(owner.scope, source.execution.executionId)).rejects.toThrow(/pins/)
     expect(() => assertExecutionVersion(fixture.repeated, {
-      ...source.execution, agentConfigurationVersionId: 'current-but-not-pinned',
+      ...nativeNode(source.execution), agentConfigurationVersionId: 'current-but-not-pinned',
     })).toThrow(/immutable/)
     expect(() => assertExecutionVersion(fixture.before, source.execution)).toThrow(/immutable/)
   })

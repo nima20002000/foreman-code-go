@@ -53,7 +53,10 @@ export type GraphNodeData = {
   onResize?: (workflowNodeId: string, width: number, height: number) => void
 }
 
-export type GraphNode = Node<GraphNodeData, 'agent'>
+export type AgentGraphNode = Node<GraphNodeData, 'agent'> & {type:'agent'}
+export type JobGraphNodeData = {kind:'job';workflowNodeId:string;workspaceId:string;jobDefinitionId:string;jobDefinitionRevision:number;jobDefinitionVersionId:string;label:string;description?:string;stepLabel:string;departing?:boolean;entering?:boolean;onOpen?: (nodeId:string)=>void}
+export type JobGraphNode = Node<JobGraphNodeData,'job'> & {type:'job'}
+export type GraphNode = AgentGraphNode | JobGraphNode
 
 /** A node exposes exactly one handle per side, shared by every connection. */
 export type GraphHandleSide = 'top' | 'right' | 'bottom' | 'left'
@@ -74,6 +77,7 @@ export type GraphProjection = {
 }
 
 export type GraphMapperOptions = {
+  onOpenJobNode?: (nodeId:string)=>void
   selectedAgentId?: string
   selectedNodeIds?: ReadonlySet<string>
   runStatesByNodeId?: ReadonlyMap<string, HarnessExecutionState>

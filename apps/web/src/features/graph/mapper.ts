@@ -186,7 +186,7 @@ function waitLabel(
 }
 
 function nodeLabel(workflowNode: WorkflowNodeV3, agent: Agent | undefined): string {
-  return workflowNode.name ?? workflowNode.label ?? agent?.name ?? workflowNode.agentId
+  return workflowNode.name ?? workflowNode.label ?? agent?.name ?? (workflowNode.kind==='job'?'Job':workflowNode.agentId)
 }
 
 export function workflowToGraph(
@@ -200,6 +200,11 @@ export function workflowToGraph(
   }
 
   const nodes: GraphNode[] = workflow.nodes.map((workflowNode, index) => {
+    if(workflowNode.kind==='job') {
+      const size=clampNodeSize(workflowNode.width??DEFAULT_NODE_WIDTH,workflowNode.height??DEFAULT_NODE_HEIGHT)
+      return {id:workflowNode.id,type:'job',position:workflowNodePosition(workflowNode,index),initialWidth:size.width,initialHeight:size.height,width:size.width,height:size.height,style:size,selected:Boolean(options.selectedNodeIds?.has(workflowNode.id)),
+        data:{kind:'job',workflowNodeId:workflowNode.id,workspaceId:workflow.workspaceId,jobDefinitionId:workflowNode.jobDefinitionId,jobDefinitionRevision:workflowNode.jobDefinitionRevision,jobDefinitionVersionId:workflowNode.jobDefinitionVersionId,label:nodeLabel(workflowNode,undefined),description:workflowNode.description,stepLabel:`Step ${index+1}`,entering:options.enteringNodeIds?.has(workflowNode.id),onOpen:options.onOpenJobNode}}
+    }
     const agent = agentsById.get(workflowNode.agentId)
       ?? { id: workflowNode.agentId, name: workflowNode.name ?? workflowNode.label ?? workflowNode.agentId }
     const state = agentState(agent)
@@ -346,7 +351,7 @@ export function withoutAgentReferences(
 ): WorkflowDefinitionV3 {
   if (agentIds.size === 0) return workflow
   const removedNodeIds = new Set(
-    workflow.nodes.filter((node) => agentIds.has(node.agentId)).map((node) => node.id),
+    workflow.nodes.filter((node) => node.kind!=='job' && agentIds.has(node.agentId)).map((node) => node.id),
   )
   if (removedNodeIds.size === 0) return workflow
   return {

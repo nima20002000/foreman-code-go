@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { journalRequest, journalIntent, savedJournal } from './nim2644Journal.fixture'
 import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
@@ -32,7 +33,7 @@ vi.mock('../../workflow-board/startPreflight', async (original) => ({
     workspace: { locationRevision: 1, locationValidation: { status: 'ready' } },
     capabilities: { runtimeAdmission: true, persistedReadback: true },
     version: { id: draft.baseWorkflowVersionId, definition: draft.graph,
-      agentConfigurationVersionIds: Object.fromEntries(draft.graph.nodes.map(({ agentId }) => [agentId, `configuration-${agentId}`])) },
+      agentConfigurationVersionIds: Object.fromEntries(draft.graph.nodes.map(nativeNode).map(({ agentId }) => [agentId, `configuration-${agentId}`])) },
   } }),
 }))
 vi.mock('./DraftCanvas', () => ({ DraftCanvas: () => <div>Canvas fixture</div> }))
@@ -113,7 +114,7 @@ beforeEach(() => {
   sessionStorage.setItem(tabKey, 'B')
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
   vi.spyOn(nextDraftApi, 'pins').mockImplementation(async (_workspaceId, graph, _stagedAgents, agents) => ({
-    expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.flatMap(({ agentId }) => {
+    expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map(nativeNode).flatMap(({ agentId }) => {
       const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId
       return pin ? [[agentId, pin]] : []
     })), expectedLocationRevision: 1, agents: agents ?? [],
@@ -155,7 +156,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     await waitFor(() => expect(clients[0]!.isFetching()).toBe(0))
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(edit().context.draft.revision).toBe(10)
-    expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker B')
+    expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe('marker B')
 
     // A stale Stage rejects before any affected-set confirmation or Stop.
     await user.click(saveButton())
@@ -167,7 +168,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     expect(readEditOutbox(key)).toBeUndefined()
     expect(edit().context.draft.revision).toBe(10)
     expect(edit().context.draft.baseWorkflowVersionId).toBe('version-5')
-    expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker B')
+    expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe('marker B')
     expect(savedA.intent?.result?.version.id).toBe('version-6')
     expect(boardStartClient.start).not.toHaveBeenCalled()
 
@@ -176,7 +177,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reload saved draft' }))
     await waitFor(() => expect(edit().context.draft.revision).toBe(11))
     expect(edit().context.draft.baseWorkflowVersionId).toBe('version-6')
-    expect(edit().graph.nodes[0]?.initialPrompt).toBe('marker A')
+    expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe('marker A')
 
     act(() => useGraphDraftStore.getState().updateNextDraft(key, (current) => mark(current, 'marker B corrected')))
     await saveWithStop(user)
@@ -202,7 +203,7 @@ describe('NIM-2644 typed-board cross-tab stale revision fence', () => {
       const acknowledged = acknowledgeEditIntentSnapshot(key, newer, saved.intent!)
       expect(acknowledged.context.draft.revision).toBe(11)
       expect(acknowledged.context.draft.baseWorkflowVersionId).toBe('version-6')
-      expect(acknowledged.graph.nodes[0]?.initialPrompt).toBe('marker A newer')
+      expect(nativeNode(acknowledged.graph.nodes[0])?.initialPrompt).toBe('marker A newer')
       const replay = acknowledgeEditIntentSnapshot(key, acknowledged, saved.intent!)
       expect(replay).toBe(acknowledged)
       acknowledgeEditOutbox(key, box.request.commandId)

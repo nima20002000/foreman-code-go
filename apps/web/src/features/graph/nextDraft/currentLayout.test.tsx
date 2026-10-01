@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -47,9 +48,9 @@ it('writes positions through current Save while keeping private executable edits
     expectedAgentConfigurationVersionIds: pins, graph: { nodes: [{ id: 'node-0', position: { x: 500, y: 20 } }, expect.anything()] } })
   expect(JSON.stringify(options?.body)).not.toContain('private executable edit')
   const edit = useGraphDraftStore.getState().nextDrafts[key]!
-  expect(edit.graph.nodes[0]?.initialPrompt).toBe('private executable edit')
+  expect(nativeNode(edit.graph.nodes[0])?.initialPrompt).toBe('private executable edit')
   expect(edit.context.draft.revision).toBe(7)
-  expect(edit.context.draft.graph.nodes[0]?.position).toEqual({ x: 500, y: 20 })
+  expect(nativeNode(edit.context.draft.graph.nodes[0])?.position).toEqual({ x: 500, y: 20 })
 })
 it('replays the exact command after a lost reply before sending a newer position', async () => {
   const send = vi.spyOn(apiClient, 'request').mockRejectedValueOnce(new Error('lost reply')).mockResolvedValue(acknowledged)
@@ -89,7 +90,7 @@ it('reloads stored geometry and current labels with immutable configuration pins
   })
   const base = await createNextDraftApi(new ApiClient({ fetch: send })).layoutBase(f.scope.workspaceId, f.scope.workflowId)
   expect(base.draft.graph.name).toBe('Current saved label')
-  expect(base.draft.graph.nodes[0]?.position).toEqual({ x: 81, y: 29 })
+  expect(nativeNode(base.draft.graph.nodes[0])?.position).toEqual({ x: 81, y: 29 })
   expect(base.expectedAgentConfigurationVersionIds).toEqual(f.version.agentConfigurationVersionIds)
   expect(base.expectedLocationRevision).toBe(5)
   expect(send.mock.calls.some(([url]) => String(url).endsWith('/agents'))).toBe(false)

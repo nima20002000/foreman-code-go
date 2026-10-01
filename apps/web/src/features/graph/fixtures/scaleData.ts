@@ -24,11 +24,11 @@ export function makeScaleGraph(count = 300): { workflow: WorkflowDefinition; age
 /** Strict current synthetic reader fixture; this does not admit a provider Run. */
 export function makeSyntheticRun(count = 300, sequence = '1'): GetRunResponse {
   const { workflow } = makeScaleGraph(count)
-  const nodes: RunNodeLiveActivity[] = workflow.nodes.map((node) => ({
+  const nodes: RunNodeLiveActivity[] = workflow.nodes.filter(node=>node.kind!=='job').map((node) => ({
     workflowNodeId: node.id, agentId: node.agentId, state: 'idle', action: null, event: null,
   }))
   return CurrentRunDetailsSchema.parse({
-    run: { executionSemanticsVersion: 3, agentConfigurationVersionIds: Object.fromEntries(workflow.nodes.map((node) => [node.agentId, `config-${node.agentId}`])),
+    run: { executionSemanticsVersion: 3, agentConfigurationVersionIds: Object.fromEntries(workflow.nodes.filter(node=>node.kind!=='job').map((node) => [node.agentId, `config-${node.agentId}`])),
       approval: { handler: 'user' }, executionCondition: { kind: 'manual' }, outcome: 'pending', input: {}, createdAt: '2026-09-25T00:00:00.000Z',
       id: 'synthetic-run', workspaceId: workflow.workspaceId, workflowId: workflow.id,
       workflowVersionId: 'synthetic-version', executionState: 'running' },

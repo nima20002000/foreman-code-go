@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { createHash } from 'node:crypto'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
@@ -28,7 +29,7 @@ describe('ENG05-D mounted historical identity and keyboard regressions', () => {
       runNodeId: nodeId, runExchangeKey: runInspectionKey({ executionId: id }),
     }))
     const article = await screen.findByRole('article', { name: `Execution ${id}` })
-    expect(article).toHaveTextContent(expected.execution.agentConfigurationVersionId)
+    expect(article).toHaveTextContent(nativeNode(expected.execution).agentConfigurationVersionId)
     expect(await within(article).findByLabelText(`Accepted result ${id}`)).toHaveTextContent(id)
     expect(pinned()).toHaveTextContent(owner.version.id)
     const inspector = await openRunDetails()
@@ -41,7 +42,7 @@ describe('ENG05-D mounted historical identity and keyboard regressions', () => {
       nodes: graph.nodes.map((node) => ({ ...node, initialPrompt: 'UNPUBLISHED-ENG05D-PRIVATE-DRAFT' })),
     })))
     fireEvent.click(within(inspector).getByText('Saved node configuration (this Run)'))
-    expect(await within(inspector).findByLabelText(`Saved Run node ${nodeId}`)).toHaveTextContent(expected.execution.agentConfigurationVersionId)
+    expect(await within(inspector).findByLabelText(`Saved Run node ${nodeId}`)).toHaveTextContent(nativeNode(expected.execution).agentConfigurationVersionId)
     expect(within(inspector).getByLabelText(`Saved Run node ${nodeId}`)).not.toHaveTextContent('UNPUBLISHED-ENG05D-PRIVATE-DRAFT')
     expect(within(article).getByLabelText(`Accepted result ${id}`).textContent).toBe(body)
     expect(useGraphDraftStore.getState().nextDrafts[key]!.instanceId).toBe(instanceId)

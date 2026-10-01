@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -96,7 +97,7 @@ describe('one mounted board across current route aliases', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(mounts.canvas).toBe(1); expect(mounts.disposed).toBe(0)
     expect(useGraphDraftStore.getState().nextDrafts[key]?.instanceId).toBe(instance)
-    expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0]?.initialPrompt).toBe('Unpublished next draft')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0])?.initialPrompt).toBe('Unpublished next draft')
     await act(async () => { history.back() })
     await waitFor(() => expect(screen.getByTestId('selected-run')).toHaveTextContent('run-one:version-one'))
     expect(screen.getByText('Geometry is buffered')).toBeInTheDocument()

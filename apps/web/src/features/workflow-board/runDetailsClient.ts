@@ -42,6 +42,7 @@ export async function verifyRunExecutionDetails(snapshot: RepeatGraphCurrentV3, 
   if (!sameWorkflowValue(scopeForBoardRun(detail.run), snapshot.scope)) throw invalid('Run evidence is out of scope.')
   const byId = new Map(detail.executions.map((execution) => [execution.id, execution]))
   return Promise.all(snapshot.state.executions.map(async (fact) => {
+    if(fact.identity.kind==='job')return {fact,execution:undefined,acceptedResult:undefined}
     const execution = byId.get(fact.identity.executionId)
     if (!execution) return { fact, execution: undefined, acceptedResult: undefined }
     if (execution.workflowNodeId !== fact.identity.workflowNodeId || execution.agentId !== fact.identity.agentId
@@ -141,8 +142,8 @@ export function assertExecutionVersion(version: WorkflowVersionV3, execution: Ru
   const node = version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
   const occurrence = execution.occurrence
   const block = version.definition.repeat?.blocks.find((item) => item.nodeIds.includes(execution.workflowNodeId))
-  if (!node || node.agentId !== execution.agentId
-    || version.agentConfigurationVersionIds[execution.agentId] !== execution.agentConfigurationVersionId
+  const pins=execution.kind==='job'?node?.kind==='job'&&node.jobDefinitionId===execution.jobDefinitionId&&node.jobDefinitionVersionId===execution.jobDefinitionVersionId:node&&node.kind!=='job'&&node.agentId===execution.agentId&&version.agentConfigurationVersionIds[execution.agentId]===execution.agentConfigurationVersionId
+  if (!pins
     || (!!block !== !!occurrence)
     || block && (!occurrence || occurrence.blockId !== block.id || occurrence.occurrenceIndex > block.maxOccurrences)) {
     throw invalid('Execution node, configuration or occurrence is not in this immutable version.')
@@ -163,7 +164,7 @@ export async function readRunExecutionBindings(scope: RepeatGraphScopeV3, detail
   }
   const recipient = GraphExecutionIdentitySchema.parse({
     workflowNodeId: detail.execution.workflowNodeId, executionId: detail.execution.executionId,
-    agentId: detail.execution.agentId, agentConfigurationVersionId: detail.execution.agentConfigurationVersionId,
+    ...(detail.execution.kind==='job'?{kind:'job',jobDefinitionId:detail.execution.jobDefinitionId,jobDefinitionVersionId:detail.execution.jobDefinitionVersionId}:{agentId:detail.execution.agentId,agentConfigurationVersionId:detail.execution.agentConfigurationVersionId}),
     attempt: detail.execution.attempt,
   })
   const ids = new Set<string>()

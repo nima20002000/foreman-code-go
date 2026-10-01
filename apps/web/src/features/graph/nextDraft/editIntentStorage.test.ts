@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { journalRequest } from './nim2644Journal.fixture'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { protectedKey, rotateProtectedSession } from '../../../shared/api/protectedChatStorage'
@@ -27,7 +28,7 @@ describe('NIM-2642 protected local form and exact-command recovery', () => {
     sessionStorage.removeItem(protectedKey('ui', 'graph-edit-intent:tab'))
     expect(readEditSnapshot(key)).toEqual(read)
     storeEditSnapshot(key, { ...edit, graph: { ...edit.graph, nodes: edit.graph.nodes.map((node) => ({ ...node, initialPrompt: 'New tab' })) } })
-    expect(readEditSnapshot(key)?.graph.nodes[0]?.initialPrompt).toBe('New tab')
+    expect(nativeNode(readEditSnapshot(key)?.graph.nodes[0])?.initialPrompt).toBe('New tab')
   })
   it('reuses the SAME request after refresh, duplicate clicks and competing newer forms', async () => {
     vi.stubGlobal('navigator', { locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })

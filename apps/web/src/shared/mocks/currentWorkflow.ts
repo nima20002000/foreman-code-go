@@ -1,3 +1,4 @@
+import { nativeDefinition } from './nativeFixtureTypes'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@graphql/contracts'
 import {
   ExecutableWorkflowV3Schema, WorkflowRunV3Schema, RepeatGraphScopeV3Schema,
@@ -41,5 +42,5 @@ export function currentWorkflowFixture(suffix = 'fixture') {
       run: { executionState: 'queued', outcome: 'pending', stopRequested: false, cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
       nodes: [], inputBindings: [], interactions: [], reviews: [], occurrences: [], executions: [], resolutions: [], results: [], bindings: [], decisions: [],
     } })
-  return { configurations, version, run, scope, identities, executions, current, createdAt }
+  return { configurations, version:{...version,definition:nativeDefinition(version.definition)}, run, scope, identities, executions, current, createdAt }
 }

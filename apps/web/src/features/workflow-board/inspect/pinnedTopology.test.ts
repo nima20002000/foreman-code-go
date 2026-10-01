@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@graphql/contracts/wave25'
 import { pinnedNodeStates, pinnedTopology, type PinnedNodeDisplayCut } from './pinnedTopology'
@@ -6,7 +7,7 @@ describe('immutable canvas display projection', () => {
   it('uses only saved node names and configuration pins', () => {
     const { version } = makeCurrentWorkflowFixture('pinned', 'sequential')
     const result = pinnedTopology(version)
-    expect(result.nodes.map((node) => [node.id, node.label, node.configurationId])).toEqual(
+    expect(result.nodes.map((node) => [node.id, node.label, nativeNode(node).configurationId])).toEqual(
       version.definition.nodes.map((node) => [node.id, node.name, version.agentConfigurationVersionIds[node.agentId]]))
     expect(result.edges).toBe(version.definition.edges)
     expect(result.nodes.filter((node) => node.entry).map((node) => node.id)).toEqual([version.entryNodeId])
@@ -16,7 +17,7 @@ describe('immutable canvas display projection', () => {
     const { version } = makeCurrentWorkflowFixture('ordinary-pinned', 'single')
     const original = JSON.stringify(version)
     const result = pinnedTopology(version)
-    expect(result.nodes[0]?.blockId).toBeUndefined()
+    expect(nativeNode(result.nodes[0])?.blockId).toBeUndefined()
     expect(version.definition).not.toHaveProperty('repeat')
     expect(JSON.stringify(version)).toBe(original)
     expect(pinnedNodeStates().size).toBe(0)
@@ -33,11 +34,11 @@ describe('immutable canvas display projection', () => {
 
   it('keeps a saved position and makes unsaved geometry fallback deterministic without mutation', () => {
     const { version } = makeCurrentWorkflowFixture('position-pinned')
-    version.definition.nodes[0]!.position = { x: 127, y: -41 }
+    nativeNode(version.definition.nodes[0]!).position = { x: 127, y: -41 }
     const original = JSON.stringify(version)
     expect(pinnedTopology(version).nodes[0]?.position).toEqual({ x: 127, y: -41 })
     expect(pinnedTopology(version)).toEqual(pinnedTopology(version))
-    expect(version.definition.nodes[1]).not.toHaveProperty('position')
+    expect(nativeNode(version.definition.nodes[1])).not.toHaveProperty('position')
     expect(JSON.stringify(version)).toBe(original)
   })
 

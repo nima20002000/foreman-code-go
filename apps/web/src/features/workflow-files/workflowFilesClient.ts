@@ -50,7 +50,7 @@ function parseRow(value: unknown, scope: PermanentFileScope, ref?: MessageAttach
   const parsed = FileWithRevisionSchema.safeParse(value)
   if (!parsed.success) throw invalidResponse()
   const row = parsed.data
-  if (row.file.scope.kind === 'temporary' || referenceScopeKey(row.file.scope) !== referenceScopeKey(scope)
+  if (row.file.scope.kind === 'temporary' || row.file.scope.kind==='job_execution' || referenceScopeKey(row.file.scope) !== referenceScopeKey(scope)
     || row.file.currentRevisionId !== row.revision.revisionId
     || (ref && (row.file.fileId !== ref.fileId || row.revision.revisionId !== ref.revisionId))) throw invalidResponse()
   return row

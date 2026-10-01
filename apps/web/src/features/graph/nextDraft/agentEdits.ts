@@ -6,7 +6,7 @@ import type { NextDraftEdit } from './state'
 
 export type DraftAgentEdits = Record<string, Agent>
 export function referencedAgentEdits(graph: WorkflowDefinitionV3, edits: DraftAgentEdits = {}): DraftAgentEdits {
-  const ids = new Set(graph.nodes.map((node) => node.agentId))
+  const ids = new Set(graph.nodes.filter(node=>node.kind!=='job').map((node) => node.agentId))
   return Object.fromEntries(Object.entries(edits).filter(([id]) => ids.has(id)))
 }
 export function hasAgentEdits(edit: NextDraftEdit): boolean {
@@ -70,7 +70,7 @@ export function acknowledgeAgentEdits(current: DraftAgentEdits | undefined, sent
     if (!submitted) return [[id, agent]]
     // Discard may retain a newly created node because its meaning was edited
     // again. Keep its local Agent until that dependent newer work is resolved.
-    if (sameValue(agent, submitted) && (saved.has(id) || !retainedGraph?.nodes.some((node) => node.agentId === id))) return []
+    if (sameValue(agent, submitted) && (saved.has(id) || !retainedGraph?.nodes.some((node) => node.kind!=='job' && node.agentId === id))) return []
     const acknowledged = saved.get(id)
     return [[id, acknowledged ? { ...agent, configurationVersionId: acknowledged.configurationVersionId,
       createdAt: acknowledged.createdAt, updatedAt: acknowledged.updatedAt } : agent]]

@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 // @vitest-environment jsdom
 import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react'
@@ -219,7 +220,7 @@ describe.each(forms)('ENG06-D %s Board recovery', (form) => {
     expect(intent.affected[0]!.agentConfigurationVersionIds).toEqual(run.agentConfigurationVersionIds)
     expect(intent.saveAttempted).toBe(false)
     expect(f.mock.controls.stopCalls).toBe(1); expect(f.mock.versions.size).toBe(1)
-    expect(useGraphDraftStore.getState().nextDrafts[f.key]!.graph.nodes[0]!.initialPrompt)
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[f.key]!.graph.nodes[0]!).initialPrompt)
       .toBe('Instructions staged while recovery is unresolved')
     // Terminal status is still NOT cleanup settlement. Keep waiting and retain
     // the same intent/advance command rather than saving or starting a new Run.
@@ -235,7 +236,7 @@ describe.each(forms)('ENG06-D %s Board recovery', (form) => {
     await waitFor(() => expect(reopened.query.getQueryData<GraphEditReadResultV3>(
       graphEditIntentKey(f.mock.workspaceId, f.workflowId, draftId))?.intent?.id).toBe(intent.id))
     expect(readEditOutbox(f.key)).toEqual(retained)
-    expect(useGraphDraftStore.getState().nextDrafts[f.key]!.graph.nodes[0]!.initialPrompt)
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[f.key]!.graph.nodes[0]!).initialPrompt)
       .toBe('Instructions staged while recovery is unresolved')
     expect(f.mock.record(f.workflowId).intent?.advanceCommandId).toBe(intent.advanceCommandId)
     expect(f.mock.versions.size).toBe(1); expect(f.mock.controls.stopCalls).toBe(1)
@@ -251,7 +252,7 @@ describe.each(forms)('ENG06-D %s Board recovery', (form) => {
     expect(f.mock.runs.get(run.id)!.run.workflowVersionId).toBe(run.workflowVersionId)
     const newest = [...f.mock.versions.values()].at(-1)!
     expect(newest.id).not.toBe(run.workflowVersionId)
-    expect(newest.definition.nodes[0]!.initialPrompt).toBe('Instructions staged while recovery is unresolved')
+    expect(nativeNode(newest.definition.nodes[0]!).initialPrompt).toBe('Instructions staged while recovery is unresolved')
     expect(newest.definition.repeat).toEqual(pinned!.definition.repeat)
     expect(f.mock.runs.size).toBe(1); expect(f.mock.controls.stopCalls).toBe(1)
     expect(f.mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))).toHaveLength(1)

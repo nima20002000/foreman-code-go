@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import assert from 'node:assert/strict'
 import type { Agent } from '@graphql/contracts'
 import type { WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
@@ -16,7 +17,7 @@ export function repairFixture(count = 3): NextDraftContext {
   }
   return { draft: { id: 'draft', workspaceId: 'workspace', workflowId: 'workflow', revision: 7, publishedRevision: 7,
     baseWorkflowVersionId: 'version-1', graph, stagedAgents: [], updatedByPrincipalId: 'fixture', updatedAt: '2026-09-24T00:00:00Z' },
-  agents: graph.nodes.map((node) => ({ metadataRevision: 3, agent: { id: node.agentId, name: node.name!, productRole: 'coder', configurationVersionId: `configuration-${node.agentId}` } })) }
+  agents: graph.nodes.map((node) => ({ metadataRevision: 3, agent: { id: nativeNode(node).agentId, name: node.name!, productRole: 'coder', configurationVersionId: `configuration-${nativeNode(node).agentId}` } })) }
 }
 const move = (graph: WorkflowDefinitionV3, nodeId = 'node-0') => ({ ...graph,
   nodes: graph.nodes.map((node) => node.id === nodeId ? { ...node, position: { x: 912, y: -41 }, width: 280, height: 190 } : node) })
@@ -32,8 +33,8 @@ export const nim2644StateCases: { name: string; run: () => void }[] = [
     const before = structuredClone({ saved, sent, current })
     const merged = mergeAcknowledgement(current, sent, saved)
     assert.deepEqual(ids(merged), ids(saved)); assert.deepEqual(merged.edges, saved.edges)
-    assert.deepEqual(merged.nodes[0]?.position, { x: 912, y: -41 })
-    assert.equal(merged.nodes[0]?.width, 280); assert.equal(merged.nodes[0]?.height, 190)
+    assert.deepEqual(nativeNode(merged.nodes[0])?.position, { x: 912, y: -41 })
+    assert.equal(nativeNode(merged.nodes[0])?.width, 280); assert.equal(nativeNode(merged.nodes[0])?.height, 190)
     assert(sameExecutableWorkflow(merged, saved))
     assert.deepEqual({ saved, sent, current }, before)
     assert.deepEqual(mergeAcknowledgement(merged, sent, saved), merged)
@@ -45,7 +46,7 @@ export const nim2644StateCases: { name: string; run: () => void }[] = [
     const merged = mergeAcknowledgement(move(sent, 'node-1'), sent, saved)
     assert.deepEqual(ids(merged), ids(saved)); assert.deepEqual(merged.edges, saved.edges)
     assert.equal(merged.entryNodeId, 'node-0'); assert(sameExecutableWorkflow(merged, saved))
-    assert.deepEqual(merged.nodes[1]?.position, { x: 912, y: -41 })
+    assert.deepEqual(nativeNode(merged.nodes[1])?.position, { x: 912, y: -41 })
   } },
   { name: 'FE-003 restores an edge-only deletion despite unrelated layout', run() {
     const saved = repairFixture().draft.graph, sent = { ...saved, edges: saved.edges.slice(1) }
@@ -57,7 +58,7 @@ export const nim2644StateCases: { name: string; run: () => void }[] = [
     const current = instruction(move(sent), 'newer')
     const merged = mergeAcknowledgement(current, sent, saved)
     assert.deepEqual(ids(merged), ids(saved)); assert.deepEqual(merged.edges, saved.edges)
-    assert.equal(merged.nodes[0]?.initialPrompt, 'newer'); assert.deepEqual(merged.nodes[0]?.position, current.nodes[0]?.position)
+    assert.equal(nativeNode(merged.nodes[0])?.initialPrompt, 'newer'); assert.deepEqual(nativeNode(merged.nodes[0])?.position, nativeNode(current.nodes[0])?.position)
     assert(!sameExecutableWorkflow(merged, saved))
   } },
   { name: 'FE-003 keeps a newer node deletion and does not restore its incident edges', run() {
@@ -72,7 +73,7 @@ export const nim2644StateCases: { name: string; run: () => void }[] = [
     const current = { ...move(sent), edges: sent.edges.slice(1) }
     const merged = mergeAcknowledgement(current, sent, saved)
     assert.deepEqual(merged.edges.map((edge) => edge.id), ['edge-2'])
-    assert.equal(merged.nodes[0]?.initialPrompt, undefined)
+    assert.equal(nativeNode(merged.nodes[0])?.initialPrompt, undefined)
   } },
   { name: 'FE-003 never restores entry onto a node removed after an explicit staged entry clear', run() {
     const saved = repairFixture().draft.graph, sent = { ...saved, entryNodeId: null }
@@ -89,7 +90,7 @@ export const nim2644StateCases: { name: string; run: () => void }[] = [
   { name: 'FE-003 preserves a newer semantic edit to an added node', run() {
     const saved = repairFixture().draft.graph, sent = { ...saved, nodes: [...saved.nodes, newNode] }
     const merged = mergeAcknowledgement(instruction(move(sent, newNode.id), 'newer', newNode.id), sent, saved)
-    assert.equal(merged.nodes.find((node) => node.id === newNode.id)?.initialPrompt, 'newer')
+    assert.equal(merged.nodes.map(nativeNode).find((node) => node.id === newNode.id)?.initialPrompt, 'newer')
     const edits = { [local.id]: local }
     assert.deepEqual(acknowledgeAgentEdits(edits, edits, repairFixture(), merged), edits)
     assert.deepEqual(acknowledgeAgentEdits(edits, edits, repairFixture(), saved), {})
@@ -112,7 +113,7 @@ export const nim2644StateCases: { name: string; run: () => void }[] = [
     const saved = { ...sent, version: 2 }
     const current = instruction(move(removeNode(sent, 'node-2')), 'newer')
     const merged = mergeAcknowledgement(current, sent, saved)
-    assert.equal(merged.version, 2); assert.equal(merged.nodes[0]?.initialPrompt, 'newer')
+    assert.equal(merged.version, 2); assert.equal(nativeNode(merged.nodes[0])?.initialPrompt, 'newer')
     assert.deepEqual(ids(merged), ids(current)); assert.deepEqual(merged.edges, current.edges)
   } },
   { name: 'FE-002 exact local Agent submission clears despite server empty-field normalization', run() {

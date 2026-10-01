@@ -1,3 +1,4 @@
+import { nativeNode } from '../shared/mocks/nativeFixtureTypes'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
@@ -36,8 +37,8 @@ async function researcherButton() {
   const canvas = within(board).getByLabelText('Editable workflow graph')
   const fixture = getMockFixture('workspace-1')!
   const node = fixture.workflows.find((workflow) => workflow.id === 'workflow-content-pipeline')!
-    .nodes.find((node) => node.agentId === 'agent-researcher')!
-  const title = node.name ?? node.label ?? fixture.agents.find((agent) => agent.id === node.agentId)!.name
+    .nodes.map(nativeNode).find((node) => nativeNode(node).agentId === 'agent-researcher')!
+  const title = node.name ?? node.label ?? fixture.agents.find((agent) => agent.id === nativeNode(node).agentId)!.name
   return within(canvas).findByRole('button', { name: (name) => name.startsWith(`${title},`) })
 }
 async function workflowBoard(name: string) {

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, use
 import { Background, ConnectionMode, ReactFlow,
   type Connection, type IsValidConnection, type NodeChange, type ReactFlowInstance } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { JobNode } from './JobNode'
 import { AgentNode, HandoffEdge } from './GraphElements'
 import { GraphGeometryContext } from './graphContexts'
 import { createGraphGeometryAdapter, type GraphGeometryChange } from './geometry'
@@ -10,7 +11,7 @@ import { useGraphPresentation } from './useGraphPresentation'
 import { useGraphEvent } from './useGraphEvent'
 import type { GraphNode, GraphEdge, GraphProjection } from './types'
 
-const nodeTypes = { agent: AgentNode }
+const nodeTypes = { agent: AgentNode, job: JobNode }
 const edgeTypes = { [AGENT_HANDOFF_EDGE_TYPE]: HandoffEdge }
 const fitViewOptions = { padding: 0.25, minZoom: 0.5, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
