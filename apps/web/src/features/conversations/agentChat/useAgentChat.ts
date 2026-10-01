@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useInfiniteQuery, useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient, type MutationFilters } from '@tanstack/react-query'
 import type { ManagementAction } from '@graphql/contracts/management'
 import type { AgentChatContext, AgentChatIntent, AgentChatState } from '@graphql/contracts/agent-chat'
 import { agentChatApi } from '../../../shared/api/agentChat'
 import { ApiError } from '../../../shared/api/client'
+import { createStreamReadback } from '../../../shared/api/streamReadback'
 import { subscribeAgentChat, type AgentChatConnection } from '../../../shared/api/agentChatStream'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../../shared/api/sessionBoundary'
 import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
@@ -59,6 +60,7 @@ export function commandMayHaveBeenAccepted(error: unknown): boolean {
 
 export function useAgentChat(context: AgentChatContext, selected?: SelectedChatBinding) {
   const client = useQueryClient(), generation = sessionGeneration()
+  const readGeneration = useRef(0)
   const draftKey = selected ? selectedChatDraftKey(selected.selection, context.agentId, selected.key?.conversationId ?? null) : agentChatContextKey(context)
   const creationDraftKey = selected ? selectedChatDraftKey(selected.selection, context.agentId, null) : draftKey
   const visit = useMemo(() => createChatVisit(() => selected?.isCurrent() ?? true), [selected])
@@ -98,6 +100,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
   const [connection, setConnection] = useState<AgentChatConnection>('connecting')
   const query = useQuery({ queryKey: key, enabled: canRead, retry: false, staleTime: 0, refetchInterval: 5_000, ...(selected ? { gcTime: 0 } : {}),
     queryFn: async ({ signal }) => {
+      const read = ++readGeneration.current
       const current = visit.capture()
       if (selected && !current()) throw new DOMException('Selection changed', 'AbortError')
       const result = selected ? await selectedRunChatApi.read(selected.selection, { signal }) : undefined
@@ -106,6 +109,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
         message: result.kind === 'unavailable' && result.reason === 'legacy_run' ? 'Snapshot unavailable' : 'Session unavailable' }, 409)
       const state = result?.kind === 'selected' ? result.state : await agentChatApi.read(context, { signal })
       signal.throwIfAborted()
+      if (read !== readGeneration.current) throw new DOMException('Newer chat readback required', 'AbortError')
       assertSession(generation)
       if (!matches(state)) throw new ApiError({ code: 'AGENT_CHAT_CONTEXT_STALE', message: 'Chat returned a different selection. Refresh before sending.' }, 409)
       return state
@@ -122,7 +126,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
   const historyId = query.data?.conversation?.id
   const historyKey = selected ? ['agent-chat', generation, draftKey, 'history', historyId, selected.visitId]
     : ['agent-chat', generation, context, historyId, 'history']
-  const history = useInfiniteQuery({ queryKey: historyKey, ...(selected ? { gcTime: 0 } : {}),
+  const history = useInfiniteQuery({ queryKey: historyKey, maxPages: 5, ...(selected ? { gcTime: 0 } : {}),
     queryFn: async ({ pageParam, signal }) => {
       try {
         const current = visit.capture()
@@ -162,6 +166,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
   const accept = useCallback((incoming: AgentChatState, source: 'read' | 'receipt' = 'receipt') => {
     assertSession(generation)
     if (sessionIsSwitching() || !isCurrent() || !matches(incoming)) return
+    if (isAuthAccessError(client.getQueryState(key)?.error)) return
     const historyRead = client.getQueryState(selected
       ? ['agent-chat', generation, draftKey, 'history', incoming.conversation?.id, selected.visitId]
       : ['agent-chat', generation, incoming.context, incoming.conversation?.id, 'history'])
@@ -181,31 +186,31 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
   const conversationId = state?.conversation?.id
   useEffect(() => {
     if (!conversationId || !canRead || denial || !isCurrent()) return
-    let timer: ReturnType<typeof setTimeout> | undefined, reading = false, dirty = false, disposed = false
+    let disposed = false
     const current = visit.capture()
-    // Coalesce opaque delta events. An event during a read schedules a trailing read; it cannot
-    // disappear behind a deduplicated in-flight GET. No text is invented from part/native ids.
-    const refetch = () => {
+    const readback = createStreamReadback(async () => {
       if (disposed || selected && !current()) return
-      dirty = true
-      if (reading || timer || disposed) return
-      timer = setTimeout(async () => {
-        timer = undefined; reading = true; dirty = false
-        try {
-          await client.cancelQueries({ queryKey: key, exact: true })
-          if (!disposed && (!selected || current())) await client.refetchQueries({ queryKey: key, exact: true })
-        } catch { /* Query retains the read error; the next event/reconnect can refresh it. */ } finally { reading = false; if (dirty && !disposed) refetch() }
-      }, 100)
-    }
+      await client.cancelQueries({ queryKey: key, exact: true })
+      if (!disposed && (!selected || current())) await client.refetchQueries({ queryKey: key, exact: true })
+    })
+    const refetch = readback.request
     const close = subscribeAgentChat(context.workspaceId, conversationId, {
       snapshot: (incoming) => {
         if (disposed || selected && !current()) return
-        if (matches(incoming)) accept(incoming, 'read')
+        if (matches(incoming)) {
+          readGeneration.current++
+          void client.cancelQueries({ queryKey: key, exact: true }).catch(() => undefined)
+          accept(incoming, 'receipt'); refetch()
+        }
         else if (!selected) refetch()
       },
-      event: refetch, refetch, connection: (next) => { if (!disposed && (!selected || current())) setConnection(next) },
+      event: (event) => {
+        if (event.type !== 'delta') { readGeneration.current++; void client.cancelQueries({ queryKey: key, exact: true }).catch(() => undefined) }
+        refetch()
+      },
+      refetch: () => { readGeneration.current++; void client.cancelQueries({ queryKey: key, exact: true }).catch(() => undefined); refetch() }, connection: (next) => { if (!disposed && (!selected || current())) setConnection(next) },
     })
-    return () => { disposed = true; clearTimeout(timer); close() }
+    return () => { disposed = true; readback.dispose(); close() }
   }, [client, key, context.workspaceId, draftKey, conversationId, canRead, denial, accept, matches, selected, visit, isCurrent])
 
   const mutation = useMutation<Result, Error, Command>({ mutationKey: commandKey, retry: false, gcTime: Infinity,

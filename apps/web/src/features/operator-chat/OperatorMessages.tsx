@@ -3,13 +3,16 @@ import { ChatMessageFiles } from '../conversations/ChatMessageFiles'
 import { MessageBubble } from '../../shared/ui/nocturne'
 import { OperatorActivityList } from './OperatorActivityList'
 import { OperatorThinking } from './OperatorThinking'
-import type { OperatorTextProjection } from './operatorTextProjection'
+import { operatorTextPartKey, type OperatorTextProjection } from './operatorTextProjection'
 
 /** Allocate activity once over the complete loaded message sequence. */
 export function OperatorMessages({ messages, activities, activeRequestId, working = false, partialText = '', thinkingText = '', parts, timeline, onBrowse }: {
   messages: Message[]; activities: OperatorActivity[]; activeRequestId?: string | null; working?: boolean;
   partialText?: string; thinkingText?: string; parts?: Record<string, string>; timeline?: OperatorTextProjection; onBrowse(): void;
 }) {
+  const reasoning = messages.filter((message) => message.activityChannel === 'reasoning')
+  messages = messages.filter((message) => message.activityChannel !== 'reasoning')
+  const partKey = (message: Message) => message.activityNative ? operatorTextPartKey(message.activityNative, message.activityChannel) : message.nativeMessageId
   const rows: Array<{ key: string; message?: Message; requestId?: string; live?: boolean }> = []
   const lastAssistant = new Map<string, Message>()
   const assistantCounts = new Map<string, number>()
@@ -45,6 +48,7 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
   }
   const lastActivity = new Map<string, bigint>()
   return <ol className="operator-messages" aria-label="Conversation history">
+    {reasoning.map((message) => <li key={message.id}><OperatorThinking text={message.content} onBrowse={onBrowse} /></li>)}
     {rows.map(({ key, message, requestId, live }) => {
       const role = message?.role ?? 'assistant'
       const assistant = role === 'assistant'
@@ -55,15 +59,16 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
         && BigInt(entry.sequence) > priorActivity && (live || boundary === undefined || BigInt(entry.sequence) <= boundary)) : []
       if (assistant && requestId) lastActivity.set(requestId,
         boundary ?? entries.reduce((max, entry) => BigInt(entry.sequence) > max ? BigInt(entry.sequence) : max, priorActivity))
-      const savedIds = new Set(messages.filter((entry) => entry.requestId === requestId && entry.nativeMessageId).map((entry) => entry.nativeMessageId))
-      const streamed = message?.nativeMessageId && message.nativeMessageComplete === false && active ? parts?.[message.nativeMessageId] : undefined
-      const content = streamed !== undefined && streamed.startsWith(message?.content ?? '') ? streamed : message?.content
+      const savedIds = new Set(messages.filter((entry) => entry.requestId === requestId && entry.nativeMessageId).map(partKey))
+      const nativePartKey = message ? partKey(message) : undefined
+      const streamed = nativePartKey && message?.nativeMessageComplete === false && active ? parts?.[nativePartKey] : undefined
+      const content = streamed !== undefined && (timeline?.finalParts?.[nativePartKey ?? ''] || streamed.startsWith(message?.content ?? '')) ? streamed : message?.content
       let orderedTimeline: OperatorTextProjection['timeline'] | undefined
       if (assistant && timeline && timeline.requestId === requestId && timeline.timeline.length) {
         if (live) orderedTimeline = timeline.timeline.filter((item) => item.kind === 'activity'
           ? entries.some((entry) => entry.id === item.id) : !savedIds.has(item.partId))
         else if (content) {
-          const nativePart = message?.nativeMessageId
+          const nativePart = nativePartKey
           const hasPart = timeline.timeline.some((item) => item.kind === 'text' && item.partId === nativePart)
           const candidate = timeline.timeline.filter((item) => item.kind === 'activity'
             ? entries.some((entry) => entry.id === item.id)

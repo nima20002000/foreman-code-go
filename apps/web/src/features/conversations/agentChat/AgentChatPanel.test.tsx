@@ -481,3 +481,23 @@ describe('AgentChatPanel live reads and interaction', () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Offline draft')
   })
 })
+
+it('cold readback keeps completed parent/unresolved child work visible instead of labeling the chat idle', async () => {
+  installChatSource()
+  const state = structuredClone(agentChatFixtures.idleAfterCompletion)
+  state.activitySnapshot = { schemaVersion: 1, revision: String(state.revision), scope: { kind: 'agent_chat', conversationId: state.conversation.id,
+    workspaceId: state.context.workspaceId, workflowId: state.context.workflowId, nodeId: state.context.workflowNodeId, agentId: state.context.agentId },
+  active: [{ ref: { kind: 'subagent', itemId: 'child' }, phase: 'active', outcome: null, delivery: null, evidence: 'unknown', startedAt: null }],
+  queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
+  const view = mountChat(state); await view.ready()
+  expect(screen.getByText('Background work remains')).toBeInTheDocument()
+})
+it('keeps a persisted unavailable question visible with disabled reply options and the qualified recovery message', async () => {
+  installChatSource()
+  const state = approvalState()
+  state.responseAvailability = { ...state.responseAvailability!, available: false, status: 'recovery_required', path: null,
+    reason: 'callback_lost', message: 'The native callback was lost after restart. No reply will be sent automatically.' }
+  const view = mountChat(state); await view.ready()
+  expect(screen.getByText(state.responseAvailability.message)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /approve once/i })).toBeDisabled()
+})

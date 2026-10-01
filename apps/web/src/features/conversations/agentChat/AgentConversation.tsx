@@ -72,6 +72,9 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const interruptReason = writeReason ?? (state ? intentUnavailable(state, 'interrupt_and_send') : 'Loading this conversation…')
   const cancelReason = chat.blocked('agent_chat:cancel')
   const responseReason = chat.blocked('agent_chat:respond')
+    ?? (state?.pendingInteraction && (!state.pendingInteraction.turn.nativeRequestId || state.pendingInteraction.session.nativeSessionId !== state.conversation?.nativeSession?.nativeSessionId || state.activeTurn?.nativeTurnId && state.pendingInteraction.turn.nativeTurnId !== state.activeTurn.nativeTurnId) ? 'The original native request is not available.' : undefined)
+    ?? (state?.pendingInteraction && !state.responseAvailability?.available ? state.responseAvailability?.message ?? 'Refresh this conversation to check reply availability.' : undefined)
+    ?? (state?.responseAvailability && (state.responseAvailability.nativeRequestId !== state.pendingInteraction?.turn.nativeRequestId || state.responseAvailability.nativeSessionId !== state.pendingInteraction?.session.nativeSessionId || state.responseAvailability.nativeRequestType !== state.pendingInteraction?.nativeRequestType) ? 'Refresh this conversation before replying.' : undefined)
   const stopReason = cancelReason ?? (state?.capabilities.interruptAndSend ? undefined
     : state?.capabilities.unavailable.interruptAndSend ?? 'Interrupting is unavailable.')
   const busy = !!state && chatBusy(state), hasQueue = state?.turns.some((turn) => turn.delivery === 'queued')
@@ -96,12 +99,12 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     && (!state.conversation || state.capabilities.resume || busy) : !!state.conversation || state.availability.canSend)
   const canStop = !!state && (busy || hasQueue) && state.availability.reason !== 'run_active' && !sessionMissing
     && (state.capabilities.interruptAndSend || !!state.capabilities.unavailable.interruptAndSend)
-  const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.nativeMessageComplete !== false).at(-1)
+  const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.activityChannel !== 'reasoning' && message.nativeMessageComplete !== false).at(-1)
   const legacyNotices = <div className="agent-chat-notices">
     {runActivity}
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
-      : stateLabels[state.sessionState]}</p> : null}
+      : state.sessionState === 'idle' && state.activitySnapshot?.active.length ? 'Background work remains' : stateLabels[state.sessionState]}</p> : null}
     {!chat.online ? <Alert tone="warning" title="You are offline" live>Your draft is kept. No messages will be sent automatically when you reconnect.</Alert>
       : state?.conversation && chat.connection !== 'connected' ? <Alert tone="warning" title={chat.connection === 'unavailable' ? 'Live updates unavailable' : 'Connecting to live activity'} live>
         {chat.connection === 'unavailable' ? 'Checking the latest saved state while live updates are unavailable.' : 'Reconnecting and checking the latest saved state. Messages are not resent.'}

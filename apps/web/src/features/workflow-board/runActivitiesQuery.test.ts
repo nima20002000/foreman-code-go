@@ -40,3 +40,11 @@ describe('bounded public Run Activities client', () => {
     expect(feed.nextCursor).toBe('cursor-4')
   })
 })
+it('rejects a cross-Run projection even if the outer page has the selected authorized scope', async () => {
+  server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/runs/${scope.runId}/activities`, () => HttpResponse.json({
+    scope, items: [], mode: 'initial', highWater: '0', retainedFrom: '0', nextCursor: 'cursor', olderCursor: null, hasMore: false,
+    activitySnapshot: { schemaVersion: 1, revision: '1', scope: { kind: 'workflow_run', workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: 'other-run', workflowVersionId: scope.workflowVersionId },
+      active: [], queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } },
+  })))
+  await expect(readRunActivities(scope)).rejects.toThrow(/another Run/)
+})

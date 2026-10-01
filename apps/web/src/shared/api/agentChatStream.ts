@@ -47,20 +47,23 @@ export function subscribeAgentChat(workspaceId: string, conversationId: string, 
       let event: AgentChatStreamEvent
       try { event = AgentChatStreamEventSchema.parse(JSON.parse(wire.data)) } catch { retry(); return }
       if (event.conversationId !== conversationId) { retry(); return }
+      if (event.type === 'snapshot') {
+        const parsed = AgentChatStateSchema.safeParse(event.data.state ?? event.data)
+        if (!parsed.success || parsed.data.conversation?.id !== conversationId) { retry(); return }
+        ready = true; failures = 0; highWater = -1; seen.clear()
+        listeners.snapshot(parsed.data)
+        if (valid() && source === current) listeners.connection('connected')
+        return
+      }
       if (seen.has(event.id)) return
       seen.add(event.id)
       if (seen.size > 256) seen.delete(seen.values().next().value!)
       if (event.id <= highWater) { listeners.refetch(); return }
+      if (ready && highWater >= 0 && event.id > highWater + 1) { listeners.refetch(); if (!valid() || source !== current) return }
       highWater = event.id
-      if (event.type === 'snapshot') {
-        const parsed = AgentChatStateSchema.safeParse(event.data.state ?? event.data)
-        if (!parsed.success || parsed.data.conversation?.id !== conversationId) { retry(); return }
-        ready = true; failures = 0
-        listeners.snapshot(parsed.data)
-        if (valid() && source === current) listeners.connection('connected')
-      } else if (!ready && event.type === 'state' && event.data.snapshotRequired === true) {
+      if (!ready && event.type === 'state' && event.data.snapshotRequired === true) {
         // The server's snapshot exceeded its byte budget: the stream is live, read state over HTTP.
-        ready = true; failures = 0
+        ready = true; failures = 0; highWater = -1; seen.clear()
         listeners.refetch()
         if (valid() && source === current) listeners.connection('connected')
       } else {

@@ -19,7 +19,7 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
   approvalRevision?: string;
 }) {
   const earlierActivity = useInfiniteQuery({
-    queryKey: ['operator-chat', 'activity', conversationId ?? '', identityEpoch()],
+    maxPages: 5, queryKey: ['operator-chat', 'activity', conversationId ?? '', identityEpoch()],
     queryFn: ({ pageParam, signal }) => getOperatorActivity(conversationId ?? '', pageParam ? { before: pageParam } : {}, { signal }),
     initialPageParam: activityNextCursor ?? undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
