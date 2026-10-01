@@ -68,7 +68,7 @@ export class NativeConfigurationService {
         const options = await manager.discoverModels(this.directory, signal)
         return HarnessOptionsResultSchema.parse({ harness, ...options, authenticated: true, nativeAgents: [],
           settings: harnessSettingSupport(harness), restrictions: ['Global qualification directory; workspace MCP diagnostics are separate.', 'No native session or model turn was created.'], checkedAt: new Date().toISOString() })
-      } finally { await manager.dispose() }
+      } finally { await this.factories.disposeAuxiliary(manager) }
     }
     const allocated = this.factories.allocate({ harness: 'opencode', role: 'diagnostics',
       workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none' })
@@ -78,6 +78,6 @@ export class NativeConfigurationService {
       const options = await manager.discoverOptions(this.directory, signal)
       return HarnessOptionsResultSchema.parse({ harness, ...options, settings: harnessSettingSupport(harness),
         restrictions: ['Only connected providers are selectable.', 'An empty variant selects the native default.', 'No native session or model turn was created.'], checkedAt: new Date().toISOString() })
-    } finally { await manager.dispose() }
+    } finally { await this.factories.disposeAuxiliary(manager) }
   }
 }
