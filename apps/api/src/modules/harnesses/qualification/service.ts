@@ -180,9 +180,7 @@ export class HarnessQualificationService {
       if (error instanceof AggregateError) throw error
       return
     }
-    this.assertRunning()
-    const workDirectory = await mkdtemp(join(tmpdir(), `graphql-${harness}-qualification-`))
-    this.directories.add(workDirectory)
+    let workDirectory: string | undefined
     let uncertain = false
     const owned = new Set<() => Promise<void>>()
     const ownCleanup = (close: () => Promise<void>) => {
@@ -191,11 +189,15 @@ export class HarnessQualificationService {
     }
     try {
       this.assertRunning()
+      const directory = await mkdtemp(join(tmpdir(), `graphql-${harness}-qualification-`))
+      workDirectory = directory
+      this.directories.add(workDirectory)
+      this.assertRunning()
       const saved = structuredClone(await this.settings.getManagedHarnessDefaults())
       this.assertRunning()
       const model = saved.revision > 0 ? saved.defaults[harness].model : null
       const result = await this.timed(240_000, (signal) => runAsQualificationCandidate(harness, sha256,
-        () => suite.run({ binary, version, binarySha256: sha256, profile, model, workDirectory, signal, ownCleanup })))
+        () => suite.run({ binary, version, binarySha256: sha256, profile, model, workDirectory: directory, signal, ownCleanup })))
       if (owned.size) throw new QualificationCleanupError([], 'Qualification resources are still owned.')
       this.assertRunning()
       checks.push(...result.checks)
@@ -228,7 +230,7 @@ export class HarnessQualificationService {
       if (error instanceof AggregateError) throw error
     } finally {
       // A failed removal remains owned and is retried by join().
-      if (!uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(() => undefined)
+      if (workDirectory && !uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(() => undefined)
     }
   }
 }
