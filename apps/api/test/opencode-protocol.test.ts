@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
 
-import { credentialReferences, parseConfigObject, parseOpenCodeSse, providerSupports, visibleNativeEvent, object } from '../src/modules/harnesses/opencodeProtocol.js'
+import { credentialReferences, parseConfigObject, parseOpenCodeSse, providerSupports, visibleNativeEvent, normalizedHistory, object } from '../src/modules/harnesses/opencodeProtocol.js'
 
 it('[F22] credential provenance recognizes Bearer placeholders only in unresolved input', () => {
   assert.deepEqual(credentialReferences({ mcp: { app: { headers: { Authorization: 'Bearer {env:GRAPHQL_MCP_TOKEN}' } } } }), { app: 'GRAPHQL_MCP_TOKEN' })
@@ -91,3 +91,36 @@ it('skips malformed SSE payloads and still forwards an unknown native event', as
   for await (const event of parseOpenCodeSse(stream)) events.push(event)
   assert.deepEqual(events, [{ type: 'future.event', properties: { value: 1 } }])
 })
+
+it('does not borrow a visible part type across native sessions or messages', () => {
+  const types = new Map<string, string>()
+  visibleNativeEvent({ type: 'message.part.updated', properties: { part: {
+    id: 'reused', sessionID: 'root', messageID: 'answer', type: 'text',
+  } } }, false, types)
+  const delta = (sessionID: string, messageID: string) => ({ type: 'message.part.delta',
+    properties: { partID: 'reused', sessionID, messageID, delta: 'private after gap' } })
+  assert.equal(visibleNativeEvent(delta('root', 'answer'), false, types), true)
+  assert.equal(visibleNativeEvent(delta('child', 'answer'), false, types), false)
+  assert.equal(visibleNativeEvent(delta('root', 'different'), false, types), false)
+  types.clear()
+  assert.equal(visibleNativeEvent(delta('root', 'answer'), false, types), false)
+})
+
+it('bounds SSE by UTF-8 bytes rather than UTF-16 characters', async () => {
+  const stream = new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(`data: {"type":"message.updated","text":"${'é'.repeat(1_000_001)}"}\n\n`))
+    controller.close()
+  } })
+  await assert.rejects(async () => {
+    for await (const event of parseOpenCodeSse(stream)) assert.fail(`Unexpected oversized frame: ${event.type}`)
+  }, /bounded transport buffer/)
+})
+
+for (const created of [NaN, Infinity, 8_640_000_000_000_001]) {
+  it(`retains malformed history timestamp evidence without throwing (${created})`, () => {
+    const info = { id: 'answer', role: 'assistant', time: { created } }
+    const events = normalizedHistory([{ info, parts: [] }], false)
+    assert.equal(events[0]!.occurredAt, '1970-01-01T00:00:00.000Z')
+    assert.deepEqual(events[0]!.payload.info, info)
+  })
+}

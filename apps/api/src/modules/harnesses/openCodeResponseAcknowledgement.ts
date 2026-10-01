@@ -4,6 +4,6 @@ import type { OpenCodeEvent } from './opencodeProtocol.js'
 export function isOpenCodeReplyAcknowledgement(
   event: OpenCodeEvent, sessionID: string, requestID: string, reply: 'once' | 'always' | 'reject',
 ): boolean {
-  return event.type === 'permission.replied' && event.properties?.sessionID === sessionID
+  return sessionID.length > 0 && requestID.length > 0 && event.type === 'permission.replied' && event.properties?.sessionID === sessionID
     && event.properties.requestID === requestID && event.properties.reply === reply
 }
