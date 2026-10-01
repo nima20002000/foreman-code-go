@@ -19,6 +19,8 @@ export interface QualificationSuiteInput {
   /** Disposable directory owned by this run; deleted afterwards by the caller. */
   workDirectory: string
   signal: AbortSignal
+  /** Register acquired resources before the next await; unregister only after positive close. */
+  ownCleanup?(close: () => Promise<void>): () => void
 }
 
 export interface QualificationSuiteResult {

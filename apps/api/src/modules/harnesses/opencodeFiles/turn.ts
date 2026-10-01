@@ -502,6 +502,7 @@ export class OpenCodeFileTurn {
       checkFileCondition(this.releaseAuthorized || this.submission === 'not_submitted',
         'FILE_SUBMISSION_FENCED', 'An unresolved native turn still owns its files.')
       await this.release(signal)
+      if (this.submission === 'terminal' || this.processClosed) await this.adoptReady()
     })
   }
 

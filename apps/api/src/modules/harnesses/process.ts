@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
 import { nativeOutputCollector } from './nativeCommandOutput.js'
-import { spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
+import { nativeProcessExit, spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
 
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
 import { inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
@@ -177,7 +177,7 @@ async function runOwnedProcess<T>(
     options.onSpawn?.(child)
     if (options.signal?.aborted) abort()
     const [output, , exit] = await result
-    return { ...output, ...exit }
+    return { ...output, ...nativeProcessExit(child, exit) }
   } catch (error) {
     await stop()
     await Promise.allSettled([readers, input, closed])
@@ -312,10 +312,10 @@ export function spawnOwnedStdioProcess(options: {
     ...(options.recovery ? { recovery: options.recovery } : {}),
   })
   let didClose = false
-  const closed = new Promise<ProcessExit>((resolve) => {
+  const closed = new Promise<ProcessExit>((resolve, reject) => {
     child.once('close', (exitCode, exitSignal) => {
       didClose = true
-      resolve({ exitCode, exitSignal })
+      try { resolve(nativeProcessExit(child, { exitCode, exitSignal })) } catch (error) { reject(error) }
     })
   })
   let shutdown: Promise<void> | undefined

@@ -1,3 +1,4 @@
+import { closeQualificationResources } from '../cleanup.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -22,6 +23,7 @@ export const codexQualificationSuite: QualificationSuite = {
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
     let protocol: ReturnType<typeof protocolFromBundle> | undefined
     let transport: CodexStdioTransport | undefined
+    let releaseCleanup: (() => void) | undefined
     let threadId: string | undefined
     let turnId: string | undefined
     const stagedTools: RpcRequest[] = []
@@ -167,6 +169,7 @@ export const codexQualificationSuite: QualificationSuite = {
               }
             }
           }, (error) => completionFailure?.(error), 30_000, undefined, disabledAppMcpServerNames)
+        releaseCleanup = input.ownCleanup?.(() => transport!.close())
         await transport.start(signal)
         await createThread()
         return 'Native thread started.'
@@ -199,6 +202,6 @@ export const codexQualificationSuite: QualificationSuite = {
       }],
     ]
     try { return await collectChecks({ ...input, signal }, checks, evidence) }
-    finally { await transport?.close() }
+    finally { await closeQualificationResources(transport ? [{ close: () => transport!.close(), release: releaseCleanup }] : []) }
   },
 }
