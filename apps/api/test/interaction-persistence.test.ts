@@ -239,6 +239,7 @@ it('keeps every applied migration byte-for-byte and composes HAP-04 and HAP-05 m
   const observed = new Map<number, string>()
   let lastSql = ''
   const pool = { connect: async () => ({ release() {}, query: async (sql: string, values: unknown[] = []) => {
+    if (sql === 'select current_schema() as schema') return { rows: [{ schema: 'public' }], rowCount: 1 }
     if (sql.startsWith('insert into application_migrations')) observed.set(Number(values[0]), createHash('sha256').update(lastSql).digest('hex'))
     else lastSql = sql
     return { rows: [], rowCount: 0 }

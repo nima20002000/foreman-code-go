@@ -82,7 +82,8 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
     })
   }
   it('A-R01: disabled Codex entry is credential-free while non-chat scoped validation remains mandatory', async () => {
-    vi.mocked(runCommand).mockResolvedValue({ exitCode: 0, stdout: JSON.stringify(scopedCodexEntry(false)), stderr: '' })
+    vi.mocked(runCommand).mockImplementation(async (_binary, args) => ({ exitCode: 0,
+      stdout: JSON.stringify(args[1] === 'list' ? [scopedCodexEntry(false)] : scopedCodexEntry(false)), stderr: '' }))
     const { manager } = codex(), input = codexInput()
     const prepared = await manager['prepareInput'](input)
     assert.equal(prepared.scopedCredentialVariable, undefined); assert.equal(prepared.input.environment, undefined)

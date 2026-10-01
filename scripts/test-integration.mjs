@@ -254,7 +254,9 @@ async function main() {
       const log = integrationLogPath(slot.directory, file)
       mkdirSync(dirname(log), { recursive: true })
       const fd = openSync(log, 'w', 0o600)
-      const environment = { ...process.env, TEST_DATABASE_URL: slot.databaseUrl, TMPDIR: slot.directory, TMP: slot.directory, TEMP: slot.directory }
+      const environment = { ...process.env, TEST_DATABASE_URL: slot.databaseUrl,
+        NIM2691_POSTGRES: '1', NIM2691_ADMIN_DATABASE_URL: slot.databaseUrl,
+        TMPDIR: slot.directory, TMP: slot.directory, TEMP: slot.directory }
       const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
       closeSync(fd)
       active.set(slot.index, child)

@@ -120,6 +120,13 @@ export class ProjectionDatabase {
             effect_digest: effect?.effect_digest ?? null, effect_semantic_digest: effect?.semantic_digest ?? null, effect_sequence: effect?.first_sequence ?? null }
         }))
       }
+      if (q.startsWith('select p.record,p.source_digest,p.semantic_digest,p.sequence::text,')) {
+        if (!s.projection) return result()
+        const source = s.sources.find((row) => row.source_kind === 'run' && row.source_id === values[1]
+          && row.source_revision === s.projection!.sequence)
+        return result([{ ...s.projection, proof_sequence: source?.first_sequence ?? null,
+          proof_source_digest: source?.source_digest ?? null, proof_semantic_digest: source?.semantic_digest ?? null }])
+      }
       if (q.includes('join run_graph_sources s')) {
         const source = s.sources.find(x => x.source_kind === values[1] && x.source_id === values[2] && String(x.source_revision) === values[3])
         const effect = s.effects.find(x => x.effect_kind === values[4] && x.entity_id === values[5])
@@ -140,6 +147,12 @@ export class ProjectionDatabase {
         workflow_version_id: this.scope.workflowVersionId, execution_state: s.executionState, stopped: s.stopped,
         written_here: true, created_here: this.fresh }])
       if (q.startsWith('select head_sequence::text')) return result(this.initialized ? [{ sequence: String(s.head), head_sequence: String(s.head) }] : [])
+      if (q.startsWith('select h.head_sequence::text,latest.source_revision')) {
+        const latest = s.sources.filter((row) => row.source_kind === 'run' && row.source_id === values[0])
+          .sort((a, b) => Number(b.source_revision) - Number(a.source_revision))[0]
+        return result(this.initialized ? [{ head_sequence: String(s.head), source_revision: null,
+          source_digest: null, semantic_digest: null, first_sequence: null, ...latest }] : [])
+      }
       if (q.startsWith('select s.source_revision::text,s.source_digest')) return result(s.sources
         .filter((row) => row.source_kind === 'run' && row.source_id === values[0])
         .sort((a, b) => Number(b.source_revision) - Number(a.source_revision)).slice(0, 1))
@@ -147,9 +160,6 @@ export class ProjectionDatabase {
         outcome: s.outcome, stopped: s.stopped, cleanup_pending: s.cleanupPending }])
       if (q.startsWith('select not exists(select 1 from harness_executions')) return result([{ empty: s.head === 0 && !s.sources.length }])
       if (q.startsWith('select 1 where exists(select 1 from harness_executions')) return result()
-      if (q.startsWith('select record,source_digest,semantic_digest,sequence::text from run_graph_public_projection')) return result(s.projection ? [s.projection] : [])
-      if (q.startsWith('select first_sequence::text,source_digest,semantic_digest from run_graph_sources')) return result(s.sources
-        .filter((row) => row.source_kind === 'run' && row.source_id === values[1] && row.source_revision === values[2]))
       if (q.startsWith('insert into run_graph_public_projection')) {
         s.projection = { record: JSON.parse(String(values[2])), source_digest: String(values[3]),
           semantic_digest: String(values[4]), sequence: String(values[1]) }; return result()
@@ -174,7 +184,7 @@ export class ProjectionDatabase {
         'select distinct on (e.workflow_node_id) e.id',
         'select d.record from run_repeat_resolutions',
         'select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind',
-        'select e.workflow_node_id as node_id,count(*)::text,',
+        'with interactions as ( select e.workflow_node_id as node_id,count(*)::text,',
         'select b.record,b.bound_at from run_repeat_bindings',
         'select i.record from durable_interactions',
         'select j.record,j.revision::text,i.record as interaction_record',

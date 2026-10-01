@@ -8,3 +8,6 @@ test-results/
 .env.*
 !.env.example
 .logs/
+
+# Temporary file-publication storage created by tests.
+apps/api/.af-publications-*/
