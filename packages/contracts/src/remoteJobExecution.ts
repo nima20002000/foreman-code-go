@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { JobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs.js'
 import { MachineReferenceSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
-import { RemoteOperationPhaseSchema } from './remoteExecution.js'
+import { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
 
 /** New job envelopes use genuine subjects; existing workflow dispatch contracts are unchanged. */
 export const RemoteExecutionSubjectSchema = z.discriminatedUnion('kind', [
