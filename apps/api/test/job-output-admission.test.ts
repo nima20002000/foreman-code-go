@@ -32,8 +32,8 @@ async function fixture() {
   const intent={schemaVersion:1,protocolVersion:1,mainId:binding.mainId,subject:{kind:'manual-job',workspaceId:job.workspaceId,jobExecutionId:job.id,definitionId:job.acceptedSpec.definitionId},executionId:job.id,attemptId:job.attemptId,operationId:job.operationId,bindingHash:job.acceptedSpec.bindingHash,inputDigest:`sha256:${job.acceptedSpec.specDigest}`,owner:job.owner}
   const receipt={schemaVersion:1,kind:'job',intent,execution:job,connection:{mainId:binding.mainId,deviceId:binding.deviceId,workerInstallationId:binding.workerInstallationId,keyRevision:binding.keyRevision,authorizationRevision:binding.authorizationRevision,bootId:binding.bootId,connectionGeneration:binding.connectionGeneration},workerIncarnationId:randomUUID(),sequence:1,observedAt:job.createdAt,phase:'confirmed_terminal',entryAttempted:true,stopFence:false,native:{containerId:'unit-original-container',supervisorIdentity:'unit-original-supervisor',processIdentityDigest:digest('unit-process'),startedAt:job.createdAt},controls:[],terminal:{finishedAt:job.finishedAt,closureEvidenceDigest:digest('unit-closure'),outcome:'succeeded',exitCode:0,signal:null,processStopped:true,resultDigest:digest('result'),logGapPossible:false,logsTruncated:false,outputCollectionError:false,artifactDigests:[]},publication:'process_recorded'}
   const registration=DeviceRegistrationSchema.parse({mainId:binding.mainId,deviceId:binding.deviceId,workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1,publicKeyFingerprint:digest('unit-key'),status:'paired',scopes:['connect','heartbeat']})
-  const records=new Map<string,JobOutputAdmission>();let now=new Date(job.createdAt),ready=true,revoked=false,liveOwner=true,rootRevision=1
-  const fileId=randomUUID(),revisionId=randomUUID(),expires=new Date(now.getTime()+3600_000)
+  const records=new Map<string,JobOutputAdmission>();let now=new Date(job.createdAt),ready=true,revoked=false,liveOwner=true,rootRevision=1,rootRevoked=false,canonicalState='pending',allocationState='allocated'
+  const fileId=randomUUID(),revisionId=randomUUID(),expires=new Date(now.getTime()+7200_000)
   const query=vi.fn(async(text:string,args:unknown[]=[])=>{
     if(text.startsWith('select record,accepted_spec'))return {rows:[{record:job,accepted_spec:job.acceptedSpec}]}
     if(text.startsWith('select accepted_by'))return {rows:[{accepted_by:'owner'}]}
@@ -43,9 +43,9 @@ async function fixture() {
     if(text.includes('from device_registrations'))return {rows:[{record:{...registration,status:revoked?'revoked':'paired'},credential_expires_at:new Date('2099-01-01')}]}
     if(text.includes('from job_dispatch_intents'))return {rows:[{intent,last_receipt:receipt,receipt_sequence:'1'}]}
     if(text.includes('from source_execution_materializations'))return {rows:[{record:material,state:'closed'}]}
-    if(text.includes('from source_root_bindings'))return {rows:[{record:root,current_binding_revision:String(rootRevision)}]}
+    if(text.includes('from source_root_bindings'))return {rows:[{record:root,current_binding_revision:String(rootRevision),revoked_at:rootRevoked?now:null}]}
     if(text.includes('from source_snapshots'))return {rows:[{record:source,availability:'retained'}]}
-    if(text.includes('from file_allocations'))return {rows:[{state:'pending',allocation_state:'allocated',expires_at:expires}]}
+    if(text.includes('from file_allocations'))return {rows:[{state:canonicalState,allocation_state:allocationState,expires_at:expires}]}
     if(text.startsWith('insert into management_command_receipts')){records.set(String(args[2]),JSON.parse(String(args[5])));return {rows:[],rowCount:1}}
     if(text.includes("where principal_id = $1 and operation = $2 and command_id = $3")){const old=records.get(String(args[2]));return {rows:old?[{input_hash:commandInputHash(old.input),target_key:`job:${job.id}:output:${old.input.path}`,result:old}]:[]}}
     if(text.includes('where principal_id=$1 and operation=$2 and command_id=$3')){const old=records.get(String(args[2]));return {rows:old?[{result:old}]:[]}}
@@ -57,10 +57,10 @@ async function fixture() {
   vi.spyOn(pg,'Pool').mockImplementation(class { constructor(){return pool} } as unknown as typeof pg.Pool)
   const authority=new JobPublicationAuthority({require:async()=>{if(!liveOwner)throw new DomainError('JOB_OWNERSHIP_LOST','Modeled owner lost.',409)}},{validate:async()=>({valid:true,reasons:[],sideEffects:false})} as never)
   const endpoint={currentBinding:()=>ready?Object.freeze({...binding}):undefined}
-  const reserve=vi.fn(async()=>({file:{fileId,currentRevisionId:revisionId,scope:{kind:'job_execution' as const,workspaceId:job.workspaceId,jobExecutionId:job.id},state:'pending' as const,createdAt:job.createdAt,retentionDurationSeconds:3600,expiresAt:expires.toISOString()},revision:{byteClass:'ci-output' as const,fileId,revisionId,filename:'result.json',mediaType:'application/json' as const,byteSize:11,sha256:digest('{"ok":true}'),origin:'job_output' as const,createdAt:job.createdAt}}))
+  const reserve=vi.fn(async()=>({file:{fileId,currentRevisionId:revisionId,scope:{kind:'job_execution' as const,workspaceId:job.workspaceId,jobExecutionId:job.id},state:'pending' as const,createdAt:job.createdAt,retentionDurationSeconds:7200,expiresAt:expires.toISOString()},revision:{byteClass:'ci-output' as const,fileId,revisionId,filename:'result.json',mediaType:'application/json' as const,byteSize:11,sha256:digest('{"ok":true}'),origin:'job_output' as const,createdAt:job.createdAt}}))
   const admission=new PostgresJobOutputAdmission(pool,authority,endpoint,reserve,()=>now)
   const input=JobOutputPublicationInputSchema.parse({workspaceId:job.workspaceId,executionId:job.id,attemptId:job.attemptId,owner:job.owner,commandId:randomUUID(),path:'dist/result.json',mediaType:'application/json',sha256:digest('{"ok":true}'),byteSize:11})
-  return {admission,input,binding,job,records,reserve,query,endpoint,revoked:()=>{revoked=true},loseOwner:()=>{liveOwner=false},rebind:()=>{binding.connectionEpoch=randomUUID()},offline:()=>{ready=false},expire:()=>{now=new Date(expires)},rootChange:()=>{rootRevision++}}
+  return {admission,input,binding,job,records,reserve,query,endpoint,revoked:()=>{revoked=true},loseOwner:()=>{liveOwner=false},rebind:()=>{binding.connectionEpoch=randomUUID()},offline:()=>{ready=false},expire:()=>{now=new Date(expires)},rootChange:()=>{rootRevision++},revokeRoot:()=>{rootRevoked=true},advance:()=>{now=new Date(now.getTime()+3600_001)},finalize:(state='ready',allocation='finalized')=>{canonicalState=state;allocationState=allocation}}
 }
 describe('main-owned job output admission and actual byte receiver',()=>{
   it('issues original main IDs once, rejects caller IDs/changed payload and resolves current scoped context',async()=>{
@@ -77,7 +77,41 @@ describe('main-owned job output admission and actual byte receiver',()=>{
     f.expire();await expect(f.admission.resolve(f.input,f.job)).rejects.toMatchObject({code:'FILE_EXPIRED'})
   })
   it('reauthorizes real accepted scope and refuses revoked device/lost owner/changed root before issuing IDs',async()=>{
-    for(const failure of ['revoked','loseOwner','rootChange','offline'] as const){const f=await fixture();f[failure]();await expect(f.admission.admit(f.input)).rejects.toBeInstanceOf(DomainError);expect(f.records.size).toBe(0)}
+    for(const failure of ['revoked','loseOwner','revokeRoot','offline'] as const){const f=await fixture();f[failure]();await expect(f.admission.admit(f.input)).rejects.toBeInstanceOf(DomainError);expect(f.records.size).toBe(0)}
+  })
+  it('keeps the original accepted binding after the source selection head advances',async()=>{
+    const f=await fixture(),first=await f.admission.admit(f.input)
+    f.rootChange()
+    expect(await f.admission.admit(f.input)).toEqual(first)
+    expect((await f.admission.requireAdmission(f.input)).intent).toEqual(first)
+    await expect(f.admission.authorizeTransfer(first,outputTransferContext(f.binding))).resolves.toBeUndefined()
+    f.revokeRoot()
+    await expect(f.admission.requireAdmission(f.input)).rejects.toMatchObject({code:'JOB_OUTPUT_ROOT_REVOKED'})
+  })
+  it('reconciles an expired admission only for an exact finalized retained canonical output',async()=>{
+    const f=await fixture(),first=await f.admission.admit(f.input)
+    f.advance()
+    await expect(f.admission.admit(f.input)).rejects.toMatchObject({code:'FILE_EXPIRED'})
+    f.finalize()
+    expect(await f.admission.admit(f.input)).toEqual(first)
+    expect((await f.admission.requireAdmission(f.input)).intent).toEqual(first)
+    expect(f.reserve).toHaveBeenCalledTimes(1);expect(f.records.size).toBe(1)
+    await expect(f.admission.authorizeTransfer(first,outputTransferContext(f.binding))).rejects.toMatchObject({code:'FILE_EXPIRED'})
+    await expect(f.admission.admit({...f.input,sha256:digest('changed')})).rejects.toMatchObject({code:'JOB_OUTPUT_ADMISSION_CONFLICT'})
+    f.revoked()
+    await expect(f.admission.requireAdmission(f.input)).rejects.toMatchObject({code:'JOB_OUTPUT_DEVICE_REVOKED'})
+  })
+  it('requires both ready canonical bytes and finalized allocation to reconcile expired admission',async()=>{
+    for(const [state,allocation] of [['ready','allocated'],['pending','finalized']]){
+      const f=await fixture();await f.admission.admit(f.input);f.finalize(state,allocation);f.advance()
+      await expect(f.admission.requireAdmission(f.input)).rejects.toMatchObject({code:'FILE_EXPIRED'})
+    }
+    const f=await fixture();await f.admission.admit(f.input);f.finalize();f.advance();f.loseOwner()
+    await expect(f.admission.requireAdmission(f.input)).rejects.toMatchObject({code:'JOB_OWNERSHIP_LOST'})
+  })
+  it('does not replay a finalized output past its independent retention',async()=>{
+    const f=await fixture();await f.admission.admit(f.input);f.finalize();f.expire()
+    await expect(f.admission.admit(f.input)).rejects.toMatchObject({code:'FILE_EXPIRED'})
   })
   it('uses the real resumable sender/receiver through the typed binary channel, never a substitute byte reader',async()=>{
     const f=await fixture(),root=await mkdtemp(join(process.env.GRAPHQL_HEAVY_BASE_TMPDIR ?? tmpdir(),'job-output-transfer-unit-'))

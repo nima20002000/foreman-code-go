@@ -56,6 +56,8 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     if (record.receipt.binding.deviceId !== null) throw new DomainError('SOURCE_PRIVATE_REPOSITORY_REMOTE', 'Request the actual private repository from the approved remote source host.', 409)
     if (record.receipt.binding.accessMode !== 'exclusive-write') throw new DomainError('SOURCE_READ_ONLY', 'Read-only source references cannot become writable execution copies.', 403)
     const materializer = new PrivateSourceMaterializer(this.bytes, async () => this.authority.revalidateMaterialization(record))
-    return createPrivateSourceRepository({ receipt: record.receipt, manifest, materializer, attempt: record.receipt })
+    return createPrivateSourceRepository({ receipt: record.receipt, manifest, materializer, attempt: { placementHash: record.receipt.placementHash,
+      executionId: record.receipt.executionId, attemptId: record.receipt.attemptId,
+      keyRevision: record.receipt.keyRevision, authorizationRevision: record.receipt.authorizationRevision } })
   }
 }

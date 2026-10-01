@@ -29,7 +29,10 @@ full-upload validator/allocation/finalize/publication service for artifacts.
 
 Data fsync precedes atomic checksummed progress journal replacement and directory
 fsync, which precede ACK. Duplicate committed ranges are read back and compared.
-Each resume checks the durable prefix and truncates only uncommitted tails.
+Each resume checks the durable prefix and truncates only uncommitted tails. If the
+first journal was never committed, the freshly authorized original intent can
+restart its private part at offset zero under both transfer and allocation locks;
+crash-left locks still require stopped-owner reconciliation.
 Missing/corrupt committed bytes fail closed; C must cancel/restart the byte attempt
 under the same accepted logical operation. Final SHA256 and byte count are checked
 independently, including on repeated finish after lost ACK. `resolveVerifiedReceipt`

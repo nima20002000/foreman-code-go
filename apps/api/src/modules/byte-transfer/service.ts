@@ -175,8 +175,13 @@ export class ResumableByteTransferService implements ByteTransferPort {
         if (active >= POLICY.maxActiveGlobal || deviceActive >= POLICY.maxActivePerDevice
           || bytes + intent.byteSize > POLICY.maxStagingBytes
           || deviceBytes + intent.byteSize > POLICY.maxStagingPerDeviceBytes) throw new Error('Transfer staging quota exceeded')
+        // With both original transfer/allocation locks held, a missing journal has
+        // committed no bytes. Recover its crash-left private part under the same
+        // freshly authorized main intent; regular() rejects links/unsafe files.
         const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_CREAT | constants.O_EXCL | constants.O_RDWR)
-        try { await data.sync() } finally { await data.close() }
+          .catch(error => { if (error.code === 'EEXIST') return this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR); throw error })
+        try { await this.reconcile(j, data); await data.sync() } finally { await data.close() }
+        await this.authorize(j, context, 'start')
         await this.save(j); return j.progress
       } finally {
         if (allocated) await rm(`/proc/self/fd/${this.directory!.fd}/allocation.lock`, { recursive: true })

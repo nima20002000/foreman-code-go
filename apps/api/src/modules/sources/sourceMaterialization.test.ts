@@ -7,6 +7,8 @@ import { createSourceManifest, sourceSha256, verifySourceManifest, sourcePath } 
 import { PrivateSourceMaterializer } from './materialization.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { createPrivateSourceRepository } from './repository.js'
+import { InstalledSourceExecutionHosts, type SourceAttemptAuthority } from './executionHosts.js'
+import type { SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { captureExplicitSource, captureGitSource, qualifiedGit, type SourceSnapshotSink } from './capture.js'
 import type { SourceManifest, RootBinding } from '@graphql/contracts/source-materialization'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
@@ -187,6 +189,28 @@ describe('canonical source namespace and private repository', () => {
     await expect(store.commit(f.manifest)).rejects.toThrow()
     await expect(store.write(f.manifest.snapshotId, f.manifest.entries[0]!, f.bytes)).rejects.toThrow('immutable')
     await expect(store.read({ ...f.manifest, manifestDigest: 'f'.repeat(64) }, f.manifest.entries[0]!, new AbortController().signal)).rejects.toThrow('exact approved')
+  })
+  it('creates the main CI repository through the installed host with exact live authority', async () => {
+    const f = await fixture()
+    const binding = { ...f.binding, deviceId: null, workerInstallationId: null }
+    const attempt = { ...f.attempt, keyRevision: null, authorizationRevision: null }
+    let authorized = true
+    const revalidate = vi.fn(async () => { if (!authorized) throw new Error('revoked') })
+    const authority: SourceAttemptAuthority = { authorize: revalidate, authorizeFinal: revalidate,
+      revalidate, revalidateMaterialization: revalidate }
+    const hosts = new InstalledSourceExecutionHosts(binding.mainId, { async read() { return f.bytes } }, authority,
+      { prepare: async () => { throw new Error('Unexpected remote host') }, verify: async () => { throw new Error('Unexpected remote host') }, releaseClaim: revalidate })
+    const receipt = await new PrivateSourceMaterializer({ async read() { return f.bytes } }, revalidate).prepare({ ...f, binding, attempt })
+    const record: SourceMaterializationRecord = { receipt, rootPolicyId: randomUUID(), rootPolicyRevision: '1',
+      operationId: randomUUID(), reservationId: randomUUID(), sourceBindingHash: f.attempt.placementHash,
+      finalDispatchBindingHash: null, state: 'prepared' }
+    const repository = await hosts.privateRepository(record, f.manifest)
+    expect((await qualifiedGit(repository.gitDirectory, ['show', 'HEAD:src/app.ts'])).toString()).toBe(f.bytes.toString())
+    expect(await hosts.verify(record)).toBe(repository.workTree)
+    expect(await hosts.privateRepository(record, f.manifest)).toEqual(repository)
+    authorized = false
+    await expect(hosts.privateRepository(record, f.manifest)).rejects.toThrow('revoked')
+    expect(revalidate).toHaveBeenCalled()
   })
   it('creates usable isolated Git objects without copied config, hooks or shared .git', async () => {
     const f = await fixture(), materializer = new PrivateSourceMaterializer({ async read() { return f.bytes } }, async () => {})

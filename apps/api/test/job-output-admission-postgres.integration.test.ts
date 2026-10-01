@@ -62,6 +62,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
       create table job_dispatch_intents(execution_id text primary key,intent jsonb,last_receipt jsonb,receipt_sequence bigint,owner_id text,owner_fence text,cancel_principal_id text);
       create table source_root_catalog(root_id uuid primary key,current_binding_revision bigint);
       create table source_root_bindings(root_id uuid,binding_revision bigint,workspace_id text,record jsonb);
+      create table workspace_root_policies(root_policy_id text,root_policy_revision bigint,workspace_id text,revoked_at timestamptz);
       create table source_execution_materializations(materialization_id uuid,workspace_id text,execution_id text,attempt_id text,record jsonb,state text);
       create table source_snapshots(workspace_id text,snapshot_id uuid,approved_source_id uuid,manifest_digest text,record jsonb,availability text);`)
     await pool.query('insert into application_installation values(true,$1)',[mainId])
@@ -84,6 +85,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     await pool.query('insert into source_root_catalog values($1,1)',[root.rootId])
     const rootRecord={version:1,source:{approvedSourceId:job.acceptedSpec.source.approvedSourceId,snapshotId:root.snapshotId,manifestDigest:root.manifestDigest},selection:{hostRef:job.acceptedSpec.target.hostRef,rootPolicyId:material.rootPolicyId,rootPolicyRevision:'1',locationRevision:'1'},binding:root,ownerPrincipalId:'owner',authorizedByPrincipalId:'owner',registration:job.acceptedSpec.target.registration,attestationId:'fixture',attestationDigest:hash('root'),boundAt:job.createdAt}
     await pool.query('insert into source_root_bindings values($1,1,$2,$3::jsonb)',[root.rootId,job.workspaceId,JSON.stringify(rootRecord)])
+    await pool.query('insert into workspace_root_policies values($1,$2,$3,null)',[material.rootPolicyId,material.rootPolicyRevision,job.workspaceId])
     await pool.query('insert into source_execution_materializations values($1,$2,$3,$4,$5::jsonb,$6)',[material.receipt.materializationId,job.workspaceId,job.id,job.attemptId,JSON.stringify(material),'closed'])
     const approved={version:1,workspaceId:job.workspaceId,ownerPrincipalId:'owner',approvedByPrincipalId:'owner',locationRevision:1,mainId,originIdentityHash:`sha256:${hash('origin')}`,approvedAt:job.createdAt,availability:'retained',manifest:{version:1,snapshotId:root.snapshotId,approvedSourceId:job.acceptedSpec.source.approvedSourceId,capturePolicy:'git-tree-v1',executablePolicy:'strip',git:{commit:job.acceptedSpec.source.commit,tree:'2'.repeat(40),objectFormat:'sha1'},entries:[],deletions:[],totalEntries:0,totalBytes:0,manifestDigest:root.manifestDigest}}
     await pool.query('insert into source_snapshots values($1,$2,$3,$4,$5::jsonb,$6)',[job.workspaceId,root.snapshotId,job.acceptedSpec.source.approvedSourceId,root.manifestDigest,JSON.stringify(approved),'retained'])

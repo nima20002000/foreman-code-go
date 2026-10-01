@@ -86,11 +86,14 @@ choose transfer IDs, root IDs, storage paths, principal or connection context.
 The main checks the real selected installation, live paired registration,
 accepted job/owner/current PostgreSQL owner session, original native/closure
 receipt and main process projection, exact materialization/root policy/location,
-current root catalog revision and retained approved source. It reserves the
+unrevoked accepted root policy and retained approved source. A newer source catalog
+selection does not revoke the original immutable binding. It reserves the
 canonical file allocation before issuing bytes, then stores a server-minted
 `TransferIntent` in the existing `management_command_receipts` ledger under
 `job.output.admit`. Original receipts and one execution/attempt/output slot are
-immutable; retries preserve IDs and expiry. Metadata links still use the existing
+immutable; retries preserve IDs and expiry. After transfer expiry, an identical
+publication retry requires a finalized canonical allocation with a ready file and
+live original retention; expired staging cannot resume. Metadata links still use the existing
 publication ledger. Network byte I/O never spans the admission SQL transaction.
 
 Every B operation resolves its original command receipt and rechecks live
