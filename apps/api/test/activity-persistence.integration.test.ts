@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorActivityRepository } from '../src/modules/conversations/operatorActivityRepository.js'
 import { activitySnapshotMigration } from '../src/infrastructure/activitySnapshotMigration.js'
 
@@ -13,8 +14,10 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
     await admin.query(`create schema "${schema}"`)
     pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` }); repository = new PostgresOperatorActivityRepository(pool)
     await pool.query(`create table operator_conversations (id text primary key, active_request_id text, native_session_id text,
-      active_native_turn_id text, deleted_at timestamptz, revision bigint not null default 0);
-      create table operator_conversation_turns (conversation_id text, request_id text);
+      active_native_turn_id text, deleted_at timestamptz, revision bigint not null default 0,
+      kind text not null default 'agent', record jsonb not null default '{}', active_phase text, cancel_requested boolean not null default false,
+      turn_state text not null default 'idle', last_error text, last_result jsonb, pending_interaction jsonb, updated_at timestamptz not null default now());
+      create table operator_conversation_turns (conversation_id text, request_id text, intent text, delivery text, updated_at timestamptz);
       create table operator_conversation_activity (conversation_id text, request_id text, activity_id text,
         record jsonb not null, sequence bigint generated always as identity, revision bigint not null default 0,
         unique(conversation_id,request_id,activity_id));`)
@@ -25,6 +28,18 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
   afterEach(async () => { await pool?.end(); if (admin) { await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end() } })
   const value = (status: 'running' | 'completed', title = 'Tool') => ({ id: 'tool', requestId: 'A', kind: 'tool' as const, title, status })
   const fence = (sequence: string) => ({ nativeSessionId: 'session', nativeTurnId: 'turn-A', source: { eventId: `event-${sequence}`, sequence } })
+  it('claim start time remains immutable through activity revisions and repeated claims', async () => {
+    await pool.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null where id='conversation';
+      insert into operator_conversation_turns (conversation_id,request_id,intent,delivery) values ('conversation','A','next_turn','queued')`)
+    const chat = new PostgresAgentChatRepository(pool)
+    expect(await chat.claim('conversation', 'A')).toBe(true)
+    const start = (await pool.query('select started_at from operator_conversation_turns')).rows[0].started_at
+    expect(start).toBeInstanceOf(Date)
+    await repository.append('conversation', 'A', value('running'))
+    expect(await chat.claim('conversation', 'A')).toBe(false)
+    expect((await pool.query('select started_at from operator_conversation_turns')).rows[0].started_at).toEqual(start)
+    expect((await pool.query('select revision::text from operator_conversations')).rows[0].revision).toBe('2')
+  })
   it('duplicates and stale same-status content do not mutate item or scope revisions', async () => {
     await repository.append('conversation', 'A', value('completed'), fence('2'))
     const before = await pool.query(`select c.revision::text as scope,a.revision::text as item,a.record from operator_conversations c cross join operator_conversation_activity a`)
