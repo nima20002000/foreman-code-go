@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js'
 import { JobWorkflowNodeSchema } from '../jobWorkflow.js'
+import { SavedNodePlacementSchema } from '../nodePlacement.js'
 import { GraphqlToolOverrideSchema } from '../graphqlMcpTools.js'
 
 /** Leaf schemas: do not import the root, management or saved DTO entrypoints.
@@ -89,6 +90,7 @@ export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
 const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
 export const CurrentAgentWorkflowNodeSchema = z.object({
   kind: z.literal('agent').optional(),
+  placement: SavedNodePlacementSchema.optional(),
   id: GraphIdSchema, agentId: GraphIdSchema,
   name: z.string().trim().min(1).optional(), label: z.string().trim().min(1).optional(),
   description: z.string().optional(), initialPrompt: z.string().trim().min(1).optional(),
