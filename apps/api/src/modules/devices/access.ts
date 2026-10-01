@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, verify } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { authorizeDevice, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest } from '@graphql/contracts/device-identity'
+import { authorizeDevice, DevicePairingRequestSchema, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest } from '@graphql/contracts/device-identity'
 import { pairingProof, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { commandInputHash, PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -63,7 +63,7 @@ export class PostgresDeviceAccessService {
     const now = Date.now()
     if (now - this.pairingAttempts.window >= 60_000) this.pairingAttempts = { window: now, count: 0 }
     if (++this.pairingAttempts.count > 30) throw new DeviceAccessError('forbidden')
-    if (!/^[0-9a-f-]{36}$/.test(input.requestId) || input.grant.length !== 43) throw new DeviceAccessError('unauthorized')
+    input = DevicePairingRequestSchema.parse(input)
     if (input.mainId !== this.mainId) throw new DeviceAccessError('wrong_main')
     if (!verify(null, Buffer.from(pairingProof(input)), input.publicKey, Buffer.from(input.signature, 'base64url'))) throw new DeviceAccessError('unauthorized')
     return this.transaction(async client => {
