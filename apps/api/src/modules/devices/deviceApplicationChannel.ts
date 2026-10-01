@@ -39,6 +39,7 @@ export class DeviceApplicationChannel {
   private readonly pending = new Map<string, Pending>()
   private readonly assemblies = new Map<string, Assembly>()
   private readonly handlers = new Map<string, AbortController>()
+  private readonly replies = new Map<string, AbortController>()
   private readonly uploads = new Map<string, AbortController>()
   private readonly acknowledgements = new Map<string, { offset: number; resolve(): void; reject(error: Error): void }>()
   private inboundBytes = 0
@@ -141,7 +142,7 @@ export class DeviceApplicationChannel {
       ack.resolve(); return
     }
     if (frame.type === 'application-cancel') {
-      this.uploads.get(id)?.abort(); this.handlers.get(id)?.abort()
+      this.uploads.get(id)?.abort(); this.handlers.get(id)?.abort(); this.replies.get(id)?.abort()
       const assembly = this.assemblies.get(id)
       if (assembly) { this.inboundBytes -= assembly.jsonBytes + assembly.binaryBytes; this.assemblies.delete(id); assembly.abort.abort() }
       this.pending.get(id)?.reject(new DeviceApplicationError('cancelled')); return
@@ -154,7 +155,10 @@ export class DeviceApplicationChannel {
       if (!extension || frame.version !== extension.version || (kind !== 'request' && this.pending.get(id)?.namespace !== frame.namespace)) throw new DeviceConnectionError('malformed-frame')
       const jsonBytes = Number(frame.jsonBytes), binaryBytes = Number(frame.binaryBytes), total = jsonBytes + binaryBytes
       if (typeof frame.jsonBytes !== 'number' || typeof frame.binaryBytes !== 'number' || !Number.isSafeInteger(jsonBytes) || jsonBytes < 1 || jsonBytes > extension.maxJsonBytes || !Number.isSafeInteger(binaryBytes) || binaryBytes < 0 || binaryBytes > extension.maxBinaryBytes) throw new DeviceConnectionError('malformed-frame')
-      if (this.assemblies.has(id) || this.handlers.has(id) || this.assemblies.size + this.handlers.size >= DEVICE_APPLICATION_IN_FLIGHT || this.inboundBytes + total > DEVICE_APPLICATION_BUFFER_BYTES) throw new DeviceConnectionError('backpressure')
+      // Replies to admitted outgoing requests have their own bounded capacity.
+      const active = kind === 'request' ? this.handlers : this.replies
+      const assembling = [...this.assemblies.values()].filter((item) => (item.kind === 'request') === (kind === 'request')).length
+      if (this.assemblies.has(id) || this.handlers.has(id) || this.replies.has(id) || assembling + active.size >= DEVICE_APPLICATION_IN_FLIGHT || this.inboundBytes + total > DEVICE_APPLICATION_BUFFER_BYTES) throw new DeviceConnectionError('backpressure')
       this.inboundBytes += total
       this.assemblies.set(id, { namespace: frame.namespace, kind, jsonBytes, binaryBytes, received: 0, chunks: [], abort: new AbortController() })
       sendFrame(this.options.socket, { type: 'application-ack', id, offset: 0 }); return
@@ -168,7 +172,7 @@ export class DeviceApplicationChannel {
     assembly.chunks.push(chunk); assembly.received += chunk.byteLength
     sendFrame(this.options.socket, { type: 'application-ack', id, offset: assembly.received })
     if (assembly.received === assembly.jsonBytes + assembly.binaryBytes) {
-      this.assemblies.delete(id); this.handlers.set(id, assembly.abort)
+      this.assemblies.delete(id); (assembly.kind === 'request' ? this.handlers : this.replies).set(id, assembly.abort)
       void this.complete(id, assembly).catch((error: unknown) => this.close(error instanceof Error ? error : new DeviceConnectionError('transport')))
     }
   }
@@ -206,7 +210,7 @@ export class DeviceApplicationChannel {
           await this.sendPacket(id, assembly.namespace, registration.version, 'error', { code: error.code }, undefined, assembly.abort.signal)
         }
       }
-    } finally { this.inboundBytes -= assembly.jsonBytes + assembly.binaryBytes; this.handlers.delete(id); assembly.abort.abort() }
+    } finally { this.inboundBytes -= assembly.jsonBytes + assembly.binaryBytes; (assembly.kind === 'request' ? this.handlers : this.replies).delete(id); assembly.abort.abort() }
   }
   async run(iterator: AsyncIterator<string>, heartbeatMs: number): Promise<void> {
     let lastHeartbeat = Date.now(), timer: ReturnType<typeof setInterval> | undefined
@@ -236,6 +240,7 @@ export class DeviceApplicationChannel {
     for (const pending of this.pending.values()) { pending.abort.abort(); pending.reject(error) }
     for (const assembly of this.assemblies.values()) assembly.abort.abort()
     for (const controller of this.handlers.values()) controller.abort()
+    for (const controller of this.replies.values()) controller.abort()
     for (const controller of this.uploads.values()) controller.abort()
     for (const ack of this.acknowledgements.values()) ack.reject(error)
     this.assemblies.clear(); this.options.socket.close()

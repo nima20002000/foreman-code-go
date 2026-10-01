@@ -14,11 +14,11 @@ class Socket extends EventEmitter {
 }
 const binding = { mainId: 'main', deviceId: 'device', workerInstallationId: 'installation', keyRevision: 1, authorizationRevision: 1, bootId: 'boot', connectionEpoch: 'epoch', connectionGeneration: 1 }
 const flush = async () => { for (let i = 0; i < 160; i++) await Promise.resolve() }
-function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limits = { maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576 }, heartbeatMs = 1000) {
+function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limits = { maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576 }, heartbeatMs = 1000, mainHandler?: NonNullable<DeviceExtensionRegistration['handle']>) {
   const rawMain = new Socket(), rawWorker = new Socket(); rawMain.peer = rawWorker; rawWorker.peer = rawMain
   const mainSocket = adaptDeviceSocket(rawMain), workerSocket = adaptDeviceSocket(rawWorker)
-  const mainRegistration: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'client', ...limits }
-  const workerRegistration: DeviceExtensionRegistration = { ...mainRegistration, role: 'server', handle: handler }
+  const mainRegistration: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: mainHandler ? 'duplex' : 'client', ...limits, ...(mainHandler ? { handle: mainHandler } : {}) }
+  const workerRegistration: DeviceExtensionRegistration = { ...mainRegistration, role: mainHandler ? 'duplex' : 'server', handle: handler }
   const extensions = negotiateDeviceExtensions(extensionDescriptors([mainRegistration]), extensionDescriptors([workerRegistration]))
   const parent = new AbortController(), revalidate = vi.fn(async () => {})
   const main = new DeviceApplicationChannel({ side: 'main', binding, socket: mainSocket, signal: parent.signal, extensions, registrations: [mainRegistration], revalidate })
@@ -119,6 +119,44 @@ describe('authenticated namespace carrier mechanics', () => {
     const pair = setup(async () => new Promise(() => {}))
     const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', {})); for (const request of requests) void request.catch(() => {})
     await flush(); await expect(pair.main.request('execution-v1', {})).rejects.toThrow('backpressure'); await pair.close(); await Promise.allSettled(requests)
+  })
+  it.each(['main', 'worker'] as const)('delivers duplex replies on %s with all inbound request slots occupied', async (side) => {
+    const entered = vi.fn(), releases: Array<() => void> = []
+    const slow: NonNullable<DeviceExtensionRegistration['handle']> = async () => {
+      entered(); await new Promise<void>((resolve) => { releases.push(resolve) }); return { payload: 'released' }
+    }
+    const fast: NonNullable<DeviceExtensionRegistration['handle']> = async (payload) => {
+      if (payload === 'deny') throw { code: 'forbidden' }
+      return { payload: 'reply' }
+    }
+    const pair = setup(side === 'worker' ? slow : fast, undefined, 1000, side === 'main' ? slow : fast)
+    const occupied = side === 'main' ? pair.main : pair.worker, caller = side === 'main' ? pair.worker : pair.main
+    const requests = Array.from({ length: 8 }, () => caller.request('execution-v1', {}))
+    for (const request of requests) void request.catch(() => {})
+    try {
+      await flush(); expect(entered).toHaveBeenCalledTimes(8)
+      await expect(caller.request('execution-v1', {})).rejects.toThrow('backpressure')
+      await expect(occupied.request('execution-v1', {})).resolves.toEqual({ payload: 'reply' })
+      await expect(occupied.request('execution-v1', 'deny')).rejects.toThrow('forbidden')
+      expect(pair.rawMain.closed).toBe(false); expect(pair.rawWorker.closed).toBe(false)
+      for (const release of releases) release()
+      expect(await Promise.all(requests)).toEqual(Array.from({ length: 8 }, () => ({ payload: 'released' })))
+    } finally { await pair.close(); await Promise.allSettled(requests) }
+  })
+  it.each([
+    ['request slots', 8, 2, 0],
+    ['total bytes', 2, 1_048_576, 1_048_576],
+  ] as const)('retains the inbound %s limit before acknowledging another packet', async (_name, admitted, jsonBytes, binaryBytes) => {
+    const handler = vi.fn(async () => ({ payload: null })), pair = setup(handler)
+    const open = (index: number) => pair.rawMain.send(JSON.stringify({ type: 'application-open', id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`, namespace: 'execution-v1', version: 1, kind: 'request', jsonBytes, binaryBytes }))
+    try {
+      for (let index = 0; index < admitted; index++) open(index)
+      await flush(); expect(pair.rawWorker.closed).toBe(false)
+      expect(pair.rawWorker.frames.filter((frame) => JSON.parse(frame).type === 'application-ack')).toHaveLength(admitted)
+      open(admitted); await flush(); expect(pair.rawWorker.closed).toBe(true)
+      expect(pair.rawWorker.frames.filter((frame) => JSON.parse(frame).type === 'application-ack')).toHaveLength(admitted)
+      expect(handler).not.toHaveBeenCalled()
+    } finally { await pair.close() }
   })
   it('rejects malformed offsets after upgrade without admitting a handler', async () => {
     const handler = vi.fn(async () => ({ payload: null })), pair = setup(handler)

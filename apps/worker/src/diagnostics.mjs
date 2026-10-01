@@ -1,6 +1,6 @@
-import { readFile, lstat } from 'node:fs/promises';
+import { readFile, lstat, realpath } from 'node:fs/promises';
 import { accessSync, constants } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 export class WorkerError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -17,12 +17,31 @@ export function persistentFilesystems(mountInfo, home) {
   return { rootPersistent: !!selected('/') && !ephemeral.has(selected('/').type), homePersistent: !!selected(home) && !ephemeral.has(selected(home).type) };
 }
 
+async function physicalStoragePath(path) {
+  let ancestor = resolve(path);
+  const remaining = [];
+  for (;;) {
+    try { return join(await realpath(ancestor), ...remaining); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const existing = await lstat(ancestor).catch((failure) => { if (failure.code === 'ENOENT') return null; throw failure; });
+      // An existing but unresolvable symlink is not proof of a new directory.
+      if (existing || dirname(ancestor) === ancestor) throw error;
+      remaining.unshift(basename(ancestor)); ancestor = dirname(ancestor);
+    }
+  }
+}
+
 export async function hostFacts(home, storagePaths = []) {
   const os = await readFile('/etc/os-release', 'utf8');
   const values = Object.fromEntries(os.split('\n').filter((line) => /^[A-Z_]+=/.test(line)).map((line) => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1).replace(/^"|"$/g, '')]; }));
   const libc = process.report.getReport().header.glibcVersionRuntime;
   const mounts = await readFile('/proc/self/mountinfo', 'utf8');
-  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: libc ? `glibc-${libc}` : 'unknown', node: process.version, ...persistentFilesystems(mounts, resolve(home)), storagePersistent: storagePaths.every((path) => persistentFilesystems(mounts, resolve(path)).homePersistent) };
+  const [homePersistent, ...storagePersistent] = await Promise.all([home, ...storagePaths].map(async (path) => {
+    try { return persistentFilesystems(mounts, await physicalStoragePath(path)).homePersistent; }
+    catch { return false; }
+  }));
+  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: libc ? `glibc-${libc}` : 'unknown', node: process.version, ...persistentFilesystems(mounts, '/'), homePersistent, storagePersistent: storagePersistent.every(Boolean) };
 }
 
 export async function requirePrivateDirectory(path) {
