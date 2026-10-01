@@ -26,7 +26,7 @@ if ([...allowedApiModules].some(path => !path.startsWith('apps/api/src/') || for
 function snapshotSource(path) {
   if (forbiddenApiModule(path) || path.startsWith('/') || path.split('/').some((part) => !part || part === '.' || part === '..') || /\.(?:test|spec)\.[cm]?[jt]s$/.test(path) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|(?:^|\/)(?:credentials|secrets)\.json$/.test(path)
     || !(allowedApiModules.has(path) || path.startsWith('apps/worker/src/') || path.startsWith('apps/worker/artifacts/') || path.startsWith('packages/contracts/src/')
-      || ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'apps/worker/package.json', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
+      || ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
   if (!snapshot.has(path)) {
     const bytes = execFileSync('git', ['show', `${commit}:${path}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
     const gitBlobSha1 = execFileSync('git', ['rev-parse', `${commit}:${path}`], { cwd: root, encoding: 'utf8' }).trim();
@@ -37,7 +37,7 @@ function snapshotSource(path) {
 async function requirePinnedSource(path) {
   if (!snapshotSource(path).equals(await readFile(join(root, path)))) throw new Error(`Uncommitted build control input: ${path}`);
 }
-for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'apps/worker/package.json', 'pnpm-lock.yaml']) await requirePinnedSource(path);
+for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
 const target = JSON.parse(snapshotSource(relative(root, resolve(targetFile))).toString('utf8'));
 if (target.arch !== 'x64') throw new Error('Sharp assets are qualified only for linux-x64');
 if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease) || !['x64', 'arm64'].includes(target.arch) || !/^glibc-\d+\.\d+$/.test(target.libc) || !/^v22\.\d+\.\d+$/.test(target.node)) throw new Error('Unsupported build target');
