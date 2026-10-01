@@ -86,6 +86,27 @@ export class PodmanJobSupervisor implements JobSupervisor {
     return { containerId: row.Id, stopped, exitCode: stopped ? row.State.ExitCode : null, logGapPossible: true }
   }
 
+  /** W08 recovery/control uses original execution scope, including after worker restart. */
+  async stopExecution(execution: JobExecution, graceMs: number, expectedContainerId?: string): Promise<boolean> {
+    const recovered = await this.reconcile(execution)
+    if (!recovered || expectedContainerId && recovered.containerId !== expectedContainerId) return false
+    const containerId = recovered.containerId
+    const inspect = async () => {
+      const reply = await this.commands.run(['container', 'inspect', containerId])
+      if (reply.exitCode !== 0) throw new Error('Container inspection unavailable.')
+      const row = evidence(reply.stdout, execution)
+      if (row.Id !== containerId) throw new Error('Container ID changed.')
+      return row
+    }
+    const stopped = (row: ContainerEvidence) => !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
+    if (stopped(await inspect())) return true
+    try { await this.commands.run(['stop', '--time', String(Math.ceil(graceMs / 1000)), containerId], graceMs + 30000) } catch { /* Reinspect a lost stop reply before escalation. */ }
+    if (stopped(await inspect())) return true
+    await inspect()
+    try { await this.commands.run(['kill', '--signal', 'KILL', containerId]) } catch { /* Only inspection establishes closure. */ }
+    return stopped(await inspect())
+  }
+
   async launch(plan: JobLaunchPlan) {
     if (!this.qualifiedProfile || plan.profile !== this.qualifiedProfile) throw new Error('Qualified isolation unavailable.')
     const created = await this.commands.run(podmanCreateArgv(plan), plan.execution.acceptedSpec.policy.preparationTimeoutMs)
@@ -107,19 +128,9 @@ export class PodmanJobSupervisor implements JobSupervisor {
       return !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
     }
     const stop = async (graceMs: number) => {
-        const row = await inspect() // Validate ownership before any signal; never kill a bare PID.
-        if (!row.State.Running) {
-          const stopped = row.State.Pid === 0 && row.State.Status === 'exited'
-          if (stopped) clearTimeout(deadline)
-          return stopped
-        }
-        try { await this.commands.run(['stop', '--time', String(Math.ceil(graceMs / 1000)), containerId], graceMs + 30000) } catch { /* Reinspect a lost stop reply before escalation. */ }
-        if (await proveStopped()) { clearTimeout(deadline); return true }
-        await inspect()
-        try { await this.commands.run(['kill', '--signal', 'KILL', containerId]) } catch { /* Only inspection establishes closure. */ }
-        const stopped = await proveStopped()
-        if (stopped) clearTimeout(deadline)
-        return stopped
+      const stopped = await this.stopExecution(plan.execution, graceMs, containerId)
+      if (stopped) clearTimeout(deadline)
+      return stopped
     }
     // Independent of attachment and main connectivity; uncertainty cannot clear this watchdog.
     let deadlineFired = false
@@ -133,6 +144,6 @@ export class PodmanJobSupervisor implements JobSupervisor {
       return { exitCode: row.State.ExitCode, signal: null, ...(deadlineFired ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
     })
     void exited.catch(() => {})
-    return { stdout: attached.stdout, stderr: attached.stderr, exited, proveStopped, stop }
+    return { containerId, stdout: attached.stdout, stderr: attached.stderr, exited, proveStopped, stop }
   }
 }

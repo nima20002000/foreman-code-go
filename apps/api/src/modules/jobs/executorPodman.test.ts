@@ -59,4 +59,10 @@ describe('production OCI supervisor with command doubles (no installed runtime c
     const f = fixture()
     expect(await f.supervisor.reconcile(execution)).toMatchObject({ stopped: false, exitCode: null, logGapPossible: true })
   })
+  it('recovered cancellation requires the original immutable container ID', async () => {
+    const f = fixture()
+    expect(await f.supervisor.stopExecution(execution, 500, 'b'.repeat(64))).toBe(false)
+    expect(f.run.mock.calls.some(([argv]) => argv[0] === 'stop')).toBe(false)
+    expect(await f.supervisor.stopExecution(execution, 500, hash)).toBe(true)
+  })
 })

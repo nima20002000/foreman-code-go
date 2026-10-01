@@ -6,7 +6,7 @@ import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type J
 export interface JobLaunchAuthority {
   recheck(execution: JobExecution): Promise<void>
   claim(execution: JobExecution, supervisorIdentity: string): Promise<'launch' | 'cancelled' | 'reconcile'>
-  launched(execution: JobExecution, supervisorIdentity: string): Promise<void>
+  launched(execution: JobExecution, supervisorIdentity: string, containerId?: string): Promise<void>
 }
 export interface JobSourcePort {
   verify(spec: AcceptedJobSpec, signal: AbortSignal): Promise<{ privateRepositoryRoot: string; directoryIdentityHash: string; privateGit: true; diskQuotaBytes: number }>
@@ -43,6 +43,7 @@ export interface JobLaunchPlan {
 }
 export interface JobExitEvidence { exitCode: number | null; signal: string | null; execError?: string; timedOut?: boolean }
 export interface JobSupervisedProcess {
+  containerId?: string
   stdout: AsyncIterable<Uint8Array>
   stderr: AsyncIterable<Uint8Array>
   exited: Promise<JobExitEvidence>
@@ -68,6 +69,7 @@ export interface JobExecutorResult {
   signal: string | null
   processStopped: boolean
   supervisorIdentity: string
+  containerId: string | null
   recoveryRequired: boolean
   logError: boolean
   logsTruncated: boolean
@@ -120,7 +122,7 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
   const spec = AcceptedJobSpecSchema.parse(execution.acceptedSpec)
   const identity = jobSupervisorIdentity(execution)
   const result: JobExecutorResult = { outcome: null, exitCode: null, signal: null, processStopped: false,
-    supervisorIdentity: identity, recoveryRequired: false, logError: false, logsTruncated: false, outputCollectionError: false }
+    supervisorIdentity: identity, containerId: null, recoveryRequired: false, logError: false, logsTruncated: false, outputCollectionError: false }
   if (execution.process.phase === 'terminal') throw new Error('Terminal execution requires readback, not dispatch.')
   if (cancellation.aborted || execution.cancelRequestedAt) return { ...result, outcome: 'cancelled', processStopped: true }
   let plan: JobLaunchPlan
@@ -160,6 +162,7 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
   try { process = await ports.supervisor.launch(plan) } catch {
     return { ...result, recoveryRequired: true }
   }
+  result.containerId = process.containerId ?? null
   let reason: 'cancelled' | 'timed_out' | 'log_limit' | null = null
   let exitObserved = false
   const exited = process.exited.then(exit => { exitObserved = true; return exit })
@@ -213,7 +216,7 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
   }
   const drains = Promise.all([drain('stdout', process.stdout), drain('stderr', process.stderr)])
   try {
-    try { await ports.authority.launched(execution, identity) } catch { result.recoveryRequired = true }
+    try { await ports.authority.launched(execution, identity, process.containerId) } catch { result.recoveryRequired = true }
     const exit = await exited
     result.exitCode = exit.exitCode
     result.signal = exit.signal
