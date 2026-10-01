@@ -1,3 +1,4 @@
+import { ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
 import { z } from "zod";
@@ -143,10 +144,12 @@ export const ManagementOpenCodeHarnessConfigurationSchema = OpenCodeHarnessConfi
 export const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
   ManagementOpenCodeHarnessConfigurationSchema,
+  ClaudeHarnessConfigurationSchema,
 ]);
 export const ManagementHarnessDefaultsSchema = z.object({
   codex: CodexHarnessConfigurationSchema,
   opencode: ManagementOpenCodeHarnessConfigurationSchema,
+  claude: ClaudeHarnessConfigurationSchema.optional(),
 }).strict();
 
 export const CommandIdSchema = z.string().trim().min(8).max(200);
@@ -326,7 +329,7 @@ const AgentAddOperationSchema = z.object({
   nodeName: z.string().trim().min(1).max(200).optional(),
   productRole: z.enum(["orchestrator", "coder"]).optional(),
   /** Omit to copy the role template. A different harness requires an explicit configuration. */
-  harness: z.enum(["codex", "opencode"]).optional(),
+  harness: z.enum(["codex", "opencode", "claude"]).optional(),
   configuration: ManagementHarnessConfigurationSchema.optional(),
   prompt: AgentSchema.shape.prompt,
   assignedSkills: AgentSchema.shape.assignedSkills,
@@ -543,9 +546,9 @@ export const HarnessConfigurationCheckResultSchema = z.object({
   checkedAt: TimestampSchema,
 }).strict();
 
-export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode"]) }).strict();
+export const HarnessGetInputSchema = z.object({ harness: z.enum(["codex", "opencode", "claude"]) }).strict();
 export const HarnessCatalogEntrySchema = z.object({
-  harness: z.enum(["codex", "opencode"]),
+  harness: z.enum(["codex", "opencode", "claude"]),
   defaults: ManagementHarnessConfigurationSchema,
   defaultsRevision: ExpectedRevisionSchema,
   capability: HarnessQualificationSchema.nullable(),
