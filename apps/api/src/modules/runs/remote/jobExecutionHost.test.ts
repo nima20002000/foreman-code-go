@@ -16,7 +16,7 @@ afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.drain
 async function fixture(loseClosureAck = false) {
   const root = await mkdtemp(join(tmpdir(),'w08-job-')); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
-  const execution = jobExecution(); Object.assign(execution.acceptedSpec,jobSpecDigests(jobSpec()))
+  const execution = jobExecution(); Object.assign(execution.acceptedSpec,jobSpecDigests({ ...jobSpec(), source: execution.acceptedSpec.source }))
   const intent: RemoteJobDispatchIntent = { schemaVersion:1,protocolVersion:1,mainId:execution.acceptedSpec.target.mainId,
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
