@@ -1,0 +1,49 @@
+import { z } from 'zod'
+import { MAX_FILE_BYTES } from './files.js'
+
+export const BYTE_TRANSFER_VERSION = 1
+export const BYTE_TRANSFER_CAPABILITY = 'resumable-binary-transfer-v1'
+export const BYTE_TRANSFER_POLICY = Object.freeze({
+  maxChunkBytes: 1024 * 1024, maxSourceBytes: 128 * 1024 * 1024,
+  maxArtifactBytes: MAX_FILE_BYTES, maxActivePerDevice: 2, maxActiveGlobal: 4,
+  maxStagingBytes: 512 * 1024 * 1024, maxStagingPerDeviceBytes: 256 * 1024 * 1024, maxRecords: 4096,
+  maxLifetimeMs: 60 * 60 * 1000, maxIdleMs: 5 * 60 * 1000,
+  maxQueuedBytes: 4 * 1024 * 1024, maxRetries: 8,
+})
+const Hash = z.string().regex(/^[a-f0-9]{64}$/)
+export const TransferContextSchema = z.object({
+  mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
+  keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
+  bootId: z.string().min(1).max(128), connectionEpoch: z.number().int().positive(),
+}).strict()
+export type TransferContext = z.infer<typeof TransferContextSchema>
+export const TransferIntentSchema = TransferContextSchema.extend({
+  version: z.literal(1), transferId: z.uuid(), operationId: z.uuid(),
+  executionId: z.uuid(), attemptId: z.uuid(), placementHash: Hash,
+  rootId: z.uuid(), rootBindingRevision: z.number().int().positive(),
+  direction: z.enum(['to-main', 'to-worker']), byteClass: z.enum(['artifact', 'source']),
+  sha256: Hash, byteSize: z.number().int().nonnegative().max(BYTE_TRANSFER_POLICY.maxSourceBytes),
+  manifestDigest: Hash, expiresAt: z.string().datetime(),
+  chunkBytes: z.number().int().positive().max(BYTE_TRANSFER_POLICY.maxChunkBytes),
+}).strict().refine(x => x.byteClass !== 'artifact' || x.byteSize <= MAX_FILE_BYTES,
+  { message: 'Artifact exceeds its existing class budget' })
+export type TransferIntent = z.infer<typeof TransferIntentSchema>
+export const TransferProgressSchema = z.object({
+  version: z.literal(1), transferId: z.uuid(),
+  state: z.enum(['allocated', 'transferring', 'verified', 'cancelled']),
+  receivedInMemoryBytes: z.number().int().nonnegative(), durableOffset: z.number().int().nonnegative(),
+  verifiedBytes: z.number().int().nonnegative(), updatedAt: z.string().datetime(),
+}).strict()
+export type TransferProgress = z.infer<typeof TransferProgressSchema>
+export const VerifiedTransferReceiptSchema = z.object({
+  version: z.literal(1), receiptId: z.uuid(), transferId: z.uuid(), intent: TransferIntentSchema,
+  sha256: Hash, byteSize: z.number().int().nonnegative(), verifiedAt: z.string().datetime(),
+}).strict()
+export type VerifiedTransferReceipt = z.infer<typeof VerifiedTransferReceiptSchema>
+export interface ByteTransferPort {
+  start(intent: TransferIntent, context: TransferContext): Promise<TransferProgress>
+  status(id: string, context: TransferContext): Promise<TransferProgress>
+  append(id: string, context: TransferContext, chunk: { offset: number; sha256: string; bytes: Uint8Array }): Promise<TransferProgress>
+  finish(id: string, context: TransferContext): Promise<VerifiedTransferReceipt>
+  cancel(id: string, context: TransferContext): Promise<TransferProgress>
+}

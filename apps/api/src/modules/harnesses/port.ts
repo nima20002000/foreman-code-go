@@ -1,3 +1,5 @@
+import type { NativeMessageSubmission } from '@graphql/contracts'
+export type { NativeMessageSubmission } from '@graphql/contracts'
 import type {
   AgentHarness,
   ExecutionResult,
@@ -14,6 +16,7 @@ import type {
 } from '@graphql/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+import type { ResponseAvailabilityInspector } from './responseAvailability.js'
 
 export interface NativeEventInput {
   type: string
@@ -54,14 +57,22 @@ export interface OperatorNativeSessionStart {
 
 export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
 
+
 export interface NativeTurnInput {
   prompt: string
   clientCorrelationId: string
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
   onSubmitted?(nativeTurnId: string): Promise<void>
+  onMessageSubmitted?(identity: NativeMessageSubmission): Promise<void>
 }
 
 /** Input added to the exact active turn; the provider rejects it when that turn is no longer active. */
+/** Providers that report their native session only after first input use this admitted atomic lifecycle. */
+export interface NativeInitialTurnInput extends NativeTurnInput {
+  /** Persist the actual provider identity before exposing input ACKs, callbacks or output. */
+  onSessionObserved(session: NativeSessionReference): Promise<void>
+}
+
 export interface NativeSteerInput {
   prompt: string
   clientCorrelationId: string
@@ -83,6 +94,7 @@ export interface NativeResponseIdentity {
 }
 
 export interface NativeHistory {
+  nativeSubmission?: NativeMessageSubmission
   /** Set only when the provider result was matched to this exact request. */
   correlationId?: string
   nativeTurnId?: string
@@ -110,7 +122,7 @@ export interface NativeHistory {
 }
 
 /** Rich provider-neutral lifecycle. Concrete Codex/OpenCode transports are HAP-02/03. */
-export interface NativeHarnessSessionManager {
+export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>
@@ -118,6 +130,8 @@ export interface NativeHarnessSessionManager {
   /** Verify and rebind a persisted provider identity; never create a replacement session. */
   attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference>
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
+  /** One first prompt under existing app admission; never a planned/local native session ID. */
+  startInitialTurn?(start: NativeSessionStart, input: NativeInitialTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent>
   /** Add input to the exact active turn. Absent when the provider has no expected-turn precondition. */
   steerTurn?(session: NativeSessionReference, input: NativeSteerInput, signal?: AbortSignal): Promise<{ nativeTurnId: string }>
   /** Read-only receipt lookup; must not replace the runtime's active turn/correlation or replay input. */

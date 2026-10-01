@@ -140,9 +140,41 @@
       "types": "./dist/jobsNode.d.ts",
       "import": "./dist/jobsNode.js"
     },
+    "./workspace-root-policies": {
+      "types": "./dist/workspaceRootPolicies.d.ts",
+      "import": "./dist/workspaceRootPolicies.js"
+    },
+    "./workspace-bound-location": {
+      "types": "./dist/workspaceBoundLocation.d.ts",
+      "import": "./dist/workspaceBoundLocation.js"
+    },
+    "./byte-transfer": {
+      "types": "./dist/byteTransfer.d.ts",
+      "import": "./dist/byteTransfer.js"
+    },
+    "./job-output-transfer": {
+      "types": "./dist/jobOutputTransfer.d.ts",
+      "import": "./dist/jobOutputTransfer.js"
+    },
+    "./job-runtime": {
+      "types": "./dist/jobRuntime.d.ts",
+      "import": "./dist/jobRuntime.js"
+    },
     "./command-identity-node": {
       "types": "./dist/commandIdentityNode.d.ts",
       "import": "./dist/commandIdentityNode.js"
+    },
+    "./claude-qualification": {
+      "types": "./dist/claudeQualification.d.ts",
+      "import": "./dist/claudeQualification.js"
+    },
+    "./resource-telemetry": {
+      "types": "./dist/resourceTelemetry.d.ts",
+      "import": "./dist/resourceTelemetry.js"
+    },
+    "./resource-telemetry-fixtures": {
+      "types": "./dist/resourceTelemetryFixtures.d.ts",
+      "import": "./dist/resourceTelemetryFixtures.js"
     }
   },
   "scripts": {

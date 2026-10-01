@@ -14,7 +14,8 @@ const SETTINGS_KEY = 'harness-defaults'
 export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
   const candidate = (record === undefined ? DEFAULT_HARNESS_DEFAULTS : record) as HarnessDefaults
   const defaults = HarnessDefaultsSchema.parse(candidate)
-  return { codex: withAdvancedDefaults(defaults.codex), opencode: withAdvancedDefaults(defaults.opencode) }
+  return { codex: withAdvancedDefaults(defaults.codex), opencode: withAdvancedDefaults(defaults.opencode),
+    ...(defaults.claude ? { claude: withAdvancedDefaults(defaults.claude) } : {}) }
 }
 
 export class PostgresSettingsRepository {

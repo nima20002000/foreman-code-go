@@ -10,12 +10,16 @@ import { ALL_FILE_TOOL_NAMES, type AuthorizedFileCaller, type FileToolContext, t
 
 const ContextSchema = z.object({
   ownerPrincipalId: z.string().min(1), scope: TemporaryFileScopeSchema,
-  nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500),
+  nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500).optional(),
+  nativeMessageId: z.string().min(1).max(500).optional(),
   messageId: z.string().min(1).max(500).optional(), allowMutation: z.boolean(),
   allowedTools: z.array(z.enum(ALL_FILE_TOOL_NAMES)).max(ALL_FILE_TOOL_NAMES.length),
-}).strict()
+}).strict().refine((value) => (value.turnId !== undefined) !== (value.nativeMessageId !== undefined),
+  { message: 'Exactly one observed native turn or message identity is required.' })
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export function bindingIdentity(context: FileToolContext): string {
+  if (context.nativeMessageId) return digest(JSON.stringify(['native-message', context.ownerPrincipalId,
+    fileScopeIdentity(context.scope), context.nativeSessionId, context.nativeMessageId, context.messageId ?? null]))
   return digest(JSON.stringify([context.ownerPrincipalId, fileScopeIdentity(context.scope),
     context.nativeSessionId, context.turnId, context.messageId ?? null]))
 }

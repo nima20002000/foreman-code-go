@@ -21,7 +21,7 @@ export const NativeGraphActivityRecordSchema = z.object({
 export type NativeGraphActivityRecord = z.infer<typeof NativeGraphActivityRecordSchema>
 export const NativeGraphCorrelationRecordSchema = z.object({
   key: NativeGraphProjectionKeySchema, correlationKey: GraphIdSchema,
-  provider: z.enum(['codex', 'opencode']), nativeSessionId: z.string().min(1).max(1000),
+  provider: z.enum(['codex', 'opencode', 'claude']), nativeSessionId: z.string().min(1).max(1000),
   connectionId: z.string().min(1).max(1000).nullable(), connectionGeneration: z.number().int().min(0).max(2147483647),
   nativeTurnId: z.string().min(1).max(1000).nullable(), nativeRequestId: z.string().min(1).max(1000).nullable(),
   interactionId: GraphIdSchema.nullable(), reviewJobId: GraphIdSchema.nullable(),

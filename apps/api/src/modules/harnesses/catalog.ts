@@ -20,7 +20,7 @@ export class HarnessCatalogService {
   /** Run once after native runtime ownership is acquired. No model turn is created. */
   async warmup(): Promise<void> {
     const managed = await this.settings.getManagedHarnessDefaults()
-    await Promise.allSettled((['codex', 'opencode'] as const).map((harness) => this.qualifyConfiguration(managed.defaults[harness])))
+    await Promise.allSettled((['codex', 'opencode', 'claude'] as const).flatMap((harness) => managed.defaults[harness] ? [this.qualifyConfiguration(managed.defaults[harness]!)] : []))
   }
 
   private async inspectConfiguration(value: HarnessConfiguration) {
@@ -45,7 +45,7 @@ export class HarnessCatalogService {
   async list(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'harnesses:read')
     const managed = await this.settings.getManagedHarnessDefaults()
-    return Promise.all((['codex', 'opencode'] as const).map((harness) => this.describe(principal, harness, managed.defaults, managed.revision)))
+    return Promise.all((['codex', 'opencode', 'claude'] as const).filter((harness) => managed.defaults[harness] !== undefined).map((harness) => this.describe(principal, harness, managed.defaults, managed.revision)))
   }
 
   async get(principal: ManagementPrincipal, harness: AgentHarness) {
@@ -66,12 +66,14 @@ export class HarnessCatalogService {
 
   private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number) {
     requireAuthorization(principal, 'harnesses:read')
+    const configuration = defaults[harness]
+    if (!configuration) throw new DomainError('HARNESS_PROFILE_REQUIRED', 'Configure the selected harness with an actual host-local profile first.', 409)
     try {
-      const capability = await this.qualifyConfiguration(defaults[harness])
-      return { harness, defaults: defaults[harness], defaultsRevision: revision, capability, discoveryError: null }
+      const capability = await this.qualifyConfiguration(configuration)
+      return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError: null }
     } catch (error) {
       return {
-        harness, defaults: defaults[harness], defaultsRevision: revision, capability: null,
+        harness, defaults: configuration, defaultsRevision: revision, capability: null,
         discoveryError: { code: error instanceof DomainError ? error.code : 'HARNESS_DISCOVERY_UNAVAILABLE', message: error instanceof Error ? error.message : 'Harness discovery failed.' },
       }
     }
@@ -87,9 +89,10 @@ export class HarnessCatalogService {
       perform: async (client) => {
         const current = await this.settings.getManagedHarnessDefaults(client)
         if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
-        for (const harness of ['codex', 'opencode'] as const) {
-          if (isDeepStrictEqual(withAdvancedDefaults(current.defaults[harness]), withAdvancedDefaults(input.defaults[harness]))) continue
-          await this.qualifyConfiguration(input.defaults[harness])
+        for (const harness of ['codex', 'opencode', 'claude'] as const) {
+          const next = input.defaults[harness], previous = current.defaults[harness]
+          if (!next || (previous && isDeepStrictEqual(withAdvancedDefaults(previous), withAdvancedDefaults(next)))) continue
+          await this.qualifyConfiguration(next)
         }
         return this.settings.updateManagedHarnessDefaults(client, input.defaults, input.expectedRevision)
       },
