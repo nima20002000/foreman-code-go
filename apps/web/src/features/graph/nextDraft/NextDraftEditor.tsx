@@ -390,7 +390,10 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     }
     const agent = agents.find((item) => item.id === node.agentId)
     const run = runNodeView(runRecord, Boolean(board?.run), node.id, node.agentId)
-    const chat = <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}
+    const unsavedChat = !pinned && !board?.run && (!context.draft.baseWorkflowVersionId || !agent?.configurationVersionId)
+    const chat = unsavedChat ? <EmptyState icon="chat" title="Save this Agent and workflow to chat"
+      description="Save the Agent settings and workflow changes, then reopen chat. The Board’s Before you run panel lists any missing setup." />
+      : <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}
       context={{ workspaceId: graph.workspaceId, workflowId: graph.id, workflowNodeId: node.id, agentId: node.agentId,
         ...(board?.run ? { runId: board.run.runId } : {}) }}
       onNewConversation={() => {

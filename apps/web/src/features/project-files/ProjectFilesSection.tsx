@@ -42,7 +42,7 @@ function WorkspaceProjectFiles({ workspaceId }: ProjectFilesSectionProps) {
           event.currentTarget.value = ''
           if (!file) return
           const result = inspectAttachment(file)
-          uiStore.setState({ selectionIssue: result.ok ? null : result.issue.label })
+          uiStore.setState({ selectionIssue: result.ok ? null : `${result.issue.label}. ${result.issue.message}` })
           // This input and closure belong to the workspace that opened the native picker.
           if (result.ok) upload.start(file)
         }} />

@@ -128,6 +128,21 @@ describe('WorkspaceRouteEntry integration', () => {
     expect(screen.queryByRole('complementary', { name: 'Workspace context' })).not.toBeInTheDocument()
   })
 
+  it('opens, closes and reopens settings for an Agent selected by a reloaded URL', async () => {
+    const user = userEvent.setup()
+    const { router } = await renderWorkspace('/workspaces/workspace-1?agentId=agent-researcher')
+    const node = await researcherButton()
+    const title = node.getAttribute('aria-label')!.split(',')[0]
+    const open = screen.getByRole('button', { name: `Open ${title} settings` })
+    await user.click(open)
+    expect(await screen.findByRole('dialog', { name: `${title} settings` })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: `Close ${title}` }))
+    expect(screen.queryByRole('dialog', { name: `${title} settings` })).not.toBeInTheDocument()
+    expect(router.state.location.search.agentId).toBe('agent-researcher')
+    await user.click(open)
+    expect(await screen.findByRole('dialog', { name: `${title} settings` })).toBeVisible()
+  })
+
   it('opens the accepted new workflow while workspace details still serve the old list', async () => {
     const user = userEvent.setup()
     const { router, queryClient } = await renderWorkspace('/workspaces/workspace-1?workflowId=workflow-content-pipeline')

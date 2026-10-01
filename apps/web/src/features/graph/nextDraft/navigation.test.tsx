@@ -15,7 +15,7 @@ async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
 }
 // Form/registration tests. This is not React Flow or authenticated browser evidence.
-vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
+vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels, setOpen }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown>; setOpen?: (panel: { nodeId: string; panel: 'chat' }) => void }) => <div>Canvas fixture<button onClick={() => setOpen?.({ nodeId: 'node-0', panel: 'chat' })}>Open fixture chat</button>{open && panels
   ? <section role="dialog" aria-label={`${open.nodeId} ${open.panel}`}>{panels(open.nodeId)[open.panel] as never}</section> : null}</div> }))
 vi.mock('../../../shared/api/query', async (original) => ({
   ...await original<typeof import('../../../shared/api/query')>(),
@@ -39,6 +39,18 @@ function readyClient() {
     locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-23T00:00:00.000Z' } })
   return client
 }
+it.each(['workflow', 'agent'])('explains the required Save before chatting with an unsaved %s', async (kind) => {
+  const context = fixture(['coder'])
+  if (kind === 'workflow') context.draft.baseWorkflowVersionId = null
+  else delete context.agents[0]!.agent.configurationVersionId
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const client = readyClient()
+  render(<QueryClientProvider client={client}><NextDraftEditor workspaceId="workspace" workflowId="workflow" /></QueryClientProvider>)
+  await userEvent.click(screen.getByRole('button', { name: 'Open fixture chat' }))
+  expect(await screen.findByRole('heading', { name: 'Save this Agent and workflow to chat' })).toBeVisible()
+  expect(screen.getByText(/Save the Agent settings and workflow changes/)).toBeVisible()
+  expect(document.querySelector('.agent-chat-panel')).not.toBeInTheDocument()
+})
 it('registers local form dirtiness and discard with the existing navigation guard', async () => {
   useGraphDraftStore.getState().installNextDraft(key, fixture())
   const registrations = new Map<string, EditorRegistration>()

@@ -63,6 +63,9 @@ export function nodeTitle(graph: WorkflowDefinitionV3, id: string): string {
 /** Hints explain frozen acceptance rules. Only the shared service can accept a version. */
 export function authoringHints(graph: WorkflowDefinitionV3, context: NextDraftContext, agentEdits: DraftAgentEdits = {}): AuthoringIssue[] {
   const issues: AuthoringIssue[] = []
+  if (!graph.executionPolicy) issues.push({ code: 'EXECUTION_LIMITS_REQUIRED', message: 'Set execution limits in workflow settings.' })
+  else if (graph.executionPolicy.maxNodeExecutions < graph.nodes.length) issues.push({ code: 'EXECUTION_LIMIT_TOO_LOW',
+    message: `Increase “Maximum node executions” to at least ${graph.nodes.length}.` })
   const entry = entryChoices(graph, context, agentEdits)
   if (!graph.nodes.length) issues.push({ code: 'ENTRY_REQUIRED', message: 'Add an agent to start building this workflow.' })
   else if (entry.unresolved.length) issues.push({ code: 'ROLE_PIN_UNAVAILABLE', message: 'An agent’s role changed or can’t be confirmed. Reload the saved draft.' })
@@ -104,6 +107,14 @@ export function authoringHints(graph: WorkflowDefinitionV3, context: NextDraftCo
     if (!reviewer || reviewer.id !== graph.entryNodeId || entry.roles.get(reviewer.id)?.role !== 'orchestrator') issues.push({
       code: 'REVIEWER_BOOTSTRAP_UNSUPPORTED', message: 'The reviewer must be the orchestrator that starts the workflow.',
     })
+    if (reviewer && reviewer.kind !== 'job') {
+      const configuration = (agentEdits[reviewer.agentId] ?? context.agents.find((item) => item.agent.id === reviewer.agentId)?.agent)?.harnessConfiguration
+      if (configuration?.harness === 'codex' && (configuration.advanced?.approvalPolicy !== 'on-request'
+        || configuration.advanced?.approvalsReviewer !== 'auto_review')) issues.push({
+        code: 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED', nodeId: reviewer.id,
+        message: 'Choose “You, the Operator” for approvals, or set the reviewing agent to “Ask when needed” and “Codex automatic review”.',
+      })
+    }
     if (approvals.some((edge) => edge.source !== graph.entryNodeId || edge.target === graph.entryNodeId)) issues.push({
       code: 'REVIEWER_BOOTSTRAP_UNSUPPORTED', message: 'Approval connections must go from the starting orchestrator to another agent.',
     })
