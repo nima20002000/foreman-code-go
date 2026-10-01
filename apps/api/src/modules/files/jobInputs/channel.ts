@@ -8,7 +8,7 @@ import type { DeviceExtensionRegistration } from '../../devices/deviceApplicatio
 import { ResumableByteTransferService } from '../../byte-transfer/service.js'
 import type { JobInputDeliverySource } from './delivery.js'
 import { CanonicalJobInputs, JOB_INPUT_NAMESPACE } from './service.js'
-import { inputHash, recipient } from './manifest.js'
+import { inputHash, recipient, manifestBytes, snapshotDigest } from './manifest.js'
 import { outputTransferContext } from '../jobs/outputAdmission.js'
 import { DomainError } from '../../errors.js'
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex')
@@ -48,7 +48,10 @@ export class AuthenticatedJobInputSource implements JobInputDeliverySource {
   }
   async admit(execution:JobExecution,signal:AbortSignal) {
     const admission=JobInputAdmissionSchema.parse((await this.channel.request(JOB_INPUT_NAMESPACE,{method:'bind',recipient:recipient(execution)},{signal})).payload)
+    if(inputHash(admission.manifest.recipient)!==inputHash(recipient(execution))||admission.manifest.inputSnapshotDigest!==snapshotDigest(execution)||hash(manifestBytes(admission.manifest))!==admission.manifest.manifestSha256)throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Main input receipt differs from original accepted recipient/snapshot.',409)
     for(const item of admission.transfers){
+      const expected=item.relativePath==='manifest.json'?{sha256:admission.manifest.manifestSha256,byteSize:admission.manifest.manifestByteSize}:item.relativePath==='workflow-input.json'?{sha256:hash(Buffer.from(JSON.stringify(admission.manifest.workflowInput))),byteSize:Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))}:admission.manifest.entries.find(entry=>entry.relativePath===item.relativePath)?.pin
+      if(!expected||item.intent.executionId!==execution.id||item.intent.attemptId!==execution.attemptId||item.intent.placementHash!==execution.acceptedSpec.bindingHash||item.intent.direction!=='to-worker'||item.intent.byteClass!=='artifact'||item.intent.sha256!==expected.sha256||item.intent.byteSize!==expected.byteSize||item.intent.manifestDigest!==admission.manifest.manifestSha256)throw new DomainError('JOB_INPUT_TRANSFER_DENIED','Main-issued transfer does not pin the accepted input object.',403)
       this.entries.set(item.intent.transferId,{execution,admission,path:item.relativePath})
       const current=outputTransferContext(this.channel.currentBinding());await this.receiver.start(item.intent,current)
       let status=TransferProgressSchema.parse(await this.receiver.status(item.intent.transferId,current))
