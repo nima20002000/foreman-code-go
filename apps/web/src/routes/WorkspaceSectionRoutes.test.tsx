@@ -267,7 +267,9 @@ describe('workspace section routes', () => {
     const { router } = renderRoute('/workspaces/workspace-1/settings')
 
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
-    await user.click(await screen.findByRole('button', { name: 'Execution location' }))
+    const executionLocation = await screen.findByLabelText('Execution location', { selector: 'button' })
+    expect(executionLocation).toBe(screen.getByRole('button', { name: 'Execution location' }))
+    await user.click(executionLocation)
 
     expect(await screen.findByRole('dialog', { name: 'Execution folder' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Computer and approved base folder' })).toBeVisible()
