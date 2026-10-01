@@ -3,6 +3,10 @@ import { journalRequest } from './nim2644Journal.fixture'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { protectedKey, rotateProtectedSession } from '../../../shared/api/protectedChatStorage'
 import { fixture } from './core.cases'
+import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { savedClaudeConfiguration } from '../../settings/claudeSettings.fixtures'
+import { createHarnessEditor, switchHarnessEditor } from '../../settings/harnessEditor'
+import type { AgentForm } from './agentForm'
 import { nextDraftKey, newNextDraft } from './state'
 import { acknowledgeEditOutbox, clearEditIntentStorage, readEditOutbox, readEditSnapshot,
   reserveEditOutbox, storeEditSnapshot, withEditIntentLock, type EditIntentOutbox } from './editIntentStorage'
@@ -16,6 +20,49 @@ beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); clearEditIntentStorage() })
 
 describe('NIM-2642 protected local form and exact-command recovery', () => {
+  for (const harness of ['codex', 'opencode'] as const) it(`retains Claude and ${harness} provider drafts with the exact source revision across reopen`, () => {
+    const context = fixture(), source = context.agents[0]!
+    source.agent = { ...source.agent, harness: 'claude', model: savedClaudeConfiguration.model,
+      harnessConfiguration: savedClaudeConfiguration }
+    const edit = newNextDraft(context, 'claude-retained-edit'), id = source.agent.id
+    const claude = { ...createHarnessEditor(savedClaudeConfiguration), mcpText: '{ unfinished Claude MCP' }
+    const form: AgentForm = { base: JSON.stringify({ agent: source.agent, initialPrompt: 'Source prompt' }),
+      name: source.agent.name, prompt: 'Retained prompt', editor: claude }
+    edit.agentForms = { [id]: form }
+    storeEditSnapshot(key, edit)
+    const switched = switchHarnessEditor(claude, harness, DEFAULT_HARNESS_DEFAULTS[harness])
+    const alternate = { ...switched, configuration: { ...switched.configuration, model: `retained-${harness}-model` },
+      shellEnvironmentText: `{ unfinished ${harness} shell`, mcpText: `{ unfinished ${harness} MCP` }
+    edit.agentForms[id] = { ...form, editor: alternate }
+    storeEditSnapshot(key, edit)
+
+    // Reopen through the real serialized snapshot, with no in-memory editor reuse.
+    sessionStorage.removeItem(protectedKey('ui', 'graph-edit-intent:tab'))
+    const read = readEditSnapshot(key)!, retained = read.agentForms![id]!
+    expect(retained).toEqual(edit.agentForms[id])
+    expect(retained.editor.configuration.harness).toBe(harness)
+    expect(retained.editor.drafts?.claude).toEqual(claude)
+    expect(read.context).toEqual(context)
+    expect(read.context.draft.publishedRevision).toBe(7)
+    expect(read.context.draft.baseWorkflowVersionId).toBe('workflow-version-1')
+    expect(read.context.agents[0]).toEqual(source)
+    expect(read.context.agents[0]!.metadataRevision).toBe(3)
+    expect(retained.base).toBe(form.base)
+
+    const restored = switchHarnessEditor(retained.editor, 'claude')
+    expect(restored.configuration).toEqual(claude.configuration)
+    expect(restored.mcpText).toBe(claude.mcpText)
+    expect(restored.drafts?.[harness]).toEqual({ configuration: alternate.configuration,
+      shellEnvironmentText: alternate.shellEnvironmentText, mcpText: alternate.mcpText })
+    storeEditSnapshot(key, { ...read, agentForms: { [id]: { ...retained, editor: restored } } })
+    const reopened = readEditSnapshot(key)!
+    expect(reopened.context).toEqual(context)
+    const switchedAgain = switchHarnessEditor(reopened.agentForms![id]!.editor, harness)
+    expect(switchedAgain.configuration).toEqual(alternate.configuration)
+    expect(switchedAgain.shellEnvironmentText).toBe(alternate.shellEnvironmentText)
+    expect(switchedAgain.mcpText).toBe(alternate.mcpText)
+    expect(switchedAgain.drafts?.claude).toEqual(claude)
+  })
   it('retains staged graph, Agent payload, revision base and independent geometry after memory loss', () => {
     const context = fixture(), edit = newNextDraft(context, 'instance')
     edit.graph = { ...edit.graph, nodes: edit.graph.nodes.map((node, i) => i ? node : { ...node,
