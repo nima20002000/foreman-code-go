@@ -11,7 +11,7 @@ it('keeps all configuration qualification probes in the identical owner recovery
     calls.push(options?.recovery)
     if (args[0] === '--version') return { exitCode: 0, stdout: '1.18.31', stderr: '' }
     return { exitCode: 0, stderr: '', stdout: JSON.stringify({ mcp: { graphql: {
-      type: 'remote', url: 'http://127.0.0.1:4100/mcp/app', headers: { Authorization: environment ? 'Bearer [REDACTED]' : 'Bearer ' },
+      type: 'remote', oauth: false, url: 'http://127.0.0.1:4100/mcp/app', headers: { Authorization: environment ? 'Bearer [REDACTED]' : 'Bearer ' },
     } } }) }
   })
   const server = new ManagedOpenCodeServer({ binary: '/unused-replay-binary', workingDirectory: '/work', ownerAgentId: 'owner', processRecovery: recovery })
