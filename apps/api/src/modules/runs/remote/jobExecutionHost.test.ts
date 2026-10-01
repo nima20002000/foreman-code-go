@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
-import { jobExecution, jobSpec } from '../../../../test/helpers/jobFixture.js'
-import { jobSpecDigests, jobSupervisorIdentity, type QualifiedJobProfile } from '../../jobs/executor.js'
+import { jobExecution } from '../../../../test/helpers/jobFixture.js'
+import { jobSupervisorIdentity, type QualifiedJobProfile } from '../../jobs/executor.js'
 import { PodmanJobSupervisor, type PodmanCommandRunner } from '../../jobs/executorPodman.js'
 import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
 import { RemoteOperationJournal } from './operationJournal.js'
@@ -16,7 +16,7 @@ afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.drain
 async function fixture(loseClosureAck = false) {
   const root = await mkdtemp(join(tmpdir(),'w08-job-')); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
-  const execution = jobExecution(); Object.assign(execution.acceptedSpec,jobSpecDigests({ ...jobSpec(), source: execution.acceptedSpec.source }))
+  const execution = jobExecution()
   const intent: RemoteJobDispatchIntent = { schemaVersion:1,protocolVersion:1,mainId:execution.acceptedSpec.target.mainId,
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
