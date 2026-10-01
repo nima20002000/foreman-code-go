@@ -1,3 +1,4 @@
+import { verifiedWorkerEnrollmentCode } from '../../../packages/contracts/src/deviceSetupNode.ts';
 import { randomBytes, sign } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
 import { WorkerEnrollmentInputSchema, DevicePairingResultSchema } from '../../../packages/contracts/src/deviceIdentity.ts';
@@ -6,6 +7,10 @@ import { WorkerError } from './diagnostics.mjs';
 
 const retryHint = 'Keep the original state directory, identity, enrollment file and requestId. Retry the same pair command; do not create a new identity or requestId.';
 const recoveryHints = {
+  setup_code_invalid: 'Paste the complete approved enrollment code through private input; never place it in command arguments.',
+  setup_code_identity_mismatch: 'The code belongs to another companion identity. Ask the main to approve this companion public request code.',
+  setup_code_expired: 'The original grant expired. Check the original approval with the main; do not replace identity automatically.',
+  setup_code_cancelled: 'Private enrollment entry cancelled; the original identity remains unchanged.',
   pairing_file_missing: 'Provide the existing private enrollment file at the absolute --enrollment-file path.',
   pairing_file_unreadable: 'Check ownership and read access to the existing enrollment file.',
   private_enrollment_file_required: 'Use an owned regular file, mode 0600, at most 16384 bytes; do not print its contents.',
@@ -86,7 +91,15 @@ export async function enrollWorker({ stateDirectory, identity, enrollmentFile, a
   catch { throw new WorkerError('pairing_file_json_invalid'); }
   const parsed = WorkerEnrollmentInputSchema.safeParse(json);
   if (!parsed.success) throw new WorkerError('pairing_file_schema_invalid');
-  const enrollment = parsed.data;
+  return enrollWorkerInput({stateDirectory,identity,enrollment:parsed.data,appVersion,post});
+}
+export async function enrollWorkerCode({stateDirectory,identity,enrollmentCode,appVersion,post=boundedPost}) {
+  let code;
+  try{code=verifiedWorkerEnrollmentCode(enrollmentCode,identity);}
+  catch(error){throw new WorkerError(error.message==='DEVICE_SETUP_IDENTITY_MISMATCH'?'setup_code_identity_mismatch':error.message==='DEVICE_SETUP_CODE_EXPIRED'?'setup_code_expired':'setup_code_invalid');}
+  return enrollWorkerInput({stateDirectory,identity,enrollment:code.enrollment,appVersion,post});
+}
+async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,post}) {
   const endpoint = new URL(enrollment.endpoint);
   if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.pathname !== '/device/connect' || endpoint.search || endpoint.hash) throw new WorkerError('enrollment_endpoint_invalid');
   const http = new URL(endpoint); http.protocol = 'https:';

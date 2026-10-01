@@ -1,4 +1,4 @@
-import { DeviceSetupApproveInputSchema,DeviceSetupApproveResultSchema } from '@graphql/contracts/device-setup'
+import { DeviceSetupApproveInputSchema,DeviceSetupApproveResultSchema,DeviceSetupOptionsSchema } from '@graphql/contracts/device-setup'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -8,7 +8,7 @@ import { toolFailure, toolResult } from '../../mcp/shared/results.js'
 import { hasAction } from '../access/policy.js'
 import type { PostgresDeviceAccessService } from './access.js'
 
-export type DeviceManagementService = Pick<PostgresDeviceAccessService, 'readMainIdentity' | 'list' | 'createPairingGrant' | 'createSetupCode' | 'revoke'>
+export type DeviceManagementService = Pick<PostgresDeviceAccessService, 'readMainIdentity' | 'list' | 'createPairingGrant' | 'createSetupCode' | 'readSetupOptions' | 'revoke'>
 
 export function registerDeviceManagementTools(server: McpServer, service: DeviceManagementService, principal: ManagementPrincipal): void {
   const invoke = async (operation: () => Promise<unknown>) => {
@@ -19,6 +19,7 @@ export function registerDeviceManagementTools(server: McpServer, service: Device
     inputSchema: z.object({}).strict(), outputSchema: MainDeviceIdentityPublicSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, () => invoke(() => service.readMainIdentity(principal)))
+  if(hasAction(principal,'settings:read'))server.registerTool('device_setup_options_get',{description:'Read the actual configured LAN WSS device setup endpoint and listener state. No guessed address, relay, credentials or private paths; worker reachability is verified during enrollment.',inputSchema:z.object({}).strict(),outputSchema:DeviceSetupOptionsSchema,annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},()=>invoke(()=>service.readSetupOptions(principal)))
   if (hasAction(principal, 'settings:read')) server.registerTool('devices_list', {
     description: 'Read main-owned registration and authorization revisions. Connectivity is separate; no dispatch is supported.',
     inputSchema: z.object({}).strict(), outputSchema: DeviceListResultSchema,
@@ -40,6 +41,7 @@ export function registerDeviceManagementTools(server: McpServer, service: Device
 /** Mount on the existing loopback management API with its existing bearer/cookie authenticator. */
 export function registerDeviceManagementRoutes(app: FastifyInstance, service: DeviceManagementService,
   authenticate: (request: import('fastify').FastifyRequest) => Promise<ManagementPrincipal>): void {
+  app.get('/api/devices/setup-options',async request=>service.readSetupOptions(await authenticate(request)))
   app.get('/api/devices/main', async request => service.readMainIdentity(await authenticate(request)))
   app.get('/api/devices', async request => ({ devices: await service.list(await authenticate(request)) }))
   app.post('/api/devices/setup-codes',async request=>service.createSetupCode(await authenticate(request),DeviceSetupApproveInputSchema.parse(request.body)))

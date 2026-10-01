@@ -8,11 +8,12 @@ import { readWorkerStatus } from './runtime.mjs';
 const execute = promisify(execFile);
 const args = process.argv.slice(2);
 const command = args[0];
-const stateDirectory = [3, 5].includes(args.length) && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
+const stateDirectory = [3, 4, 5].includes(args.length) && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
 let runtime;
 let pairingErrorMessage;
 const help = `Usage:
-  graphql-worker run|doctor|identity --state /absolute/private/state
+  graphql-worker run|doctor|identity-request --state /absolute/private/state
+  graphql-worker pair --state /absolute/private/state --enrollment-stdin
   graphql-worker pair --state /absolute/private/state --enrollment-file /absolute/private/enrollment.json
 
 Install: node /approved/artifact/src/install-cli.mjs install --root /private/app --state /private/state --artifact /approved/artifact --manifest-sha256 APPROVED_SHA256
@@ -23,7 +24,7 @@ Keep app and state in separate private persistent directories. Pairing retries r
 `;
 async function main() {
   if (!args.length || args.includes('--help') || args.includes('-h')) { process.stdout.write(help); return; }
-  if (!stateDirectory || !['run', 'doctor', 'identity', 'pair'].includes(command) || (command !== 'pair' && args.length !== 3) || (command === 'pair' && (args.length !== 5 || args[3] !== '--enrollment-file' || !isAbsolute(args[4])))) throw new WorkerError('usage: graphql-worker run|doctor|identity|pair --state /absolute/private/directory [--enrollment-file /private/file]');
+  if (!stateDirectory || !['run', 'doctor', 'identity', 'identity-request', 'pair'].includes(command) || (command !== 'pair' && args.length !== 3) || (command === 'pair' && !((args.length===4&&args[3]==='--enrollment-stdin')||(args.length===5&&args[3]==='--enrollment-file'&&isAbsolute(args[4]))))) throw new WorkerError('usage: graphql-worker run|doctor|identity|pair --state /absolute/private/directory [--enrollment-file /private/file]');
   const { loadOrCreateWorkerIdentity, loadWorkerPairing } = await import('../../../packages/contracts/src/deviceIdentityNode.ts');
   const { prepareWorkerState, startConfiguredWorker } = await import('./workerFactory.mjs');
   const enrollment = command === 'pair' ? await import('./enrollment.mjs') : null;
@@ -65,9 +66,11 @@ async function main() {
     try { await readFile(`${stateDirectory}/pairing.json`); throw new WorkerError('already_paired'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     const identity = await loadOrCreateWorkerIdentity(stateDirectory);
-    console.log(JSON.stringify(await enrollment.enrollWorker({ stateDirectory, identity, enrollmentFile: args[4], appVersion: manifest.version })));
+    const result=args[3]==='--enrollment-stdin'?await enrollment.enrollWorkerCode({stateDirectory,identity,enrollmentCode:await import('./setupInput.mjs').then(module=>module.readPrivateEnrollmentCode()),appVersion:manifest.version}):await enrollment.enrollWorker({stateDirectory,identity,enrollmentFile:args[4],appVersion:manifest.version});
+    console.log(JSON.stringify(result));
     return;
   }
+  if(command==='identity-request'){await requirePrivateDirectory(stateDirectory);const identity=await loadOrCreateWorkerIdentity(stateDirectory);const {workerIdentityRequestCode}=await import('../../../packages/contracts/src/deviceSetupNode.ts');process.stdout.write(workerIdentityRequestCode(identity)+'\n');return;}
   if (command === 'identity') {
     await requirePrivateDirectory(stateDirectory);
     const identity = await loadOrCreateWorkerIdentity(stateDirectory);

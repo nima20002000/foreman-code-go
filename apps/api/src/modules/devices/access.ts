@@ -1,4 +1,4 @@
-import { DeviceSetupApproveInputSchema,encodeWorkerEnrollmentCode,type DeviceSetupApproveInput } from '@graphql/contracts/device-setup'
+import { DeviceSetupApproveInputSchema,DeviceSetupOptionsSchema,encodeWorkerEnrollmentCode,type DeviceSetupApproveInput,type DeviceSetupOptions } from '@graphql/contracts/device-setup'
 import { verifiedWorkerIdentityRequest } from '@graphql/contracts/device-setup-node'
 import { createHash, createHmac, randomBytes, randomUUID, verify } from 'node:crypto'
 import type pg from 'pg'
@@ -18,7 +18,7 @@ export type PairDeviceInput = DevicePairingRequest
 export { pairingProof } from '@graphql/contracts/device-identity-node'
 interface DeviceRow { record: DeviceRegistration; public_key: string; credential_expires_at: Date }
 export class PostgresDeviceAccessService {
-  constructor(private readonly pool: pg.Pool, readonly mainId: string, private readonly onRevoked?: (deviceId: string, authorizationRevision: number) => void) {}
+  constructor(private readonly pool: pg.Pool, readonly mainId: string, private readonly onRevoked?: (deviceId: string, authorizationRevision: number) => void,private readonly setupOptions:()=>DeviceSetupOptions=()=>({endpoint:null,available:false,reason:'listener-unconfigured'})) {}
   private pairingAttempts = { window: 0, count: 0 }
   private async transaction<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect()
@@ -37,12 +37,18 @@ export class PostgresDeviceAccessService {
       return MainDeviceIdentityPublicSchema.parse({ mainId: this.mainId, ...result.rows[0] })
     })
   }
+  async readSetupOptions(principal:ManagementPrincipal):Promise<DeviceSetupOptions> {
+    return this.transaction(async client=>{await this.management(client,principal,false);return DeviceSetupOptionsSchema.parse(this.setupOptions())})
+  }
   async createSetupCode(principal:ManagementPrincipal,raw:DeviceSetupApproveInput,source:'http'|'mcp'='http') {
+    requireAuthorization(principal,'settings:update')
     const input=DeviceSetupApproveInputSchema.parse(raw),request=verifiedWorkerIdentityRequest(input.identityRequestCode)
     const grantInput={commandId:input.commandId,workerInstallationId:request.workerInstallationId,publicKey:request.publicKey,expectedFingerprint:request.publicKeyFingerprint,scopes:input.scopes,...(input.expectedAuthorizationRevision?{expectedAuthorizationRevision:input.expectedAuthorizationRevision}:{})}
     let metadata:{registration:DeviceRegistration;expiresAt:string;requestId:string;mainFingerprint:string}|undefined
     const approved=await new PostgresCommandCoordinator(this.pool).execute({principal,source,operation:'device_setup_code_create',commandId:input.commandId,targetKey:this.mainId,payload:input,dedicatedConnection:true,
       authorize:client=>this.management(client,principal,true),prepare:async()=>{
+        const options=DeviceSetupOptionsSchema.parse(this.setupOptions())
+        if(!options.available||options.endpoint!==input.endpoint)throw new DomainError('DEVICE_SETUP_ENDPOINT_UNAVAILABLE','The selected approved LAN device listener is unavailable or changed.',409)
         const main=await this.transaction(async client=>{
           await this.management(client,principal,true)
           const row=(await client.query<{mainPublicKey:string;mainPublicKeyFingerprint:string}>(`select record->>'publicKey' as "mainPublicKey",record->>'publicKeyFingerprint' as "mainPublicKeyFingerprint" from device_main_identity where main_id=$1`,[this.mainId])).rows[0]
