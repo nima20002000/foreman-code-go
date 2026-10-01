@@ -1,0 +1,85 @@
+import { createHash } from 'node:crypto'
+import { constants } from 'node:fs'
+import { chmod, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
+import { identity } from '../sources/privateFilesystem.js'
+import type { JobSql } from './repository.js'
+import { jobSpec } from '../../../test/helpers/jobFixture.js'
+import { createInstalledJobRuntimeHost, InstalledJobRuntimeConfigurationSchema, readInstalledRuntimeConfiguration } from './installedRuntimeHost.js'
+
+const id = '11111111-1111-4111-8111-111111111111'
+const digest = '1'.repeat(64)
+const roots: string[] = []
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), 'ci-installed-reader-')); roots.push(root)
+  const source = join(root, 'source'); await mkdir(source, { mode: 0o700 })
+  const binary = join(root, 'runtime'); await writeFile(binary, 'pinned fixture bytes', { mode: 0o700 })
+  const fd = await open(source, constants.O_RDONLY | constants.O_DIRECTORY)
+  const filesystem = await identity(fd); await fd.close()
+  const sourceRecord = { version: 1, source: { approvedSourceId: id, snapshotId: id, manifestDigest: digest },
+    selection: { hostRef: { kind: 'main', mainId: id }, rootPolicyId: 'root', rootPolicyRevision: '1', locationRevision: '1' },
+    binding: { version: 1, mainId: id, deviceId: null, workerInstallationId: null, workspaceId: id, rootId: id, bindingRevision: 1, locationRevision: 1,
+      canonicalPath: source, filesystem, accessMode: 'exclusive-write', snapshotId: id, manifestDigest: digest },
+    ownerPrincipalId: id, authorizedByPrincipalId: id, registration: null, attestationId: 'attestation', attestationDigest: digest, boundAt: '2026-10-01T00:00:00Z' }
+  const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim()
+  const configuration = InstalledJobRuntimeConfigurationSchema.parse({ schemaVersion: 1, target: { hostRef: { kind: 'main', mainId: id }, registration: null, mainInstallationId: id },
+    root: sourceRecord, runtimeExecutable: binary, ociExecutable: binary, findmntExecutable: binary,
+    runtimeRoot: join(root, 'managed-runtime'), backingFile: join(root, 'not-provisioned.ext4'),
+    controllerEnvironment: { PATH: '/approved/bin', XDG_RUNTIME_DIR: '/approved/runtime', LANG: 'C.UTF-8' },
+    pins: { bootId, runtimeBinarySha256: createHash('sha256').update('pinned fixture bytes').digest('hex'), ociBinarySha256: digest, findmntBinarySha256: digest,
+      configurationDigest: digest, imageDigest: `sha256:${digest}`, toolchainDigest: digest, diskBytes: 1048576 } })
+  const configPath = join(root, 'installed.json'); await writeFile(configPath, JSON.stringify(configuration), { mode: 0o600 })
+  const profile = JobRuntimeProfileSchema.parse({ schemaVersion: 1, id: 'profile', workspaceId: id, revision: 1, name: 'Installed candidate', root: sourceRecord,
+    policy: { ...jobSpec().policy, isolationPolicyId: 'profile', imageDigest: configuration.pins.imageDigest, toolchainDigest: configuration.pins.toolchainDigest },
+    limits: { cpuLimit: 1, memoryBytes: 1048576, pidsLimit: 64, diskBytes: configuration.pins.diskBytes }, specDigest: digest,
+    status: 'unqualified', measurement: null, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' })
+  const query = vi.fn(async () => ({ rows: [{ id }] })) as unknown as JobSql['query']
+  return { root, binary, profile, configuration, location: { path: configPath, ownerUid: process.getuid!() }, sql: { query } as JobSql }
+}
+
+describe('protected installed runtime reader, no DB or native runtime execution', () => {
+  it('missing configuration is explicit unavailable, never defaulted or admitted', async () => {
+    const f = await fixture(); const reserve = vi.fn()
+    const host = createInstalledJobRuntimeHost({ configuration: null, identity: f.sql, reserve })
+    await expect(host.descriptor(f.profile)).rejects.toMatchObject({ code: 'JOB_RUNTIME_INSTALLATION_UNAVAILABLE', details: { reason: 'missing_configuration' } })
+    expect(await host.currentMetadata(f.sql, f.profile)).toBeNull()
+    expect(reserve).not.toHaveBeenCalled()
+  })
+  it('read-only protected metadata preserves explicit paths/environment without granting readiness', async () => {
+    const f = await fixture(); await chmod(f.location.path, 0o400)
+    expect(await readInstalledRuntimeConfiguration(f.location)).toEqual(f.configuration)
+    expect('ready' in f.configuration).toBe(false)
+    const extra = { ...f.configuration, ready: true }
+    await writeFile(f.location.path + '-other', JSON.stringify(extra), { mode: 0o600 })
+    await expect(readInstalledRuntimeConfiguration({ ...f.location, path: f.location.path + '-other' })).rejects.toMatchObject({ code: 'JOB_RUNTIME_INSTALLATION_UNAVAILABLE' })
+  })
+  it('rejects active installation identity drift before trusting filesystem pins', async () => {
+    const f = await fixture(); const query = vi.fn(async () => ({ rows: [{ id: 'other-installed-main' }] })) as unknown as JobSql['query']
+    const host = createInstalledJobRuntimeHost({ configuration: f.location, identity: { query } as JobSql, reserve: vi.fn() })
+    await expect(host.descriptor(f.profile)).rejects.toMatchObject({ details: { reason: 'installation_changed' } })
+    expect(await host.currentMetadata({ query } as JobSql, f.profile)).toBeNull()
+  })
+  it('unsupported image/toolchain/disk pins do not borrow another installed policy', async () => {
+    const f = await fixture(); f.profile.policy.imageDigest = `sha256:${'2'.repeat(64)}`
+    const host = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
+    await expect(host.descriptor(f.profile)).rejects.toMatchObject({ details: { reason: 'pin_unavailable' } })
+    expect(await host.currentMetadata(f.sql, f.profile)).toBeNull()
+  })
+  it('actual binary replacement invalidates retained metadata without probing the executable', async () => {
+    const f = await fixture(); await writeFile(f.binary, 'different executable bytes')
+    const host = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
+    await expect(host.descriptor(f.profile)).rejects.toMatchObject({ details: { reason: 'passive_identity_changed' } })
+  })
+  it('rejects writable, wrong-owner or symlink-retargeted configuration', async () => {
+    const f = await fixture(); await chmod(f.location.path, 0o666)
+    await expect(readInstalledRuntimeConfiguration(f.location)).rejects.toMatchObject({ details: { reason: 'configuration_not_protected' } })
+    await chmod(f.location.path, 0o600)
+    await expect(readInstalledRuntimeConfiguration({ ...f.location, ownerUid: f.location.ownerUid + 1 })).rejects.toMatchObject({ details: { reason: 'configuration_not_protected' } })
+    const alias = join(f.root, 'alias'); await symlink(f.location.path, alias)
+    await expect(readInstalledRuntimeConfiguration({ ...f.location, path: alias })).rejects.toMatchObject({ details: { reason: 'configuration_retargeted' } })
+  })
+})
