@@ -11,7 +11,7 @@ const Call = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.nu
 export async function unavailableResourceTelemetryToolCall(context: OperatorRequestContext, body: unknown) {
   const parsed = Call.safeParse(body)
   if (!parsed.success) return undefined
-  const allowed = TELEMETRY_READ_ACTIONS.some(action => action === 'devices:read'
+  const allowed = TELEMETRY_READ_ACTIONS.some(action => action === 'devices:metrics:read'
     ? isAuthorized(context.principal, action, {}) : hasAction(context.principal, action))
   if (allowed && context.services.resourceTelemetry) return undefined
   const name = parsed.data.params.name

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
+import { DEFAULT_MANAGEMENT_ACTIONS, type ManagementPrincipal } from '@graphql/contracts/management'
 import type { FastifyRequest } from 'fastify'
 import type pg from 'pg'
 
@@ -56,7 +56,7 @@ export class LocalDevBrowserAccess {
               (id,name,audience,token_hash,grants,expires_at)
               values($1,$2,'operator',$3,$4::jsonb,$5)`, [
               DEV_PRINCIPAL_ID, 'Local development browser', randomBytes(32).toString('hex'),
-              JSON.stringify([{ actions: [...ManagementActionSchema.options], scope: {} }]),
+              JSON.stringify([{ actions: [...DEFAULT_MANAGEMENT_ACTIONS], scope: {} }]),
               new Date(Date.now() + 3650 * 86_400_000),
             ])
           }

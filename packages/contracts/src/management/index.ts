@@ -66,6 +66,7 @@ export const ManagementActionSchema = z.enum([
   "harnesses:read",
   "harnesses:update",
   "devices:read",
+  "devices:metrics:read",
   "settings:read",
   "settings:update",
   "workspaces:read",
@@ -90,6 +91,11 @@ export const ManagementActionSchema = z.enum([
   "interactions:respond",
 ]);
 export type ManagementAction = z.infer<typeof ManagementActionSchema>;
+
+/** Host telemetry requires a separately selected grant, including for broad presets. */
+export const DEFAULT_MANAGEMENT_ACTIONS = ManagementActionSchema.options.filter(
+  (action) => action !== "devices:metrics:read",
+);
 
 export const ManagementScopeSchema = z
   .object({

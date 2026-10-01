@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import {
-  ManagementActionSchema, OwnerSetupRequestSchema,
+  DEFAULT_MANAGEMENT_ACTIONS, OwnerSetupRequestSchema,
   type ManagementPrincipal, type OwnerSetupStatus,
 } from '@graphql/contracts/management'
 import { betterAuth } from 'better-auth'
@@ -149,7 +149,7 @@ export class BrowserAuthentication {
         const issued = await this.access.issue({
           name: input.email,
           audience: 'operator',
-          grants: [{ actions: [...ManagementActionSchema.options], scope: {} }],
+          grants: [{ actions: [...DEFAULT_MANAGEMENT_ACTIONS], scope: {} }],
           expiresAt: new Date(Date.now() + 3650 * DAY * 1000),
         }, client)
         principalId = issued.principal.id

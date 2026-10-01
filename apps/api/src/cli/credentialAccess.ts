@@ -1,6 +1,6 @@
-import { ManagementActionSchema, type ManagementAction } from '@graphql/contracts/management'
+import { DEFAULT_MANAGEMENT_ACTIONS, type ManagementAction } from '@graphql/contracts/management'
 
 /** Omitted --access preserves the existing CLI behavior; explicit read-only never gains mutations. */
 export function credentialActions(access: 'manage' | 'read-only' = 'manage'): ManagementAction[] {
-  return access === 'read-only' ? ManagementActionSchema.options.filter((action) => action.endsWith(':read')) : [...ManagementActionSchema.options]
+  return access === 'read-only' ? DEFAULT_MANAGEMENT_ACTIONS.filter((action) => action.endsWith(':read')) : [...DEFAULT_MANAGEMENT_ACTIONS]
 }
