@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { AgentHarness, ExecutionResult, McpDetection, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../port.js'
 import { HarnessExecutionError } from '../errors.js'
+import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type ResponseAvailabilityInspector } from '../responseAvailability.js'
 import { claudeMcpDetection, decodeClaudeMcpControl, type ClaudeMcpInspection } from './mcpInspection.js'
 import type { ClaudeLiveCallbackReader, ClaudeNativeCallbackContext, ClaudeCallbackAuthority, ClaudePendingNotification } from './callbackAvailability.js'
@@ -69,6 +70,8 @@ interface Turn {
 interface Runtime {
   sdk: ClaudeSdkSession
   generation: string
+  currentAuthorizationScope: string
+  httpCredentialAcknowledgement?: NativeMcpHttpCredentialAcknowledgement
   closed: boolean
   session?: NativeSessionReference
   events: NativeHarnessEvent[]
@@ -161,6 +164,7 @@ export function createClaudeNativeSessionManager(options: {
     let closing: Promise<void> | undefined
     const close = () => {
       runtime.closed = true
+      delete runtime.httpCredentialAcknowledgement
       closing ??= runtime.sdk.close()
       void closing.catch(() => undefined)
     }
@@ -177,13 +181,43 @@ export function createClaudeNativeSessionManager(options: {
       try { if (closing) await closing } finally { runtime.controlPending = false }
     }
   }
+  function authorizationScope(start: NativeSessionStart): string {
+    return createHash('sha256').update(JSON.stringify(['claude-mcp-authorization-v1', options.scope, start])).digest('hex')
+  }
+  function inspectionCredentials(runtime: Runtime): Pick<ClaudeMcpInspection, 'httpCredentialAcknowledgement' | 'currentAuthorizationScope'> {
+    const acknowledgement = runtime.httpCredentialAcknowledgement
+    if (runtime.closed || disposed || acknowledgement && (acknowledgement.generation !== runtime.generation
+      || acknowledgement.authorizationScope !== runtime.currentAuthorizationScope)) delete runtime.httpCredentialAcknowledgement
+    return { currentAuthorizationScope: runtime.currentAuthorizationScope,
+      ...(runtime.httpCredentialAcknowledgement ? { httpCredentialAcknowledgement: { ...runtime.httpCredentialAcknowledgement } } : {}) }
+  }
+  function managedHttpCredential(start: NativeSessionStart, servers: Readonly<Record<string, unknown>>, serverName: string): { endpoint: string } | undefined {
+    const config = servers[serverName] as Record<string, unknown> | undefined
+    if (config?.type !== 'http') return undefined
+    const headers = config.headers && typeof config.headers === 'object' ? config.headers as Record<string, unknown> : {}
+    const authorization = Object.entries(headers).filter(([key]) => key.toLowerCase() === 'authorization')
+    if (!authorization.length) return undefined
+    const token = start.environment?.variables.GRAPHQL_MCP_TOKEN
+    let endpoint: URL | undefined
+    let expectedEndpoint: URL | undefined
+    try {
+      if (typeof config.url === 'string') endpoint = new URL(config.url)
+      if (options.expectedMcp?.url) expectedEndpoint = new URL(options.expectedMcp.url)
+    } catch { /* Invalid locators cannot establish credential scope. */ }
+    if (!token || authorization.length !== 1 || authorization[0]![1] !== `Bearer ${token}` || !endpoint
+      || !['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+      || options.expectedMcp?.url && endpoint.toString() !== expectedEndpoint?.toString()) {
+      throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_SCOPE_CONFLICT', 'Managed HTTP credentials do not match the admitted authorization scope and endpoint.')
+    }
+    return { endpoint: endpoint.toString() }
+  }
   function makeRuntime(start: NativeSessionStart): Runtime {
     let resolveInit!: Runtime['resolveInit']
     let rejectInit!: Runtime['rejectInit']
     const initialized = new Promise<NativeSessionReference>((resolve, reject) => { resolveInit = resolve; rejectInit = reject })
     // The rejection is observed even if native startup fails before await initialized.
     void initialized.catch(() => undefined)
-    const runtime = { generation: randomUUID(), closed: false, events: [], nextSequence: 0, turns: new Map(), messageOwners: new Map(), toolOwners: new Map(), restoredReceipts: new Map(), initialized, resolveInit, rejectInit } as unknown as Runtime
+    const runtime = { generation: randomUUID(), currentAuthorizationScope: authorizationScope(start), closed: false, events: [], nextSequence: 0, turns: new Map(), messageOwners: new Map(), toolOwners: new Map(), restoredReceipts: new Map(), initialized, resolveInit, rejectInit } as unknown as Runtime
     if (options.decodeFactory) runtime.decode = options.decodeFactory(start)
     all.add(runtime)
     return runtime
@@ -213,6 +247,7 @@ export function createClaudeNativeSessionManager(options: {
       } catch (error) {
         runtime.rejectInit(error)
         runtime.closed = true
+        delete runtime.httpCredentialAcknowledgement
         await runtime.sdk?.close()
         await runtime.pumping
         throw error
@@ -349,11 +384,13 @@ export function createClaudeNativeSessionManager(options: {
         }
       }
       runtime.closed = true
+      delete runtime.httpCredentialAcknowledgement
       if (!runtime.session) runtime.rejectInit(new Error('Claude stream ended before native initialization'))
       runtime.active?.events.close(new Error('Claude stream ended without an exact result; submission remains uncertain'))
     } catch (error) {
       runtime.failure = error
       runtime.closed = true
+      delete runtime.httpCredentialAcknowledgement
       runtime.rejectInit(error)
       runtime.active?.events.close(error)
       await runtime.sdk.close()
@@ -482,6 +519,8 @@ export function createClaudeNativeSessionManager(options: {
       const inspected = prepared
       const runtime = await inspected.opening
       if (runtime.active || runtime.session || runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_ALREADY_STARTED', 'Pre-input credential delivery cannot mutate an active/native session.')
+      if (runtime.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Credential refresh cannot overlap another owned SDK control operation.')
+      delete runtime.httpCredentialAcknowledgement
       const withoutCredentials = (value: NativeSessionStart): string => {
         const variables = { ...value.environment?.variables }
         for (const key of options.credentialEnvironmentVariables ?? ['GRAPHQL_MCP_TOKEN']) delete variables[key]
@@ -504,20 +543,28 @@ export function createClaudeNativeSessionManager(options: {
       for (const [name, config] of Object.entries(configured)) if (name !== managedName && JSON.stringify(config) !== JSON.stringify(servers[name])) {
         throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
       }
+      const httpCredential = managedHttpCredential(start, servers, managedName)
       if (!runtime.sdk.setMcpServers) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK scoped MCP control update is unavailable.')
       return ownedControl(runtime, async () => {
-        const raw = await runtime.sdk.setMcpServers!(servers)
+        runtime.currentAuthorizationScope = authorizationScope(start)
+        const raw = await runtime.sdk.setMcpServers!(servers).catch(() => {
+          throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
+        })
         const response = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-        if (!Array.isArray(response.added) || !Array.isArray(response.removed) || !response.errors || typeof response.errors !== 'object' || Object.keys(response.errors).length) {
+        if (!Array.isArray(response.added) || !Array.isArray(response.removed) || !response.errors || typeof response.errors !== 'object' || Object.keys(response.errors).length
+          || httpCredential && !response.added.includes(managedName)) {
           throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
         }
         signal?.throwIfAborted()
+        if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query closed before credential acknowledgment.')
+        if (httpCredential) runtime.httpCredentialAcknowledgement = { source: 'sdk_set_mcp_servers', serverName: managedName,
+          endpoint: httpCredential.endpoint, generation: runtime.generation, authorizationScope: runtime.currentAuthorizationScope }
         inspected.identity = JSON.stringify(start) // Only after actual SDK update ACK, never by mutating spawned options/env.
         if (!runtime.sdk.mcpServerStatus) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK MCP control status is unavailable')
         const rows = await runtime.sdk.mcpServerStatus!()
         signal?.throwIfAborted()
-        return decodeClaudeMcpControl(rows, runtime.generation, now())
-      }, signal)
+        return decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime))
+      }, signal).catch((error: unknown) => { delete runtime.httpCredentialAcknowledgement; throw error })
     },
     async prepareInspection(start, signal) {
       const runtime = await prepareRuntime(start, signal)
@@ -526,7 +573,7 @@ export function createClaudeNativeSessionManager(options: {
       const rows = await ownedControl(runtime, () => runtime.sdk.mcpServerStatus!(), signal)
       signal?.throwIfAborted()
       if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query closed during inspection.')
-      return decodeClaudeMcpControl(rows, runtime.generation, now())
+      return decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime))
     },
     async inspectMcp(signal): Promise<McpDetection> {
       if (!prepared && !options.inspectionStart) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_REQUIRED', 'An admitted SDK inspection context must be supplied.')
@@ -536,7 +583,7 @@ export function createClaudeNativeSessionManager(options: {
       const rows = await ownedControl(runtime, () => runtime.sdk.mcpServerStatus!(), signal)
       signal?.throwIfAborted()
       if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query closed during inspection.')
-      return claudeMcpDetection(decodeClaudeMcpControl(rows, runtime.generation, now()), options.expectedMcp ?? { serverName: 'graphql' })
+      return claudeMcpDetection(decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime)), options.expectedMcp ?? { serverName: 'graphql' })
     },
     async createSession() {
       throw new HarnessExecutionError('CLAUDE_INITIAL_TURN_REQUIRED', 'Claude reports a native session only after first input; use the admitted atomic initial-turn lifecycle.')
@@ -654,6 +701,7 @@ export function createClaudeNativeSessionManager(options: {
       const runtime = resident.get(session.nativeSessionId)
       if (!runtime) return
       runtime.closed = true
+      delete runtime.httpCredentialAcknowledgement
       if ([...resident.values()].every((entry) => entry.closed)) rejectCallbackWaiters()
       await runtime.sdk.close()
       await runtime.pumping
@@ -664,7 +712,7 @@ export function createClaudeNativeSessionManager(options: {
     async dispose() {
       disposed = true
       rejectCallbackWaiters()
-      for (const runtime of all) runtime.closed = true
+      for (const runtime of all) { runtime.closed = true; delete runtime.httpCredentialAcknowledgement }
       await options.runner.dispose()
       await Promise.all([...all].map((runtime) => runtime.pumping))
       resident.clear()

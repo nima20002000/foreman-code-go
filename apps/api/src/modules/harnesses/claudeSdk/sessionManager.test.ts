@@ -362,6 +362,88 @@ describe('Claude native session manager admission', () => {
     expect(f.queries).toHaveBeenCalledTimes(1)
     await f.manager.dispose?.()
   })
+  it('does not turn static configured headers, environment or connected health into an HTTP credential ACK', async () => {
+    const servers = { graphql: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app', headers: { Authorization: 'Bearer static-secret' } } }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: servers }, appMcpAccess: 'management', expectedMcp: { serverName: 'graphql', url: servers.graphql.url } })
+    const credentialed = { ...start, environment: { agentId: 'operator', variables: { GRAPHQL_MCP_TOKEN: 'static-secret' } } }
+    const snapshot = await f.manager.prepareInspection(credentialed)
+    expect(snapshot.httpCredentialAcknowledgement).toBeUndefined()
+    expect((await f.manager.inspectMcp()).credentialArrangement).toEqual({ kind: 'unknown' })
+    expect(JSON.stringify(snapshot)).not.toContain('static-secret')
+    expect(f.setServers).not.toHaveBeenCalled()
+    await f.manager.dispose?.()
+  })
+
+  it('retains only the actual managed HTTP update ACK across readback and rotates its opaque credential scope', async () => {
+    const servers = { graphql: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app' } }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: servers }, appMcpAccess: 'management', expectedMcp: { serverName: 'graphql', url: servers.graphql.url } })
+    const admitted = (token: string) => ({ ...start, environment: { agentId: 'operator', variables: { GRAPHQL_MCP_TOKEN: token } } })
+    const configured = (token: string) => ({ graphql: { ...servers.graphql, headers: { Authorization: `Bearer ${token}` } } })
+    const initial = await f.manager.prepareInspection({ ...start, environment: { agentId: 'operator', variables: {} } })
+    const update = deferred<Awaited<ReturnType<typeof f.setServers>>>()
+    const health = deferred<Awaited<ReturnType<typeof f.statuses>>>()
+    const entered = deferred<void>(); const healthEntered = deferred<void>()
+    f.statuses.mockImplementationOnce(() => { healthEntered.resolve(); return health.promise })
+    f.setServers.mockImplementationOnce(() => { entered.resolve(); return update.promise })
+    const refreshing = f.manager.refreshInspectionCredentials(admitted('private-first-token'), configured('private-first-token'))
+    await entered.promise
+    expect(initial.httpCredentialAcknowledgement).toBeUndefined()
+    expect(f.offers).not.toHaveBeenCalled()
+    await expect(f.manager.inspectMcp()).rejects.toThrow('another control operation')
+    update.resolve({ added: ['graphql'], removed: [], errors: {} })
+    await healthEntered.promise
+    await expect(f.manager.refreshInspectionCredentials(admitted('private-first-token'), configured('private-first-token'))).rejects.toThrow('another owned SDK control operation')
+    health.resolve(await f.statuses.mock.results[0]!.value)
+    const first = await refreshing
+    expect(first.httpCredentialAcknowledgement).toEqual({ source: 'sdk_set_mcp_servers', serverName: 'graphql', endpoint: servers.graphql.url,
+      generation: first.generation, authorizationScope: first.currentAuthorizationScope })
+    expect(first.currentAuthorizationScope).toMatch(/^[a-f0-9]{64}$/)
+    expect((await f.manager.prepareInspection(admitted('private-first-token'))).httpCredentialAcknowledgement).toEqual(first.httpCredentialAcknowledgement)
+    expect((await f.manager.inspectMcp()).credentialArrangement).toEqual({ kind: 'scoped_http_header' })
+    const second = await f.manager.refreshInspectionCredentials(admitted('private-second-token'), configured('private-second-token'))
+    expect(second.currentAuthorizationScope).not.toBe(first.currentAuthorizationScope)
+    expect(second.httpCredentialAcknowledgement?.authorizationScope).toBe(second.currentAuthorizationScope)
+    expect(second.generation).toBe(first.generation)
+    const connected: Awaited<ReturnType<typeof f.statuses>> = await f.statuses.mock.results[0]!.value
+    f.statuses.mockResolvedValueOnce(connected.map((row) => ({ ...row, status: 'pending' })))
+    expect((await f.manager.inspectMcp()).credentialArrangement).toEqual({ kind: 'unknown' })
+    expect((await f.manager.prepareInspection(admitted('private-second-token'))).httpCredentialAcknowledgement).toEqual(second.httpCredentialAcknowledgement)
+    expect(JSON.stringify([first, second, await f.manager.inspectMcp()])).not.toMatch(/private-(first|second)-token/)
+    expect(f.queries).toHaveBeenCalledTimes(1)
+    expect(f.close).not.toHaveBeenCalled()
+    await f.manager.dispose?.()
+    await expect(f.manager.prepareInspection(admitted('private-second-token'))).rejects.toThrow('disposed')
+    const fresh = fixture(undefined, { sdkOptions: { mcpServers: configured('private-second-token') }, appMcpAccess: 'management', expectedMcp: { serverName: 'graphql', url: servers.graphql.url } })
+    const freshSnapshot = await fresh.manager.prepareInspection(admitted('private-second-token'))
+    expect(freshSnapshot.generation).not.toBe(second.generation)
+    expect(freshSnapshot.httpCredentialAcknowledgement).toBeUndefined()
+    expect((await fresh.manager.inspectMcp()).credentialArrangement).toEqual({ kind: 'unknown' })
+    await fresh.manager.dispose?.()
+  })
+
+  it.each(['server-error', 'rejected-ack', 'foreign-ack', 'wrong-token', 'wrong-owner'] as const)('clears an older HTTP credential receipt on %s refresh failure', async (failure) => {
+    const servers = { graphql: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app' } }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: servers }, appMcpAccess: 'management', expectedMcp: { serverName: 'graphql', url: servers.graphql.url } })
+    const credentialed = { ...start, environment: { agentId: 'operator', variables: { GRAPHQL_MCP_TOKEN: 'private-accepted-token' } } }
+    const configured = { graphql: { ...servers.graphql, headers: { Authorization: 'Bearer private-accepted-token' } } }
+    await f.manager.prepareInspection({ ...start, environment: { agentId: 'operator', variables: {} } })
+    const accepted = await f.manager.refreshInspectionCredentials(credentialed, configured)
+    expect(accepted.httpCredentialAcknowledgement).toBeDefined()
+    if (failure === 'server-error') f.setServers.mockResolvedValueOnce({ added: [], removed: [], errors: { graphql: 'native refusal with private data' } })
+    if (failure === 'rejected-ack') f.setServers.mockRejectedValueOnce(new Error('native refusal private-accepted-token'))
+    if (failure === 'foreign-ack') f.setServers.mockResolvedValueOnce({ added: ['foreign'], removed: [], errors: {} })
+    const nextStart = failure === 'wrong-owner' ? { ...credentialed, correlationId: 'foreign-owner' } : credentialed
+    const nextServers = failure === 'wrong-token' ? { graphql: { ...servers.graphql, headers: { Authorization: 'Bearer private-foreign-token' } } } : configured
+    const error = await f.manager.refreshInspectionCredentials(nextStart, nextServers).catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(Error)
+    expect(JSON.stringify(error)).not.toMatch(/private-|native refusal/)
+    const readback = await f.manager.prepareInspection(credentialed)
+    expect(readback.httpCredentialAcknowledgement).toBeUndefined()
+    expect((await f.manager.inspectMcp()).credentialArrangement).toEqual({ kind: 'unknown' })
+    expect(f.queries).toHaveBeenCalledTimes(1)
+    await f.manager.dispose?.()
+  })
+
   it('denies management credential refresh for forbidden roles or changed endpoints/noncredential environment', async () => {
     const f = fixture()
     await f.manager.prepareInspection(start)
