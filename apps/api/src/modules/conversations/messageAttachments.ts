@@ -1,15 +1,16 @@
 import type pg from 'pg'
-import { MessageSchema, type Message } from '@graphql/contracts'
+import { MessageSchema, type ActivitySourceRevision, type Message } from '@graphql/contracts'
 import {
   FileWithRevisionSchema, MessageAttachmentRefsSchema, fileStateAt,
   type FileWithRevision, type MessageAttachmentRef,
 } from '@graphql/contracts/files'
 
+import { readOriginalMessageInputs } from './originalMessageInputs.js'
 import { DomainError } from '../errors.js'
 import { MessagePublicationRefsSchema, mergeMessagePins, readCodexMessagePublications } from './messagePublications.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
-const StoredMessageSchema = MessageSchema.omit({ attachments: true }).extend({
+const StoredMessageSchema = MessageSchema.omit({ attachments: true, originalInput: true }).extend({
   attachmentRefs: MessageAttachmentRefsSchema.optional(), publicationRefs: MessagePublicationRefsSchema.optional(),
 }).strict()
 
@@ -31,7 +32,7 @@ const SAME_CONVERSATION = `f.scope_kind='temporary' and f.chat_kind=c.kind and f
     and f.execution_id is not distinct from c.origin_execution_id))`
 
 interface AttachmentRow {
-  file_id: string; revision_id: string; current_revision_id: string
+  file_id: string; revision_id: string; current_revision_id: string; activity_record_revision: string
   chat_kind: 'operator' | 'agent'; owner_principal_id: string; operator_id: string | null
   conversation_id: string; agent_id: string | null; workspace_id: string | null; workflow_id: string | null
   run_id: string | null; execution_id: string | null
@@ -60,12 +61,12 @@ function metadata(row: AttachmentRow): FileWithRevision {
     state: fileStateAt(value.file, row.read_at.toISOString()) } })
 }
 
-async function readPins(query: Queryable, conversationId: string, refs: MessageAttachmentRef[]) {
+async function readPins(query: Queryable, conversationId: string, refs: MessageAttachmentRef[], onFileRevision?: (revision: ActivitySourceRevision) => void) {
   if (!refs.length) return new Map<string, FileWithRevision>()
   // The caller bounds message pages; output pins are not subject to the send limit.
   // Deduplicate exact pins, not logical IDs: history can pin different revisions.
   const pins = [...new Map(refs.map((ref) => [identity(ref), ref])).values()]
-  const result = await query.query<AttachmentRow>(`select f.file_id,f.current_revision_id,f.chat_kind,
+  const result = await query.query<AttachmentRow>(`select f.file_id,f.current_revision_id,f.activity_record_revision::text as activity_record_revision,f.chat_kind,
       f.owner_principal_id,f.operator_id,f.conversation_id,f.agent_id,f.workspace_id,f.workflow_id,
       f.run_id,f.execution_id,f.state,f.created_at,f.retention_duration_seconds,f.expires_at,
       r.revision_id,r.filename,r.media_type,r.byte_size,r.sha256,r.origin,r.created_at as revision_created_at,
@@ -75,6 +76,7 @@ async function readPins(query: Queryable, conversationId: string, refs: MessageA
     join file_revisions r on r.file_id=f.file_id and r.revision_id=pin."revisionId"
     join operator_conversations c on c.id=$1 and c.deleted_at is null
     where ${SAME_CONVERSATION}`, [conversationId, JSON.stringify(pins)])
+  for (const row of result.rows) onFileRevision?.({ source: 'file', id: row.file_id, revision: row.activity_record_revision })
   return new Map(result.rows.map((row) => [identity({ fileId: row.file_id, revisionId: row.revision_id }), metadata(row)]))
 }
 
@@ -104,22 +106,20 @@ export async function validateMessageAttachments(query: Queryable, conversationI
 /** Metadata-only page readback, including durable Codex publications missed at close.
  * Never downloads bytes or follows a file head.
  * Callers retain the existing chat read authorization, including on receipt replay. */
-export async function hydrateMessageAttachments(query: Queryable, conversationId: string, input: unknown[]): Promise<Message[]> {
+export async function hydrateMessageAttachments(query: Queryable, conversationId: string, input: unknown[], onFileRevision?: (revision: ActivitySourceRevision) => void): Promise<Message[]> {
   const messages = input.map((value) => StoredMessageSchema.parse(value))
   if (messages.some((message) => message.conversationId !== conversationId)) {
     throw new DomainError('MESSAGE_ATTACHMENT_CONTEXT_MISMATCH', 'Message readback addressed another conversation.', 500)
   }
   const pins = (message: typeof messages[number]) => mergeMessagePins(message.attachmentRefs ?? [], message.publicationRefs ?? [])
-  const rows = await readPins(query, conversationId, messages.flatMap(pins))
-  // Input pins identify candidate messages; the recovery query verifies exact
+  const rows = await readPins(query, conversationId, messages.flatMap(pins), onFileRevision)
+  // Bounded user messages identify candidates, including turns with inherited references and no new uploads. The recovery query verifies exact
   // Codex receipt/session/sender bindings, independent of current token authority.
-  const candidates = messages.filter((message) => message.role === 'user' && message.attachmentRefs?.some((ref) => {
-    const scope = rows.get(identity(ref))?.file.scope
-    return scope?.kind === 'temporary'
-  })).map((message) => message.id)
+  const candidates = messages.filter((message) => message.role === 'user').map((message) => message.id)
+  const originalInputs = await readOriginalMessageInputs(query, conversationId, candidates)
   const recovered = await readCodexMessagePublications(query, conversationId, candidates)
   const missing = [...recovered.values()].flat().filter((ref) => !rows.has(identity(ref)))
-  for (const [key, value] of await readPins(query, conversationId, missing)) rows.set(key, value)
+  for (const [key, value] of await readPins(query, conversationId, missing, onFileRevision)) rows.set(key, value)
   return messages.map(({ attachmentRefs, publicationRefs, ...message }) => {
     const attachments = mergeMessagePins(attachmentRefs ?? [], publicationRefs ?? [], recovered.get(message.id) ?? []).map((ref) => {
       const value = rows.get(identity(ref))
@@ -128,6 +128,6 @@ export async function hydrateMessageAttachments(query: Queryable, conversationId
       if (!value) throw new DomainError('MESSAGE_ATTACHMENT_METADATA_UNAVAILABLE', 'Pinned attachment metadata is unavailable.', 500)
       return value
     })
-    return MessageSchema.parse({ ...message, ...(attachments?.length ? { attachments } : {}) })
+    return MessageSchema.parse({ ...message, ...(message.role === 'user' ? { originalInput: originalInputs.get(message.id) ?? null } : {}), ...(attachments?.length ? { attachments } : {}) })
   })
 }

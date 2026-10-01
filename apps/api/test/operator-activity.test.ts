@@ -13,12 +13,12 @@ describe('Operator native activity projection', () => {
       { id: 'child', role: 'assistant', sessionID: 'child-session', parentID: 'current' },
       { id: 'answer', role: 'assistant', sessionID: 'root', parentID: 'current' },
     ]) accepts(event('message.updated', { info }))
-    expect(accepts(event('message.part.updated', { part: { messageID: 'old' } }))).toBe(false)
-    expect(accepts(event('message.part.updated', { part: { messageID: 'child' } }))).toBe(false)
-    expect(accepts(event('message.part.updated', { part: { messageID: 'answer' } }))).toBe(true)
-    expect(accepts(event('message.part.delta', { messageID: 'answer', delta: 'new' }))).toBe(true)
-    expect(accepts(event('message.part.delta', { messageID: 'unknown', delta: 'unproven' }))).toBe(false)
-    expect(accepts(event('permission.asked', { id: 'approval' }))).toBe(true)
+    expect(accepts(event('message.part.updated', { part: { sessionID: 'root', messageID: 'old', id: 'old-part' } }))).toHaveLength(0)
+    expect(accepts(event('message.part.updated', { part: { sessionID: 'child-session', messageID: 'child', id: 'child-part' } }))).toHaveLength(0)
+    expect(accepts(event('message.part.updated', { part: { sessionID: 'root', messageID: 'answer', id: 'answer-part' } }))).toHaveLength(1)
+    expect(accepts(event('message.part.delta', { sessionID: 'root', messageID: 'answer', partID: 'answer-part', delta: 'new' }))).toHaveLength(1)
+    expect(accepts(event('message.part.delta', { sessionID: 'root', messageID: 'unknown', partID: 'unknown-part', delta: 'unproven' }))).toHaveLength(0)
+    expect(accepts(event('permission.asked', { id: 'approval' }))).toHaveLength(1)
   })
   it.each([
     ['tool', { type: 'commandExecution', command: 'printf hello', cwd: '/project', commandActions: [{ type: 'unknown', command: 'printf hello' }], aggregatedOutput: 'hello' }],

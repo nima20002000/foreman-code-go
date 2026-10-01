@@ -2,13 +2,20 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { AgentChatStateSchema } from '@graphql/contracts/agent-chat'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 
-/** These state-only tests must not launch a native process, read a Run, or touch SQL. */
+const principal: ManagementPrincipal = { id: 'h2-reader', name: 'Reader', audience: 'operator', revokedAt: null,
+  expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['agent_chat:read'], scope: {} }] }
+/** Scripted authority read only; no native process or Run access. */
 function service() {
   type Ports = ConstructorParameters<typeof AgentChatService>
   const forbidden = () => { throw new Error('Unexpected I/O while describing an unopened chat.') }
-  return new AgentChatService({ query: forbidden } as unknown as Ports[0], {} as Ports[1], {} as Ports[2],
+  return new AgentChatService({ query: async (sql: string) => {
+    if (!sql.startsWith('select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals')) forbidden()
+    return { rows: [{ id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
+      expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] }
+  } } as unknown as Ports[0], {} as Ports[1], {} as Ports[2],
     { getSavedVersion: forbidden, getCurrentSavedVersion: forbidden, getAgentConfiguration: forbidden },
     { getForWorkspace: forbidden, executionPages: forbidden }, forbidden, '/h2-not-used')
 }
@@ -24,7 +31,7 @@ describe('H2 A-R01: truthful chat availability without changing the frozen contr
         workflowNodeId: fixture.version.definition.nodes[0]!.id, agentId: configuration.agentId }
       const chat = service()
       try {
-        const state = await chat['state']({ context, configuration })
+        const state = await chat['state']({ context, configuration }, principal)
         assert.equal(AgentChatStateSchema.safeParse(state).success, true)
         assert.equal(state.availability.canSend, true)
         assert.match(state.availability.message!, /GraphQL workflow tools are not available in chat/)
@@ -35,7 +42,7 @@ describe('H2 A-R01: truthful chat availability without changing the frozen contr
         assert.equal(state.capabilities.steer, harness === 'codex' ? 'native_expected_turn' : 'unavailable')
         assert.equal(state.conversation, null)
         assert.equal(state.sessionState, 'none')
-        const blocked = await chat['state']({ context, configuration, blocked: { reason: 'run_active', message: 'The Run is still active.' } })
+        const blocked = await chat['state']({ context, configuration, blocked: { reason: 'run_active', message: 'The Run is still active.' } }, principal)
         assert.deepEqual(blocked.availability, { canSend: false, reason: 'run_active', message: 'The Run is still active.' })
       } finally { await chat.shutdown() }
     })

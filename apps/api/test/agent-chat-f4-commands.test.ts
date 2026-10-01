@@ -17,7 +17,7 @@ function store() {
     const key = JSON.stringify(values.slice(0, 3))
     if (sql.includes('with claimed as')) {
       if (receipts.has(key)) return { rowCount: 0, rows: [] }
-      receipts.set(key, { target_key: values[3], input_hash: values[4], result: { status: 'pending' } })
+      receipts.set(key, { target_key: values[3], input_hash: values[4], result: JSON.parse(String(values[6] ?? '{"status":"pending"}')) })
       return { rowCount: 1, rows: [] }
     }
     if (sql.includes('with settled as')) {
@@ -53,6 +53,44 @@ describe('F4 A-R12 durable control identity', () => {
       expect(perform).toHaveBeenCalledTimes(1)
     })
   }
+
+  it('returns authorized current readback on HTTP/MCP receipt replay without lowering revisions or repeating effects', async () => {
+    const memory = store(), commands = new AgentChatCommands(memory.pool)
+    let state = structuredClone(agentChatFixtures.idleAfterCompletion)
+    const perform = vi.fn(async () => state)
+    const readCurrent = vi.fn(async () => state)
+    await commands.execute(principal, 'http', 'c', 'r', { kind: 'interrupt' }, perform, readCurrent)
+    const receipt = structuredClone([...memory.receipts.values()][0]!.result)
+    state = { ...state, revision: state.revision + 10 }
+    const replay = await new AgentChatCommands(memory.pool).execute(principal, 'mcp', 'c', 'r',
+      { kind: 'interrupt' }, perform, readCurrent)
+    expect(replay.revision).toBe(state.revision)
+    expect([...memory.receipts.values()][0]!.result).toEqual(receipt)
+    expect(perform).toHaveBeenCalledTimes(1)
+    const denied = vi.fn(async () => { throw new DomainError('ACCESS_DENIED', 'Revoked.', 403) })
+    await expect(commands.execute(principal, 'mcp', 'c', 'r', { kind: 'interrupt' }, perform, denied))
+      .rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    expect(perform).toHaveBeenCalledTimes(1)
+  })
+
+  it('records the validated answer before native I/O and preserves its exact source through uncertain HTTP/MCP replay', async () => {
+    const memory = store(), commands = new AgentChatCommands(memory.pool)
+    const metadata = { schemaVersion: 1 as const, kind: 'respond' as const, conversationId: 'c', modelRequestId: 'model-A',
+      scope: { kind: 'agent_chat' as const, conversationId: 'c', workspaceId: 'w', workflowId: 'f', nodeId: 'n', agentId: 'a' },
+      native: { harness: 'codex', sessionId: 'native-session', turnId: 'native-turn', requestId: 'native-ask', requestType: 'approval' },
+      choice: { optionId: 'opaque-option', semantic: 'approve_once' } }
+    const perform = vi.fn(async () => {
+      expect([...memory.receipts.values()][0]!.result).toEqual({ status: 'pending', acceptedControl: metadata })
+      throw new Error('Provider response accepted; transport acknowledgment lost.')
+    })
+    const request = { kind: 'respond', nativeRequestId: 'native-ask', optionId: 'opaque-option' }
+    await expect(commands.execute(principal, 'http', 'c', 'control-answer', request, perform, undefined, metadata))
+      .rejects.toMatchObject({ code: 'AGENT_CHAT_CONTROL_UNCONFIRMED' })
+    await expect(new AgentChatCommands(memory.pool).execute(principal, 'mcp', 'c', 'control-answer', request, perform))
+      .rejects.toMatchObject({ code: 'AGENT_CHAT_CONTROL_UNCONFIRMED' })
+    expect([...memory.receipts.values()][0]!.result).toEqual({ status: 'uncertain', acceptedControl: metadata })
+    expect(perform).toHaveBeenCalledTimes(1)
+  })
 
   it('fences an overlapping retry and a changed control kind while the first control is in flight', async () => {
     const memory = store(), commands = new AgentChatCommands(memory.pool)

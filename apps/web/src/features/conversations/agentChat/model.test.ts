@@ -65,3 +65,74 @@ describe('Agent chat identity and state projection', () => {
     delete state.pendingInteraction!.turn.nativeRequestId; expect(approvalReplyAvailable(state)).toBe(false)
   })
 })
+
+describe('equal-revision canonical readback', () => {
+  it('cannot erase active A, queued B or elevate capabilities from a cached receipt at the same revision', () => {
+    const current = agentChatFixtures.activeWithQueue
+    const cached = { ...agentChatFixtures.idleAfterCompletion, revision: current.revision,
+      capabilities: { ...current.capabilities, queueNextTurn: true } }
+    expect(acceptAgentChatState(current, cached)).toBe(current)
+  })
+  it('cannot replace a completed message with a legacy partial field omitted', () => {
+    const complete = agentChatFixtures.idleAfterCompletion.messages[1]!
+    const partial = { ...complete, nativeMessageComplete: undefined, content: 'partial' }
+    expect(mergeChatMessages([complete], [partial])).toEqual([complete])
+    const previous = agentChatFixtures.idleAfterCompletion
+    const incoming = { ...previous, revision: previous.revision + 1, messages: [partial] }
+    expect(acceptAgentChatState(previous, incoming).messages).toEqual([complete])
+  })
+})
+
+
+describe('independently qualified read facts', () => {
+  it('refreshes same-revision Run availability from authorized reads while retaining lifecycle and ignoring receipt replay', () => {
+    const current = agentChatFixtures.activeWithQueue
+    const read = { ...agentChatFixtures.runActive, context: current.context, conversation: current.conversation, revision: current.revision }
+    const merged = acceptAgentChatState(current, read, 'read')
+    expect(merged.availability).toEqual(read.availability)
+    expect(merged.activeTurn).toEqual(current.activeTurn)
+    expect(merged.turns).toEqual(current.turns)
+    expect(acceptAgentChatState(merged, current, 'receipt')).toBe(merged)
+  })
+})
+
+it('real message reconciliation compares durable entity revisions and preserves canonical empty finals', () => {
+  const base = agentChatFixtures.idleAfterCompletion.messages[1]!
+  const final = { ...base, revision: '9007199254740993', content: '', nativeMessageComplete: true }
+  const stale = { ...base, revision: '9007199254740992', content: 'older', nativeMessageComplete: true }
+  expect(mergeChatMessages([final], [stale])).toEqual([final])
+  expect(mergeChatMessages([final], [{ ...final, content: 'conflicting equal revision' }])).toEqual([final])
+})
+it('an old qualified receipt/SSE cannot elevate capability while fresh authorized read can update qualification', () => {
+  const previous = { ...agentChatFixtures.activeWithQueue, qualificationKey: 'a'.repeat(64), availability: { ...agentChatFixtures.activeWithQueue.availability, canSend: false } }
+  const incoming = { ...previous, qualificationKey: 'b'.repeat(64), availability: { ...previous.availability, canSend: true } }
+  expect(acceptAgentChatState(previous, incoming, 'receipt').availability.canSend).toBe(false)
+  const read = acceptAgentChatState(previous, incoming, 'read')
+  expect(read.availability.canSend).toBe(true); expect(read.qualificationKey).toBe(incoming.qualificationKey)
+  expect(read.activeTurn).toEqual(previous.activeTurn); expect(read.turns).toEqual(previous.turns)
+})
+it('actual state acceptance uses decimal scoped revisions beyond numeric legacy precision', () => {
+  const previous = structuredClone(agentChatFixtures.activeWithQueue)
+  const scope = { kind: 'agent_chat' as const, conversationId: previous.conversation.id, workspaceId: previous.context.workspaceId,
+    workflowId: previous.context.workflowId, nodeId: previous.context.workflowNodeId, agentId: previous.context.agentId }
+  previous.activitySnapshot = { schemaVersion: 1, scope, revision: '9007199254740993', active: [], queued: [], latest: null,
+    pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
+  const old = { ...previous, activeTurn: null, activitySnapshot: { ...previous.activitySnapshot, revision: '9007199254740992' } }
+  expect(acceptAgentChatState(previous, old).activeTurn).toEqual(previous.activeTurn)
+})
+
+it('accepts independent canonical message advances from equal-scope authorized readback and receipt replay', () => {
+  const previous: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion), base = previous.messages[1]!
+  previous.messages = [{ ...base, revision: '1', content: 'long provisional', nativeMessageComplete: false }]
+  const scope = { kind: 'agent_chat' as const, conversationId: previous.conversation!.id, workspaceId: previous.context.workspaceId,
+    workflowId: previous.context.workflowId, nodeId: previous.context.workflowNodeId, agentId: previous.context.agentId }
+  previous.activitySnapshot = { schemaVersion: 1, scope, revision: String(previous.revision), sourceRevisions: [{ source: 'message', id: base.id, revision: '1' }],
+    active: [], queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
+  const incoming = { ...previous, messages: [{ ...previous.messages[0]!, revision: '2', content: '', nativeMessageComplete: true }],
+    activitySnapshot: { ...previous.activitySnapshot, sourceRevisions: [{ source: 'message' as const, id: base.id, revision: '2' }] } }
+  for (const source of ['read', 'receipt'] as const) {
+    const accepted = acceptAgentChatState(previous, incoming, source)
+    expect(accepted.messages[0]).toMatchObject({ revision: '2', content: '', nativeMessageComplete: true })
+    expect(accepted.activitySnapshot?.sourceRevisions).toEqual(incoming.activitySnapshot.sourceRevisions)
+  }
+})

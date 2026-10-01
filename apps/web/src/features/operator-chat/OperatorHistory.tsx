@@ -6,6 +6,7 @@ import { getOperatorConversationHistory } from '../../shared/api/operatorChatHis
 import { identityChangedEvent, identityEpoch } from '../../shared/api/protectedChatStorage'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { Button } from '../../shared/ui/nocturne'
+import { mergeChatMessages } from '../conversations/agentChat/model'
 import { ConversationHistory } from '../conversations'
 import { useOperatorChatStore } from './operatorChatStore'
 
@@ -29,7 +30,7 @@ function OwnedHistory({ id, epoch, onBrowse, recentMessages, renderMessages }: {
   const client = useQueryClient()
   const key = ['operator-chat', 'history', epoch, id] as const
   const history = useInfiniteQuery({
-    queryKey: key,
+    queryKey: key, maxPages: 5,
     queryFn: ({ pageParam, signal }) => getOperatorConversationHistory(id, pageParam ? { before: pageParam } : {}, { signal }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
@@ -49,8 +50,8 @@ function OwnedHistory({ id, epoch, onBrowse, recentMessages, renderMessages }: {
   }, [client, epoch, id])
 
   const recentIds = new Set(recentMessages.map((message) => message.id))
-  const messages = [...(history.data?.pages ?? [])].reverse().flatMap((page) => page.entries)
-    .map((entry) => entry.message).filter((message) => !recentIds.has(message.id))
+  const messages = mergeChatMessages(...[...(history.data?.pages ?? [])].reverse().map((page) => page.entries.map((entry) => entry.message)), recentMessages)
+    .filter((message) => !recentIds.has(message.id))
   return <section aria-label="Earlier messages">
     {!open || history.hasNextPage ? <Button size="sm" variant="ghost" disabled={open && history.isFetching}
       onClick={() => { onBrowse?.(); if (!open) setOpen(true); else void history.fetchNextPage() }}>

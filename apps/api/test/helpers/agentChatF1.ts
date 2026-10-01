@@ -5,6 +5,7 @@ import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } fro
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
+import type { OperatorActivityChange } from '../../src/modules/conversations/operatorActivity.js'
 import type { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
 import { NativeTurnNotActiveError } from '../../src/modules/harnesses/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSteerInput, NativeTurnInput } from '../../src/modules/harnesses/port.js'
@@ -40,7 +41,7 @@ interface Receipt {
   message_id: string; native_turn_id: string | null; target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null; input_hash: string
   payload: { content: string; interruptRequestId?: string }; result?: ExecutionResult
-  created_at: Date; updated_at: Date
+  created_at: Date; updated_at: Date; started_at?: Date | null
 }
 
 /** Executes the production repository against a strict scripted SQL store. This is NOT PostgreSQL:
@@ -57,6 +58,7 @@ export class F1Store {
   }
   readonly turns = new Map<string, Receipt>()
   readonly messages = new Map<string, Message>()
+  readonly activityRows: Array<{ record: OperatorActivityChange; sequence: string; revision: string }> = []
   readonly statements: Array<{ sql: string; values: unknown[]; connection: number }> = []
   private connections = 0
   readonly pool = {
@@ -73,7 +75,17 @@ export class F1Store {
     const result = (rows: unknown[] = [], rowCount = rows.length) => ({ rows: structuredClone(rows), rowCount })
     const id = String(values[1])
     const receipt = this.turns.get(id)
-    if (['begin', 'commit', 'rollback'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql.startsWith('select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals')) {
+      return result(values[0] === principal.id ? [{ id: principal.id, name: principal.name, audience: principal.audience,
+        grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
+    }
+    if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql.startsWith('with open as ( select principal_id,operation,command_id')) return result() // No accepted controls in this fixture.
+    if (sql.startsWith('select t.message_id,t.native_turn_id,')) return result() // No file publication receipts in this fixture.
+    if (sql.startsWith('select (select started_at from operator_conversation_turns')) {
+      const latest = [...this.turns.values()].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)).at(-1)
+      return result([{ started_at: receipt?.started_at ?? null, latest_request_id: latest?.request_id ?? null }])
+    }
     if (sql.startsWith('select * from operator_conversations') || sql.startsWith('select id from operator_conversations')) return result([this.row])
     if (sql.startsWith('select delivery from operator_conversation_turns')) {
       return result([...this.turns.values()].filter((entry) => entry.native_turn_id === values[1] && entry.intent !== 'steer'
@@ -119,7 +131,12 @@ export class F1Store {
     if (sql.startsWith('select record,sequence::text from operator_conversation_messages')) {
       return result([...this.messages.values()].reverse().map((record, index) => ({ record, sequence: String(index + 1) })))
     }
-    if (sql.startsWith('select record,sequence::text,revision::text from operator_conversation_activity')) return result()
+    if (sql.startsWith('select record,sequence::text,revision::text from operator_conversation_activity')) {
+      if (sql.includes("record->>'status' in")) return result(this.activityRows.filter((entry) => entry.record.kind !== 'thinking'
+        && ['pending', 'running', 'unknown'].includes(entry.record.status)).slice(0, Number(values[1])))
+      return result([...this.activityRows].reverse().filter((entry) => values[1] === null || BigInt(entry.sequence) < BigInt(String(values[1])))
+        .slice(0, Number(values[2])))
+    }
     if (sql.startsWith('insert into operator_conversation_messages')) {
       this.messages.set(String(values[0]), JSON.parse(String(values[4])) as Message)
       return result([], 1)
@@ -151,7 +168,7 @@ export class F1Store {
       if (!receipt) return result()
       if (sql.includes("set delivery='submitting'")) {
         if (receipt.delivery !== 'queued') return result()
-        receipt.delivery = 'submitting'
+        receipt.delivery = 'submitting'; receipt.started_at ??= new Date()
       } else if (sql.includes("set delivery='accepted'") || sql.includes('set delivery=$4')) {
         if (!['submitting', 'unknown'].includes(receipt.delivery)) return result()
         if (sql.includes('target_native_turn_id=$3') && receipt.target_native_turn_id !== values[2]) return result()
@@ -168,7 +185,13 @@ export class F1Store {
       } else throw new Error(`Unhandled turn update: ${sql}`)
       return result([], 1)
     }
-    if (sql.startsWith('update operator_conversation_activity')) return result()
+    if (sql.startsWith('update operator_conversation_activity')) {
+      for (const entry of this.activityRows) if (entry.record.requestId === values[1] && ['pending', 'running'].includes(entry.record.status)) {
+        entry.record.status = entry.record.kind === 'thinking' ? values[2] ? 'canceled' : 'completed' : 'unknown'
+        entry.revision = String(Number(entry.revision) + 1)
+      }
+      return result()
+    }
     if (sql.startsWith('update operator_conversations')) {
       if (sql.includes('and active_request_id=$2') && this.row.active_request_id !== values[1]) return result()
       if (sql.includes('set active_request_id=$2')) {
@@ -265,7 +288,7 @@ export function fixture(store = new F1Store()) {
     pump(id: string): void
   }
   ;(service as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
-    execute: async (...args: unknown[]) => (args.at(-1) as () => Promise<unknown>)(), drain: async () => undefined,
+    execute: async (...args: unknown[]) => (args[5] as () => Promise<unknown>)(), drain: async () => undefined,
   }
   internals.runtimes.set(store.row.id, { manager, session: manager.session, configuration })
   const request = (requestId: string, extra: Partial<SendAgentChatMessageRequest> = {}): SendAgentChatMessageRequest => ({

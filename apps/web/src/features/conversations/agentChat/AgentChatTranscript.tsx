@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import type { AgentChatState } from '@graphql/contracts/agent-chat'
 import type { MessageAttachmentRef } from '@graphql/contracts/files'
 import { ChatMessageFiles } from '../ChatMessageFiles'
-import { messageAttachmentRefs } from '../chatAttachmentAttempt'
+import { ChatDecisionReceipts } from '../ChatDecisionReceipts'
 import type { Message } from '@graphql/contracts'
 import { Badge, Button, MessageBubble } from '../../../shared/ui/nocturne'
 import { OperatorActivityList } from '../../operator-chat/OperatorActivityList'
@@ -11,16 +11,18 @@ import { ConversationHistory } from '../ConversationHistory'
 import { ConversationViewport } from '../ConversationViewport'
 import { approvalReplyAvailable, deliveryLabels, intentLabels, mergeChatMessages } from './model'
 import { confirmedCommandReceipt } from './commandRecords'
+import { applyCanonicalActivityItems } from './activityMerge'
 import { placeChatActivities } from './activityPlacement'
 import { commandMayHaveBeenAccepted, type AgentChatCommandRecord, type useAgentChat } from './useAgentChat'
 
-export function AgentChatTranscript({ state, name, commands, history, notices, cancelReason, responseReason, resendReason, onCancel, onRespond, onSendAgain }: {
+export function AgentChatTranscript({ state, name, commands, history, notices, cancelReason, responseReason, resendReason, onRefresh, refreshing, onCancel, onRespond, onSendAgain }: {
   state: AgentChatState; name: string; commands: AgentChatCommandRecord[]; history: ReturnType<typeof useAgentChat>['history']
   notices?: ReactNode; cancelReason?: string; responseReason?: string; resendReason?: string
+  onRefresh?(): void; refreshing?: boolean
   onCancel(requestId: string): void; onRespond(optionId: string): void; onSendAgain(content: string, attachments?: MessageAttachmentRef[]): void
 }) {
   const id = state.conversation?.id
-  const messages = mergeChatMessages(...[...(history.data?.pages.flatMap((batch) => batch.pages) ?? [])].reverse().map((page) => page.messages), state.messages)
+  const messages = mergeChatMessages(...[...(history.data?.pages.flatMap((batch) => batch.pages) ?? [])].reverse().map((page) => page.messages), state.messages).filter((message) => message.activityChannel !== 'reasoning')
   const receipts = new Map(state.turns.map((turn) => [turn.messageId, turn]))
   // Every nonterminal receipt is in state, but its text can lie outside the bounded message cut.
   const orphaned = state.turns.filter((turn) => !messages.some((message) => message.id === turn.messageId))
@@ -30,7 +32,8 @@ export function AgentChatTranscript({ state, name, commands, history, notices, c
     && !state.turns.some((turn) => record.command?.kind === 'send' && turn.requestId === record.command.input.requestId))
   const status = (message: Message) => {
     const receipt = receipts.get(message.id)
-    if (message.role === 'assistant') return message.nativeMessageComplete === false ? <Badge>Reply in progress</Badge> : null
+    if (message.role === 'assistant') return message.nativeMessageComplete === false
+      ? <Badge>{message.requestId === state.activeTurn?.requestId ? 'Reply in progress' : 'Partial reply'}</Badge> : null
     if (message.role !== 'user') return null
     return receipt ? <span className="agent-chat-delivery" data-delivery={receipt.delivery}>
       <Badge tone={receipt.delivery === 'unknown' ? 'warning' : receipt.delivery === 'failed' ? 'danger' : 'neutral'}>{deliveryLabels[receipt.delivery]}</Badge>
@@ -39,11 +42,12 @@ export function AgentChatTranscript({ state, name, commands, history, notices, c
   }
   // Only genuine server-provided public activities are shown. No timers, percentages, private
   // reasoning, or synthetic "thinking" strings. Unknown delta payloads only trigger state reads.
-  const activities = state.activities.filter((entry) => entry.kind !== 'thinking')
+  const activities = applyCanonicalActivityItems(state.activities, state.activitySnapshot).filter((entry) => entry.kind !== 'thinking')
   const placement = placeChatActivities(messages, activities, state.activeTurn?.requestId)
   const revision = JSON.stringify([messages, state.turns, activities, state.pendingInteraction, unresolved.map((record) => [record.command, record.status])])
   return <ConversationViewport revision={revision}>{(onBrowse) => <>
     {notices}
+    {onRefresh ? <ChatDecisionReceipts snapshot={state.activitySnapshot} onRefresh={onRefresh} pending={refreshing} /> : null}
     {id && (state.hasEarlierMessages && !history.data || history.hasNextPage) ? <Button size="sm" variant="ghost" disabled={history.isFetching}
       onClick={() => { onBrowse(); void history.fetchNextPage() }}>Load earlier messages</Button> : null}
     {history.isError ? <p role="alert">Earlier messages could not be loaded. <Button size="sm" disabled={history.isFetching}
@@ -82,7 +86,10 @@ export function AgentChatTranscript({ state, name, commands, history, notices, c
         {turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
           {cancelReason ? <p className="agent-chat-note">{cancelReason}</p> : null}</> : null}
         {turn.delivery === 'unknown' ? <><p className="agent-chat-note">The original may have been accepted. It will not be resent automatically.</p>
-          <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => onSendAgain(message.content, messageAttachmentRefs(message))}>Send again as new message</Button></> : null}
+          {message.originalInput?.requestId === turn.requestId
+            ? <Button size="sm" disabled={!!resendReason} title={resendReason} onClick={() => onSendAgain(message.originalInput!.content, message.originalInput!.attachments)}>Send again as new message</Button>
+            : <><p className="agent-chat-note">Original send inputs are unavailable in this view. Do not use displayed outputs as new inputs.</p>
+              {onRefresh ? <Button size="sm" disabled={refreshing} onClick={onRefresh}>Read original send inputs</Button> : null}</>}</> : null}
       </div>
     }} />
     {unresolved.map((record) => record.command?.kind === 'send' ? <MessageBubble key={record.command.input.requestId} role="user" author="You"

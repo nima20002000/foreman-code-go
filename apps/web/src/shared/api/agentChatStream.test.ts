@@ -76,3 +76,38 @@ describe('Agent chat SSE transport', () => {
     expect(calls.connection).toHaveBeenCalledWith('unavailable')
   })
 })
+
+describe('stream generation barriers', () => {
+  it('restarts from a fresh snapshot after reset ephemeral counters and ignores disposed source callbacks', () => {
+    installChatSource(); vi.useFakeTimers()
+    const calls = { snapshot: vi.fn(), event: vi.fn(), refetch: vi.fn(), connection: vi.fn() }
+    const state = agentChatFixtures.activeWithQueue
+    const close = subscribeAgentChat('workspace-fixture', state.conversation.id, calls)
+    const old = AgentChatTestSource.instances[0]!
+    old.snapshot(state, 50); old.fail(); vi.advanceTimersByTime(500)
+    const current = AgentChatTestSource.instances[1]!
+    current.snapshot(state, 0)
+    old.snapshot(agentChatFixtures.idleAfterCompletion, 100)
+    old.event({ id: 101, conversationId: state.conversation.id, type: 'delta', data: {} })
+    expect(calls.snapshot).toHaveBeenCalledTimes(2)
+    expect(calls.snapshot).toHaveBeenLastCalledWith(state)
+    expect(calls.event).not.toHaveBeenCalled()
+    close(); current.snapshot(state, 1); vi.runAllTimers()
+    expect(calls.snapshot).toHaveBeenCalledTimes(2)
+    vi.useRealTimers(); vi.unstubAllGlobals()
+  })
+})
+
+
+it('does not notify or create a retry timer after a listener disposes the subscription', () => {
+  installChatSource(); vi.useFakeTimers()
+  const calls = { snapshot: vi.fn(), event: vi.fn(), refetch: vi.fn(), connection: vi.fn() }
+  const state = agentChatFixtures.active
+  const close = subscribeAgentChat('workspace-fixture', state.conversation.id, { ...calls, snapshot: () => close() })
+  AgentChatTestSource.instances[0]!.snapshot(state)
+  expect(calls.connection).not.toHaveBeenCalledWith('connected')
+  const stop = subscribeAgentChat('workspace-fixture', state.conversation.id, { ...calls, refetch: () => stop() })
+  AgentChatTestSource.instances[1]!.fail()
+  expect(vi.getTimerCount()).toBe(0)
+  vi.useRealTimers(); vi.unstubAllGlobals()
+})

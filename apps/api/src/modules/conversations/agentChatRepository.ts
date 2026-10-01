@@ -4,13 +4,18 @@ import { messageAttachmentIdentity } from '@graphql/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type Message, type PendingNativeInteraction } from '@graphql/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type Message, type PendingNativeInteraction } from '@graphql/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
 } from '@graphql/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
+import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
+import { readActivityCommands } from './activityCommands.js'
+import { agentActivityScope } from './activitySnapshot.js'
+import { readConversationPublicationReceipts, type ConversationPublicationReceipt } from './messagePublications.js'
+import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { OPERATOR_SNAPSHOT_MESSAGE_BYTES, OPERATOR_HISTORY_PAGE_BYTES } from './operatorChatRepository.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
@@ -61,6 +66,7 @@ interface TurnRow {
   payload: { content: string; interruptRequestId?: string; requestIdentityVersion?: 1; ownerPrincipalId?: string }
   created_at: Date
   updated_at: Date
+  started_at: Date | null
 }
 
 export const AGENT_CHAT_MESSAGE_LIMIT = 100
@@ -104,7 +110,7 @@ function turn(row: TurnRow): AgentChatTurn {
   })
 }
 const TURN_COLUMNS = `request_id,turn_sequence::text,intent,delivery,message_id,native_turn_id,target_native_turn_id,
-  delivery_error,input_hash,payload,created_at,updated_at`
+  delivery_error,input_hash,payload,created_at,updated_at,started_at`
 
 /** Captured while holding the conversation row lock, never resolved from a later active request. */
 export interface AgentChatInterruptTarget {
@@ -123,6 +129,8 @@ export interface NewAgentConversation {
 
 export class PostgresAgentChatRepository {
   constructor(readonly pool: pg.Pool) {}
+
+  unfinishedActivityOwners(conversationId?: string) { return new PostgresOperatorActivityRepository(this.pool).unfinishedOwners('agent', conversationId) }
 
   async byKey(key: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
     return (await query.query<AgentConversationRow>(
@@ -199,8 +207,8 @@ export class PostgresAgentChatRepository {
         and s.delivery in ('submitting','unknown') order by s.turn_sequence`, [id])).rows
   }
   /** Next queued turn. Interrupt-and-send goes ahead of ordinary queued turns. */
-  async nextQueued(id: string): Promise<AgentChatTurn | undefined> {
-    const row = (await this.pool.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
+  async nextQueued(id: string, query: Queryable = this.pool): Promise<AgentChatTurn | undefined> {
+    const row = (await query.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
       where conversation_id=$1 and delivery='queued'
       order by (intent='interrupt_and_send') desc, operator_conversation_turns.turn_sequence limit 1`, [id])).rows[0]
     return row ? turn(row) : undefined
@@ -352,7 +360,7 @@ export class PostgresAgentChatRepository {
       const unresolved = await client.query(`select 1 from operator_conversation_turns
         where conversation_id=$1 and intent <> 'steer' and delivery in ('submitting','accepted','unknown') limit 1`, [id])
       if (unresolved.rowCount) { await client.query('commit'); return false }
-      const claimed = await client.query(`update operator_conversation_turns set delivery='submitting',updated_at=now()
+      const claimed = await client.query(`update operator_conversation_turns set delivery='submitting',started_at=coalesce(started_at,now()),updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery='queued'`, [id, requestId])
       if (claimed.rowCount !== 1) { await client.query('commit'); return false }
       await client.query(`update operator_conversations set active_request_id=$2,active_native_turn_id=null,active_phase='accepted',
@@ -499,16 +507,16 @@ export class PostgresAgentChatRepository {
       if (result.outcome === 'succeeded' && nativeMessageId) {
         const output = result.output
         const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
-          ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : '' : ''
+          ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : undefined : undefined
         const prior = await client.query(`select 1 from operator_conversation_messages
           where conversation_id=$1 and (native_message_id=$2 or
             (record->>'nativeParentMessageId'=$2 and record->>'requestId'=$3)) limit 1`, [id, nativeMessageId, requestId])
-        if (content && !prior.rowCount) {
+        if (content !== undefined && !prior.rowCount) {
           const activity = await client.query<{ sequence: string }>(
             'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id, requestId])
           const now = new Date().toISOString()
           const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, role: 'assistant', requestId, content,
-            nativeMessageId, afterActivitySequence: activity.rows[0]!.sequence, createdAt: now, updatedAt: now })
+            nativeMessageId, nativeMessageComplete: true, afterActivitySequence: activity.rows[0]!.sequence, createdAt: now, updatedAt: now })
           await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
             values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id, id, content, nativeMessageId, JSON.stringify(message)])
         }
@@ -519,7 +527,7 @@ export class PostgresAgentChatRepository {
         JSON.stringify(ExecutionResultSchema.parse(result))])
       if (row.active_native_turn_id) await this.settleSteers(id, row.active_native_turn_id, delivery, client)
       await client.query(`update operator_conversation_activity set revision=revision+1,
-        record=jsonb_set(record,'{status}',to_jsonb(case when $3 then 'canceled' when record->>'kind'='thinking' then 'completed' else 'unknown' end::text))
+        record=jsonb_set(record,'{status}',to_jsonb(case when record->>'kind'='thinking' then case when $3 then 'canceled' else 'completed' end else 'unknown' end::text))
         where conversation_id=$1 and request_id=$2 and record->>'status' in ('pending','running')`, [id, requestId, result.outcome === 'canceled'])
       await client.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null,active_phase=null,
         cancel_requested=false,pending_interaction=null,turn_state=$2,last_error=$3,last_result=$4::jsonb,revision=revision+1,updated_at=now()
@@ -571,64 +579,92 @@ export class PostgresAgentChatRepository {
   }
 
   async state(id: string, options: { recoverOverflow?: boolean } = {}): Promise<{
-    row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true
+    fileSourceRevisions?: ActivitySourceRevision[]; commandActivity?: Awaited<ReturnType<typeof readActivityCommands>>; publicationReceipts?: ConversationPublicationReceipt[]; row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>> & { itemProvenance?: Record<string, unknown> }
   } | undefined> {
-    const row = await this.get(id)
-    if (!row) return undefined
-    // Open receipts have priority over recent terminal history, in one SQL snapshot.
-    // Fetch one extra open receipt to detect overflow before selecting an explicit recovery window.
-    const receiptRows = (await this.pool.query<TurnRow>(`with open as (
-        select ${TURN_COLUMNS} from operator_conversation_turns where conversation_id=$1 and intent is not null
-          and delivery = any($2::text[]) order by operator_conversation_turns.turn_sequence limit $3::int + 1
-      ), recent as (
-        select ${TURN_COLUMNS} from operator_conversation_turns where conversation_id=$1 and intent is not null
-          and not (delivery = any($2::text[])) order by operator_conversation_turns.turn_sequence desc
-          limit least(50, greatest(0, $3::int - (select count(*) from open)))
-      ) select * from (select * from open union all select * from recent) visible order by turn_sequence::bigint`,
-    [id, OPEN_DELIVERIES, AGENT_CHAT_OPEN_TURN_LIMIT])).rows
-    const overflow = receiptRows.length > AGENT_CHAT_OPEN_TURN_LIMIT
-    if (overflow && !options.recoverOverflow) {
-      throw new DomainError('AGENT_CHAT_RECEIPT_OVERFLOW',
-        'This chat exceeds the unfinished-message limit. Settle unfinished turns or cancel queued messages before reading state.',
-        409, { limit: AGENT_CHAT_OPEN_TURN_LIMIT })
-    }
-    const turns = receiptRows.slice(0, AGENT_CHAT_OPEN_TURN_LIMIT).map(turn)
-    if (overflow) {
-      // Make cleanup reachable even when the oldest 100 receipts are all unconfirmed.
-      // Reads never cancel, delete, or settle anything; the omitted receipts remain pageable.
-      const queued = await this.nextQueued(id)
-      if (queued && !turns.some((entry) => entry.requestId === queued.requestId)) {
-        turns[turns.length - 1] = queued
-        turns.sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0)
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin isolation level repeatable read read only')
+      const row = await this.get(id, client)
+      if (!row) { await client.query('commit'); return undefined }
+      // Open receipts have priority over recent terminal history, in one SQL snapshot.
+      // Fetch one extra open receipt to detect overflow before selecting an explicit recovery window.
+      const receiptRows = (await client.query<TurnRow>(`with open as (
+          select ${TURN_COLUMNS} from operator_conversation_turns where conversation_id=$1 and intent is not null
+            and delivery = any($2::text[]) order by operator_conversation_turns.turn_sequence limit $3::int + 1
+        ), recent as (
+          select ${TURN_COLUMNS} from operator_conversation_turns where conversation_id=$1 and intent is not null
+            and not (delivery = any($2::text[])) order by operator_conversation_turns.turn_sequence desc
+            limit least(50, greatest(0, $3::int - (select count(*) from open)))
+        ) select * from (select * from open union all select * from recent) visible order by turn_sequence::bigint`,
+      [id, OPEN_DELIVERIES, AGENT_CHAT_OPEN_TURN_LIMIT])).rows
+      const overflow = receiptRows.length > AGENT_CHAT_OPEN_TURN_LIMIT
+      if (overflow && !options.recoverOverflow) {
+        throw new DomainError('AGENT_CHAT_RECEIPT_OVERFLOW',
+          'This chat exceeds the unfinished-message limit. Settle unfinished turns or cancel queued messages before reading state.',
+          409, { limit: AGENT_CHAT_OPEN_TURN_LIMIT })
       }
-    }
-    // Keep the newest contiguous window within the same byte budget as Operator
-    // chat. Oversized/older messages are retained in storage and paged over HTTP/MCP.
-    const recent = (await this.pool.query<{ messages: unknown[]; has_earlier: boolean }>(`with candidates as (
-      select m.*,row_number() over (order by m.sequence desc) as ordinal,
-        sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-      from (select record,sequence from operator_conversation_messages
-        where conversation_id=$1 order by sequence desc limit ($2::integer+1)) m
-    ), selected as (select * from candidates where ordinal<=$2 and bytes<=$3)
-    select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
-      (select count(*) from candidates)>(select count(*) from selected) as has_earlier`,
-    [id, AGENT_CHAT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])).rows[0]!
-    return { row, turns, messages: await hydrateMessageAttachments(this.pool, id, recent.messages), hasEarlierMessages: recent.has_earlier,
-      ...(overflow ? { hasMoreTurns: true as const } : {}) }
+      const turns = receiptRows.slice(0, AGENT_CHAT_OPEN_TURN_LIMIT).map(turn)
+      if (overflow) {
+        // Make cleanup reachable even when the oldest 100 receipts are all unconfirmed.
+        // Reads never cancel, delete, or settle anything; the omitted receipts remain pageable.
+        const queued = await this.nextQueued(id, client)
+        if (queued && !turns.some((entry) => entry.requestId === queued.requestId)) {
+          turns[turns.length - 1] = queued
+          turns.sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0)
+        }
+      }
+      // Keep the newest contiguous window within the same byte budget as Operator
+      // chat. Oversized/older messages are retained in storage and paged over HTTP/MCP.
+      const recent = (await client.query<{ messages: unknown[]; has_earlier: boolean }>(`with candidates as (
+        select m.*,row_number() over (order by m.sequence desc) as ordinal,
+          sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
+        from (select record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) as record,sequence from operator_conversation_messages
+          where conversation_id=$1 order by sequence desc limit ($2::integer+1)) m
+      ), selected as (select * from candidates where ordinal<=$2 and bytes<=$3)
+      select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
+        (select count(*) from candidates)>(select count(*) from selected) as has_earlier`,
+      [id, AGENT_CHAT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])).rows[0]!
+      const fileSourceRevisions: ActivitySourceRevision[] = []
+      const messages = await hydrateMessageAttachments(client, id, recent.messages, (source) => fileSourceRevisions.push(source))
+      const publicationReceipts = await readConversationPublicationReceipts(client, id, messages.filter((message) => message.role === 'user').map((message) => message.id))
+      const activity = new PostgresOperatorActivityRepository(this.pool)
+      const activityPage = await activity.snapshotPage(id, { limit: 100 }, client)
+      const unfinished = await activity.unfinished(id, client)
+      const ownership = (await client.query<{ started_at: Date | null; latest_request_id: string | null }>(`select
+        (select started_at from operator_conversation_turns where conversation_id=$1 and request_id=$2) as started_at,
+        (select request_id from operator_conversation_turns where conversation_id=$1 and intent is not null order by turn_sequence desc limit 1) as latest_request_id`,
+      [id, row.active_request_id])).rows[0]!
+      const selection = row.origin_run_id && row.origin_execution_id
+        ? (await client.query<{ workflowVersionId: string; attemptKey: string }>(`select r.workflow_version_id as "workflowVersionId", e.attempt::text as "attemptKey"
+            from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2`, [row.origin_run_id, row.origin_execution_id])).rows[0] ?? null : null
+      const loaded = { fileSourceRevisions, publicationReceipts, row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
+        ...(overflow ? { hasMoreTurns: true as const } : {}),
+        ...(unfinished.hasMore ? { hasMoreActivities: true as const } : {}) }
+      const commandActivity = await readActivityCommands(client, id, agentActivityScope(loaded), String(row.revision))
+      await client.query('commit')
+      return { ...loaded, commandActivity }
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined)
+      throw error
+    } finally { client.release() }
   }
-  async receipts(id: string, before: string | undefined, limit: number) {
-    const rows = (await this.pool.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
+  async receipts(id: string, before: string | undefined, limit: number, query: Queryable = this.pool): Promise<{ turns: AgentChatTurn[]; nextCursor: string | null }> {
+    if (query === this.pool && before !== undefined) return withConversationPageRead(this.pool, (sql) => this.receipts(id, before, limit, sql))
+    await assertConversationCursor(query, id, before, 'turns')
+    const rows = (await query.query<TurnRow>(`select ${TURN_COLUMNS} from operator_conversation_turns
       where conversation_id=$1 and intent is not null and ($2::bigint is null or turn_sequence<$2::bigint)
       order by operator_conversation_turns.turn_sequence desc limit ($3::integer+1)`, [id, before ?? null, limit])).rows
     const selected = rows.slice(0, limit)
     const nextCursor = rows.length > limit ? selected[selected.length - 1]!.turn_sequence : null
     return { turns: selected.reverse().map(turn), nextCursor }
   }
-  async history(id: string, before: string | undefined, limit: number) {
-    const page = (await this.pool.query<{ messages: unknown[]; next_cursor: string | null }>(`with candidates as (
+  async history(id: string, before: string | undefined, limit: number, query: Queryable = this.pool): Promise<{ messages: Message[]; nextCursor: string | null }> {
+    if (query === this.pool) return withConversationPageRead(this.pool, (sql) => this.history(id, before, limit, sql))
+    await assertConversationCursor(query, id, before, 'messages')
+    const page = (await query.query<{ messages: unknown[]; next_cursor: string | null }>(`with candidates as (
       select m.*,row_number() over (order by m.sequence desc) as ordinal,
         sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-      from (select record,sequence from operator_conversation_messages
+      from (select record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) as record,sequence from operator_conversation_messages
         where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
         order by sequence desc limit ($3::integer+1)) m
     ), selected as (select * from candidates where ordinal<=$3 and (bytes<=$4 or ordinal=1))
@@ -638,7 +674,7 @@ export class PostgresAgentChatRepository {
     [id, before ?? null, limit, OPERATOR_HISTORY_PAGE_BYTES])).rows[0]!
     // One oversized message is allowed over HTTP/MCP readback, ensuring cursor progress
     // without truncating native content or putting it back in a live snapshot.
-    return { messages: await hydrateMessageAttachments(this.pool, id, page.messages), nextCursor: page.next_cursor }
+    return { messages: await hydrateMessageAttachments(query, id, page.messages), nextCursor: page.next_cursor }
   }
 
   private async bump(id: string, query: Queryable = this.pool): Promise<void> {

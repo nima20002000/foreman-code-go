@@ -1,3 +1,13 @@
+import { AcceptedChatResponseControlSchema, type ChatResponseAcknowledgment } from '@graphql/contracts/interaction-activity'
+import type { OperatorChatCommands } from './operatorChatCommands.js'
+import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
+import { qualifyChatActivity } from './qualifiedActivity.js'
+import { reconcileKnownActivities } from './reconcileKnownActivities.js'
+import { knownNativeActivity } from './knownNativeActivity.js'
+import { committedNativeText } from './committedNativeText.js'
+import { activityTextEnvelope } from './activityTextEnvelope.js'
+import { nativeInteractionAvailability } from './interactionAvailability.js'
+import { commandInputHash } from '../commands/postgres.js'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { access, mkdir, realpath } from 'node:fs/promises'
@@ -12,14 +22,16 @@ import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/m
 import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operator-chat'
 
 import { DomainError } from '../errors.js'
-import { requireAuthorization } from '../access/policy.js'
+import { requireAuthorization, isAuthorized } from '../access/policy.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory } from '../harnesses/port.js'
 import type { PostgresOperatorRepository } from '../operators/postgres.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import { nativeCorrelation, PostgresOperatorConversationRepository, type ConversationRow } from './operatorChatRepository.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
-import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
+import { completedNativeAssistantMessage } from './operatorText.js'
+import { nativeActivityFence } from './nativeActivityFence.js'
+import { createNativeTextStream } from './nativeTextStream.js'
 
 export { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 
@@ -120,6 +132,7 @@ export class OperatorChatService {
   private reconciliation: Promise<void> | undefined
   private closing = false
   private shutdownTask: Promise<void> | undefined
+  private commandReceipts: OperatorChatCommands | undefined
   private setupCheck: { configurationId: string; promise: Promise<OperatorChatSetup> } | undefined
 
   constructor(
@@ -129,6 +142,12 @@ export class OperatorChatService {
     private readonly workingDirectory: string,
     private readonly authority: OperatorChatAuthority,
   ) {}
+
+  private receipts() { return this.commandReceipts ??= this.repository.createControlCommands() }
+  private async controlRead(id: string, principal: ManagementPrincipal, action: 'operator_chat:cancel' | 'operator_chat:respond') {
+    await this.assertAccess(id, principal, action)
+    return this.get(id, principal)
+  }
 
   private control<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.controls.get(id) ?? Promise.resolve()
@@ -181,6 +200,7 @@ export class OperatorChatService {
   }
   async assertAccess(id: string, principal: ManagementPrincipal, action: ManagementAction = 'operator_chat:read', includeDeleted = false) {
     requireAuthorization(principal, action)
+    requireAuthorization(await this.authority.current(principal.id), action)
     const row = await this.repository.active(id)
     if (!row || (!includeDeleted && row.deleted_at) || row.owner_principal_id !== principal.id) {
       throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
@@ -211,9 +231,24 @@ export class OperatorChatService {
   }
   async get(id: string, principal: ManagementPrincipal) {
     await this.assertAccess(id, principal)
-    const state = await this.repository.get(id)
+    const state = await this.repository.getWithActivity(id)
     if (!state) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
-    return state
+    const current = await this.authority.current(principal.id)
+    requireAuthorization(current, 'operator_chat:read')
+    const runtime = this.runtimes.get(id)
+    const responseAvailability = state.pendingInteraction ? await nativeInteractionAvailability(state.pendingInteraction,
+      isAuthorized(current, 'operator_chat:respond'), runtime?.session ? { manager: runtime.manager, session: runtime.session } : undefined,
+      { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
+        isCurrent: () => this.runtimes.get(id) === runtime && !!runtime?.session && !runtime.disposal && !this.closing }) : undefined
+    const finalPrincipal = await this.authority.current(principal.id)
+    requireAuthorization(finalPrincipal, 'operator_chat:read')
+    const qualifiedResponse = responseAvailability && !isAuthorized(finalPrincipal, 'operator_chat:respond')
+      ? { ...responseAvailability, available: false, status: 'unavailable' as const, path: null,
+        reason: 'unauthorized' as const, message: 'Your current grants do not allow responding to this interaction.' } : responseAvailability
+    const activitySnapshot = qualifyChatActivity(state.activitySnapshot, qualifiedResponse)
+    return { ...state, activitySnapshot, ...(qualifiedResponse ? { responseAvailability: qualifiedResponse } : {}),
+      qualificationKey: commandInputHash({ principal: finalPrincipal, revision: state.revision, sourceRevisions: state.activitySnapshot.sourceRevisions,
+        responseAvailability: qualifiedResponse ?? null }).slice(7) }
   }
 
   async history(id: string, principal: ManagementPrincipal, query: Partial<OperatorConversationHistoryQuery> = {}) {
@@ -235,23 +270,44 @@ export class OperatorChatService {
     return this.repository.activity.page(id, input)
   }
 
-  private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent) {
+  private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false) {
+    const redact = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
+    const known = knownNativeActivity(event, runtime.manager.harness)
+    if (known) {
+      const settled = await this.repository.activity.settleKnownByNative(id, known.change, known.native, redact)
+      if (settled) { this.events.publish(id, 'activity', settled); return }
+      if (known.native.sessionId !== runtime.session?.nativeSessionId || known.native.turnId !== nativeTurnId) return
+    }
     const change = operatorActivity(event, runtime.manager.harness, requestId)
     if (!change) return
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
       ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
     if (change.kind === 'thinking' && !showThinking) return
-    const safe = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})).value(change)
-    const accepted = await this.repository.activity.append(id, requestId, safe)
+    const safe = redact.value(change)
+    if (!runtime.session || !nativeTurnId) {
+      this.events.publish(id, 'state', { requestId, snapshotRequired: true })
+      void this.control(id, () => this.observe(id, requestId, runtime)).catch(() => undefined)
+      return
+    }
+    const accepted = await this.repository.activity.append(id, requestId, safe, {
+      ...nativeActivityFence(runtime.session, nativeTurnId, event, authoritativeReconciliation),
+      onReconciliationRequired: () => {
+        this.events.publish(id, 'state', { requestId, snapshotRequired: true })
+        void this.control(id, () => this.observe(id, requestId, runtime)).catch(() => undefined)
+      },
+    })
     if (accepted) this.events.publish(id, 'activity', accepted)
   }
   private async recordAssistantMessage(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, precedingActivityId?: string | null) {
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
-    if (message && await this.repository.appendAssistantMessage(id, requestId, message.id, message.text,
+    if (!message) return true
+    if (await this.repository.appendAssistantMessage(id, requestId, message.id, message.text,
       message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined,
       precedingActivityId)) {
       this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
+      return true
     }
+    return false
   }
 
   send(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal) {
@@ -410,6 +466,7 @@ export class OperatorChatService {
     let creating = false
     let submitting = false
     let submitted = false
+    let textStream: ReturnType<typeof createNativeTextStream> | undefined
     try {
       let row = await this.repository.active(id)
       if (!row || row.active_request_id !== input.requestId) return
@@ -447,10 +504,27 @@ export class OperatorChatService {
       const correlationId = nativeCorrelation(id, input.requestId)
       const hint = input.context && Object.values(input.context).some(Boolean)
         ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
-      const partKinds = new Map<string, string>()
       let submittedTurnId = row.active_native_turn_id
+      const textOwner = () => ({ scope: { kind: 'operator_chat' as const, conversationId: id },
+        requestId: input.requestId, sessionId: runtime.session!.nativeSessionId,
+        ...(submittedTurnId ? { turnId: submittedTurnId } : {}) })
+      const redactText = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
+      const committed = committedNativeText({ id, requestId: input.requestId, repository: this.repository,
+        harness: runtime.manager.harness, session: runtime.session, owner: textOwner, sanitize: (operation) => redactText.value(operation),
+        reconcile: () => { void this.control(id, () => this.observe(id, input.requestId, runtime)).catch(() => undefined) } })
+      textStream = createNativeTextStream({
+        signal, harness: runtime.manager.harness,
+        owner: textOwner,
+        publish: (operation) => {
+          // Raw reasoning is never promoted to a public assistant answer; safe summaries use activity records.
+          if (operation.identity.channel !== 'assistant') return
+          this.events.publish(id, 'delta', { requestId: input.requestId, activityChange: activityTextEnvelope(redactText.value(operation), runtime.manager.harness),
+            ...(committed.revision() ? { scopeRevision: committed.revision() } : {}) })
+        },
+        reconcile: () => this.events.publish(id, 'state', { requestId: input.requestId, snapshotRequired: true }),
+      })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
-      for await (const event of runtime.manager.startTurn(runtime.session, {
+      for await (const event_ of runtime.manager.startTurn(runtime.session, {
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
         onSubmitted: async (nativeTurnId) => {
           submittedTurnId = nativeTurnId
@@ -461,6 +535,7 @@ export class OperatorChatService {
             if (!await this.repository.submitted(id, input.requestId, nativeTurnId)) throw new Error('Native turn ownership was lost.')
             if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, input.requestId, nativeTurnId)
             const current = await this.repository.active(id)
+            textStream?.flush()
             this.events.publish(id, 'state', { requestId: input.requestId, activeRequestId: input.requestId,
               revision: Number(current?.revision), turnState: current?.cancel_requested ? 'canceling' : 'active' })
             return Boolean(current && current.active_request_id === input.requestId && current.cancel_requested)
@@ -492,22 +567,29 @@ export class OperatorChatService {
       }, signal)) {
         // After native output, errors from pending/history reads are not prompt rejections.
         submitted = true
-        if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
-        await this.recordActivity(id, input.requestId, runtime, event)
-        await this.recordAssistantMessage(id, input.requestId, runtime, event)
-        for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: input.requestId })
-        if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
-          const pending = await runtime.manager.pending(runtime.session, signal)
-          if (pending) {
-            await this.repository.pending(id, input.requestId, pending)
-            this.events.publish(id, 'state', { requestId: input.requestId, pending: true })
-            return // Native request stays resident. The periodic reconciler observes its continuation.
+        for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
+          textStream.before(event)
+          await this.recordActivity(id, input.requestId, runtime, event, submittedTurnId)
+          const text = await committed.record(event, submittedTurnId)
+          if (text.allowed && (text.handled || await this.recordAssistantMessage(id, input.requestId, runtime, event))) textStream.push(event)
+          else textStream.rejected(event)
+          if (text.final) this.events.publish(id, 'message', { requestId: input.requestId, snapshotRequired: true,
+            scopeRevision: committed.revision() })
+          if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
+            const pending = await runtime.manager.pending(runtime.session, signal)
+            if (pending) {
+              await this.repository.pending(id, input.requestId, pending)
+              this.events.publish(id, 'state', { requestId: input.requestId, pending: true })
+              return // Native request stays resident. The periodic reconciler observes its continuation.
+            }
           }
         }
       }
+      textStream.flush()
       submitted = true
       await this.control(id, () => this.observe(id, input.requestId, runtime))
     } catch (error) {
+      if (signal.aborted) textStream?.dispose(); else textStream?.flush()
       if (submitted || (submitting && !definitePromptRejection(error)) || (creating && !definiteCreationFailure(error))) {
         await this.repository.uncertain(id, input.requestId, error instanceof Error ? error.message : 'Native delivery is uncertain.')
       } else {
@@ -519,7 +601,7 @@ export class OperatorChatService {
         })
       }
       this.events.publish(id, 'error', { requestId: input.requestId, message: error instanceof Error ? error.message : 'Operator turn failed.' })
-    }
+    } finally { textStream?.dispose() }
   }
 
   private async complete(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, retryable = false) {
@@ -555,7 +637,7 @@ export class OperatorChatService {
     if (!row || row.active_request_id !== requestId) return
     const correlationId = nativeCorrelation(id, requestId)
     const history: NativeHistory = await runtime.manager.reconcile(runtime.session, correlationId, signal)
-    if (history.correlationId !== correlationId || !history.nativeTurnId
+    if (runtime.session.nativeSessionId !== row.native_session_id || history.correlationId !== correlationId || !history.nativeTurnId
       || (row.active_native_turn_id && row.active_native_turn_id !== history.nativeTurnId)) {
       await this.repository.uncertain(id, requestId, 'The provider has not proven the identity of this request. No new turn will be submitted.')
       return
@@ -566,13 +648,15 @@ export class OperatorChatService {
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
       ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
     for (const event of currentOperatorHistory(history, runtime.manager.harness)) {
-      await this.recordActivity(id, requestId, runtime, event)
+      await this.recordActivity(id, requestId, runtime, event, history.nativeTurnId, true)
       const change = operatorActivity(event, runtime.manager.harness, requestId)
       if (change && (change.kind !== 'thinking' || showThinking)) precedingActivityId = change.id
       await this.recordAssistantMessage(id, requestId, runtime, event,
         runtime.manager.harness === 'opencode' ? precedingActivityId : undefined)
     }
-    const pending = history.pendingInteraction ?? history.pendingInteractions[0]
+    const currentOwner = await this.repository.active(id)
+    if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== row.native_session_id) return
+    const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
     await this.repository.pending(id, requestId, pending)
     if (history.terminalResult && !pending) {
       await this.complete(id, requestId, history.terminalResult, history.nativeMessageId)
@@ -594,7 +678,15 @@ export class OperatorChatService {
     this.events.publish(id, 'state', { requestId: row.active_request_id, turnState: 'canceling' })
   }
 
-  async cancel(id: string, requestId: string, principal: ManagementPrincipal) {
+  async cancel(id: string, requestId: string, principal: ManagementPrincipal, commandId?: string, source: 'http' | 'mcp' = 'http') {
+    this.assertOpen()
+    await this.assertAccess(id, principal, 'operator_chat:cancel')
+    const key = commandId ?? `operator-cancel:${commandInputHash([id, requestId]).slice(7)}`
+    return this.receipts().execute(principal, source, id, key, { kind: 'cancel', requestId },
+      (markDispatchAttempt) => this.cancelNative(id, requestId, principal, markDispatchAttempt), () => this.controlRead(id, principal, 'operator_chat:cancel'))
+  }
+
+  private async cancelNative(id: string, requestId: string, principal: ManagementPrincipal, markDispatchAttempt: () => void) {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:cancel')
     // Intent is a request-fenced database transition, not a native write. Do not
@@ -612,6 +704,7 @@ export class OperatorChatService {
       try {
         const runtime = this.runtimes.get(id)
         if (runtime && row.active_native_turn_id) {
+          markDispatchAttempt()
           await this.interrupt(id, row, runtime)
           await this.observe(id, requestId, runtime, AbortSignal.timeout(5_000))
         }
@@ -635,12 +728,35 @@ export class OperatorChatService {
     return this.get(id, principal)
   }
 
-  async respond(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal) {
+  async respond(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal, source: 'http' | 'mcp' = 'http') {
+    this.assertOpen()
+    await this.assertAccess(id, principal, 'operator_chat:respond')
+    let providerAcknowledgment: ChatResponseAcknowledgment | undefined
+    const observed = await this.get(id, principal), pending = observed.pendingInteraction
+    const option = pending?.responseOptions.find((choice) => choice.optionId === input.optionId)
+    const acceptedControl = pending && option && observed.activeRequestId === input.requestId
+      && pending.turn.nativeRequestId === input.nativeRequestId && observed.activitySnapshot
+      ? AcceptedChatResponseControlSchema.parse({ schemaVersion: 1, kind: 'respond', conversationId: id,
+        modelRequestId: input.requestId, scope: observed.activitySnapshot.scope,
+        native: { harness: pending.session.harness, providerVersion: pending.session.providerVersion,
+          sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId,
+          requestId: input.nativeRequestId, requestType: pending.nativeRequestType },
+        choice: { optionId: option.optionId, semantic: option.semantic } }) : undefined
+    const key = input.commandId ?? `operator-respond:${commandInputHash([id, input.requestId, input.nativeRequestId]).slice(7)}`
+    return this.receipts().execute(principal, source, id, key,
+      { kind: 'respond', requestId: input.requestId, nativeRequestId: input.nativeRequestId, optionId: input.optionId },
+      (markDispatchAttempt) => this.respondNative(id, input, principal, markDispatchAttempt, (proof) => { providerAcknowledgment = proof }),
+      () => this.controlRead(id, principal, 'operator_chat:respond'), acceptedControl, () => providerAcknowledgment)
+  }
+
+  private async respondNative(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal, markDispatchAttempt: () => void,
+    recordEvidence: (proof: ChatResponseAcknowledgment) => void) {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:respond')
     await this.control(id, async () => {
       const row = await this.repository.active(id)
-      const option = row?.pending_interaction?.responseOptions.find((item) => item.optionId === input.optionId)
+      const pending = row?.pending_interaction
+      const option = pending?.responseOptions.find((item) => item.optionId === input.optionId)
       if (!row || row.active_request_id !== input.requestId || row.pending_interaction?.turn.nativeRequestId !== input.nativeRequestId || !option) {
         throw new DomainError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'This approval is no longer offered for this turn.', 409)
       }
@@ -656,8 +772,18 @@ export class OperatorChatService {
       let delivered = false
       this.responding.add(id)
       try {
+        markDispatchAttempt()
         await runtime.manager.respond(runtime.session, input.nativeRequestId, option, this.lifetime.signal)
         delivered = true
+        if (runtime.manager.reconcileResponse && pending) {
+          const history = await runtime.manager.reconcileResponse(runtime.session, { nativeRequestId: input.nativeRequestId,
+            nativeRequestType: pending.nativeRequestType, option }, this.lifetime.signal)
+          const proofs = (history.responseDeliveries ?? []).filter((proof) => proof.nativeSessionId === runtime.session!.nativeSessionId
+            && proof.nativeRequestId === input.nativeRequestId)
+          if (proofs.length && proofs.every((proof) => proof.harness === runtime.session!.harness
+            && proof.providerVersion === runtime.session!.providerVersion && proof.nativeRequestType === pending.nativeRequestType
+            && proof.optionId === option.optionId && proof.semantic === option.semantic)) recordEvidence(proofs[0]!)
+        }
         await this.repository.pending(id, input.requestId)
         await this.observe(id, input.requestId, runtime)
       } catch (error) {
@@ -699,6 +825,13 @@ export class OperatorChatService {
   }
 
   private async reconcile() {
+    await reconcileKnownActivities({ kind: 'operator', activity: this.repository.activity,
+      signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
+      runtimeFor: (id) => {
+        const runtime = this.runtimes.get(id)
+        return runtime?.session && !runtime.disposal ? { manager: runtime.manager, session: runtime.session,
+          redact: nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})) } : undefined
+      }, publish: (id, settled) => this.events.publish(id, 'activity', settled) })
     for (const candidate of await this.repository.unfinished()) {
       if (this.closing) break
       let revoked = false
@@ -771,6 +904,7 @@ export class OperatorChatService {
       ])
       const second = await Promise.allSettled([...this.runtimes.keys()].map((id) => this.release(id)))
       const errors = [...first, ...second].flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+      await this.commandReceipts?.drain()
       if (errors.length) throw new AggregateError(errors, 'Operator chat shutdown was incomplete.')
     })()
     return this.shutdownTask

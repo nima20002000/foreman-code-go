@@ -2,6 +2,7 @@ import type { DurableInteraction } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { NativeResponseJournal } from '../harnesses/recovery/responseJournal.js'
 import { hasAction, requireAuthorization } from '../access/policy.js'
+import { projectInteractionActivity, type InteractionActivityEvidence } from './activityProjection.js'
 import { DomainError } from '../errors.js'
 import type { WorkerInteractionAuthority } from './authorization.js'
 import type { PostgresApprovalBudgetRepository } from './budget.js'
@@ -34,7 +35,8 @@ export class InteractionService {
   }
   constructor(private readonly interactions: Wave25InteractionRepository,
     _budgets: PostgresApprovalBudgetRepository, private readonly nativeRuntime: InteractionNativeRuntime,
-    _resumeGraph: (interaction: DurableInteraction) => Promise<void>, private readonly responseJournal?: NativeResponseJournal) {
+    _resumeGraph: (interaction: DurableInteraction) => Promise<void>, private readonly responseJournal?: NativeResponseJournal,
+    private readonly activityEvidence?: (interaction: DurableInteraction) => Promise<InteractionActivityEvidence>) {
     if (!(interactions instanceof Wave25InteractionRepository)) throw new DomainError(
       'APPROVAL_REPOSITORY_REQUIRED', 'The current original-source approval repository is required.', 503)
   }
@@ -73,14 +75,27 @@ export class InteractionService {
 
   async reviewStatusVisible(principal: ManagementPrincipal, id: string) {
     const interaction = await this.getVisible(principal, id)
+    const activity = await this.readActivity(interaction, false)
     const reviewerId = interaction.approval.designatedOrchestratorAgentId
-    if (interaction.approval.handler !== 'orchestrator' || !reviewerId) return { interaction }
+    if (interaction.approval.handler !== 'orchestrator' || !reviewerId) return { interaction, activity }
     const job = await this.interactions.coordination.findReviewJob(id, reviewerId)
-    if (!job) return { interaction }
+    if (!job) return { interaction, activity }
     const { state, attempt, error, retryAfter, updatedAt } = job
-    return { interaction, review: { state, attempt, updatedAt, reviewJobId: job.id,
+    return { interaction, activity, review: { state, attempt, updatedAt, reviewJobId: job.id,
       cleanupPending: state === 'failed' && !job.cleanup?.completedAt,
       ...(error ? { error } : {}), ...(retryAfter ? { retryAfter } : {}) } }
+  }
+
+  /** Read-only availability. Caller supplies the result of its existing responder-role policy. */
+  async readActivity(interaction: DurableInteraction, authorized: boolean) {
+    const qualified = this.activityEvidence ? await this.activityEvidence(interaction) : {
+      response: { qualified: false, usable: false, path: null, authorized: false },
+    } satisfies InteractionActivityEvidence
+    const acknowledgment = await this.interactions.activityAcknowledgment(interaction)
+    const turnMatches = !acknowledgment.nativeTurnId || !qualified.nativeTurnId
+      || acknowledgment.nativeTurnId === qualified.nativeTurnId
+    return projectInteractionActivity(interaction, { ...qualified, ...acknowledgment,
+      response: { ...qualified.response, authorized, usable: qualified.response.usable && turnMatches } })
   }
 
   async listVisible(principal: ManagementPrincipal, input: {

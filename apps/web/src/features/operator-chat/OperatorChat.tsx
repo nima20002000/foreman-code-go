@@ -1,9 +1,10 @@
-import { OperatorActivitySchema } from '@graphql/contracts'
+import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@graphql/contracts'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
 import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
 
+import { newerOperatorConversationState as newer } from './operatorConversationReadback'
 import { useConversationDraftStore } from '../conversations'
 import { ChatAttachmentControl, useConversationAttachments } from '../attachments'
 import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
@@ -13,8 +14,8 @@ import { apiClient, cancelOperatorTurn, createOperatorConversation, getOperatorC
   sendOperatorMessage, respondOperatorInteraction } from '../../shared/api/client'
 import { ApiError } from '../../shared/api/client'
 import { deleteOperatorConversation, restoreOperatorConversation, listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
+import { createStreamReadback } from '../../shared/api/streamReadback'
 import { subscribeOperatorChat, type OperatorChatConnection } from '../../shared/api/operatorChatStream'
-import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
 import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChatStorage'
@@ -29,9 +30,10 @@ import { isMissingOperatorConversation, useMissingOperatorConversation } from '.
 import { SettingsFormFeedback } from '../settings/SettingsFormActions'
 import { acknowledgeOperatorMessage, assertOperatorMessageReserved, beginOperatorMessageAttempt, discardDefinitivelyRejectedOperatorMessage,
   readPendingOperatorMessage, recordOperatorMessageFailure, reserveOperatorMessage } from './operatorOutbox'
-import { projectOperatorActivity, projectOperatorText, type OperatorTextProjection } from './operatorTextProjection'
+import { projectOperatorActivity, projectOperatorEnvelope, type OperatorTextProjection } from './operatorTextProjection'
 import { newerOperatorSummaries, operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from './operatorChatStatus'
 import { useOperatorAttachmentReceipts } from './useOperatorAttachmentReceipts'
+import { ChatDecisionReceipts } from '../conversations/ChatDecisionReceipts'
 import { OperatorTranscript } from './OperatorTranscript'
 import { OperatorApprovalCard } from './OperatorApprovalCard'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
@@ -43,13 +45,6 @@ import './operatorChat.css'
 const listKey = ['operator-chat', 'summaries'] as const
 const detailKey = (id: string) => ['operator-chat', 'conversation', id] as const
 type Summaries = Awaited<ReturnType<typeof listOperatorConversationSummaries>>
-function newer(current: OperatorConversationState | undefined, next: OperatorConversationState): OperatorConversationState {
-  const accepted = current && current.revision > next.revision ? current : next
-  // A recent server window may move forward while this tab is reading earlier
-  // activity. Retain observed records in Query, merging only accepted revisions.
-  return { ...accepted, activities: mergeOperatorActivity(current?.activities ?? [], next.activities ?? []),
-    activityNextCursor: current?.activityNextCursor !== undefined ? current.activityNextCursor : next.activityNextCursor }
-}
 function currentSession(generation: number): boolean {
   return !sessionIsSwitching() && sessionGeneration() === generation
 }
@@ -88,6 +83,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const panelId = useId()
   const historyId = useId()
   // Presentation-only fragments. Query/PostgreSQL still own all finalized state.
+  const readGeneration = useRef(0)
   const [partial, setPartial] = useState<{ conversationId: string; value?: OperatorTextProjection }>()
   const [preparationError, setPreparationError] = useState<{ id: string; message: string }>()
   const [connection, setConnection] = useState<{ id: string; state: OperatorChatConnection }>()
@@ -107,8 +103,12 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const listDenied = useAccessFailureLatch(list)
   const selected = useQuery({ queryKey: detailKey(selectedId ?? ''), enabled: enabled && open && !listDenied && Boolean(selectedId),
     queryFn: async ({ signal }) => {
+      const read = ++readGeneration.current
       const state = await getOperatorConversation(selectedId ?? '', { signal })
-      return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state)
+      signal.throwIfAborted()
+      if (read !== readGeneration.current) throw new DOMException('Newer readback required', 'AbortError')
+      if (state.conversation.id !== selectedId) throw new SessionChangedError()
+      return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state, 'read')
     }, retry: false, refetchInterval: 3_000 })
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied
@@ -130,7 +130,10 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     && (isMissingOperatorConversation(selected.error) || isMissingOperatorConversation(shownSetup.error))
   const recoveredSelection = useMissingOperatorConversation(selectedId, missingSelection)
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
-    if (deletedIds.current.has(id)) return
+    if (deletedIds.current.has(id) || state.conversation.id !== id) return
+    const denial = queryClient.getQueryState(detailKey(id))?.error
+    if (ApiError.is(denial) && [401, 403].includes(denial.status)) return
+    if (useOperatorChatStore.getState().selectedConversationId === id) readGeneration.current++
     const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
     queryClient.setQueryData(detailKey(id), accepted)
     const summary = summarizeOperatorConversation(accepted)
@@ -294,46 +297,50 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   }, [setHistoryOpen])
   useEffect(() => {
     if (!enabled || !open || !selectedId || accessDenied) return
-    const refresh = () => {
-      void queryClient.invalidateQueries({ queryKey: detailKey(selectedId) })
-      void queryClient.invalidateQueries({ queryKey: listKey })
-      void queryClient.invalidateQueries({ queryKey: ['operator-chat', 'history', identityEpoch(), selectedId] })
-    }
-    return subscribeOperatorChat(selectedId, {
-      snapshot: (state) => acceptState(selectedId, state),
-      reconnect: refresh,
+    let disposed = false
+    const readback = createStreamReadback(async () => {
+      await queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true })
+      if (disposed) return
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: detailKey(selectedId) }),
+        queryClient.invalidateQueries({ queryKey: listKey }),
+        queryClient.invalidateQueries({ queryKey: ['operator-chat', 'history', identityEpoch(), selectedId] }),
+      ])
+    })
+    const refresh = readback.request
+    const close = subscribeOperatorChat(selectedId, {
+      snapshot: (state) => {
+        void queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true })
+        acceptState(selectedId, state)
+        refresh()
+      },
+      reconnect: () => { setPartial((current) => current?.conversationId === selectedId ? undefined : current); refresh() },
       connection: (state) => setConnection((current) => current?.id === selectedId && current.state === state ? current : { id: selectedId, state }),
       event: (event) => {
+        if (event.type !== 'delta') { readGeneration.current++; void queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true }).catch(() => undefined) }
         const state = queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId))
         if (event.type === 'activity') {
           const activity = OperatorActivitySchema.safeParse(event.data.activity)
           if (!activity.success || typeof event.data.revision !== 'number') { refresh(); return }
           const value = activity.data
-          queryClient.setQueryData<OperatorConversationState>(detailKey(selectedId), (current) => current ? {
-            ...current, revision: Math.max(current.revision, Number(event.data.revision)),
-            activities: mergeOperatorActivity(current.activities ?? [], [value]),
-          } : current)
+          // A partial event cannot advance the revision of a complete snapshot.
+          refresh()
           setPartial((current) => ({ conversationId: selectedId,
             value: projectOperatorActivity(current?.conversationId === selectedId ? current.value : undefined,
               state?.activeRequestId ?? null, value.requestId, value.id) }))
         } else if (event.type === 'delta') {
+          if (!ActivityChangeEnvelopeV1Schema.safeParse(event.data.activityChange).success) { refresh(); return }
+          refresh()
           setPartial((current) => ({ conversationId: selectedId,
-            value: projectOperatorText(current?.conversationId === selectedId ? current.value : undefined, state?.activeRequestId ?? null, event.data) }))
+            value: projectOperatorEnvelope(current?.conversationId === selectedId ? current.value : undefined, selectedId, state?.activeRequestId ?? null, event.data.activityChange, state?.messages ?? []) }))
         } else {
-          if (event.type === 'state' && typeof event.data.activeRequestId === 'string'
-            && typeof event.data.revision === 'number' && Number.isSafeInteger(event.data.revision)
-            && ['active', 'canceling'].includes(String(event.data.turnState))) {
-            const { activeRequestId, revision, turnState } = event.data
-            queryClient.setQueryData<OperatorConversationState>(detailKey(selectedId), (current) => current
-              && revision >= current.revision ? { ...current, revision, activeRequestId,
-                turnState: turnState as 'active' | 'canceling' } : current)
-          }
           // Keep the streamed reply until the authoritative snapshot contains its
           // final replacement. Clearing here creates a visible blank during refetch.
           refresh()
         }
       },
     })
+    return () => { disposed = true; readback.dispose(); close() }
   }, [acceptState, accessDenied, enabled, open, queryClient, selectedId])
 
   if (!enabled || sessionIsSwitching()) return null
@@ -493,13 +500,15 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
             <OperatorTranscript key={conversation.conversation.id} conversationId={conversation.conversation.id} messages={conversation.messages} activities={conversation.activities} activityNextCursor={conversation.activityNextCursor}
               activeRequestId={requestId} parts={partial && partial.conversationId === selectedId ? partial.value?.parts : undefined} partialText={partialText} thinkingText={thinkingText} hasEarlierMessages={conversation.hasEarlierMessages} working={['starting', 'active'].includes(conversation.turnState) && !conversation.pendingInteraction}
               timeline={partial && partial.conversationId === selectedId ? partial.value : undefined}
-              approvalRevision={requestId && conversation.pendingInteraction ? JSON.stringify([requestId, conversation.pendingInteraction]) : undefined}
-              approval={requestId && conversation.pendingInteraction ? (onBrowse) => <OperatorApprovalCard interaction={conversation.pendingInteraction!} onBrowse={onBrowse}
-                disabled={Boolean(archived || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
+              approvalRevision={JSON.stringify([requestId, conversation.pendingInteraction, conversation.activitySnapshot?.pendingInteractions, conversation.activitySnapshot?.activities.filter((item) => item.kind === 'interaction')])}
+              approval={(onBrowse) => <><ChatDecisionReceipts snapshot={conversation.activitySnapshot} pending={selected.isFetching} onRefresh={() => { void selected.refetch() }} />
+                {requestId && conversation.pendingInteraction ? <OperatorApprovalCard interaction={conversation.pendingInteraction!} onBrowse={onBrowse}
+                disabled={Boolean(archived || !conversation.responseAvailability?.available || conversation.responseAvailability && (conversation.responseAvailability.nativeRequestId !== conversation.pendingInteraction?.turn.nativeRequestId || conversation.responseAvailability.nativeSessionId !== conversation.pendingInteraction?.session.nativeSessionId || conversation.responseAvailability.nativeRequestType !== conversation.pendingInteraction?.nativeRequestType) || (respond.isPending && respond.variables?.id === selectedId) || conversation.responseDelivery !== 'offered' || conversation.turnState === 'canceling')}
                 onSelect={(optionId) => respond.mutate({ id: conversation.conversation.id, generation: sessionGeneration(),
-                  input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId } })} /> : undefined} />
+                  input: { requestId, nativeRequestId: conversation.pendingInteraction!.turn.nativeRequestId!, optionId } })} /> : null}</>} />
             {conversation.pendingInteraction || conversation.error || pending.error || pending.command || sendError
               || (respondVariables?.id === selectedId && respond.error) || (cancelVariables?.id === selectedId && cancel.error) ? <div className="operator-chat-decision-area">
+              {conversation.pendingInteraction && !conversation.responseAvailability?.available ? <p role="status">{conversation.responseAvailability?.message ?? 'Refresh this conversation to check reply availability.'}</p> : null}
               {conversation.pendingInteraction && conversation.responseDelivery !== 'offered' ? <Alert tone="warning" title="Response delivery is being reconciled">It will not be sent twice.</Alert> : null}
               <div className="operator-chat-feedback">
                 {conversation.error ? <Alert live tone="danger" title="Operator turn failed">{conversation.error}</Alert> : null}
