@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import * as c from '@graphql/contracts/management'
-import { AgentConfigurationVersionSchema, OperatorConfigurationVersionSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, OperatorConfigurationVersionSchema, type HarnessConfiguration } from '@graphql/contracts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.js'
@@ -24,9 +24,12 @@ import { createGraphqlMcpServer } from '../src/mcp/unified/server.js'
 import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 
-const qualify = { qualifyConfiguration: async (value: { harness: 'codex' | 'opencode' }) => ({ harness: value.harness, version: 'fixture', authenticated: true,
+const qualify = { qualifyConfiguration: async (value: HarnessConfiguration) => {
+  if (value.harness === 'claude') throw new Error('Skills library fixture supports only Codex and OpenCode qualification')
+  return { harness: value.harness, version: 'fixture', authenticated: true,
   ready: true, structuredEvents: true, supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true,
-  supportsStartupPrompt: true, supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [] }) }
+  supportsStartupPrompt: true, supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [] }
+} }
 const codex = { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } as const
 
 describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and the unified MCP', () => {

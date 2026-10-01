@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeSessionReferenceSchema, type HarnessExecution } from '@graphql/contracts'
 import type { SelectedRunChatTarget } from '@graphql/contracts/selected-run-chat'
@@ -83,7 +84,7 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run-scoped chat PostgreSQL 
       const ay = executionsA.find((execution) => execution.workflowNodeId === y!.id)!
       const { saved } = await saveWithoutY(f)
       await f.db.pool.query('update agents set archived_at=now() where id=$1', [y!.agentId])
-      const b = await startSaved(f, saved.version)
+      const b = await startSaved(f, agentWorkflowVersion(saved.version))
       const bx = (await allExecutions(f, b.id)).find((execution) => execution.workflowNodeId === x!.id)!
       expect(ax.nativeSessionId).not.toBe(bx.nativeSessionId)
       const runIds = [f.f.run.id, b.id], before = await historicalRows(f.db.pool, runIds)

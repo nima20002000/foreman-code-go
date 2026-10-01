@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -26,7 +27,7 @@ describe.skipIf(!postgresEnabled)('W08 exact accepted host readback parity', () 
     const f = await currentRunHistory(), app = Fastify(), clients: Client[] = []
     try {
       const draft = await insertCurrentRunFixture(f.db.pool, { ...f.f, run: { ...f.run, id: randomUUID() } }, f.saved.value, f.owner.principal.id, { insert: false })
-      const node = draft.version.definition.nodes[0]!, configuration = f.f.configurations[0]!, digest = 'a'.repeat(64)
+      const node = agentWorkflowNode(draft.version.definition.nodes[0]), configuration = f.f.configurations[0]!, digest = 'a'.repeat(64)
       const mainId = randomUUID(), deviceId = randomUUID()
       const placement = freezePlacement({ schemaVersion: 1, mainId, runId: draft.run.id, nodeId: node.id,
         hostRef: { kind: 'device', mainId, deviceId }, labelAtAcceptance: 'Original laptop', mainInstallationId: 'main-installation',
@@ -40,7 +41,7 @@ describe.skipIf(!postgresEnabled)('W08 exact accepted host readback parity', () 
           protocolRevision: 'protocol-v1', credentialScopeRefs: [] } })
       await withExclusiveGraphConnection(f.db.pool, connection => connection.transaction(async sql => {
         await insertRepeatRun(sql, draft.accepted, repeatStartPublication)
-        await insertAcceptedPlacements(sql, draft.run.id, draft.version.definition.nodes,
+        await insertAcceptedPlacements(sql, draft.run.id, draft.version.definition.nodes.map(agentWorkflowNode),
           draft.run.agentConfigurationVersionIds, [placement], { assertCurrent: async () => {} })
       }))
       const reads = new RunPlacementReadService(f.db.pool, async () => []) // no native work in this fixture

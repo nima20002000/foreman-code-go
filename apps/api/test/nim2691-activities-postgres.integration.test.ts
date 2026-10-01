@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -87,7 +88,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('NIM-2691 bounded Activiti
           summary: 'Native activity recorded; details unavailable' })
         expect(unavailable.items[0]?.actor).toBeUndefined()
         expect(JSON.stringify(unavailable)).not.toContain('sk-native-canary')
-        const firstNode = t.version.definition.nodes[0]!
+        const firstNode = agentWorkflowNode(t.version.definition.nodes[0])
         const safeTool = publicRunActivity({ sequence: '999999', source: 'harness',
           kind: 'harness_output', occurred_at: new Date(time), harness_execution_id: 'execution-tool',
           execution_node_id: firstNode.id, execution_agent_id: firstNode.agentId,

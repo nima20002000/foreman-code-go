@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
@@ -50,13 +51,16 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run snapshots / PostgreSQL 
       await expect(f.db.pool.query('delete from agents where id=$1', [y.agentId])).rejects.toMatchObject({ code: '23503' })
       expect(await historicalRows(f.db.pool, [f.f.run.id])).toEqual(old)
 
-      const b = await startSaved(f, saved.version)
+      const b = await startSaved(f, agentWorkflowVersion(saved.version))
       const after = await readSnapshot(api, targetFor(f, b.id))
       if (after.kind !== 'available') throw new Error('Run B must have its own persisted snapshot')
       expect(after.workflowVersionId).toBe(saved.version.id)
       expect(after.nodes).toHaveLength(1)
       expect(after.nodes[0]).toMatchObject({ id: x.id, name: 'Agent X', position: { x: 909, y: -33 }, size: { width: 480, height: 144 } })
-      expect(after.nodes.some((node) => node.id === y.id || node.agentId === y.agentId)).toBe(false)
+      expect(after.nodes.some((node) => {
+        if (node.kind === 'job') throw new Error('Historical Agent snapshot fixture requires Agent nodes')
+        return node.id === y.id || node.agentId === y.agentId
+      })).toBe(false)
       expect(after.edges).toHaveLength(0)
       expect(await historicalRows(f.db.pool, [f.f.run.id])).toEqual(old)
       const retained = await historicalRows(f.db.pool, [f.f.run.id, b.id])

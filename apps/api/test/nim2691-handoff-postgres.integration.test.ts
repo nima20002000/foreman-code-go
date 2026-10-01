@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -66,7 +67,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
           expect(parsed.success, JSON.stringify({ kind: row.kind, issues: parsed.error?.issues })).toBe(true)
         }
         expect(activityRows.some((row) => row.kind === 'work_activation_queued')).toBe(true)
-        const node = t.version.definition.nodes[0]!
+        const node = agentWorkflowNode(t.version.definition.nodes[0])
         const admitted = await store.admitWorkActivation(entry, () => ({
           id: `nim2691-entry-execution-${randomUUID()}`, runId: t.run.id,
           workflowNodeId: node.id, agentId: node.agentId,
@@ -647,7 +648,9 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         edges: fixture.version.definition.edges.map((edge) => ({ ...edge, maxWorkHandoffsPerRun: 3 })),
       } })
       const run = { ...fixture.run, executionState: 'running' as const }
-      const [b, c, d] = [version.definition.nodes[1]!, version.definition.nodes[2]!, version.definition.nodes[3]!]
+      const b = agentWorkflowNode(version.definition.nodes[1])
+      const c = agentWorkflowNode(version.definition.nodes[2])
+      const d = agentWorkflowNode(version.definition.nodes[3])
       const incoming = version.definition.edges.filter((edge) => edge.target === d.id)
       expect(incoming).toHaveLength(2)
       await transaction(pool, async (sql) => {
