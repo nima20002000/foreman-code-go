@@ -316,13 +316,15 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
         join management_principals p on p.id=c.principal_id
         where c.conversation_id=$1 and p.revoked_at is null`, [conversation.id])).rows[0].count).toBe(0)
 
-      const copy = AgentFileCreateWorkingCopyResultSchema.parse(fileCallValue(await call(context.turnId,
+      const nativeTurnId = context.turnId
+      assert.ok(nativeTurnId, 'This Codex fixture requires an observed native turn binding.')
+      const copy = AgentFileCreateWorkingCopyResultSchema.parse(fileCallValue(await call(nativeTurnId,
         'files_create_working_copy', { commandId: randomUUID(), source: ref, destination: scope })))
       const edited = Buffer.from('# Edited by the resumed Operator\n')
-      const write = AgentFileWriteWorkingCopyResultSchema.parse(fileCallValue(await call(context.turnId,
+      const write = AgentFileWriteWorkingCopyResultSchema.parse(fileCallValue(await call(nativeTurnId,
         'files_write_working_copy', { artifactId: copy.value.artifactId, contentBase64: edited.toString('base64') })))
       expect(write.sha256).toBe(digest(edited))
-      const published = AgentFilePublishResultSchema.parse(fileCallValue(await call(context.turnId,
+      const published = AgentFilePublishResultSchema.parse(fileCallValue(await call(nativeTurnId,
         'files_publish_result', { commandId: randomUUID(), artifactId: copy.value.artifactId,
           scope, filename: 'edited.md', mediaType: 'text/markdown' })))
       const publishedRef = { fileId: published.value.file.fileId, revisionId: published.value.revision.revisionId }

@@ -1,4 +1,5 @@
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
+import { InteractionActivityProjectionSchema } from "./interaction-activity.js";
 import { z } from "zod";
 import { FileWithRevisionSchema, MessageAttachmentFields } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
@@ -34,14 +35,9 @@ export * from "./harnessQualification.js";
 export * from "./approvalTopology.js";
 export * from "./graphqlMcpTools.js";
 
-/** Runner-owned directory inherited by every workflow and Agent in a workspace. */
-export const ExecutionLocationSchema = z
-  .object({
-    runnerId: IdSchema,
-    rootPath: z.string().min(1).refine((value) => !value.includes("\0"), "rootPath cannot contain NUL"),
-  })
-  .strict();
-export type ExecutionLocation = z.infer<typeof ExecutionLocationSchema>;
+import { ExecutionLocationSchema } from "./executionLocation.js";
+export { ExecutionLocationSchema } from "./executionLocation.js";
+export type { ExecutionLocation } from "./executionLocation.js";
 
 /** Immutable location accepted together with a new Run. */
 export const RunExecutionLocationSchema = ExecutionLocationSchema.extend({
@@ -1526,6 +1522,7 @@ export type OperatorConversationStreamEvent = z.infer<typeof OperatorConversatio
 
 export const GetInteractionResponseSchema = z.object({
   interaction: DurableInteractionSchema,
+  activity: InteractionActivityProjectionSchema.optional(),
   review: ReviewStatusSchema.optional(),
   /** Monitoring permission, independent of the interaction's assigned handler. */
   canRespond: z.boolean().optional(),
@@ -1624,3 +1621,21 @@ export const ApprovalInboxSearchSchema = UrlSearchSelectionSchema.extend({
 });
 
 export * from "./runtimeIdentity.js";
+
+export * from "./deviceIdentity.js";
+export * from "./activity.js";
+export * from "./activityFixtures.js";
+export * from "./activityChanges.js";
+export * from "./nodePlacement.js";
+export * from "./harnessRegistry.js";
+export * from "./sourceMaterialization.js";
+export * from "./jobs.js";
+export * from "./deviceApplication.js";
+export * from "./remoteJobExecution.js";
+export * from "./jobArtifacts.js";
+export * from "./jobWorkflow.js";
+export * from "./sourceAdmission.js";
+export * from "./workspaceRootPolicies.js";
+export * from "./workspaceBoundLocation.js";
+export * from "./jobOutputTransfer.js";
+export * from "./jobRuntime.js";

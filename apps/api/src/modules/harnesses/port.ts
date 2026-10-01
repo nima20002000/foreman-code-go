@@ -14,6 +14,7 @@ import type {
 } from '@graphql/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+import type { ResponseAvailabilityInspector } from './responseAvailability.js'
 
 export interface NativeEventInput {
   type: string
@@ -54,11 +55,20 @@ export interface OperatorNativeSessionStart {
 
 export type NativeSessionStart = WorkflowNativeSessionStart | OperatorNativeSessionStart
 
+export interface NativeMessageSubmission {
+  kind: 'message'
+  nativeSessionId: string
+  /** Provider-observed consumed input message identity, not a native turn ID. */
+  nativeMessageId: string
+  clientCorrelationId: string
+}
+
 export interface NativeTurnInput {
   prompt: string
   clientCorrelationId: string
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
   onSubmitted?(nativeTurnId: string): Promise<void>
+  onMessageSubmitted?(identity: NativeMessageSubmission): Promise<void>
 }
 
 /** Input added to the exact active turn; the provider rejects it when that turn is no longer active. */
@@ -83,6 +93,7 @@ export interface NativeResponseIdentity {
 }
 
 export interface NativeHistory {
+  nativeSubmission?: NativeMessageSubmission
   /** Set only when the provider result was matched to this exact request. */
   correlationId?: string
   nativeTurnId?: string
@@ -110,7 +121,7 @@ export interface NativeHistory {
 }
 
 /** Rich provider-neutral lifecycle. Concrete Codex/OpenCode transports are HAP-02/03. */
-export interface NativeHarnessSessionManager {
+export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>

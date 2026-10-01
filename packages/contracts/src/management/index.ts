@@ -1,4 +1,5 @@
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
+import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
 import { z } from "zod";
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema } from "../wave25/workflowSchemas.js";
 import { CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema } from "../wave25/workflowShape.js";
@@ -604,7 +605,7 @@ export const ManagedInteractionPageSchema = z.object({
   pendingCount: z.number().int().nonnegative().optional(),
   pendingByWorkflow: z.record(z.string(), z.number().int().nonnegative()).optional(),
 }).strict();
-export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema, review: ReviewStatusSchema.optional() }).strict();
+export const ManagedInteractionSchema = z.object({ interaction: DurableInteractionSchema, activity: InteractionActivityProjectionSchema.optional(), review: ReviewStatusSchema.optional() }).strict();
 
 /** Deployment capability, separate from the candidate-only A0 schema. False
  * stays literal until native admission AND durable repeat edit intents qualify.
@@ -634,6 +635,7 @@ export const REPEAT_OPERATOR_TOOL_NAMES = [
 export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
 
 export const OperatorToolNameSchema = z.enum([
+  "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
   "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_handoff_history_get",

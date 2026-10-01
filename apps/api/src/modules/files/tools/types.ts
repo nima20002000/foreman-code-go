@@ -18,7 +18,9 @@ export interface FileToolContext {
   ownerPrincipalId: string
   scope: TemporaryFileScope
   nativeSessionId: string
-  turnId: string
+  /** Exactly one observed submission kind; message IDs never masquerade as turns. */
+  turnId?: string | undefined
+  nativeMessageId?: string | undefined
   messageId?: string | undefined
   /** Must come from the accepted harness security configuration, not merely the owner's grants. */
   allowMutation: boolean
