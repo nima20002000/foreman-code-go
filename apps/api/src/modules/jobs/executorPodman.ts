@@ -1,33 +1,67 @@
 import { spawn } from 'node:child_process'
+import { constants } from 'node:fs'
+import { mkdir, open, readdir, realpath, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { JobExecution } from '@graphql/contracts'
 import { jobSupervisorIdentity, type JobLaunchPlan, type JobSupervisor, type QualifiedJobProfile } from './executor.js'
 
-/** No pulling, setup, host networking, home, socket or credentials are implied. */
-export function podmanCreateArgv(plan: JobLaunchPlan): string[] {
-  const relative = plan.cwd.slice(plan.privateRepositoryRoot.length)
-  const runtimeRoot = plan.execution.acceptedSpec.target.destination.managedRuntimeRoot
-  if (plan.stdin !== 'closed' || plan.pty || !plan.privateRepositoryRoot.startsWith('/') ||
-    plan.privateRepositoryRoot.includes(',') || plan.privateRepositoryRoot.includes('\0') ||
-    !plan.cwd.startsWith(`${plan.privateRepositoryRoot}/`) && plan.cwd !== plan.privateRepositoryRoot ||
-    relative.split('/').some(component => component === '..') || !plan.argv[0] || plan.argv.some(arg => arg.includes('\0')) ||
-    !runtimeRoot.startsWith('/') || runtimeRoot.includes(',') || runtimeRoot.includes('\0') || runtimeRoot === plan.privateRepositoryRoot ||
-    runtimeRoot.startsWith(`${plan.privateRepositoryRoot}/`)) {
+export interface PodmanIsolationInput {
+  identity: string
+  sourceRoot: string
+  runtimeRoot: string
+  cwd: string
+  argv: readonly string[]
+  profile: Pick<QualifiedJobProfile, 'pidsLimit' | 'memoryBytes' | 'cpuLimit' | 'imageDigest'>
+  spoolBytes: number
+  labels: Record<string, string>
+}
+/** Shared by actual jobs and explicitly admitted model-free qualification. */
+export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[] {
+  const relative = input.cwd.slice(input.sourceRoot.length)
+  if (!/^[a-zA-Z0-9-]{1,128}$/.test(input.identity) || !input.sourceRoot.startsWith('/') ||
+    input.sourceRoot.includes(',') || input.sourceRoot.includes('\0') ||
+    !input.cwd.startsWith(`${input.sourceRoot}/`) && input.cwd !== input.sourceRoot ||
+    relative.split('/').some(component => component === '..') || !input.argv[0] || input.argv.some(arg => arg.includes('\0')) ||
+    !input.runtimeRoot.startsWith('/') || input.runtimeRoot.includes(',') || input.runtimeRoot.includes('\0') || input.runtimeRoot === input.sourceRoot ||
+    input.runtimeRoot.startsWith(`${input.sourceRoot}/`) || !Number.isSafeInteger(input.spoolBytes) || input.spoolBytes < 8) {
     throw new Error('Invalid noninteractive container plan.')
   }
-  return ['create', '--name', plan.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',
+  return [`--hooks-dir=${join(input.runtimeRoot, 'ci-empty-oci-hooks')}`, 'create', '--name', input.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',
     '--image-volume=ignore', '--http-proxy=false', '--network=none', '--stop-signal=SIGTERM',
-    '--label', `graphql.job.identity=${plan.identity}`, '--label', `graphql.job.spec=${plan.execution.acceptedSpec.specDigest}`,
-    '--label', `graphql.job.attempt=${plan.execution.attemptId}`,
-    '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pid=private', '--ipc=private', '--userns=keep-id',
-    '--pids-limit', String(plan.profile.pidsLimit), '--memory', String(plan.profile.memoryBytes),
-    '--cpus', String(plan.profile.cpuLimit), '--memory-swap', String(plan.profile.memoryBytes),
-    '--log-driver=k8s-file', '--log-opt', `max-size=${Math.floor(plan.execution.acceptedSpec.policy.maxWorkerSpoolBytes / 2)}`,
-    '--log-opt', `path=${runtimeRoot}/${plan.identity}.oci.log`,
-    '--mount', `type=bind,src=${plan.privateRepositoryRoot},dst=/workspace,rw`,
+    ...Object.entries(input.labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
+    '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pid=private', '--ipc=private', '--cgroupns=private', '--userns=keep-id',
+    '--pids-limit', String(input.profile.pidsLimit), '--memory', String(input.profile.memoryBytes),
+    '--cpus', String(input.profile.cpuLimit), '--memory-swap', String(input.profile.memoryBytes),
+    '--log-driver=k8s-file', '--log-opt', `max-size=${Math.floor(input.spoolBytes / 2)}`,
+    '--log-opt', `path=${input.runtimeRoot}/${input.identity}.oci.log`,
+    '--mount', `type=bind,src=${input.sourceRoot},dst=/workspace,rw`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=67108864',
     '--workdir', `/workspace${relative}`, '--unsetenv-all', '--env', 'HOME=/tmp/job-home', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
-    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', '--entrypoint', plan.argv[0]!,
-    plan.profile.imageDigest, ...plan.argv.slice(1)]
+    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', '--entrypoint', input.argv[0]!,
+    input.profile.imageDigest, ...input.argv.slice(1)]
+}
+
+/** Application-owned empty hook directory inside the already approved runtime root. */
+export async function ensureEmptyPodmanHooks(runtimeRoot: string) {
+  if (await realpath(runtimeRoot) !== runtimeRoot) throw new Error('Canonical runtime root required.')
+  const root = await open(runtimeRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  try {
+    const metadata = await root.stat()
+    if (metadata.uid !== process.getuid?.() || metadata.mode & 0o022) throw new Error('Runtime root ownership rejected.')
+    const hooks = join(runtimeRoot, 'ci-empty-oci-hooks')
+    await mkdir(hooks, { mode: 0o700 }).catch(error => { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error })
+    const details = await stat(hooks)
+    if (await realpath(hooks) !== hooks || !details.isDirectory() || details.uid !== metadata.uid || details.mode & 0o077 || (await readdir(hooks)).length) throw new Error('Empty owned hook directory required.')
+    return hooks
+  } finally { await root.close() }
+}
+/** No pulling, setup, host networking, home, socket or credentials are implied. */
+export function podmanCreateArgv(plan: JobLaunchPlan): string[] {
+  if (plan.stdin !== 'closed' || plan.pty) throw new Error('Noninteractive job required.')
+  return podmanIsolationCreateArgv({ identity: plan.identity, sourceRoot: plan.privateRepositoryRoot,
+    runtimeRoot: plan.execution.acceptedSpec.target.destination.managedRuntimeRoot, cwd: plan.cwd, argv: plan.argv,
+    profile: plan.profile, spoolBytes: plan.execution.acceptedSpec.policy.maxWorkerSpoolBytes,
+    labels: { 'graphql.job.identity': plan.identity, 'graphql.job.spec': plan.execution.acceptedSpec.specDigest, 'graphql.job.attempt': plan.execution.attemptId } })
 }
 
 /** W07 supplies the absolute qualified runtime path and nonsecret controller env. */
@@ -109,6 +143,7 @@ export class PodmanJobSupervisor implements JobSupervisor {
 
   async launch(plan: JobLaunchPlan) {
     if (!this.qualifiedProfile || plan.profile !== this.qualifiedProfile) throw new Error('Qualified isolation unavailable.')
+    await ensureEmptyPodmanHooks(plan.execution.acceptedSpec.target.destination.managedRuntimeRoot)
     const created = await this.commands.run(podmanCreateArgv(plan), plan.execution.acceptedSpec.policy.preparationTimeoutMs)
     const containerId = created.stdout.trim()
     if (created.exitCode !== 0 || !/^[a-f0-9]{64}$/.test(containerId)) throw new Error('Container create uncertain; reconcile original identity.')
