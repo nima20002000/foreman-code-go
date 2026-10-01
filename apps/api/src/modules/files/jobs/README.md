@@ -70,3 +70,63 @@ authentication, the CI HTTP routes and SDK MCP tools, denied callers, pinned
 readback, receipt counts and owner revocation/expiry. Its explicit owner/root SQL
 fixture proves the adapter contract, not a qualified two-host/container install.
 This lane does not launch integration or physical acceptance.
+
+Main-issued remote output admission
+----------------------------------
+
+`createAdmittedJobOutputs` now supplies the actual main admission, B receiver,
+`AcceptedJobTransferResolver`, verified byte reader, canonical artifact port and
+W07 `byte-transfer-v1` server extension. There is no injected permissive transfer
+resolver or alternate byte reader. `WorkerJobOutputApplication` and
+`WorkerJobOutputReceiver` implement W08-B's metadata/sender ports on the existing
+authenticated W07 application channel.
+
+Admission accepts only `JobOutputPublicationInputSchema`; worker arguments cannot
+choose transfer IDs, root IDs, storage paths, principal or connection context.
+The main checks the real selected installation, live paired registration,
+accepted job/owner/current PostgreSQL owner session, original native/closure
+receipt and main process projection, exact materialization/root policy/location,
+current root catalog revision and retained approved source. It reserves the
+canonical file allocation before issuing bytes, then stores a server-minted
+`TransferIntent` in the existing `management_command_receipts` ledger under
+`job.output.admit`. Original receipts and one execution/attempt/output slot are
+immutable; retries preserve IDs and expiry. Metadata links still use the existing
+publication ledger. Network byte I/O never spans the admission SQL transaction.
+
+Every B operation resolves its original command receipt and rechecks live
+ownership/device/source/root authority and canonical allocation lifecycle. The
+current W07 channel is obtained from its authenticated ready-session getter;
+stored boot/connection fields alone are not authority. B's existing numeric
+`connectionEpoch` represents W07's actual `connectionGeneration`. The opaque
+main socket epoch is separately fenced using trusted `AsyncLocalStorage` frame
+scope, including after awaits, so an old socket with the same numeric generation
+cannot continue after replacement. Reconnect resolves current context while
+retaining the originally issued immutable intent.
+
+The approved readonly W07 getter patch is
+`/tmp/graphql-workstream-20261001/patches/w09-c-current-device-binding.patch`.
+Root/W07 owns sequencing it after the security fixes. It must fence ready state,
+current session epoch, channel/session abort and negotiated incoming namespace.
+No current binding may be constructed from payload fields.
+
+`registerJobOutputMetadataEndpoints` gives authenticated HTTP/MCP metadata parity
+on a separately mounted **device-only** surface. It accepts the actual paired
+worker credential and current channel, refuses browser cookies/origin and
+Operator credential exchange, and exposes admission/publication only. Bulk
+bytes use the bounded binary carrier. Human Operator UI/MCP continue the complete
+supported job workflow through job Start and canonical artifact readback; they
+do not impersonate an output-producing worker.
+
+Integrate `jobOutputAdmissionMigration` (285203) after the existing command/file/
+job/source/device migrations and export `job-output-transfer`. The migration
+adds only receipt indexes/immutability, not a second transfer/event table. The
+command/file audit source supports `device` without adding a grant or write tool.
+
+Additional focused units: `test/job-output-admission.test.ts` exercises modeled
+SQL authority boundaries plus the real B sender/receiver/private storage. The
+root-only `test/job-output-admission-postgres.integration.test.ts` exercises real
+pairing/current W07 session, actual PostgreSQL `JobOwnership`, HTTP/MCP denial,
+original receipt replay, real binary transfer and canonical byte readback/counts.
+Its source/native observation rows are explicit fixture facts; this is not
+physical laptop/container acceptance. Run that DB fixture only as orchestrator
+with an explicitly owned loopback `TEST_DATABASE_URL`.
