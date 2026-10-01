@@ -20,7 +20,7 @@ export interface NativeProcessRecovery {
 }
 // This tracks ordinary sequential subprocesses of the SAME live manager. It is
 // never consulted as closure evidence and cannot be reconstructed on restart.
-const consumedLaunchScopes = new WeakSet<NativeProcessRecovery>()
+const consumedLaunchScopes = new WeakMap<NativeProcessRecovery, { root: string; owner: string; launchId: string }>()
 interface LaunchRecord {
   format: 1; id: string; owner: string; boot: string; parent: LinuxProcessIdentity; controlKey: string
 }
@@ -216,6 +216,15 @@ export class NativeProcessRegistry {
   async abandonReservedLaunch(scope: NativeProcessRecovery): Promise<boolean> {
     if (process.platform !== 'linux' || resolve(scope.root) !== resolve(this.root)
       || !scope.launchId || !/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid native launch abandonment scope.')
+    const consumed = consumedLaunchScopes.get(scope)
+    if (consumed) {
+      if (consumed.root !== resolve(scope.root) || consumed.owner !== scope.owner || consumed.launchId !== scope.launchId) {
+        throw new Error('The entered native launch scope was modified.')
+      }
+      // Positive in-memory dispatch observation refuses no-start publication.
+      // It is never closure evidence; the factory must still close the owner.
+      return false
+    }
     const directory = join(privateDirectory(scope.root), key(scope.owner), scope.launchId)
     const launch = launchRecord(readRecord(join(directory, 'intent.json')))
     const parent = processIdentity(process.pid)
@@ -407,7 +416,11 @@ function reserveProcess(scope: NativeProcessRecovery): LaunchRecord {
  * guardian dispatch are synchronous; a live parent cannot race its own cleanup.
  * A foreign recovery process can prove no-dispatch only after that parent dies. */
 function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
-  if (!scope.launchId || consumedLaunchScopes.has(scope)) return reserveProcess(scope)
+  const consumed = consumedLaunchScopes.get(scope)
+  if (consumed && (consumed.root !== resolve(scope.root) || consumed.owner !== scope.owner || consumed.launchId !== scope.launchId)) {
+    throw new Error('The entered native launch scope was modified.')
+  }
+  if (!scope.launchId || consumed) return reserveProcess(scope)
   if (!/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid reserved native launch.')
   const directory = join(privateDirectory(scope.root), key(scope.owner), scope.launchId)
   const launch = launchRecord(readRecord(join(directory, 'intent.json')))
@@ -469,7 +482,8 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   // Observe startup errors before sending configuration or exposing the child to the adapter.
   child.on('error', () => undefined)
   owned.set(child, { scope, id })
-  if (scope.launchId) consumedLaunchScopes.add(scope)
+  if (scope.launchId && !consumedLaunchScopes.has(scope)) consumedLaunchScopes.set(scope,
+    { root: resolve(scope.root), owner: scope.owner, launchId: scope.launchId })
   let dispatchAttempted = false
   try {
     if (!child.pid) {
