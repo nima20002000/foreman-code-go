@@ -83,6 +83,12 @@ function validateHostEnvironment(configuration: HarnessConfiguration, context: z
     }
   }
 }
+/** Explicit user-selected configured profile. Execution locations retain their separate accepted placement. */
+export const HarnessProfileSelectionSchema = z.object({
+  instanceId: z.uuid(), instanceRevision: Identity, target: HostHarnessOverrideTargetSchema,
+}).strict()
+export type HarnessProfileSelection = z.infer<typeof HarnessProfileSelectionSchema>
+
 export const HostHarnessOverrideSaveSchema = z.object({
   commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().nonnegative(),
   target: HostHarnessOverrideTargetSchema, presetId: Identity, enabled: z.boolean(),
