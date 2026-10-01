@@ -1,7 +1,7 @@
-import type { TelemetryReadResult, TelemetrySample, TelemetrySelector } from '@graphql/contracts/resource-telemetry'
+import { telemetrySelectorKey, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector } from '@graphql/contracts/resource-telemetry'
 import { useResourceTelemetryQuery, type ReceivedTelemetry } from '../../shared/api/resourceTelemetry'
 import { Alert, Badge, Card, CardBody, CardHeader, MetricCard } from '../../shared/ui/nocturne'
-import { coverageView, formatDuration, isCurrent, metricView, reasonLabels, sampleClock, shortId, type MetricView } from './telemetryView'
+import { capturedMetricView, coverageView, formatDuration, isCurrent, metricView, reasonLabels, sampleClock, shortId, type MetricView } from './telemetryView'
 import { useMonotonicElapsed } from './useMonotonicElapsed'
 import './resourceTelemetry.css'
 
@@ -77,15 +77,16 @@ function SampleBody({ sample, elapsedMs }: { sample: TelemetrySample; elapsedMs:
 const hasCapturedValues = (sample: TelemetrySample) => sample.cpu.state === 'fresh' || sample.memory.state === 'fresh'
 
 /** An explicitly noncurrent earlier reading; never shown as current values. */
-function LastKnown({ sample }: { sample: TelemetrySample }) {
-  const cpu = sample.cpu.state === 'fresh' ? sample.cpu : undefined
-  const ram = sample.memory.state === 'fresh' ? sample.memory : undefined
-  if (!cpu && !ram) return null
-  const cpuView = metricView('CPU', { ...sample, serverNowUnixMs: sample.collectedAtUnixMs, ageUpperBoundMs: 0 }, 0)
-  const ramView = metricView('RAM', { ...sample, serverNowUnixMs: sample.collectedAtUnixMs, ageUpperBoundMs: 0 }, 0)
+function LastKnown({ sample, historical = false }: { sample: TelemetrySample; historical?: boolean }) {
+  const cpuView = capturedMetricView('CPU', sample), ramView = capturedMetricView('RAM', sample)
+  if (!cpuView && !ramView) return null
+  const coverage = coverageView(sample)
   return <section className="rt-last-known" aria-label="Last known">
-    <p className="n-eyebrow">Last known · not current</p>
-    <p className="rt-note">Captured {new Date(sample.collectedAtUnixMs).toISOString()} · {cpu && cpuView.headline ? `CPU ${cpuView.headline} ${cpuView.headlineNote}` : 'CPU not captured'} · {ram && ramView.headline ? `RAM ${ramView.headline} (${ramView.source})` : 'RAM not captured'}</p>
+    <p className="n-eyebrow">{historical ? 'Historical capture' : 'Last known'} · not current</p>
+    {(coverage.shared || coverage.partial) && <div className="rt-badges">{coverage.shared && <Badge tone="info">Shared</Badge>}{coverage.partial && <Badge tone="warning">Partial</Badge>}</div>}
+    {coverage.reasons.length > 0 && <p className="rt-note">{coverage.reasons.join(' · ')}</p>}
+    <p className="rt-note">Captured {new Date(sample.collectedAtUnixMs).toISOString()} · {cpuView ? `CPU ${cpuView.headline} ${cpuView.headlineNote} (${cpuView.source})` : 'CPU not captured'} · {ramView ? `RAM ${ramView.headline} (${ramView.source})` : 'RAM not captured'}</p>
+    <p className="rt-note">{[...(cpuView?.details ?? []), ...(ramView?.details ?? [])].join(' · ')}</p>
   </section>
 }
 
@@ -103,6 +104,7 @@ const scopeNote = { computer: 'Whole computer — not any one Agent’s usage.',
 
 export function ResourceTelemetryPanel({ scope, title, received, pending, error, elapsedMs }: ResourceTelemetryPanelProps) {
   const result: TelemetryReadResult | undefined = received?.result
+  const displayElapsedMs = Math.max(0, elapsedMs) + (received?.requestDurationMs ?? 0)
   return <Card className="rt-card" data-scope={scope} role="region" aria-label={title}>
     <CardHeader eyebrow={scope === 'computer' ? 'Whole computer' : 'This execution’s owned processes'} title={title} description={scopeNote[scope]} />
     <CardBody>
@@ -111,8 +113,8 @@ export function ResourceTelemetryPanel({ scope, title, received, pending, error,
       {result?.kind === 'denied' && <Alert title="Access denied" tone="danger" live>This session may not read this telemetry. No values are retained.</Alert>}
       {result?.kind === 'no-sample' && <Alert title="No reading" tone="info">{reasonLabels[result.reason]}</Alert>}
       {result?.kind === 'sample' && <>
-        <SampleBody sample={result.sample} elapsedMs={elapsedMs} />
-        {!isCurrent(result.sample, elapsedMs) && result.lastKnown && <LastKnown sample={result.lastKnown} />}
+        <SampleBody sample={result.sample} elapsedMs={displayElapsedMs} />
+        {!isCurrent(result.sample, displayElapsedMs) && result.lastKnown && <LastKnown sample={result.lastKnown} />}
       </>}
       <p className="rt-note">Local processes only; cloud model inference is not measured.</p>
     </CardBody>
@@ -134,6 +136,19 @@ export interface ScopedResourceTelemetryProps {
   mode?: 'live' | 'historical'
   capturedOwned?: TelemetryReadResult
 }
+function HistoricalTelemetry({ result, selector }: { result: TelemetryReadResult | undefined; selector: ScopedResourceTelemetryProps['ownedSelector'] }) {
+  if (result?.kind === 'denied') return <Alert title="Access denied" tone="danger">This session may not read this execution’s historical telemetry. No values are retained.</Alert>
+  if (result?.kind === 'no-sample' && result.selector.scope === 'owned') return <Alert title="Historical metrics unavailable" tone="neutral">{reasonLabels[result.reason]}</Alert>
+  if (!result || result.kind !== 'sample' || result.sample.selector.scope !== 'owned'
+    || selector && result.sample.selectorKey !== telemetrySelectorKey(selector))
+    return <Alert title="Historical metrics unavailable" tone="neutral">No authorized captured sample exists for this execution.</Alert>
+  const sample = hasCapturedValues(result.sample) ? result.sample : result.lastKnown?.selector.scope === 'owned'
+    && result.lastKnown.selectorKey === result.sample.selectorKey && hasCapturedValues(result.lastKnown) ? result.lastKnown : null
+  if (sample) return <Card className="rt-card" role="region" aria-label="Captured execution metrics"><CardBody><LastKnown sample={sample} historical /></CardBody></Card>
+  const reasons = [...new Set([...(result.sample.cpu.state !== 'fresh' ? [result.sample.cpu.reason] : []),
+    ...(result.sample.memory.state !== 'fresh' ? [result.sample.memory.reason] : []), ...result.sample.coverage.reasons])]
+  return <Alert title="Historical metrics unavailable" tone="neutral">{reasons.map(reason => reasonLabels[reason]).join(' · ') || 'No authorized captured values remain for this execution.'}</Alert>
+}
 
 /** Identity/context first, then whole-computer and owned-process panels. Mount only in an open Info surface. */
 export function ScopedResourceTelemetry({ context, computerSelector, ownedSelector, mode = 'live', capturedOwned }: ScopedResourceTelemetryProps) {
@@ -144,9 +159,7 @@ export function ScopedResourceTelemetry({ context, computerSelector, ownedSelect
       ? <LiveTelemetryPanel selector={computerSelector} title={historical ? 'Computer now' : 'Computer'} />
       : <Alert title="Computer reading unavailable" tone="neutral">No computer selector was supplied for this placement.</Alert>}
     {historical
-      ? (capturedOwned?.kind === 'sample' && capturedOwned.sample.selector.scope === 'owned' && hasCapturedValues(capturedOwned.sample)
-        ? <Card className="rt-card" role="region" aria-label="Captured execution metrics"><CardBody><LastKnown sample={capturedOwned.sample} /></CardBody></Card>
-        : <Alert title="Historical metrics unavailable" tone="neutral">No authorized captured sample exists for this execution.</Alert>)
+      ? <HistoricalTelemetry result={capturedOwned} selector={ownedSelector} />
       : ownedSelector?.scope === 'owned'
         ? <LiveTelemetryPanel selector={ownedSelector} title="Execution" />
         : <Alert title="Execution metrics unavailable" tone="neutral">This node has no accepted or observed execution to measure.</Alert>}

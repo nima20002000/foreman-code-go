@@ -7,11 +7,12 @@ import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 
 export const RESOURCE_TELEMETRY_READ_PATH = '/api/management/resource-telemetry/read'
 
-/** A validated read plus the browser monotonic instant at which it arrived; ages are server age + elapsed since this instant. */
+/** Preserve server facts; display ages add the full request duration plus monotonic elapsed since arrival. */
 export interface ReceivedTelemetry {
   selectorKey: string
   result: TelemetryReadResult
   receivedMonoMs: number
+  requestDurationMs: number
 }
 
 export const resourceTelemetryKeys = {
@@ -34,14 +35,19 @@ export function assertTelemetryMatchesSelector(result: TelemetryReadResult, sele
 export async function readResourceTelemetry(selector: TelemetrySelector, options: { signal?: AbortSignal } = {}): Promise<ReceivedTelemetry> {
   const body = TelemetrySelectorSchema.parse(selector)
   const selectorKey = telemetrySelectorKey(body)
+  const requestedMonoMs = performance.now()
   try {
     const result = await apiClient.request(RESOURCE_TELEMETRY_READ_PATH, TelemetryReadResultSchema, { method: 'POST', body, signal: options.signal })
     options.signal?.throwIfAborted()
     assertTelemetryMatchesSelector(result, selectorKey)
-    return { selectorKey, result, receivedMonoMs: performance.now() }
+    const receivedMonoMs = performance.now()
+    return { selectorKey, result, receivedMonoMs, requestDurationMs: Math.max(0, receivedMonoMs - requestedMonoMs) }
   } catch (error) {
     // The service answers a caller denial with HTTP 403 and no private values; keep it distinct from OS permission-denied.
-    if (error instanceof ApiError && error.status === 403) return { selectorKey, result: { kind: 'denied', selectorKey }, receivedMonoMs: performance.now() }
+    if (error instanceof ApiError && error.status === 403) {
+      const receivedMonoMs = performance.now()
+      return { selectorKey, result: { kind: 'denied', selectorKey }, receivedMonoMs, requestDurationMs: Math.max(0, receivedMonoMs - requestedMonoMs) }
+    }
     throw error
   }
 }

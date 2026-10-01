@@ -52,7 +52,7 @@ export interface MetricView {
 
 export interface SampleClock { nowMs: number; ageMs: number; freshRemainingMs: number }
 
-/** Server instants advanced only by monotonic time elapsed since the response arrived. */
+/** Server instants advanced by conservative request transit plus monotonic elapsed since arrival. */
 export function sampleClock(sample: TelemetrySample, elapsedMs: number): SampleClock {
   const elapsed = Math.max(0, elapsedMs)
   const nowMs = sample.serverNowUnixMs + elapsed
@@ -83,6 +83,11 @@ function memoryValue(metric: Extract<TelemetrySample['memory'], { state: 'fresh'
   if (memory.availableBytes !== null) details.push(`${formatBinaryBytes(memory.availableBytes)} available`)
   if (memory.sharedPagesMayDoubleCount) details.push('Shared pages may be double counted')
   return { headline: formatBinaryBytes(memory.bytes), headlineNote: null, source: memorySourceLabels[memory.kind], details }
+}
+/** Format an actually retained value without changing its timestamps or claiming it is current. */
+export function capturedMetricView(label: 'CPU' | 'RAM', sample: TelemetrySample) {
+  return label === 'CPU' ? sample.cpu.state === 'fresh' ? cpuValue(sample.cpu) : null
+    : sample.memory.state === 'fresh' ? memoryValue(sample.memory) : null
 }
 
 export function metricView(label: 'CPU' | 'RAM', sample: TelemetrySample, elapsedMs: number): MetricView {

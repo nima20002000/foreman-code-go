@@ -7,7 +7,7 @@ import { formatBinaryBytes } from './telemetryView'
 const panel = (name: keyof typeof fixtures, elapsedMs = 0, scope: 'computer' | 'owned' = 'owned') => {
   const result = fixtures[name]!
   const selectorKey = result.kind === 'sample' ? result.sample.selectorKey : result.selectorKey
-  return render(<ResourceTelemetryPanel scope={scope} title="Execution" received={{ selectorKey, result, receivedMonoMs: 0 }} elapsedMs={elapsedMs} />)
+  return render(<ResourceTelemetryPanel scope={scope} title="Execution" received={{ selectorKey, result, receivedMonoMs: 0, requestDurationMs: 0 }} elapsedMs={elapsedMs} />)
 }
 
 describe('ResourceTelemetryPanel', () => {
@@ -76,6 +76,20 @@ describe('ResourceTelemetryPanel', () => {
     panel('shared')
     expect(screen.getByText('Shared')).toBeInTheDocument()
     expect(screen.getByText('Partial')).toBeInTheDocument()
+  })
+  it.each(['cgroup-current', 'rss-sum'] as const)('preserves retained %s qualifiers, limits and real zero independently of null current values', kind => {
+    const fresh = fixtures.freshZero!, stale = fixtures.staleOnline!
+    if (fresh.kind !== 'sample' || stale.kind !== 'sample' || fresh.sample.memory.state !== 'fresh') throw new Error('sample fixtures')
+    const captured = { ...fresh.sample, coverage: { boundary: 'partial' as const, shared: true, reasons: ['limit', 'process-tree-partial'] as const },
+      memory: { ...fresh.sample.memory, value: { ...fresh.sample.memory.value, kind, bytes: 0, sharedPagesMayDoubleCount: kind === 'rss-sum' } } }
+    render(<ResourceTelemetryPanel scope="owned" title="Execution" received={{ selectorKey: stale.sample.selectorKey,
+      result: { ...stale, lastKnown: { ...captured, coverage: { ...captured.coverage, reasons: [...captured.coverage.reasons] } } }, receivedMonoMs: 0, requestDurationMs: 0 }} elapsedMs={0} />)
+    const last = screen.getByRole('region', { name: 'Last known' })
+    expect(within(last).getByText('Shared')).toBeInTheDocument(); expect(within(last).getByText('Partial')).toBeInTheDocument()
+    expect(last).toHaveTextContent('Server limit reached'); expect(last).toHaveTextContent('Process tree partially observed')
+    expect(last).toHaveTextContent('CPU 0.0%'); expect(last).toHaveTextContent('RAM 0 MiB')
+    expect(last).toHaveTextContent(kind === 'rss-sum' ? 'RSS sum (shared pages may be double counted)' : 'cgroup current')
+    expect(within(screen.getByRole('region', { name: 'RAM Stale' })).getByText('—')).toBeInTheDocument()
   })
 
   it('distinguishes OS permission-denied from caller denial and shows no private values for denial', () => {
