@@ -46,4 +46,18 @@ describe('persisted Agent activity adapter', () => {
     loaded.selection = { workflowVersionId: 'saved-version', attemptKey: '3' }
     expect(agentActivitySnapshot(loaded).scope).toMatchObject({ kind: 'selected_run_chat', selection: { runId: 'run', executionId: 'execution', workflowVersionId: 'saved-version', attemptKey: '3' } })
   })
+  it('publication item revision follows actual independent file state while scope revision stays equal', () => {
+    const loaded = state()
+    loaded.messages = [{ id: 'message', conversationId: loaded.row.id, requestId: 'A', role: 'user', content: 'Publish', sequence: '1', revision: '0',
+      createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' }]
+    loaded.publicationReceipts = [{ receiptId: 'receipt', messageId: 'message', fileId: 'file', fileRevisionId: 'file-version',
+      nativeSessionId: 'session', nativeTurnId: 'native-A', fileActivityRevision: '7', fileState: 'ready' }]
+    const ready = agentActivitySnapshot(loaded)
+    loaded.publicationReceipts[0] = { ...loaded.publicationReceipts[0]!, fileActivityRevision: '8', fileState: 'expired' }
+    const expired = agentActivitySnapshot(loaded)
+    expect(ready.revision).toBe(expired.revision)
+    expect(ready.activities.find((item) => item.kind === 'file_publication')).toMatchObject({ revision: '7', status: 'ready' })
+    expect(expired.activities.find((item) => item.kind === 'file_publication')).toMatchObject({ revision: '8', status: 'unknown' })
+  })
+
 })

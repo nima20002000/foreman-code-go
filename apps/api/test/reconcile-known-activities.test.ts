@@ -14,7 +14,7 @@ it('settles only preexisting original-owner items through the resident history p
   const input = { kind: 'agent' as const, conversationId: 'conversation', activity, signal: new AbortController().signal,
     runtimeFor: () => ({ manager, session }), publish: vi.fn() }
   await reconcileKnownActivities(input)
-  expect(activity.settleKnownByNative).toHaveBeenCalledWith('conversation', expect.objectContaining({ id: 'older-tool', status: 'completed' }), owner.native)
+  expect(activity.settleKnownByNative).toHaveBeenCalledWith('conversation', expect.objectContaining({ id: 'older-tool', status: 'completed' }), owner.native, undefined)
   expect(manager.attachSession).not.toHaveBeenCalled(); expect(manager.startTurn).not.toHaveBeenCalled()
   expect(manager.respond).not.toHaveBeenCalled(); expect(manager.cancel).not.toHaveBeenCalled()
   history.mockClear()

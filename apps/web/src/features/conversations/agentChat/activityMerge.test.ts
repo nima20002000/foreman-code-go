@@ -60,3 +60,40 @@ it('independent source revisions cannot lower current owners when an unrelated c
   const olderDependency = snapshot('11'); olderDependency.sourceRevisions = [{ source: 'execution', id: 'attempt-A', revision: '6' }]
   expect(reconcileActivitySnapshot(current, olderDependency, scope)!.revision).toBe('10')
 })
+
+for (const source of ['execution', 'native_events', 'file', 'command'] as const) it(`accepts independently advanced ${source} at equal scope revision`, () => {
+  const current = snapshot('4')
+  current.active = [{ ref: { kind: 'chat_request', conversationId: 'chat-a', requestId: 'A' }, phase: 'active', outcome: null, delivery: 'accepted', evidence: 'confirmed', startedAt: null }]
+  current.sourceRevisions = [{ source, id: 'independent', revision: '1' }]
+  const incoming = snapshot('4'); incoming.sourceRevisions = [{ source, id: 'independent', revision: '2' }]
+  const merged = reconcileActivitySnapshot(current, incoming, scope)!
+  expect(merged.active).toEqual([]); expect(merged.sourceRevisions).toEqual(incoming.sourceRevisions)
+})
+it('advances command interaction delivery using its own vector even when scope/item revisions stay equal', () => {
+  const summary = { id: 'approval', revision: '4', owner: { kind: 'chat_request' as const, conversationId: 'chat-a', requestId: 'A' },
+    sourceRevisions: [{ source: 'command' as const, id: 'receipt', revision: '1' }], delivery: 'uncertain' as const,
+    answerRecorded: true, providerAcknowledged: false, workerAcknowledged: false, responseAvailability: 'unknown' as const }
+  const item: ActivityItem = { id: summary.id, revision: '4', order: '0', owner: summary.owner,
+    source: { schemaVersion: 1, system: 'management_command_receipt', observedAt: null }, evidence: 'reconciling', kind: 'interaction', interaction: summary }
+  const current = snapshot('4', [item]); current.sourceRevisions = summary.sourceRevisions; current.pendingInteractions = [summary]
+  const delivered = { ...summary, sourceRevisions: [{ ...summary.sourceRevisions[0]!, revision: '2' }], delivery: 'delivered' as const, providerAcknowledged: true }
+  const incoming = snapshot('4', [{ ...item, evidence: 'confirmed', interaction: delivered }]); incoming.sourceRevisions = delivered.sourceRevisions
+  expect(reconcileActivitySnapshot(current, incoming, scope)!.activities[0]).toMatchObject({ interaction: { delivery: 'delivered', providerAcknowledged: true } })
+  expect(reconcileActivitySnapshot(current, incoming, scope)!.pendingInteractions).toEqual([])
+  const mixed = { ...incoming, sourceRevisions: [...delivered.sourceRevisions, { source: 'file' as const, id: 'file', revision: '1' }] }
+  current.sourceRevisions = [...summary.sourceRevisions, { source: 'file', id: 'file', revision: '2' }]
+  const reconciled = reconcileActivitySnapshot(current, mixed, scope)!
+  expect(reconciled.sourceRevisions).toEqual(current.sourceRevisions)
+  expect(reconciled.pendingInteractions).toEqual([])
+  expect(reconciled.activities[0]).toMatchObject({ interaction: { delivery: 'delivered' } })
+})
+
+it('accepts file state changes at equal scope using the immutable file source revision', () => {
+  const base = text('publication:receipt', '7', '')
+  const item: ActivityItem = { id: base.id, revision: '7', order: '2', owner: base.owner, source: base.source, evidence: 'confirmed',
+    kind: 'file_publication', receiptId: 'receipt', fileId: 'file', status: 'ready' }
+  const current = snapshot('4', [item]); current.sourceRevisions = [{ source: 'file', id: 'file', revision: '7' }]
+  const incoming = snapshot('4', [{ ...item, revision: '8', status: 'unknown' }]); incoming.sourceRevisions = [{ source: 'file', id: 'file', revision: '8' }]
+  expect(reconcileActivitySnapshot(current, incoming, scope)!.activities[0]).toMatchObject({ revision: '8', status: 'unknown' })
+  expect(reconcileActivitySnapshot(incoming, current, scope)!.activities[0]).toMatchObject({ revision: '8', status: 'unknown' })
+})

@@ -627,8 +627,10 @@ export class PostgresOperatorConversationRepository {
           afterActivitySequence: activity, updatedAt: new Date().toISOString() })
         if (message.content === existing.content && message.nativeMessageComplete === existing.nativeMessageComplete
           && message.afterActivitySequence === existing.afterActivitySequence) { await client.query('commit'); return false }
-        await client.query('update operator_conversation_messages set content=$3,record=$4::jsonb where conversation_id=$1 and native_message_id=$2',
-          [id,nativeMessageId,message.content,JSON.stringify(message)])
+        await client.query(`update operator_conversation_messages set content=$3,record=$4::jsonb,
+          text_provenance=case when $5::boolean and text_provenance is not null then jsonb_set(text_provenance,'{final}','true'::jsonb) else text_provenance end
+          where conversation_id=$1 and native_message_id=$2`,
+        [id,nativeMessageId,message.content,JSON.stringify(message),message.nativeMessageComplete !== false])
       } else {
         const now = new Date().toISOString()
         const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, requestId, role: 'assistant', content,

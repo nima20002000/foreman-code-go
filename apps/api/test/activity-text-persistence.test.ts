@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
 import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { appendConversationTextOperation } from '../src/modules/conversations/conversationTextRepository.js'
 
 function fixture() {
@@ -10,6 +11,8 @@ function fixture() {
     origin_run_id: null, origin_execution_id: null, native_session_id: 'session', active_native_turn_id: 'turn' }
   const query = async (text: string, values: unknown[] = []) => {
     const sql = text.replace(/\s+/g, ' ').trim()
+    if (sql.startsWith('select * from operator_conversations')) return { rows: [{ ...owner, id: 'conversation', active_request_id: 'A' }], rowCount: 1 }
+    if (sql.startsWith('select record from operator_conversation_messages')) return { rows: item ? [{ record: structuredClone(item.record) }] : [], rowCount: item ? 1 : 0 }
     if (sql.startsWith('select kind')) return { rows: [{ ...owner, revision: String(revision) }], rowCount: 1 }
     if (sql.startsWith('select id,record,content')) return { rows: item ? [structuredClone(item)] : [], rowCount: item ? 1 : 0 }
     if (sql.startsWith('select coalesce(max')) return { rows: [{ sequence: '3' }], rowCount: 1 }
@@ -17,6 +20,11 @@ function fixture() {
       writes.push(sql); item = { id: String(values[0]), record: JSON.parse(String(values[5])) as Record<string, unknown>, content: String(values[3]),
         text_provenance: JSON.parse(String(values[6])), revision: String(item ? Number(item.revision) + 1 : 0) }
       return { rows: [{ revision: item.revision }], rowCount: 1 }
+    }
+    if (sql.startsWith('update operator_conversation_messages set content=')) {
+      writes.push(sql); item!.content = String(values[2]); item!.record = JSON.parse(String(values[3])) as Record<string, unknown>
+      if (values[4] === true && item!.text_provenance) item!.text_provenance = { ...(item!.text_provenance as object), final: true }
+      return { rows: [], rowCount: 1 }
     }
     if (sql.startsWith('update operator_conversation_messages set text_provenance')) {
       item!.text_provenance = JSON.parse(String(values[2])); return { rows: [], rowCount: 1 }
@@ -26,7 +34,7 @@ function fixture() {
     return { rows: [], rowCount: 0 }
   }
   const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
-  return { pool, writes, owner, state: () => ({ revision, item: structuredClone(item) }) }
+  return { pool, writes, owner, finalizeHistory: (content: string) => { item!.content = content; item!.record.content = content; item!.record.nativeMessageComplete = true }, state: () => ({ revision, item: structuredClone(item) }) }
 }
 const operation = (sequence: number, text: string, final = false): ActivityTextOperation => ({
   identity: { scope: { kind: 'agent_chat', conversationId: 'conversation', workspaceId: 'ws', workflowId: 'wf', nodeId: 'node', agentId: 'agent' },
@@ -69,4 +77,24 @@ describe('existing message text persistence', () => {
     expect(await appendConversationTextOperation(f.pool, 'conversation', 'A', oldGeneration, { nativeGeneration: 'current' })).toBeUndefined()
     expect(f.writes).toHaveLength(0)
   })
+  for (const finalText of ['short', '']) it(`preserves a history-only ${finalText ? 'shorter' : 'empty'} final against a later canonical delta`, async () => {
+    const f = fixture()
+    await appendConversationTextOperation(f.pool, 'conversation', 'A', operation(1, 'long provisional'))
+    f.finalizeHistory(finalText)
+    const finalized = f.state()
+    expect((await appendConversationTextOperation(f.pool, 'conversation', 'A', operation(3, 'late')))?.status).toBe('ignored')
+    expect(f.state()).toEqual(finalized)
+    expect(f.state().item?.record.nativeMessageComplete).toBe(true)
+  })
+
+  for (const finalText of ['short', '']) it(`synchronizes canonical provenance when actual history writer finalizes ${finalText ? 'shorter' : 'empty'} text`, async () => {
+    const f = fixture()
+    await appendConversationTextOperation(f.pool, 'conversation', 'A', operation(1, 'long provisional'))
+    expect(await new PostgresOperatorConversationRepository(f.pool).appendAssistantMessage('conversation', 'A', 'item', finalText)).toBe(true)
+    expect(f.state().item?.text_provenance).toMatchObject({ final: true })
+    const finalized = f.state()
+    expect((await appendConversationTextOperation(f.pool, 'conversation', 'A', operation(3, 'late')))?.status).toBe('ignored')
+    expect(f.state()).toEqual(finalized)
+  })
+
 })

@@ -97,7 +97,7 @@ export class ActivityProductionReplay {
         if (method === 'config/mcpServer/reload') return {}
         throw new Error(`Unrecorded replay operation: ${method}`)
       },
-      respond: async (rpcId, result) => {
+      respond: async (rpcId, _method, result) => {
         if (!sessionId || !channel.connected || this.requests.get(rpcId) !== sessionId) throw new Error('Replay response lost its exact callback.')
         this.responses.push({ sessionId, rpcId }); this.requests.delete(rpcId)
         if (result && typeof result === 'object' && !Array.isArray(result)) this.toolReplies.set(rpcId, result as JsonObject)

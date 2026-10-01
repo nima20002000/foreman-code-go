@@ -41,7 +41,7 @@ export function conversationPublicationItems(conversationId: string, messages: r
   return receipts.flatMap((receipt) => {
     const message = messages.find((entry) => entry.id === receipt.messageId)
     if (!message?.requestId || message.sequence === undefined) return []
-    return [ActivityItemSchema.parse({ kind: 'file_publication', id: `publication:${receipt.receiptId}`, revision: '0',
+    return [ActivityItemSchema.parse({ kind: 'file_publication', id: `publication:${receipt.receiptId}`, revision: receipt.fileActivityRevision,
       order: message.sequence, orderSource: 'file_publication', owner: { kind: 'chat_request', conversationId, requestId: message.requestId },
       native: { harness: 'codex', sessionId: receipt.nativeSessionId, turnId: receipt.nativeTurnId },
       source: { schemaVersion: 1, system: 'file_tool_publication', observedAt: null }, evidence: 'confirmed',

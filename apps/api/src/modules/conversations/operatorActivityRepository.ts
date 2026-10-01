@@ -1,5 +1,6 @@
 import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery, ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@graphql/contracts'
 import type pg from 'pg'
+import type { NativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { settleKnownActivity } from './settleKnownActivity.js'
 import { conversationActivityKey } from './activityIdentity.js'
 import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
@@ -25,12 +26,12 @@ const changeSchema = OperatorActivitySchema.omit({ sequence: true, revision: tru
 export class PostgresOperatorActivityRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  settleKnownByNative(conversationId: string, change: Omit<OperatorActivityChange, 'requestId'>, actual: ActivityNativeIdentity) {
-    return settleKnownActivity(this.pool, conversationId, undefined, change, actual)
+  settleKnownByNative(conversationId: string, change: Omit<OperatorActivityChange, 'requestId'>, actual: ActivityNativeIdentity, redact?: NativePersistenceRedactor) {
+    return settleKnownActivity(this.pool, conversationId, undefined, change, actual, redact)
   }
 
-  settleKnownActivity(conversationId: string, requestId: string, change: OperatorActivityChange, actual: ActivityNativeIdentity) {
-    return settleKnownActivity(this.pool, conversationId, requestId, change, actual)
+  settleKnownActivity(conversationId: string, requestId: string, change: OperatorActivityChange, actual: ActivityNativeIdentity, redact?: NativePersistenceRedactor) {
+    return settleKnownActivity(this.pool, conversationId, requestId, change, actual, redact)
   }
 
   async append(conversationId: string, requestId: string, input: OperatorActivityChange, fence: ActivityMutationFence = {}): Promise<{ activity: OperatorActivity; revision: number; scopeRevision: string; itemRevision: string } | undefined> {

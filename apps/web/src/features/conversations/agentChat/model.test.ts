@@ -120,3 +120,19 @@ it('actual state acceptance uses decimal scoped revisions beyond numeric legacy 
   const old = { ...previous, activeTurn: null, activitySnapshot: { ...previous.activitySnapshot, revision: '9007199254740992' } }
   expect(acceptAgentChatState(previous, old).activeTurn).toEqual(previous.activeTurn)
 })
+
+it('accepts independent canonical message advances from equal-scope authorized readback and receipt replay', () => {
+  const previous: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion), base = previous.messages[1]!
+  previous.messages = [{ ...base, revision: '1', content: 'long provisional', nativeMessageComplete: false }]
+  const scope = { kind: 'agent_chat' as const, conversationId: previous.conversation!.id, workspaceId: previous.context.workspaceId,
+    workflowId: previous.context.workflowId, nodeId: previous.context.workflowNodeId, agentId: previous.context.agentId }
+  previous.activitySnapshot = { schemaVersion: 1, scope, revision: String(previous.revision), sourceRevisions: [{ source: 'message', id: base.id, revision: '1' }],
+    active: [], queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
+  const incoming = { ...previous, messages: [{ ...previous.messages[0]!, revision: '2', content: '', nativeMessageComplete: true }],
+    activitySnapshot: { ...previous.activitySnapshot, sourceRevisions: [{ source: 'message' as const, id: base.id, revision: '2' }] } }
+  for (const source of ['read', 'receipt'] as const) {
+    const accepted = acceptAgentChatState(previous, incoming, source)
+    expect(accepted.messages[0]).toMatchObject({ revision: '2', content: '', nativeMessageComplete: true })
+    expect(accepted.activitySnapshot?.sourceRevisions).toEqual(incoming.activitySnapshot.sourceRevisions)
+  }
+})

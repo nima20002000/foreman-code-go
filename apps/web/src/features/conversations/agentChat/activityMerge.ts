@@ -1,5 +1,5 @@
 import type { OperatorActivity } from '@graphql/contracts'
-import type { ActivityItem, ActivityScope, ActivitySnapshotV1 } from '@graphql/contracts/activity'
+import type { ActivityItem, ActivityScope, ActivitySnapshotV1, ActivitySourceRevision, InteractionSummary } from '@graphql/contracts/activity'
 
 /** Canonical structural scope key; object property insertion order is not identity. */
 export function activityScopeKey(scope: ActivityScope): string {
@@ -7,16 +7,42 @@ export function activityScopeKey(scope: ActivityScope): string {
     ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value
   return JSON.stringify(canonical(scope))
 }
+type Sources = readonly ActivitySourceRevision[] | undefined
+const sourceKey = (source: ActivitySourceRevision) => JSON.stringify([source.source, source.id])
+function compareSources(current: Sources, incoming: Sources) {
+  const known = new Map(current?.map((source) => [sourceKey(source), source.revision]))
+  return { stale: incoming?.some((source) => { const previous = known.get(sourceKey(source)); return previous !== undefined && BigInt(source.revision) < BigInt(previous) }) ?? false,
+    advanced: incoming?.some((source) => { const previous = known.get(sourceKey(source)); return previous === undefined || BigInt(source.revision) > BigInt(previous) }) ?? false }
+}
 export function sourceVectorIsStale(current: ActivitySnapshotV1, incoming: ActivitySnapshotV1): boolean {
-  const known = new Map(current.sourceRevisions?.map((source) => [JSON.stringify([source.source, source.id]), source.revision]))
-  return incoming.sourceRevisions?.some((source) => { const previous = known.get(JSON.stringify([source.source, source.id])); return previous !== undefined && BigInt(source.revision) < BigInt(previous) }) ?? false
+  return compareSources(current.sourceRevisions, incoming.sourceRevisions).stale
+}
+export function sourceVectorHasAdvance(current: ActivitySnapshotV1, incoming: ActivitySnapshotV1): boolean {
+  const compared = compareSources(current.sourceRevisions, incoming.sourceRevisions)
+  return !compared.stale && compared.advanced
+}
+const summarySources = (summary: InteractionSummary): Sources => summary.sourceRevisions?.some((source) => source.source !== 'scope')
+  ? summary.sourceRevisions.filter((source) => source.source !== 'scope') : summary.sourceRevisions
+const itemSources = (item: ActivityItem): Sources => item.kind === 'interaction' ? summarySources(item.interaction) : undefined
+function mergePendingInteractions(current: ActivitySnapshotV1, incoming: ActivitySnapshotV1): InteractionSummary[] {
+  const candidates = new Map([...incoming.pendingInteractions, ...incoming.activities.flatMap((item) => item.kind === 'interaction' ? [item.interaction] : [])]
+    .map((summary) => [summary.id, summary]))
+  return current.pendingInteractions.flatMap((previous) => {
+    const next = candidates.get(previous.id)
+    const sources = next && compareSources(summarySources(previous), summarySources(next))
+    if (!next || !sources?.advanced || sources.stale) return [previous]
+    return next.delivery === 'delivered' ? [] : [next]
+  })
 }
 
 export function mergeActivityItems(current: readonly ActivityItem[], incoming: readonly ActivityItem[], limit = 1000): ActivityItem[] {
   const items = new Map(current.map((item) => [item.id, item]))
   for (const item of incoming) {
     const previous = items.get(item.id)
-    if (previous && BigInt(item.revision) <= BigInt(previous.revision)) continue
+    if (previous) {
+      const sources = compareSources(itemSources(previous), itemSources(item))
+      if (sources.stale || !sources.advanced && BigInt(item.revision) <= BigInt(previous.revision)) continue
+    }
     if (previous?.kind === 'text' && previous.finality === 'authoritative_final'
       && (item.kind !== 'text' || item.finality !== 'authoritative_final')) continue
     items.set(item.id, item)
@@ -33,9 +59,9 @@ export function reconcileActivitySnapshot(current: ActivitySnapshotV1 | undefine
   const key = activityScopeKey(selectedScope)
   if (activityScopeKey(incoming.scope) !== key) return current
   if (!current || activityScopeKey(current.scope) !== key) return { ...incoming, activities: mergeActivityItems([], incoming.activities, limit) }
-  if (BigInt(incoming.revision) <= BigInt(current.revision) || sourceVectorIsStale(current, incoming)) {
-    const known = new Set(current.activities.map((item) => item.id))
-    return { ...current, activities: mergeActivityItems(current.activities, incoming.activities.filter((item) => !known.has(item.id)), limit) }
+  if (BigInt(incoming.revision) < BigInt(current.revision) || sourceVectorIsStale(current, incoming)
+    || BigInt(incoming.revision) === BigInt(current.revision) && !sourceVectorHasAdvance(current, incoming)) {
+    return { ...current, pendingInteractions: mergePendingInteractions(current, incoming), activities: mergeActivityItems(current.activities, incoming.activities, limit) }
   }
   return { ...incoming, activities: mergeActivityItems(current.activities, incoming.activities, limit) }
 }

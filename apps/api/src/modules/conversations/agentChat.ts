@@ -1000,7 +1000,7 @@ export class AgentChatService {
 
   private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>, nativeTurnId: string | null, authoritativeReconciliation = false, textHandled = false) {
     const known = knownNativeActivity(event, runtime.manager.harness)
-    const settled = known ? await this.activity.settleKnownByNative(id, known.change, known.native) : undefined
+    const settled = known ? await this.activity.settleKnownByNative(id, known.change, known.native, redact) : undefined
     if (settled) this.events.publish(id, 'activity', settled)
     const change = operatorActivity(event, runtime.manager.harness, requestId)
     if (!settled && change && change.kind !== 'thinking'

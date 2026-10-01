@@ -271,9 +271,10 @@ export class OperatorChatService {
   }
 
   private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false) {
+    const redact = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
     const known = knownNativeActivity(event, runtime.manager.harness)
     if (known) {
-      const settled = await this.repository.activity.settleKnownByNative(id, known.change, known.native)
+      const settled = await this.repository.activity.settleKnownByNative(id, known.change, known.native, redact)
       if (settled) { this.events.publish(id, 'activity', settled); return }
       if (known.native.sessionId !== runtime.session?.nativeSessionId || known.native.turnId !== nativeTurnId) return
     }
@@ -282,7 +283,7 @@ export class OperatorChatService {
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
       ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
     if (change.kind === 'thinking' && !showThinking) return
-    const safe = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})).value(change)
+    const safe = redact.value(change)
     if (!runtime.session || !nativeTurnId) {
       this.events.publish(id, 'state', { requestId, snapshotRequired: true })
       void this.control(id, () => this.observe(id, requestId, runtime)).catch(() => undefined)
@@ -828,7 +829,8 @@ export class OperatorChatService {
       signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
       runtimeFor: (id) => {
         const runtime = this.runtimes.get(id)
-        return runtime?.session && !runtime.disposal ? { manager: runtime.manager, session: runtime.session } : undefined
+        return runtime?.session && !runtime.disposal ? { manager: runtime.manager, session: runtime.session,
+          redact: nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})) } : undefined
       }, publish: (id, settled) => this.events.publish(id, 'activity', settled) })
     for (const candidate of await this.repository.unfinished()) {
       if (this.closing) break

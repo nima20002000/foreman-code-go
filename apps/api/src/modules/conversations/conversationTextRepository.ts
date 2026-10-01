@@ -67,7 +67,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     const stale = source?.eventId !== undefined && source.eventId === previous?.eventId
       || comparableNative && BigInt(source!.nativeSequence!) <= BigInt(previous!.nativeSequence!)
       || comparableTransport && source!.sequence! <= previous!.sequence!
-    const alreadyFinal = prior && (stored?.final ?? prior.record.nativeMessageComplete !== false)
+    const alreadyFinal = prior && (stored?.final === true || prior.record.nativeMessageComplete !== false)
     if (stale || alreadyFinal && !operation.final) {
       await client.query('commit'); return result('ignored')
     }
@@ -82,7 +82,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     }
     const content = operation.mode === 'append' ? (prior?.content ?? '') + operation.text : operation.text
     const provenance: Provenance = { ...identity, final: operation.final, ...(source ? { source } : {}) }
-    if (prior && content === prior.content && operation.final === (stored?.final ?? prior.record.nativeMessageComplete !== false)) {
+    if (prior && content === prior.content && operation.final === alreadyFinal) {
       if (source && (comparableNative || comparableTransport)) await client.query(`update operator_conversation_messages set text_provenance=$3::jsonb
         where conversation_id=$1 and native_message_id=$2`, [conversationId, nativeId, JSON.stringify(provenance)])
       await client.query('commit'); return result('ignored')
