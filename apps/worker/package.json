@@ -12,6 +12,8 @@
     "ws": "8.22.0"
   },
   "devDependencies": {
-    "esbuild": "0.27.7"
+    "esbuild": "0.27.7",
+    "msgpackr": "1.12.1",
+    "yaml": "2.9.0"
   }
 }
