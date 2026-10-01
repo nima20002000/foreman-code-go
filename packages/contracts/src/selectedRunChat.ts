@@ -60,7 +60,7 @@ const ExecutionChoice = z.object({
   hasMoreExecutions: z.boolean(),
 }).strict();
 const Unavailable = z.object({ kind: z.literal("unavailable"), target: SelectedRunChatTargetSchema,
-  reason: z.enum(["legacy_run", "execution_missing"]) }).strict();
+  reason: z.enum(["legacy_run", "execution_missing", "job_node"]) }).strict();
 export const ReadSelectedRunChatResponseSchema = z.discriminatedUnion("kind", [Selected, ExecutionChoice, Unavailable]);
 export type ReadSelectedRunChatResponse = z.infer<typeof ReadSelectedRunChatResponseSchema>;
 

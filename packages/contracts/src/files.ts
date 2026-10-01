@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { JobExecutionFileScopeSchema, JobArtifactFileSchema, JobArtifactFileRevisionSchema } from "./jobArtifacts.js";
 import { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 
 /** FIL-02 / FEAT-03. Metadata contracts only; never proof of authorization or byte validation. */
@@ -71,7 +72,7 @@ export const PermanentFileScopeSchema = z.discriminatedUnion("kind", [
   WorkflowReferenceFileScopeSchema, WorkspaceReferenceFileScopeSchema,
 ]);
 export const FileScopeSchema = z.discriminatedUnion("kind", [
-  TemporaryFileScopeSchema, WorkflowReferenceFileScopeSchema, WorkspaceReferenceFileScopeSchema,
+  TemporaryFileScopeSchema, WorkflowReferenceFileScopeSchema, WorkspaceReferenceFileScopeSchema, JobExecutionFileScopeSchema,
 ]);
 export type OperatorFileChatScope = z.infer<typeof OperatorFileChatScopeSchema>;
 export type AgentFileChatScope = z.infer<typeof AgentFileChatScopeSchema>;
@@ -104,7 +105,7 @@ export const PermanentFileSchema = z.object({
   state: z.enum(["pending", "ready", "removed"]),
 }).strict();
 /** Removed files retain this record as a tombstone; a missing head/creation identity is invalid. */
-export const FileSchema = z.union([TemporaryFileSchema, PermanentFileSchema]);
+export const FileSchema = z.union([TemporaryFileSchema, PermanentFileSchema, JobArtifactFileSchema]);
 export type TemporaryFile = z.infer<typeof TemporaryFileSchema>;
 export type PermanentFile = z.infer<typeof PermanentFileSchema>;
 export type File = z.infer<typeof FileSchema>;
@@ -122,12 +123,13 @@ export const FileRevisionSchema = z.object({
 }).strict().refine(hasMatchingExtension, "Filename extension must match an allowed media type").readonly();
 export type FileRevision = z.infer<typeof FileRevisionSchema>;
 
-function revisionBelongsToFile(value: { file: File; revision: FileRevision }): boolean {
+function revisionBelongsToFile(value: { file: File; revision: FileRevision | z.infer<typeof JobArtifactFileRevisionSchema> }): boolean {
+  if ((value.file.scope.kind === "job_execution") !== (value.revision.origin === "job_output")) return false;
   return value.file.fileId === value.revision.fileId
     && Date.parse(value.revision.createdAt) >= Date.parse(value.file.createdAt);
 }
 /** Historical readback may intentionally return a revision other than currentRevisionId. */
-export const FileWithRevisionSchema = z.object({ file: FileSchema, revision: FileRevisionSchema })
+export const FileWithRevisionSchema = z.object({ file: FileSchema, revision: z.union([FileRevisionSchema, JobArtifactFileRevisionSchema]) })
   .strict().refine(revisionBelongsToFile, "Revision must belong to this file and not predate it");
 export type FileWithRevision = z.infer<typeof FileWithRevisionSchema>;
 
@@ -248,7 +250,7 @@ function base64ByteLength(value: string): number {
 }
 export const AgentFileReadResultSchema = z.discriminatedUnion("status", [
   z.object({
-    status: z.literal("ready"), file: FileSchema, revision: FileRevisionSchema, readAt: UtcTimestamp,
+    status: z.literal("ready"), file: FileSchema, revision: z.union([FileRevisionSchema, JobArtifactFileRevisionSchema]), readAt: UtcTimestamp,
     offset: z.number().int().min(0).max(MAX_FILE_BYTES),
     byteLength: z.number().int().min(0).max(MAX_FILE_READ_BYTES), contentBase64: ReadBytes, eof: z.boolean(),
   }).strict().refine((value) => revisionBelongsToFile(value) && value.file.state === "ready"

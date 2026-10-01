@@ -73,6 +73,7 @@ describe("executable workflow graph integrity", () => {
 
   it("rejects duplicate Agent activations and arbitrary execution back-edges", () => {
     const duplicateAgent = structuredClone(version);
+    if(duplicateAgent.definition.nodes[1]!.kind==='job')throw new Error('Agent fixture expected')
     duplicateAgent.definition.nodes[1]!.agentId = "agent-1";
     expect(WorkflowVersionV3Schema.safeParse(duplicateAgent).success).toBe(false);
     const cyclic = structuredClone(version);

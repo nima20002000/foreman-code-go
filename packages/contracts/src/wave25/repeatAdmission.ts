@@ -57,7 +57,7 @@ export const RepeatStartSnapshotV1Schema = z.object({
   executable: ExecutableWorkflowV3Schema,
   workflow: z.object({
     id: GraphIdSchema, workspaceId: GraphIdSchema, revision: z.number().int().nonnegative(),
-    currentVersionId: GraphIdSchema, archived: z.boolean(), definition: WorkflowDefinitionV3Schema,
+    currentVersionId: GraphIdSchema, archived: z.boolean(), definition: WorkflowDefinitionV3Schema.transform(definition=>({...definition,nodes:definition.nodes.map(node=>structuredClone(node))})),
   }).strict(),
   workspace: z.object({ id: GraphIdSchema, archived: z.boolean(), location: RunExecutionLocationV3Schema }).strict(),
   draft: GraphDraftV3Schema.nullable(),

@@ -12,7 +12,7 @@ export type { Id, Timestamp } from "./schemaPrimitives.js";
 import {
   ApprovalHandlerSchema, AcceptedWorkflowApprovalConfigurationSchema,
   ExecutionConditionSchema,
-  CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
+  CurrentAgentWorkflowNodeSchema, CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema, CurrentWorkflowDefinitionBaseSchema,
   WorkflowDefinitionV3Schema, ExecutionSemanticsVersionSchema,
 } from "./wave25/workflowShape.js";
 export {
@@ -700,7 +700,7 @@ export type Agent = z.infer<typeof AgentSchema>;
 
 /** Generic presentation names refer to the one current shape, never retired validators. */
 export const WorkflowNodeSchema = CurrentWorkflowNodeSchema;
-export const WorkflowNodeFields = CurrentWorkflowNodeSchema.shape;
+export const WorkflowNodeFields = CurrentAgentWorkflowNodeSchema.shape;
 export const WorkflowEdgeSchema = CurrentWorkflowRelationshipSchema;
 export const WorkflowDefinitionFields = CurrentWorkflowDefinitionBaseSchema.omit({ nodes: true, edges: true }).shape;
 export type WorkflowNode = z.infer<typeof CurrentWorkflowNodeSchema>;
