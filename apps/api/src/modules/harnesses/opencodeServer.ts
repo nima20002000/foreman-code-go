@@ -70,6 +70,7 @@ interface OwnedTurn {
   submittedAt: number
   idleObserved: boolean
   activityObserved?: boolean
+  observerAbort?: AbortController
   scopedError: JsonObject | undefined
   terminalResult: NativeHistory['terminalResult']
   nativeMessageId?: string
@@ -94,6 +95,7 @@ interface SessionState {
   ownedIds: Map<string, boolean>
   sequence: number
   turn: OwnedTurn | undefined
+  admissionPending?: AbortController
   recoveryCorrelationId?: string
 }
 interface MessagePage { messages: OpenCodeMessage[]; nextCursor?: string }
@@ -318,6 +320,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private async *watchTurn(session: NativeSessionReference, correlationId: string, prompt: string | undefined, signal: AbortSignal,
     onSubmitted?: (nativeTurnId: string) => Promise<void>): AsyncIterable<NativeHarnessEvent> {
     const state = this.requireSession(session)
+    if (state.admissionPending) throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'This session already has pending turn admission.')
+    const admission = new AbortController()
+    state.admissionPending = admission
+    signal = AbortSignal.any([signal, admission.signal])
     let turn: OwnedTurn | undefined
     let response: Response | undefined
     let initialHistory: NativeHistory | undefined
@@ -362,6 +368,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           state.autoReplies.resume()
         }
         turn.observing = true
+        turn.observerAbort = admission
         if (turn.terminalResult) return
         if (turn.submitted) {
           initialHistory = await this.reconcileReady(session, correlationId, signal)
@@ -415,6 +422,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
           throw error
         }
       })
+      if (state.admissionPending === admission) delete state.admissionPending
       if (!turn) throw new Error('OpenCode turn reservation failed.')
       if (initialHistory) {
         // Authoritative history already carries stable content-addressed identities.
@@ -494,9 +502,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
     } finally {
       await response?.body?.cancel().catch(() => undefined)
+      if (state.admissionPending === admission) delete state.admissionPending
       // Detaching observation is deliberately NOT native cancellation or writer release.
       if (turn) {
         turn.observing = false
+        if (turn.observerAbort === admission) delete turn.observerAbort
         if (!turn.submitted && state.turn === turn) {
           await this.finishFiles(turn, 'definite_rejection')
           state.turn = undefined
@@ -600,7 +610,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         }
         // Persist before resolving respond(), evicting a cache entry, or committing a caller transaction.
         // A journal failure is an uncertain outcome; it never authorizes another native send.
-        this.options.responseJournal?.record(receipt)
+        try { this.options.responseJournal?.record(receipt) }
+        catch (error) {
+          throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_JOURNAL_UNCERTAIN',
+            'The exact native reply was acknowledged but its durable journal could not be committed.', 'uncertain', { cause: error })
+        }
         boundedMapSet(this.responseReceipts, JSON.stringify([session.nativeSessionId, nativeRequestId]), receipt)
         acknowledged = true
       }
@@ -652,6 +666,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (session.harness === 'opencode' && harnessProfile('opencode', session.providerVersion) === 'opencode-1.18.31'
       && state && (!nativeTurnId || state.turn?.messageID === nativeTurnId)) {
       state.autoReplies.stop()
+      state.admissionPending?.abort(new Error('OpenCode turn admission canceled.'))
+      if (!state.turn?.terminalResult) state.turn?.observerAbort?.abort(new Error('OpenCode turn admission canceled.'))
       // Close facade admission synchronously even while prompt ACK/startup holds the lifecycle.
       // Serialized cancellation retries durable revocation and reports unresolved cleanup.
       void state.turn?.files?.bridge.revoke().catch(() => undefined)
@@ -1094,6 +1110,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     for (const state of this.sessions.values()) {
       if (state.directory === directory && !isDeepStrictEqual(state.configuration.advanced?.mcp.serverEnabled ?? {}, configuration.advanced?.mcp.serverEnabled ?? {})) {
         throw new HarnessExecutionError('OPENCODE_MCP_CONTEXT_CONFLICT', 'Sessions in one native directory instance cannot select conflicting MCP controls.')
+      }
+      if (state.directory === directory && !isDeepStrictEqual(nativePolicy(state.configuration), nativePolicy(configuration))) {
+        throw new HarnessExecutionError('OPENCODE_PERMISSION_CONTEXT_CONFLICT', 'Sessions in one native directory instance cannot share different permission lifetimes.')
       }
     }
     const [providerID, ...model] = configuration.model.split('/')

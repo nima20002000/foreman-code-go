@@ -69,9 +69,9 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
       if (value !== null) headers[name] = value
     }
     onEvidence?.(Object.freeze({ ...base, status: response.status, headers: Object.freeze(headers) }))
-    if (!current()) {
+    if (!current() || combined.aborted) {
       await response.body?.cancel().catch(() => undefined)
-      throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native generation changed after dispatch.', 'uncertain')
+      throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native generation or owner lifetime changed after dispatch.', 'uncertain')
     }
     return response
   }

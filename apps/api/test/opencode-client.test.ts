@@ -44,7 +44,7 @@ it('fences a generation replacement while a mutation is awaiting its ACK', async
   const pending = fetch('http://opencode.invalid/session/root?directory=%2Fwork', { method: 'POST' })
   Object.assign(server, { generation: 8 })
   resolve(new Response('{}'))
-  await assert.rejects(pending, /generation changed/)
+  await assert.rejects(pending, /generation or owner lifetime changed/)
   assert.equal(evidence[0]?.status, 200)
 })
 it('keeps dispatch, raw status and body validity distinct', () => {
@@ -54,4 +54,14 @@ it('keeps dispatch, raw status and body validity distinct', () => {
   assert.equal(classifyOpenCodeDelivery({ ...base, status: 403 }), 'definite rejection')
   assert.equal(classifyOpenCodeDelivery({ ...base, status: 200 }), 'acknowledged')
   assert.equal(classifyOpenCodeDelivery({ ...base, dispatch: 'not_dispatched' }), 'definite rejection')
+})
+it('fences an aborted owner lifetime even when an injected controller returns a late ACK', async () => {
+  let resolve!: (response: Response) => void
+  const lifetime = new AbortController()
+  const server = controller(() => new Promise<Response>(r => { resolve = r }))
+  const fetch = createOpenCodeBoundFetch({ server, directory: '/work', ownerAgentId: 'alice', generation: 7, signal: lifetime.signal })
+  const pending = fetch('http://opencode.invalid/session/root?directory=%2Fwork', { method: 'POST' })
+  lifetime.abort()
+  resolve(new Response('{}'))
+  await assert.rejects(pending, /owner lifetime changed/)
 })

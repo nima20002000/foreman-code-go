@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import { FixtureServer, json, manager, sessionFor } from './opencode-fixtures.js'
+import { configuration, errorCode, FixtureServer, json, manager, sessionFor } from './opencode-fixtures.js'
 
 it('ignores pre-submission idle with ACK and persisted root before later completion', async () => {
   const server = new FixtureServer()
@@ -34,7 +34,85 @@ it('does not settle a turn from status returned after process replacement', asyn
       }
       return undefined
     }
-    await assert.rejects(native.reconcile(session, 'stale'), /generation changed/i)
+    await assert.rejects(native.reconcile(session, 'stale'), /generation.*changed/i)
     assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 1)
+  } finally { await native.dispose() }
+})
+
+it('cancellation interrupts pending prompt admission before serialized native abort', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  const session = await sessionFor(native)
+  const request = server.request.bind(server)
+  let started!: () => void
+  const dispatch = new Promise<void>(resolve => { started = resolve })
+  let posts = 0
+  server.request = async (path, init, signal, generation) => {
+    if (path.includes('/prompt_async')) {
+      posts++
+      started()
+      return new Promise<Response>((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })
+      })
+    }
+    return request(path, init, signal, generation)
+  }
+  const turn = native.startTurn(session, { clientCorrelationId: 'cancel-admission', prompt: 'hello' })[Symbol.asyncIterator]()
+  try {
+    const next = turn.next()
+    // Register rejection before requesting cancellation to avoid an unhandled observer rejection.
+    const detached = assert.rejects(next)
+    await dispatch
+    const canceled = native.cancel(session)
+    await detached
+    assert.equal(await canceled, true)
+    assert.equal(posts, 1)
+    assert.equal(server.calls.filter(call => call.path.includes('/abort')).length, 1)
+  } finally { await native.dispose() }
+})
+
+it('cancellation during readiness prevents queued prompt dispatch', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  const session = await sessionFor(native)
+  const ensure = server.ensure.bind(server)
+  let started!: () => void
+  const readiness = new Promise<void>(resolve => { started = resolve })
+  let block = true
+  server.ensure = async signal => {
+    if (!block) return ensure(signal)
+    block = false
+    started()
+    await new Promise<void>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }))
+  }
+  try {
+    const next = native.startTurn(session, { clientCorrelationId: 'cancel-readiness', prompt: 'hello' })[Symbol.asyncIterator]().next()
+    const detached = assert.rejects(next)
+    await readiness
+    const canceled = native.cancel(session)
+    await detached
+    assert.equal(await canceled, true)
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 0)
+  } finally { await native.dispose() }
+})
+
+it('keeps exact-turn steering and interactive questions unsupported with zero native POSTs', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  try {
+    const capabilities = await native.capabilities()
+    assert.deepEqual(capabilities.supportedInteractionKinds, ['approval'])
+    assert.equal(Reflect.get(native, 'steerTurn'), undefined)
+    assert.equal(server.calls.filter(call => call.method === 'POST').length, 0)
+  } finally { await native.dispose() }
+})
+
+it('rejects different permission lifetimes despite identical directory MCP switches', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  try {
+    await sessionFor(native)
+    await assert.rejects(sessionFor(native, { ...configuration(), autoApprove: true }), errorCode('OPENCODE_PERMISSION_CONTEXT_CONFLICT'))
+    assert.equal(server.calls.filter(call => call.path.startsWith('/session?') && call.method === 'POST').length, 1)
   } finally { await native.dispose() }
 })
