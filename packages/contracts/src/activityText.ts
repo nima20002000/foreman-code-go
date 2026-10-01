@@ -5,6 +5,7 @@ export interface ActivityTextIdentity {
   scope: ActivityScope
   requestId?: string
   attemptKey?: string
+  generation?: string
   sessionId: string
   turnId?: string
   itemId: string

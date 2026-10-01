@@ -33,7 +33,6 @@ export function createNativeTextStream(input: {
     },
     push(event: NativeHarnessEvent) {
       if (disposed) return
-      if (kinds.size >= TEXT_STREAM_LIMITS.items) { stream.flush(); if (!disposed) input.reconcile(); return }
       for (const operation of normalizeNativeTextOperations(event, { ...input, kinds, parents })) {
         if (operation) stream.push(operation)
         else { stream.flush(); if (!disposed) input.reconcile() }
@@ -54,6 +53,8 @@ export function normalizeNativeTextOperations(event: NativeHarnessEvent, input: 
   kinds: Map<string, string>; parents: Map<string, string>
 }): Array<ActivityTextOperation | undefined> {
   const { kinds, parents } = input
+  const part = event.payload.part && typeof event.payload.part === 'object' ? event.payload.part as Record<string, unknown> : {}
+  if (typeof part.id === 'string' && !kinds.has(part.id) && kinds.size >= TEXT_STREAM_LIMITS.items) return [undefined]
     if (event.type === 'message.part.delta' && event.payload.field === 'text' && typeof event.payload.partID === 'string' && !kinds.has(event.payload.partID)) return [undefined]
     const deltas = nativeAssistantText(event, kinds)
     const completed = completedNativeAssistantMessage(event, input.harness)
@@ -63,13 +64,14 @@ export function normalizeNativeTextOperations(event: NativeHarnessEvent, input: 
       const part = payload.part && typeof payload.part === 'object' ? payload.part as Record<string, unknown> : {}
       const nativeItemId = payload.itemId ?? item.id ?? payload.partID ?? part.id
       if (typeof nativeItemId !== 'string' || !nativeItemId) return undefined
+      if (!parents.has(nativeItemId) && (typeof part.messageID === 'string' || typeof payload.messageId === 'string') && parents.size >= TEXT_STREAM_LIMITS.items) return undefined
       if (typeof part.messageID === 'string') parents.set(nativeItemId, part.messageID)
       if (event.type === 'claude.text' && typeof payload.messageId === 'string') parents.set(nativeItemId, payload.messageId)
       const parentId = parents.get(nativeItemId)
       const source = payload.source && typeof payload.source === 'object' ? payload.source as Record<string, unknown> : {}
       const eventId = typeof source.eventId === 'string' ? source.eventId : undefined
       const nativeSequence = typeof source.sequence === 'string' ? source.sequence : undefined
-      return { observedAt: event.occurredAt, identity: { ...input.owner(), itemId: nativeItemId, partId: delta.partId,
+      return { observedAt: event.occurredAt, identity: { ...input.owner(), ...(typeof payload.nativeGeneration === 'string' ? { generation: payload.nativeGeneration } : {}), itemId: nativeItemId, partId: delta.partId,
         ...(parentId ? { parentId } : {}), channel: delta.partId.startsWith('thinking:') ? 'reasoning' : 'assistant' },
       mode: delta.mode, text: delta.text, final: !!completed && completed.complete !== false,
       ...(event.connectionId || eventId || nativeSequence ? { source: {
