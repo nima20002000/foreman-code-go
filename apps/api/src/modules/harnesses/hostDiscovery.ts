@@ -23,7 +23,8 @@ export interface LauncherEvidence {
 }
 
 /** Empty/relative PATH components are deliberately ignored: no project cwd lookup. */
-export async function discoverLauncher(requested: string, environment: TargetEnvironment, payloadPaths: readonly string[] = []): Promise<LauncherEvidence> {
+export async function discoverLauncher(requested: string, environment: TargetEnvironment, payloadPaths: readonly string[] = [], signal?: AbortSignal): Promise<LauncherEvidence> {
+  signal?.throwIfAborted()
   const diagnostics: string[] = []
   const directories = environment.path.split(':').filter((entry) => {
     if (!entry || !isAbsolute(entry)) { diagnostics.push('Ignored empty or relative PATH entry.'); return false }
@@ -32,6 +33,7 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
   const candidates = requested.includes('/') ? [isAbsolute(requested) ? requested : resolve(environment.cwd, requested)] : directories.map((entry) => join(entry, requested))
   const evidence: LauncherEvidence = { requested, resolvedLauncher: null, fingerprint: null, status: 'missing', interpreter: null, diagnostics, environment: structuredClone(environment), checkedAt: new Date().toISOString() }
   for (const candidate of candidates) {
+    signal?.throwIfAborted()
     let symbolicLink: boolean
     try { symbolicLink = (await lstat(candidate)).isSymbolicLink() } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') evidence.status = 'unreadable'
@@ -72,14 +74,14 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
         const path = await realpath(payloadPath)
         await access(path, constants.X_OK)
         const hash = createHash('sha256')
-        for await (const chunk of createReadStream(path)) hash.update(chunk)
+        for await (const chunk of createReadStream(path, { ...(signal ? { signal } : {}) })) hash.update(chunk)
         fingerprints.push({ path, fingerprint: hash.digest('hex') })
       }
       evidence.payloadFingerprints = fingerprints
       evidence.fingerprint = createHash('sha256').update(JSON.stringify(fingerprints)).digest('hex')
       evidence.status = 'installed'
       return evidence
-    } catch { evidence.status = 'unreadable' }
+    } catch { signal?.throwIfAborted(); evidence.status = 'unreadable' }
   }
   return evidence
 }
