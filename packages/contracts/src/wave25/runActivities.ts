@@ -13,7 +13,7 @@ export const RunActivitiesInputSchema = z.object({
 export type RunActivitiesInput = z.infer<typeof RunActivitiesInputSchema>
 
 export const RunActivityPublicKindSchema = z.enum([
-  'run', 'stop', 'recovery', 'agent_work', 'tool_action', 'tool_log',
+  'run', 'stop', 'recovery', 'agent_work', 'job_work', 'tool_action', 'tool_log',
   'work_request', 'work_return', 'work_notice', 'reroute', 'needs_direction',
   'approval', 'review', 'error',
 ])
@@ -24,6 +24,8 @@ export const RunActivityPublicStatusSchema = z.enum([
 ])
 export const RunActivityReferenceSchema = z.object({
   executionId: GraphIdSchema.optional(), activationId: GraphIdSchema.optional(),
+  jobExecutionId: GraphIdSchema.optional(), jobAttemptId: GraphIdSchema.optional(),
+  jobOperationId: GraphIdSchema.optional(), nodeExecutionId: GraphIdSchema.optional(),
   requestId: GraphIdSchema.optional(), returnId: GraphIdSchema.optional(),
   denialId: GraphIdSchema.optional(), noticeId: GraphIdSchema.optional(),
   unresolvedId: GraphIdSchema.optional(),
@@ -38,6 +40,11 @@ export const RunActivityAgentSchema = z.object({
   agentId: GraphIdSchema, agentName: z.string().min(1).max(100),
   nodeId: GraphIdSchema, nodeName: z.string().min(1).max(100),
 }).strict()
+export const RunActivityJobSchema = z.object({
+  kind: z.literal('job'), nodeId: GraphIdSchema, nodeName: z.string().min(1).max(200),
+  jobDefinitionId: GraphIdSchema, jobDefinitionRevision: z.number().int().positive(),
+  jobDefinitionVersionId: GraphIdSchema,
+}).strict()
 export const RunActivityPublicSchema = z.object({
   id: GraphIdSchema, scope: RunGraphScopeSchema, sequence: GraphSequenceSchema,
   occurredAt: TimestampSchema,
@@ -45,7 +52,8 @@ export const RunActivityPublicSchema = z.object({
   kind: RunActivityPublicKindSchema, status: RunActivityPublicStatusSchema,
   severity: z.enum(['info', 'warning', 'error']),
   summary: z.string().min(1).max(240), detail: z.string().min(1).max(500).optional(),
-  actor: RunActivityAgentSchema.optional(), subject: RunActivityAgentSchema.optional(),
+  actor: z.union([RunActivityAgentSchema, RunActivityJobSchema]).optional(),
+  subject: z.union([RunActivityAgentSchema, RunActivityJobSchema]).optional(),
   refs: RunActivityReferenceSchema,
   usage: z.object({ used: z.number().int().nonnegative(),
     limit: z.number().int().positive().nullable() }).strict()

@@ -14,7 +14,7 @@ const Hash = z.string().regex(/^[a-f0-9]{64}$/)
 export const TransferContextSchema = z.object({
   mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
   keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
-  bootId: z.string().min(1).max(128), connectionEpoch: z.number().int().positive(),
+  bootId: z.uuid(), connectionEpoch: z.uuid(),
 }).strict()
 export type TransferContext = z.infer<typeof TransferContextSchema>
 export const TransferIntentSchema = TransferContextSchema.extend({

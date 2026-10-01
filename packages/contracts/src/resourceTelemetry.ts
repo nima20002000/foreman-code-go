@@ -172,3 +172,33 @@ export interface TelemetryReadService<Principal> {
 
 export type TelemetryCpuCapture = z.infer<typeof TelemetryCpuCaptureSchema>
 export type TelemetryMemoryCapture = z.infer<typeof TelemetryMemoryCaptureSchema>
+
+/** Public domain references only; trusted authorities recover owner/attribution/host generations. */
+export const TelemetryOwnedTargetSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('workflow-execution'), workspaceId: Id, workflowId: Id, runId: Id,
+    nodeId: Id, executionId: Id }).strict(),
+  z.object({ kind: z.literal('ci-job'), workspaceId: Id, jobExecutionId: Id, attemptId: Id }).strict(),
+  z.object({ kind: z.literal('agent-conversation'), workspaceId: Id, workflowId: Id, nodeId: Id,
+    agentId: Id, conversationId: Id }).strict(),
+  z.object({ kind: z.literal('operator-conversation'), conversationId: Id }).strict(),
+])
+export const TelemetrySelectorTargetSchema = z.discriminatedUnion('scope', [
+  z.object({ schemaVersion: z.literal(1), scope: z.literal('computer'), mainId: z.uuid(),
+    hostRef: MachineReferenceSchema }).strict(),
+  z.object({ schemaVersion: z.literal(1), scope: z.literal('owned'), mainId: z.uuid(),
+    target: TelemetryOwnedTargetSchema }).strict(),
+]).superRefine((target, ctx) => {
+  if (target.scope === 'computer' && target.mainId !== target.hostRef.mainId)
+    ctx.addIssue({ code: 'custom', message: 'Target main and requested host disagree.' })
+})
+export const TelemetrySelectorResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('selector'), selector: TelemetrySelectorSchema }).strict(),
+  z.object({ kind: z.literal('unavailable') }).strict(),
+  z.object({ kind: z.literal('denied') }).strict(),
+])
+export type TelemetryOwnedTarget = z.infer<typeof TelemetryOwnedTargetSchema>
+export type TelemetrySelectorTarget = z.infer<typeof TelemetrySelectorTargetSchema>
+export type TelemetrySelectorResult = z.infer<typeof TelemetrySelectorResultSchema>
+export interface TelemetrySelectorService<Principal> {
+  resolve(principal: Principal, target: TelemetrySelectorTarget, signal: AbortSignal): Promise<TelemetrySelectorResult>
+}

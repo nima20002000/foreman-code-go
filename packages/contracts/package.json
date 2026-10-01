@@ -195,6 +195,18 @@
     "./worker-mcp-relay": {
       "types": "./dist/workerMcpRelay.d.ts",
       "import": "./dist/workerMcpRelay.js"
+    },
+    "./source-operations": {
+      "types": "./dist/sourceOperations.d.ts",
+      "import": "./dist/sourceOperations.js"
+    },
+    "./device-setup": {
+      "types": "./dist/deviceSetup.d.ts",
+      "import": "./dist/deviceSetup.js"
+    },
+    "./device-setup-node": {
+      "types": "./dist/deviceSetupNode.d.ts",
+      "import": "./dist/deviceSetupNode.js"
     }
   },
   "scripts": {

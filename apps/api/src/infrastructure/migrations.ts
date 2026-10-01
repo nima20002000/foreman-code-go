@@ -1,3 +1,24 @@
+import { deviceIdentityMigration } from '../modules/devices/migration.js'
+import { activitySnapshotMigration } from './activitySnapshotMigration.js'
+import { activitySourcesMigration } from './activitySourcesMigration.js'
+import { activityCommandSourcesMigration } from './activityCommandSourcesMigration.js'
+import { harnessInstanceSettingsMigration } from '../modules/harnesses/instanceSettings/migration.js'
+import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/instanceSettings/profileMigration.js'
+import { jobsMigration } from './jobsMigration.js'
+import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
+import { workflowJobsMigration } from './workflowJobsMigration.js'
+import { jobRuntimeProfilesMigration } from './jobRuntimeProfilesMigration.js'
+import { jobPreparationDeadlineMigration } from './jobPreparationDeadlineMigration.js'
+import { jobRunCleanupMigration } from './jobRunCleanupMigration.js'
+import { jobAcceptedIdentityMigration } from './jobAcceptedIdentityMigration.js'
+import { jobActivityRevisionMigration } from './jobActivityRevisionMigration.js'
+import { nodePlacementMigration } from './nodePlacementMigration.js'
+import { remoteExecutionMigration } from './remoteExecutionMigration.js'
+import { remoteDispatchOriginsMigration } from './remoteDispatchOriginsMigration.js'
+import { artifactEdgeMigration } from './artifactEdgeMigration.js'
+import { jobArtifactStorageMigration } from './jobArtifactStorageMigration.js'
+import { jobOutputAdmissionMigration } from './jobOutputAdmissionMigration.js'
+import { jobInputAdmissionMigration } from './jobInputAdmissionMigration.js'
 import { sourceMetadataMigration } from '../modules/sources/migration.js'
 import { workspaceRootPoliciesMigration } from '../modules/sources/rootPoliciesMigration.js'
 import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
@@ -754,6 +775,27 @@ export const migrations = [
   harnessQualificationMigration,
   sourceMetadataMigration,
   workspaceRootPoliciesMigration,
+  deviceIdentityMigration,
+  activitySnapshotMigration,
+  activitySourcesMigration,
+  activityCommandSourcesMigration,
+  harnessInstanceSettingsMigration,
+  harnessInstanceProfileEvidenceMigration,
+  jobsMigration,
+  currentMultiNodeAgentMigration,
+  workflowJobsMigration,
+  jobRuntimeProfilesMigration,
+  jobPreparationDeadlineMigration,
+  jobRunCleanupMigration,
+  jobAcceptedIdentityMigration,
+  jobActivityRevisionMigration,
+  nodePlacementMigration,
+  remoteExecutionMigration,
+  remoteDispatchOriginsMigration,
+  artifactEdgeMigration,
+  jobArtifactStorageMigration,
+  jobOutputAdmissionMigration,
+  jobInputAdmissionMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
