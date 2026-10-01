@@ -8,6 +8,7 @@ import { ApiError } from '../../../shared/api/client'
 import { ConversationComposer } from '../ConversationComposer'
 import { ConversationViewport } from '../ConversationViewport'
 import { useConversationDraftStore } from '../conversationDraftStore'
+import { chatBackgroundWork } from '../chatWorkStatus'
 import { AgentChatTranscript } from './AgentChatTranscript'
 import { chatBusy, deliveryLabels, intentLabels, intentUnavailable } from './model'
 import type { SelectedChatBinding } from './selectedRunChatModel'
@@ -78,6 +79,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const stopReason = cancelReason ?? (state?.capabilities.interruptAndSend ? undefined
     : state?.capabilities.unavailable.interruptAndSend ?? 'Interrupting is unavailable.')
   const busy = !!state && chatBusy(state), hasQueue = state?.turns.some((turn) => turn.delivery === 'queued')
+  const background = state && !busy ? chatBackgroundWork(state.activitySnapshot) : undefined
   const empty = (!draft.trim() && !attachments.hasAttachments) || attachments.hasBlockingAttachments || draft.length > 32_000
   const latest = chat.latestCommand
   const receipt = chat.latestReceipt
@@ -104,7 +106,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     {runActivity}
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
-      : state.sessionState === 'idle' && state.activitySnapshot?.active.length ? 'Background work remains' : stateLabels[state.sessionState]}</p> : null}
+      : state.sessionState === 'idle' && background ? background.label : stateLabels[state.sessionState]}</p> : null}
+    {background ? <p role="status">{background.message}</p> : null}
     {!chat.online ? <Alert tone="warning" title="You are offline" live>Your draft is kept. No messages will be sent automatically when you reconnect.</Alert>
       : state?.conversation && chat.connection !== 'connected' ? <Alert tone="warning" title={chat.connection === 'unavailable' ? 'Live updates unavailable' : 'Connecting to live activity'} live>
         {chat.connection === 'unavailable' ? 'Checking the latest saved state while live updates are unavailable.' : 'Reconnecting and checking the latest saved state. Messages are not resent.'}
@@ -152,9 +155,10 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     <p className="agent-chat-session-label" role="status" title={state?.availability.message ?? nextReason}>
       {chat.query.isError ? 'Chat unavailable' : !state ? 'Loading…' : sessionMissing ? 'Session unavailable'
         : !state.availability.canSend ? state.availability.reason === 'run_active' ? 'Run active · read only' : 'Chat unavailable'
-          : busy ? 'Working' : 'Ready'}
+          : busy ? 'Working' : background?.label ?? 'Ready'}
     </p>
     {chat.query.isError ? <Button size="sm" onClick={chat.refresh}>Retry</Button> : null}
+    {background ? <p role="status">{background.message}</p> : null}
     {!chat.online ? <p role="status">Offline · draft kept</p> : null}
     {receipt ? <p role="status">{deliveryLabels[currentReceipt?.delivery ?? receipt.delivery]}</p> : null}
     {error ? <p role="alert" title={error instanceof Error ? error.message : undefined}>Command unconfirmed</p> : null}
@@ -163,7 +167,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   return <div className="agent-conversation" data-testid="agent-conversation" data-chat-key={chat.draftKey}>
     {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} commands={chat.commands} history={chat.history}
       notices={notices} cancelReason={cancelReason} responseReason={responseReason} resendReason={nextReason}
-      onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
+      onRefresh={chat.refresh} refreshing={chat.query.isFetching} onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
       : <ConversationViewport revision="loading">{() => notices}</ConversationViewport>}
     {showComposer || canStop ? <div className="agent-chat-composer-controls" role="group" aria-label="Chat actions" aria-describedby={reasonId}>
       {showComposer ? <ConversationComposer conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}

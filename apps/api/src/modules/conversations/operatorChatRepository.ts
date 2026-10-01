@@ -133,10 +133,14 @@ export class PostgresOperatorConversationRepository {
     // One small owner-filtered projection. Do not fetch message history or native request payloads.
     const result = await this.pool.query<{
       id: string; title: string | null; turn_state: OperatorConversationSummary['turnState'];
-      revision: string | number; active_request_id: string | null; needs_attention: boolean;
+      revision: string | number; active_request_id: string | null; needs_attention: boolean; background_activity?: 'running' | 'unknown' | null;
     }>(`select id,record->>'title' as title,turn_state,revision,active_request_id,
       coalesce(active_request_id is not null and pending_interaction is not null
-        and response_delivery='offered' and not cancel_requested and record->>'status'='open', false) as needs_attention
+        and response_delivery='offered' and not cancel_requested and record->>'status'='open', false) as needs_attention,
+      case when exists(select 1 from operator_conversation_activity a where a.conversation_id=c.id
+        and a.record->>'kind'<>'thinking' and a.record->>'status'='unknown') then 'unknown'
+        when exists(select 1 from operator_conversation_activity a where a.conversation_id=c.id
+        and a.record->>'kind'<>'thinking' and a.record->>'status' in ('pending','running')) then 'running' else null end as background_activity
       from operator_conversations c where c.deleted_at is null and c.owner_principal_id=$1
         and exists(select 1 from operator_conversation_messages m where m.conversation_id=c.id)
         and (not $3::boolean or (active_request_id is not null and pending_interaction is not null
@@ -145,7 +149,7 @@ export class PostgresOperatorConversationRepository {
     return result.rows.map((row) => OperatorConversationSummarySchema.parse({
       conversationId: row.id, ...(row.title === null ? {} : { title: row.title }),
       turnState: row.turn_state, revision: Number(row.revision), activeRequestId: row.active_request_id,
-      needsAttention: row.needs_attention,
+      needsAttention: row.needs_attention, ...(row.background_activity !== undefined ? { backgroundActivity: row.background_activity } : {}),
     }))
   }
 

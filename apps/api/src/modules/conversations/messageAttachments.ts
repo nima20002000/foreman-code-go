@@ -5,11 +5,12 @@ import {
   type FileWithRevision, type MessageAttachmentRef,
 } from '@graphql/contracts/files'
 
+import { readOriginalMessageInputs } from './originalMessageInputs.js'
 import { DomainError } from '../errors.js'
 import { MessagePublicationRefsSchema, mergeMessagePins, readCodexMessagePublications } from './messagePublications.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
-const StoredMessageSchema = MessageSchema.omit({ attachments: true }).extend({
+const StoredMessageSchema = MessageSchema.omit({ attachments: true, originalInput: true }).extend({
   attachmentRefs: MessageAttachmentRefsSchema.optional(), publicationRefs: MessagePublicationRefsSchema.optional(),
 }).strict()
 
@@ -115,6 +116,7 @@ export async function hydrateMessageAttachments(query: Queryable, conversationId
   // Bounded user messages identify candidates, including turns with inherited references and no new uploads. The recovery query verifies exact
   // Codex receipt/session/sender bindings, independent of current token authority.
   const candidates = messages.filter((message) => message.role === 'user').map((message) => message.id)
+  const originalInputs = await readOriginalMessageInputs(query, conversationId, candidates)
   const recovered = await readCodexMessagePublications(query, conversationId, candidates)
   const missing = [...recovered.values()].flat().filter((ref) => !rows.has(identity(ref)))
   for (const [key, value] of await readPins(query, conversationId, missing, onFileRevision)) rows.set(key, value)
@@ -126,6 +128,6 @@ export async function hydrateMessageAttachments(query: Queryable, conversationId
       if (!value) throw new DomainError('MESSAGE_ATTACHMENT_METADATA_UNAVAILABLE', 'Pinned attachment metadata is unavailable.', 500)
       return value
     })
-    return MessageSchema.parse({ ...message, ...(attachments?.length ? { attachments } : {}) })
+    return MessageSchema.parse({ ...message, ...(message.role === 'user' ? { originalInput: originalInputs.get(message.id) ?? null } : {}), ...(attachments?.length ? { attachments } : {}) })
   })
 }
