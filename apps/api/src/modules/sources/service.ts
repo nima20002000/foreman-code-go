@@ -93,7 +93,12 @@ export class PostgresSourceService implements SourceAdmissionPort {
     requireAuthorization(principal, 'workspace_locations:read', input)
     return this.commands.execute({ principal, source, operation: 'source.approve', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:source`, payload: input, dedicatedConnection: true,
-      authorize: async sql => { await authorizeSource(sql, principal, 'sources:approve', input.workspaceId); await authorizeSource(sql, principal, 'sources:read', input.workspaceId); await this.host(sql) },
+      authorize: async sql => {
+        await authorizeSource(sql, principal, 'sources:approve', input.workspaceId); await authorizeSource(sql, principal, 'sources:read', input.workspaceId); await this.host(sql)
+        const prior = (await sql.query<{ availability: string }>(`select s.availability from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
+          where a.requested_by=$1 and a.command_id=$2`, [principal.id, input.commandId])).rows[0]
+        if (prior && prior.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original source approval no longer has retained bytes; command retry cannot resurrect it.', 410)
+      },
       perform: async () => {
         // Existing workspace/host ownership is checked before location.snapshot
         // probes its persisted path; input has no filesystem selector.
