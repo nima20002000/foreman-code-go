@@ -1,3 +1,5 @@
+import { request as httpsRequest } from 'node:https';
+import { deviceTlsOptions } from '../../../packages/contracts/src/deviceTlsNode.ts';
 import { verifiedWorkerEnrollmentCode } from '../../../packages/contracts/src/deviceSetupNode.ts';
 import { randomBytes, sign } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
@@ -66,6 +68,23 @@ export async function boundedPost(url, body, fetchRequest = fetch) {
   catch { throw new WorkerError('enrollment_response_invalid'); }
 }
 
+/** App-specific CA is passed only to this request, with normal TLS hostname and
+ * chain validation. No redirects or response text reaches diagnostics. */
+export function scopedEnrollmentPost(tlsTrust) {
+  const tls=deviceTlsOptions(tlsTrust);
+  return (url,body)=>new Promise((resolve,reject)=>{
+    const bytes=Buffer.from(JSON.stringify(body));
+    const request=httpsRequest(url,{method:'POST',...tls,headers:{'content-type':'application/json','content-length':bytes.length},signal:AbortSignal.timeout(10000)},response=>{
+      if(!response.statusCode||response.statusCode<200||response.statusCode>=300){response.destroy();reject(new WorkerError(`enrollment_http_${response.statusCode??500}`));return;}
+      let size=0;const chunks=[];
+      response.on('data',chunk=>{size+=chunk.length;if(size>16384){response.destroy();reject(new WorkerError('enrollment_response_too_large'));}else chunks.push(Buffer.from(chunk));});
+      response.once('error',()=>reject(new WorkerError('enrollment_transport_failed')));
+      response.once('end',()=>{try{resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));}catch{reject(new WorkerError('enrollment_response_invalid'));}});
+    });
+    request.once('error',()=>reject(new WorkerError('enrollment_transport_failed')));request.end(bytes);
+  });
+}
+
 async function enrollmentPost(post, url, body, pairing) {
   try { return await post(url, body); }
   catch (error) {
@@ -93,13 +112,13 @@ export async function enrollWorker({ stateDirectory, identity, enrollmentFile, a
   if (!parsed.success) throw new WorkerError('pairing_file_schema_invalid');
   return enrollWorkerInput({stateDirectory,identity,enrollment:parsed.data,appVersion,post});
 }
-export async function enrollWorkerCode({stateDirectory,identity,enrollmentCode,appVersion,post=boundedPost}) {
+export async function enrollWorkerCode({stateDirectory,identity,enrollmentCode,appVersion,post}) {
   let code;
   try{code=verifiedWorkerEnrollmentCode(enrollmentCode,identity);}
   catch(error){throw new WorkerError(error.message==='DEVICE_SETUP_IDENTITY_MISMATCH'?'setup_code_identity_mismatch':error.message==='DEVICE_SETUP_CODE_EXPIRED'?'setup_code_expired':'setup_code_invalid');}
-  return enrollWorkerInput({stateDirectory,identity,enrollment:code.enrollment,appVersion,post});
+  return enrollWorkerInput({stateDirectory,identity,enrollment:code.enrollment,appVersion,post:post??(code.tlsTrust?scopedEnrollmentPost(code.tlsTrust):boundedPost),tlsTrust:code.tlsTrust});
 }
-async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,post}) {
+async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,post,tlsTrust}) {
   const endpoint = new URL(enrollment.endpoint);
   if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.pathname !== '/device/connect' || endpoint.search || endpoint.hash) throw new WorkerError('enrollment_endpoint_invalid');
   const http = new URL(endpoint); http.protocol = 'https:';
@@ -115,7 +134,7 @@ async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,
   if (!parsedResult.success) { const failure = new WorkerError('pairing_outcome_unknown'); failure.reason = 'pairing_response_schema_invalid'; throw failure; }
   const result = parsedResult.data;
   if (result.registration.mainId !== enrollment.mainId || result.registration.workerInstallationId !== identity.workerInstallationId || result.registration.publicKeyFingerprint !== identity.publicKeyFingerprint || result.registration.keyRevision !== identity.keyRevision || result.registration.status !== 'paired') throw new WorkerError('enrollment_identity_mismatch');
-  try { await persistWorkerPairing(stateDirectory, { formatVersion: 1, mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, keyRevision: result.registration.keyRevision, authorizationRevision: result.registration.authorizationRevision, endpoint: enrollment.endpoint, mainPublicKeyFingerprint: enrollment.mainPublicKeyFingerprint, credential: result.credential, expiresAt: result.expiresAt }); }
+  try { await persistWorkerPairing(stateDirectory, { formatVersion: 1, mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, keyRevision: result.registration.keyRevision, authorizationRevision: result.registration.authorizationRevision, endpoint: enrollment.endpoint, mainPublicKeyFingerprint: enrollment.mainPublicKeyFingerprint, credential: result.credential, expiresAt: result.expiresAt,...(tlsTrust?{tlsTrust}:{}) }); }
   catch { throw new WorkerError('pairing_persistence_failed'); }
   return { mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, authorizationRevision: result.registration.authorizationRevision };
 }

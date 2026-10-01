@@ -44,7 +44,7 @@ export class PostgresDeviceAccessService {
     requireAuthorization(principal,'settings:update')
     const input=DeviceSetupApproveInputSchema.parse(raw),request=verifiedWorkerIdentityRequest(input.identityRequestCode)
     const grantInput={commandId:input.commandId,workerInstallationId:request.workerInstallationId,publicKey:request.publicKey,expectedFingerprint:request.publicKeyFingerprint,scopes:input.scopes,...(input.expectedAuthorizationRevision?{expectedAuthorizationRevision:input.expectedAuthorizationRevision}:{})}
-    let metadata:{registration:DeviceRegistration;expiresAt:string;requestId:string;mainFingerprint:string}|undefined
+    let metadata:{registration:DeviceRegistration;expiresAt:string;requestId:string;mainFingerprint:string;tlsTrust?:DeviceSetupOptions['tlsTrust']}|undefined
     const approved=await new PostgresCommandCoordinator(this.pool).execute({principal,source,operation:'device_setup_code_create',commandId:input.commandId,targetKey:this.mainId,payload:input,dedicatedConnection:true,
       authorize:client=>this.management(client,principal,true),prepare:async()=>{
         const options=DeviceSetupOptionsSchema.parse(this.setupOptions())
@@ -56,14 +56,14 @@ export class PostgresDeviceAccessService {
           return row
         })
         const grant=await this.createPairingGrant(principal,grantInput,source)
-        metadata={registration:grant.registration,expiresAt:grant.expiresAt,requestId:randomUUID(),mainFingerprint:main.mainPublicKeyFingerprint}
+        metadata={registration:grant.registration,expiresAt:grant.expiresAt,requestId:randomUUID(),mainFingerprint:main.mainPublicKeyFingerprint,...(options.tlsTrust?{tlsTrust:options.tlsTrust}:{})}
       },perform:async()=>{
         if(!metadata)throw new DomainError('DEVICE_SETUP_UNAVAILABLE','The approved enrollment receipt is missing.',503)
         return metadata // The private code/grant is not stored in the public command result or audit.
       }})
     const original=approved.value,grant=await this.createPairingGrant(principal,grantInput,source)
     if(grant.expiresAt!==original.expiresAt||grant.registration.deviceId!==original.registration.deviceId)throw new DomainError('DEVICE_SETUP_RECEIPT_CONFLICT','The original key-bound grant changed.',409)
-    return {registration:original.registration,expiresAt:original.expiresAt,enrollmentCode:encodeWorkerEnrollmentCode({version:1,kind:'enrollment',workerInstallationId:request.workerInstallationId,publicKeyFingerprint:request.publicKeyFingerprint,enrollment:{mainId:this.mainId,mainPublicKeyFingerprint:original.mainFingerprint,endpoint:input.endpoint,grant:grant.grant,requestId:original.requestId},expiresAt:original.expiresAt})}
+    return {registration:original.registration,expiresAt:original.expiresAt,enrollmentCode:encodeWorkerEnrollmentCode({version:1,kind:'enrollment',workerInstallationId:request.workerInstallationId,publicKeyFingerprint:request.publicKeyFingerprint,enrollment:{mainId:this.mainId,mainPublicKeyFingerprint:original.mainFingerprint,endpoint:input.endpoint,grant:grant.grant,requestId:original.requestId},expiresAt:original.expiresAt,...(original.tlsTrust?{tlsTrust:original.tlsTrust}:{})})}
   }
   async list(principal: ManagementPrincipal): Promise<DeviceRegistration[]> {
     return this.transaction(async client => {

@@ -1,10 +1,12 @@
+import { deviceTlsOptions } from '@graphql/contracts/device-tls-node'
+import type { DeviceTlsTrust } from '@graphql/contracts/device-identity'
 import type { DeviceExtensionRegistration } from './deviceApplicationChannel.js'
 import WebSocket from 'ws'
 import { DeviceConnectionSupervisor } from './connectionSupervisor.js'
 import { deviceConnector } from './deviceCarrier.js'
 /** Only the selected-main device credential enters this closure. */
 export function createWorkerConnection(options: {
-  pairing: { mainId: string; deviceId: string; workerInstallationId: string; keyRevision: number; authorizationRevision: number; endpoint: string; credential: string; mainPublicKeyFingerprint: string }
+  pairing: { mainId: string; deviceId: string; workerInstallationId: string; keyRevision: number; authorizationRevision: number; endpoint: string; credential: string; mainPublicKeyFingerprint: string;tlsTrust?:DeviceTlsTrust }
   bootId: string
   appVersion: string
   extensions?: DeviceExtensionRegistration[]
@@ -15,7 +17,7 @@ export function createWorkerConnection(options: {
     ...(options.extensions ? { extensions: options.extensions } : {}),
     mainPublicKeyFingerprint: options.pairing.mainPublicKeyFingerprint,
     connect: async (signal) => {
-      return deviceConnector({ url: options.pairing.endpoint, credential: options.pairing.credential, create: (url, configuration) => new WebSocket(url, configuration) })(signal)
+      return deviceConnector({ url: options.pairing.endpoint, credential: options.pairing.credential, create: (url, configuration) => new WebSocket(url, {...configuration,...deviceTlsOptions(options.pairing.tlsTrust)}) })(signal)
     },
     // Dispatch/transfer are disabled: there are no commands to replay at W07.
     reconcile: async () => {},
