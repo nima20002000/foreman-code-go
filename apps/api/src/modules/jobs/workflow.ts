@@ -1,19 +1,20 @@
 import { JobExecutionSchema, type JobDefinition, type JobExecution } from '@graphql/contracts/jobs'
 import { JobWorkflowNodeSchema, JobWorkflowExecutionReferenceSchema, JobWorkflowAdmissionReferenceSchema, type JobWorkflowAdmissionReference, type JobWorkflowExecutionReference } from '@graphql/contracts/job-workflow'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type pg from 'pg'
+import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { JobService } from './service.js'
 
 /** Shared Run owner authority validates the exact saved node, occurrence, input and budget
  * inside the existing graph transaction. A job relationship is not a launch capability. */
 export interface WorkflowJobAuthority {
-  require(sql:pg.PoolClient,reference:JobWorkflowAdmissionReference):Promise<{principal:ManagementPrincipal;definition:JobDefinition;node:unknown}>
-  acceptResult(sql:pg.PoolClient,reference:JobWorkflowExecutionReference,execution:JobExecution):Promise<void>
+  require(sql:GraphTransactionSql,reference:JobWorkflowAdmissionReference):Promise<{principal:ManagementPrincipal;definition:JobDefinition;node:unknown}>
+  acceptResult(sql:GraphTransactionSql,reference:JobWorkflowExecutionReference,execution:JobExecution):Promise<void>
 }
 export class WorkflowJobService {
   constructor(private readonly jobs:JobService,private readonly authority:WorkflowJobAuthority) {}
-  async admit(sql:pg.PoolClient,raw:JobWorkflowAdmissionReference) {
+  async admit(sql:GraphTransactionSql,raw:JobWorkflowAdmissionReference) {
+    assertGraphTransaction(sql)
     const reference=JobWorkflowAdmissionReferenceSchema.parse(raw)
     const {principal,definition,node:rawNode}=await this.authority.require(sql,reference)
     const node=JobWorkflowNodeSchema.parse(rawNode)
@@ -26,7 +27,8 @@ export class WorkflowJobService {
     await sql.query(`insert into workflow_job_executions(run_id,node_execution_id,job_execution_id,reference) values($1,$2,$3,$4::jsonb)`,[reference.runId,reference.nodeExecutionId,execution.id,JSON.stringify({...reference,jobExecutionId:execution.id})])
     return execution
   }
-  async acceptResult(sql:pg.PoolClient,raw:JobWorkflowExecutionReference):Promise<JobExecution> {
+  async acceptResult(sql:GraphTransactionSql,raw:JobWorkflowExecutionReference):Promise<JobExecution> {
+    assertGraphTransaction(sql)
     const reference=JobWorkflowExecutionReferenceSchema.parse(raw)
     await this.authority.require(sql,reference)
     const row=(await sql.query<{job_execution_id:string;accepted:boolean}>(`select job_execution_id,accepted from workflow_job_executions where run_id=$1 and node_execution_id=$2 for update`,[reference.runId,reference.nodeExecutionId])).rows[0]

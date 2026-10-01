@@ -9,7 +9,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { canonical, JobRepository } from './repository.js'
+import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
 
 export const jobDigest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex')
@@ -107,8 +107,9 @@ export class JobService {
     return this.read(principal,workspaceId,'jobs:start',sql=>this.repository.execution(sql,workspaceId,execution.id))
   }
   /** Workflow adapter calls inside its own accepted-node transaction; no Operator token enters a build. */
-  async admit(sql:pg.PoolClient,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow']):Promise<JobExecution> {
-    const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec)
+  async admit(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow']):Promise<JobExecution> {
+    const id=randomUUID(),attemptId=randomUUID()
+    const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,{executionId:id,attemptId})
     const request=definition.spec
     const {materializationId:_materialization,materializationDigest:_digest,...source}=spec.source
     const selection=(target:JobDefinitionSpec['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
@@ -119,8 +120,8 @@ export class JobService {
     }
     const acceptedSpec=AcceptedJobSpecSchema.parse({...spec,definitionId:definition.id,definitionRevision:definition.revision,definitionVersionId:definition.versionId,
       scriptDigest:jobDigest(spec.argv),outputSpecDigest:jobDigest(spec.outputs),specDigest:jobDigest(spec),bindingHash:jobDigest({target:spec.target,source:spec.source})})
-    const id=randomUUID(), now=this.clock().toISOString()
-    const binding=await this.ports.dispatch.accept(sql,{workspaceId:definition.workspaceId,executionId:id,spec:acceptedSpec,workflow,principal})
+    const now=this.clock().toISOString()
+    const binding=await this.ports.dispatch.accept(sql,{workspaceId:definition.workspaceId,executionId:id,attemptId,spec:acceptedSpec,workflow,principal})
     const execution=JobExecutionSchema.parse({schemaVersion:1,id,workspaceId:definition.workspaceId,acceptedSpec,...binding,workflow,
       process:{phase:'queued',outcome:null,exitCode:null,signal:null,processStopped:false},transport:'unknown',publication:'pending',
       startedAt:null,finishedAt:null,lastSeenAt:null,resultIssue:null,cancelRequestedAt:null,createdAt:now,updatedAt:now})

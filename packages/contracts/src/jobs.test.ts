@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { JobAuthoringChoicesSchema, JobDefinitionSpecSchema, JobTargetSchema } from './jobs.js'
 import { makeCurrentWorkflowFixture } from './wave25/currentFixture.js'
-import { ExecutableWorkflowV3Schema } from './wave25/index.js'
+import { JobWorkflowNodeSchema } from './jobWorkflow.js'
+import { GraphExecutionIdentitySchema, ExecutableWorkflowV3Schema } from './wave25/index.js'
 
 describe('job contracts and same-Agent workflow nodes',()=>{
+  it('admits an explicit job node and job identity without Agent or native-provider fields',()=>{
+    const fixture=makeCurrentWorkflowFixture('ci-job-only')
+    const node=JobWorkflowNodeSchema.parse({kind:'job',id:'job-node',name:'Build',jobDefinitionId:'job-definition',jobDefinitionRevision:1,jobDefinitionVersionId:'job-version'})
+    const version={...fixture.version,entryNodeId:node.id,agentConfigurationVersionIds:{},definition:{...fixture.version.definition,entryNodeId:node.id,nodes:[node],edges:[],approval:{handler:'user'}}}
+    expect(ExecutableWorkflowV3Schema.safeParse({version,configurations:[]}).success).toBe(true)
+    expect(GraphExecutionIdentitySchema.safeParse({kind:'job',workflowNodeId:node.id,executionId:'real-job',jobDefinitionId:'job-definition',jobDefinitionVersionId:'job-version',attempt:1}).success).toBe(true)
+    expect(JobWorkflowNodeSchema.safeParse({...node,agentId:'fabricated'}).success).toBe(false)
+  })
   it('loads target schema at runtime and does not fabricate Agent or Run identity',()=>{
     const shape=JobTargetSchema.shape
     expect(Object.keys(shape)).not.toContain('agentId')

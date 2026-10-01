@@ -22,10 +22,10 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
   private readonly repository=new JobRepository()
   private readonly owners=new Map<string,{owner:JobOwnership;abort:AbortController}>()
   constructor(private readonly pool:pg.Pool,private readonly remote:RemoteJobDispatchPort,private readonly host:JobDispatchHost) {}
-  async accept(sql:JobSql,input:{workspaceId:string;executionId:string;spec:AcceptedJobSpec;workflow:JobExecution['workflow'];principal:ManagementPrincipal}) {
+  async accept(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;spec:AcceptedJobSpec;workflow:JobExecution['workflow'];principal:ManagementPrincipal}) {
     const intent=RemoteJobDispatchIntentSchema.parse({schemaVersion:1,protocolVersion:1,mainId:input.spec.target.mainId,
       subject:input.workflow?{kind:'workflow-node',workspaceId:input.workspaceId,...input.workflow}:{kind:'manual-job',workspaceId:input.workspaceId,jobExecutionId:input.executionId,definitionId:input.spec.definitionId},
-      executionId:input.executionId,attemptId:randomUUID(),operationId:randomUUID(),bindingHash:input.spec.bindingHash,inputDigest:`sha256:${input.spec.specDigest}`,owner:{grantId:randomUUID(),epoch:'1'}})
+      executionId:input.executionId,attemptId:input.attemptId,operationId:randomUUID(),bindingHash:input.spec.bindingHash,inputDigest:`sha256:${input.spec.specDigest}`,owner:{grantId:randomUUID(),epoch:'1'}})
     await sql.query('insert into job_dispatch_intents(execution_id,workspace_id,intent) values($1,$2,$3::jsonb)',[input.executionId,input.workspaceId,JSON.stringify(intent)])
     return {operationId:intent.operationId,attemptId:intent.attemptId,owner:intent.owner}
   }

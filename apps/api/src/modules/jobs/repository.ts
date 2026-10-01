@@ -1,7 +1,7 @@
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import { JobDefinitionSchema, JobExecutionSchema, JobLogChunkSchema, type JobDefinition, type JobExecution, type JobLogChunk } from '@graphql/contracts/jobs'
 import { DomainError } from '../errors.js'
-export type JobSql = Pick<pg.PoolClient, 'query'>
+export type JobSql = GraphSqlClient
 
 export class JobRepository {
   async definition(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobDefinition> {

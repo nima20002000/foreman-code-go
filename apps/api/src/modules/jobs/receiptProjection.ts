@@ -23,8 +23,8 @@ export async function projectJobReceiptLocked(sql:JobSql,execution:JobExecution,
     if(terminal.logsTruncated)execution.resultIssue='log_overflow'
     if(receipt.publication==='complete') {
       try {await outputs.verifyRequiredOutputs(sql,execution);execution.publication='complete'} catch(error) {
-        if(!(error instanceof DomainError))throw error
-        execution.publication='failed';execution.resultIssue=error instanceof DomainError&&error.code==='JOB_REQUIRED_OUTPUT_MISSING'?'missing_output':'publication_failed'
+        if(!(error instanceof DomainError)||!['JOB_REQUIRED_OUTPUT_MISSING','JOB_REQUIRED_OUTPUT_CORRUPT'].includes(error.code))throw error
+        execution.publication='failed';execution.resultIssue=error.code==='JOB_REQUIRED_OUTPUT_MISSING'?'missing_output':error.code==='JOB_REQUIRED_OUTPUT_CORRUPT'?'corrupt_output':'publication_failed'
       }
     } else if(receipt.publication==='failed'||terminal.outputCollectionError) {execution.publication='failed';execution.resultIssue='publication_failed'}
     else execution.publication='collecting'
