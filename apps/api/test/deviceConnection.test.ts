@@ -1,3 +1,4 @@
+import { deviceNegotiationHash } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
 import { mainIdentityProofMessage } from '@graphql/contracts/device-identity-node'
 import type { MainIdentityProofRequest } from '@graphql/contracts/device-identity'
@@ -28,7 +29,7 @@ const proof = async (request: MainIdentityProofRequest) => ({ request, mainAppli
 const principal: AuthenticatedDevice = { ...identity, audience: 'graphql-worker', expiresAt: '2099-01-01T00:00:00Z' }
 const hello = { ...identity, connectionEpoch: '55555555-5555-4555-8555-555555555555', type: 'hello', protocolVersion: 1, appVersion: 'build', nonce: Buffer.alloc(32).toString('base64url'), connectionGeneration: 1 }
 const welcome = { ...hello, type: 'welcome', connectionEpoch: '66666666-6666-4666-8666-666666666666', capabilities: { heartbeat: true, dispatch: false, transfer: false } }
-const signedWelcome = async (sent: Record<string, unknown>, epoch = welcome.connectionEpoch) => ({ ...welcome, connectionEpoch: epoch, connectionGeneration: sent.connectionGeneration, mainIdentityProof: await proof({ audience: 'graphql-worker-main-v1', ...identity, nonce: sent.nonce as string, connectionGeneration: sent.connectionGeneration as number, connectionEpoch: sent.connectionEpoch as string, mainConnectionEpoch: epoch, protocolVersion: 1, workerApplicationVersion: 'build' }) })
+const signedWelcome = async (sent: Record<string, unknown>, epoch = welcome.connectionEpoch) => ({ ...welcome, connectionEpoch: epoch, connectionGeneration: sent.connectionGeneration, mainIdentityProof: await proof({ audience: 'graphql-worker-main-v1', ...identity, nonce: sent.nonce as string, connectionGeneration: sent.connectionGeneration as number, connectionEpoch: sent.connectionEpoch as string, mainConnectionEpoch: epoch, protocolVersion: 1, workerApplicationVersion: 'build', negotiationHash: deviceNegotiationHash([]) }) })
 const flush = async () => { for (let i = 0; i < 80; i++) await Promise.resolve() }
 const makeEndpoint = () => {
   const presence = vi.fn()
@@ -69,7 +70,7 @@ describe('device-only carrier and lifecycle', () => {
     const { endpoint, presence } = makeEndpoint(); const a = new Socket(); const b = new Socket()
     const old = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(a)); a.frame(hello); await flush(); a.frame({ type: 'ready', connectionEpoch: a.sent[0]!.connectionEpoch }); await flush()
     const fresh = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(b)); b.frame({ ...hello, bootId: '77777777-7777-4777-8777-777777777777' }); await flush(); b.frame({ type: 'ready', connectionEpoch: b.sent[0]!.connectionEpoch }); await flush(); await old
-    expect(presence.mock.calls.map(([view]) => view.phase)).toEqual(['ready', 'ready'])
+    expect(presence.mock.calls.map(([view]) => view.phase)).toEqual(['ready', 'offline', 'ready'])
     expect(b.sent[0]!.connectionEpoch).not.toBe(a.sent[0]!.connectionEpoch)
     endpoint.close(); await fresh; expect(presence.mock.calls.at(-1)![0].phase).toBe('offline')
   })
@@ -78,6 +79,18 @@ describe('device-only carrier and lifecycle', () => {
     auth.authenticateDevice.mockReturnValueOnce(new Promise((done) => { resolve = done }))
     const socket = new Socket(); const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket)); endpoint.close(); await task; resolve(principal); await flush()
     expect(presence).not.toHaveBeenCalled(); expect(socket.closed).toBe(true)
+  })
+  it('revocation fences an authentication result that completes after revoke committed', async () => {
+    const { endpoint, auth, presence } = makeEndpoint(); let resolve!: (value: AuthenticatedDevice) => void
+    auth.authenticateDevice.mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const socket = new Socket(); const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket))
+    endpoint.revoke(identity.deviceId); resolve(principal); await task
+    expect(presence).not.toHaveBeenCalled(); expect(socket.sent[0]).toEqual({ type: 'blocked', code: 'authentication' })
+  })
+  it('retains a classified blocked failure when peer closes immediately after its frame', async () => {
+    const raw = new Socket(), adapted = adaptDeviceSocket(raw)
+    raw.frame({ type: 'blocked', code: 'incompatible-protocol' }); raw.close()
+    await expect(adapted.messages[Symbol.asyncIterator]().next()).rejects.toThrow('incompatible-protocol')
   })
   it('half-open heartbeat expires within declared deadline', async () => {
     vi.useFakeTimers(); const { endpoint, presence } = makeEndpoint(); const socket = new Socket()

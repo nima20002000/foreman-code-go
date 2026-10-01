@@ -1,3 +1,5 @@
+import { negotiateDeviceExtensions, parseExtensionDescriptors } from '@graphql/contracts/device-application'
+import { DeviceApplicationChannel, DeviceApplicationError, deviceNegotiationHash, extensionDescriptors, type DeviceApplicationRequestOptions, type DeviceExtensionRegistration } from './deviceApplicationChannel.js'
 import { verifyMainIdentityProof } from '@graphql/contracts/device-identity-node'
 import type { MainIdentityProofRequest } from '@graphql/contracts/device-identity'
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -10,17 +12,23 @@ export class DeviceConnectionSupervisor {
   private task: Promise<void> | undefined
   private abort: AbortController | undefined
   private socket: DeviceSocket | undefined
+  private channel: DeviceApplicationChannel | undefined
   constructor(private readonly options: {
     identity: Omit<DeviceSessionBinding, 'connectionEpoch' | 'connectionGeneration'>; appVersion: string; mainPublicKeyFingerprint: string
     connect(signal: AbortSignal): Promise<DeviceSocket>
     reconcile(binding: DeviceSessionBinding, signal: AbortSignal): Promise<void>
     onState?(view: DeviceConnectionView): void
-    handshakeMs?: number; heartbeatMs?: number; random?: () => number
-  }) {}
+    handshakeMs?: number; heartbeatMs?: number; random?: () => number; extensions?: DeviceExtensionRegistration[]
+  }) { extensionDescriptors(options.extensions ?? []) }
   status(): DeviceConnectionView { return { ...this.state } }
   private update(phase: DeviceConnectionView['phase'], failure: DeviceConnectionView['failure'] = null) {
     this.state = { ...this.state, phase, failure }; this.options.onState?.(this.status())
   }
+  request(namespace: string, payload: unknown, options?: DeviceApplicationRequestOptions) {
+    if (!this.channel || this.state.phase !== 'ready') return Promise.reject(new DeviceApplicationError('unavailable'))
+    return this.channel.request(namespace, payload, options)
+  }
+  capabilities() { return this.channel?.capabilities() ?? [] }
   start(): void {
     if (this.task) return
     this.abort = new AbortController(); this.state.desired = true
@@ -49,7 +57,7 @@ export class DeviceConnectionSupervisor {
         } finally { if (timer) clearTimeout(timer) }
         this.socket = socket
         this.update('authenticating')
-        const hello: DeviceHello = { ...this.options.identity, connectionEpoch: randomUUID(), type: 'hello', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, nonce: randomBytes(32).toString('base64url'), connectionGeneration: this.state.generation }
+        const hello: DeviceHello = { ...this.options.identity, connectionEpoch: randomUUID(), type: 'hello', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, nonce: randomBytes(32).toString('base64url'), connectionGeneration: this.state.generation, extensions: extensionDescriptors(this.options.extensions ?? []) }
         sendFrame(socket, hello); this.update('negotiating')
         const iterator = socket.messages[Symbol.asyncIterator]()
         const next = await nextFrame(iterator, attempt.signal, this.options.handshakeMs ?? 10_000)
@@ -60,9 +68,18 @@ export class DeviceConnectionSupervisor {
         if (frame.mainId !== hello.mainId) throw new DeviceConnectionError('wrong-main')
         for (const key of ['deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const) if (frame[key] !== hello[key]) throw new DeviceConnectionError('authentication')
         const capabilities = frame.capabilities as Record<string, unknown> | undefined
-        if (frame.type !== 'welcome' || typeof frame.connectionEpoch !== 'string' || !frame.connectionEpoch || !capabilities || capabilities.heartbeat !== true || capabilities.dispatch !== false || capabilities.transfer !== false) throw new DeviceConnectionError('malformed-frame')
+        if (frame.type !== 'welcome' || typeof frame.connectionEpoch !== 'string' || !frame.connectionEpoch || !capabilities || capabilities.heartbeat !== true || typeof capabilities.dispatch !== 'boolean' || typeof capabilities.transfer !== 'boolean') throw new DeviceConnectionError('malformed-frame')
         if (frame.connectionGeneration !== hello.connectionGeneration) throw new DeviceConnectionError('wrong-main')
-        const expectedProof: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...this.options.identity, nonce: hello.nonce, connectionGeneration: hello.connectionGeneration, connectionEpoch: hello.connectionEpoch, mainConnectionEpoch: frame.connectionEpoch, protocolVersion: DEVICE_PROTOCOL_VERSION, workerApplicationVersion: hello.appVersion }
+        const advertised = capabilities.extensions ?? []
+        if (!Array.isArray(advertised) || advertised.length > 16) throw new DeviceConnectionError('malformed-frame')
+        const extensions = advertised as import('@graphql/contracts/device-application').DeviceNegotiatedExtension[]
+        let recomputed: typeof extensions
+        try { recomputed = negotiateDeviceExtensions(parseExtensionDescriptors(extensions.map((item) => ({ namespace: item.namespace, version: item.version, role: item.mainCanRequest && item.workerCanRequest ? 'duplex' : item.mainCanRequest ? 'client' : 'server', maxJsonBytes: item.maxJsonBytes, maxBinaryBytes: item.maxBinaryBytes }))), extensionDescriptors(this.options.extensions ?? [])) } catch { throw new DeviceConnectionError('malformed-frame') }
+        if (JSON.stringify(recomputed) !== JSON.stringify(extensions)) throw new DeviceConnectionError('malformed-frame')
+        const dispatch = extensions.some((item) => ['execution-v1', 'job-v1'].includes(item.namespace) && item.mainCanRequest)
+        const transfer = extensions.some((item) => item.namespace === 'byte-transfer-v1' && (item.mainCanRequest || item.workerCanRequest))
+        if (capabilities.dispatch !== dispatch || capabilities.transfer !== transfer) throw new DeviceConnectionError('malformed-frame')
+        const expectedProof: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...this.options.identity, nonce: hello.nonce, connectionGeneration: hello.connectionGeneration, connectionEpoch: hello.connectionEpoch, mainConnectionEpoch: frame.connectionEpoch, protocolVersion: DEVICE_PROTOCOL_VERSION, workerApplicationVersion: hello.appVersion, negotiationHash: deviceNegotiationHash(extensions) }
         if (!await withDeviceDeadline(verifyMainIdentityProof(frame.mainIdentityProof, expectedProof, this.options.mainPublicKeyFingerprint), attempt.signal, this.options.handshakeMs ?? 10_000)) throw new DeviceConnectionError('wrong-main')
         if ((frame.mainIdentityProof as { mainApplicationVersion: string }).mainApplicationVersion !== frame.appVersion) throw new DeviceConnectionError('wrong-main')
         if (attempt.signal.aborted) break
@@ -70,16 +87,9 @@ export class DeviceConnectionSupervisor {
         this.update('synchronizing'); await withDeviceDeadline(this.options.reconcile(binding, attempt.signal), attempt.signal, this.options.handshakeMs ?? 10_000)
         if (attempt.signal.aborted) break
         sendFrame(socket, { type: 'ready', connectionEpoch: binding.connectionEpoch })
+        this.channel = new DeviceApplicationChannel({ side: 'worker', binding, socket, signal: attempt.signal, extensions, registrations: this.options.extensions ?? [] })
         this.update('ready'); failures = 0
-        while (!attempt.signal.aborted) {
-          sendFrame(socket, { type: 'ping', connectionEpoch: binding.connectionEpoch })
-          const pong = await nextFrame(iterator, attempt.signal, this.options.heartbeatMs ?? 15_000)
-          if (pong.done) throw new DeviceConnectionError('transport')
-          const received = readFrame(pong.value)
-          if (received.type === 'blocked') throw new DeviceConnectionError(classifiedFailure(received.code))
-          if (received.type !== 'pong' || received.connectionEpoch !== binding.connectionEpoch) throw new DeviceConnectionError('malformed-frame')
-          await pause(this.options.heartbeatMs ?? 15_000, attempt.signal)
-        }
+        await this.channel.run(iterator, this.options.heartbeatMs ?? 15_000)
       } catch (error) {
         if (signal.aborted) break
         const code = error instanceof DeviceConnectionError ? error.code : 'transport'
@@ -88,7 +98,7 @@ export class DeviceConnectionSupervisor {
         this.update('backoff', code)
         const delay = Math.min(30_000, 500 * 2 ** Math.min(failures++, 6)) * (0.75 + (this.options.random?.() ?? Math.random()) * 0.5)
         await pause(delay, signal)
-      } finally { attempt.abort(); signal.removeEventListener('abort', cancel); socket?.close(); this.socket = undefined }
+      } finally { attempt.abort(); signal.removeEventListener('abort', cancel); socket?.close(); this.socket = undefined; this.channel?.close(); this.channel = undefined }
     }
   }
 }

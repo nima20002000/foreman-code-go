@@ -36,16 +36,20 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
   let queuedBytes = 0
   let ended = false
   let failure: Error | undefined
+  let terminalFailure: DeviceConnectionError | undefined
   let wake: (() => void) | undefined
   const cleanup = () => { raw.off('message', message); raw.off('error', error); raw.off('close', close) }
   const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; queuedBytes = 0; wake?.() }
-  const close = () => { finish(); cleanup() }
+  const close = () => { finish(terminalFailure); cleanup() }
   const error = () => { finish(new DeviceConnectionError('transport')); raw.close() }
   const message = (data: unknown, binary: unknown) => {
     if (ended) return
     if (binary === true || (!Buffer.isBuffer(data) && typeof data !== 'string')) { finish(new DeviceConnectionError('malformed-frame')); raw.close(); return }
     const text = String(data)
     if (Buffer.byteLength(text) > DEVICE_FRAME_BYTES || queue.length >= DEVICE_QUEUE_DEPTH || queuedBytes + Buffer.byteLength(text) > DEVICE_BUFFER_BYTES) { finish(new DeviceConnectionError('backpressure')); raw.close(); return }
+    if (text.includes('blocked')) {
+      try { const frame = JSON.parse(text) as { type?: string; code?: string }; if (frame.type === 'blocked') terminalFailure = new DeviceConnectionError(['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(frame.code ?? '') ? frame.code as import('@graphql/contracts/device-connection').DeviceFailureCode : 'malformed-frame') } catch { /* parser reports malformed JSON at consumption */ }
+    }
     queue.push(text); queuedBytes += Buffer.byteLength(text); wake?.()
   }
   raw.on('message', message); raw.on('error', error); raw.on('close', close)

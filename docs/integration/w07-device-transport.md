@@ -18,3 +18,26 @@ Before worker synchronization/readiness, the worker verifies the signed welcome 
 Session binding retains main/device/installation/key/auth revisions and process boot separately from the server-issued connection epoch. Replacements, revocation and shutdown cancel old sessions before presence writes. Heartbeat has live auth revalidation; receipt is connectivity only. Protocol is exact v1 independent of app and provider versions. Dispatch and transfer remain false.
 
 Focused transport doubles cannot qualify real WSS, persisted main restart, the worker service surviving SSH/browser closure, or laptop acceptance. Root/human must supply that evidence after approving listener/TLS/artifact/service changes. No listener, service, security or network settings were changed in this lane.
+
+## Actual negotiated application channels
+
+Root/C packaging also includes worker-safe `deviceApplicationChannel.ts` and exports `@graphql/contracts/device-application`. Consume A's `933a7d8` signed `negotiationHash` contract/helper. The proof binds the sorted namespace/version/direction/byte-limit intersection; altered advertisements fail before ready. Registrations are supplied at service construction and changes require a fresh negotiated connection.
+
+```ts
+const extensions: DeviceExtensionRegistration[] = [{
+  namespace: 'execution-v1', version: 1, role: 'server',
+  maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+  handle: async (payload, context) => {
+    // Domain port verifies exact operation/manual-job grant and context.binding.
+    return { payload: await actualDomainHandler(payload, context) }
+  },
+}]
+```
+
+Supply `extensions` to `DeviceEndpoint` and `createWorkerConnection`. Main uses `endpoint.request(deviceId, namespace, payload, {signal?, bytes?, timeoutMs?})`; worker uses `connection.request(namespace, payload, options)`. Both return `{payload,bytes?}`. Client-only registrations require the compatible peer's actual server handler. Server/duplex registrations require an actual function. No registrations retain heartbeat-only capabilities. `execution-v1`/`job-v1` enable dispatch only for a negotiated main-to-worker handler; `byte-transfer-v1` enables transfer only for a compatible direction. Other namespaces (MCP/discovery) remain explicitly negotiated without implying execution authority.
+
+JSON and binary independently cap at 1MiB. Wire chunks carry at most8KiB raw data inside16KiB frames and wait for per-chunk credit. Each channel bounds eight in-flight requests and4MiB upload/assembly budgets. Control/heartbeat frames bypass domain handler waits; handler results/cancellation remain correlated to the authenticated epoch. Receipt of a chunk/ACK never means execution accepted or file published. Oversized payloads return an explicit rejection, with no truncation.
+
+Main revalidates device authorization before calls, handler admission, replies and heartbeats. Domain handlers must separately validate W08 execution/manual-job intent/grant/owner/target or W09 transfer root/revision permissions against `context.binding`; connect/heartbeat scopes never become execution grants. Request cancellation aborts the handler context and fences late results. Replaced/revoked/shutdown channels reject pending requests and old callback writes. Main revocation also fences authentication tickets still awaiting DB readback, so a late pre-revoke result cannot index a fresh session.
+
+Worker MCP uses an actual separately registered `worker-mcp-v1` main handler, called through `connection.request`; W08/C owns its narrow token validation and local worker-only launcher bridge. This carrier never exposes the browser/MCP API or invents an MCP endpoint, domain scheduler, storage receipt, execution authority or listener.

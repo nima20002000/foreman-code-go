@@ -1,3 +1,4 @@
+import type { DeviceApplicationFrame, DeviceExtensionDescriptor, DeviceNegotiatedExtension } from './deviceApplication.js'
 import type { MainSignedIdentityProof } from './deviceIdentity.js'
 /** Wire compatibility is independent of application and native-provider versions. */
 export const DEVICE_PROTOCOL_VERSION = 1
@@ -21,15 +22,16 @@ export interface DeviceHello extends DeviceSessionBinding {
   protocolVersion: number
   appVersion: string
   nonce: string
+  extensions?: DeviceExtensionDescriptor[]
 }
 export interface DeviceWelcome extends DeviceSessionBinding {
   type: 'welcome'
   protocolVersion: number
   appVersion: string
   mainIdentityProof: MainSignedIdentityProof
-  capabilities: { heartbeat: true; dispatch: false; transfer: false }
+  capabilities: { heartbeat: true; dispatch: boolean; transfer: boolean; extensions?: DeviceNegotiatedExtension[] }
 }
-export type DeviceFrame = DeviceHello | DeviceWelcome | { type: 'ping' | 'pong' | 'ready'; connectionEpoch: string } | { type: 'blocked'; code: DeviceFailureCode }
+export type DeviceFrame = DeviceApplicationFrame | DeviceHello | DeviceWelcome | { type: 'ping' | 'pong' | 'ready'; connectionEpoch: string } | { type: 'blocked'; code: DeviceFailureCode }
 export interface DeviceConnectionView {
   desired: boolean
   phase: DeviceConnectionPhase
