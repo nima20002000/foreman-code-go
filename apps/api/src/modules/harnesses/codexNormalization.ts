@@ -30,7 +30,9 @@ export function normalizeCodexNotification(owner: CodexNotificationOwner, envelo
   const turnId = text(params.turnId) ?? text(turn?.id)
   const item = isObject(params.item) ? params.item : undefined
   const itemId = text(params.itemId) ?? text(item?.id)
-  const evidence = { ...envelope, ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}), ...(itemId ? { itemId } : {}) }
+  const requestId = params.requestId
+  const evidence = { ...envelope, ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}), ...(itemId ? { itemId } : {}),
+    ...(typeof requestId === 'string' || typeof requestId === 'number' ? { requestId } : {}) }
   if (threadId && threadId !== owner.threadId) return { kind: 'unlinked' as const, evidence }
   const exactThread = ['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)
   if (exactThread && threadId !== owner.threadId) return { kind: 'ignored' as const, reason: 'missing_thread' }
