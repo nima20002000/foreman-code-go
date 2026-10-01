@@ -13,6 +13,7 @@ import { DomainError } from '../src/modules/errors.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
+import { codexResponseSurfaceFixtures } from './fixtures/codex-response-surfaces.js'
 import { calls, collect, emit, errorCode, finish, fixture, fixtureQualification, input, state, until, type Fixture } from './fixtures/codex-test-helpers.js'
 
 // Only qualification is replaced here. Every lifecycle/translation/transport path
@@ -303,6 +304,31 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert(value.turn.nativeRequestId)
   })
 
+  for (const surface of ['workflow', 'operator', 'agent-chat', 'selected-run-continuation']) {
+    it(`inspects a current ${surface} callback from its explicit native startup shape`, async () => {
+      const fixtureSource = codexResponseSurfaceFixtures(f.directory).find((entry) => entry.surface === surface)!
+      const scoped = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, fixtureSource.appMcpAccess)
+      managers.push(scoped)
+      const session = await scoped.createSession(fixtureSource.source)
+      const events = collect(scoped.startTurn(session, { prompt: 'approval', clientCorrelationId: `${surface}-fixture-turn` }))
+      const value = await until(() => scoped.pending(session))
+      const query = responseQuery(value)
+      const before = await wire()
+      const inspected = await scoped.inspectResponseAvailability(session, query)
+      assert.equal(inspected.state, 'available')
+      assert.equal(inspected.path, 'live_callback')
+      assert(inspected.generation)
+      assert.deepEqual(await wire(), before)
+      if (fixtureSource.appMcpAccess === 'none') assert.equal(fixtureSource.source.environment, undefined)
+      if (fixtureSource.surface === 'selected-run-continuation') assert.equal(fixtureSource.runtimeRole, 'agent-chat')
+      const current = await state(f.directory, session.nativeSessionId)
+      await emit(f.directory, { method: 'turn/completed', params: { threadId: session.nativeSessionId,
+        turn: { ...current.turns.at(-1)!, status: 'completed', completedAt: 2 } } }, fixtureSource.inboxAgentId)
+      await events
+      assert.equal((await scoped.inspectResponseAvailability(session, query)).state, 'unavailable')
+    })
+  }
+
   it('inspects only the exact live response callback without native writes or history changes', async () => {
     const session = await manager.createSession(source)
     const { result } = await start(session, 'approval')
@@ -331,6 +357,26 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await manager.inspectResponseAvailability({ ...session, nativeSessionId: 'another-thread' }, query)).state, 'unavailable')
     assert.deepEqual(await wire(), beforeWire)
     assert.deepEqual(await manager.history(session), beforeHistory)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('fences a conflicting exact RPC identity without replying to either approval', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    const value = await pending(session)
+    const query = responseQuery(value)
+    const before = await wire()
+    await inject(session, 'item/commandExecution/requestApproval', {
+      itemId: 'different-command', command: 'printf conflicting-command', cwd: f.directory,
+      availableDecisions: ['accept', 'decline'],
+    }, 901)
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'protocol.conflicting_request_identity'))
+    const availability = await manager.inspectResponseAvailability(session, query)
+    assert.equal(availability.state, 'recovery_required')
+    assert.equal(availability.reason, 'identity_mismatch')
+    await assertCode(manager.respond(session, query.nativeRequestId, value.responseOptions[0]!), 'NATIVE_RESPONSE_RECONCILIATION_REQUIRED')
+    assert.deepEqual(await wire(), before)
     await finish(f.directory, session.nativeSessionId)
     await result
   })

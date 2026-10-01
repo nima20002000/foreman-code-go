@@ -12,6 +12,11 @@ const save = (name, value) => fs.writeFileSync(path.join(root, name), JSON.strin
 const flag = (name) => fs.existsSync(path.join(root, name))
 const log = (value) => fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify(value) + '\n')
 const args = process.argv.slice(2)
+const processDisabledMcp = new Set(args.flatMap((argument, index) => {
+  if (argument !== '-c') return []
+  const matched = /^mcp_servers\.([A-Za-z0-9_-]+)\.enabled=false$/.exec(args[index + 1] || '')
+  return matched ? [matched[1]] : []
+}))
 log({ cli: args })
 if (args[0] === '--version') { console.log(read('version.json', 'codex-cli 0.154.0')); process.exit(0) }
 if (args[0] === 'login') {
@@ -181,7 +186,13 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       if (!flag('no-resolution')) send({ method: 'serverRequest/resolved', params: { threadId: current.id, requestId: message.id } })
       if (expectedResponses > 0 && --expectedResponses === 0 && !flag('no-resolution')) complete(found, 'completed', `approved-${agent}`)
     }
-  } else if (message.method === 'config/read') result(message.id, { config: { approval_policy: 'on-request' }, origins: {}, layers: [] })
+  } else if (message.method === 'config/read') {
+    const configured = read('mcp.json', { name: 'graphql', enabled: true })
+    const name = configured.name || 'graphql'
+    const servers = flag('no-mcp') ? {} : { [name]: { ...configured,
+      enabled: processDisabledMcp.has(name) ? false : configured.enabled !== false } }
+    result(message.id, { config: { approval_policy: 'on-request', mcp_servers: servers }, origins: {}, layers: [] })
+  }
   else if (message.method === 'mcpServerStatus/list') result(message.id, { data: [], nextCursor: null })
   else if (message.method === 'model/list') result(message.id, { data: [{ id: 'test-model' }], nextCursor: null })
   else if (message.method === 'config/mcpServer/reload') result(message.id, {})

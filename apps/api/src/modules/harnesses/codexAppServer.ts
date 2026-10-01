@@ -79,6 +79,7 @@ interface WaitingRequest {
   method: string
   generation: number
   transport: CodexTransport
+  conflictingIdentity?: boolean
   signature: string
   responses: Map<string, { option: ApprovalResponseOption; nativeResponse: JsonObject }>
   delivery: Delivery
@@ -844,6 +845,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       || runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) !== waiting) {
       return { ...unavailable('callback_lost'), state: 'recovery_required' }
     }
+    if (waiting.conflictingIdentity) return { ...unavailable('identity_mismatch'), state: 'recovery_required' }
     if (!turnId || turnId !== runtime.activeTurnId || runtime.terminalResult) return unavailable('identity_mismatch')
     if (runtime.phase !== 'active' || runtime.starting || !runtime.qualified.schemaManifestSha256
       || runtime.qualified.providerVersion !== session.providerVersion) return unavailable('unqualified')
@@ -861,7 +863,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!waiting) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The addressed native request is not pending in this session.')
     const stored = waiting.responses.get(option.optionId)
     if (!stored) throw new HarnessExecutionError('NATIVE_RESPONSE_OPTION_INVALID', 'The selected response was not offered for this native request.')
-    if (waiting.delivery !== 'pending' || waiting.generation !== runtime.generation || waiting.transport !== runtime.transport || runtime.closed) {
+    if (waiting.delivery !== 'pending' || waiting.conflictingIdentity || waiting.generation !== runtime.generation || waiting.transport !== runtime.transport || runtime.closed) {
       throw new HarnessExecutionError('NATIVE_RESPONSE_RECONCILIATION_REQUIRED', 'A submitted, disconnected, or uncertain native response cannot be retransmitted.')
     }
     signal?.throwIfAborted()
@@ -1742,7 +1744,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const resolved = runtime.resolvedRequests.get(key)
     if (existing || resolved) {
       // Do not send an error using a still-live original request ID.
-      if ((existing?.signature ?? resolved?.signature) !== signature) this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
+      if ((existing?.signature ?? resolved?.signature) !== signature) {
+        if (existing) existing.conflictingIdentity = true
+        this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
+      }
       return
     }
     if (runtime.interactions.size >= MAX_INTERACTIONS) {
