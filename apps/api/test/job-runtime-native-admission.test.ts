@@ -1,4 +1,8 @@
 import { describe,expect,it,vi } from 'vitest'
+import type pg from 'pg'
+import { createJobRuntimeProfileService } from '../src/modules/jobs/runtimeProfileFactory.js'
+import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import type { PostgresSourceService } from '../src/modules/sources/service.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { JobRuntimeProfileSchema,JobRuntimeFingerprintSchema,JobRuntimeApprovalSchema,type JobRuntimeNativeAdmission } from '@graphql/contracts/job-runtime'
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
@@ -66,4 +70,24 @@ describe('Main persisted qualification admission (no native IO)',()=>{
     await expect(admitInstalledJobQualification(f.sql,f.input)).rejects.toThrow()
     expect(f.state.nativeAdmission).toEqual(first)
   })
+})
+
+it('captures an installed device candidate through its trusted carrier without opening Main-local worker paths',async()=>{
+  const hostRef={kind:'device' as const,mainId:uuid,deviceId:'22222222-2222-4222-8222-222222222222'},registration={workerInstallationId:'33333333-3333-4333-8333-333333333333',keyRevision:1,authorizationRevision:1}
+  const remoteRoot={...root,selection:{...root.selection,hostRef},registration,binding:{...root.binding,deviceId:hostRef.deviceId,workerInstallationId:registration.workerInstallationId}}
+  const remoteProfile=JobRuntimeProfileSchema.parse({...profile,root:remoteRoot})
+  const remoteFingerprint=JobRuntimeFingerprintSchema.parse({...fingerprint,hostRef,registration,root:remoteRoot})
+  const query=vi.fn(async(text:string)=>{
+    let rows:unknown[]=[]
+    if(text.includes('from management_principals'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:null,delegated_from:null}]
+    else if(text.includes('select archived_at'))rows=[{archived_at:null}]
+    else if(text.startsWith('select record from job_runtime_profiles'))rows=[{record:remoteProfile}]
+    return {rows,rowCount:rows.length,command:'SELECT',oid:0,fields:[]}
+  })
+  const commands={execute:async(input:{prepare():Promise<void>;perform(sql:JobSql):Promise<unknown>})=>{await input.prepare();return {value:await input.perform({query} as JobSql)}}} as unknown as PostgresCommandCoordinator
+  const capture=vi.fn(async()=>remoteFingerprint),descriptor=vi.fn(async()=>{throw new Error('Worker paths cannot be read by Main')})
+  const service=createJobRuntimeProfileService({pool:{connect:async()=>({query,release:()=>{}})} as unknown as pg.Pool,commands,sources:{} as PostgresSourceService,
+    host:{capture,descriptor,currentMetadata:async()=>remoteFingerprint,currentConnection:async()=>null,reserveQualification:async()=>{throw new Error('Request cannot enter native runtime')}}})
+  const requested=await service.requestQualification(principal,'mcp',profile.workspaceId,{commandId:'remote-request',profileId:profile.id,expectedRevision:1})
+  expect(requested.fingerprint).toEqual(remoteFingerprint);expect(capture).toHaveBeenCalledOnce();expect(descriptor).not.toHaveBeenCalled()
 })
