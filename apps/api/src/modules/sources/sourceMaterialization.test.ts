@@ -69,6 +69,12 @@ describe('private materialization', () => {
     await expect(service.prepare(f)).rejects.toThrow('replaced')
     expect(await readFile(join(f.root, 'outside'), 'utf8')).toBe('preserved')
   })
+  it('rejects a destination beneath an unprotected writable ancestor', async () => {
+    const f = await fixture(), parent = join(f.root, 'unsafe'), destination = join(parent, 'destination')
+    await mkdir(parent); await chmod(parent, 0o777); await mkdir(destination, { mode: 0o700 })
+    const service = new PrivateSourceMaterializer({ async read() { return f.bytes } }, async () => {})
+    await expect(service.prepare({ ...f, binding: { ...f.binding, canonicalPath: destination } })).rejects.toThrow('ancestors')
+  })
   it('rejects symlink destination ancestors', async () => {
     const f = await fixture(), link = `${f.root}-link`; roots.push(link); await symlink(f.root, link)
     const service = new PrivateSourceMaterializer({ async read() { return f.bytes } }, async () => {})

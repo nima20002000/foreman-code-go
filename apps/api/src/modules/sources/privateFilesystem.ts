@@ -22,7 +22,14 @@ export async function openPrivateRoot(path: string): Promise<FileHandle> {
   let parent = await open('/', directoryFlags)
   try {
     for (const component of path.split('/').filter(Boolean)) {
+      const ancestor = await parent.stat()
+      if ((ancestor.uid !== 0 && ancestor.uid !== process.getuid?.())
+        || ((ancestor.mode & 0o022) !== 0 && (ancestor.mode & 0o1000) === 0))
+        throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Root ancestors must exclude replacement by other principals.')
       const child = await open(anchored(parent, component), directoryFlags)
+      if ((ancestor.mode & 0o022) !== 0 && (await child.stat()).uid !== process.getuid?.()) {
+        await child.close(); throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Sticky-directory entries must be owned by this worker.')
+      }
       await parent.close(); parent = child
     }
     const stat = await parent.stat()
@@ -52,6 +59,9 @@ export async function entryParent(root: FileHandle, path: string, create: boolea
   try {
     for (const component of components) {
       const child = await openChildDirectory(parent, component, create)
+      if ((ancestor.mode & 0o022) !== 0 && (await child.stat()).uid !== process.getuid?.()) {
+        await child.close(); throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Sticky-directory entries must be owned by this worker.')
+      }
       await parent.close(); parent = child
     }
     return { parent, leaf }
