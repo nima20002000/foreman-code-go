@@ -1,0 +1,20 @@
+[Unit]
+Description=GraphQL selected-main worker
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=@NODE@ @APP@/current/src/cli.mjs run --state @STATE@
+Environment=HOME=@HOME@
+Environment=PATH=@PATH@
+WorkingDirectory=@STATE@
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
