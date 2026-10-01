@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { regularFiles, verifyPackage, artifactFiles, copySharpPackages, sharpPackages } from '../../../scripts/worker-artifact-files.mjs';
+import { regularFiles, verifyPackage, artifactFiles, copySharpPackages, sharpPackages, assertWorkerDependency } from '../../../scripts/worker-artifact-files.mjs';
 import { validateManifest } from '../src/installation.mjs';
 
 function fixture() {
@@ -78,4 +78,10 @@ test('libvips preserves its published README license table instead of requiring 
   const files = new Map([['package.json', Buffer.from(JSON.stringify({ name, version, license: 'LGPL-3.0-or-later' }))], ['README.md', Buffer.from('Dependency licenses: libvips LGPLv3')]]);
   const index = { requiresBuild: false, manifest: { name, version }, algo: 'sha512', files: new Map([...files].map(([path, bytes]) => [path, { size: bytes.length, digest: createHash('sha512').update(bytes).digest('hex') }])) };
   verifyPackage(name, version, index, files);
+});
+
+
+test('worker graph rejects database and control-plane server dependencies without disabling its guard', () => {
+  for (const path of ['pg', 'pg-pool', 'postgres', 'fastify', '@fastify/websocket', 'drizzle-orm/node-postgres', 'kysely']) assert.throws(() => assertWorkerDependency(path), /Forbidden/);
+  for (const path of ['node:fs', 'sharp', 'ws', '@graphql/contracts/jobs']) assertWorkerDependency(path);
 });
