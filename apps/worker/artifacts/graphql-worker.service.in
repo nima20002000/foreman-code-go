@@ -8,6 +8,7 @@ Type=simple
 ExecStart=@NODE@ @APP@/current/src/cli.mjs run --state @STATE@
 Environment=HOME=@HOME@
 Environment=PATH=@PATH@
+UnsetEnvironment=NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED
 WorkingDirectory=@STATE@
 Restart=on-failure
 RestartSec=5

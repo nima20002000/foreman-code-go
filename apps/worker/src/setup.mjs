@@ -23,7 +23,7 @@ export async function setupCompanion({ home, node, artifact, approvedManifestSha
   await requirePrivateDirectory(state);
   const result = await installVersion({ root, artifact, approvedManifestSha256, facts, expected: { protocolVersion: 1, identityFormat: 1 }, updatePolicy });
   const launcher = join(root, 'graphql-companion');
-  await publish(launcher, `#!/bin/sh\nexport HOME='${home}'\nexport PATH='${path}'\nexec '${node}' '${root}/current/src/companion.mjs' --state '${state}' "$@"\n`, 0o700);
+  await publish(launcher, `#!/bin/sh\nunset NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED\nexport HOME='${home}'\nexport PATH='${path}'\nexec '${node}' '${root}/current/src/companion.mjs' --state '${state}' "$@"\n`, 0o700);
   const desktop = join(home, '.local/share/applications/graphql-companion.desktop');
   await publish(desktop, `[Desktop Entry]\nType=Application\nName=GraphQL Companion\nComment=Computer connection and diagnostics\nExec=${launcher} --desktop\nTerminal=false\nCategories=Utility;\n`, 0o600);
   const proposedService = join(root, 'graphql-worker.service');

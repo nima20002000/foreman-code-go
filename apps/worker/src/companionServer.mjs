@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 import { requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
 import { createCompanionService } from './companionService.mjs';
 
@@ -10,7 +11,7 @@ function cliCommand(stateDirectory, command, input) {
   return new Promise((resolve, reject) => {
     const args = [fileURLToPath(new URL('./cli.mjs', import.meta.url)), command, '--state', stateDirectory];
     if (command === 'pair') args.push('--enrollment-stdin');
-    const child = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'], env: { HOME: process.env.HOME, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } });
     let output = '', error = '', size = 0;
     const timer = setTimeout(() => child.kill('SIGTERM'), 30_000);
     const collect = (chunk, stderr) => {
@@ -27,7 +28,7 @@ function cliCommand(stateDirectory, command, input) {
       if (status === 0 && size <= 32_768) resolve(output.trim());
       else {
         const code = error.split(/[:\s(]/, 1)[0];
-        reject(new WorkerError(['already_paired', 'wrong_main_proof', 'pairing_main_unreachable', 'pairing_outcome_unknown', 'pairing_http_rejected', 'target_runtime_mismatch'].includes(code) ? code : 'companion_command_failed'));
+        reject(new WorkerError(['setup_code_invalid', 'setup_code_identity_mismatch', 'setup_code_expired', 'setup_code_cancelled', 'already_paired', 'wrong_main_proof', 'pairing_main_unreachable', 'pairing_outcome_unknown', 'pairing_http_rejected', 'target_runtime_mismatch'].includes(code) ? code : 'companion_command_failed'));
       }
     });
     child.stdin.end(input ? `${input}\n` : '');
