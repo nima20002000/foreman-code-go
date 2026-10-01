@@ -45,3 +45,25 @@ it('never records authorization loss after dispatch as definite native rejection
   expect([...memory.records.values()][0]!.result.status).toBe('uncertain')
   expect(perform).toHaveBeenCalledTimes(1)
 })
+it('retains the accepted native choice and rechecks current action authority before reading a completed receipt', async () => {
+  const memory = ledger(), commands = new OperatorChatCommands(memory.pool)
+  const control = { schemaVersion: 1 as const, kind: 'respond' as const, conversationId: 'conversation', modelRequestId: 'model-request',
+    scope: { kind: 'operator_chat' as const, conversationId: 'conversation' },
+    native: { harness: 'codex', providerVersion: 'codex-cli 0.154.0', sessionId: 'native-session', turnId: 'native-turn', requestId: 'native-question', requestType: 'approval' },
+    choice: { optionId: 'approve-once', semantic: 'approve_once' } }
+  const payload = { kind: 'respond', requestId: 'model-request', nativeRequestId: 'native-question', optionId: 'approve-once' }
+  const perform = vi.fn(async () => initial)
+  await commands.execute(principal, 'http', 'conversation', 'caller-key', payload, perform, async () => initial, control)
+  const recorded = structuredClone([...memory.records.values()][0]!.result)
+  await commands.execute(principal, 'mcp', 'conversation', 'caller-key', payload, perform, async () => initial,
+    { ...control, native: { ...control.native, requestId: 'newer-question' } })
+  expect([...memory.records.values()][0]!.result).toEqual(recorded)
+  expect(recorded.acceptedControl).toEqual(control)
+  expect(perform).toHaveBeenCalledTimes(1)
+  const queries = vi.mocked(memory.pool.query).mock.calls.length
+  await expect(commands.execute(principal, 'mcp', 'conversation', 'caller-key', payload, perform, async () => {
+    throw new DomainError('ACCESS_DENIED', 'The response grant was revoked.', 403)
+  })).rejects.toMatchObject({ code: 'ACCESS_DENIED', status: 403 })
+  expect(vi.mocked(memory.pool.query).mock.calls).toHaveLength(queries)
+  expect(perform).toHaveBeenCalledTimes(1)
+})
