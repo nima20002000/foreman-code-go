@@ -87,6 +87,10 @@
     "./node-placement": {
       "types": "./dist/nodePlacement.d.ts",
       "import": "./dist/nodePlacement.js"
+    },
+    "./harness-registry": {
+      "types": "./dist/harnessRegistry.d.ts",
+      "import": "./dist/harnessRegistry.js"
     }
   },
   "scripts": {

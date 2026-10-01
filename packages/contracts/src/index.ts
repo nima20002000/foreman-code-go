@@ -1632,3 +1632,4 @@ export * from "./activity.js";
 export * from "./activityFixtures.js";
 export * from "./activityChanges.js";
 export * from "./nodePlacement.js";
+export * from "./harnessRegistry.js";
