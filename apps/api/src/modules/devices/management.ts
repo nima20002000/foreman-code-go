@@ -1,3 +1,4 @@
+import { DeviceSetupApproveInputSchema,DeviceSetupApproveResultSchema } from '@graphql/contracts/device-setup'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -7,7 +8,7 @@ import { toolFailure, toolResult } from '../../mcp/shared/results.js'
 import { hasAction } from '../access/policy.js'
 import type { PostgresDeviceAccessService } from './access.js'
 
-export type DeviceManagementService = Pick<PostgresDeviceAccessService, 'readMainIdentity' | 'list' | 'createPairingGrant' | 'revoke'>
+export type DeviceManagementService = Pick<PostgresDeviceAccessService, 'readMainIdentity' | 'list' | 'createPairingGrant' | 'createSetupCode' | 'revoke'>
 
 export function registerDeviceManagementTools(server: McpServer, service: DeviceManagementService, principal: ManagementPrincipal): void {
   const invoke = async (operation: () => Promise<unknown>) => {
@@ -24,6 +25,7 @@ export function registerDeviceManagementTools(server: McpServer, service: Device
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, () => invoke(async () => ({ devices: await service.list(principal) })))
   if (hasAction(principal, 'settings:update')) {
+    server.registerTool('device_setup_code_create',{description:'Approve one public worker identity-request code and selected reachable LAN WSS endpoint. Returns one PRIVATE, original-expiry key-bound enrollment code; no relay/discovery or connectivity claim. Requires global settings:update.',inputSchema:DeviceSetupApproveInputSchema,outputSchema:DeviceSetupApproveResultSchema,annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}},input=>invoke(()=>service.createSetupCode(principal,input,'mcp')))
     server.registerTool('device_pairing_grant_create', {
       description: 'Approve a verified worker public-key fingerprint and issue a five-minute, single-use device-only pairing grant. Requires unscoped settings:update. Treat returned grant as secret; no remote execution scopes.',
       inputSchema: DevicePairingGrantInputSchema, outputSchema: DevicePairingGrantResultSchema, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -40,6 +42,7 @@ export function registerDeviceManagementRoutes(app: FastifyInstance, service: De
   authenticate: (request: import('fastify').FastifyRequest) => Promise<ManagementPrincipal>): void {
   app.get('/api/devices/main', async request => service.readMainIdentity(await authenticate(request)))
   app.get('/api/devices', async request => ({ devices: await service.list(await authenticate(request)) }))
+  app.post('/api/devices/setup-codes',async request=>service.createSetupCode(await authenticate(request),DeviceSetupApproveInputSchema.parse(request.body)))
   app.post('/api/devices/pairing-grants', async request => service.createPairingGrant(await authenticate(request), DevicePairingGrantInputSchema.parse(request.body)))
   app.post('/api/devices/revoke', async request => {
     const input = DeviceRevokeInputSchema.parse(request.body)

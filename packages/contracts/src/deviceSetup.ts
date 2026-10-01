@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { WorkerEnrollmentInputSchema } from './deviceIdentity.js'
+import { WorkerEnrollmentInputSchema,DeviceRegistrationSchema,DeviceScopeSchema } from './deviceIdentity.js'
 export const DEVICE_SETUP_CODE_MAX=8192
 export const WorkerIdentityRequestSchema=z.object({version:z.literal(1),kind:z.literal('identity-request'),workerInstallationId:z.uuid(),publicKey:z.string().min(1).max(1024),publicKeyFingerprint:z.string().regex(/^[a-f0-9]{64}$/)}).strict()
 export const WorkerEnrollmentCodeSchema=z.object({version:z.literal(1),kind:z.literal('enrollment'),workerInstallationId:z.uuid(),publicKeyFingerprint:z.string().regex(/^[a-f0-9]{64}$/),enrollment:WorkerEnrollmentInputSchema.refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved WSS device endpoint.'),expiresAt:z.string().datetime()}).strict()
@@ -12,3 +12,7 @@ export function decodeWorkerIdentityRequest(code:string):WorkerIdentityRequest {
 /** Private credential envelope. Never place this code in URLs, argv or logs. */
 export function encodeWorkerEnrollmentCode(value:WorkerEnrollmentCode):string {return encode('GQLWE1.',WorkerEnrollmentCodeSchema.parse(value))}
 export function decodeWorkerEnrollmentCode(code:string):WorkerEnrollmentCode {return WorkerEnrollmentCodeSchema.parse(decode('GQLWE1.',code))}
+
+export const DeviceSetupApproveInputSchema=z.object({commandId:z.string().min(8).max(200),identityRequestCode:z.string().min(1).max(DEVICE_SETUP_CODE_MAX),endpoint:WorkerEnrollmentInputSchema.shape.endpoint,scopes:z.array(DeviceScopeSchema).min(1).max(2),expectedAuthorizationRevision:z.number().int().positive().optional()}).strict().refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved LAN WSS device endpoint.')
+export const DeviceSetupApproveResultSchema=z.object({registration:DeviceRegistrationSchema,enrollmentCode:z.string().max(DEVICE_SETUP_CODE_MAX),expiresAt:z.string().datetime()}).strict()
+export type DeviceSetupApproveInput=z.infer<typeof DeviceSetupApproveInputSchema>

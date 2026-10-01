@@ -1,3 +1,5 @@
+import { DeviceSetupApproveInputSchema,encodeWorkerEnrollmentCode,type DeviceSetupApproveInput } from '@graphql/contracts/device-setup'
+import { verifiedWorkerIdentityRequest } from '@graphql/contracts/device-setup-node'
 import { createHash, createHmac, randomBytes, randomUUID, verify } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -34,6 +36,28 @@ export class PostgresDeviceAccessService {
       if (!result.rows[0]) throw new DomainError('DEVICE_MAIN_IDENTITY_UNAVAILABLE', 'Main device authentication has not been initialized.', 503)
       return MainDeviceIdentityPublicSchema.parse({ mainId: this.mainId, ...result.rows[0] })
     })
+  }
+  async createSetupCode(principal:ManagementPrincipal,raw:DeviceSetupApproveInput,source:'http'|'mcp'='http') {
+    const input=DeviceSetupApproveInputSchema.parse(raw),request=verifiedWorkerIdentityRequest(input.identityRequestCode)
+    const grantInput={commandId:input.commandId,workerInstallationId:request.workerInstallationId,publicKey:request.publicKey,expectedFingerprint:request.publicKeyFingerprint,scopes:input.scopes,...(input.expectedAuthorizationRevision?{expectedAuthorizationRevision:input.expectedAuthorizationRevision}:{})}
+    let metadata:{registration:DeviceRegistration;expiresAt:string;requestId:string;mainFingerprint:string}|undefined
+    const approved=await new PostgresCommandCoordinator(this.pool).execute({principal,source,operation:'device_setup_code_create',commandId:input.commandId,targetKey:this.mainId,payload:input,dedicatedConnection:true,
+      authorize:client=>this.management(client,principal,true),prepare:async()=>{
+        const main=await this.transaction(async client=>{
+          await this.management(client,principal,true)
+          const row=(await client.query<{mainPublicKey:string;mainPublicKeyFingerprint:string}>(`select record->>'publicKey' as "mainPublicKey",record->>'publicKeyFingerprint' as "mainPublicKeyFingerprint" from device_main_identity where main_id=$1`,[this.mainId])).rows[0]
+          if(!row||publicKeyFingerprint(row.mainPublicKey)!==row.mainPublicKeyFingerprint)throw new DomainError('DEVICE_MAIN_IDENTITY_UNAVAILABLE','The selected Main identity is unavailable.',503)
+          return row
+        })
+        const grant=await this.createPairingGrant(principal,grantInput,source)
+        metadata={registration:grant.registration,expiresAt:grant.expiresAt,requestId:randomUUID(),mainFingerprint:main.mainPublicKeyFingerprint}
+      },perform:async()=>{
+        if(!metadata)throw new DomainError('DEVICE_SETUP_UNAVAILABLE','The approved enrollment receipt is missing.',503)
+        return metadata // The private code/grant is not stored in the public command result or audit.
+      }})
+    const original=approved.value,grant=await this.createPairingGrant(principal,grantInput,source)
+    if(grant.expiresAt!==original.expiresAt||grant.registration.deviceId!==original.registration.deviceId)throw new DomainError('DEVICE_SETUP_RECEIPT_CONFLICT','The original key-bound grant changed.',409)
+    return {registration:original.registration,expiresAt:original.expiresAt,enrollmentCode:encodeWorkerEnrollmentCode({version:1,kind:'enrollment',workerInstallationId:request.workerInstallationId,publicKeyFingerprint:request.publicKeyFingerprint,enrollment:{mainId:this.mainId,mainPublicKeyFingerprint:original.mainFingerprint,endpoint:input.endpoint,grant:grant.grant,requestId:original.requestId},expiresAt:original.expiresAt})}
   }
   async list(principal: ManagementPrincipal): Promise<DeviceRegistration[]> {
     return this.transaction(async client => {
