@@ -28,6 +28,8 @@ export interface RepeatEngineStartContext {
   native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
   workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
+  jobs?: (owner: RunOwnership, version: import('@graphql/contracts/wave25').WorkflowVersionV3) => {
+    store: import('../jobs/workflowNode.js').WorkflowJobNodeStore; driver: import('../jobs/workflowRuntimePorts.js').WorkflowJobDriver }
   lifecycle: RepeatRuntimeLifecycle
   /** Must capture REAL current coordinator/manager/lease/command evidence on
    * each call. No DB-membership-only proof or fabricated first_launch fallback. */
@@ -164,7 +166,7 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
     throw new DomainError('REPEAT_NATIVE_HOST_REQUIRED', 'Repeat lifecycle proof writers are required.', 409)
   }
   await executeRepeatRuntime({ runId: snapshot.run.id, version: snapshot.version, owner: input.owner,
-    signal: input.signal, store, driver, checkpointer: input.checkpointer, configuredParallelism: input.configuredParallelism,
+    signal: input.signal, store, driver, ...(input.jobs ? { jobs: input.jobs(input.owner, snapshot.version) } : {}), checkpointer: input.checkpointer, configuredParallelism: input.configuredParallelism,
     lifecycle: {
       markRunning: () => lifecycle.markRunning(),
       currentState: () => lifecycle.currentState(),

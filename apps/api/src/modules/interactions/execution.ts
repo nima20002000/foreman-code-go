@@ -506,6 +506,18 @@ export class ApprovalExecutionCoordinator {
     await this.reviewers.reconcile(onError)
   }
 
+  /** Read-only current manager/lease facts; absence is not replaced with a historic lane. */
+  passiveOwnedNativeSessions() {
+    return [...this.ownedSessions.values()].flatMap(owned => {
+      if (!owned.session || owned.failed || owned.cleanup) return []
+      const lease = owned.manager.capturedLease(owned.session)
+      const manager = this.rawManagers.get(owned.manager)
+      if (!lease || !manager || lease.guard.signal.aborted) return []
+      return [{ execution: structuredClone(owned.execution), session: structuredClone(owned.session), manager,
+        writer: { id: lease.fence.id, token: lease.fence.token } }]
+    })
+  }
+
   private managerContext(
     execution: HarnessExecution,
     configuration: AgentConfigurationVersion,

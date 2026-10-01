@@ -56,6 +56,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     private readonly interactions: PostgresInteractionRepository,
     private readonly onRunTerminal?: (runId: string, reason: string) => Promise<void>,
     limits: { workerParallelism?: number; maximumWaiting?: number; maximumActiveRuns?: number } = {},
+    private readonly jobComposition?: NonNullable<import('./repeatStartComposition.js').RepeatEngineStartContext['jobs']>,
   ) {
     this.workspaceRoot = resolve(workspaceRoot)
     this.configuredParallelism = limits.workerParallelism ?? 4
@@ -165,6 +166,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         checkpointer: this.checkpointer, admission: this.workerAdmission,
         configuredParallelism: this.configuredParallelism, runtimeRoot: this.workspaceRoot,
         factory: this.runs.repeatRepositoryFactory(), native: this.nativeExecutions,
+        ...(this.jobComposition ? { jobs: this.jobComposition } : {}),
         workflows: this.workflows, locations: this.locations,
         nativeBoundaryEvidence: (id) => this.nativeExecutions.nativeBoundaryEvidence(id, owner),
         lifecycle: {

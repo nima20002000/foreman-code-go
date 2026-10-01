@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DeviceRegistrationSchema, type CanonicalMachineReference, type DeviceRegistration } from '@graphql/contracts/device-identity'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -7,7 +7,7 @@ import { DeviceAccessError } from './access.js'
 
 /** Identity only: the caller checks its domain grants first and retains this command transaction's locks.
  * Returns current key/auth revisions for the caller's pin checks; null denotes the original main. */
-export async function assertDeviceHostInstallation(client: Pick<pg.ClientBase, 'query'>,
+export async function assertDeviceHostInstallation(client: GraphSqlClient,
   host: CanonicalMachineReference, applicationInstallationId: string): Promise<DeviceRegistration | null> {
   const main = await client.query<{ id: string }>('select id from application_installation where singleton=true for share')
   if (main.rows[0]?.id !== host.mainId) throw new DeviceAccessError('wrong_main')
@@ -25,7 +25,7 @@ export async function assertDeviceHostInstallation(client: Pick<pg.ClientBase, '
 }
 
 /** Use the command's transaction so revocation cannot race a host-scoped settings mutation. */
-export async function authorizeDeviceHost(client: Pick<pg.ClientBase, 'query'>, principal: ManagementPrincipal,
+export async function authorizeDeviceHost(client: GraphSqlClient, principal: ManagementPrincipal,
   action: 'harnesses:read' | 'harnesses:update', host: CanonicalMachineReference, applicationInstallationId: string): Promise<void> {
   requireAuthorization(await readLiveManagementPrincipal(client, principal.id), action)
   await assertDeviceHostInstallation(client, host, applicationInstallationId)

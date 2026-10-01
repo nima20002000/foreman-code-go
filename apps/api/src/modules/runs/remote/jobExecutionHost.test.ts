@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -13,19 +14,24 @@ import type { JobExecution } from '@graphql/contracts/jobs'
 import type { RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
 import { jobSpecDigests } from '@graphql/contracts/jobs-node'
 import { jobInputSnapshotDigest } from '@graphql/contracts/job-inputs-node'
-import { JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
+import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import { jobSupervisorIdentity, type QualifiedJobProfile } from '../../jobs/executor.js'
 import { PodmanJobSupervisor, type PodmanCommandRunner } from '../../jobs/executorPodman.js'
+import { identity } from '../../sources/privateFilesystem.js'
+import { OwnedOCIContainer, type OCIContainerOwnership } from '../../jobs/executorContainerOwner.js'
 import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteJobExecutionHost } from './jobExecutionHost.js'
 const roots: string[] = [], journals: RemoteOperationJournal[] = [], hosts: RemoteJobExecutionHost[] = []
-afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(root => rm(root,{recursive:true,force:true}))) })
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(root => rm(root,{recursive:true,force:true}))) })
 async function fixture(loseClosureAck = false, denyPublication = false, wrongInput = false, loseCollectionAck = false) {
   const root = await mkdtemp(join(tmpdir(),'w08-job-')); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
   const execution = jobExecution()
+  const sourceRoot=join(root,'source');await mkdir(sourceRoot,{mode:0o700})
+  const sourceHandle=await open(sourceRoot,constants.O_RDONLY|constants.O_DIRECTORY),sourceIdentity=await identity(sourceHandle);await sourceHandle.close()
+  Object.assign(execution.acceptedSpec.target.destination,{canonicalProjectRoot:sourceRoot,canonicalCwd:sourceRoot,directoryIdentityHash:createHash('sha256').update(JSON.stringify(sourceIdentity)).digest('hex')})
   execution.acceptedSpec.target.destination.managedRuntimeRoot=join(root,'runtime');await mkdir(execution.acceptedSpec.target.destination.managedRuntimeRoot,{mode:0o700})
   Object.assign(execution.acceptedSpec,jobSpecDigests(execution.acceptedSpec,execution.acceptedSpec.workflowInput))
   const intent: RemoteJobDispatchIntent = { schemaVersion:1,protocolVersion:1,mainId:execution.acceptedSpec.target.mainId,
@@ -40,13 +46,19 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     if(argv[0]==='wait')return{exitCode:0,stdout:'7'}
     return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:false,Pid:0,ExitCode:7,Status:'exited'}}])}
   },attach:()=>{const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough()});queueMicrotask(()=>{child.stdout.end('build exit7');child.stderr.end();child.emit('close',7)});return child as unknown as ReturnType<PodmanCommandRunner['attach']>} }
-  const supervisor=new PodmanJobSupervisor(profile,runner)
+  // OCI boundary authority is a unit double; this suite proves journal/input sequencing, not physical qualification.
+  const ownership={assertCurrent:vi.fn(),bindContainer:vi.fn(),launchHelpers:vi.fn(),readCertificate:vi.fn(),publish:vi.fn()} as unknown as OCIContainerOwnership
+  vi.spyOn(OwnedOCIContainer.prototype,'entered').mockResolvedValue(undefined as never)
+  vi.spyOn(OwnedOCIContainer.prototype,'close').mockResolvedValue(true)
+  const supervisor=new PodmanJobSupervisor(profile,runner,async()=>ownership)
   const host=new RemoteJobExecutionHost({journal,connection:{kind:'main',mainId:intent.mainId,mainInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},incarnationId:randomUUID(),supervisor,
     source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024})},
     inputs:{prepare:async current=>{
       const spec=current.acceptedSpec,hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex')
       const manifest=Buffer.from(JSON.stringify(JobBuildInputManifestSchema.parse({version:1,inputSnapshotDigest:jobInputSnapshotDigest(current),workflowInput:spec.workflowInput,files:[]}))),workflow=Buffer.from(JSON.stringify(spec.workflowInput))
-      return {version:1,bindingId:'1'.repeat(64),recipient:{workspaceId:current.workspaceId,executionId:current.id,attemptId:wrongInput?'wrong':current.attemptId,operationId:current.operationId,owner:current.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest},inputSnapshotDigest:jobInputSnapshotDigest(current),manifestSha256:hash(manifest),manifestByteSize:manifest.length,directory:{relativePath:'.graphql-job-inputs',device:'1',inode:'2',mountId:'3'},files:[{relativePath:'manifest.json',sha256:hash(manifest),byteSize:manifest.length},{relativePath:'workflow-input.json',sha256:hash(workflow),byteSize:workflow.length}],readonlyMountRequired:true}
+      const inputRoot=join(sourceRoot,JOB_INPUT_DIRECTORY);await mkdir(inputRoot,{mode:0o700});await writeFile(join(inputRoot,'manifest.json'),manifest,{mode:0o444});await writeFile(join(inputRoot,'workflow-input.json'),workflow,{mode:0o444})
+      const inputHandle=await open(inputRoot,constants.O_RDONLY|constants.O_DIRECTORY),inputIdentity=await identity(inputHandle);await inputHandle.close()
+      return {version:1,bindingId:'1'.repeat(64),recipient:{workspaceId:current.workspaceId,executionId:current.id,attemptId:wrongInput?'wrong':current.attemptId,operationId:current.operationId,owner:current.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest},inputSnapshotDigest:jobInputSnapshotDigest(current),manifestSha256:hash(manifest),manifestByteSize:manifest.length,directory:{relativePath:JOB_INPUT_DIRECTORY,...inputIdentity},files:[{relativePath:'manifest.json',sha256:hash(manifest),byteSize:manifest.length},{relativePath:'workflow-input.json',sha256:hash(workflow),byteSize:workflow.length}],readonlyMountRequired:true}
     }},
     authorize:async(_intent,_execution,action)=>{if(denyPublication&&action==='publish')throw new Error('cleanup cannot publish');if(!state.allowed)throw new Error('revoked')},appendLog:async()=>{},observeReceipt:async receipt=>{state.reports.push(`${receipt.phase}:${receipt.publication}`);if(loseCollectionAck&&receipt.publication==='collecting')throw new Error('lost collecting ACK');if(receipt.terminal){if(loseClosureAck)throw new Error('lost process ACK');state.closureAccepted=true}},
     collectOutputs:async()=>{expect(state.closureAccepted).toBe(true);state.collected++} });hosts.push(host)

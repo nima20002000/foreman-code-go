@@ -25,6 +25,16 @@ export class OperatorRuntimeOwner {
     this.client.on('end', () => lost(new Error('The native runtime ownership connection ended.')))
   }
 
+  /** Passive authority for local telemetry; no lock acquisition or owner mutation. */
+  get active(): boolean { return this.held && !this.closing && !this.loss }
+  async readRuntimeEpoch(): Promise<string> {
+    if (!this.active) throw new DomainError('NATIVE_RUNTIME_UNAVAILABLE', 'The original runtime owner is not active.', 503)
+    const row = (await this.client.query<{ epoch: string }>(`select (extract(epoch from backend_start)*1000000)::bigint::text as epoch
+      from pg_stat_activity where pid=pg_backend_pid()`)).rows[0]
+    if (!this.active || !row?.epoch) throw new DomainError('NATIVE_RUNTIME_UNAVAILABLE', 'The original runtime owner epoch is unavailable.', 503)
+    return row.epoch
+  }
+
   acquire(): Promise<void> {
     if (this.closing) return Promise.reject(new Error('Native runtime ownership is closing.'))
     if (this.loss) return Promise.reject(this.loss)

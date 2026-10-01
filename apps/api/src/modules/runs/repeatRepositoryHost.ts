@@ -83,6 +83,12 @@ export class RepeatRepositoryFactory {
     return store
   }
 
+  /** Same actual Run owner and locked hooks for the concrete Job store. */
+  hostForOwner(owner: RunOwnership, version: WorkflowVersionV3): RepeatRepositoryHost {
+    this.forOwner(owner, version)
+    return { openLocked: (sql, scope, record, actualVersion) => this.openLocked(owner, sql, scope, record, actualVersion) }
+  }
+
   /** Consumption never constructs a store or recreates a capability from SQL. */
   consumeLaunchPermit(owner: RunOwnership, executionId: string): boolean {
     owner.assertOwned()

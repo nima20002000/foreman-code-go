@@ -1,4 +1,12 @@
 import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
+import { RemoteJobMainRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
+import { JOB_INPUT_NAMESPACE } from './modules/files/jobInputs/service.js'
+import { PostgresWorkflowJobNodeStore, workflowJobStorePublication } from './modules/jobs/workflowStore.js'
+import { createProductionJobs } from './modules/jobs/production.js'
+import type { OperatorServices } from './mcp/operator/types.js'
+import { registerJobRoutes } from './routes/jobs.js'
+import { registerJobRuntimeProfileRoutes } from './routes/jobRuntimeProfiles.js'
+import { registerSourceRoutes } from './modules/sources/routes.js'
 import { createClaudeProductionDiscovery } from './modules/harnesses/claudeSdk/bootstrap.js'
 import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
 import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
@@ -162,7 +170,23 @@ export function buildProductionApp(
     extensions: [
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
-      ...(infrastructure?.deviceDomains?.extensions ?? []),
+      { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+        handle: async (payload, context) => {
+          if (RemoteJobMainRpcRequestSchema.safeParse(payload).success) {
+            if (!jobRuntime) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual main Job application bridge is unavailable.', 503)
+            return { payload: await jobRuntime.application.handle(payload, context.binding) }
+          }
+          const native = infrastructure?.deviceDomains?.extensions.find(value => value.namespace === 'execution-v1')
+          if (!native?.handle) throw new DomainError('REMOTE_WORKFLOW_RPC_UNAVAILABLE', 'The actual main workflow application bridge is unavailable.', 503)
+          return native.handle(payload, context)
+        } },
+      { namespace: JOB_INPUT_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 8192,
+        handle: async (payload, context) => {
+          const handler = jobRuntime?.inputs.extension.handle
+          if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual Job input authority is unavailable.', 503)
+          return handler(payload, context)
+        } },
+      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE].includes(value.namespace)) ?? []),
     ],
     async reconcile(binding, signal, endpoint) {
       if (endpoint.capabilities(binding.deviceId).some((item) => item.namespace === 'harness-discovery-v1' && item.mainCanRequest)) {
@@ -475,9 +499,15 @@ export function buildProductionApp(
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
   )
+  let jobRuntime: Awaited<ReturnType<typeof createProductionJobs>> | undefined
   const engine = new LangGraphWorkflowEngine(
     runs, workflows, approvals, checkpoints.saver, config.harnesses.workspaceRoot,
-    locations, launchCredentials, repository,
+    locations, launchCredentials, repository, undefined, {}, (owner, version) => {
+      if (!jobRuntime) throw new DomainError('WORKFLOW_JOB_COMPOSITION_REQUIRED', 'The actual Job domain has not initialized.', 503)
+      const bound = jobRuntime.workflow.forOwner(owner, version)
+      return { store: new PostgresWorkflowJobNodeStore(owner, version, runs.repeatRepositoryFactory().hostForOwner(owner, version),
+        bound.locked, workflowJobStorePublication()), driver: bound.driver }
+    },
   )
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
@@ -676,6 +706,8 @@ export function buildProductionApp(
     detection, locations,
     provisioningRoot: projectRoot, harnessProfiles: harnessInstances,
   })
+  const runtimeServices: OperatorServices & { jobs?: import('./modules/jobs/service.js').JobService;
+    jobRuntimeProfiles?: import('./modules/jobs/runtimeProfiles.js').JobRuntimeProfiles } = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
   const app = buildApp({
     runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
@@ -686,7 +718,7 @@ export function buildProductionApp(
     readinessTimeoutMs: config.readinessTimeoutMs,
     harnessCompatibility,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
-    operator: { access, services: { ...operatorServices, extensions: operatorExtensions, harnessSettings } },
+    operator: { access, services: runtimeServices },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
     mcpDetection: { pool: database.pool, service: detection },
     logger,
@@ -731,6 +763,7 @@ export function buildProductionApp(
     ],
     dispose: [
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
+      { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
       { name: 'GraphQL MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Ordinary restart must persist the exact retained Worker/reviewer
@@ -795,6 +828,16 @@ export function buildProductionApp(
       assertOpen()
       const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
+      assertOpen()
+      jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
+        runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
+        ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
+      runtimeServices.sources = jobRuntime.sources
+      runtimeServices.jobs = jobRuntime.jobs
+      runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
+      registerSourceRoutes(app, jobRuntime.sources)
+      registerJobRoutes(app, jobRuntime.jobs)
+      registerJobRuntimeProfileRoutes(app, jobRuntime.profiles)
       assertOpen()
       await harnessRegistry.initialize(machine.installationId)
       assertOpen()

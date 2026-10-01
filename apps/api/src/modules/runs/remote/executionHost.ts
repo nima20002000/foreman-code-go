@@ -30,11 +30,32 @@ export interface RemoteExecutionHostPorts {
 interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void> }
 /** Worker-only authenticated extension handler. No DB, scheduler, HTTP server or production composition. */
 export class RemoteExecutionHost {
+  private closing = false
+  private shutdownTask: Promise<void> | undefined
+  private readonly preparations = new Set<Promise<unknown>>()
+  private readonly allocatedManagers = new Set<NativeHarnessSessionManager>()
   private readonly launchControllers = new Map<string, AbortController>()
   private readonly bindings = new Map<string, { intent: DispatchIntent; placement: AcceptedNodePlacement }>()
   private readonly residents = new Map<string, Resident>()
   constructor(private readonly ports: RemoteExecutionHostPorts) {}
+  shutdown(): Promise<void> {
+    return this.shutdownTask ??= this.shutdownOwned()
+  }
+  private async shutdownOwned(): Promise<void> {
+    this.closing = true
+    for (const controller of this.launchControllers.values()) controller.abort(new Error('Worker execution host is shutting down.'))
+    await Promise.allSettled([...this.preparations])
+    const active = [...this.residents.values()]
+    for (const owned of active) owned.controller.abort(new Error('Worker execution host is shutting down.'))
+    await Promise.allSettled(active.flatMap(owned => owned.turn ? [owned.turn] : []))
+    const managers = new Set([...this.allocatedManagers, ...active.map(owned => owned.manager)])
+    await Promise.all([...managers].map(async manager => {
+      if (!manager.dispose) throw new Error('An actual worker native manager has no disposal contract.')
+      await manager.dispose()
+    }))
+  }
   async handle(raw: unknown) {
+    if (this.closing) throw new Error('Worker execution host is shutting down.')
     const frame = RemoteExecutionRpcRequestSchema.parse(raw)
     const placement = readPlacement(frame.placement)
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
@@ -63,6 +84,7 @@ export class RemoteExecutionHost {
     return this.read(frame.intent.operationId, frame.method)
   }
   async inspect(raw: { intent: unknown; placement: unknown; configuration: unknown }, method: 'capabilities' | 'inspectMcp') {
+    if (this.closing) throw new Error('Worker execution host is shutting down.')
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), configuration = AgentConfigurationVersionSchema.parse(raw.configuration)
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId || placement.mainId !== this.ports.connection.mainId
       || intent.bindingHash !== placement.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentId !== configuration.agentId
@@ -70,9 +92,18 @@ export class RemoteExecutionHost {
     await this.ports.authorize(intent, placement, 'read')
     const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: configuration.agentId,
       harness: configuration.harness.harness, configuration, workingDirectory: placement.destination.canonicalCwd })
+    if (this.closing) throw new Error('Worker execution host is shutting down.')
+    this.allocatedManagers.add(resolved.manager)
     return resolved.manager[method]()
   }
-  async prepare(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
+  prepare(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
+    if (this.closing) return Promise.reject(new Error('Worker execution host is shutting down.'))
+    const task = this.prepareOwned(raw)
+    this.preparations.add(task)
+    void task.then(() => this.preparations.delete(task), () => this.preparations.delete(task))
+    return task
+  }
+  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
       || placement.mainId !== this.ports.connection.mainId || placement.bindingHash !== intent.bindingHash
@@ -90,6 +121,7 @@ export class RemoteExecutionHost {
     if (existing) return { session: existing.session, status: await this.ports.journal.status(intent.operationId) }
     const reservation = await this.ports.journal.reserveEntry(intent.operationId)
     if (!reservation.reserved) throw new Error('Original native execution requires reconciliation')
+    if (this.closing) throw new Error('Worker execution host is shutting down.')
     const controller = new AbortController()
     this.launchControllers.set(intent.operationId, controller)
     try {
@@ -104,6 +136,8 @@ export class RemoteExecutionHost {
       if (before.status !== 'known' || before.receipt.stopFence) throw new Error('Remote launch stopped before native submission')
       const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: request.configuration.agentId,
         harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
+      controller.signal.throwIfAborted()
+      this.allocatedManagers.add(resolved.manager)
       resolved.beginStart?.()
       const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`, ...(environment ? { environment } : {}) }, controller.signal)
       resolved.markResident?.()
@@ -115,6 +149,7 @@ export class RemoteExecutionHost {
       if (receipt.stopFence) await resident.manager.cancel(session)
       return { session, status: await this.ports.journal.status(intent.operationId) }
     } catch (error) { await this.ports.journal.uncertain(intent.operationId, 'Native session preparation acknowledgment unavailable'); throw error }
+    finally { this.launchControllers.delete(intent.operationId) }
   }
   async recover(raw: { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; session: NativeSessionReference; evidenceDigest: string }) {
     const status = await this.ports.journal.status(raw.intent.operationId)

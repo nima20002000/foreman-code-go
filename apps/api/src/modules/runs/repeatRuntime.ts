@@ -48,6 +48,7 @@ export function repeatExecutionDriver(input: {
       input.owner.assertOwned()
       const node = input.version.definition.nodes.find((item) => item.id === ref.nodeId)
       if (!node) return repeatConflict('WORKFLOW_NODE_NOT_FOUND')
+      if (node.kind === 'job') return repeatConflict('WORKFLOW_NODE_KIND_CONFLICT')
       const execution = HarnessExecutionSchema.parse({ id: `execution-${randomUUID()}`, runId: input.scope.runId,
         workflowNodeId: ref.nodeId, agentId: node.agentId,
         agentConfigurationVersionId: input.version.agentConfigurationVersionIds[node.agentId],
@@ -190,7 +191,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
       const configuration = await context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId)
       check()
-      if (!node || !configuration || configuration.id !== context.version.agentConfigurationVersionIds[node.agentId]
+      if (!node || node.kind === 'job' || !configuration || configuration.id !== context.version.agentConfigurationVersionIds[node.agentId]
         || configuration.agentId !== node.agentId || configuration.workspaceId !== run.workspaceId) {
         throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'Native work requires the immutable occurrence configuration.', 409)
       }
@@ -311,6 +312,7 @@ export interface RepeatRuntimeLifecycle {
  * guarded graph edges. The shared engine owns Run ownership/admission,
  * authenticated graph-resume claims and choosing this semantics-3 entry point. */
 export async function executeRepeatRuntime(input: {
+  jobs?: { store: import('../jobs/workflowNode.js').WorkflowJobNodeStore; driver: import('../jobs/workflowRuntimePorts.js').WorkflowJobDriver }
   runId: string; version: WorkflowVersionV3
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'

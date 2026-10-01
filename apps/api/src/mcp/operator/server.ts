@@ -1,3 +1,5 @@
+import { registerJobTools } from './tools/jobs.js'
+import { registerJobRuntimeTools } from './tools/jobRuntimeProfiles.js'
 import { registerDeviceOperatorTools } from './tools/devices.js'
 import { registerOperatorControlTools } from './tools/operatorControls.js'
 import { registerSourceTools } from '../../modules/sources/mcp.js'
@@ -30,6 +32,8 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
 
 export function registerOperatorTools(server: McpServer, context: OperatorRequestContext): void {
   registerSourceTools(server, context)
+  registerJobTools(server, context)
+  registerJobRuntimeTools(server, context)
   registerDeviceOperatorTools(server, context)
   registerOperatorControlTools(server, context)
   registerFileReferenceTools(server, context)

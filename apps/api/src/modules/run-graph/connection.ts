@@ -7,7 +7,7 @@ export interface GraphSqlClient {
 }
 export interface GraphTransactionSql extends GraphSqlClient { readonly transaction: true }
 const adoptedClients = new WeakSet<pg.ClientBase>()
-const leases = new WeakMap<GraphTransactionSql, { live: boolean; failed: boolean; committed: boolean; finalizers: (() => Promise<void>)[] }>()
+const leases = new WeakMap<GraphSqlClient, { live: boolean; failed: boolean; committed: boolean; finalizers: (() => Promise<void>)[] }>()
 export function didGraphTransactionCommit(sql: GraphTransactionSql): boolean {
   return leases.get(sql)?.committed === true
 }
@@ -25,7 +25,7 @@ export function beforeGraphCommit(sql: GraphTransactionSql, finalize: () => Prom
 const context = new AsyncLocalStorage<ExclusiveGraphConnection>()
 
 /** Runtime check as well as a TypeScript port: a plain Pool/Client cannot impersonate a transaction. */
-export function assertGraphTransaction(sql: GraphTransactionSql): void {
+export function assertGraphTransaction(sql: GraphSqlClient): asserts sql is GraphTransactionSql {
   const state = leases.get(sql)
   if (!state?.live) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
   if (state.failed) throw new RunGraphError('GRAPH_TRANSACTION_FAILED')

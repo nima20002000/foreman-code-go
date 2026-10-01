@@ -40,6 +40,11 @@ export class RemoteJobExecutionHost {
         || connection.keyRevision !== target.registration.keyRevision || connection.authorizationRevision !== target.registration.authorizationRevision) throw new Error('Job worker registration mismatch')
     } else if (!('kind' in connection) || connection.kind !== 'main' || connection.mainInstallationId !== target.mainInstallationId) throw new Error('Job main installation mismatch')
   }
+  async shutdown(): Promise<void> {
+    const active = [...this.tasks.values()]
+    for (const owned of active) owned.controller.abort(new Error('Worker job host is shutting down.'))
+    await Promise.all(active.map(owned => owned.task))
+  }
   async handle(raw: unknown) {
     const frame = RemoteJobExecutionRpcRequestSchema.parse(raw)
     if (frame.method === 'job-dispatch') return this.deliver(frame.intent, frame.execution)

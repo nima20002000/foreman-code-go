@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, CODEX_APPROVAL_OPTIONS_FIXTURE, type AgentConfigurationVersion } from '@graphql/contracts'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
@@ -36,6 +36,27 @@ async function setup(expectedToken?: string) {
   return { host, manager, session, journal, intent, placement, request, state }
 }
 describe('actual worker native-port adapter', () => {
+  it('joins a pending native allocation and disposes its actual manager before shutdown returns', async () => {
+    const { host, manager, session, intent, placement, request, state } = await setup()
+    let enter!: () => void, release!: () => void
+    const entered = new Promise<void>(resolve => { enter = resolve }), released = new Promise<void>(resolve => { release = resolve })
+    manager.createSession = async (_input, signal) => { enter(); await released; signal?.throwIfAborted(); state.starts++; return session }
+    manager.dispose = vi.fn(async () => {})
+    const pending = host.prepare({ intent, placement, request })
+    await entered
+    let closed = false
+    const closing = host.shutdown().then(() => { closed = true })
+    await Promise.resolve()
+    expect(closed).toBe(false)
+    release()
+    await expect(pending).rejects.toThrow()
+    await closing
+    await host.shutdown()
+    expect(manager.dispose).toHaveBeenCalledTimes(1)
+    expect(state.starts).toBe(0)
+    await expect(host.prepare({ intent, placement, request })).rejects.toThrow('shutting down')
+  })
+
   it('uses the native manager once across duplicated delivery and turn requests', async () => { const { host, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); await host.prepare({ intent, placement, request }); expect(state.starts).toBe(1); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); await host.startTurn('operation', 'accepted prompt', 'execution:execution'); expect(state.turns).toBe(1); await host.drain() })
   it('routes the main native port through the shared bound RPC and observes requested cancellation', async () => {
     const { host, intent, placement, request, state } = await setup()

@@ -1,3 +1,4 @@
+import { createWorkerExecutionDomains } from '../../../apps/api/src/modules/runs/remote/workerComposition.ts';
 import { mkdir, readFile } from 'node:fs/promises';
 import { loadOrCreateWorkerIdentity, loadWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { createWorkerConnection } from '../../../apps/api/src/modules/devices/workerConnection.ts';
@@ -7,7 +8,7 @@ import { startWorker } from './runtime.mjs';
 import { approvedRootExtensions } from './rootExtension.mjs';
 
 export { createWorkerConnection };
-export { approvedRootExtensions };
+export { approvedRootExtensions, createWorkerExecutionDomains };
 // Read-only qualification helper for the explicit human installation gate only.
 // Startup consumes and verifies the approved facts; it never calls this helper.
 export { qualifyApprovedRootAllowlist } from '../../../apps/api/src/modules/sources/rootAttestation.ts';
@@ -24,11 +25,13 @@ export async function prepareWorkerState(stateDirectory) {
 
 // Only supplied, actual domain registrations enter the authenticated transport.
 // The package never manufactures dispatch handlers or another workflow authority.
-export async function startConfiguredWorker({ stateDirectory, extensions = [] }) {
+export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains }) {
   const manifest = await prepareWorkerState(stateDirectory);
-  return startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, createConnection: async ({ bootId }) => {
+  const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
+  const runtime = await startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, createConnection: async ({ bootId }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
     const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
-    return createWorkerConnection({ pairing, bootId, appVersion: manifest.version, extensions: [...extensions, ...rootExtensions] });
+    return createWorkerConnection({ pairing, bootId, appVersion: manifest.version, extensions: [...extensions, ...(execution?.extensions ?? []), ...rootExtensions] });
   } });
+  return { ...runtime, async stop() { await execution?.close(); await runtime.stop(); } };
 }

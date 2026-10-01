@@ -1,7 +1,7 @@
 import { createServer, createConnection as connect } from 'node:net';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { realpath } from 'node:fs/promises';
+import { realpath, readFile } from 'node:fs/promises';
 import { WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
 
 function socketName(stateDirectory) {
@@ -37,12 +37,13 @@ export async function acquireWorkerLock(stateDirectory, status = () => ({ active
 
 // This composition has no control-plane imports. Identity and connection implementations
 // are explicitly injected from W07-A/B; execution admission is a later W08 port.
-export async function startWorker({ stateDirectory, loadIdentity, createConnection, shutdownMs = 10_000 }) {
+export async function startWorker({ stateDirectory, loadIdentity, createConnection, shutdownMs = 10_000, readBootId = async () => (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }) {
   let connection;
   const unlock = await acquireWorkerLock(stateDirectory, () => ({ active: true, phase: connection?.status?.().phase ?? 'connecting', failure: connection?.status?.().failure ?? null }));
   try {
     const identity = await loadIdentity(stateDirectory);
-    const bootId = randomUUID();
+    const bootId = await readBootId();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bootId)) throw new WorkerError('boot_identity_unavailable');
     connection = await createConnection({ identity, bootId, capabilities: { dispatch: false, transfer: false } });
     await connection.start();
     let stopping;

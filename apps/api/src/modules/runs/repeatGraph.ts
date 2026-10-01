@@ -1,3 +1,5 @@
+import { workflowJobNodeAction, type WorkflowJobNodeStore } from '../jobs/workflowNode.js'
+import type { WorkflowJobDriver } from '../jobs/workflowRuntimePorts.js'
 import { Annotation, END, START, StateGraph, type Command } from '@langchain/langgraph'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import { WorkflowVersionV3Schema, type RepeatOccurrenceV1, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
@@ -38,13 +40,15 @@ export type RepeatGraphStore = RepeatNodeStore & Pick<RepeatRunRepository, 'ente
 export function buildRepeatGraph(input: {
   runId: string; version: WorkflowVersionV3; store: RepeatGraphStore; driver: RepeatExecutionDriver
   checkpointer: BaseCheckpointSaver; signal: AbortSignal; configuredParallelism?: number; maximumWaiting?: number
+  jobs?: { store: WorkflowJobNodeStore; driver: WorkflowJobDriver }
   track?: (task: Promise<Partial<RepeatGraphState>>) => void
 }) {
   const version = WorkflowVersionV3Schema.parse(input.version), layout = compileRepeatLayout(version)
   const configured = input.configuredParallelism ?? 4
   if (!Number.isSafeInteger(configured) || configured < 1) return repeatConflict('INVALID_RUNNER_PARALLELISM')
-  const action = repeatNodeAction({ ...input, limiter: new ExecutionLimiter(
-    Math.min(configured, version.definition.executionPolicy!.maxParallelism), input.maximumWaiting ?? 1000) })
+  const limiter = new ExecutionLimiter(Math.min(configured, version.definition.executionPolicy!.maxParallelism), input.maximumWaiting ?? 1000)
+  const action = repeatNodeAction({ ...input, limiter })
+  const jobAction = input.jobs && workflowJobNodeAction({ runId: input.runId, store: input.jobs.store, driver: input.jobs.driver, limiter, signal: input.signal })
   const current = async (blockId: string, state: RepeatGraphState): Promise<RepeatOccurrenceV1> => {
     const id = state.occurrences[blockId]
     if (!id) return repeatConflict('REPEAT_CHECKPOINT_OCCURRENCE_MISSING')
@@ -73,6 +77,10 @@ export function buildRepeatGraph(input: {
           : { boundaries: { [node.blockId!]: 'done' } }
       }
       const occurrence = node.kind === 'body' ? (await current(node.blockId!, state)).identity : null
+      if (version.definition.nodes.find(value => value.id === node.nodeId)?.kind === 'job') {
+        if (!jobAction) return repeatConflict('WORKFLOW_JOB_COMPOSITION_REQUIRED')
+        return jobAction({ nodeId: node.nodeId, occurrence }, state)
+      }
       return action({ nodeId: node.nodeId, occurrence }, state)
     })()
     input.track?.(task)
