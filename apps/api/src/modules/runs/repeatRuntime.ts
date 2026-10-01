@@ -348,8 +348,15 @@ export async function executeRepeatRuntime(input: {
         tasks.delete(task)
         if (!(input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') && definitive(error)) {
           firstFailure ??= error
-          failed.abort(error)
-          void cancel().catch(() => undefined)
+          const cleanup = input.lifecycle.requestCleanup().then(() => {
+            failed.abort(error)
+            return cancel()
+          })
+          tasks.add(cleanup)
+          void cleanup.then(() => { tasks.delete(cleanup) }, (cleanupError: unknown) => {
+            tasks.delete(cleanup)
+            firstFailure ??= cleanupError
+          })
         }
       })
     }
@@ -435,6 +442,7 @@ export async function executeRepeatRuntime(input: {
     if (input.signal.aborted && input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') {
       // The owning engine closes the original native sessions before releasing
       // ownership. Restart is not a synthetic Stop or terminal business result.
+      await input.lifecycle.requestCleanup()
       failed.abort(error)
       await drain()
       throw error
@@ -450,6 +458,7 @@ export async function executeRepeatRuntime(input: {
       // The owning engine may retry the same checkpoint, never initial state.
       throw error
     }
+    await input.lifecycle.requestCleanup()
     failed.abort(error)
     const closing = cancel()
     let drained = false
