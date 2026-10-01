@@ -15,7 +15,7 @@ const stateDirectory = args.length === 3 && args[1] === '--state' && isAbsolute(
 let runtime;
 async function main() {
   if (!stateDirectory || !['run', 'doctor'].includes(command)) throw new WorkerError('usage: graphql-worker run|doctor --state /absolute/private/directory');
-  const facts = await hostFacts(process.env.HOME ?? '');
+  const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
   if (command === 'doctor') {
     let identity; const errors = [];
     try {
@@ -39,7 +39,7 @@ async function main() {
     console.log(JSON.stringify(doctorReport({ facts, identity, service, connection, executables: executableAvailability(process.env.PATH ?? ''), errors })));
     return;
   }
-  if (!facts.rootPersistent || !facts.homePersistent) throw new WorkerError('nonpersistent_storage');
+  if (!facts.rootPersistent || !facts.homePersistent || !facts.storagePersistent) throw new WorkerError('nonpersistent_storage');
   const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
   validateManifest(manifest, facts, { protocolVersion: 1, identityFormat: 1 });
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });

@@ -26,7 +26,7 @@ async function main() {
     const unlock = await acquireWorkerLock(state); await unlock(); return true;
   };
   if (command === 'install') {
-    const result = await installVersion({ root, artifact: options['--artifact'], approvedManifestSha256: options['--manifest-sha256'], facts: await hostFacts(process.env.HOME ?? ''), expected: { protocolVersion: 1, identityFormat: 1 }, updatePolicy: approveStop });
+    const result = await installVersion({ root, artifact: options['--artifact'], approvedManifestSha256: options['--manifest-sha256'], facts: await hostFacts(process.env.HOME ?? '', [root, state]), expected: { protocolVersion: 1, identityFormat: 1 }, updatePolicy: approveStop });
     console.log(JSON.stringify(result));
   } else if (command === 'rollback') await rollbackVersion({ root, approveStop });
   else throw new WorkerError('installer_command_invalid');

@@ -17,11 +17,12 @@ export function persistentFilesystems(mountInfo, home) {
   return { rootPersistent: !!selected('/') && !ephemeral.has(selected('/').type), homePersistent: !!selected(home) && !ephemeral.has(selected(home).type) };
 }
 
-export async function hostFacts(home) {
+export async function hostFacts(home, storagePaths = []) {
   const os = await readFile('/etc/os-release', 'utf8');
   const values = Object.fromEntries(os.split('\n').filter((line) => /^[A-Z_]+=/.test(line)).map((line) => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1).replace(/^"|"$/g, '')]; }));
   const libc = process.report.getReport().header.glibcVersionRuntime;
-  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: libc ? `glibc-${libc}` : 'unknown', node: process.version, ...persistentFilesystems(await readFile('/proc/self/mountinfo', 'utf8'), resolve(home)) };
+  const mounts = await readFile('/proc/self/mountinfo', 'utf8');
+  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: libc ? `glibc-${libc}` : 'unknown', node: process.version, ...persistentFilesystems(mounts, resolve(home)), storagePersistent: storagePaths.every((path) => persistentFilesystems(mounts, resolve(path)).homePersistent) };
 }
 
 export async function requirePrivateDirectory(path) {
@@ -37,7 +38,7 @@ export function executableAvailability(path) {
 export function doctorReport({ facts, identity, connection, service, executables, errors = [] }) {
   return {
     versions: { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node },
-    persistentRoot: facts.rootPersistent, persistentHome: facts.homePersistent,
+    persistentRoot: facts.rootPersistent, persistentHome: facts.homePersistent, persistentState: facts.storagePersistent ?? null,
     executables: Object.fromEntries(['node', 'git', 'codex', 'opencode', 'systemctl'].map((key) => [key, executables[key] === true])),
     service: { active: service.active === true, userManagerAvailable: service.userManagerAvailable === true },
     identity: { installationId: identity?.workerInstallationId ?? null, selectedMainId: identity?.mainId ?? null, selectedMainFingerprint: identity?.mainPublicKeyFingerprint ?? null },
