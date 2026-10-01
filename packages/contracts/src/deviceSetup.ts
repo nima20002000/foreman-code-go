@@ -1,0 +1,14 @@
+import { z } from 'zod'
+import { WorkerEnrollmentInputSchema } from './deviceIdentity.js'
+export const DEVICE_SETUP_CODE_MAX=8192
+export const WorkerIdentityRequestSchema=z.object({version:z.literal(1),kind:z.literal('identity-request'),workerInstallationId:z.uuid(),publicKey:z.string().min(1).max(1024),publicKeyFingerprint:z.string().regex(/^[a-f0-9]{64}$/)}).strict()
+export const WorkerEnrollmentCodeSchema=z.object({version:z.literal(1),kind:z.literal('enrollment'),workerInstallationId:z.uuid(),publicKeyFingerprint:z.string().regex(/^[a-f0-9]{64}$/),enrollment:WorkerEnrollmentInputSchema.refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved WSS device endpoint.'),expiresAt:z.string().datetime()}).strict()
+export type WorkerIdentityRequest=z.infer<typeof WorkerIdentityRequestSchema>
+export type WorkerEnrollmentCode=z.infer<typeof WorkerEnrollmentCodeSchema>
+function encode(prefix:string,value:unknown):string {const bytes=new TextEncoder().encode(JSON.stringify(value));let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const code=prefix+btoa(binary).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');if(code.length>DEVICE_SETUP_CODE_MAX)throw new Error('DEVICE_SETUP_CODE_INVALID');return code}
+function decode(prefix:string,raw:string):unknown {try{const code=raw.trim();if(code.length>DEVICE_SETUP_CODE_MAX||!code.startsWith(prefix))throw new Error();const value=code.slice(prefix.length);if(!/^[A-Za-z0-9_-]+$/.test(value)||value.length%4===1)throw new Error();const binary=atob(value.replaceAll('-','+').replaceAll('_','/')+'='.repeat((4-value.length%4)%4));const json=new TextDecoder('utf-8',{fatal:true}).decode(Uint8Array.from(binary,char=>char.charCodeAt(0)));const parsed:unknown=JSON.parse(json);if(encode(prefix,parsed)!==code)throw new Error();return parsed}catch{throw new Error('DEVICE_SETUP_CODE_INVALID')}}
+export function encodeWorkerIdentityRequest(value:WorkerIdentityRequest):string {return encode('GQLWR1.',WorkerIdentityRequestSchema.parse(value))}
+export function decodeWorkerIdentityRequest(code:string):WorkerIdentityRequest {return WorkerIdentityRequestSchema.parse(decode('GQLWR1.',code))}
+/** Private credential envelope. Never place this code in URLs, argv or logs. */
+export function encodeWorkerEnrollmentCode(value:WorkerEnrollmentCode):string {return encode('GQLWE1.',WorkerEnrollmentCodeSchema.parse(value))}
+export function decodeWorkerEnrollmentCode(code:string):WorkerEnrollmentCode {return WorkerEnrollmentCodeSchema.parse(decode('GQLWE1.',code))}
