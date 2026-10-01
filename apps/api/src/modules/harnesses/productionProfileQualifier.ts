@@ -8,6 +8,7 @@ import { harnessHostKey } from './instanceSettings/repository.js'
 import type { ProductionHarnessRegistry } from './productionRegistry.js'
 import type { NativeHarnessFactories } from './runtimeFactory.js'
 import { harnessProfile } from './qualification/profiles.js'
+import { qualificationError } from './qualificationErrors.js'
 
 /** Explicit profile checks enter through real role-isolated adapters. A saved
  * config, filesystem inventory, worker heartbeat or fixture never grants trust. */
@@ -52,9 +53,10 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       ownerAgentId: `profile-check:${input.checkId}`, appMcpAccess: 'none',
       ...(configuration.harness === 'opencode' && configuration.advanced ? { advancedConfiguration: configuration.advanced } : {}),
     })
-    let authenticated = false
-    let compatible = false
+    let authenticated: boolean | null = null
+    let compatible: boolean | null = null
     let qualified = false
+    let failure: { code: string; message: string } | undefined
     try {
       this.factories.admitAuxiliary(allocation.manager)
       await this.factories.assertInstallationUnchanged(binding, input.signal)
@@ -74,7 +76,10 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       const code = error instanceof DomainError ? error.code
         : typeof error === 'object' && error && 'result' in error ? (error as { result?: { error?: { code?: string } } }).result?.error?.code : undefined
       if (!code || !/^(?:CODEX_(?:SETTING|MODEL|MCP|REQUIRED_MCP|APP_SERVER_AUTH)|OPENCODE_(?:SETTING|MODEL|PROVIDER|AGENT|VARIANT|MCP|SERVER_VERSION))/.test(code)) throw error
-      // A current explicit negative check replaces earlier positive readback.
+      const sanitized = qualificationError(error)
+      failure = { code: sanitized.code, message: sanitized.message }
+      qualified = false
+      // Unknown stages remain unknown; this negative result replaces earlier trust.
     } finally { await this.factories.disposeAuxiliary(allocation.manager) }
     input.signal.throwIfAborted()
     this.registry.installations.assertCurrent(binding)
@@ -82,7 +87,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       configurationFingerprint: value.configurationFingerprint, driverId: value.driverId,
       driverRevision: binding.installation.driverRevision, protocolRevision: binding.installation.protocolRevision,
       suiteRevision: `${value.driverId}-profile-check-v1`, environmentGeneration: binding.installation.environmentGeneration,
-      connectionGeneration: binding.installation.connectionGeneration, authenticated, compatible, qualified,
+      connectionGeneration: binding.installation.connectionGeneration, authenticated, compatible, qualified, ...(failure ? { failure } : {}),
       checkedAt: new Date().toISOString() })
   }
 }
