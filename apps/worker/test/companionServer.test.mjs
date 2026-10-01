@@ -79,3 +79,12 @@ test('GUI sessions expire and separate launches get different credentials', asyn
   await assert.rejects(fetch(first.gui.origin));
   assert.equal((await second.post('/api/status')).status, 200);
 });
+
+test('read-only preview cannot create identity, pair or change a service', async (t) => {
+  const f = await fixture(t, { readOnly: true });
+  for (const path of ['/api/identity-request', '/api/pair', '/api/service-enable']) assert.equal((await f.post(path, { enrollmentCode: 'GQLWE1.test', confirm: true, planSha256: 'a'.repeat(64) })).status, 403);
+  assert.deepEqual(f.calls, []);
+  const status = await (await f.post('/api/status')).json();
+  assert.equal(status.readOnly, true);
+  assert.equal(status.compatibility.supported, false);
+});

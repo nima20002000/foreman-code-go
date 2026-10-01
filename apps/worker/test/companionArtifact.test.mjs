@@ -26,6 +26,9 @@ test('packaged GUI serves the actual CSP page and invokes real read-only doctor 
   assert.equal(status.versions.commit, manifest.commit);
   assert.equal(status.pairing, 'unpaired');
   assert.equal(status.service.active, false);
+  assert.deepEqual(status.compatibility.required, manifest.target);
+  assert.deepEqual(status.compatibility.actual, Object.fromEntries(['os', 'osRelease', 'arch', 'libc', 'node'].map((key) => [key, status.versions[key]])));
+  assert.equal(status.compatibility.supported, status.compatibility.mismatches.length === 0);
   assert.equal((await post('/api/service-enable', { confirm: true, planSha256: 'a'.repeat(64) })).status, 400);
   // This deliberately unqualified tmpfs state cannot initialize a durable identity.
   assert.equal((await post('/api/identity-request')).status, 400);

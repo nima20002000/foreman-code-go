@@ -55,9 +55,19 @@ async function jsonBody(request) {
 
 // Pairing never starts a service. Its separately confirmed enable action can
 // install only this user's reviewed unit; GUI close never stops the worker.
-export async function createCompanionServer({ stateDirectory, htmlFile = new URL('../artifacts/companion.html', import.meta.url), runCli = (command, input) => cliCommand(stateDirectory, command, input), serviceController = createCompanionService({ home: process.env.HOME ?? '', stateDirectory }), lifetimeMs = 30 * 60_000 }) {
+export async function createCompanionServer({ stateDirectory, htmlFile = new URL('../artifacts/companion.html', import.meta.url), runCli = (command, input) => cliCommand(stateDirectory, command, input), serviceController = createCompanionService({ home: process.env.HOME ?? '', stateDirectory }), lifetimeMs = 30 * 60_000, readOnly = false }) {
   await requirePrivateDirectory(stateDirectory);
   const html = await readFile(htmlFile, 'utf8');
+  let requiredTarget;
+  try { requiredTarget = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8')).target; }
+  catch { /* Source fixtures have no installed artifact; never infer compatibility. */ }
+  const compatibility = (report) => {
+    const keys = ['os', 'osRelease', 'arch', 'libc', 'node'];
+    const project = (value) => Object.fromEntries(keys.map((key) => [key, typeof value?.[key] === 'string' ? value[key] : null]));
+    const required = project(requiredTarget), actual = project(report.versions);
+    const mismatches = keys.filter((key) => !required[key] || actual[key] !== required[key]);
+    return { supported: mismatches.length === 0, required, actual, mismatches };
+  };
   const session = randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + lifetimeMs;
   let origin, host, pairing = false, closed = false, timer;
@@ -84,7 +94,11 @@ export async function createCompanionServer({ stateDirectory, htmlFile = new URL
       const body = await jsonBody(request);
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new WorkerError('request_invalid');
       if (request.url === '/api/close') { respond(response, 200, { closed: true }); setImmediate(close); return; }
-      if (request.url === '/api/status') { respond(response, 200, { ...JSON.parse(await runCli('doctor')), sessionExpiresAt: new Date(expiresAt).toISOString(), serviceControl: 'explicit-confirmation' }); return; }
+      if (request.url === '/api/status') {
+        const report = JSON.parse(await runCli('doctor'));
+        respond(response, 200, { ...report, compatibility: compatibility(report), readOnly, sessionExpiresAt: new Date(expiresAt).toISOString(), serviceControl: 'explicit-confirmation' }); return;
+      }
+      if (readOnly) { respond(response, 403, { error: 'preview_read_only' }); return; }
       if (request.url === '/api/service-plan') { respond(response, 200, await serviceController.plan()); return; }
       if (request.url === '/api/service-enable') {
         if (body.confirm !== true || !/^[a-f0-9]{64}$/.test(body.planSha256 ?? '')) throw new WorkerError('service_confirmation_required');
