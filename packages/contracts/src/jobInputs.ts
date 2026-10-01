@@ -32,3 +32,8 @@ export type JobInputDeliveryReceipt=z.infer<typeof JobInputDeliveryReceiptSchema
 export const JobBuildInputManifestSchema=z.object({version:z.literal(1),inputSnapshotDigest:FileSha256Schema,workflowInput:RunInputSchema.nullable(),
   files:z.array(z.object({relativePath:Relative,...JobInputRevisionSchema.omit({path:true}).shape}).strict()).max(256)}).strict()
 export type JobBuildInputManifest=z.infer<typeof JobBuildInputManifestSchema>
+export const JobInputDeviceRequestSchema=z.discriminatedUnion('method',[
+ z.object({method:z.literal('bind'),recipient:JobInputRecipientSchema}).strict(),
+ z.object({method:z.literal('authorize'),executionId:z.string().min(1),transferId:z.uuid()}).strict(),
+ z.object({method:z.literal('range'),executionId:z.string().min(1),transferId:z.uuid(),offset:z.number().int().nonnegative(),length:z.number().int().min(1).max(8192)}).strict(),
+])
