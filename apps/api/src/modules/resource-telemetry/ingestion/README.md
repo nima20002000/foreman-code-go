@@ -1,5 +1,67 @@
 # W11-B owner handoff (NIM-2855)
 
+## 2026-10-01 resumed W11-B authority checkpoint
+
+Lane-owned Main authority consumes `metrics:report` from the actual live W07 device
+registration. `connect`/`heartbeat` alone, a negotiated capability alone, a stale key,
+expired credential, removed reporting scope or authorization revision mismatch cannot
+report or read retained remote samples. Whole-computer readback separately requires
+`devices:metrics:read`; `devices:read` and scoped Run/chat/job grants do not imply it.
+Shared permission schemas/catalog discovery belong to the integration owner. Neither
+this change nor those schema additions grant existing registrations or credentials
+live permission. There is no new telemetry endpoint or worker database access.
+
+Accepted workflow attribution joins the original captured writer/session with the
+exact accepted SQL harness execution, accepted Run v3 configuration pin, persisted
+original native session, immutable placement/dispatch and current owner epoch. The
+lane must correlate to `execution:<executionId>` and its captured connection generation.
+Immutable execution input, directory, configuration and occurrence-related identities
+must match; changed session/provider reference, expired lease or retired captured
+lifetime is unavailable. Mutable completion changes only lifecycle, never saved facts.
+
+HRT composition supplies `PassiveTelemetryAuthorityInput.getRemoteNativeOwners?()` in
+`apps/api/src/modules/resource-telemetry/productionAuthority.ts`. Each original capture
+is a `CapturedRemoteTelemetryNativeOwner`: `execution`, `session`, `writer` with
+`id/token/connectionGeneration`, actual `nativeOwner`, exact authenticated `binding`,
+original `native: RemoteNativeIdentity`, and `assertCurrent()`. This is a trusted
+in-process getter from the original lifetime owner, never a deserialized metric row.
+Main validates its remote receipt/native digest and native turn, accepted placement
+registration revisions and actual W07 host/install/boot/connection. SQL is read only
+on Main. The Main-local `nativeScopes()` filters remote hosts; it never attributes a
+laptop sample or its processes to the Main collector. A's `scopeProjection.ts` owns
+worker-side trusted projections and must receive original accepted/session facts
+through HRT's read-only producers, without worker SQL.
+
+Reported shared values whose genuine co-owners cannot be enumerated return opaque
+`shared-restricted` without lastKnown. Remote workflow projection marks co-owner
+completeness false pending that producer, even if other workflow captures are known.
+Conversation/CI roles stay unavailable where original role lease/OCI producers are
+absent; no workflow grant, selected Run, agent ID or name synthesizes another role.
+
+**Activation gate:** integration must land `metrics:report` and `devices:metrics:read`
+shared contracts and HTTP/MCP discovery, wire HRT original remote capture getters and
+A's worker projection, then exercise live revocation races/persisted readback through
+the authenticated production MCP endpoint. A human-approved explicit W07 reporting
+authorization and separate reader grant are still required before real remote metrics
+can qualify. This lane does not alter live registration scopes or credentials. DB,
+browser, OS counter comparison, reboot and PC/laptop acceptance remain unrun here.
+
+Focused non-DB proof for this continuation: pinned API `tsc --noEmit`, owned ESLint
+and `git diff --check`; carrier/service/authenticated HTTP-MCP adapter suite 52 cases
+passed after correcting a fixture that accidentally reused the terminal owner's
+cgroup for a separately live owner. Repository heavy-job scheduling requires host
+PID visibility: the ordinary reviewed harness escalation was used with its unchanged
+scheduler; no queue bypass, peer termination or scheduler modifications occurred.
+The authorized integration-owned permission producer is
+`ab8c0ee1491d43ee80f2682233632015e29bf017` (local cherry-pick `793839c6`), consumed
+without modifying its files. The schema-enabled API suite passed 95 cases in six
+files: production authority, ingestion, carrier, authenticated HTTP/MCP adapters,
+selectors and separate metrics permission contracts. Shared leaf/schema checks passed
+7 cases across resourceTelemetry.test.ts and deviceMetricsScopes.test.ts. The original dispatch connection
+and an unrevoked owner grant are read under SQL share locks; reconnect cannot revive
+an owner whose existing grant was revoked. All checks remain non-DB tests with
+controlled SQL/session/clock producers, not production or physical acceptance.
+
 ## 2026-10-01 authenticated carrier continuation
 
 `carrier.ts` exports `mainResourceTelemetryExtension` (Main client),

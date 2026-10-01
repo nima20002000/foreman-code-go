@@ -3,10 +3,12 @@ import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
+import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
 import type { HarnessExecution, NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { DevicePresence, DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { DeviceRegistration } from '@graphql/contracts/device-identity'
+import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
 import type { DeviceNegotiatedExtension } from '@graphql/contracts/device-application'
 import { TelemetrySelectorResultSchema, TelemetryReadResultSchema, type TelemetryCollectedBatch, type TelemetryIdentity, type TelemetrySelectorTarget, type TrustedTelemetryContext } from '@graphql/contracts/resource-telemetry'
 import { freezePlacement, deriveDispatch } from '../placement/binding.js'
@@ -17,7 +19,7 @@ import { registerResourceTelemetryRoutes } from '../../routes/resourceTelemetry.
 import { registerResourceTelemetrySelectorRoutes } from '../../routes/resourceTelemetrySelector.js'
 import { registerResourceTelemetryTools } from '../../mcp/operator/resourceTelemetry.js'
 import { registerResourceTelemetrySelectorTools } from '../../mcp/operator/resourceTelemetrySelector.js'
-import { createPassiveTelemetryAuthorities, type CapturedTelemetryNativeOwner } from './productionAuthority.js'
+import { createPassiveTelemetryAuthorities, type CapturedTelemetryNativeOwner, type CapturedRemoteTelemetryNativeOwner } from './productionAuthority.js'
 import type { NativeLaunchObservation } from './collector/registryAdapter.js'
 const mainId = '11111111-1111-4111-8111-111111111111', bootId = '33333333-3333-4333-8333-333333333333'
 const context: Extract<TrustedTelemetryContext, { kind: 'main-local' }> = { kind: 'main-local', mainId, deviceId: mainId,
@@ -33,10 +35,10 @@ function source(index = 1) {
     agentConfigurationVersionId: `configuration-${index}`, attempt: 7, nativeSessionId: `native-${index}`, input: {}, state: 'running',
     createdAt: '2026-10-01T00:00:00Z', startedAt: '2026-10-01T00:00:01Z' }
   const session: NativeSessionReference = { harness: 'codex', providerVersion: 'captured-version', nativeSessionId: execution.nativeSessionId! }
-  const capture: CapturedTelemetryNativeOwner = { execution, session, writer: { id: `lane-${index}`, token: `private-writer-token-${index}` }, nativeOwner: `captured-recovery-owner-${index}` }
+  const capture: CapturedTelemetryNativeOwner = { execution, session, writer: { id: `lane-${index}`, token: `private-writer-token-${index}`, connectionGeneration: 3 }, nativeOwner: `captured-recovery-owner-${index}` }
   const lane: NativeSessionLane = { id: capture.writer.id, harness: session.harness, nativeSessionId: session.nativeSessionId, ownerAgentId: execution.agentId,
     leaseOwner: 'actual-runner-owner', leaseToken: capture.writer.token, leaseExpiresAt: '2099-01-01T00:00:00Z', observedStatus: 'busy',
-    connectionGeneration: 3, correlationId: execution.id, observedAt: '2026-10-01T00:00:01Z', revision: 4 }
+    connectionGeneration: 3, correlationId: `execution:${execution.id}`, observedAt: '2026-10-01T00:00:01Z', revision: 4 }
   const placement = freezePlacement({ schemaVersion: 1, mainId, runId: execution.runId, nodeId: execution.workflowNodeId,
     hostRef: { kind: 'main', mainId }, mainInstallationId: mainId, registration: null,
     destination: { canonicalProjectRoot: '/project', canonicalCwd: '/project', managedRuntimeRoot: '/managed', directoryIdentityHash: 'a'.repeat(64),
@@ -47,17 +49,23 @@ function source(index = 1) {
       protocolRevision: '1', credentialScopeRefs: [] } })
   const intent = deriveDispatch(placement, { executionId: execution.id, occurrenceId: null, occurrenceIndex: 0, technicalAttempt: execution.attempt,
     attemptId: `actual-attempt-uuid-${index}`, operationId: `actual-operation-${index}`, owner: { grantId: `actual-grant-${index}`, epoch: '3' }, inputDigest: `sha256:${'e'.repeat(64)}` })
-  return { capture, lane, placement, intent, workspaceId: `workspace-${index}`, workflowId: `workflow-${index}`, accepted: true }
+  const run = AcceptedWorkflowRunV3Schema.parse({ id: execution.runId, workspaceId: `workspace-${index}`, workflowId: `workflow-${index}`,
+    workflowVersionId: `version-${index}`, executionSemanticsVersion: 3, agentConfigurationVersionIds: { [execution.agentId]: execution.agentConfigurationVersionId },
+    approval: { handler: 'user' }, executionCondition: { kind: 'manual' }, executionState: 'running', outcome: 'pending', input: {},
+    createdAt: execution.createdAt, authorizationPrincipalId: 'actual-principal',
+    executionLocation: { runnerId: 'actual-runner', rootPath: '/project', locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } })
+  return { capture, lane, run, session, placement, intent, workspaceId: `workspace-${index}`, workflowId: `workflow-${index}`, accepted: true, grantLive: true }
 }
 function setup() {
   const sources = [source()]
+  let remoteOwner: CapturedRemoteTelemetryNativeOwner | null = null, receipt: RemoteOperationReceipt | null = null
   let live = structuredClone(principal), revoked = false, active = true, mainContext: typeof context | null = { ...context }
   let binding: DeviceSessionBinding | null = null, presence: DevicePresence | null = null, registration: DeviceRegistration | null = null
   let capabilities: DeviceNegotiatedExtension[] = [], credentialExpires = new Date('2099-01-01T00:00:00Z')
   let afterLaneRead: (() => void) | undefined, afterExecutionRead: (() => void) | undefined
   const launches: NativeLaunchObservation[] = [{ owner: sources[0]!.capture.nativeOwner, launchId: 'actual-launch-1', bootId,
     provider: { pid: 321, startTicks: '12' }, lifecycle: 'active' }]
-  const getNativeOwners = vi.fn(() => sources.map(value => structuredClone(value.capture)))
+  const getNativeOwners = vi.fn(() => remoteOwner ? [] : sources.map(value => structuredClone(value.capture)))
   const query = vi.fn(async (text: string, values: unknown[] = []) => {
     let rows: unknown[] = []
     if (text.includes('from management_principals')) rows = [{ id: live.id, name: live.name, audience: live.audience, grants: live.grants,
@@ -70,8 +78,17 @@ function setup() {
       const found = sources.find(value => value.capture.execution.id === values[0] && value.capture.execution.runId === values[1])
       if (found) rows = [{ id: found.capture.execution.id, run_id: found.capture.execution.runId, workflow_node_id: found.capture.execution.workflowNodeId,
         agent_id: found.capture.execution.agentId, attempt: found.capture.execution.attempt, accepted: found.accepted, record: structuredClone(found.capture.execution),
-        workspace_id: found.workspaceId, workflow_id: found.workflowId }]
+        workspace_id: found.workspaceId, workflow_id: found.workflowId, workflow_version_id: found.run.workflowVersionId, run_record: structuredClone(found.run) }]
       afterExecutionRead?.(); afterExecutionRead = undefined
+    } else if (text.includes('from execution_dispatch_owner_grants')) {
+      const found = sources.find(value => value.capture.execution.id === values[0] && value.intent.operationId === values[1]
+        && value.intent.owner.grantId === values[2] && value.intent.owner.epoch === values[3]); if (found?.grantLive) rows = [{}]
+    } else if (text.includes('from remote_dispatch_origins')) {
+      if (receipt) rows = [{ connection: receipt.connection }]
+    } else if (text.includes('from remote_execution_receipts')) {
+      if (receipt && receipt.intent.operationId === values[0]) rows = [{ receipt: structuredClone(receipt) }]
+    } else if (text.includes('from execution_native_sessions')) {
+      const found = sources.find(value => value.capture.execution.id === values[0]); if (found) rows = [{ reference: found.session }]
     } else if (text.includes('from execution_dispatch_intents where execution_id')) {
       const found = sources.find(value => value.intent.executionId === values[0])
       if (found) rows = [{ operation_id: found.intent.operationId, execution_id: found.intent.executionId, run_id: found.intent.runId, node_id: found.intent.nodeId,
@@ -86,19 +103,42 @@ function setup() {
     return { rows, rowCount: rows.length }
   })
   const release = vi.fn(), pool = { connect: async () => ({ query, release }) } as unknown as pg.Pool
-  const authorities = createPassiveTelemetryAuthorities({ pool, getNativeOwners, mainContext: () => mainContext, mainActive: () => active,
+  const authorities = createPassiveTelemetryAuthorities({ pool, getNativeOwners, getRemoteNativeOwners: () => remoteOwner ? [remoteOwner] : [], mainContext: () => mainContext, mainActive: () => active,
     deviceBinding: () => binding, presence: () => presence, deviceCapabilities: () => capabilities,
     registry: { revision: () => 'registry-real-1', snapshot: () => ({ revision: 'registry-real-1', launches }), changes: async function* () {} } })
-  return { sources, launches, authorities, query, release, getNativeOwners,
+  return { sources, launches,
+    remoteOriginal(value: CapturedRemoteTelemetryNativeOwner, originalReceipt: RemoteOperationReceipt) { remoteOwner = value; receipt = originalReceipt }, authorities, query, release, getNativeOwners,
     live(value: ManagementPrincipal) { live = value }, revoked(value: boolean) { revoked = value }, active(value: boolean) { active = value },
     main(value: typeof context | null) { mainContext = value }, afterLane(work: () => void) { afterLaneRead = work }, afterExecution(work: () => void) { afterExecutionRead = work },
     remote(value: DeviceSessionBinding) {
       binding = value; presence = { binding: value, phase: 'ready', dispatch: true, transfer: true, appVersion: 'actual-worker-version', protocolVersion: 1, lastSeenAt: new Date().toISOString() }
       registration = { mainId: value.mainId, deviceId: value.deviceId, workerInstallationId: value.workerInstallationId, keyRevision: value.keyRevision,
-        authorizationRevision: value.authorizationRevision, status: 'paired', scopes: ['connect', 'heartbeat'], publicKeyFingerprint: 'a'.repeat(64) }
+        authorizationRevision: value.authorizationRevision, status: 'paired', scopes: ['connect', 'heartbeat', 'metrics:report'], publicKeyFingerprint: 'a'.repeat(64) }
       capabilities = [{ namespace: 'resource-telemetry', version: 1, mainCanRequest: true, workerCanRequest: false, maxJsonBytes: 65536, maxBinaryBytes: 0 }]
     }, offline() { binding = null; presence!.phase = 'offline' }, denyCapability() { capabilities = [] },
+    metrics(value: boolean) { registration!.scopes = value ? ['connect', 'heartbeat', 'metrics:report'] : ['connect', 'heartbeat'] },
     revokeDevice() { registration!.authorizationRevision++ }, expireCredential() { credentialExpires = new Date(0) } }
+}
+const binding: DeviceSessionBinding = { mainId, deviceId: '22222222-2222-4222-8222-222222222222',
+  workerInstallationId: '66666666-6666-4666-8666-666666666666', bootId, keyRevision: 1, authorizationRevision: 2, connectionGeneration: 3,
+  connectionEpoch: '88888888-8888-4888-8888-888888888888' }
+function remoteSetup() {
+  const s = setup(), original = s.sources[0]!
+  s.remote(binding)
+  const { bindingHash: _hash, ...placement } = original.placement
+  void _hash
+  original.placement = freezePlacement({ ...placement, hostRef: { kind: 'device', mainId, deviceId: binding.deviceId },
+    registration: { workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision } })
+  original.intent = deriveDispatch(original.placement, original.intent)
+  const capture: CapturedRemoteTelemetryNativeOwner = { ...original.capture, writer: { ...original.capture.writer, connectionGeneration: original.lane.connectionGeneration }, binding, native: { sessionId: original.session.nativeSessionId,
+    turnId: 'actual-native-turn', processIdentityDigest: 'f'.repeat(64) }, assertCurrent: vi.fn() }
+  original.lane.currentTurnOrMessageId = capture.native.turnId
+  const { connectionEpoch: _epoch, ...connection } = binding
+  void _epoch
+  const receipt: RemoteOperationReceipt = { schemaVersion: 1, intent: original.intent, connection, workerIncarnationId: '99999999-9999-4999-8999-999999999999',
+    sequence: 1, phase: 'running', native: capture.native, entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [] }
+  s.remoteOriginal(capture, receipt)
+  return { ...s, capture, receipt, original }
 }
 describe('genuine passive telemetry production authorities', () => {
   it('joins captured writer/recovery facts with actual W08 records and resolves a complete first selector', async () => {
@@ -180,15 +220,15 @@ describe('genuine passive telemetry production authorities', () => {
     expect(await s.authorities.targets.allowTarget(principal, computer, signal())).toBe(false)
     expect(await s.authorities.targets.resolveOwned({ ...principal, grants: [] }, target, signal())).toEqual({ kind: 'denied' })
     expect(s.getNativeOwners).not.toHaveBeenCalled()
-    const deviceReader: ManagementPrincipal = { ...principal, grants: [{ actions: ['devices:read'], scope: {} }] }
+    const deviceReader: ManagementPrincipal = { ...principal, grants: [{ actions: ['devices:metrics:read' as const], scope: {} }] }
     s.live(deviceReader); expect(await s.authorities.targets.allowTarget(deviceReader, computer, signal())).toBe(true)
-    const scoped = { ...deviceReader, grants: [{ actions: ['devices:read' as const], scope: { workspaceIds: ['workspace-1'] } }] }
+    const scoped = { ...deviceReader, grants: [{ actions: ['devices:metrics:read' as const], scope: { workspaceIds: ['workspace-1'] } }] }
     s.live(scoped); expect(await s.authorities.targets.allowTarget(scoped, computer, signal())).toBe(false)
     s.live(principal); s.revoked(true)
     expect(await s.authorities.targets.resolveOwned(principal, target, signal())).toEqual({ kind: 'denied' })
     expect(s.getNativeOwners).not.toHaveBeenCalled()
   })
-  it.each(['expired-writer', 'changed-writer', 'wrong-session', 'not-accepted', 'wrong-installation', 'missing-dispatch'] as const)('returns unavailable for %s without inventing attribution', async defect => {
+  it.each(['expired-writer', 'changed-writer', 'wrong-session', 'not-accepted', 'wrong-installation', 'missing-dispatch', 'wrong-correlation', 'wrong-lane-generation', 'wrong-run-pin', 'wrong-run-version', 'wrong-original-session', 'revoked-owner'] as const)('returns unavailable for %s without inventing attribution', async defect => {
     const s = setup(), current = s.sources[0]!
     if (defect === 'expired-writer') current.lane.leaseExpiresAt = '1970-01-01T00:00:00Z'
     if (defect === 'changed-writer') current.lane.leaseToken = 'different-writer-token'
@@ -196,6 +236,12 @@ describe('genuine passive telemetry production authorities', () => {
     if (defect === 'not-accepted') current.accepted = false
     if (defect === 'wrong-installation') s.main({ ...context, applicationInstallationId: 'other-installation' })
     if (defect === 'missing-dispatch') current.intent = { ...current.intent, executionId: 'other-execution' }
+    if (defect === 'wrong-correlation') current.lane.correlationId = 'conversation:unrelated'
+    if (defect === 'wrong-lane-generation') current.lane.connectionGeneration++
+    if (defect === 'wrong-run-pin') current.run.agentConfigurationVersionIds[current.capture.execution.agentId] = 'other-config'
+    if (defect === 'wrong-run-version') current.run.workflowVersionId = ''
+    if (defect === 'revoked-owner') current.grantLive = false
+    if (defect === 'wrong-original-session') current.session = { ...current.session, providerVersion: 'other-original-version' }
     expect(await s.authorities.targets.resolveOwned(principal, target, signal())).toEqual({ kind: 'unavailable' })
   })
   it('fences changes to the captured guard or main runtime during asynchronous facts reads', async () => {
@@ -250,6 +296,83 @@ describe('genuine passive telemetry production authorities', () => {
     s.remote({ ...binding, connectionGeneration: 4 }); expect(await s.authorities.sessions.active(remote, signal())).toBe(false)
     s.active(false); expect(await s.authorities.sessions.active(context, signal())).toBe(false)
   })
+  it('requires explicit reporting scope independently of connection and reader authority', async () => {
+    const s = setup(), remote: TrustedTelemetryContext = { kind: 'remote', binding, capability: 'resource-telemetry/v1' }
+    s.remote(binding); s.metrics(false)
+    expect(await s.authorities.sessions.active(remote, signal())).toBe(false)
+    const reader: ManagementPrincipal = { ...principal, grants: [{ actions: ['devices:metrics:read' as const], scope: {} }] }
+    s.live(reader)
+    const target: TelemetrySelectorTarget = { schemaVersion: 1, scope: 'computer', mainId, hostRef: { kind: 'device', mainId, deviceId: binding.deviceId } }
+    expect(await s.authorities.targets.allowTarget(reader, target, signal())).toBe(false)
+    s.metrics(true)
+    expect(await s.authorities.sessions.active(remote, signal())).toBe(true)
+    expect(await s.authorities.targets.allowTarget(reader, target, signal())).toBe(true)
+    const deviceReader = { ...reader, grants: [{ actions: ['devices:read' as const], scope: {} }] }
+    s.live(deviceReader)
+    expect(await s.authorities.targets.allowTarget(deviceReader, target, signal())).toBe(false)
+    s.metrics(false)
+    expect(await s.authorities.sessions.active(remote, signal())).toBe(false)
+  })
+  it('joins original remote session/receipt/accepted Run without attributing it to the Main collector', async () => {
+    const s = remoteSetup(), remote: TrustedTelemetryContext = { kind: 'remote', binding, capability: 'resource-telemetry/v1' }
+    const service = new ResourceTelemetryService({ ...s.authorities, clock: { monotonicMs: () => 0, unixMs: Date.now } })
+    try {
+      const local = await service.handshake(context, 'local-collector', signal())
+      const identity = await service.handshake(remote, 'remote-collector', signal())
+      const result = await new ResourceTelemetrySelectors(service, s.authorities.targets).resolve(principal, target, signal())
+      expect(result.kind).toBe('selector')
+      if (result.kind !== 'selector' || result.selector.scope !== 'owned') throw new Error('selector')
+      expect(result.selector.host).toEqual(identity.host)
+      expect(await s.authorities.nativeScopes(local).snapshot(signal())).toEqual([])
+      expect(await s.authorities.ownership.resolve(result.selector, signal())).toMatchObject({ selector: result.selector, state: 'active' })
+      s.original.lane.connectionGeneration++
+      expect(await s.authorities.ownership.resolve(result.selector, signal())).toBeNull()
+    } finally { await service.close() }
+  })
+  it('keeps remote host freshness separate from online presence and clears values when reporting scope is revoked', async () => {
+    const s = setup(), remote: TrustedTelemetryContext = { kind: 'remote', binding, capability: 'resource-telemetry/v1' }
+    const reader: ManagementPrincipal = { ...principal, grants: [{ actions: ['devices:metrics:read' as const], scope: {} }] }
+    s.remote(binding); s.live(reader)
+    let mono = 0
+    const wall = Date.now(), service = new ResourceTelemetryService({ ...s.authorities, clock: { monotonicMs: () => mono, unixMs: () => wall + mono } })
+    try {
+      const identity = await service.handshake(remote, 'remote-collector', signal())
+      const challenge = (await service.challenge(remote, signal()))!
+      const selector = { schemaVersion: 1 as const, scope: 'computer' as const, ...identity }
+      const batch: TelemetryCollectedBatch = { schemaVersion: 1, identity, challengeId: challenge.challengeId, sequence: '1',
+        collectedAtUnixMs: wall, challengeReceivedMonoNs: '1', captureStartMonoNs: '1', captureEndMonoNs: '1001', logicalCpuCount: 8,
+        host: { selector, coverage: { boundary: 'complete-boundary', shared: false, reasons: [] }, cpu: { state: 'warmup', reason: 'warmup' },
+          memory: { state: 'ok', value: { kind: 'host-used-estimate', bytes: 1024, totalBytes: 8192, availableBytes: 7168, sharedPagesMayDoubleCount: false } } },
+        owned: [], diagnostics: [], truncated: false }
+      await service.ingest(remote, JSON.stringify(batch), signal())
+      mono = 5999
+      expect(await service.read(reader, selector, signal())).toMatchObject({ kind: 'sample', sample: { presence: 'online', memory: { value: { bytes: 1024 } } } })
+      mono = 6000
+      expect(await service.read(reader, selector, signal())).toMatchObject({ kind: 'sample', sample: { presence: 'online', memory: { value: null, reason: 'stale' } } })
+      s.offline()
+      expect(await service.read(reader, selector, signal())).toMatchObject({ kind: 'sample', sample: { presence: 'offline', memory: { value: null } }, lastKnown: { memory: { value: { bytes: 1024 } } } })
+      s.metrics(false)
+      expect(await service.read(reader, selector, signal())).toEqual({ kind: 'denied', selectorKey: expect.any(String) })
+      await expect(service.handshake(remote, 'other-collector', signal())).rejects.toThrow('authorization')
+    } finally { await service.close() }
+  })
+  it.each(['wrong-native-digest', 'wrong-receipt-host', 'wrong-attempt', 'wrong-registration-revision', 'expired-original', 'missing-metrics'] as const)(
+    'leaves remote %s unavailable', async defect => {
+      const s = remoteSetup()
+      if (defect === 'wrong-native-digest') s.receipt.native = { ...s.capture.native, processIdentityDigest: 'e'.repeat(64) }
+      if (defect === 'wrong-receipt-host') s.receipt.connection = { ...s.receipt.connection, workerInstallationId: mainId }
+      if (defect === 'wrong-attempt') s.receipt.intent = { ...s.receipt.intent, attemptId: 'other-attempt' }
+      if (defect === 'wrong-registration-revision') {
+        const { bindingHash: _hash, ...pins } = s.original.placement
+        void _hash
+        s.original.placement = freezePlacement({ ...pins, registration: { ...pins.registration!, authorizationRevision: 99 } })
+        s.original.intent = deriveDispatch(s.original.placement, s.original.intent)
+        s.receipt.intent = s.original.intent
+      }
+      if (defect === 'expired-original') s.capture.assertCurrent = () => { throw new Error('Original lifetime retired') }
+      if (defect === 'missing-metrics') s.metrics(false)
+      expect(await s.authorities.targets.resolveOwned(principal, target, signal())).toEqual({ kind: 'unavailable' })
+    })
   it('leaves chat and CI unavailable without genuine captured writers or OCI ownership', async () => {
     const s = setup(), reader: ManagementPrincipal = { ...principal, grants: [{ actions: ['agent_chat:read', 'operator_chat:read', 'jobs:read'], scope: {} }] }
     s.live(reader)
