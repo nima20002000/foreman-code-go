@@ -23,8 +23,7 @@ describe('device Operator MCP shared service', () => {
       expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['devices_list'])
       const result = await client.callTool({ name: 'devices_list', arguments: {} })
       expect(result.structuredContent).toEqual({ devices: [registration] })
-      const denied = await client.callTool({ name: 'device_revoke', arguments: { deviceId: registration.deviceId, expectedRevision: 2, commandId: 'denied-test' } })
-      expect(denied.isError).toBe(true)
+      await expect(client.callTool({ name: 'device_revoke', arguments: { deviceId: registration.deviceId, expectedRevision: 2, commandId: 'denied-test' } })).rejects.toThrow('not found')
     } finally { await client.close(); await server.close() }
   })
 })
