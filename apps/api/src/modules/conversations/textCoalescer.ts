@@ -46,5 +46,10 @@ export function createTextCoalescer(publish: (operation: ActivityTextOperation) 
     pending = compatible ? { ...operation, text: pending!.text + operation.text } : operation
     timer ??= setTimeout(flush, limits.latencyMs)
   }
-  return { push, flush, dispose() { disposed = true; clearTimeout(timer); timer = undefined; pending = undefined; states.clear(); seen.clear() } }
+  return { push, flush, seal(operation: ActivityTextOperation) {
+    if (disposed) return
+    const key = keyOf(operation), previous = states.get(key)
+    if (previous || states.size < limits.items) states.set(key, { final: true, connectionId: previous?.connectionId, sequence: previous?.sequence })
+    else reconcile()
+  }, dispose() { disposed = true; clearTimeout(timer); timer = undefined; pending = undefined; states.clear(); seen.clear() } }
 }

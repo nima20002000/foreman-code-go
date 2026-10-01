@@ -248,11 +248,14 @@ export class OperatorChatService {
   }
   private async recordAssistantMessage(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, precedingActivityId?: string | null) {
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
-    if (message && await this.repository.appendAssistantMessage(id, requestId, message.id, message.text,
+    if (!message) return true
+    if (await this.repository.appendAssistantMessage(id, requestId, message.id, message.text,
       message.parentMessageId ? { parentMessageId: message.parentMessageId, complete: message.complete === true } : undefined,
       precedingActivityId)) {
       this.events.publish(id, 'message', { requestId, nativeMessageId: message.id })
+      return true
     }
+    return false
   }
 
   send(id: string, value: SendOperatorMessageRequest, principal: ManagementPrincipal) {
@@ -506,8 +509,8 @@ export class OperatorChatService {
         if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
         textStream.before(event)
         await this.recordActivity(id, input.requestId, runtime, event)
-        await this.recordAssistantMessage(id, input.requestId, runtime, event)
-        textStream.push(event)
+        if (await this.recordAssistantMessage(id, input.requestId, runtime, event)) textStream.push(event)
+        else textStream.rejected(event)
         if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
           const pending = await runtime.manager.pending(runtime.session, signal)
           if (pending) {

@@ -63,6 +63,11 @@ export function createNativeTextStream(input: {
         else { stream.flush(); input.reconcile() }
       }
     },
+    rejected(event: NativeHarnessEvent) {
+      if (disposed) return
+      for (const operation of normalize(event)) if (operation?.final) stream.seal(operation)
+      input.reconcile()
+    },
     flush: stream.flush,
     dispose,
   }

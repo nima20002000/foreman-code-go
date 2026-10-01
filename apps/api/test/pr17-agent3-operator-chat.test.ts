@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type NativeSessionReference, type OperatorConfigurationVersion, type PendingNativeInteraction } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type NativeHarnessEvent, type NativeSessionReference, type OperatorConfigurationVersion, type PendingNativeInteraction } from '@graphql/contracts'
 import { OperatorChatService, type OperatorChatAuthority } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation, type ConversationRow } from '../src/modules/conversations/operatorChatRepository.js'
 import type { NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
@@ -14,6 +14,7 @@ class Manager extends ReviewManager {
   rejection: unknown
   afterSubmissionError: unknown
   finish = false
+  emitted: NativeHarnessEvent[] = []
   creations = 0
   override async createSession() { this.creations++; return this.session }
   stoppedAutomatic = 0
@@ -25,6 +26,7 @@ class Manager extends ReviewManager {
   override async *startTurn(session: NativeSessionReference, input: NativeTurnInput) {
     if (this.rejection) { this.turns++; throw this.rejection }
     yield* super.startTurn(session, input)
+    yield* this.emitted
     if (this.afterSubmissionError) throw this.afterSubmissionError
     if (this.finish) this.nativeHistory.terminalResult = { outcome: 'succeeded', output: { text: '' } }
   }
@@ -298,4 +300,20 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
     await f.chat.shutdown()
   })
 
+})
+
+
+it('W05 does not advertise authoritative final text when its repository mutation was declined', async () => {
+  const f = fixture(), deltas: unknown[] = []
+  f.repository.appendAssistantMessage = async () => false
+  f.manager.emitted = [{ sequence: 1, type: 'item.completed', occurredAt: new Date().toISOString(),
+    payload: { item: { id: 'uncommitted-item', type: 'agentMessage', text: 'uncommitted text' } } },
+    { sequence: 2, type: 'assistant.delta', occurredAt: new Date().toISOString(), payload: { itemId: 'uncommitted-item', text: 'late' } }]
+  f.manager.finish = true
+  const unsubscribe = f.chat.events.subscribe(f.row.id, (event) => { if (event.type === 'delta') deltas.push(event.data) })
+  try {
+    await f.chat.send(f.row.id, { requestId: 'commit-before-publish', content: 'Keep canonical ownership' }, f.owner)
+    await eventually(() => f.finishResults.length === 1)
+    expect(deltas).toEqual([])
+  } finally { unsubscribe(); await f.chat.shutdown() }
 })
