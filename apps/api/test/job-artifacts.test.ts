@@ -6,6 +6,7 @@ import { gzipSync } from 'node:zlib'
 import type pg from 'pg'
 import { describe, it, expect, vi } from 'vitest'
 import { FileWithRevisionSchema, MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { JobArtifactSchema } from '@graphql/contracts/jobs'
 import { ManagementPrincipalSchema } from '@graphql/contracts/management'
 import { JobPublicationAuthority } from '../src/modules/jobs/authority.js'
 import { FileStorageService } from '../src/modules/files/service.js'
@@ -60,9 +61,27 @@ async function fixture() {
   const input={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,owner:execution.owner,
     commandId:randomUUID(),path:'dist/index.html',mediaType:'text/html' as const,sha256:hash('<html>result</html>'),byteSize:19}
   return {execution,principal,query,sql,pool,repository,bytes,links,runtime,preparation,reader,port,input,
-    revoke:()=>{revoked=true},advance:()=>{now=new Date(now.getTime()+3600_000)}}
+    revoke:()=>{revoked=true},advance:(milliseconds=3600_000)=>{now=new Date(now.getTime()+milliseconds)}}
 }
 describe('canonical job artifact publication and read port',()=>{
+  it('reads the original persisted expiry across publication retry and current lifecycle changes',async()=>{
+    const f=await fixture();const published=await f.port.publishAccepted(f.input)
+    const stored=f.repository.values.get(published.artifact.fileId)!
+    expect('expiresAt' in stored.value.file).toBe(true)
+    if(!('expiresAt' in stored.value.file)) throw new Error('Expected canonical job retention expiry')
+    const expiresAt=stored.value.file.expiresAt
+    expect(published.artifact).toMatchObject({expiresAt,state:'available'})
+    f.advance(1000)
+    const replay=await f.port.publishAccepted(f.input,'mcp')
+    expect(replay).toMatchObject({replayed:true,artifact:{expiresAt}})
+    const read=await f.port.read(f.sql,f.principal,f.execution.workspaceId,f.execution.id,published.artifact.fileId,published.artifact.revisionId,'mcp')
+    expect(JobArtifactSchema.parse(read.artifact)).toMatchObject({expiresAt,state:'available'})
+    f.advance()
+    const listed=await f.port.list(f.sql,f.principal,f.execution.workspaceId,f.execution.id)
+    expect(JobArtifactSchema.parse(listed[0])).toMatchObject({expiresAt,state:'expired'})
+    stored.value.file.state='removed'
+    expect(await f.port.list(f.sql,f.principal,f.execution.workspaceId,f.execution.id)).toMatchObject([{expiresAt,state:'tombstoned'}])
+  })
   it('publishes standalone explicit CI scope, persists one logical receipt and replays without worker bytes',async()=>{
     const f=await fixture(); const first=await f.port.publishAccepted(f.input)
     expect(first.artifact).toMatchObject({executionId:f.execution.id,mediaType:'text/html',state:'available'})
