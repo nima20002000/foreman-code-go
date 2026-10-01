@@ -51,11 +51,11 @@ function codexFixture() {
   seam.runtimes.set(codexSession.nativeSessionId, runtime)
   return { manager, runtime, seam, responses: () => responses }
 }
-function waiting(id: string, delivery: Waiting['delivery']): Waiting {
+function waiting(id: string, delivery: Waiting['delivery'], transport: Runtime['transport']): Waiting {
   return {
     pending: { session: codexSession, turn: { nativeTurnId: 'turn-test', nativeRequestId: id },
       nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [option] },
-    requestId: id, method: 'item/commandExecution/requestApproval', generation: 0, signature: id,
+    requestId: id, method: 'item/commandExecution/requestApproval', generation: 0, transport, signature: id,
     responses: new Map([[option.optionId, { option, nativeResponse: { decision: 'accept' } }]]),
     delivery, resolution: new Promise(() => undefined), resolve: () => undefined,
   }
@@ -64,8 +64,8 @@ function waiting(id: string, delivery: Waiting['delivery']): Waiting {
 describe('PR17 native session runtime regressions', () => {
   it('F9: exposes a later pending approval without mutating or replaying an earlier uncertain response', async () => {
     const { manager, runtime, responses } = codexFixture()
-    const first = waiting('first', 'uncertain')
-    const second = waiting('second', 'pending')
+    const first = waiting('first', 'uncertain', runtime.transport)
+    const second = waiting('second', 'pending', runtime.transport)
     runtime.interactions.set('first', first)
     runtime.interactions.set('second', second)
     assert.equal((await manager.pending(codexSession))?.turn.nativeRequestId, 'second')

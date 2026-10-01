@@ -10,7 +10,7 @@ const envelope = (method: string, params: CodexNotificationEnvelope['params'], r
   runtimeGeneration, arrivalOrdinal: 4, method, params,
 })
 const context = { session: { harness: 'codex' as const, providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'root' },
-  configuration: DEFAULT_HARNESS_DEFAULTS.codex, generation: 3 }
+  configuration: DEFAULT_HARNESS_DEFAULTS.codex, connectionId: 'connection-3', generation: 3 }
 const approval = (method: string, params: Record<string, unknown> = {}, id: string | number = 1) =>
   translateCodexInteraction(context, { id, method, params: { threadId: 'root', turnId: 'parent-turn', ...params } })
 

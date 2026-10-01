@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 
+import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { DomainError } from '../src/modules/errors.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
@@ -56,6 +57,11 @@ async function pending(session: NativeSessionReference): Promise<PendingNativeIn
 async function inject(session: NativeSessionReference, method: string, extra: JsonObject = {}, id = 4000): Promise<void> {
   const current = await state(f.directory, session.nativeSessionId)
   await emit(f.directory, { id, method, params: { threadId: session.nativeSessionId, turnId: current.turns.at(-1)!.id, ...extra } })
+}
+function responseQuery(value: PendingNativeInteraction): NativeResponseAvailabilityQuery {
+  const { nativeRequestId, nativeTurnId } = value.turn
+  assert(nativeRequestId && nativeTurnId)
+  return { nativeRequestId, nativeRequestType: value.nativeRequestType, expectedNativeTurnId: nativeTurnId }
 }
 async function respond(session: NativeSessionReference, value: PendingNativeInteraction, semantic = 'approve_once') {
   const option = value.responseOptions.find((entry) => entry.semantic === semantic)
@@ -295,6 +301,133 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await emit(f.directory, { method: 'turn/completed', params: { threadId: session.nativeSessionId, turn: { ...original, status: 'completed' } } })
     await result
     assert(value.turn.nativeRequestId)
+  })
+
+  it('inspects only the exact live response callback without native writes or history changes', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    const value = await pending(session)
+    const query = responseQuery(value)
+    const beforeWire = await wire()
+    const beforeHistory = await manager.history(session)
+    const available = await manager.inspectResponseAvailability(session, query)
+    assert.equal(available.state, 'available')
+    assert.equal(available.path, 'live_callback')
+    assert.equal(available.reason, 'live_callback')
+    assert.equal(available.qualified, true)
+    assert(available.generation)
+    const aborted = new AbortController()
+    aborted.abort()
+    await assert.rejects(manager.inspectResponseAvailability(session, query, aborted.signal))
+    for (const [changed, reason] of [
+      [{ ...query, nativeRequestId: 'not-the-callback' }, 'callback_lost'],
+      [{ ...query, nativeRequestType: 'item/fileChange/requestApproval' }, 'identity_mismatch'],
+      [{ ...query, expectedNativeTurnId: 'older-turn' }, 'identity_mismatch'],
+    ] as const) {
+      const rejected = await manager.inspectResponseAvailability(session, changed)
+      assert.equal(rejected.state, 'unavailable')
+      assert.equal(rejected.reason, reason)
+    }
+    assert.equal((await manager.inspectResponseAvailability({ ...session, nativeSessionId: 'another-thread' }, query)).state, 'unavailable')
+    assert.deepEqual(await wire(), beforeWire)
+    assert.deepEqual(await manager.history(session), beforeHistory)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('requires response recovery after submission or uncertainty instead of offering the callback again', async () => {
+    await flag('no-resolution')
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    const value = await pending(session)
+    const query = responseQuery(value)
+    const controller = new AbortController()
+    const response = manager.respond(session, query.nativeRequestId, value.responseOptions[0]!, controller.signal)
+    void response.catch(() => undefined)
+    assert.equal((await manager.inspectResponseAvailability(session, query)).state, 'recovery_required')
+    await until(async () => (await manager.history(session)).interactionDeliveries?.[0]?.state === 'submitted')
+    assert.equal((await manager.inspectResponseAvailability(session, query)).state, 'recovery_required')
+    assert.equal((await manager.inspectResponseAvailability(session, query)).reason, 'response_in_flight')
+    controller.abort(new Error('stop waiting for delivery confirmation'))
+    await assert.rejects(response)
+    const before = await wire()
+    assert.equal((await manager.inspectResponseAvailability(session, query)).state, 'recovery_required')
+    assert.deepEqual(await wire(), before)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('reports a consumed exact callback without inferring which response was delivered', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    const value = await pending(session)
+    const query = responseQuery(value)
+    await emit(f.directory, { method: 'serverRequest/resolved', params: { threadId: session.nativeSessionId, requestId: 901 } })
+    await until(async () => (await manager.history(session)).pendingInteractions.length === 0)
+    const before = await wire()
+    const consumed = await manager.inspectResponseAvailability(session, query)
+    assert.equal(consumed.state, 'unavailable')
+    assert.equal(consumed.reason, 'request_consumed')
+    assert.equal(consumed.path, null)
+    assert.deepEqual(await wire(), before)
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('requires a fresh callback after same-manager native reconnection', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    const old = await pending(session)
+    const oldQuery = responseQuery(old)
+    const original = await manager.inspectResponseAvailability(session, oldQuery)
+    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    assert(launched && typeof launched.pid === 'number')
+    process.kill(launched.pid, 'SIGTERM')
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'transport.disconnected'))
+    await result
+    await manager.reconcile(session, 'turn-correlation')
+    const recovered = await manager.inspectResponseAvailability(session, oldQuery)
+    assert.equal(recovered.state, 'recovery_required')
+    assert.equal(recovered.path, null)
+    await inject(session, 'item/commandExecution/requestApproval', {
+      itemId: 'command-901', command: 'printf harmless', cwd: f.directory,
+      availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
+    }, 901)
+    const fresh = await pending(session)
+    assert.notEqual(fresh.turn.nativeRequestId, old.turn.nativeRequestId)
+    const available = await manager.inspectResponseAvailability(session, responseQuery(fresh))
+    assert.equal(available.state, 'available')
+    assert.notEqual(available.generation, original.generation)
+    assert.equal((await manager.inspectResponseAvailability(session, oldQuery)).state, 'recovery_required')
+  })
+
+  it('does not alias a saved callback after cold attach reuses the same turn and native RPC ID', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    const old = await pending(session)
+    const oldQuery = responseQuery(old)
+    await manager.closeForRestart(session)
+    await result
+    assert.equal((await manager.inspectResponseAvailability(session, oldQuery)).state, 'unavailable')
+    const replacement = makeManager()
+    await replacement.attachSession(session, source)
+    await replacement.reconcile(session, 'turn-correlation')
+    assert.equal((await replacement.inspectResponseAvailability(session, oldQuery)).reason, 'callback_lost')
+    await inject(session, 'item/commandExecution/requestApproval', {
+      itemId: 'different-command-901', command: 'printf fresh-command', cwd: f.directory,
+      availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
+    }, 901)
+    const fresh = await until(() => replacement.pending(session))
+    assert.equal(fresh.turn.nativeTurnId, old.turn.nativeTurnId)
+    assert.notEqual(fresh.turn.nativeRequestId, old.turn.nativeRequestId)
+    assert.notEqual(fresh.responseOptions[0]!.optionId, old.responseOptions[0]!.optionId)
+    const before = await wire()
+    assert.equal((await replacement.inspectResponseAvailability(session, oldQuery)).state, 'unavailable')
+    assert.equal((await replacement.inspectResponseAvailability(session, responseQuery(fresh))).state, 'available')
+    await assertCode(replacement.respond(session, oldQuery.nativeRequestId, old.responseOptions[0]!), 'NATIVE_RESPONSE_UNKNOWN_REQUEST')
+    assert.deepEqual(await wire(), before)
+    assert.equal((await wire('thread/start')).length, 1)
+    assert.equal((await wire('turn/start')).length, 1)
   })
 
   it('F16/F17: pipe submission keeps the mapping; uncertain responses cannot be retransmitted', async () => {

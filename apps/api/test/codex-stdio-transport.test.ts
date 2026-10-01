@@ -56,6 +56,17 @@ void (async () => {
     assert.deepEqual(observed, [])
   }, 15_000)
 
+  it('reports current callback-channel connectivity without submitting a native message', async () => {
+    const value = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, protocol,
+      async () => undefined, () => undefined, () => undefined)
+    transports.push(value)
+    assert.equal(value.isConnected(), false)
+    await value.start()
+    assert.equal(value.isConnected(), true)
+    await value.close()
+    assert.equal(value.isConnected(), false)
+  })
+
   it('rejects oversized outbound requests and responses before native submission', async () => {
     const value = await transport()
     const controller = new AbortController()
