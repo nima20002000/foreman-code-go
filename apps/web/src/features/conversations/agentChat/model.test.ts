@@ -95,3 +95,28 @@ describe('independently qualified read facts', () => {
     expect(acceptAgentChatState(merged, current, 'receipt')).toBe(merged)
   })
 })
+
+it('real message reconciliation compares durable entity revisions and preserves canonical empty finals', () => {
+  const base = agentChatFixtures.idleAfterCompletion.messages[1]!
+  const final = { ...base, revision: '9007199254740993', content: '', nativeMessageComplete: true }
+  const stale = { ...base, revision: '9007199254740992', content: 'older', nativeMessageComplete: true }
+  expect(mergeChatMessages([final], [stale])).toEqual([final])
+  expect(mergeChatMessages([final], [{ ...final, content: 'conflicting equal revision' }])).toEqual([final])
+})
+it('an old qualified receipt/SSE cannot elevate capability while fresh authorized read can update qualification', () => {
+  const previous = { ...agentChatFixtures.activeWithQueue, qualificationKey: 'a'.repeat(64), availability: { ...agentChatFixtures.activeWithQueue.availability, canSend: false } }
+  const incoming = { ...previous, qualificationKey: 'b'.repeat(64), availability: { ...previous.availability, canSend: true } }
+  expect(acceptAgentChatState(previous, incoming, 'receipt').availability.canSend).toBe(false)
+  const read = acceptAgentChatState(previous, incoming, 'read')
+  expect(read.availability.canSend).toBe(true); expect(read.qualificationKey).toBe(incoming.qualificationKey)
+  expect(read.activeTurn).toEqual(previous.activeTurn); expect(read.turns).toEqual(previous.turns)
+})
+it('actual state acceptance uses decimal scoped revisions beyond numeric legacy precision', () => {
+  const previous = structuredClone(agentChatFixtures.activeWithQueue)
+  const scope = { kind: 'agent_chat' as const, conversationId: previous.conversation.id, workspaceId: previous.context.workspaceId,
+    workflowId: previous.context.workflowId, nodeId: previous.context.workflowNodeId, agentId: previous.context.agentId }
+  previous.activitySnapshot = { schemaVersion: 1, scope, revision: '9007199254740993', active: [], queued: [], latest: null,
+    pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
+  const old = { ...previous, activeTurn: null, activitySnapshot: { ...previous.activitySnapshot, revision: '9007199254740992' } }
+  expect(acceptAgentChatState(previous, old).activeTurn).toEqual(previous.activeTurn)
+})

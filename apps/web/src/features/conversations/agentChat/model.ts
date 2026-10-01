@@ -1,3 +1,4 @@
+import { activityScopeKey, reconcileActivitySnapshot, sourceVectorIsStale } from './activityMerge'
 import type { Message } from '@graphql/contracts'
 import type { AgentChatContext, AgentChatIntent, AgentChatState, AgentChatTurn } from '@graphql/contracts/agent-chat'
 
@@ -27,6 +28,13 @@ export function mergeChatMessages(...sources: readonly (readonly Message[])[]): 
     for (const message of source) {
       const previous = messages.get(message.id)
       if (previous?.conversationId !== undefined && previous.conversationId !== message.conversationId) continue
+      if (previous?.revision !== undefined) {
+        if (message.revision === undefined || BigInt(message.revision) < BigInt(previous.revision)) continue
+        if (message.revision === previous.revision) {
+          if (message.content === previous.content && message.nativeMessageComplete === previous.nativeMessageComplete && message.attachments !== undefined) messages.set(message.id, { ...previous, attachments: message.attachments })
+          continue
+        }
+      }
       if (previous?.nativeMessageComplete === true && message.nativeMessageComplete !== true) continue
       messages.set(message.id, message)
     }
@@ -42,22 +50,45 @@ export function mergeChatMessages(...sources: readonly (readonly Message[])[]): 
   return order.map((id) => messages.get(id)!)
 }
 export function acceptAgentChatState(previous: AgentChatState | undefined, incoming: AgentChatState, source: 'read' | 'receipt' = 'receipt'): AgentChatState {
+  const qualificationChanged = previous?.qualificationKey !== incoming.qualificationKey
+  if (previous && sameAgentChatContext(previous.context, incoming.context) && source === 'receipt' && previous.qualificationKey !== incoming.qualificationKey) {
+    incoming = { ...incoming, qualificationKey: previous.qualificationKey,
+      capabilities: { ...previous.capabilities, resume: previous.capabilities.resume && incoming.capabilities.resume,
+        queueNextTurn: previous.capabilities.queueNextTurn && incoming.capabilities.queueNextTurn,
+        interruptAndSend: previous.capabilities.interruptAndSend && incoming.capabilities.interruptAndSend,
+        steer: previous.capabilities.steer === incoming.capabilities.steer ? previous.capabilities.steer : 'unavailable' },
+      availability: previous.availability.canSend && incoming.availability.canSend ? previous.availability : { ...incoming.availability, canSend: false },
+      responseAvailability: incoming.responseAvailability?.available === false ? incoming.responseAvailability : previous.responseAvailability }
+  }
   if (previous && sameAgentChatContext(previous.context, incoming.context)) {
     // A GET started before the first POST may still return `none` after its receipt arrived.
     if (previous.conversation && !incoming.conversation && incoming.revision <= previous.revision) return previous
     if (previous.conversation?.id === incoming.conversation?.id) {
-      if (incoming.revision < previous.revision) return previous
-      if (incoming.revision === previous.revision) {
+      if (previous.activitySnapshot && !incoming.activitySnapshot) return previous
+      const revisionOrder = previous.activitySnapshot && incoming.activitySnapshot
+        ? BigInt(incoming.activitySnapshot.revision) < BigInt(previous.activitySnapshot.revision) ? -1 : BigInt(incoming.activitySnapshot.revision) > BigInt(previous.activitySnapshot.revision) ? 1 : 0
+        : incoming.revision < previous.revision ? -1 : incoming.revision > previous.revision ? 1 : 0
+      if (previous.activitySnapshot && incoming.activitySnapshot && activityScopeKey(previous.activitySnapshot.scope) !== activityScopeKey(incoming.activitySnapshot.scope)) return previous
+      if (previous.activitySnapshot && incoming.activitySnapshot && sourceVectorIsStale(previous.activitySnapshot, incoming.activitySnapshot)) return previous
+      if (revisionOrder < 0) {
+        if (!incoming.activitySnapshot || !previous.activitySnapshot) return previous
+        return { ...previous, activitySnapshot: reconcileActivitySnapshot(previous.activitySnapshot, incoming.activitySnapshot, previous.activitySnapshot.scope)! }
+      }
+      if (revisionOrder === 0) {
         // Conversation revisions cover persisted lifecycle, not current Run/setup qualification.
         // Only an authorized read can refresh those separately qualified facts; receipt replay cannot.
-        return source === 'read' ? { ...previous, capabilities: incoming.capabilities, availability: incoming.availability } : previous
+        if (source === 'receipt' && !incoming.activitySnapshot && !qualificationChanged) return previous
+        const activitySnapshot = incoming.activitySnapshot ? reconcileActivitySnapshot(previous.activitySnapshot, incoming.activitySnapshot, incoming.activitySnapshot.scope) : previous.activitySnapshot
+        if (source === 'receipt' && !qualificationChanged) return { ...previous, ...(activitySnapshot ? { activitySnapshot } : {}) }
+        return { ...previous, ...(activitySnapshot ? { activitySnapshot } : {}), capabilities: incoming.capabilities, availability: incoming.availability, responseAvailability: incoming.responseAvailability, qualificationKey: incoming.qualificationKey }
       }
     }
   }
   const previousMessages = previous?.conversation?.id === incoming.conversation?.id ? previous?.messages : undefined
   const complete = new Map(previousMessages?.filter((message) => message.nativeMessageComplete === true).map((message) => [message.id, message]))
-  return { ...incoming, messages: mergeChatMessages(incoming.messages.map((message) =>
-    message.nativeMessageComplete !== true && complete.has(message.id) ? complete.get(message.id)! : message)),
+  const activitySnapshot = incoming.activitySnapshot ? reconcileActivitySnapshot(previous?.activitySnapshot, incoming.activitySnapshot, incoming.activitySnapshot.scope) : undefined
+  return { ...incoming, ...(activitySnapshot ? { activitySnapshot } : {}), messages: mergeChatMessages(previousMessages ?? [], incoming.messages.map((message) =>
+    message.nativeMessageComplete !== true && complete.has(message.id) ? complete.get(message.id)! : message)).filter((message) => incoming.messages.some((entry) => entry.id === message.id)),
     turns: [...new Map(incoming.turns.map((turn) => [turn.requestId, turn])).values()]
       .sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0) }
 }
@@ -94,6 +125,10 @@ export function intentUnavailable(state: AgentChatState, intent: AgentChatIntent
 /** A response must address the exact pending request in this conversation, not a workflow approval. */
 export function approvalReplyAvailable(state: AgentChatState): boolean {
   const pending = state.pendingInteraction
+  if (!state.responseAvailability?.available || state.responseAvailability.nativeRequestId !== pending?.turn.nativeRequestId
+    || state.responseAvailability.nativeSessionId !== pending?.session.nativeSessionId
+    || state.responseAvailability.nativeRequestType !== pending?.nativeRequestType
+    || state.responseAvailability.nativeTurnId && state.responseAvailability.nativeTurnId !== pending?.turn.nativeTurnId) return false
   return !!pending?.turn.nativeRequestId && !!state.conversation?.nativeSession
     && pending.session.nativeSessionId === state.conversation.nativeSession.nativeSessionId
     && pending.session.harness === state.conversation.harness
