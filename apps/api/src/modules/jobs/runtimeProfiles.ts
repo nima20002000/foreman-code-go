@@ -1,7 +1,7 @@
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { JobRuntimeApprovalSchema, JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, JobRuntimeProfileSchema, JobRuntimeProfileSaveSchema,
+import { JobRuntimeApprovalSchema, JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, JobRuntimeNativeAdmissionSchema, JobRuntimeProfileSchema, JobRuntimeProfileSaveSchema,
   JobRuntimeQualificationRequestSchema, type JobRuntimeProfile, type JobRuntimeProfileSave, type JobRuntimeApproval } from '@graphql/contracts/job-runtime'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { SourceRootRecord } from '@graphql/contracts/source-admission'
@@ -154,11 +154,11 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     return this.transaction(async sql=>{
       await this.authorize(sql,principal,workspaceId)
       const approval=await this.approval(sql,workspaceId,id),profile=await this.record(sql,workspaceId,approval.profileId)
-      const row=(await sql.query<{measurement:unknown;run_result:JobRuntimeQualificationResult|null}>('select measurement,run_result from job_runtime_qualification_approvals where id=$1',[id])).rows[0]!
+      const row=(await sql.query<{measurement:unknown;run_result:JobRuntimeQualificationResult|null;native_admission:unknown}>('select measurement,run_result,native_admission from job_runtime_qualification_approvals where id=$1',[id])).rows[0]!
       const measurement=row.measurement?JobRuntimeMeasurementSchema.parse(row.measurement):null
       const readiness=profile.status==='qualified'&&measurement&&Date.parse(measurement.expiresAt)>Date.now()?await this.producer.revalidate(sql,profile):{ready:false,reasons:row.run_result?.outcome==='denied'?row.run_result.reasons:[`RUNTIME_${profile.status.toUpperCase().replaceAll('-','_')}`]}
       await this.authorize(sql,principal,workspaceId)
-      return {approval,measurement,profile,readiness:{...readiness,sideEffects:false as const}}
+      return {approval,measurement,nativeAdmission:row.native_admission?JobRuntimeNativeAdmissionSchema.parse(row.native_admission):null,profile,readiness:{...readiness,sideEffects:false as const}}
     })
   }
   private async approval(sql:JobSql,workspaceId:string,id:string,lock=false):Promise<JobRuntimeApproval> {
