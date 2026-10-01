@@ -49,16 +49,21 @@ export class DeviceEndpoint {
   private async authenticateInternal(headers: { authorization?: string; cookie?: string; origin?: string }): Promise<AuthenticatedDevice> {
     if (this.pending.size >= 32) throw new DeviceConnectionError('backpressure')
     const abort = new AbortController(); this.pending.add(abort)
+    let physicalAuthentication: Promise<AuthenticatedDevice> | undefined
     try {
       if (this.closed || headers.cookie !== undefined || headers.origin !== undefined || !headers.authorization?.startsWith('Bearer ')) throw new DeviceConnectionError('authentication')
       let principal: AuthenticatedDevice
-      try { principal = await withDeviceDeadline(this.track(this.options.auth.authenticateDevice(headers.authorization.slice(7), 'connect')), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { throw authorizationFailure(error) }
+      try {
+        physicalAuthentication = this.track(this.options.auth.authenticateDevice(headers.authorization.slice(7), 'connect'))
+        void physicalAuthentication.then(() => this.pending.delete(abort), () => this.pending.delete(abort))
+        principal = await withDeviceDeadline(physicalAuthentication, abort.signal, this.options.handshakeMs ?? 10_000)
+      } catch (error) { throw authorizationFailure(error) }
       if (this.closed || abort.signal.aborted) throw new DeviceConnectionError('transport')
       if (principal.audience !== 'graphql-worker' || principal.mainId !== this.options.mainId) throw new DeviceConnectionError('wrong-main')
       if (principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
       this.tickets.add(principal)
       return principal
-    } finally { abort.abort(); this.pending.delete(abort) }
+    } finally { abort.abort(); if (!physicalAuthentication) this.pending.delete(abort) }
   }
   accept(headers: { authorization?: string; cookie?: string; origin?: string }, socket: DeviceSocket): Promise<void> { return this.track(this.acceptInternal(headers, socket)) }
   private async acceptInternal(headers: { authorization?: string; cookie?: string; origin?: string }, socket: DeviceSocket): Promise<void> {
@@ -124,7 +129,7 @@ export class DeviceEndpoint {
       this.channels.set(principal.deviceId, channel); this.allChannels.add(channel)
       const channelTask = channel.run(iterator, this.options.heartbeatMs ?? 30_000).catch((error: unknown) => { abort.abort(); throw error })
       void channelTask.catch(() => undefined)
-      this.track(channelTask.catch(() => undefined).then(() => channel.join()).finally(() => this.allChannels.delete(channel)))
+      void this.track(channelTask.catch(() => undefined).then(() => channel.join()).finally(() => this.allChannels.delete(channel)))
       await withDeviceDeadline(this.track(this.options.reconcile(binding, abort.signal)), abort.signal, this.options.handshakeMs ?? 10_000)
       if (!current()) throw new DeviceConnectionError('transport')
       if (!session?.presence || this.sessions.get(principal.deviceId)?.abort !== abort) throw new DeviceConnectionError('transport')

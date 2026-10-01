@@ -96,6 +96,15 @@ describe('device-only carrier and lifecycle', () => {
     raw.frame({ type: 'blocked', code: 'incompatible-protocol' }); raw.close()
     await expect(adapted.messages[Symbol.asyncIterator]().next()).rejects.toThrow('incompatible-protocol')
   })
+  it('retains the handshake admission bound until cancelled physical auth queries settle', async () => {
+    vi.useFakeTimers(); const { endpoint, auth } = makeEndpoint(), releases: Array<(value: AuthenticatedDevice) => void> = []
+    auth.authenticateDevice.mockImplementation(() => new Promise((resolve) => { releases.push(resolve) }))
+    const pending = Array.from({ length: 32 }, () => endpoint.authenticate({ authorization: 'Bearer device' })); for (const task of pending) void task.catch(() => {})
+    await vi.advanceTimersByTimeAsync(101); await Promise.allSettled(pending)
+    await expect(endpoint.authenticate({ authorization: 'Bearer device' })).rejects.toThrow('backpressure'); expect(auth.authenticateDevice).toHaveBeenCalledTimes(32)
+    endpoint.close(); let joined = false; const drain = endpoint.join().then(() => { joined = true }); await flush(); expect(joined).toBe(false)
+    for (const release of releases) release(principal); await drain; expect(joined).toBe(true); expect(vi.getTimerCount()).toBe(0)
+  })
   it('joins a physical reconciliation callback even after its handshake wrapper is cancelled', async () => {
     let finish!: () => void; let entered = false
     const { endpoint, presence } = makeEndpoint(undefined, 100, async () => { entered = true; await new Promise<void>((resolve) => { finish = resolve }) })
@@ -228,7 +237,8 @@ describe('pinned ws adapter on disposable loopback transport', () => {
     const worker = new DeviceConnectionSupervisor({ identity, appVersion: 'build', mainPublicKeyFingerprint: fingerprint, connect, reconcile: async () => {}, heartbeatMs: 20, extensions: [{ ...mainExtension, handle: workerHandler }] })
     try {
       worker.start(); await vi.waitFor(() => expect(worker.status().phase).toBe('ready'), { timeout: 2000, interval: 10 })
-      await vi.waitFor(() => expect(endpoint.capabilities(identity.deviceId)).toHaveLength(1))
+      await vi.waitFor(() => expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toBeDefined())
+      expect(endpoint.capabilities(identity.deviceId)).toHaveLength(1)
       expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'ready', dispatch: true, transfer: false }); expect(synchronizedReply).toMatchObject({ receipt: 'actual-handler' })
       await expect(endpoint.request(identity.deviceId, 'execution-v1', { grant: 'heartbeat-only' })).rejects.toThrow('forbidden')
       const captured = endpoint.captureRequest(identity.deviceId, 'execution-v1')!
