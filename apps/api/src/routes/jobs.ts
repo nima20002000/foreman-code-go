@@ -3,12 +3,13 @@ import { z } from 'zod'
 import { JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobStartSchema } from '@graphql/contracts/jobs'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { JobService } from '../modules/jobs/service.js'
-interface Scope {workspaceId:string;definitionId:string;executionId:string;fileId:string;revisionId:string}
+interface Scope {workspaceId:string;definitionId:string;versionId:string;executionId:string;fileId:string;revisionId:string}
 export function registerJobRoutes(app:FastifyInstance,service:JobService):void {
   const root='/api/management/workspaces/:workspaceId/jobs'
   app.get<{Params:Scope}>(`${root}/choices`,async request=>service.choices(requirePrincipal(request),request.params.workspaceId))
   app.get<{Params:Scope}>(`${root}/definitions`,async request=>({definitions:await service.listDefinitions(requirePrincipal(request),request.params.workspaceId)}))
   app.get<{Params:Scope}>(`${root}/definitions/:definitionId`,async request=>({definition:await service.getDefinition(requirePrincipal(request),request.params.workspaceId,request.params.definitionId)}))
+  app.get<{Params:Scope}>(`${root}/definitions/:definitionId/versions/:versionId`,async request=>({definition:await service.getDefinitionVersion(requirePrincipal(request),request.params.workspaceId,request.params.definitionId,request.params.versionId)}))
   app.post<{Params:Scope;Body:unknown}>(`${root}/definitions`,async request=>({definition:await service.saveDefinition(requirePrincipal(request),'http',request.params.workspaceId,JobDefinitionSaveSchema.parse(request.body))}))
   app.post<{Params:Scope;Body:unknown}>(`${root}/validate`,async request=>service.validate(requirePrincipal(request),request.params.workspaceId,z.object({spec:JobDefinitionSpecSchema}).strict().parse(request.body).spec))
   app.post<{Params:Scope;Body:unknown}>(`${root}/executions`,async request=>({execution:await service.start(requirePrincipal(request),'http',request.params.workspaceId,JobStartSchema.parse(request.body))}))

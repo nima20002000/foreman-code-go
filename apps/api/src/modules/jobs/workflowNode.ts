@@ -8,6 +8,7 @@ import type { WorkflowJobPreparation } from './workflowPreparation.js'
 export interface WorkflowJobNodeStore {
   prepareJob(ref:RepeatNodeRef):Promise<WorkflowJobAdmission>
   admitPreparedJob(ref:RepeatNodeRef,preparation:WorkflowJobPreparation,spec:PreparedJobSpec):Promise<JobExecution>
+  observeJobState(ref:RepeatNodeRef,executionId:string):Promise<JobExecution>
   acceptJobTerminal(ref:RepeatNodeRef,executionId:string):Promise<RepeatResolution>
 }
 export function workflowJobNodeAction(input:{runId:string;store:WorkflowJobNodeStore;driver:WorkflowJobDriver;limiter:ExecutionLimiter;signal:AbortSignal}) {
@@ -20,7 +21,7 @@ export function workflowJobNodeAction(input:{runId:string;store:WorkflowJobNodeS
     if(admitted.kind==='resolved')resolution=admitted.resolution
     else {
       const execution=admitted.kind==='admitted'?admitted.execution:await input.store.admitPreparedJob(ref,admitted.preparation,await input.driver.prepare(admitted.preparation,input.signal))
-      await input.limiter.run(input.signal,()=>input.driver.observe(execution,input.signal))
+      await input.limiter.run(input.signal,()=>input.driver.observe(execution,input.signal,()=>input.store.observeJobState(ref,execution.id)))
       input.signal.throwIfAborted()
       resolution=await input.store.acceptJobTerminal(ref,execution.id)
     }

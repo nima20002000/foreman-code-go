@@ -30,9 +30,9 @@ export class JobService {
     requireAuthorization(live,action,{workspaceId})
     return live
   }
-  private async read<T>(principal: ManagementPrincipal, workspaceId: string, action: ManagementAction, work:(sql: pg.PoolClient, live: ManagementPrincipal)=>Promise<T>):Promise<T> {
+  private async read<T>(principal: ManagementPrincipal, workspaceId: string, action: ManagementAction, work:(sql: pg.PoolClient, live: ManagementPrincipal)=>Promise<T>,source:'http'|'mcp'='http'):Promise<T> {
     try { requireAuthorization(principal,action,{workspaceId}) } catch(error) {
-      await this.commands.recordDenied(principal.id,'http',action,workspaceId); throw error
+      await this.commands.recordDenied(principal.id,source,action,workspaceId); throw error
     }
     const sql = await this.pool.connect()
     let releaseError: Error | undefined
@@ -58,8 +58,8 @@ export class JobService {
       perform:async sql => { await lockActiveWorkspace(sql,workspaceId); const value=await perform(sql,live); await this.authorize(sql,principal,workspaceId,action); return value },
     })).value
   }
-  choices(principal:ManagementPrincipal,workspaceId:string) {
-    return this.read(principal,workspaceId,'job_definitions:read',(sql,live)=>this.ports.preparation.choices(sql,live,workspaceId))
+  choices(principal:ManagementPrincipal,workspaceId:string,source:'http'|'mcp'='http') {
+    return this.read(principal,workspaceId,'job_definitions:read',(sql,live)=>this.ports.preparation.choices(sql,live,workspaceId),source)
   }
   readArtifact(principal:ManagementPrincipal,workspaceId:string,id:string,fileId:string,revisionId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_artifacts:read',async(sql,live)=>{
@@ -71,13 +71,16 @@ export class JobService {
         throw new DomainError('JOB_ARTIFACT_INVALID','The exact artifact bytes are missing, expired or corrupt.',409)
       }
       return {artifact,bytes:result.bytes}
-    })
+    },source)
   }
-  listDefinitions(principal:ManagementPrincipal, workspaceId:string) {
-    return this.read(principal,workspaceId,'job_definitions:read',async sql => (await sql.query<{record:unknown}>('select record from job_definitions where workspace_id=$1 order by id limit 100',[workspaceId])).rows.map(row=>JobDefinitionSchema.parse(row.record)))
+  listDefinitions(principal:ManagementPrincipal, workspaceId:string,source:'http'|'mcp'='http') {
+    return this.read(principal,workspaceId,'job_definitions:read',async sql => (await sql.query<{record:unknown}>('select record from job_definitions where workspace_id=$1 order by id limit 100',[workspaceId])).rows.map(row=>JobDefinitionSchema.parse(row.record)),source)
   }
-  getDefinition(principal:ManagementPrincipal,workspaceId:string,id:string) {
-    return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.definition(sql,workspaceId,id))
+  getDefinition(principal:ManagementPrincipal,workspaceId:string,id:string,source:'http'|'mcp'='http') {
+    return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.definition(sql,workspaceId,id),source)
+  }
+  getDefinitionVersion(principal:ManagementPrincipal,workspaceId:string,definitionId:string,versionId:string,source:'http'|'mcp'='http') {
+    return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.version(sql,workspaceId,versionId,definitionId),source)
   }
   async saveDefinition(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobDefinitionSave) {
     const input = parse(JobDefinitionSaveSchema,raw)
@@ -94,9 +97,9 @@ export class JobService {
       return value
     })
   }
-  validate(principal:ManagementPrincipal,workspaceId:string,raw:JobDefinitionSpec) {
+  validate(principal:ManagementPrincipal,workspaceId:string,raw:JobDefinitionSpec,source:'http'|'mcp'='http') {
     const spec=parse(JobDefinitionSpecSchema,raw)
-    return this.read(principal,workspaceId,'job_definitions:read',(sql,live)=>this.ports.preparation.validate(sql,live,workspaceId,spec))
+    return this.read(principal,workspaceId,'job_definitions:read',(sql,live)=>this.ports.preparation.validate(sql,live,workspaceId,spec),source)
   }
   private async transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>):Promise<T> {
     const sql=await this.pool.connect()
@@ -146,7 +149,7 @@ export class JobService {
       }})
     const execution=JobExecutionSchema.parse(result.value)
     await this.ports.dispatch.wake(execution.id).catch(()=>undefined)
-    return this.read(principal,workspaceId,'jobs:start',sql=>this.repository.execution(sql,workspaceId,execution.id))
+    return this.read(principal,workspaceId,'jobs:start',sql=>this.repository.execution(sql,workspaceId,execution.id),source)
   }
   prepareDefinition(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,identity:{executionId:string;attemptId:string;operationId:string}) {
     return this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,identity)
@@ -182,11 +185,11 @@ export class JobService {
     await this.ports.preparation.adoptFinalBinding(sql,principal,execution)
     return execution
   }
-  getExecution(principal:ManagementPrincipal,workspaceId:string,id:string) {
-    return this.read(principal,workspaceId,'jobs:read',sql=>this.repository.execution(sql,workspaceId,id))
+  getExecution(principal:ManagementPrincipal,workspaceId:string,id:string,source:'http'|'mcp'='http') {
+    return this.read(principal,workspaceId,'jobs:read',sql=>this.repository.execution(sql,workspaceId,id),source)
   }
-  listExecutions(principal:ManagementPrincipal,workspaceId:string) {
-    return this.read(principal,workspaceId,'jobs:read',async sql=>(await sql.query<{record:unknown}>('select record from job_executions where workspace_id=$1 order by id desc limit 100',[workspaceId])).rows.map(row=>JobExecutionSchema.parse(row.record)))
+  listExecutions(principal:ManagementPrincipal,workspaceId:string,source:'http'|'mcp'='http') {
+    return this.read(principal,workspaceId,'jobs:read',async sql=>(await sql.query<{record:unknown}>('select record from job_executions where workspace_id=$1 order by id desc limit 100',[workspaceId])).rows.map(row=>JobExecutionSchema.parse(row.record)),source)
   }
   async cancel(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,id:string,commandId:string) {
     parse(z.string().min(1),commandId)
@@ -200,21 +203,21 @@ export class JobService {
       return {executionId:id}
     })
     await this.ports.dispatch.wake(id).catch(()=>undefined)
-    return this.read(principal,workspaceId,'jobs:cancel',sql=>this.repository.execution(sql,workspaceId,id))
+    return this.read(principal,workspaceId,'jobs:cancel',sql=>this.repository.execution(sql,workspaceId,id),source)
   }
-  readLogs(principal:ManagementPrincipal,workspaceId:string,id:string,afterSequence:number,limit:number) {
+  readLogs(principal:ManagementPrincipal,workspaceId:string,id:string,afterSequence:number,limit:number,source:'http'|'mcp'='http') {
     parse(z.number().int().nonnegative(),afterSequence); parse(z.number().int().min(1).max(100),limit)
     return this.read(principal,workspaceId,'job_logs:read',async sql=>{
       await this.repository.execution(sql,workspaceId,id)
       const chunks=await this.repository.logs(sql,id,afterSequence,limit)
       const row=(await sql.query<{log_truncated:boolean}>('select log_truncated from job_executions where id=$1',[id])).rows[0]!
       return JobLogPageSchema.parse({chunks,nextCursor:chunks.at(-1)?.sequence??afterSequence,truncated:row.log_truncated,gap:null})
-    })
+    },source)
   }
-  listArtifacts(principal:ManagementPrincipal,workspaceId:string,id:string) {
+  listArtifacts(principal:ManagementPrincipal,workspaceId:string,id:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_artifacts:read',async(sql,live)=>{
       await this.repository.execution(sql,workspaceId,id)
       return this.ports.artifacts.list(sql,live,workspaceId,id)
-    })
+    },source)
   }
 }

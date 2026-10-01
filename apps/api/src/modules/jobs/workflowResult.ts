@@ -11,9 +11,9 @@ export function workflowJobResult(version:WorkflowVersionV3,ref:RepeatNodeRef,ex
   if(execution.workflow?.workflowId!==version.workflowId||execution.workflow.nodeId!==node.id||execution.acceptedSpec.definitionId!==node.jobDefinitionId||execution.acceptedSpec.definitionVersionId!==node.jobDefinitionVersionId)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT')
   if(execution.process.phase!=='terminal'||!execution.process.processStopped||!execution.process.outcome||!execution.finishedAt||['pending','collecting'].includes(execution.publication))repeatConflict('JOB_RESULT_PENDING')
   const ready=execution.publication==='complete'&&!execution.resultIssue
-  const outcome=ready?execution.process.outcome:execution.resultIssue==='log_overflow'||execution.resultIssue==='log_delivery_unknown'?'logs_incomplete':'output_failed'
+  const outcome=execution.process.outcome!=='succeeded'?execution.process.outcome:ready?'succeeded':execution.resultIssue==='log_overflow'||execution.resultIssue==='log_delivery_unknown'?'logs_incomplete':'output_failed'
   const data={latestDeliverable:{jobExecutionId:execution.id,process:{outcome:execution.process.outcome,exitCode:execution.process.exitCode,signal:execution.process.signal},
-    artifacts:artifacts.map(({fileId,revisionId,sha256,byteSize,path})=>({fileId,revisionId,sha256,byteSize,path}))},
+    publication:execution.publication,resultIssue:execution.resultIssue,artifacts:artifacts.map(({fileId,revisionId,sha256,byteSize,path})=>({fileId,revisionId,sha256,byteSize,path}))},
     remainingFindings:outcome==='succeeded'?[]:[{outcome,exitCode:execution.process.exitCode,publication:execution.publication}]}
   const routed=node.choice?.outcomes.find(item=>item.outcome===outcome)
   const accepted=!!routed||(outcome==='succeeded'&&!node.choice)

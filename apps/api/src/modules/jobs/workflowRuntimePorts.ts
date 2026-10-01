@@ -15,5 +15,5 @@ export interface WorkflowJobLockedPort {
 export interface WorkflowJobDriver {
   /** Source/byte I/O happens outside the owner's GraphTransactionSql. */
   prepare(preparation:WorkflowJobPreparation,signal:AbortSignal):Promise<PreparedJobSpec>
-  observe(execution:JobExecution,signal:AbortSignal):Promise<void>
+  observe(execution:JobExecution,signal:AbortSignal,observe:()=>Promise<JobExecution>):Promise<void>
 }

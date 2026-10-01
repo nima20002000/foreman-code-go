@@ -107,6 +107,7 @@ export type JobValidation = z.infer<typeof JobValidationSchema>
 export interface JobsService {
   listDefinitions(workspaceId: string): Promise<JobDefinition[]>
   getDefinition(workspaceId: string, id: string): Promise<JobDefinition>
+  getDefinitionVersion(workspaceId:string,id:string,versionId:string):Promise<JobDefinition>
   saveDefinition(workspaceId: string, input: JobDefinitionSave): Promise<JobDefinition>
   validate(workspaceId: string, spec: JobDefinitionSpec): Promise<JobValidation>
   start(workspaceId: string, input: JobStart): Promise<JobExecution>

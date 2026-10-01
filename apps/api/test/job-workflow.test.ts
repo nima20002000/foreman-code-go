@@ -26,6 +26,13 @@ describe('existing workflow job result path',()=>{
     expect(result.resolution.value).toMatchObject({resolution:'succeeded',outcome:'build_failed',branchEnded:true})
     expect(result.result.output).toMatchObject({routing:{outcome:'build_failed'},data:{latestDeliverable:{process:{outcome:'build_failed',exitCode:7}}}})
   })
+  it('retains the observed build failure when required output publication also failed',()=>{
+    const {version,execution,node}=fixture();node.choice={outcomes:[{outcome:'build_failed',target:{kind:'branch_end'}}]}
+    execution.publication='failed';execution.resultIssue='missing_output'
+    const result=workflowJobResult(version,{nodeId:'build',occurrence:null},execution,[])
+    expect(result.resolution.value.outcome).toBe('build_failed')
+    expect(result.result.output).toMatchObject({data:{latestDeliverable:{publication:'failed',resultIssue:'missing_output',process:{outcome:'build_failed',exitCode:7}}}})
+  })
   it('does not advance before required publication is durable',()=>{
     const {version,execution}=fixture();execution.publication='collecting'
     expect(()=>workflowJobResult(version,{nodeId:'build',occurrence:null},execution,[])).toThrow()
@@ -34,7 +41,7 @@ describe('existing workflow job result path',()=>{
     const {version,execution,runId}=fixture();execution.process.outcome='succeeded';execution.process.exitCode=0
     const resolution=workflowJobResult(version,{nodeId:'build',occurrence:null},execution,[]).resolution
     let prepares=0,observes=0
-    const action=workflowJobNodeAction({runId,signal:new AbortController().signal,limiter:new ExecutionLimiter(1),driver:{prepare:async()=>{prepares++;throw new Error('Unexpected prep')},observe:async()=>{observes++}},store:{prepareJob:async()=>({kind:'resolved',resolution}),admitPreparedJob:async()=>{throw new Error('Unexpected admission')},acceptJobTerminal:async()=>resolution}})
+    const action=workflowJobNodeAction({runId,signal:new AbortController().signal,limiter:new ExecutionLimiter(1),driver:{prepare:async()=>{prepares++;throw new Error('Unexpected prep')},observe:async()=>{observes++}},store:{observeJobState:async()=>{throw new Error('Unexpected observation')},prepareJob:async()=>({kind:'resolved',resolution}),admitPreparedJob:async()=>{throw new Error('Unexpected admission')},acceptJobTerminal:async()=>resolution}})
     expect(await action({nodeId:'build',occurrence:null},{runId,occurrences:{},boundaries:{},executionIds:{}})).toMatchObject({executionIds:{build:{executionId:execution.id,occurrenceId:null}}})
     expect(prepares).toBe(0);expect(observes).toBe(0)
   })

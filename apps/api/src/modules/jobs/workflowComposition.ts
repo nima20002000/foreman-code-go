@@ -50,10 +50,15 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
       verifyResult:async(sql,execution)=>{
         owner.assertOwned();await owner.readOneShotFence(sql)
         if(execution.workflow?.runId!==owner.runId||execution.workflow.workflowId!==version.workflowId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The settled Job belongs to another Run.',409)
-        const row=(await sql.query<{last_receipt:unknown}>('select last_receipt from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
+        const row=(await sql.query<{last_receipt:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select last_receipt,delivery_attempted,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
+        if(row && !row.delivery_attempted && row.last_receipt===null && row.cancel_command_id && row.cancel_principal_id && row.cancel_action && execution.process.outcome==='cancelled' && execution.process.processStopped && execution.startedAt===null && execution.finishedAt && execution.publication==='complete') {
+          const actor=await readLiveManagementPrincipal(sql,row.cancel_principal_id)
+          requireAuthorization(actor,row.cancel_action,{workspaceId:execution.workspaceId,workflowId:version.workflowId,runId:owner.runId})
+          return // Durable main cancellation before delivery is positive no-launch evidence, not a fabricated worker receipt.
+        }
         const receipt=RemoteJobOperationReceiptSchema.parse(row?.last_receipt)
         if(!receipt.terminal||receipt.intent.executionId!==execution.id||receipt.intent.attemptId!==execution.attemptId||receipt.intent.bindingHash!==execution.acceptedSpec.bindingHash||!execution.process.processStopped||execution.process.phase!=='terminal'||['pending','collecting'].includes(execution.publication))throw new DomainError('JOB_RESULT_PENDING','The original durable process/output result is not settled.',409)
-        if(execution.publication==='complete')await input.outputs.verifyRequiredOutputs(sql,execution)
+        if(execution.publication==='complete'&&execution.process.outcome==='succeeded')await input.outputs.verifyRequiredOutputs(sql,execution)
       },
     }
     const driver:WorkflowJobDriver={
@@ -64,11 +69,11 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
         const spec=await input.jobs.prepareDefinition(owner.oneShotConnection(),captured.principal,captured.definition,preparation)
         signal.throwIfAborted();owner.assertOwned();return spec
       },
-      observe:async(execution,signal)=>{
+      observe:async(execution,signal,observe)=>{
         signal.throwIfAborted();await input.dispatch.wake(execution.id)
         try {while(true) {
           owner.assertOwned();signal.throwIfAborted()
-          const current=await owner.oneShotConnection().transaction(sql=>locked.read(sql,execution.id))
+          const current=await observe()
           if(current.process.phase==='terminal'&&!['pending','collecting'].includes(current.publication))return
           await new Promise<void>((resolve,reject)=>{
             const abort=()=>{clearTimeout(timer);reject(signal.reason)}
