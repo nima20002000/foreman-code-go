@@ -39,7 +39,12 @@ export async function openChildDirectory(parent: FileHandle, name: string, creat
   const child = await open(anchored(parent, name), directoryFlags)
   const stat = await child.stat()
   if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) { await child.close(); throw new SourceError('SOURCE_DIRECTORY_NOT_PRIVATE', 'Materialization parents must be private worker directories.') }
-  return child
+  try {
+    const parentIdentity = await identity(parent), childIdentity = await identity(child)
+    if (parentIdentity.device !== childIdentity.device || parentIdentity.mountId !== childIdentity.mountId)
+      throw new SourceError('SOURCE_MOUNT_CHANGED', 'Source entries cannot cross a filesystem or mount boundary.')
+    return child
+  } catch (error) { await child.close(); throw error }
 }
 export async function entryParent(root: FileHandle, path: string, create: boolean): Promise<{ parent: FileHandle; leaf: string }> {
   const components = path.split('/'); const leaf = components.pop()!
