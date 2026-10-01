@@ -42,7 +42,7 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
   const claim = async (optionId = 'allow_once', generation = identity.generation) => {
     if (kind === 'operator') expect(await operator.claimResponse('conversation', 'model-request', identity.nativeRequestId)).toBe(true)
     // Existing NativeConversationControlCommands persisted reservation fixture, including actual observed generation.
-    receipts = [{ principal_id: 'responder', result: { status: 'pending', acceptedControl: { modelRequestId: 'model-request', conversationId: 'conversation', scope: { kind: kind === 'operator' ? 'operator_chat' : 'agent_chat', conversationId: 'conversation', workspaceId: 'workspace', workflowId: 'workflow' }, native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId, messageId: identity.nativeMessageId, generation, requestId: identity.nativeRequestId, requestType: identity.nativeRequestType }, choice: { optionId } } } }]
+    receipts = [{ principal_id: 'responder', result: { status: 'pending', acceptedControl: { modelRequestId: 'model-request', conversationId: 'conversation', scope: { kind: kind === 'operator' ? 'operator_chat' : 'agent_chat', conversationId: 'conversation', workspaceId: 'workspace', workflowId: 'workflow' }, native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId, messageId: identity.nativeMessageId, generation, requestId: identity.nativeRequestId, requestType: identity.nativeRequestType }, choice: { optionId, semantic: optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel' } } } }]
   }
   return { ...port, row, principals, query, claim, manager }
 }

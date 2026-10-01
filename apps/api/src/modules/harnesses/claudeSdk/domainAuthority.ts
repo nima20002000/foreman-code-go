@@ -138,7 +138,7 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
     if (pending.session.nativeSessionId !== identity.nativeSessionId || pending.turn.nativeRequestId !== identity.nativeRequestId
       || (pending.request as Record<string, unknown>).generation !== identity.generation
       || this.binding.kind === 'operator' && row.response_delivery !== 'submitted') denied()
-    const receipt = (await this.database.query<{ principal_id: string; result: { acceptedControl: { modelRequestId: string; conversationId: string; scope: { kind: string; conversationId: string; workspaceId?: string; workflowId?: string }; native: { harness: string; providerVersion?: string; sessionId: string; messageId?: string; generation?: string; requestId: string; requestType: string }; choice: { optionId: string } } } }>(`select principal_id,result from management_command_receipts
+    const receipt = (await this.database.query<{ principal_id: string; result: { acceptedControl: { modelRequestId: string; conversationId: string; scope: { kind: string; conversationId: string; workspaceId?: string; workflowId?: string }; native: { harness: string; providerVersion?: string; sessionId: string; messageId?: string; generation?: string; requestId: string; requestType: string }; choice: { optionId: string; semantic: string } } } }>(`select principal_id,result from management_command_receipts
       where operation=$1 and target_key=$2 and result->>'status'='pending'
         and result->'acceptedControl'->>'modelRequestId'=$3
         and result->'acceptedControl'->'native'->>'requestId'=$4
@@ -146,7 +146,8 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
     [this.binding.kind === 'operator' ? 'operator_chat_control' : 'agent_chat_control', this.binding.conversationId, identity.attemptId, identity.nativeRequestId, optionId])).rows
     if (receipt.length !== 1) denied('CLAUDE_RESPONSE_CLAIM_REQUIRED')
     const control = receipt[0]!.result.acceptedControl
-    if (control.conversationId !== this.binding.conversationId || control.scope.conversationId !== this.binding.conversationId
+    if (control.choice.semantic !== (optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel')
+      || control.conversationId !== this.binding.conversationId || control.scope.conversationId !== this.binding.conversationId
       || control.native.harness !== 'claude' || control.native.providerVersion !== row.provider_version
       || (this.binding.kind === 'operator' ? control.scope.kind !== 'operator_chat' : !['agent_chat', 'selected_run_chat'].includes(control.scope.kind)
         || control.scope.workspaceId !== row.workspace_id || control.scope.workflowId !== row.workflow_id)
