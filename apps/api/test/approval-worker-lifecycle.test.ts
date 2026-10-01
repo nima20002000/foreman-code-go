@@ -21,7 +21,12 @@ const createdAt = '2026-09-16T00:00:00.000Z'
 
 afterEach(() => vi.restoreAllMocks())
 
+it('rejects unsupported Claude configuration before allocating worker fixture authority', () => {
+  expect(() => fixture('claude')).toThrow('supports only Codex and OpenCode')
+})
+
 function fixture(harness: AgentHarness = 'codex', started = true) {
+  if (harness === 'claude') throw new Error('Approval worker fixture supports only Codex and OpenCode')
   const configuration: AgentConfigurationVersion = {
     id: 'config-1', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: {}, assignedSkills: [], contentHash: 'sha256:pinned', createdAt,
@@ -41,6 +46,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
   }
   const context = {
     harness, executionId: execution.id, agentId: configuration.agentId, workingDirectory: '/project', configuration,
+    runId: execution.runId, attempt: execution.attempt,
   }
   const request: HarnessExecutionRequest = {
     executionId: execution.id, runId: execution.runId, workspaceId: configuration.workspaceId,

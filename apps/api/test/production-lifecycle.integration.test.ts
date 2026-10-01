@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -271,14 +272,14 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
     } : fixture.configurations[1]!.harness,
   }))
   const approval = { handler, ...(handler === 'orchestrator' ? { designatedOrchestratorAgentId: 'agent-researcher' } : {}) }
-  fixture.version = WorkflowVersionV3Schema.parse({ ...fixture.version, workspaceId, approval, entryNodeId: 'orchestrator',
+  fixture.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...fixture.version, workspaceId, approval, entryNodeId: 'orchestrator',
     agentConfigurationVersionIds: Object.fromEntries(fixture.configurations.map((item) => [item.agentId, item.id])),
     definition: { ...fixture.version.definition, workspaceId, nodes, entryNodeId: 'orchestrator', approval,
       edges: [ ...nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, kind: 'execution', source: nodes[index]!.id, target: node.id })),
         ...(handler === 'orchestrator' ? nodes.slice(1).map((node) => ({ id: `approval-${node.id}`, kind: 'approval', source: 'orchestrator', target: node.id })) : []) ],
       executionPolicy: { maxParallelism: 1, maxNodeExecutions: nodes.length },
     },
-  })
+  }))
   await seedAgent3(database.pool, project, fixture, { run: false })
   const issuer = await access.issue({ name: 'Run owner', audience: 'operator', grants: [{ actions: ['runs:start', 'runs:stop', 'workspace_locations:read', 'workspace_locations:update', 'interactions:read', 'interactions:respond'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
   const locations = new WorkspaceLocationService(database.pool, new PostgresCommandCoordinator(database.pool), root)

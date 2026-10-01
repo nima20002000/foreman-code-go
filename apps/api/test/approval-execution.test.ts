@@ -96,7 +96,12 @@ class ScriptedManager implements NativeHarnessSessionManager {
   async close(session: NativeSessionReference) { this.closed.push(session) }
 }
 
+it('rejects unsupported Claude configuration before allocating the approval fixture', () => {
+  assert.throws(() => fixture('claude'), /supports only Codex and OpenCode/)
+})
+
 function fixture(harness: AgentHarness = 'codex') {
+  if (harness === 'claude') throw new Error('Approval execution fixture supports only Codex and OpenCode')
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: {}, assignedSkills: [], contentHash: 'sha256:fixture', createdAt: now,

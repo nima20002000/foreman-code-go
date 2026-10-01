@@ -185,7 +185,10 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
       await terminal(f, started.run.id)
       const after = RunBoardSnapshotGetResultSchema.parse(await parity(f, r.client, r.token, RUN_HISTORY_TOOLS.snapshot, snapshotScope(f, started.run.id)))
       if (after.snapshot.kind !== 'available') throw new Error('Run B must be captured')
-      expect(after.snapshot.nodes.some((node) => node.id === y.id || node.agentId === y.agentId)).toBe(false)
+      expect(after.snapshot.nodes.some((node) => {
+        if (node.kind === 'job') throw new Error('Historical Agent snapshot fixture requires Agent nodes')
+        return node.id === y.id || node.agentId === y.agentId
+      })).toBe(false)
       expect(after.snapshot.edges.some((edge) => edge.source === y.id || edge.target === y.id)).toBe(false)
       expect(after.snapshot.workflowVersionId).toBe(saved.version.id)
       expect(after.snapshot.nodes[0]).toMatchObject({ position: { x: 909, y: -33 }, size: { width: 480 } })

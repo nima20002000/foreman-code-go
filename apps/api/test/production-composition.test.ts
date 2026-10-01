@@ -158,6 +158,7 @@ it.each(['codex', 'opencode'] as const)('constructs separate native %s managers 
   expect(first.manager).toBeInstanceOf(harness === 'codex' ? CodexAppServerSessionManager : OpenCodeNativeSessionManager)
   expect(first.processState).toBe('needs_start')
   if (harness === 'opencode') {
+    if (configuration.harness.harness !== 'opencode') throw new Error('OpenCode composition fixture requires its actual provider configuration')
     expect(first.manager).toHaveProperty('options.ownerAgentId', context.agentId)
     expect(first.manager).toHaveProperty('options.server.options.workingDirectory', context.workingDirectory)
     expect(first.manager).toHaveProperty('options.server.advancedConfiguration', configuration.harness.advanced)

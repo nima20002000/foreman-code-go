@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { mkdtemp, mkdir, readdir, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -239,7 +240,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     const exact = await call('workflow_saved_get_v3', current.CurrentWorkflowReadResultSchema, { workspaceId, workflowId,
       workflowVersionId: saved.value.currentVersionId })
     expect(exact.version).toEqual(saved.value.version)
-    expect(exact.version.definition.nodes[0]?.graphqlTools).toEqual({ add: ['interaction_list'], remove: [] })
+    expect(agentWorkflowNode(exact.version.definition.nodes[0]).graphqlTools).toEqual({ add: ['interaction_list'], remove: [] })
     const readback = await call('workflow_get', current.SavedManagedWorkflowSchema, { workspaceId, workflowId })
     expect(readback.workflow.name).toBe('Renamed workflow')
     expect(readback.workflow.executionPolicy?.maxNodeExecutions).toBe(5)

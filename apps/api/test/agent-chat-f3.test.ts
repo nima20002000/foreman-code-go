@@ -34,6 +34,7 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 
 class MemoryConversations {
   row: AgentConversationRow | undefined
+  selection: { workflowVersionId: string; attemptKey: string } | null = null
   readonly turns: AgentChatTurn[] = []
   readonly unavailable: Array<{ message: string; reason: string }> = []
   abandonments = 0
@@ -42,7 +43,9 @@ class MemoryConversations {
   openRead: (() => Promise<AgentConversationRow[]>) | undefined
   async byKey() { return this.row }
   async get() { return this.row }
-  async state() { return { row: this.row!, turns: this.turns, messages: [], hasEarlierMessages: false } }
+  async state() { return { row: this.row!, turns: this.turns, messages: [], hasEarlierMessages: false,
+    selection: this.selection, activeStartedAt: null, latestRequestId: this.turns.at(-1)?.requestId ?? null,
+    unfinishedActivities: [], activityPage: { activities: [], nextCursor: null, itemRevisions: {} } } }
   async open() { return this.openRead ? this.openRead() : this.row ? [this.row] : [] }
   async restoreUnsettled() { return this.row }
   async unconfirmedSteers() { return [] }
@@ -130,12 +133,16 @@ async function setup(options: { harness?: 'codex' | 'opencode'; ephemeral?: bool
   else if (options.ephemeral && configuration.harness.harness === 'codex') {
     configuration.harness.advanced = { ...structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION), sessionPersistence: 'ephemeral' }
   }
+  if (configuration.harness.harness === 'claude') throw new Error('F3 fixture supports only Codex and OpenCode')
   const node = fixture.version.definition.nodes[0]!
   const context: AgentChatContext = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
     workflowNodeId: node.id, agentId: node.agentId }
   const repository = new MemoryConversations()
   const origin: AgentChatOrigin = options.origin ?? { kind: 'fresh' }
   if (origin.kind === 'run_execution') context.runId = origin.runId
+  if (origin.kind === 'run_execution') repository.selection = {
+    workflowVersionId: fixture.run.workflowVersionId, attemptKey: String(fixture.identities[0]!.attempt),
+  }
   repository.row = { id: 'conversation-f3', agent_key: agentChatKey(context), workspace_id: context.workspaceId, workflow_id: context.workflowId,
     workflow_node_id: node.id, agent_id: node.agentId, agent_configuration_version_id: configuration.id,
     origin_run_id: origin.kind === 'run_execution' ? origin.runId : null, origin_execution_id: origin.kind === 'run_execution' ? origin.executionId : null,
@@ -155,12 +162,31 @@ async function setup(options: { harness?: 'codex' | 'opencode'; ephemeral?: bool
     async *executionPages() { sourceReads++; for (const execution of source) yield [execution] } }
   const workflows = { getSavedVersion: async () => fixture.version, getCurrentSavedVersion: async () => fixture.version,
     getAgentConfiguration: async () => configuration }
-  const pool = { query: async () => ({ rows: [] }) } as unknown as pg.Pool
+  const query = async (text: string, values: unknown[] = []) => {
+    const sql = text.replace(/\s+/g, ' ').trim()
+    if (['begin', 'commit', 'rollback'].includes(sql)) return { rows: [] }
+    if (sql.includes('from management_principals')) return { rows: values[0] === principal.id
+      ? [{ id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
+        expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [] }
+    if (sql.startsWith("select * from operator_conversations where kind='agent'")) {
+      const row = repository.row
+      return { rows: row && JSON.stringify(values) === JSON.stringify([row.workspace_id, row.workflow_id,
+        row.origin_run_id, row.workflow_node_id, row.agent_id, row.origin_execution_id]) ? [row] : [] }
+    }
+    if (sql.startsWith('select s.reference from execution_native_sessions')) {
+      const origin = repository.row?.record.origin
+      return { rows: origin?.kind === 'run_execution' && values[0] === origin.executionId && values[1] === origin.runId
+        ? [{ reference: { harness: native.harness, providerVersion: (await native.capabilities()).providerVersion,
+          nativeSessionId: origin.sourceNativeSessionId } }] : [] }
+    }
+    throw new Error(`Unscripted F3 SQL: ${sql}`)
+  }
+  const pool = { query, connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
   function service() {
     const value = new AgentChatService(pool, repository as unknown as PostgresAgentChatRepository,
       {} as PostgresOperatorConversationRepository, workflows, runs as unknown as ConstructorParameters<typeof AgentChatService>[4], factory, root)
     ;(value as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
-      execute: async (...args: unknown[]) => (args.at(-1) as () => Promise<unknown>)(), drain: async () => undefined,
+      execute: async (...args: unknown[]) => (args[5] as () => Promise<unknown>)(), drain: async () => undefined,
     }
     cleanups.push(() => value.shutdown()); return value
   }
@@ -317,6 +343,9 @@ describe('F3 native availability and ownership', () => {
       executionId: 'a-newer-two', sourceNativeSessionId: 'source-a-newer-two' }
     f.repository.row = { ...originalRow, agent_key: agentChatKey(context), origin_run_id: selected.runId,
       origin_execution_id: selected.executionId, record: { ...originalRow.record, origin: selected } }
+    const captured = f.source.find((item) => item.id === selected.executionId && item.runId === selected.runId)
+    assert(captured)
+    f.repository.selection = { workflowVersionId: f.fixture.run.workflowVersionId, attemptKey: String(captured.attempt) }
     f.repository.begin('selected-fork')
     await f.chat['runtime'](f.repository.row, f.configuration, 'selected-fork', new AbortController().signal)
     assert.equal(f.native.calls[0]!.kind, 'fork'); assert.equal(f.native.calls[0]!.source, selected.sourceNativeSessionId)
