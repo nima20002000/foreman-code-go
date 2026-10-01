@@ -39,7 +39,7 @@ const PinnedRunNode = memo(function PinnedRunNode({ id, data }: NodeProps<RunNod
     onAction={ui?.panels && data.kind==='agent' ? (next) => ui.setOpen(panel === next ? undefined : { nodeId: id, panel: next }) : undefined}>
     <AgentHandles name={data.label} connectable={false} />
   </AgentNodeView>
-    {panel && ui?.panels && data.kind==='job'?<Dialog open title={data.label} description={`Selected Run · ${data.recorded}`} onOpenChange={value=>{if(!value)ui.setOpen(undefined)}}>{ui.panels(id,{kind:'job',jobDefinitionId:data.jobDefinitionId,jobDefinitionRevision:data.jobDefinitionRevision,jobDefinitionVersionId:data.jobDefinitionVersionId,name:data.label,workflowExecution:data.workflowExecution}).info}</Dialog>:null}
+    {panel && ui?.panels && data.kind==='job'?<Dialog open className="job-dialog" title={data.label} description={`Selected Run · ${data.recorded}`} onOpenChange={value=>{if(!value)ui.setOpen(undefined)}}>{ui.panels(id,{kind:'job',jobDefinitionId:data.jobDefinitionId,jobDefinitionRevision:data.jobDefinitionRevision,jobDefinitionVersionId:data.jobDefinitionVersionId,name:data.label,workflowExecution:data.workflowExecution}).info}</Dialog>:null}
     {panel && ui?.panels && data.kind==='agent' ? <AgentPopover open anchor={anchor} title={data.label} subtitle={`Selected Run · ${data.recorded}`}
       harness={data.facts.harness} icon={data.facts.icon} panel={panel}
       onPanelChange={(next) => ui.setOpen({ nodeId: id, panel: next })} onClose={() => ui.setOpen(undefined)}

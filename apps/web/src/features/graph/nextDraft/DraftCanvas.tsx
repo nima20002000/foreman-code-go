@@ -105,7 +105,7 @@ const DraftJob=memo(function DraftJob({id,data,selected}:NodeProps<JobGraphNode>
     ariaLabel={`${data.label}, job, saved revision ${data.jobDefinitionRevision}`}
     onSelect={()=>inspect(()=>{selectNode?.(id);setOpen({nodeId:id,panel:'info'})})}
 ><AgentHandles name={data.label}/></AgentNodeView>
-    {panel?<Dialog open title={data.label} description="Noninteractive job" onOpenChange={value=>{if(!value)inspect(()=>setOpen(undefined))}}>{panels(id).info}{panels(id).settings}</Dialog>:null}</>
+    {panel?<Dialog open className="job-dialog" title={data.label} description="Noninteractive job" onOpenChange={value=>{if(!value)inspect(()=>setOpen(undefined))}}>{panels(id).info}{panels(id).settings}</Dialog>:null}</>
 })
 const nodeTypes = { agent: DraftAgent, job: DraftJob }, edgeTypes = { typed: TypedEdge }
 const fitViewOptions = { padding: 0.25, minZoom: 0.5, maxZoom: 1 }

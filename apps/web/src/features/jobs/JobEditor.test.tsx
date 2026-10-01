@@ -7,6 +7,17 @@ import { server } from '../../mocks/server'
 import { JobEditor } from './JobEditor'
 import { definition } from './fixtures'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
+it('keeps the full long Job name as its focused dialog title and allows Close', async () => {
+  const longDefinition = { ...definition, name: '長い名前'.repeat(50) }
+  const close = vi.fn()
+  server.use(http.get(`${root}/choices`, () => HttpResponse.json({ targets: [], sources: [], policies: [] })))
+  render(<QueryClientProvider client={new QueryClient()}><JobEditor workspaceId={definition.workspaceId} definition={longDefinition} onClose={close} /></QueryClientProvider>)
+  const heading = screen.getByRole('heading', { name: `Edit ${longDefinition.name}` })
+  expect(heading).toHaveFocus()
+  await screen.findByText('No computer and validated source root')
+  await userEvent.click(screen.getByRole('button', { name: 'Close dialog' }))
+  expect(close).toHaveBeenCalledOnce()
+})
 it('offers only qualified authoritative choices and preserves exact selected pins in save', async () => {
   const saved: unknown[] = []
   server.use(http.get(`${root}/choices`, () => HttpResponse.json({ targets: [{ id: 'target-a', label: 'Qualified PC', target: definition.spec.target, ready: true, reasons: [] }, { id: 'target-b', label: 'Laptop', target: definition.spec.target, ready: false, reasons: ['Required isolation unavailable'] }], sources: [definition.spec.source], policies: [definition.spec.policy] })), http.post(`${root}/validate`, () => HttpResponse.json({ valid: true, reasons: [], sideEffects: false })), http.post(`${root}/definitions`, async ({ request }) => { saved.push(await request.json()); return HttpResponse.json({ definition }) }))

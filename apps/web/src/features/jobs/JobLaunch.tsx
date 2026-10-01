@@ -19,7 +19,7 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
   const submit = () => start.mutateAsync(start.variables ?? { commandId: crypto.randomUUID(), definitionId: definition.id, expectedRevision: definition.revision })
   const close = useUnsavedChanges({ label: 'job launch', scope: 'surface', dirty: false, busy: start.isPending, uncertain, saveDisabled: !start.variables && !readiness?.valid,
     save: submit, discard: onClose, ...(start.error ? { error: jobError(start.error) } : {}) })
-  return <Dialog open title={rerun ? 'Review rerun' : 'Review job launch'} size="lg" busy={start.isPending} dismissible={!uncertain} onOpenChange={open => { if (!open) void close(onClose) }}
+  return <Dialog open className="job-dialog" title={rerun ? 'Review rerun' : 'Review job launch'} size="lg" busy={start.isPending} dismissible={!uncertain} onOpenChange={open => { if (!open) void close(onClose) }}
     description={`Launch saved revision ${definition.revision} of ${definition.name}.`}
     footer={<><Button disabled={start.isPending || uncertain} onClick={() => void close(onClose)}>Back</Button><Button variant="primary" loading={start.isPending} disabled={!start.variables && !readiness?.valid} onClick={() => { void submit().catch(() => undefined) }}>{start.variables ? 'Retry same start request' : rerun ? 'Rerun as new execution' : 'Start job'}</Button></>}>
     {(validation.isPending || validation.isFetching) && <p role="status">Checking computer, source and isolation readiness…</p>}

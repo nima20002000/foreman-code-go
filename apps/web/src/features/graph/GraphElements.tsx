@@ -5,6 +5,7 @@ import { AgentFacts, AgentNodeView, AgentPopover, Button, Icon, type AgentNodeSt
 import { AgentSettingsForm } from './AgentSettingsForm'
 import { AgentHandles } from './AgentHandles'
 import { AgentChatPanel } from './AgentPanels'
+import { NodeTelemetryInfo } from '../resource-telemetry/NodeTelemetryInfo'
 import { GraphGeometryContext, GraphNodeMenuContext } from './graphContexts'
 import { useGraphPresentation, useGraphPresentationStore } from './useGraphPresentation'
 import { useGraphNodeRuntime } from './useGraphNodeRuntime'
@@ -101,13 +102,17 @@ export const AgentNode = memo(function AgentNode({ data: staticData, isConnectab
             setMenuOpen(false)
           }}
         />}
-        info={<AgentFacts items={[
-          { label: 'Status', value: nodeView.actionLabel ? `${status} · ${nodeView.actionLabel}` : status },
-          { label: 'Role', value: facts.roleLabel },
-          { label: 'Step', value: data.stepLabel },
-          ...agentSettingRows(data.agent),
-          { label: 'Agent ID', value: data.agentId, mono: true },
-        ]} />} />
+        info={<>
+          <AgentFacts items={[
+            { label: 'Status', value: nodeView.actionLabel ? `${status} · ${nodeView.actionLabel}` : status },
+            { label: 'Role', value: facts.roleLabel },
+            { label: 'Step', value: data.stepLabel },
+            ...agentSettingRows(data.agent),
+            { label: 'Agent ID', value: data.agentId, mono: true },
+          ]} />
+          {/* No accepted/observed placement or telemetry selector reaches this node yet: explicit unavailable, no request. */}
+          <NodeTelemetryInfo />
+        </>} />
     </article>
   )
 })

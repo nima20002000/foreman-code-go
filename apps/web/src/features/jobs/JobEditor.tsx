@@ -52,7 +52,7 @@ export function JobEditor({ workspaceId, definition, onClose }: { workspaceId: s
   }
   const close = useUnsavedChanges({ label: 'job definition', scope: 'surface', dirty, busy, uncertain, error: save.error ? jobError(save.error) : error, save: submit, discard: onClose, saveDisabled: !spec || !name.trim() })
   const changed = () => { if (!uncertain) save.reset(); setDirty(true); setError('') }
-  return <Dialog open title={definition ? `Edit ${definition.name}` : 'New job'} size="lg" busy={busy} onOpenChange={open => { if (!open) void close(onClose) }} footer={<><Button disabled={locked} onClick={() => void close(onClose)}>Cancel</Button><Button variant="primary" loading={busy} disabled={!save.variables && (!spec || !name.trim() || choices.isError)} onClick={() => { void submit().catch(cause => setError(jobError(cause))) }}>{save.variables ? 'Retry original save' : 'Save job definition'}</Button></>}>
+  return <Dialog open className="job-dialog" title={definition ? `Edit ${definition.name}` : 'New job'} size="lg" busy={busy} onOpenChange={open => { if (!open) void close(onClose) }} footer={<><Button disabled={locked} onClick={() => void close(onClose)}>Cancel</Button><Button variant="primary" loading={busy} disabled={!save.variables && (!spec || !name.trim() || choices.isError)} onClick={() => { void submit().catch(cause => setError(jobError(cause))) }}>{save.variables ? 'Retry original save' : 'Save job definition'}</Button></>}>
     <p>Saving creates a new revision. Existing execution snapshots stay unchanged.</p>
     {choices.isPending && <p role="status">Loading authorized job choices…</p>}
     {Boolean(choices.error) && <Alert title="Choices unavailable" tone="danger">{jobError(choices.error)}</Alert>}

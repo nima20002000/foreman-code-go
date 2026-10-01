@@ -8,6 +8,17 @@ import { JobLaunch } from './JobLaunch'
 import { definition, execution } from './fixtures'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
 
+it('keeps a long reviewed Job name in the dialog description and permits closing before launch', async () => {
+  const longDefinition = { ...definition, name: '長い名前'.repeat(50) }
+  const close = vi.fn()
+  server.use(http.post(`${root}/validate`, () => HttpResponse.json({ valid: false, reasons: ['Resource offline'], sideEffects: false })))
+  render(<QueryClientProvider client={new QueryClient()}><JobLaunch workspaceId={definition.workspaceId} definition={longDefinition} onClose={close} onAccepted={vi.fn()} /></QueryClientProvider>)
+  expect(screen.getByRole('dialog', { name: 'Review job launch' })).toHaveAccessibleDescription(`Launch saved revision 1 of ${longDefinition.name}.`)
+  await screen.findByText('Resource offline')
+  await userEvent.click(screen.getByRole('button', { name: 'Close dialog' }))
+  expect(close).toHaveBeenCalledOnce()
+})
+
 it('requires fresh readiness after a cached successful check fails to refresh', async () => {
   let readinessAvailable = true
   const cache = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
