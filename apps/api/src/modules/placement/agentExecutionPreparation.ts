@@ -7,7 +7,8 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import { beforeGraphCommit } from '../run-graph/connection.js'
 import type { SourceAdmissionPort } from '../sources/admissionPorts.js'
 import { sourceBindingHash } from '../sources/bindingHash.js'
-import { verifiedSourceWorkingTree } from '../sources/nativeStamp.js'
+import { posix } from 'node:path'
+import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { repeatRuntimeDirectory } from '../runs/repeatRepositoryHost.js'
@@ -43,10 +44,11 @@ export class AgentExecutionPreparation {
       owner.assertOwned()
       await owner.oneShotConnection().transaction(sql => this.producer.assertPinsCurrent(sql, placement, principal, run.workspaceId))
     }
+    const relativeCwd = posix.relative(placement.destination.canonicalProjectRoot, placement.destination.canonicalCwd)
     let native: NativeExecutionPlacement
     if (accepted.previous) {
-      const path = await this.sources.verifyExecution({ principal, record: accepted.previous.materialization })
-      if (path !== accepted.previous.workingTree.canonicalProjectRoot) this.conflict()
+      const tree = await this.sources.verifyWorkingDirectory({ principal, record: accepted.previous.materialization, relativeCwd })
+      if (!sameWorkflowValue(tree, accepted.previous.workingTree)) this.conflict()
       native = accepted.previous
     } else {
       const attempt = { executionId: intent.executionId, attemptId: intent.attemptId,
@@ -55,12 +57,7 @@ export class AgentExecutionPreparation {
         bindingRevision: root.binding.bindingRevision, source: root.source, operationId: intent.operationId,
         attempt: { ...attempt, placementHash: sourceBindingHash(root, attempt, intent.operationId) } })
       owner.assertOwned()
-      const path = await this.sources.verifyPreparation({ principal, record })
-      const tree = verifiedSourceWorkingTree(record, path)
-      // Subdirectory CWD needs an actual host-specific directory identity/access
-      // attestation; a lexical join cannot fabricate it from the tree inode.
-      if (placement.destination.canonicalCwd !== placement.destination.canonicalProjectRoot) throw new DomainError(
-        'SOURCE_CWD_ATTESTATION_REQUIRED', 'The configured source subdirectory requires exact host access/identity attestation.', 409)
+      const tree = await this.sources.verifyWorkingDirectory({ principal, record, relativeCwd })
       const prepared = bindNativeExecution(placement, intent, record, tree)
       native = await owner.oneShotConnection().transaction(async sql => {
         owner.assertOwned(); await owner.readOneShotFence(sql)
@@ -78,8 +75,8 @@ export class AgentExecutionPreparation {
       runId: run.id, executionSemanticsVersion: 3 as const }
     return { workingDirectory: native.workingTree.canonicalCwd,
       runtimeDirectory: repeatRuntimeDirectory(placement.destination.managedRuntimeRoot, scope, execution),
-      revalidate: async () => { await assertCurrent(); const path = await this.sources.verifyExecution({ principal, record: native.materialization });
-        if (path !== native.workingTree.canonicalProjectRoot) this.conflict() } }
+      revalidate: async () => { await assertCurrent(); const tree = await this.sources.verifyWorkingDirectory({ principal, record: native.materialization, relativeCwd });
+        if (!sameWorkflowValue(tree, native.workingTree)) this.conflict() } }
   }
   private conflict(): never { throw new DomainError('EXECUTION_PLACEMENT_CONFLICT', 'Exact accepted source/attempt preparation is required before native entry.', 409) }
 }

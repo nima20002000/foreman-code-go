@@ -1,6 +1,7 @@
 import { NativeExecutionPlacementSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@graphql/contracts/node-placement'
 import type { SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { posix } from 'node:path'
 import { DomainError } from '../errors.js'
 import { placementDigest, readPlacement } from './binding.js'
 import { commandInputHash } from '@graphql/contracts/command-identity-node'
@@ -11,7 +12,9 @@ function sourceMaterializationDigest(record: SourceMaterializationRecord): strin
 }
 
 export function nativePlacementDigest(input: Omit<NativeExecutionPlacement, 'bindingHash'>): string {
-  return placementDigest({ ...input, materialization: { ...input.materialization, finalDispatchBindingHash: null, state: 'prepared' } })
+  const record = input.materialization
+  return placementDigest({ ...input, materialization: { receipt: record.receipt, sourceBindingHash: record.sourceBindingHash,
+    rootPolicyId: record.rootPolicyId, rootPolicyRevision: record.rootPolicyRevision, operationId: record.operationId, reservationId: record.reservationId } })
 }
 export function bindNativeExecution(placement: AcceptedNodePlacement, intent: DispatchIntent,
   materialization: SourceMaterializationRecord, workingTree: VerifiedSourceWorkingTree): NativeExecutionPlacement {
@@ -29,6 +32,7 @@ export function readNativeExecutionBinding(parent: AcceptedNodePlacement, intent
     || binding.nodeId !== intent.nodeId || binding.executionId !== intent.executionId || binding.attemptId !== intent.attemptId
     || binding.operationId !== intent.operationId || binding.materialization.operationId !== intent.operationId
     || receipt.executionId !== intent.executionId || receipt.attemptId !== intent.attemptId
+    || binding.materialization.sourceBindingHash !== receipt.placementHash
     || receipt.binding.rootId !== source.rootId || receipt.binding.bindingRevision !== source.bindingRevision
     || receipt.binding.snapshotId !== source.snapshotId || receipt.binding.manifestDigest !== source.manifestDigest
     || binding.materialization.rootPolicyId !== placement.destination.rootPolicyId
@@ -41,6 +45,19 @@ export function readNativeExecutionBinding(parent: AcceptedNodePlacement, intent
     || binding.workingTree.materializationDigest !== sourceMaterializationDigest(binding.materialization)
     || !sameWorkflowValue(binding.workingTree.filesystem, receipt.localTreeIdentity)) {
     throw new DomainError('EXECUTION_PLACEMENT_CONFLICT', 'Native source must be the exact materialized accepted execution.', 409)
+  }
+  const proof = binding.workingTree.cwdAttestation
+  if (!proof) throw new DomainError('EXECUTION_CWD_ATTESTATION_REQUIRED', 'An actual host CWD attestation is required.', 409)
+  const { attestationDigest, ...fields } = proof
+  const relativeCwd = posix.relative(placement.destination.canonicalProjectRoot, placement.destination.canonicalCwd)
+  if (attestationDigest !== commandInputHash(fields).slice('sha256:'.length)
+    || proof.materializationId !== receipt.materializationId || proof.executionId !== intent.executionId
+    || proof.attemptId !== intent.attemptId || proof.operationId !== intent.operationId
+    || proof.sourceBindingHash !== binding.materialization.sourceBindingHash || proof.relativeCwd !== relativeCwd
+    || proof.canonicalCwd !== posix.join(binding.workingTree.canonicalProjectRoot, relativeCwd)
+    || binding.workingTree.canonicalCwd !== proof.canonicalCwd || binding.workingTree.directoryIdentityHash !== proof.directoryIdentityHash
+    || proof.accessMode !== receipt.binding.accessMode || binding.workingTree.accessMode !== proof.accessMode) {
+    throw new DomainError('EXECUTION_CWD_CONFLICT', 'Native CWD must match the exact retained host child-directory attestation.', 409)
   }
   return binding
 }
