@@ -19,6 +19,8 @@
 .next-draft-section > .n-button, .next-draft-section > p > .n-button { justify-self: start; }
 .next-draft-connections li[data-direction='in'] > svg { transform: rotate(180deg); }
 .work-connection-limit-object { overflow: visible; pointer-events: none; }
+/* React Flow stacks each edge svg by inline z-index, below nodes; lift the edge hosting an open editor above them. */
+.react-flow__edges svg:has(.work-connection-limit-editor) { z-index: 5000 !important; }
 .work-connection-limit-control { pointer-events: auto; }
 .work-connection-limit-pill { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 44px; min-height: 34px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-strong); font: var(--type-control); cursor: pointer; }
 .work-connection-limit-pill:hover, .work-connection-limit-pill:focus-visible { border-color: var(--accent); outline: 2px solid var(--focus); outline-offset: 2px; }
