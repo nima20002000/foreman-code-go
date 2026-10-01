@@ -125,15 +125,17 @@ test('rollback verifies retained bytes and cannot reactivate tampered code', asy
   assert.equal(await readlink(join(f.root, 'current')), current);
 });
 
-test('worker duplicate start, reboot identity, and graceful stop', async (t) => {
+test('worker duplicate start, stable OS boot identity across restart, and graceful stop', async (t) => {
   const f = await fixture(t); const state = join(f.dir, 'state'); await mkdir(state, { mode: 0o700 });
   const identity = { workerInstallationId: 'stable' }; let starts = 0; let stops = 0;
   const options = { stateDirectory: state, loadIdentity: async () => identity, createConnection: async ({ capabilities }) => { assert.deepEqual(capabilities, { dispatch: false, transfer: false }); return { start() { starts++; }, async stop() { stops++; } }; } };
   const first = await startWorker(options);
+  t.after(() => first.stop());
   assert.equal((await readWorkerStatus(state)).active, true);
   await assert.rejects(startWorker(options), /worker_already_running/);
   await Promise.all([first.stop(), first.stop()]);
-  const second = await startWorker(options); assert.equal(second.identity, first.identity); assert.notEqual(second.bootId, first.bootId);
+  const second = await startWorker(options); t.after(() => second.stop());
+  assert.equal(second.identity, first.identity); assert.equal(second.bootId, first.bootId);
   await second.stop(); assert.equal(starts, 2); assert.equal(stops, 2);
 });
 

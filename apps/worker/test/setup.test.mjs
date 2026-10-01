@@ -1,0 +1,48 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, readFile, stat, rm, chmod } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { setupCompanion } from '../src/setup.mjs';
+
+const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.17.1', rootPersistent: true, homePersistent: true, storagePersistent: true };
+async function fixture(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'worker-setup-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = join(directory, 'home'), artifact = join(directory, 'artifact');
+  await mkdir(home); await mkdir(join(artifact, 'src'), { recursive: true });
+  const content = 'console.log(JSON.stringify(process.argv.slice(2)))';
+  await writeFile(join(artifact, 'src/cli.mjs'), content);
+  await writeFile(join(artifact, 'src/companion.mjs'), content);
+  const manifest = { format: 1, version: '1.0.0', protocolVersion: 1, identityFormat: 1, commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64), packageManager: 'pnpm@11.27.0', target: facts,
+    files: ['cli.mjs', 'companion.mjs'].map((name) => ({ path: `src/${name}`, size: Buffer.byteLength(content), sha256: hash(content) })) };
+  const bytes = JSON.stringify(manifest); await writeFile(join(artifact, 'manifest.json'), bytes);
+  return { home, artifact, node: process.execPath, facts, approvedManifestSha256: hash(bytes), serviceTemplate: await readFile(new URL('../artifacts/graphql-worker.service.in', import.meta.url), 'utf8') };
+}
+
+test('setup installs private repeatable launcher files and retains existing identity without activating a service', async (t) => {
+  const f = await fixture(t), state = join(f.home, '.local/state/graphql-worker');
+  await mkdir(state, { recursive: true, mode: 0o700 });
+  await writeFile(join(state, 'identity.json'), 'existing-private-identity', { mode: 0o600 });
+  const result = await setupCompanion(f); await setupCompanion(f);
+  assert.equal(await readFile(join(state, 'identity.json'), 'utf8'), 'existing-private-identity');
+  for (const path of [result.root, result.state, result.launcher]) assert.equal((await stat(path)).mode & 0o777, 0o700);
+  for (const path of [result.desktop, result.proposedService]) assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.equal(result.serviceActivation, 'not-requested');
+  await assert.rejects(readFile(join(f.home, '.config/systemd/user/graphql-worker.service')), { code: 'ENOENT' });
+  const run = spawnSync(result.launcher, ['doctor'], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), ['--state', state, 'doctor']);
+  assert.match(await readFile(result.desktop, 'utf8'), /Terminal=true/);
+});
+
+test('setup rejects checksum and nonprivate identity storage before publishing a launcher', async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(setupCompanion({ ...f, approvedManifestSha256: 'c'.repeat(64) }), /manifest_checksum_mismatch/);
+  await assert.rejects(readFile(join(f.home, '.local/lib/graphql-worker/graphql-companion')), { code: 'ENOENT' });
+  const state = join(f.home, '.local/state/graphql-worker'); await chmod(state, 0o755);
+  await assert.rejects(setupCompanion(f), /private_directory_required/);
+});
