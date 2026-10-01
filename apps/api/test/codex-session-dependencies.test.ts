@@ -73,3 +73,20 @@ describe('Codex production/replay dependency boundary', () => {
     assert(fixture.calls.filter((value) => value === 'close').length >= 2)
   })
 })
+
+describe('Codex original placed inspection directory',()=>{
+  it.each([undefined,'/actual-admitted-source/src'])('qualifies and inspects MCP in the same actual directory with option %s',async workingDirectory=>{
+    const f=replay(),qualified:string[]=[],commands:string[]=[]
+    const qualify=f.dependencies.qualify,runCommand=f.dependencies.runCommand
+    f.dependencies.qualify=async(...args)=>{qualified.push(args[2]);return qualify(...args)}
+    f.dependencies.runCommand=async(...args)=>{commands.push(args[2]);return runCommand(...args)}
+    const manager=new CodexAppServerSessionManager('/nonexistent-recorded-codex',undefined,undefined,undefined,undefined,undefined,f.dependencies,
+      workingDirectory?{workingDirectory}:{})
+    await manager.capabilities();await manager.inspectMcp();await manager.qualificationEvidence()
+    assert.deepEqual(qualified,[workingDirectory??process.cwd(),workingDirectory??process.cwd(),workingDirectory??process.cwd()])
+    assert.deepEqual(commands,[workingDirectory??process.cwd(),workingDirectory??process.cwd()])
+    assert(!f.calls.includes('start'))
+    assert(!f.calls.includes('qualifyModel'))
+    await manager.shutdown()
+  })
+})

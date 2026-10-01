@@ -10,7 +10,8 @@ import { DeviceConnectionIdentitySchema, WorkerPairingConfigurationSchema, type 
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
 import type { DispatchIntent, AcceptedNodePlacement, NativeExecutionPlacement } from '@graphql/contracts/node-placement'
-import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteApplicationAccess } from '@graphql/contracts/remote-execution'
+import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperationReceiptSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteApplicationAccess } from '@graphql/contracts/remote-execution'
+import { RemoteWorkflowPhysicalReadoutSchema } from '@graphql/contracts/remote-workflow-physical'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
 import { SourceMaterializationRecordSchema, type SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { SourceOperationResponseSchema } from '@graphql/contracts/source-operations'
@@ -42,6 +43,8 @@ import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
 import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
+import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories } from './workflowPhysicalReadout.js'
+import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
@@ -108,8 +111,10 @@ export async function attestInstalledWorkflowRuntimeLeaf(input:{sources:SourceOp
     ||request.workingDirectory!==executionPlacement.workingTree.canonicalCwd)unavailable('runtime_source_binding_conflict')
   assertRuntimeLeafPath(request.runtimeDirectory,placement)
   input.context.signal.throwIfAborted()
-  const verified=SourceOperationResponseSchema.parse(await input.sources.handle({version:1,operation:'sources.verify',record},input.context))
-  if(verified.operation!=='sources.verify'||verified.workTree!==executionPlacement.workingTree.canonicalProjectRoot)unavailable('runtime_source_path_conflict')
+  const verified=SourceOperationResponseSchema.parse(await input.sources.handle({version:1,operation:'sources.verify',record,
+    relativeCwd:executionPlacement.workingTree.cwdAttestation?.relativeCwd??''},input.context))
+  if(verified.operation!=='sources.verify'||verified.workTree!==executionPlacement.workingTree.canonicalProjectRoot
+    ||verified.canonicalCwd!==request.workingDirectory||verified.directoryIdentityHash!==executionPlacement.workingTree.directoryIdentityHash)unavailable('runtime_source_path_conflict')
   const base=await openPrivateRoot(roots.managedRuntimeRoot)
   let directory=base
   try {
@@ -169,6 +174,9 @@ export interface InstalledWorkflowHostOptions {
   signal:AbortSignal
   /** Explicit installation initialization; absence of an established journal is otherwise recovery-required. */
   initializeNewInstallation?:true
+  /** Common worker composition owns these shared original journal/registry instances. */
+  journal?():Promise<RemoteOperationJournal>
+  registry?:NativeProcessRegistry
 }
 interface InstalledOperation {
   intent:DispatchIntent
@@ -184,6 +192,10 @@ interface InstalledOperation {
   nativeSignal?:AbortSignal
   applicationAccess?:RemoteApplicationAccess
   mcp?:Awaited<ReturnType<typeof createWorkerMcpEndpoint>>
+  leaseExpiresAt?:string
+  runtimeLeaf?:RuntimeLeafAttestation
+  retainedHistory?:NativeHistory
+  physicalClosure?:NativeLaunchObservation
 }
 /** A configured extension is code support, not qualified readiness. Every new operation consumes genuine Main facts before opening a journal or allocating a manager. */
 export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOptions) {
@@ -193,12 +205,13 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   const pairing=WorkerPairingConfigurationSchema.parse(input.pairing)
   if(input.bootId!==bootIdentity()||Date.parse(pairing.expiresAt)<=Date.now())unavailable('installed_identity_unavailable')
   const state=await openPrivateRoot(input.stateDirectory);await state.close()
-  const registry=new NativeProcessRegistry(join(input.stateDirectory,'workflow-native-processes'))
+  const registry=input.registry??new NativeProcessRegistry(join(input.stateDirectory,'workflow-native-processes'))
   const lifetime=new AbortController(),signal=AbortSignal.any([input.signal,lifetime.signal])
   const operations=new Map<string,InstalledOperation>(),hosts=new Map<string,RemoteExecutionHost>()
+  const physical=new InstalledWorkflowPhysicalReadouts()
   const active=new Set<Promise<unknown>>()
   let journalOpening:Promise<RemoteOperationJournal>|undefined,closing=false,shutdown:Promise<void>|undefined
-  const journal=()=>journalOpening??=RemoteOperationJournal.open(join(input.stateDirectory,'workflow-operations.json'),
+  const journal=()=>journalOpening??=input.journal?input.journal():RemoteOperationJournal.open(join(input.stateDirectory,'workflow-operations.json'),
     input.initializeNewInstallation?{initializeNewInstallation:true}:{})
   const current=(binding:Readonly<DeviceSessionBinding>)=>{
     signal.throwIfAborted()
@@ -277,7 +290,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           assertUnchanged:async value=>{await before();await dependencies.assertUnchanged(value)},
           runCommand:async(binary,args,cwd,effectSignal,environment,options)=>{await before();return dependencies.runCommand(binary,args,cwd,effectSignal,environment,{...options,recovery:actual.scope})},
           qualifyModel:async(configuration,binary,cwd,environment,effectSignal)=>{await before();return dependencies.qualifyModel(configuration,binary,cwd,environment,effectSignal,actual.scope)},
-        })
+        },{workingDirectory:configurationContext.workingDirectory})
         actual.manager=manager
         return manager
       })
@@ -291,8 +304,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!executionPlacement||executionPlacement.bindingHash!==capture.facts.executionPlacement.bindingHash
             ||!isDeepStrictEqual(request.configuration,capture.facts.configuration))unavailable('actual_native_placement_required')
           resident.capture=capture
-          return attestInstalledWorkflowRuntimeLeaf({sources:input.sources,context:{...context,signal},approvedRoots:await input.approvedRoots(),
+          const runtimeLeaf=await attestInstalledWorkflowRuntimeLeaf({sources:input.sources,context:{...context,signal},approvedRoots:await input.approvedRoots(),
             nativePlacement:capture.facts.executionPlacement,intent,placement,request})
+          resident.runtimeLeaf=runtimeLeaf
+          return runtimeLeaf
         },
         preflight:async(nativeRequest,access)=>{
           const resident=operations.get(nativeRequest.executionId)
@@ -302,6 +317,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!isDeepStrictEqual(nativeRequest.configuration,actual.capture.facts.configuration))unavailable('accepted_configuration_conflict')
           const relay=await prepareWorkerApplicationAccess({request},actual.intent,actual.placement,access,signal)
           actual.applicationAccess=structuredClone(access)
+          actual.leaseExpiresAt=relay.expiresAt
           if(!actual.mcp)actual.mcp=await createWorkerMcpEndpoint({relay,launcher:configuration.appMcpLauncher,signal})
           return relay.environment
         },
@@ -317,12 +333,18 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         settle:async(intent,history,owner)=>{
           const resident=operation(intent)
           if(!resident.native||resident.manager!==owner.manager)unavailable('original_native_owner_required')
+          resident.retainedHistory=structuredClone(history)
           const state=await log.status(intent.operationId)
           if(state.status==='known'&&(state.receipt.stopFence||history.terminalTurn!==undefined&&history.terminalTurn.correlationId===state.receipt.turnInput?.correlationId
             &&history.terminalTurn.providerId===state.receipt.native?.turnId))resident.launchDisabled=true
           const terminal=await settleInstalledWorkflowNativeOwner({journal:log,registry,intent,history,captured:resident.native,
             manager:owner.manager,session:owner.session})
-          if(terminal)await resident.mcp?.close()
+          if(terminal) {
+            const observation=matchingOriginalRegistryLaunch(registry,resident.native.launch)
+            if(observation.lifecycle!=='closed'||observation.closureEvidence!=='cgroup_v2_empty')unavailable('original_physical_closure_missing')
+            resident.physicalClosure=observation
+            await resident.mcp?.close()
+          }
           return terminal
         },
       })
@@ -344,7 +366,40 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         const frame=RemoteExecutionRpcRequestSchema.parse(payload)
         const host=await construct(context,frame.intent,frame.placement)
         context.signal.throwIfAborted()
-        return {payload:await createRemoteExecutionHandler(host)(frame)}
+        if(frame.method==='physical-readout')return {payload:await physical.read(frame)}
+        if(frame.method==='physical-ack')return {payload:await physical.ack(frame)}
+        const response=await createRemoteExecutionHandler(host)(frame)
+        const value=response&&typeof response==='object'?response as {session?:NativeSessionReference;history?:NativeHistory;status?:unknown}:undefined
+        const status=value?.status&&typeof value.status==='object'?value.status as {status?:string;receipt?:unknown}:response as {status?:string;receipt?:unknown}
+        if(status?.status==='known') {
+          const receipt=RemoteOperationReceiptSchema.parse(status.receipt),resident=operation(frame.intent)
+          if(receipt.native&&resident.native&&resident.session&&resident.runtimeLeaf&&resident.leaseExpiresAt) {
+            const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
+              :value?.history?{type:'history',history:value.history}:{type:'boundary'}
+            const history=value?.history??resident.retainedHistory
+            const readout=RemoteWorkflowPhysicalReadoutSchema.parse({version:1,expiresAt:new Date(Math.min(Date.parse(resident.leaseExpiresAt),Date.now()+60_000)).toISOString(),
+              receipt,session:resident.session,launch:resident.native.launch,
+              observation:matchingOriginalRegistryLaunch(registry,resident.native.launch),runtimeLeaf:resident.runtimeLeaf,
+              source:{record:resident.capture.facts.executionPlacement.materialization,workingTree:resident.capture.facts.executionPlacement.workingTree},
+              ...(history?{history}:{}),...(resident.physicalClosure?{closure:{ownerClosed:true,launch:resident.physicalClosure}}:{}),
+              ...(receipt.terminal?.result?{output:{kind:'text-only',result:receipt.terminal.result}}:{})})
+            physical.remember({readout,placement:frame.placement,source,leaseExpiresAt:resident.leaseExpiresAt,
+              assertCurrent:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read')
+                const logged=await(await journal()).status(resident.intent.operationId)
+                if(logged.status!=='known'||!isDeepStrictEqual(logged.receipt.intent,resident.intent)
+                  ||logged.receipt.native?.sessionId!==resident.session?.nativeSessionId
+                  ||logged.receipt.native?.processIdentityDigest!==resident.native?.native.processIdentityDigest)unavailable('original_physical_owner_changed')
+                current(context.binding)
+                const approvedRoots=ApprovedRootAllowlistSchema.parse(await input.approvedRoots())
+                await assertOriginalPhysicalDirectories({source:readout.source,runtimeLeaf:readout.runtimeLeaf,placement:resident.placement,approvedRoots,signal,
+                  authorize:async()=>{current(context.binding);await workerExecutionAuthorizer(forBinding(context.binding))(resident.intent,resident.placement,'read');current(context.binding)}})
+                if(!isDeepStrictEqual(approvedRoots,ApprovedRootAllowlistSchema.parse(await input.approvedRoots())))unavailable('original_physical_root_policy_changed')
+                current(context.binding)},
+              observe:()=>matchingOriginalRegistryLaunch(registry,resident.native!.launch),
+              closure:()=>resident.physicalClosure??null})
+          }
+        }
+        return {payload:response}
       })()
       active.add(task);void task.then(()=>active.delete(task),()=>active.delete(task))
       return task
@@ -380,6 +435,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   }
   const close=()=>shutdown??=(async()=>{
     closing=true;lifetime.abort(new Error('Installed workflow host is closing.'))
+    physical.clear()
     const results=await Promise.allSettled([...hosts.values()].map(host=>host.shutdown()))
     await Promise.allSettled([...active])
     const failures:unknown[]=results.flatMap(result=>result.status==='rejected'?[result.reason]:[])
@@ -393,7 +449,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       } catch(error){failures.push(error)}
     }
     if(failures.length)throw new AggregateError(failures,'Original installed workflow cleanup remains unconfirmed; the journal owner is retained.')
-    if(journalOpening)await(await journalOpening).close()
+    if(journalOpening&&!input.journal)await(await journalOpening).close()
   })()
   return {kind:'configured' as const,extensions,nativeOwnerFor,close}
 }

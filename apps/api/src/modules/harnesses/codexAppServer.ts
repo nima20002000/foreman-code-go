@@ -62,6 +62,10 @@ export type CodexDiagnosticOperations = Pick<CodexSessionOperations,
 export type CodexSessionDependencies =
   | ({ mode: 'native' } & Partial<CodexSessionOperations>)
   | ({ mode: 'replay' } & CodexSessionOperations)
+export interface CodexInspectionOptions {
+  /** Original installed placement CWD; omitted local callers retain process.cwd(). */
+  workingDirectory?: string
+}
 
 export { QUALIFIED_CODEX_VERSION, QUALIFIED_CODEX_SCHEMA_SHA256 }
 const MAX_EVENTS = 1_024
@@ -356,6 +360,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly appMcpAccess: 'scoped' | 'none' = 'scoped',
     private readonly chatFiles?: CodexChatFiles,
     dependencies: CodexSessionDependencies = { mode: 'native' },
+    private readonly inspection: CodexInspectionOptions = {},
   ) {
     const defaults: CodexSessionOperations = {
       transport: (...args) => new CodexStdioTransport(...args),
@@ -389,7 +394,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
-    const result = await this.dependencies.qualify(this.binary, this.expectedVersion, process.cwd(), this.dependencies.environment(), true, signal)
+    const result = await this.dependencies.qualify(this.binary, this.expectedVersion, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
     return NativeHarnessCapabilitiesSchema.parse({
       provider: 'codex', providerVersion: result.providerVersion, persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
@@ -425,7 +430,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
-    const result = await this.dependencies.qualify(this.binary, this.expectedVersion, process.cwd(), this.dependencies.environment(), true, signal)
+    const result = await this.dependencies.qualify(this.binary, this.expectedVersion, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
     return {
       providerVersion: result.providerVersion, schemaManifestSha256: result.schemaManifestSha256,
       referenceSchemaManifestSha256: result.referenceSchemaManifestSha256, stableSchemaGitBlob: result.stableSchemaGitBlob,
@@ -1005,7 +1010,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   async inspectMcp(signal?: AbortSignal): Promise<McpDetection> {
     const checkedAt = this.dependencies.now().toISOString()
     try {
-      const value = await this.inspectMcpConfiguration(process.cwd(), signal)
+      const value = await this.inspectMcpConfiguration(this.inspection.workingDirectory ?? process.cwd(), signal)
       return McpDetectionSchema.parse({
         harness: 'codex', serverName: this.appMcpServerName,
         state: value.configured.enabled ? 'status_unavailable' : 'disabled', endpointMatches: null,
