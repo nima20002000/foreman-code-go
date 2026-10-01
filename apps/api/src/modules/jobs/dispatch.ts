@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { RemoteJobDispatchIntentSchema, type RemoteJobDispatchIntent, type RemoteJobDispatchPort, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptSchema, type RemoteJobDispatchPort, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
 import type { AcceptedJobSpec, JobExecution } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -39,6 +39,10 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(intent.attemptId!==fence.attemptId||intent.owner.grantId!==fence.owner.grantId||intent.owner.epoch!==fence.owner.epoch||intent.bindingHash!==execution.acceptedSpec.bindingHash||!row.owner_id||!row.owner_fence)throw new DomainError('JOB_OWNER_FENCE_INVALID','The accepted job owner/attempt binding is not live.',409)
     const live=(await sql.query(`select 1 from pg_stat_activity a where a.pid::text=$1 and (extract(epoch from a.backend_start)*1000000)::bigint::text=$2 and exists(select 1 from pg_locks l where l.pid=a.pid and l.locktype='advisory' and l.classid=810038::oid and l.objid=(hashtext($3)::bigint & 4294967295)::oid and l.objsubid=2 and l.mode='ExclusiveLock' and l.granted)`,[row.owner_id,row.owner_fence,execution.id])).rows.length
     if(!live)throw new DomainError('JOB_OWNERSHIP_LOST','The original main job owner session is no longer live.',409)
+    const accepted=(await sql.query<{accepted_by:string}>('select accepted_by from job_executions where id=$1',[execution.id])).rows[0]!
+    const principal=await readLiveManagementPrincipal(sql,accepted.accepted_by)
+    requireAuthorization(principal,execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
+    await this.host.revalidate(sql,execution,principal)
   }
   async wake(executionId:string):Promise<void> {
     let active=this.owners.get(executionId)
@@ -99,6 +103,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(terminal)await this.release(executionId)
   }
   private async acceptReceipt(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<boolean> {
+    receipt=RemoteJobOperationReceiptSchema.parse(receipt)
     const row=(await sql.query<{intent:unknown;receipt_sequence:string;last_receipt:unknown}>('select intent,receipt_sequence::text,last_receipt from job_dispatch_intents where execution_id=$1 for update',[execution.id])).rows[0]!
     if(canonical(row.intent)!==canonical(receipt.intent))throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Remote receipt does not match the accepted operation/attempt/subject.',409)
     if(receipt.sequence<=Number(row.receipt_sequence)) {

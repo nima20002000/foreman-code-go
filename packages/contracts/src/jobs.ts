@@ -71,7 +71,7 @@ export const JobExecutionSchema = z.object({
   process: JobProcessStateSchema, transport: z.enum(['connected', 'offline', 'unknown']),
   publication: z.enum(['pending', 'collecting', 'complete', 'failed', 'expired']),
   startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(), lastSeenAt: TimestampSchema.nullable(),
-  resultIssue: z.enum(['missing_output', 'corrupt_output', 'publication_failed', 'log_overflow']).nullable(),
+  resultIssue: z.enum(['missing_output', 'corrupt_output', 'publication_failed', 'log_overflow', 'log_delivery_unknown']).nullable(),
   cancelRequestedAt: TimestampSchema.nullable(), createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict()
 export const JobLogChunkSchema = z.object({

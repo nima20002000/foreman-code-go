@@ -18,6 +18,6 @@ export interface JobPreparationPort {
 }
 /** Canonical W09 file revisions, never a job artifact byte store. */
 export interface JobArtifactPort {
-  read(client: JobSql, principal: ManagementPrincipal, workspaceId: string, executionId: string, fileId: string, revisionId: string): Promise<{artifact:JobArtifact;bytes:Buffer}>
+  read(client: JobSql, principal: ManagementPrincipal, workspaceId: string, executionId: string, fileId: string, revisionId: string, source?: 'http'|'mcp'): Promise<{artifact:JobArtifact;bytes:Buffer}>
   list(client: JobSql, principal: ManagementPrincipal, workspaceId: string, executionId: string): Promise<JobArtifact[]>
 }

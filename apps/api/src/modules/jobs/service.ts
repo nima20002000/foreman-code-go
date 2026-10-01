@@ -59,10 +59,10 @@ export class JobService {
   choices(principal:ManagementPrincipal,workspaceId:string) {
     return this.read(principal,workspaceId,'job_definitions:read',(sql,live)=>this.ports.preparation.choices(sql,live,workspaceId))
   }
-  readArtifact(principal:ManagementPrincipal,workspaceId:string,id:string,fileId:string,revisionId:string) {
+  readArtifact(principal:ManagementPrincipal,workspaceId:string,id:string,fileId:string,revisionId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_artifacts:read',async(sql,live)=>{
       await this.repository.execution(sql,workspaceId,id)
-      const result=await this.ports.artifacts.read(sql,live,workspaceId,id,fileId,revisionId)
+      const result=await this.ports.artifacts.read(sql,live,workspaceId,id,fileId,revisionId,source)
       const artifact=JobArtifactSchema.parse(result.artifact)
       if(artifact.executionId!==id||artifact.fileId!==fileId||artifact.revisionId!==revisionId||artifact.state!=='available'
         ||result.bytes.length!==artifact.byteSize||createHash('sha256').update(result.bytes).digest('hex')!==artifact.sha256) {
