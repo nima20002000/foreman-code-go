@@ -1,6 +1,5 @@
 // Generated from bundled codex-cli 0.154.0 via scripts/generate-codex-method-types.mjs.
 // Compile-time baseline only; every launch still validates its own emitted schema.
-/* eslint-disable */
 
 export type AbsolutePathBuf = string;
 

@@ -40,5 +40,5 @@ try {
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\/\/.*\n/gm, '').replace(/^import .*;\n/gm, '').trim()).join('\n\n')
   const name = (path) => path.split('/').at(-1)
   const map = Object.entries(methods).map(([method, [params, result]]) => `  '${method}': { params: ${name(params)}; result: ${name(result)} }`).join('\n')
-  await writeFile('apps/api/src/modules/harnesses/codexMethodTypes.ts', `// Generated from bundled ${version} via scripts/generate-codex-method-types.mjs.\n// Compile-time baseline only; every launch still validates its own emitted schema.\n/* eslint-disable */\n\n${body}\n\nexport interface CodexMethodMap {\n${map}\n  'config/mcpServer/reload': { params: Record<string, never>; result: Record<string, never> }\n}\n`)
+  await writeFile('apps/api/src/modules/harnesses/codexMethodTypes.ts', `// Generated from bundled ${version} via scripts/generate-codex-method-types.mjs.\n// Compile-time baseline only; every launch still validates its own emitted schema.\n\n${body}\n\nexport interface CodexMethodMap {\n${map}\n  'config/mcpServer/reload': { params: Record<string, never>; result: Record<string, never> }\n}\n`)
 } finally { await rm(directory, { recursive: true, force: true }) }
