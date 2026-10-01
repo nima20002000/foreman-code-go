@@ -32,9 +32,10 @@ export class AgentChatCommands {
   constructor(private readonly pool: Pick<pg.Pool, 'query'>) {}
 
   execute(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
-    payload: unknown, perform: () => Promise<AgentChatState>): Promise<AgentChatState> {
+    payload: unknown, perform: () => Promise<AgentChatState>,
+    readCurrent?: () => Promise<AgentChatState>): Promise<AgentChatState> {
     if (this.closing) return Promise.reject(new DomainError('AGENT_CHAT_CLOSING', 'Agent chat is shutting down.', 503))
-    const task = this.reserve(principal, source, conversationId, requestId, payload, perform)
+    const task = this.reserve(principal, source, conversationId, requestId, payload, perform, readCurrent)
     this.pending.add(task)
     void task.finally(() => { this.pending.delete(task) }).catch(() => undefined)
     return task
@@ -46,7 +47,10 @@ export class AgentChatCommands {
   }
 
   private async reserve(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
-    payload: unknown, perform: () => Promise<AgentChatState>): Promise<AgentChatState> {
+    payload: unknown, perform: () => Promise<AgentChatState>,
+    readCurrent?: () => Promise<AgentChatState>): Promise<AgentChatState> {
+    // Current scope/authority is checked even for conflicts, rejections and receipt replay.
+    if (readCurrent) await readCurrent()
     const hash = commandInputHash(payload)
     const key = [principal.id, OPERATION, requestId]
     // All control kinds share the same namespace; changing kind or target also conflicts.
@@ -64,7 +68,8 @@ export class AgentChatCommands {
       if (prior.target_key !== conversationId || prior.input_hash !== hash) {
         throw new DomainError('AGENT_CHAT_REQUEST_CONFLICT', 'This request ID was already used for a different control or input.', 409)
       }
-      if (prior.result.status === 'completed') return AgentChatStateSchema.parse(prior.result.state)
+      if (prior.result.status === 'completed') return AgentChatStateSchema.parse(
+        readCurrent ? await readCurrent() : prior.result.state)
       if (prior.result.status === 'rejected') {
         const error = prior.result.error
         throw new DomainError(error.code, error.message, error.status, error.details)
@@ -95,7 +100,8 @@ export class AgentChatCommands {
       // The durable reservation remains the fence even when saving the outcome fails.
       throw unconfirmed(requestId)
     }
-    if (outcome.status === 'completed') return outcome.state
+    if (outcome.status === 'completed') return AgentChatStateSchema.parse(
+      readCurrent ? await readCurrent() : outcome.state)
     if (outcome.status === 'rejected') {
       const error = outcome.error
       throw new DomainError(error.code, error.message, error.status, error.details)

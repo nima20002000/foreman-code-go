@@ -54,6 +54,25 @@ describe('F4 A-R12 durable control identity', () => {
     })
   }
 
+  it('returns authorized current readback on HTTP/MCP receipt replay without lowering revisions or repeating effects', async () => {
+    const memory = store(), commands = new AgentChatCommands(memory.pool)
+    let state = structuredClone(agentChatFixtures.idleAfterCompletion)
+    const perform = vi.fn(async () => state)
+    const readCurrent = vi.fn(async () => state)
+    await commands.execute(principal, 'http', 'c', 'r', { kind: 'interrupt' }, perform, readCurrent)
+    const receipt = structuredClone([...memory.receipts.values()][0]!.result)
+    state = { ...state, revision: state.revision + 10 }
+    const replay = await new AgentChatCommands(memory.pool).execute(principal, 'mcp', 'c', 'r',
+      { kind: 'interrupt' }, perform, readCurrent)
+    expect(replay.revision).toBe(state.revision)
+    expect([...memory.receipts.values()][0]!.result).toEqual(receipt)
+    expect(perform).toHaveBeenCalledTimes(1)
+    const denied = vi.fn(async () => { throw new DomainError('ACCESS_DENIED', 'Revoked.', 403) })
+    await expect(commands.execute(principal, 'mcp', 'c', 'r', { kind: 'interrupt' }, perform, denied))
+      .rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    expect(perform).toHaveBeenCalledTimes(1)
+  })
+
   it('fences an overlapping retry and a changed control kind while the first control is in flight', async () => {
     const memory = store(), commands = new AgentChatCommands(memory.pool)
     let entered!: () => void, release!: () => void
