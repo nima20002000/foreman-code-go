@@ -1,13 +1,14 @@
-import { open, readFile, rename, mkdir } from 'node:fs/promises'
+import { open, readFile, rename, mkdir, unlink } from 'node:fs/promises'
+import type { FileHandle } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@graphql/contracts/node-placement'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
-import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema,
-  type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
-  type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
+import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema,
+  type RemoteOperationStatus, type RemoteOwnerControl,
+  type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
 
 const JournalSchema = z.object({ schemaVersion: z.literal(1), receipts: z.array(RemoteOperationReceiptSchema),
   reconciliations: z.array(z.object({ commandId: z.string(), operationId: z.string(), previousOwner: z.object({ grantId: z.string(), epoch: z.string() }),
@@ -21,26 +22,43 @@ const same = isDeepStrictEqual
 export class RemoteOperationJournal {
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
-  private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number) {}
+  private constructor(private readonly path: string, private data: z.infer<typeof JournalSchema>, private readonly capacity: number, private readonly lock: FileHandle) {}
   static async open(path: string, options: { initializeNewInstallation?: boolean; capacity?: number } = {}) {
     const capacity = options.capacity ?? 1000
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Invalid journal capacity')
-    let data: z.infer<typeof JournalSchema>
-    try { data = JournalSchema.parse(JSON.parse(await readFile(path, 'utf8'))) }
-    catch (error) {
-      if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-      data = { schemaVersion: 1, receipts: [], reconciliations: [] }
-    }
-    if (data.receipts.length > capacity) throw new Error('Journal exceeds capacity')
-    const journal = new RemoteOperationJournal(path, data, capacity)
-    await journal.persist(data)
-    return journal
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    // A crashed owner leaves a fence. W11/operator reconciliation must establish safe lock disposition.
+    const lock = await open(`${path}.owner-lock`, 'wx', 0o600)
+    try {
+      await lock.writeFile(randomUUID()); await lock.sync()
+      let data: z.infer<typeof JournalSchema>
+      try {
+        const serialized = await readFile(path, 'utf8')
+        if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
+        data = JournalSchema.parse(JSON.parse(serialized))
+      } catch (error) {
+        if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
+        data = { schemaVersion: 1, receipts: [], reconciliations: [] }
+      }
+      if (data.receipts.length > capacity) throw new Error('Journal exceeds capacity')
+      const journal = new RemoteOperationJournal(path, data, capacity, lock)
+      await journal.persist(data)
+      return journal
+    } catch (error) { await lock.close(); await unlink(`${path}.owner-lock`); throw error }
+  }
+  async close() {
+    await this.tail
+    this.faulted = true
+    await this.lock.close()
+    await unlink(`${this.path}.owner-lock`)
   }
   private async persist(data: z.infer<typeof JournalSchema>) {
+    const serialized = JSON.stringify(JournalSchema.parse(data))
+    if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) throw new Error('Journal byte limit reached')
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
     const temporary = `${this.path}.${randomUUID()}.tmp`
     const file = await open(temporary, 'wx', 0o600)
-    try { await file.writeFile(JSON.stringify(JournalSchema.parse(data))); await file.sync() } finally { await file.close() }
+    try { await file.writeFile(serialized); await file.sync() } catch (error) { await unlink(temporary); throw error } finally { await file.close() }
     await rename(temporary, this.path)
     const directory = await open(dirname(this.path), 'r')
     try { await directory.sync() } finally { await directory.close() }
@@ -79,7 +97,7 @@ export class RemoteOperationJournal {
       if (data.receipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
       const receipt = RemoteOperationReceiptSchema.parse({ schemaVersion: 1, intent, connection, workerIncarnationId,
-        sequence: 1, phase: 'received', entryAttempted: false, stopFence: false, controls: [] })
+        sequence: 1, phase: 'received', entryAttempted: false, turnEntryAttempted: false, stopFence: false, controls: [] })
       data.receipts.push(receipt)
       return receipt
     })
@@ -103,12 +121,36 @@ export class RemoteOperationJournal {
       return receipt
     })
   }
+  reserveTurn(operationId: string, input: { correlationId: string; promptDigest: string }) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (receipt.turnInput && !same(receipt.turnInput, input)) throw new Error('Turn input binding conflict')
+      if (receipt.stopFence || receipt.turnEntryAttempted || receipt.phase !== 'start_acknowledged') return { reserved: false, receipt }
+      receipt.turnEntryAttempted = true; receipt.turnInput = input; receipt.sequence++; return { reserved: true, receipt }
+    })
+  }
+  acknowledgeTurn(operationId: string, turnId: string) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (!receipt.native || !receipt.turnEntryAttempted || !turnId) throw new Error('Turn entry reservation required')
+      if (receipt.native.turnId && receipt.native.turnId !== turnId) throw new Error('Native turn ownership conflict')
+      receipt.native.turnId = turnId; receipt.sequence++; return receipt
+    })
+  }
   markRunning(operationId: string) {
     return this.change(data => {
       const receipt = this.receipt(data, operationId)
       if (receipt.phase === 'running' || receipt.stopFence) return receipt
       if (receipt.phase !== 'start_acknowledged') throw new Error('Start acknowledgment required')
       receipt.phase = 'running'; receipt.sequence++; return receipt
+    })
+  }
+  interaction(operationId: string, target: RemoteInteractionTarget) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      target = RemoteInteractionTargetSchema.parse(target)
+      if (!same(receipt.native, target.native) || receipt.phase !== 'running' || receipt.stopFence) throw new Error('Interaction native ownership mismatch')
+      receipt.interaction = target; receipt.sequence++; return receipt
     })
   }
   control(command: RemoteOwnerControl) {
@@ -119,13 +161,30 @@ export class RemoteOperationJournal {
       if (prior) { if (!same(prior, command)) throw new Error('Control command conflict'); return { dispatch: false, receipt } }
       if (receipt.intent.attemptId !== command.attemptId || receipt.intent.executionId !== command.executionId
         || receipt.intent.bindingHash !== command.bindingHash || !same(receipt.intent.owner, command.owner)) throw new Error('Stale control ownership')
+      if (command.nativeTarget && (command.nativeTarget.kind !== 'session' || command.nativeTarget.sessionId !== receipt.native?.sessionId
+        || (command.nativeTarget.turnId && command.nativeTarget.turnId !== receipt.native?.turnId))) throw new Error('Wrong explicit native target')
       if (command.native && !same(command.native, receipt.native)) throw new Error('Wrong native control target')
-      if (command.action.kind === 'respond' && (receipt.stopFence || receipt.phase !== 'running')) throw new Error('Response is not currently eligible')
+      if (command.action.kind === 'respond') {
+        const target = receipt.interaction
+        if (receipt.stopFence || receipt.phase !== 'running' || !target || target.interactionId !== command.action.interactionId
+          || target.interactionRevision !== command.action.interactionRevision || target.nativeInteractionId !== command.action.nativeInteractionId) throw new Error('Response is not currently eligible')
+        if (receipt.controls.some(value => value.action.kind === 'respond' && value.action.interactionId === target.interactionId
+          && value.action.interactionRevision === target.interactionRevision)) throw new Error('Interaction response already reserved')
+      }
       if (receipt.controls.length >= 128) throw new Error('Control journal full')
       receipt.controls.push(command)
       if (command.action.kind === 'stop') { receipt.stopFence = true; if (receipt.phase !== 'confirmed_terminal') receipt.phase = 'stop_requested' }
       receipt.sequence++
       return { dispatch: receipt.phase !== 'confirmed_terminal' && receipt.native !== undefined, receipt }
+    })
+  }
+  revokeFence(operationId: string) {
+    return this.change(data => {
+      const receipt = this.receipt(data, operationId)
+      if (receipt.phase !== 'confirmed_terminal') {
+        receipt.stopFence = true; receipt.phase = 'stop_requested'; receipt.uncertainty = 'Authority revoked; physical closure pending'; receipt.sequence++
+      }
+      return receipt
     })
   }
   uncertain(operationId: string, reason: string) {
@@ -153,7 +212,7 @@ export class RemoteOperationJournal {
       if (!same(receipt.intent.owner, transition.previousOwner) || !same(receipt.native, transition.native)
         || !/^[a-f0-9]{64}$/.test(transition.evidenceDigest) || BigInt(transition.nextOwner.epoch) <= BigInt(transition.previousOwner.epoch)) throw new Error('Original execution reconciliation evidence required')
       if (data.reconciliations.length >= 128) throw new Error('Reconciliation journal full')
-      data.reconciliations.push(transition); receipt.intent.owner = transition.nextOwner; receipt.sequence++; return receipt
+      data.reconciliations.push(structuredClone(transition)); receipt.intent.owner = transition.nextOwner; receipt.sequence++; return receipt
     })
   }
 }

@@ -1,0 +1,196 @@
+import { isDeepStrictEqual } from 'node:util'
+import { createHash } from 'node:crypto'
+import { HarnessExecutionRequestSchema, AgentConfigurationVersionSchema, ApprovalResponseOptionSchema, type NativeSessionReference, type HarnessExecutionRequest } from '@graphql/contracts'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent } from '@graphql/contracts/node-placement'
+import { RemoteOwnerControlSchema, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+import { RemoteExecutionRpcRequestSchema } from '@graphql/contracts/remote-execution-rpc'
+import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
+import type { NativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
+import type { NativeHarnessSessionManager, NativeHistory } from '../../harnesses/port.js'
+import { readPlacement } from '../../placement/binding.js'
+import type { RemoteOperationJournal } from './operationJournal.js'
+
+export interface RemoteExecutionHostPorts {
+  journal: RemoteOperationJournal
+  connection: DeviceConnectionIdentity
+  incarnationId: string
+  managers: NativeSessionManagerResolver
+  authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control'): Promise<void>
+  /** Host-local credentials and sandbox policy; never copied from main. */
+  preflight(request: HarnessExecutionRequest): Promise<void>
+  nativeEvidence(intent: DispatchIntent, session: NativeSessionReference): Promise<RemoteNativeIdentity>
+  /** W11/provider closure verification; terminal observation alone is insufficient. */
+  verifyRecovery?(receipt: RemoteOperationReceipt, session: NativeSessionReference, evidenceDigest: string): Promise<void>
+  settle(intent: DispatchIntent, history: NativeHistory): Promise<RemoteTerminalEvidence | null>
+}
+interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void> }
+/** Worker-only authenticated extension handler. No DB, scheduler, HTTP server or production composition. */
+export class RemoteExecutionHost {
+  private readonly bindings = new Map<string, { intent: DispatchIntent; placement: AcceptedNodePlacement }>()
+  private readonly residents = new Map<string, Resident>()
+  constructor(private readonly ports: RemoteExecutionHostPorts) {}
+  async handle(raw: unknown) {
+    const frame = RemoteExecutionRpcRequestSchema.parse(raw)
+    const placement = readPlacement(frame.placement)
+    if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
+      || placement.mainId !== this.ports.connection.mainId || frame.intent.bindingHash !== placement.bindingHash
+      || frame.intent.runId !== placement.runId || frame.intent.nodeId !== placement.nodeId) throw new Error('RPC ownership mismatch')
+    const recorded = await this.ports.journal.status(frame.intent.operationId)
+    if (recorded.status === 'known' && !isDeepStrictEqual(recorded.receipt.intent, frame.intent)) throw new Error('RPC stale execution owner')
+    await this.ports.authorize(frame.intent, placement, frame.method === 'control' ? 'control' : ['prepare', 'start-turn'].includes(frame.method) ? 'start' : 'read')
+    if (frame.method === 'prepare') return this.prepare(frame)
+    if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
+    if (frame.method === 'reconcile-response') { const resident = await this.resident(frame.intent.operationId, 'read'); if (!resident.manager.reconcileResponse) throw new Error('Exact native response recovery unavailable'); return { history: await resident.manager.reconcileResponse(resident.session, frame.response), status: await this.ports.journal.status(frame.intent.operationId) } }
+    if (frame.method === 'control') return this.control(frame.command, frame)
+    if (frame.method === 'start-turn') return this.startTurn(frame.intent.operationId, frame.prompt, frame.correlationId)
+    if (frame.method === 'status') return this.status(frame.intent.operationId)
+    return this.read(frame.intent.operationId, frame.method)
+  }
+  async inspect(raw: { intent: unknown; placement: unknown; configuration: unknown }, method: 'capabilities' | 'inspectMcp') {
+    const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), configuration = AgentConfigurationVersionSchema.parse(raw.configuration)
+    if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId || placement.mainId !== this.ports.connection.mainId
+      || intent.bindingHash !== placement.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentId !== configuration.agentId
+      || placement.payload.agentConfigurationVersionId !== configuration.id) throw new Error('Remote discovery binding mismatch')
+    await this.ports.authorize(intent, placement, 'read')
+    const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: configuration.agentId,
+      harness: configuration.harness.harness, configuration, workingDirectory: placement.destination.canonicalCwd })
+    return resolved.manager[method]()
+  }
+  async prepare(raw: { intent: unknown; placement: unknown; request: unknown }) {
+    const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
+    if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
+      || placement.mainId !== this.ports.connection.mainId || placement.bindingHash !== intent.bindingHash
+      || placement.runId !== intent.runId || placement.nodeId !== intent.nodeId || placement.payload.kind !== 'agent'
+      || placement.payload.agentConfigurationVersionId !== request.configuration.id || placement.payload.agentId !== request.configuration.agentId
+      || request.executionId !== intent.executionId || request.runId !== intent.runId || request.workflowNodeId !== intent.nodeId
+      || request.workingDirectory !== placement.destination.canonicalCwd || request.runtimeDirectory !== placement.destination.managedRuntimeRoot
+      || intent.inputDigest !== `sha256:${createHash('sha256').update(canonicalGraphJson(request.input)).digest('hex')}`) throw new Error('Remote launch binding mismatch')
+    await this.ports.authorize(intent, placement, 'start')
+    this.bindings.set(intent.operationId, { intent, placement })
+    await this.ports.journal.accept(intent, this.ports.connection, this.ports.incarnationId)
+    const existing = this.residents.get(intent.operationId)
+    if (existing) return { session: existing.session, status: await this.ports.journal.status(intent.operationId) }
+    const reservation = await this.ports.journal.reserveEntry(intent.operationId)
+    if (!reservation.reserved) throw new Error('Original native execution requires reconciliation')
+    try {
+      await this.ports.preflight(request)
+      await this.ports.authorize(intent, placement, 'start')
+      const before = await this.ports.journal.status(intent.operationId)
+      if (before.status !== 'known' || before.receipt.stopFence) throw new Error('Remote launch stopped before native submission')
+      const resolved = this.ports.managers.resolve({ executionId: intent.executionId, agentId: request.configuration.agentId,
+        harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
+      resolved.beginStart?.()
+      const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}` })
+      resolved.markResident?.()
+      const native = await this.ports.nativeEvidence(intent, session)
+      if (native.sessionId !== session.nativeSessionId) throw new Error('Native session attestation mismatch')
+      const receipt = await this.ports.journal.acknowledgeStart(intent.operationId, native)
+      const resident = { intent, placement, request, manager: resolved.manager, session, controller: new AbortController() }
+      this.residents.set(intent.operationId, resident)
+      if (receipt.stopFence) await resident.manager.cancel(session)
+      return { session, status: await this.ports.journal.status(intent.operationId) }
+    } catch (error) { await this.ports.journal.uncertain(intent.operationId, 'Native session preparation acknowledgment unavailable'); throw error }
+  }
+  async recover(raw: { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; session: NativeSessionReference; evidenceDigest: string }) {
+    const status = await this.ports.journal.status(raw.intent.operationId)
+    if (status.status !== 'known' || !status.receipt.native || !this.ports.verifyRecovery
+      || !isDeepStrictEqual(status.receipt.intent, raw.intent) || status.receipt.native.sessionId !== raw.session.nativeSessionId) throw new Error('Original native recovery evidence required')
+    const placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
+    if (placement.bindingHash !== raw.intent.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentConfigurationVersionId !== request.configuration.id
+      || request.executionId !== raw.intent.executionId || request.workingDirectory !== placement.destination.canonicalCwd || request.runtimeDirectory !== placement.destination.managedRuntimeRoot) throw new Error('Recovery binding mismatch')
+    await this.ports.authorize(raw.intent, placement, 'read')
+    await this.ports.verifyRecovery(status.receipt, raw.session, raw.evidenceDigest)
+    const resolved = this.ports.managers.resolve({ executionId: raw.intent.executionId, agentId: request.configuration.agentId,
+      harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
+    resolved.beginStart?.()
+    const session = await resolved.manager.attachSession(raw.session, { request, correlationId: `execution:${raw.intent.executionId}`, instructionsDelivered: true })
+    if (session.nativeSessionId !== raw.session.nativeSessionId) throw new Error('Recovery replaced original session')
+    resolved.markResident?.()
+    this.bindings.set(raw.intent.operationId, { intent: raw.intent, placement })
+    this.residents.set(raw.intent.operationId, { intent: raw.intent, placement, request, manager: resolved.manager, session, controller: new AbortController() })
+    return { session, status }
+  }
+  /** Invoke on credential policy refresh/revocation; offline requested cancellation stays non-terminal. */
+  async refreshAuthority() {
+    for (const resident of this.residents.values()) {
+      try { await this.ports.authorize(resident.intent, resident.placement, 'start') }
+      catch {
+        await this.ports.journal.revokeFence(resident.intent.operationId)
+        resident.controller.abort(); resident.manager.stopAutomaticResponses?.(resident.session)
+        try { await resident.manager.cancel(resident.session); await this.settle(resident, `execution:${resident.intent.executionId}`) }
+        catch { await this.ports.journal.uncertain(resident.intent.operationId, 'Revoked authority; original native cancellation unconfirmed') }
+      }
+    }
+  }
+  private async resident(operationId: string, action: 'start' | 'read' | 'control') {
+    const resident = this.residents.get(operationId)
+    if (!resident) throw new Error('Original native owner requires reconciliation')
+    await this.ports.authorize(resident.intent, resident.placement, action)
+    return resident
+  }
+  async startTurn(operationId: string, prompt: string, correlationId: string) {
+    const resident = await this.resident(operationId, 'start')
+    if (correlationId !== `execution:${resident.intent.executionId}` || !prompt || prompt.length > 1_000_000) throw new Error('Native turn correlation mismatch')
+    const reserved = await this.ports.journal.reserveTurn(operationId, { correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex') })
+    if (!reserved.reserved) return this.ports.journal.status(operationId)
+    resident.turn = (async () => {
+      try {
+        await this.ports.authorize(resident.intent, resident.placement, 'start')
+        const status = await this.ports.journal.status(operationId)
+        if (status.status !== 'known' || status.receipt.stopFence) return
+        for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId,
+          onSubmitted: async turnId => { await this.ports.journal.acknowledgeTurn(operationId, turnId); const current = await this.ports.journal.status(operationId); if (current.status === 'known' && current.receipt.stopFence) await resident.manager.cancel(resident.session, undefined, turnId); else await this.ports.journal.markRunning(operationId) } }, resident.controller.signal)) { void event }
+        await this.settle(resident, correlationId)
+      } catch { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') }
+    })()
+    return this.ports.journal.status(operationId)
+  }
+  private async settle(resident: Resident, correlationId: string) {
+    const evidence = await this.ports.settle(resident.intent, await resident.manager.reconcile(resident.session, correlationId))
+    if (evidence) await this.ports.journal.terminal(resident.intent.operationId, evidence)
+  }
+  async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp') {
+    const resident = await this.resident(operationId, 'read')
+    if (method === 'history') return { history: await resident.manager.reconcile(resident.session, `execution:${resident.intent.executionId}`), status: await this.ports.journal.status(operationId) }
+    if (method === 'pending') return resident.manager.pending(resident.session)
+    return resident.manager[method]()
+  }
+  async control(raw: unknown, binding?: { intent: DispatchIntent; placement: AcceptedNodePlacement }) {
+    const command = RemoteOwnerControlSchema.parse(raw)
+    if (binding) {
+      const intent = DispatchIntentSchema.parse(binding.intent), placement = readPlacement(binding.placement)
+      if (intent.operationId !== command.operationId || intent.bindingHash !== placement.bindingHash
+        || placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
+        || placement.mainId !== this.ports.connection.mainId) throw new Error('Control placement mismatch')
+      await this.ports.authorize(intent, placement, 'control')
+      this.bindings.set(command.operationId, { intent, placement })
+      await this.ports.journal.accept(intent, this.ports.connection, this.ports.incarnationId)
+    }
+    const owned = this.bindings.get(command.operationId)
+    if (!owned) throw new Error('Original control owner requires reconciliation')
+    await this.ports.authorize(owned.intent, owned.placement, 'control')
+    const resident = this.residents.get(command.operationId)
+    if (!resident) {
+      if (command.action.kind !== 'stop') throw new Error('Original native question unavailable')
+      return this.ports.journal.control(command)
+    }
+    const previous = await this.ports.journal.status(command.operationId)
+    if (previous.status === 'known' && previous.receipt.controls.some(value => value.commandId === command.commandId)) return this.ports.journal.control(command)
+    if (command.action.kind === 'respond') {
+      const pending = await resident.manager.pending(resident.session)
+      if (!pending || pending.turn.nativeRequestId !== command.action.nativeInteractionId || pending.session.nativeSessionId !== command.native?.sessionId || pending.turn.nativeTurnId !== command.native?.turnId) throw new Error('Original native question no longer pending')
+      await this.ports.journal.interaction(command.operationId, { interactionId: command.action.interactionId, interactionRevision: command.action.interactionRevision, nativeInteractionId: command.action.nativeInteractionId, native: command.native! })
+    }
+    const recorded = await this.ports.journal.control(command)
+    if (!recorded.dispatch) return recorded.receipt
+    await this.ports.authorize(resident.intent, resident.placement, 'control')
+    try {
+      if (command.action.kind === 'stop') { resident.controller.abort(); resident.manager.stopAutomaticResponses?.(resident.session); await resident.manager.cancel(resident.session, undefined, recorded.receipt.native?.turnId) }
+      else await resident.manager.respond(resident.session, command.action.nativeInteractionId, ApprovalResponseOptionSchema.parse(command.action.response))
+      await this.settle(resident, `execution:${resident.intent.executionId}`)
+    } catch { await this.ports.journal.uncertain(command.operationId, 'Native control acknowledgment unavailable') }
+    return this.ports.journal.status(command.operationId)
+  }
+  status(operationId: string) { return this.ports.journal.status(operationId) }
+}

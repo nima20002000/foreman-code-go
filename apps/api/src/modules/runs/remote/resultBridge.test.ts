@@ -1,0 +1,27 @@
+import { describe, expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { VerifiedRemoteEvidence, type RemoteCommitAuthority, type RemoteResultCommitPort } from './resultBridge.js'
+import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+const digest = 'a'.repeat(64)
+const mainId = randomUUID(), deviceId = randomUUID()
+const connection = { mainId, deviceId, workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
+const receipt: RemoteOperationReceipt = { schemaVersion: 1, intent: { schemaVersion: 1, protocolVersion: 1, mainId, runId: 'run', nodeId: 'node', executionId: 'execution', occurrenceId: 'occurrence', occurrenceIndex: 0, technicalAttempt: 1, operationId: 'operation', attemptId: 'attempt', bindingHash: digest, inputDigest: `sha256:${digest}`, owner: { grantId: 'grant', epoch: '1' } }, connection, workerIncarnationId: randomUUID(), sequence: 4, phase: 'confirmed_terminal', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [], native: { sessionId: 'session', turnId: 'turn', processIdentityDigest: digest }, terminal: { kind: 'completed', closureEvidenceDigest: digest, resultDigest: digest } }
+function fixture() {
+  const state = { accepts: 0, rejects: [] as string[] }
+  const authority = { intent: receipt.intent, placement: { hostRef: { kind: 'device', mainId, deviceId }, bindingHash: digest, registration: { workerInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1 } }, originalConnection: connection, originalIncarnationId: receipt.workerIncarnationId, grantIsLive: true, lastSequence: 0, terminal: null, native: null } as RemoteCommitAuthority
+  const port: RemoteResultCommitPort = { transaction: async (_operationId, work) => work({ authority: async () => authority, reject: async (_receipt, reason) => { state.rejects.push(reason) }, accept: async value => { state.accepts++; authority.lastSequence = value.receipt.sequence; authority.terminal = value.receipt.terminal ?? null; authority.native = value.receipt.native ?? null } }) }
+  return { state, authority, port }
+}
+describe('authoritative remote result bridge', () => {
+  it('accepts original correlated results and converges lost publication acknowledgments', async () => { const { state, port } = fixture(); expect(await VerifiedRemoteEvidence.commit(receipt, connection, port)).toBe('accepted'); expect(await VerifiedRemoteEvidence.commit(receipt, connection, port)).toBe('duplicate'); expect(state.accepts).toBe(1) })
+  it('permits observation over a reconnected authenticated carrier preserving original native evidence', async () => { const { port } = fixture(); expect(await VerifiedRemoteEvidence.commit(receipt, { ...connection, connectionGeneration: 2, bootId: randomUUID() }, port)).toBe('accepted') })
+  it.each(['revoked', 'old-owner', 'wrong-worker', 'replacement-native'])('rejects %s without publishing an edge', async kind => {
+    const { state, authority, port } = fixture(); let report = structuredClone(receipt); let authenticated = connection
+    if (kind === 'revoked') authority.grantIsLive = false
+    if (kind === 'old-owner') authority.intent = { ...authority.intent, owner: { grantId: 'renewed', epoch: '2' } }
+    if (kind === 'wrong-worker') authenticated = { ...connection, deviceId: randomUUID() }
+    if (kind === 'replacement-native') { authority.native = receipt.native!; report = { ...report, native: { ...receipt.native!, turnId: 'replacement' } } }
+    expect(await VerifiedRemoteEvidence.commit(report, authenticated, port)).toBe('rejected'); expect(state.accepts).toBe(0); expect(state.rejects).toHaveLength(1)
+  })
+  it('accepts a main-owner recovery only after explicit original execution reconciliation', async () => { const { authority, port } = fixture(); const recovered = { ...receipt, intent: { ...receipt.intent, owner: { grantId: 'renewed', epoch: '2' } } }; expect(await VerifiedRemoteEvidence.commit(recovered, connection, port)).toBe('rejected'); authority.intent = recovered.intent; expect(await VerifiedRemoteEvidence.commit(recovered, connection, port)).toBe('accepted') })
+})
