@@ -7,6 +7,8 @@ import {
 } from '@graphql/contracts/files'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
+import { JobArtifactFileRevisionSchema, JobArtifactRetentionSchema } from '@graphql/contracts/job-artifacts'
+import { z } from 'zod'
 import { DomainError } from '../errors.js'
 import type { FileAccess, FileConversation, FileConversationAuthorization } from './authorization.js'
 import type { AllocationSession, FileAllocation, FileAllocationRepository, FileRepository, StoredFile,
@@ -81,6 +83,7 @@ export class FileStorageService<Target> {
     if (origin !== 'upload' && scope.kind !== 'temporary') {
       throw new DomainError('FILE_REFERENCE_READ_ONLY', 'Agent results cannot be written to permanent reference files.', 403)
     }
+    if (scope.kind === 'job_execution') throw new DomainError('FILE_BYTE_CLASS_DENIED', 'Job artifacts require the explicit CI publication service.', 403)
     const request = FileUploadRequestSchema.parse(input)
     const inputHash = createHash('sha256').update(JSON.stringify([fileScopeIdentity(scope), request.filename,
       request.mediaType, request.byteSize, request.sha256,
@@ -113,6 +116,40 @@ export class FileStorageService<Target> {
       await session.create(allocation)
       return this.result(allocation, false)
     }, this.mutation(principal, target, scope, source, commitAuthorization))
+  }
+
+  /** Trusted CI seam: accepted output spec/closure/owner authority must supply the commit guard. */
+  async allocateJobOutput(principal: ManagementPrincipal, target: Target, input: unknown,
+    publicationIdentity: string, retentionSeconds: number, guard: FileMutationContext) {
+    const scope = await this.authorization.resolve(principal, target, 'write')
+    if (scope.kind !== 'job_execution' || !publicationIdentity || !guard) {
+      throw new DomainError('FILE_JOB_BINDING_REQUIRED', 'An explicitly authorized job execution artifact is required.', 403)
+    }
+    const request = z.object({ requestId: z.string().min(1).max(200),
+      filename: JobArtifactFileRevisionSchema.unwrap().shape.filename,
+      mediaType: JobArtifactFileRevisionSchema.unwrap().shape.mediaType,
+      sha256: JobArtifactFileRevisionSchema.unwrap().shape.sha256,
+      byteSize: JobArtifactFileRevisionSchema.unwrap().shape.byteSize }).strict().parse(input)
+    const duration = JobArtifactRetentionSchema.parse(retentionSeconds)
+    const inputHash = createHash('sha256').update(JSON.stringify([fileScopeIdentity(scope), request.filename,
+      request.mediaType, request.byteSize, request.sha256, publicationIdentity, duration])).digest('hex')
+    return this.repository.withAllocation(principal.id, request.requestId, async session => {
+      const prior = await session.read()
+      if (prior) {
+        if (prior.inputHash !== inputHash) throw new DomainError('FILE_REQUEST_CONFLICT', 'The job publication identity already has different bytes or scope.', 409)
+        this.matches(prior.stored, scope)
+        return this.result(prior, true)
+      }
+      const now = this.now(), fileId = randomUUID(), revisionId = randomUUID()
+      const value = FileWithRevisionSchema.parse({ file: { fileId, currentRevisionId: revisionId, scope,
+        state: 'pending', createdAt: now, retentionDurationSeconds: duration, expiresAt: temporaryFileExpiresAt(now, duration) },
+      revision: { byteClass: 'ci-output', fileId, revisionId, filename: request.filename, mediaType: request.mediaType,
+        sha256: request.sha256, byteSize: request.byteSize, origin: 'job_output', createdAt: now } })
+      const allocation: FileAllocation = { allocationId: randomUUID(), requestId: request.requestId, inputHash,
+        state: 'allocated', stored: { value, ownerPrincipalId: principal.id, storageKey: randomUUID() } }
+      await session.create(allocation)
+      return this.result(allocation, false)
+    }, this.mutation(principal, target, scope, guard.source, guard))
   }
 
   async upload(principal: ManagementPrincipal, target: Target, requestId: string, source: Readable,

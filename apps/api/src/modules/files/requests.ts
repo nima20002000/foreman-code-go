@@ -30,6 +30,7 @@ export const EmptyFileCommandSchema = z.object({}).strict()
 /** Fixed key order is intentional: object key order is not idempotency identity. */
 export function fileScopeIdentity(input: FileScope): string {
   const scope = FileScopeSchema.parse(input)
+  if (scope.kind === 'job_execution') return JSON.stringify([scope.kind, scope.workspaceId, scope.jobExecutionId])
   if (scope.kind === 'workspace_reference') return JSON.stringify([scope.kind, scope.workspaceId])
   if (scope.kind === 'workflow_reference') return JSON.stringify([scope.kind, scope.workspaceId, scope.workflowId])
   const chat = scope.chat
