@@ -1,4 +1,4 @@
-import { AcceptedChatResponseControlSchema } from '@graphql/contracts/interaction-activity'
+import { AcceptedChatResponseControlSchema, type ChatResponseAcknowledgment } from '@graphql/contracts/interaction-activity'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
 import { qualifyChatActivity } from './qualifiedActivity.js'
@@ -730,6 +730,7 @@ export class OperatorChatService {
   async respond(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal, source: 'http' | 'mcp' = 'http') {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:respond')
+    let providerAcknowledgment: ChatResponseAcknowledgment | undefined
     const observed = await this.get(id, principal), pending = observed.pendingInteraction
     const option = pending?.responseOptions.find((choice) => choice.optionId === input.optionId)
     const acceptedControl = pending && option && observed.activeRequestId === input.requestId
@@ -743,15 +744,18 @@ export class OperatorChatService {
     const key = input.commandId ?? `operator-respond:${commandInputHash([input.requestId, input.nativeRequestId]).slice(7)}`
     return this.receipts().execute(principal, source, id, key,
       { kind: 'respond', requestId: input.requestId, nativeRequestId: input.nativeRequestId, optionId: input.optionId },
-      (markDispatchAttempt) => this.respondNative(id, input, principal, markDispatchAttempt), () => this.controlRead(id, principal, 'operator_chat:respond'), acceptedControl)
+      (markDispatchAttempt) => this.respondNative(id, input, principal, markDispatchAttempt, (proof) => { providerAcknowledgment = proof }),
+      () => this.controlRead(id, principal, 'operator_chat:respond'), acceptedControl, () => providerAcknowledgment)
   }
 
-  private async respondNative(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal, markDispatchAttempt: () => void) {
+  private async respondNative(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal, markDispatchAttempt: () => void,
+    recordEvidence: (proof: ChatResponseAcknowledgment) => void) {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:respond')
     await this.control(id, async () => {
       const row = await this.repository.active(id)
-      const option = row?.pending_interaction?.responseOptions.find((item) => item.optionId === input.optionId)
+      const pending = row?.pending_interaction
+      const option = pending?.responseOptions.find((item) => item.optionId === input.optionId)
       if (!row || row.active_request_id !== input.requestId || row.pending_interaction?.turn.nativeRequestId !== input.nativeRequestId || !option) {
         throw new DomainError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'This approval is no longer offered for this turn.', 409)
       }
@@ -770,6 +774,15 @@ export class OperatorChatService {
         markDispatchAttempt()
         await runtime.manager.respond(runtime.session, input.nativeRequestId, option, this.lifetime.signal)
         delivered = true
+        if (runtime.manager.reconcileResponse && pending) {
+          const history = await runtime.manager.reconcileResponse(runtime.session, { nativeRequestId: input.nativeRequestId,
+            nativeRequestType: pending.nativeRequestType, option }, this.lifetime.signal)
+          const proofs = (history.responseDeliveries ?? []).filter((proof) => proof.nativeSessionId === runtime.session!.nativeSessionId
+            && proof.nativeRequestId === input.nativeRequestId)
+          if (proofs.length && proofs.every((proof) => proof.harness === runtime.session!.harness
+            && proof.providerVersion === runtime.session!.providerVersion && proof.nativeRequestType === pending.nativeRequestType
+            && proof.optionId === option.optionId && proof.semantic === option.semantic)) recordEvidence(proofs[0]!)
+        }
         await this.repository.pending(id, input.requestId)
         await this.observe(id, input.requestId, runtime)
       } catch (error) {

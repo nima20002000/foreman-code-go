@@ -6,7 +6,7 @@ import { createServer } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema, OperatorConversationStateSchema } from '@graphql/contracts'
-import { AgentChatStateSchema, SendAgentChatMessageResponseSchema } from '@graphql/contracts/agent-chat'
+import { AgentChatHistoryPageSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema } from '@graphql/contracts/agent-chat'
 import { ManagementActionSchema, ManagedAgentDefaultsSchema } from '@graphql/contracts/management'
 import { ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
@@ -194,6 +194,20 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
       native: { sessionId: native.sessionId, turnId: native.turnId }, change: { kind: 'text.append', channel: 'assistant' } } })
     expect(typeof (emitted.data as Record<string, unknown>).scopeRevision).toBe('string')
     await stream.close()
+    const oversized = '界'.repeat(150000)
+    f.replay.append(native.sessionId, native.turnId!, oversized)
+    const historyUrl = `/api/workspaces/${workspaceId}/agent-chat/conversations/${id}/history`
+    const largeHistory = await eventually(async () => {
+      const response = await f.http('GET', `${historyUrl}?limit=1`)
+      expect(response.statusCode, response.body).toBe(200)
+      return AgentChatHistoryPageSchema.parse(response.json())
+    }, (page) => page.messages.some((entry) => entry.content.endsWith(oversized)))
+    expect(largeHistory.messages[0]!.content).toBe(`provisional answer longer than final${oversized}`)
+    const bounded = await read()
+    expect(JSON.stringify(bounded).length).toBeLessThan(400000)
+    const mcpHistory = await f.call('agent_chat_read', { workspaceId, ...(selection ? { selection } : { query }), history: { limit: 1 } })
+    expect(mcpHistory.isError).not.toBe(true)
+    expect((mcpHistory.structuredContent as { history: unknown }).history).toEqual(largeHistory)
     expect(f.replay.starts.length).toBe(calls)
     f.replay.complete(native.sessionId, native.turnId!, '')
     const finished = await eventually(read, (state) => state.activeTurn === null)
@@ -218,6 +232,17 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     const counts = await f.db.pool.query('select count(*)::int as count from management_command_receipts where principal_id=$1 and command_id=$2',
       [f.writer.principal.id, 'cancel-B-control'])
     expect(counts.rows[0]!.count).toBe(1)
+    const foreignCreated = await f.http('POST', '/api/operator/conversations', { title: 'Foreign cursor source' })
+    expect(foreignCreated.statusCode, foreignCreated.body).toBe(201)
+    const foreignId = foreignCreated.json().conversation.id
+    expect((await f.http('POST', `/api/operator/conversations/${foreignId}/messages`, { requestId: 'foreign-source', content: 'Own separate history' })).statusCode).toBe(202)
+    const foreign = (await f.db.pool.query('select turn_sequence::text as cursor from operator_conversation_turns where conversation_id=$1 and request_id=$2', [foreignId, 'foreign-source'])).rows[0]!.cursor
+    const receiptUrl = `/api/workspaces/${workspaceId}/agent-chat/conversations/${id}/turns?before=${foreign}&limit=1`
+    const foreignHttp = await f.http('GET', receiptUrl)
+    expect(foreignHttp.statusCode, foreignHttp.body).toBe(409)
+    expect(foreignHttp.json().error.code).toBe('TURN_HISTORY_CURSOR_SCOPE_CONFLICT')
+    const foreignMcp = await f.call('agent_chat_read', { workspaceId, ...(selection ? { selection } : { query }), receipts: { before: foreign, limit: 1 } })
+    expect(foreignMcp.isError).toBe(true)
   })
 
   for (const uncertain of [false, true]) it(`Agent response ${uncertain ? 'uncertain' : 'acknowledged'}: exact recorded choice, HTTP/MCP retry and revoked action`, async () => {
@@ -290,6 +315,55 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(restarted.pendingInteraction?.turn.nativeRequestId).toBe(waiting.pendingInteraction!.turn.nativeRequestId)
     expect(restarted.responseAvailability?.available).toBe(false)
     expect(f.replay.responses.length).toBe(effects)
+  })
+
+  for (const uncertain of [false, true]) it(`Operator control parity: ${uncertain ? 'uncertain' : 'accepted'} response, changed choice, cached grant checks and cancel`, async () => {
+    const f = await setup()
+    const created = await f.http('POST', '/api/operator/conversations', { title: 'Operator parity controls' })
+    expect(created.statusCode, created.body).toBe(201)
+    const id = created.json().conversation.id
+    const sent = await f.http('POST', `/api/operator/conversations/${id}/messages`, { requestId: 'operator-parity-turn', content: 'Wait for exact native approval' })
+    expect(sent.statusCode, sent.body).toBe(202)
+    const read = async () => OperatorConversationStateSchema.parse((await f.http('GET', `/api/operator/conversations/${id}`)).json())
+    const active = await eventually(read, (state) => !!state.activitySnapshot?.active[0]?.native?.turnId)
+    const native = active.activitySnapshot!.active[0]!.native!
+    await f.replay.ask(native.sessionId, native.turnId!)
+    const waiting = await eventually(read, (state) => !!state.pendingInteraction && state.responseAvailability?.available === true)
+    const pending = waiting.pendingInteraction!, option = pending.responseOptions.find((entry) => entry.semantic === 'approve_once')!
+    const alternative = pending.responseOptions.find((entry) => entry.optionId !== option.optionId)!
+    const request = { requestId: 'operator-parity-turn', nativeRequestId: pending.turn.nativeRequestId!, optionId: option.optionId, commandId: 'operator-answer-key' }
+    const denied = await f.call('operator_chat_respond', { conversationId: id, request }, f.denied.token)
+    expect(denied.isError).toBe(true); expect(f.replay.responses).toHaveLength(0)
+    if (uncertain) f.replay.nextResponse = 'uncertain'
+    const answered = await f.http('POST', `/api/operator/conversations/${id}/responses`, request)
+    expect(answered.statusCode, answered.body).toBe(uncertain ? 409 : 200)
+    const retried = await f.call('operator_chat_respond', { conversationId: id, request })
+    expect(retried.isError === true).toBe(uncertain)
+    expect(f.replay.responses).toHaveLength(1)
+    const changed = await f.http('POST', `/api/operator/conversations/${id}/responses`, { ...request, optionId: alternative.optionId })
+    expect(changed.statusCode, changed.body).toBe(409)
+    expect(changed.json().error.code).toBe('OPERATOR_CHAT_REQUEST_CONFLICT')
+    const receipt = (await f.db.pool.query(`select result from management_command_receipts where principal_id=$1
+      and operation='operator_chat_control' and command_id=$2`, [f.writer.principal.id, request.commandId])).rows[0]!.result
+    expect(receipt).toMatchObject({ status: uncertain ? 'uncertain' : 'completed', acceptedControl: { conversationId: id,
+      modelRequestId: request.requestId, native: { sessionId: native.sessionId, turnId: native.turnId, requestId: request.nativeRequestId },
+      choice: { optionId: option.optionId, semantic: option.semantic } } })
+    expect((await f.call('operator_chat_get', { conversationId: id })).isError).not.toBe(true)
+    const cancel = { requestId: request.requestId, commandId: 'operator-cancel-key' }
+    const canceled = await f.http('POST', `/api/operator/conversations/${id}/cancel`, cancel)
+    expect(canceled.statusCode, canceled.body).toBe(200)
+    const nativeCancels = f.replay.calls.filter((entry) => entry.method === 'turn/interrupt').length
+    const cancelRetry = await f.call('operator_chat_cancel', { conversationId: id, request: cancel })
+    expect(cancelRetry.isError).not.toBe(true)
+    expect(f.replay.calls.filter((entry) => entry.method === 'turn/interrupt')).toHaveLength(nativeCancels)
+    expect((await f.db.pool.query(`select count(*)::int as count from management_command_receipts where principal_id=$1
+      and operation='operator_chat_control' and command_id=$2`, [f.writer.principal.id, cancel.commandId])).rows[0]!.count).toBe(1)
+    await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [f.writer.principal.id,
+      JSON.stringify([{ actions: ['operator_chat:read'], scope: {} }])])
+    const noAction = await f.call('operator_chat_respond', { conversationId: id, request })
+    expect(noAction.isError).toBe(true)
+    expect((await f.http('POST', `/api/operator/conversations/${id}/cancel`, cancel)).statusCode).toBe(403)
+    expect(f.replay.responses).toHaveLength(1)
   })
 
   it('Operator publications: twelve real receipt-backed outputs survive final-text replacement, duplicate finalization and retained authorized download', async () => {
