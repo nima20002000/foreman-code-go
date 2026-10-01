@@ -17,6 +17,8 @@ test('package verification rejects changed bytes, sizes, file sets, identities a
   verifyPackage('sharp', '0.35.4', index, files);
   for (const invalid of [{ ...index, requiresBuild: true }, { ...index, manifest: { name: 'other', version: '0.35.4' } }, { ...index, algo: 'sha256' }]) assert.throws(() => verifyPackage('sharp', '0.35.4', invalid, files));
   for (const changed of [new Map([...files, ['extra', Buffer.from('x')]]), new Map([...files].filter(([path]) => path !== 'LICENSE')), new Map(files).set('LICENSE', Buffer.from('License'))]) assert.throws(() => verifyPackage('sharp', '0.35.4', index, changed));
+  const withoutLicense = new Map([...files].filter(([path]) => path !== 'LICENSE'));
+  assert.throws(() => verifyPackage('sharp', '0.35.4', { ...index, files: new Map([...index.files].filter(([path]) => path !== 'LICENSE')) }, withoutLicense), /license/);
   index.files.get('LICENSE').size++;
   assert.throws(() => verifyPackage('sharp', '0.35.4', index, files));
 });
@@ -68,4 +70,12 @@ test('locked native packages use exact TAB keys and copy deterministic verified 
   changed.files.get('LICENSE').digest = '0'.repeat(128);
   await assert.rejects(copySharpPackages({ root, output: join(directory, 'bad'), lock, record }), /integrity/);
   await assert.rejects(copySharpPackages({ root, output: join(directory, 'missing'), lock, record: () => undefined }), /index/);
+});
+
+
+test('libvips preserves its published README license table instead of requiring an absent LICENSE file', () => {
+  const name = '@img/sharp-libvips-linux-x64', version = '1.3.3';
+  const files = new Map([['package.json', Buffer.from(JSON.stringify({ name, version, license: 'LGPL-3.0-or-later' }))], ['README.md', Buffer.from('Dependency licenses: libvips LGPLv3')]]);
+  const index = { requiresBuild: false, manifest: { name, version }, algo: 'sha512', files: new Map([...files].map(([path, bytes]) => [path, { size: bytes.length, digest: createHash('sha512').update(bytes).digest('hex') }])) };
+  verifyPackage(name, version, index, files);
 });

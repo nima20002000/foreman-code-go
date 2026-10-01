@@ -43,7 +43,10 @@ export function verifyPackage(name, version, index, files) {
   }
   const manifest = JSON.parse(files.get('package.json'));
   if (manifest.name !== name || manifest.version !== version) throw new Error(`Package identity mismatch: ${name}`);
-  if (![...files.keys()].some(path => /(?:^|\/)(?:LICENSE|LICENCE|COPYING)(?:\.|$)/i.test(path))) throw new Error(`Package license missing: ${name}`);
+  // The locked libvips tarball publishes its dependency license table in README.md.
+  const licenseTable = name === '@img/sharp-libvips-linux-x64' && manifest.license === 'LGPL-3.0-or-later'
+    && files.get('README.md')?.toString('utf8').includes('LGPLv3');
+  if (!licenseTable && ![...files.keys()].some(path => /(?:^|\/)(?:LICENSE|LICENCE|COPYING)(?:\.|$)/i.test(path))) throw new Error(`Package license missing: ${name}`);
 }
 
 export async function copySharpPackages({ root, output, lock, record }) {
