@@ -103,3 +103,21 @@ it('rechecks a candidate whose parts change before the addressed root is reached
   value.push(root)
   assert.equal(value.result, undefined)
 })
+
+it('ignores foreign-session messages even when the requested root ID is reused', () => {
+  const root = user('root'); root.info.sessionID = 'owned'
+  const value = new OpenCodeTurnHistory(root)
+  const foreignRoot = user('root'); foreignRoot.info.sessionID = 'foreign'
+  const foreignAnswer = assistant('foreign-answer', 'root'); foreignAnswer.info.sessionID = 'foreign'
+  assert.equal(value.push(foreignAnswer), false)
+  assert.equal(value.push(foreignRoot), false)
+  assert.equal(value.rooted, false)
+  const answer = assistant('owned-answer', 'root'); answer.info.sessionID = 'owned'
+  value.push(answer); value.push(root)
+  assert.equal(value.resultMessageId, 'owned-answer')
+})
+
+it('does not complete an assistant with a non-finite completion timestamp', () => {
+  const answer = assistant('answer', 'root'); answer.info.time = { completed: NaN }
+  assert.equal(history(user('root'), [answer]).result, undefined)
+})

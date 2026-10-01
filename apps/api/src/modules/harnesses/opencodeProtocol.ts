@@ -141,15 +141,25 @@ export function boundedMapSet<T>(map: Map<string, T>, key: string, value: T, max
   while (map.size > maximum) map.delete(map.keys().next().value!)
 }
 
+function partIdentity(sessionID: unknown, messageID: unknown, partID: unknown): string | undefined {
+  if (typeof partID !== 'string' || !partID) return undefined
+  // Sparse native frames may omit both parents. Never reuse that unscoped type
+  // for a frame which supplies a different, complete native identity.
+  return JSON.stringify([typeof sessionID === 'string' ? sessionID : null,
+    typeof messageID === 'string' ? messageID : null, partID])
+}
+
 /** Unknown deltas after a stream gap are hidden until authoritative part identity is known. */
 export function visibleNativeEvent(event: OpenCodeEvent, thinking: boolean, partTypes: Map<string, string>): boolean {
   const props = object(event.properties)
   const part = object(props.part)
-  if (typeof part.id === 'string' && typeof part.type === 'string') boundedMapSet(partTypes, part.id, part.type)
+  const snapshotKey = partIdentity(part.sessionID ?? props.sessionID, part.messageID ?? props.messageID, part.id)
+  if (snapshotKey && typeof part.type === 'string') boundedMapSet(partTypes, snapshotKey, part.type)
   if (thinking) return true
   if (part.type === 'reasoning' || /reasoning|thinking/.test(event.type)) return false
   if (event.type === 'message.part.delta') {
-    const type = typeof props.partID === 'string' ? partTypes.get(props.partID) : undefined
+    const key = partIdentity(props.sessionID, props.messageID, props.partID)
+    const type = key ? partTypes.get(key) : undefined
     return type !== undefined && type !== 'reasoning'
   }
   return true
@@ -159,7 +169,8 @@ export function normalizedHistory(messages: OpenCodeMessage[], thinking: boolean
   const result: NativeHarnessEvent[] = []
   for (const message of messages) {
     const created = object(message.info.time).created
-    const occurredAt = new Date(typeof created === 'number' ? created : 0).toISOString()
+    const timestamp = typeof created === 'number' && Number.isFinite(created) && Math.abs(created) <= 8_640_000_000_000_000 ? created : 0
+    const occurredAt = new Date(timestamp).toISOString()
     const id = String(message.info.id)
     const messageEventId = `message:${id}:${digest(message.info)}`
     result.push({ connectionId: `history-${digest(messageEventId)}`, sequence: 0, type: 'message.updated', occurredAt,
@@ -194,7 +205,7 @@ function assistantResult(message: OpenCodeMessage | undefined): ExecutionResult 
       retryable: data.isRetryable === true,
     } }
   }
-  if (info.summary === true || typeof object(info.time).completed !== 'number'
+  if (info.summary === true || typeof object(info.time).completed !== 'number' || !Number.isFinite(object(info.time).completed)
     || typeof info.finish !== 'string' || ['tool-calls', 'unknown', 'error'].includes(info.finish)) return undefined
   if (hasPendingTools(message)) return undefined
   return { outcome: 'succeeded', output: { text: message.parts
@@ -233,6 +244,9 @@ export class OpenCodeTurnHistory {
 
   push(message: OpenCodeMessage): boolean {
     const info = message.info
+    // Directory history is not session authority. A reused message ID from a
+    // foreign session cannot root or terminate the accepted native turn.
+    if (typeof this.root.info.sessionID === 'string' && info.sessionID !== this.root.info.sessionID) return false
     if (info.role === 'assistant') {
       // The newest assistant matters even if incomplete; never fall back to an older completion.
       this.latest ??= message
@@ -339,7 +353,7 @@ export async function* parseOpenCodeSse(
           if (event) yield event
         } else {
           pending += char
-          frameBytes += char.length
+          frameBytes += Buffer.byteLength(char, 'utf8')
           if (frameBytes > MAX_FRAME_BYTES) throw new Error('OpenCode SSE frame exceeds the bounded transport buffer.')
         }
       }
