@@ -28,6 +28,8 @@ it('pins actual main installation payloads and invalidates selections after pass
     expect(selection.installation.installationFingerprint).toBe('payload-A')
     expect(selection.installation.qualified).toBeNull()
     expect(reads).toBe(4)
+    await registry.refreshMain()
+    expect(() => registry.installations.assertCurrent(selection)).not.toThrow()
     payload = 'payload-B'
     await registry.refreshMain()
     expect(() => registry.installations.assertCurrent(selection)).toThrow()

@@ -6,9 +6,9 @@ import { HarnessHostReferenceSchema, HarnessRegistryReadbackSchema, type Harness
   type HostHarnessOverride, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
 import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { DevicePresence, DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { commandInputHash } from '../commands/postgres.js'
-import { authorizeDeviceHost } from '../devices/hostAuthorization.js'
+import { authorizeDeviceHost, assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
 import { discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'
 import { passiveDriverPayloads } from './payloadDiscovery.js'
@@ -30,6 +30,8 @@ export class ProductionHarnessRegistry {
   private defaults: ConfiguredHarnessInstance[] = []
   private stopped = false
   private refreshGeneration = 0
+  private refreshTask: Promise<void> | undefined
+  private inventoryIdentity = ''
   constructor(private readonly pool: pg.Pool, private readonly binaries: { codexBinary: string; openCodeBinary: string },
     private readonly managedDefaults: (client?: pg.ClientBase) => Promise<{ revision: number; defaults: HarnessDefaults }>,
     private readonly profiles: HostHarnessProfileEvidenceRepository,
@@ -37,7 +39,8 @@ export class ProductionHarnessRegistry {
     private readonly environment: NodeJS.ProcessEnv = process.env,
     private readonly discovery: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads }
       = { launcher: discoverLauncher, payloads: passiveDriverPayloads },
-    private readonly collectingBinding: (deviceId: string) => DeviceSessionBinding | null = currentRemoteBinding) {}
+    private readonly collectingBinding: (deviceId: string) => DeviceSessionBinding | null = currentRemoteBinding,
+    private readonly connection: (deviceId: string) => DevicePresence | null = () => null) {}
 
   async initialize(mainId: string): Promise<void> {
     this.mainId = mainId
@@ -64,9 +67,22 @@ export class ProductionHarnessRegistry {
     return { generation: commandInputHash({ path, cwd, node: process.execPath, platform: process.platform, architecture: process.arch,
       nodeOptions: this.environment.NODE_OPTIONS ?? '' }), path, cwd, provenance }
   }
-  async refreshMain(signal?: AbortSignal): Promise<void> {
+  refreshMain(signal?: AbortSignal): Promise<void> {
+    this.assertOpen(); signal?.throwIfAborted()
+    if (this.refreshTask) return this.refreshTask.then(() => { signal?.throwIfAborted() })
+    const task = this.collectMain(signal)
+    this.refreshTask = task
+    void task.then(() => { if (this.refreshTask === task) this.refreshTask = undefined },
+      () => { if (this.refreshTask === task) this.refreshTask = undefined })
+    return task
+  }
+  private async collectMain(signal?: AbortSignal): Promise<void> {
     this.assertOpen(); signal?.throwIfAborted()
     const generation = ++this.refreshGeneration
+    const managed = await this.managedDefaults()
+    const defaults = localDefaultInstances(managed.defaults, managed.revision)
+    if (commandInputHash(defaults) !== commandInputHash(this.defaults)) { this.defaults = defaults; this.reloadInstances() }
+    this.assertOpen(); signal?.throwIfAborted()
     const hostRef = this.host()
     const environment = this.targetEnvironment()
     const records: HarnessInstallationRecord[] = []
@@ -94,14 +110,19 @@ export class ProductionHarnessRegistry {
     }
     const view = projectHarnessRegistry(this.instances.list(), records)
     view.hostMetadata = { hostRef, applicationInstallationId: hostRef.mainId,
-      platform: { platform: process.platform, architecture: process.arch }, workspaceRoots: null }
+      platform: { platform: process.platform, architecture: process.arch }, workspaceRoots: null, connection: null }
     this.snapshots.set(harnessHostKey(hostRef), HarnessRegistryReadbackSchema.parse(view))
     this.reloadInstallations()
   }
   private reloadInstances(): void { this.instances.reload([...this.defaults, ...this.accepted.values()]) }
   private reloadInstallations(): void {
-    this.installations.refresh([...this.snapshots.values()].flatMap((snapshot) => snapshot.installations.map((installation) => ({ ...installation,
-      launcher: { ...installation.launcher, payloadFingerprints: installation.launcher.payloadFingerprints ?? [] } }))))
+    const records = [...this.snapshots.values()].flatMap((snapshot) => snapshot.installations.map((installation) => ({ ...installation,
+      launcher: { ...installation.launcher, payloadFingerprints: installation.launcher.payloadFingerprints ?? [] } })))
+    const identity = commandInputHash(records.map((record) => ({ ...record,
+      launcher: { ...record.launcher, checkedAt: undefined, diagnostics: undefined } })))
+    if (identity === this.inventoryIdentity) return
+    this.installations.refresh(records)
+    this.inventoryIdentity = identity
   }
   pinAccepted(configuration: { id: string; agentId: string; harness: unknown }): RegistryHarnessSelection {
     this.assertOpen()
@@ -169,10 +190,17 @@ export class ProductionHarnessRegistry {
       const managed = await this.managedDefaults(client)
       const defaults = localDefaultInstances(managed.defaults, managed.revision)
       if (commandInputHash(defaults) !== commandInputHash(this.defaults)) { this.defaults = defaults; this.reloadInstances() }
-      const snapshot = this.snapshots.get(harnessHostKey(hostRef))
-      const result = snapshot ? { ...structuredClone(snapshot), instances: this.defaults.map((value) => projectHarnessInstance(this.instances.select(value.instanceId))) } : { instances: this.defaults.map((value) =>
+      const cached = this.snapshots.get(harnessHostKey(hostRef))
+      const snapshot = cached?.hostMetadata?.applicationInstallationId === applicationInstallationId ? cached : undefined
+      const registration = await assertDeviceHostInstallation(client, hostRef, applicationInstallationId)
+      const observed = hostRef.kind === 'device' ? this.connection(hostRef.deviceId) : null
+      const connection = observed && registration && observed.binding.workerInstallationId === registration.workerInstallationId
+        && observed.binding.keyRevision === registration.keyRevision
+        && observed.binding.authorizationRevision === registration.authorizationRevision ? observed : null
+      const result = snapshot ? { ...structuredClone(snapshot),
+        ...(snapshot.hostMetadata ? { hostMetadata: { ...snapshot.hostMetadata, connection } } : {}), instances: this.defaults.map((value) => projectHarnessInstance(this.instances.select(value.instanceId))) } : { instances: this.defaults.map((value) =>
         ({ ...value, configuration: HarnessConfigurationSchema.parse(value.configuration), availability: 'available' as const, driverRevision: '1' })),
-        installations: [], hostMetadata: { hostRef, applicationInstallationId, platform: null, workspaceRoots: null } }
+        installations: [], hostMetadata: { hostRef, applicationInstallationId, platform: null, workspaceRoots: null, connection } }
       await client.query('commit')
       return HarnessRegistryReadbackSchema.parse(result)
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
@@ -188,6 +216,13 @@ export class ProductionHarnessRegistry {
     return binding ? harnessConnectionGeneration(binding) : ''
   }
   async profileEvidence(value: HostHarnessOverride, client?: pg.PoolClient): Promise<HostHarnessProfileEvidence | null> {
+    if (value.target.hostRef.kind === 'device') {
+      const binding = this.currentRemoteBinding(value.target.hostRef.deviceId)
+      if (!binding) return null
+      const registration = await assertDeviceHostInstallation(client ?? this.pool, value.target.hostRef, value.target.applicationInstallationId)
+      if (!registration || binding.workerInstallationId !== registration.workerInstallationId
+        || binding.keyRevision !== registration.keyRevision || binding.authorizationRevision !== registration.authorizationRevision) return null
+    }
     const proof = await this.profiles.latest(value.instanceId, value.revision, client)
     const snapshot = this.snapshots.get(harnessHostKey(value.target.hostRef))
     const installation = snapshot?.installations.find((record) => record.harnessInstallationId === value.target.harnessInstallationId)

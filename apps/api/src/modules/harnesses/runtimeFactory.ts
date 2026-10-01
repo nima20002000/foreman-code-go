@@ -2,7 +2,7 @@ import type { HarnessConfiguration, OpenCodeAdvancedConfiguration } from '@graph
 import { DomainError } from '../errors.js'
 import { HarnessInstanceRegistry, localHarnessDrivers, type ConfiguredHarnessInstance } from './instanceRegistry.js'
 import type { HarnessInstallationRegistry, RegistryHarnessSelection } from './installationRegistry.js'
-import { commandInputHash } from '../commands/postgres.js'
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import { discoverLauncher } from './hostDiscovery.js'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexDiagnosticPin, type CodexDiagnosticOperations } from './codexAppServer.js'
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
@@ -74,6 +74,7 @@ export class NativeHarnessFactories {
     instances?: HarnessInstanceRegistry
     installations?: HarnessInstallationRegistry
     installationDiscovery?: typeof discoverLauncher
+    selectDefault?: (harness: 'codex' | 'opencode') => RegistryHarnessSelection
     selectConfiguration?: (configuration: HarnessConfiguration) => RegistryHarnessSelection
     auxiliaryRecovery?: (role: 'diagnostics' | 'qualification') => NativeProcessRecovery
     admitRecovery?: (recovery: NativeProcessRecovery) => void
@@ -91,6 +92,9 @@ export class NativeHarnessFactories {
   }
 
   allocate(input: NativeHarnessAllocation): NativeHarnessAllocationResult {
+    if (!input.selection && (input.role === 'diagnostics' || input.role === 'qualification') && this.config.selectDefault) {
+      input = { ...input, selection: this.config.selectDefault(input.harness) }
+    }
     if (input.selection) {
       if (!this.config.installations) throw new DomainError('HARNESS_SELECTION_UNAVAILABLE', 'Canonical installation selection is not composed.', 503)
       this.config.installations.assertCurrent(input.selection)

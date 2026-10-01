@@ -51,7 +51,9 @@ import { PostgresAgentChatRepository } from './modules/conversations/agentChatRe
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
 import { DomainError } from './modules/errors.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
-import { createHarnessCompatibility, HarnessCompatibilityService } from './modules/harnesses/compatibility/service.js'
+import { FileCompatibilityCache } from './modules/harnesses/compatibility/cache.js'
+import { scopedCompatibilityProbe } from './modules/harnesses/compatibility/scopedProbe.js'
+import { HarnessCompatibilityService } from './modules/harnesses/compatibility/service.js'
 import { HarnessQualificationRepository } from './modules/harnesses/qualification/repository.js'
 import { HarnessQualificationRegistry } from './modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
@@ -172,10 +174,22 @@ export function buildProductionApp(
   const harnessRegistry = new ProductionHarnessRegistry(database.pool, config.harnesses,
     (client) => settings.getManagedHarnessDefaults(client), hostProfileEvidence,
     (deviceId) => { const view = deviceRuntime.presenceFor(deviceId); return view?.phase === 'ready' ? view.binding : null },
-    process.env, infrastructure?.inventoryDiscovery, (deviceId) => deviceRuntime.currentBinding(deviceId))
+    process.env, infrastructure?.inventoryDiscovery, (deviceId) => deviceRuntime.currentBinding(deviceId),
+    (deviceId) => deviceRuntime.presenceFor(deviceId))
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
+  const compatibilityProbe = (timeoutMs = 2000, expected?: { harness: CompatibilityHarness; binary: string }) => scopedCompatibilityProbe({
+    registry: processRegistry, pin: (harness) => {
+      const binding = harnessRegistry.pinDefault(harness)
+      if (expected && (harness !== expected.harness || binding.installation.launcher.resolvedLauncher !== expected.binary)) {
+        throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'Diagnostics require the original inspected launcher.', 409)
+      }
+      return binding
+    },
+    assertInstallation: (binding, signal) => nativeFactories.assertInstallationUnchanged(binding, signal),
+    workingDirectory: config.harnesses.workspaceRoot, environment: process.env, timeoutMs,
+  })
   const qualificationRepository = new HarnessQualificationRepository(database.pool)
   const identity = infrastructure?.qualificationIdentity ?? {
     registry: harnessRegistry.installations, pin: (harness: CompatibilityHarness) => harnessRegistry.pinDefault(harness),
@@ -193,18 +207,24 @@ export function buildProductionApp(
     qualificationRepository, qualificationRegistry, selectedSuites,
     { codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary }, commands, settings,
     undefined, (harness) => harnessCompatibility.refreshAfterQualification(harness),
+    (harness, binary, timeoutMs) => compatibilityProbe(timeoutMs, { harness, binary }),
+    (harness, signal) => {
+      if (harness !== 'codex' && harness !== 'opencode') throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'Unsupported qualification driver.', 409)
+      return harnessRegistry.refreshMain(signal)
+    },
   ) : undefined
   // Live qualification is an explicit authenticated operation; optional
   // compatibility diagnostics never start model turns during startup.
   const harnessCompatibility = infrastructure?.auxiliary
     ? new HarnessCompatibilityService(infrastructure.auxiliary.compatibility)
-    : createHarnessCompatibility(config.harnesses)
+    : new HarnessCompatibilityService({ probe: compatibilityProbe(), cache: new FileCompatibilityCache() })
   const endpointHost = config.host === '0.0.0.0' ? '127.0.0.1'
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
+    selectDefault: (harness) => harnessRegistry.pinDefault(harness),
     selectConfiguration: (configuration) => harnessRegistry.pinAccepted({
       id: `configuration-check:${commandInputHash(configuration)}`, agentId: 'configuration-qualification', harness: configuration,
     }),

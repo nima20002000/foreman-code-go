@@ -33,7 +33,9 @@ export class HarnessQualificationService {
     private readonly commands: PostgresCommandCoordinator,
     private readonly settings: Pick<PostgresSettingsRepository, 'getManagedHarnessDefaults'>,
     private readonly staticCheck?: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt?: number) => Promise<string>,
-    private readonly onFinished?: (harness: CompatibilityHarness) => void) {}
+    private readonly onFinished?: (harness: CompatibilityHarness) => void,
+    private readonly probeFactory?: (harness: CompatibilityHarness, binary: string, timeoutMs: number) => CompatibilityProbe,
+    private readonly refreshInstalled?: (harness: CompatibilityHarness, signal: AbortSignal) => Promise<void>) {}
 
   async list(principal: ManagementPrincipal): Promise<{ qualifications: HarnessQualification[] }> {
     requireAuthorization(principal, 'harnesses:read')
@@ -113,7 +115,7 @@ export class HarnessQualificationService {
 
   private checkStatic(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt: number): Promise<string> {
     if (this.staticCheck) return this.staticCheck(harness, binary, version, signal, attempt)
-    return checkStaticCompatibility(harness, binary, version, signal, attempt, this.probes)
+    return checkStaticCompatibility(harness, binary, version, signal, attempt, this.probes, this.probeFactory)
   }
 
   private async removeDirectory(directory: string): Promise<void> {
@@ -123,9 +125,12 @@ export class HarnessQualificationService {
 
   private async prepare(harness: CompatibilityHarness, force: boolean): Promise<HarnessQualification> {
     const suite = this.suites[harness]
+    await this.refreshInstalled?.(harness, this.cancellation.signal)
+    this.assertRunning(harness)
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
     this.assertRunning()
-    const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
+    const probe = this.probeFactory?.(harness, binary, 5000)
+      ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
     this.probes.add(probe)
     let version: string
     try { version = (await this.timed(5000, (signal) => probe.inspect(harness, signal))).version }
@@ -228,8 +233,11 @@ export class HarnessQualificationService {
   }
 }
 
-async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt: number, probes: Set<CompatibilityProbe>): Promise<string> {
-  const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, attempt === 1 ? 2000 : 10_000)
+async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt: number, probes: Set<CompatibilityProbe>,
+  probeFactory?: (harness: CompatibilityHarness, binary: string, timeoutMs: number) => CompatibilityProbe): Promise<string> {
+  const timeout = attempt === 1 ? 2000 : 10_000
+  const probe = probeFactory?.(harness, binary, timeout)
+    ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, timeout)
   probes.add(probe)
   try {
     const installation = await probe.inspect(harness, signal)

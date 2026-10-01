@@ -5,7 +5,7 @@ import type { DevicePresence } from '../src/modules/devices/deviceEndpoint.js'
 const view = (epoch: string, generation: number): DevicePresence => ({
   binding: { mainId: 'main', deviceId: 'device', workerInstallationId: 'worker-installation', keyRevision: 1,
     authorizationRevision: 1, bootId: 'worker-boot', connectionEpoch: epoch, connectionGeneration: generation },
-  phase: 'ready', dispatch: false, transfer: false,
+  phase: 'ready', dispatch: false, transfer: false, appVersion: '0.1.0', protocolVersion: 1, lastSeenAt: '2026-10-01T10:25:00.000Z',
 })
 it('retains the current authenticated epoch against stale offline/readiness and exposes independent snapshots', () => {
   const presence = new ProductionDevicePresence('main')

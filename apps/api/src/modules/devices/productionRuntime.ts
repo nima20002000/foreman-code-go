@@ -6,7 +6,7 @@ import { API_APPLICATION_VERSION } from '../../infrastructure/applicationVersion
 import { PostgresDeviceAccessService } from './access.js'
 import type { DeviceExtensionRegistration } from './deviceApplicationChannel.js'
 import { DeviceEndpoint } from './deviceEndpoint.js'
-import { loadOrCreateMainDeviceIdentity, signMainIdentityProof } from './mainIdentity.js'
+import { loadOrCreateMainDeviceIdentity, signMainIdentityProof, signMainEnrollmentProof } from './mainIdentity.js'
 import type { DeviceManagementService } from './management.js'
 import type { DeviceListenerConfig } from './productionConfig.js'
 import { ProductionDeviceListener } from './productionListener.js'
@@ -71,9 +71,11 @@ export class ProductionDeviceRuntime {
     const identity = await loadOrCreateMainDeviceIdentity(this.pool, mainId)
     this.assertOpen()
     const presence = new ProductionDevicePresence(mainId)
-    const access = new PostgresDeviceAccessService(this.pool, mainId, (deviceId) => this.endpoint?.revoke(deviceId))
+    const access = new PostgresDeviceAccessService(this.pool, mainId, (deviceId, authorizationRevision) => this.endpoint?.revoke(deviceId, authorizationRevision))
     const sign = (request: Parameters<typeof signMainIdentityProof>[1]) =>
       this.track(async () => signMainIdentityProof(identity, request, API_APPLICATION_VERSION))
+    const signEnrollment = (request: Parameters<typeof signMainEnrollmentProof>[1]) =>
+      this.track(async () => signMainEnrollmentProof(identity, request, API_APPLICATION_VERSION))
     const extensions = (this.domains?.extensions ?? []).map((extension) => ({ ...extension,
       ...(extension.handle ? { handle: (payload, context) => this.track(() => extension.handle!(payload, context)) } : {}),
     } satisfies DeviceExtensionRegistration))
@@ -92,7 +94,7 @@ export class ProductionDeviceRuntime {
     this.service = access; this.endpoint = endpoint; this.presence = presence
     if (this.listenerConfig) this.listener = new ProductionDeviceListener(this.listenerConfig, endpoint, {
       mainId, mainPublicKeyFingerprint: identity.publicKeyFingerprint, appVersion: API_APPLICATION_VERSION,
-      signMainIdentityProof: sign, pair: (input) => this.track(() => access.pair(input)),
+      signMainEnrollmentProof: signEnrollment, pair: (input) => this.track(() => access.pair(input)),
     })
   }
   currentBinding(deviceId: string): DeviceSessionBinding | null { return this.endpoint?.currentBinding(deviceId) ?? null }

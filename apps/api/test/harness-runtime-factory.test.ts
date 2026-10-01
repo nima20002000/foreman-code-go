@@ -2,8 +2,42 @@ import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { NativeHarnessFactories, type NativeFactoryInfrastructure } from '../src/modules/harnesses/runtimeFactory.js'
 import type { ManagedOpenCodeServerOptions, OpenCodeServerController } from '../src/modules/harnesses/opencodeTransport.js'
+import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
+import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
 
 describe('native runtime construction', () => {
+  it('allocates diagnostics against the canonical default and fences changed payload bytes before native startup', async () => {
+    const instances = new HarnessInstanceRegistry(localHarnessDrivers)
+    instances.reload([{ instanceId: 'local-default:opencode', instanceRevision: '8', driverId: 'opencode',
+      enabled: true, configuration: DEFAULT_HARNESS_DEFAULTS.opencode }])
+    const installations = new HarnessInstallationRegistry(instances)
+    const installation: HarnessInstallationRecord = { hostRef: { kind: 'main', mainId: 'recorded-main' },
+      harnessInstallationId: 'recorded-installation', installationFingerprint: 'original-payload', driverId: 'opencode',
+      driverRevision: '1', protocolRevision: 'recorded-protocol', environmentGeneration: 'env', connectionGeneration: 'connection',
+      launcher: { requested: 'opencode', resolvedLauncher: '/recorded/selected-opencode', fingerprint: 'original-payload',
+        status: 'installed', interpreter: null, diagnostics: [], checkedAt: '2026-10-01T00:00:00.000Z',
+        environment: { generation: 'env', provenance: 'worker', cwd: '/recorded', path: '/recorded' },
+        payloadFingerprints: [{ path: '/recorded/selected-opencode', fingerprint: 'original-payload' }] },
+      installed: true, observedVersion: null, authenticated: null, compatible: null, qualified: null }
+    installations.refresh([installation])
+    const discovery = vi.fn(async () => ({ ...installation.launcher, fingerprint: 'changed-payload' }))
+    let options!: ManagedOpenCodeServerOptions
+    const factories = new NativeHarnessFactories({ codexBinary: '/unused', openCodeBinary: '/forbidden-path-fallback',
+      instances, installations, installationDiscovery: discovery,
+      selectDefault: () => installations.pin({ instanceId: 'local-default:opencode', hostRef: installation.hostRef,
+        harnessInstallationId: installation.harnessInstallationId, connectionGeneration: 'connection', environmentGeneration: 'env' }),
+    }, { mode: 'native', openCodeServer: (input) => {
+      options = input
+      return { expectedVersion: '1.18.31', ownerAgentId: input.ownerAgentId,
+        ensure: vi.fn(), request: vi.fn(), dispose: vi.fn(async () => undefined) }
+    } })
+    const allocation = factories.allocate({ harness: 'opencode', role: 'diagnostics',
+      workingDirectory: '/recorded', ownerAgentId: 'diagnostic-owner', appMcpAccess: 'none' })
+    expect(options.binary).toBe('/recorded/selected-opencode')
+    expect(discovery).not.toHaveBeenCalled()
+    await expect(options.assertInstallation!()).rejects.toThrow('payload changed')
+    await factories.disposeAuxiliary(allocation.manager)
+  })
   it('allocates real role-isolated managers without starting infrastructure and disposes only its own child', async () => {
     const servers: OpenCodeServerController[] = []
     const serverFactory = vi.fn((options: ManagedOpenCodeServerOptions) => {
