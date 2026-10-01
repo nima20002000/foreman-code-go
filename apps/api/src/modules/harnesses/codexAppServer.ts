@@ -1727,6 +1727,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private async handleRequest(runtime: Runtime, request: RpcRequest, staged = false): Promise<void> {
+    if (runtime.closed || runtime.disposed) return
     const params = request.params ?? {}
     const key = requestKey(runtime.generation, request.id)
     const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
@@ -1797,7 +1798,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const prior = runtime.fileRequests.get(key)
     if (prior?.pending || prior?.conflictingIdentity) return
     if ([...runtime.resolvedRequests.values()].filter((entry) => entry.pending).length >= MAX_INTERACTIONS) {
-      this.record(runtime, 'files.response_capacity_exceeded', { nativeRequestKey: key }); return
+      this.record(runtime, 'files.response_capacity_exceeded', { nativeRequestKey: key })
+      // An untrackable live ID cannot be forgotten while this connection keeps
+      // accepting callbacks. Fence it synchronously and retain failed cleanup.
+      this.handleDisconnect(runtime)
+      void runtime.transport.close().catch(() => { this.record(runtime, 'transport.close_unconfirmed', {}) })
+      return
     }
     const reservation: ResolvedRequest = { signature, nativeRequestId: undefined,
       nativeTurnId: text(params.turnId), method: request.method, generation, pending: true }

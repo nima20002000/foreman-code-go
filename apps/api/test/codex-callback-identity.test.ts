@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import type { CodexHarnessConfiguration, NativeSessionReference } from '@graphql/contracts'
-import { CodexAppServerSessionManager, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
+import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
+import { randomUUID } from 'node:crypto'
 import { CodexRuntimeFileTurn } from '../src/modules/harnesses/codexFiles/runtime.js'
 import type { CodexFileTurn } from '../src/modules/harnesses/codexFiles/turn.js'
 import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
@@ -17,14 +18,23 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
 async function fixture(id: string | number = 901, files = true) {
   const session = { harness: 'codex' as const, providerVersion: QUALIFIED_CODEX_VERSION, nativeSessionId: 'callback-thread' }
   const source = input('/callback-no-io')
-  const manager = new CodexAppServerSessionManager('not-executed')
+  const forbidden = async () => { throw new Error('Native IO is forbidden in this memory fixture.') }
+  const dependencies: Extract<CodexSessionDependencies, { mode: 'replay' }> = {
+    mode: 'replay', qualify: forbidden, assertUnchanged: forbidden, runCommand: forbidden, qualifyModel: forbidden,
+    withDiagnostics: forbidden, environment: () => { throw new Error('Native environment IO is forbidden.') },
+    transport: () => { throw new Error('Native transport IO is forbidden.') },
+    id: randomUUID, now: () => new Date('2026-10-01T00:00:00Z'), schedule: setTimeout, cancelTimer: clearTimeout,
+  }
+  const manager = new CodexAppServerSessionManager('not-executed', undefined, undefined, undefined, undefined, undefined, dependencies)
   const writes: Array<{ operation: string; id: string | number; method?: string }> = []
   let heldResponse: ReturnType<typeof gate> | undefined
+  let closes = 0
+  let failClose = false
   const transport: CodexTransport = { start: async () => undefined, request: async (method) => {
     assert.equal(method, 'turn/start')
     return { turn: { id: 'next-callback-turn', status: 'inProgress', itemsView: 'full', items: [],
       error: null, startedAt: 1, completedAt: null, durationMs: null } }
-  }, close: async () => undefined,
+  }, close: async () => { closes += 1; if (failClose) { failClose = false; throw new Error('fixture transport closure unconfirmed') } },
     reject: async (id) => { writes.push({ operation: 'reject', id }) },
     respond: async (id, method) => { writes.push({ operation: 'respond', id, method }); await heldResponse?.promise }, isConnected: () => true }
   const seam = manager as unknown as {
@@ -62,6 +72,8 @@ async function fixture(id: string | number = 901, files = true) {
   const query = { nativeRequestId: pending.turn.nativeRequestId!, nativeRequestType: pending.nativeRequestType,
     expectedNativeTurnId: pending.turn.nativeTurnId! }
   return { manager, session, runtime, seam, writes, completion, approval, file, query, pending, calls: () => calls,
+    closes: () => closes,
+    failNextClose: () => { failClose = true },
     holdResponse: () => { heldResponse = gate(); return heldResponse },
     cleanup: async () => { completion.release(); heldResponse?.release(); await flush(); await manager.shutdown() } }
 }
@@ -268,7 +280,7 @@ describe('connection-scoped typed callback identity across files and approvals',
     } finally { held.release(); await iterator?.return?.(); await f.cleanup() }
   })
 
-  it('bounds pending response reservations across next-turn cache cleanup without writing an untracked reply', async () => {
+  for (const uncertainCleanup of [false, true]) it(`bounds pending responses and fences overflow approval (cleanup uncertain=${uncertainCleanup})`, async () => {
     const f = await fixture()
     const held = f.holdResponse()
     let iterator: Awaited<ReturnType<typeof nextTurn>> | undefined
@@ -277,11 +289,32 @@ describe('connection-scoped typed callback identity across files and approvals',
       f.completion.release(); await flush()
       assert.equal(f.writes.length, 128)
       iterator = await nextTurn(f)
+      if (uncertainCleanup) f.failNextClose()
       await f.seam.handleRequest(f.runtime, { ...f.file, id: 9_090,
         params: { ...f.file.params, turnId: f.runtime.activeTurnId, callId: 'new-file-call' } })
       assert.equal(f.writes.length, 128)
       assert.equal(f.runtime.resolvedRequests.size, 128)
       assert.ok((await f.manager.history(f.session)).events.some((event) => event.type === 'files.response_capacity_exceeded'))
+      const approval = { ...f.approval, id: 9_090, params: { ...f.approval.params, turnId: f.runtime.activeTurnId } }
+      await f.seam.handleRequest(f.runtime, approval)
+      assert.equal(await f.manager.pending(f.session), undefined)
+      const translated = translateCodexInteraction({ session: f.session, configuration: f.runtime.configuration,
+        connectionId: f.runtime.connectionId, generation: f.runtime.generation }, approval)!.pending
+      const availability = await f.manager.inspectResponseAvailability(f.session, { nativeRequestId: translated.turn.nativeRequestId!,
+        nativeRequestType: translated.nativeRequestType, expectedNativeTurnId: translated.turn.nativeTurnId! })
+      assert.notEqual(availability.state, 'available')
+      await assert.rejects(f.manager.respond(f.session, translated.turn.nativeRequestId!, translated.responseOptions[0]!))
+      assert.equal(f.runtime.closed, true)
+      assert.ok(f.closes() >= 1)
+      assert.equal(f.writes.length, 128)
+      if (uncertainCleanup) {
+        await flush()
+        assert.ok((await f.manager.history(f.session)).events.some((event) => event.type === 'transport.close_unconfirmed'))
+        assert.ok(f.seam.transports.size > 0)
+        await f.manager.close(f.session)
+        assert.ok(f.closes() >= 2)
+        assert.equal(f.writes.length, 128)
+      }
     } finally { held.release(); await iterator?.return?.(); await f.cleanup() }
   })
 })
