@@ -14,7 +14,7 @@ const command = args[0];
 const stateDirectory = args.length === 3 && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
 let runtime;
 async function main() {
-  if (!stateDirectory || !['run', 'doctor'].includes(command)) throw new WorkerError('usage: graphql-worker run|doctor --state /absolute/private/directory');
+  if (!stateDirectory || !['run', 'doctor', 'identity'].includes(command)) throw new WorkerError('usage: graphql-worker run|doctor|identity --state /absolute/private/directory');
   const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
   if (command === 'doctor') {
     let identity; const errors = [];
@@ -22,7 +22,9 @@ async function main() {
       await requirePrivateDirectory(stateDirectory);
       // Doctor is read-only, including when the worker has never initialized identity.
       await readFile(`${stateDirectory}/identity.json`);
-      identity = await loadWorkerPairing(stateDirectory);
+      identity = await loadOrCreateWorkerIdentity(stateDirectory);
+      try { identity = { ...identity, ...await loadWorkerPairing(stateDirectory) }; }
+      catch (error) { if (error.code !== 'ENOENT') errors.push('identity_invalid'); }
     } catch { errors.push('identity_invalid'); }
     let service = { active: false, userManagerAvailable: false };
     try {
@@ -43,6 +45,12 @@ async function main() {
   const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
   validateManifest(manifest, facts, { protocolVersion: 1, identityFormat: 1 });
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+  if (command === 'identity') {
+    await requirePrivateDirectory(stateDirectory);
+    const identity = await loadOrCreateWorkerIdentity(stateDirectory);
+    console.log(JSON.stringify({ formatVersion: identity.formatVersion, workerInstallationId: identity.workerInstallationId, keyRevision: identity.keyRevision, publicKey: identity.publicKey, publicKeyFingerprint: identity.publicKeyFingerprint }));
+    return;
+  }
   runtime = await startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, createConnection: async ({ bootId }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
     return createWorkerConnection({ pairing, bootId, appVersion: manifest.version });

@@ -63,6 +63,12 @@ expired or revoked credentials never cause automatic re-pairing. Existing
 localhost browser/MCP access is not widened. No provider login is needed for
 pair/negotiate/heartbeat.
 
+`/absolute/node /private/app/current/src/cli.mjs identity --state /private/state`
+initializes the durable local identity after runtime/persistence checks and emits
+only its installation ID, public key/fingerprint and key revision for enrollment.
+It never emits the private key. Use the main's authenticated pairing/proof flow
+and W07-A's write-once pairing API; entering a new endpoint is not re-pairing.
+
 ## Update, rollback and diagnostics
 
 Before updating, human-approved W08 drain/stop policy must complete and the
