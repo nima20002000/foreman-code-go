@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
+import { ApiError } from '../../shared/api/client'
 import { projectFilesClient, type ProjectFileRemoveInput, type ProjectFileUploadInput } from './projectFilesClient'
 
 export const projectFilesKeys = {
@@ -10,6 +11,17 @@ export const projectFilesKeys = {
 
 type ScopedUpload = ProjectFileUploadInput & { generation: number }
 type ScopedRemoval = ProjectFileRemoveInput & { generation: number }
+
+function uploadContentGuidance(error: unknown): string | null {
+  if (!ApiError.is(error) || error.code !== 'FILE_TYPE_INVALID') return null
+  if (error.message === 'Markdown contains binary control characters.') {
+    return 'Markdown contains binary control characters. Remove them in a text editor and upload the corrected UTF-8 file.'
+  }
+  if (error.message === 'Markdown must use valid UTF-8.') {
+    return 'Markdown must use valid UTF-8. Save it as UTF-8 in a text editor and upload the corrected file.'
+  }
+  return 'The file content does not match a supported format. Check or re-export the file and upload the corrected copy.'
+}
 
 export function useProjectFilesQuery(workspaceId: string) {
   return useInfiniteQuery({
@@ -54,17 +66,20 @@ export function useProjectFileUpload(workspaceId: string) {
     }),
   })
   const latest = history.at(-1)
+  const contentGuidance = latest?.status === 'error' ? uploadContentGuidance(latest.error) : null
   const pending = () => queryClient.getMutationCache().findAll({ mutationKey, exact: true })
     .some((entry) => entry.state.status === 'pending')
   return {
     isPending: history.some((entry) => entry.status === 'pending'),
     isError: latest?.status === 'error',
+    contentGuidance,
+    canRetry: latest?.status === 'error' && !contentGuidance,
     filename: latest?.input?.file.name,
     start(file: File) {
       if (!pending()) mutation.mutate({ workspaceId, generation, file, requestId: crypto.randomUUID() })
     },
     retry() {
-      if (!pending() && latest?.status === 'error' && latest.input) mutation.mutate(latest.input)
+      if (!pending() && latest?.status === 'error' && !contentGuidance && latest.input) mutation.mutate(latest.input)
     },
   }
 }

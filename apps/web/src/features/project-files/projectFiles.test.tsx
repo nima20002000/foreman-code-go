@@ -165,7 +165,7 @@ describe('Project files section through the real HTTP client and MSW', () => {
     expect(await screen.findByRole('button', { name: 'Download ready.md' })).toHaveAttribute('title', 'Download ready.md')
     expect(screen.getAllByText(`${contents.byteLength} B`)).toHaveLength(2)
     expect(screen.getByText('waiting.md')).toBeVisible()
-    expect(screen.getByText('Pending')).toBeVisible()
+    expect(screen.getByText('Not ready')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Download waiting.md' })).not.toBeInTheDocument()
     expect(screen.queryByText('gone.md')).not.toBeInTheDocument()
     expect(screen.queryByText('foreign.md')).not.toBeInTheDocument()
@@ -193,6 +193,67 @@ describe('Project files section through the real HTTP client and MSW', () => {
     expect(new TextDecoder().decode(upload.bytes)).toBe('# marker\n')
     expect(upload.row.file.scope).toEqual({ kind: 'workspace_reference', workspaceId: A })
     expect(upload.row.file).not.toHaveProperty('expiresAt')
+  })
+
+  it.each([
+    ['Markdown contains binary control characters.', 'Remove them in a text editor'],
+    ['Markdown must use valid UTF-8.', 'Save it as UTF-8 in a text editor'],
+    ['Unrecognized private parser detail', 'Check or re-export the file'],
+  ])('gives bounded content recovery without retrying rejected bytes: %s', async (message, guidance) => {
+    server.use(http.put(paths.bytes, () => HttpResponse.json({ error: { code: 'FILE_TYPE_INVALID', message } }, { status: 415 })))
+    mount()
+    await screen.findByText('No files.')
+    await userEvent.upload(picker(), file('invalid.md', '# text\0binary\n'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(guidance)
+    expect(screen.queryByText('Unrecognized private parser detail')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry upload invalid.md' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Not ready')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Remove invalid.md' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Download invalid.md' })).not.toBeInTheDocument()
+  })
+
+  it('retains honest pending recovery after reload and allows removal then corrected upload', async () => {
+    server.use(http.put(paths.bytes, async ({ request, params }) => {
+      const bytes = await request.clone().arrayBuffer()
+      if (new Uint8Array(bytes).includes(0)) return HttpResponse.json({ error: {
+        code: 'FILE_TYPE_INVALID', message: 'Markdown contains binary control characters.',
+      } }, { status: 415 })
+      return putBytes(request, String(params.workspaceId), String(params.requestId))
+    }))
+    const view = mount()
+    await screen.findByText('No files.')
+    await userEvent.upload(picker(), file('correctable.md', '# text\0binary\n'))
+    await screen.findByRole('alert')
+    await screen.findByText('Not ready')
+    view.unmount()
+    mount() // A fresh QueryClient has no previous browser mutation or File variables.
+    expect(await screen.findByText('Not ready')).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('remove the entry and upload the file again')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument() // No invented persisted reason.
+    expect(screen.queryByRole('button', { name: 'Retry upload correctable.md' })).not.toBeInTheDocument()
+    const listCalls = calls.filter((call) => call.phase === 'list').length
+    await userEvent.click(screen.getByRole('button', { name: 'Check upload status' }))
+    await waitFor(() => expect(calls.filter((call) => call.phase === 'list').length).toBeGreaterThan(listCalls))
+    expect(screen.getByText('Not ready')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Remove correctable.md' }))
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /^Remove$/ }))
+    await screen.findByText('No files.')
+    await userEvent.upload(picker(), file('correctable.md', '# corrected 🙂\r\n'))
+    expect(await screen.findByRole('button', { name: 'Download correctable.md' })).toBeEnabled()
+    expect(screen.queryByText('Not ready')).not.toBeInTheDocument()
+    expect(rows.get(A)!.map((row) => row.file.state)).toEqual(['removed', 'ready'])
+    expect(allocations.size).toBe(2)
+  })
+
+  it('checks persisted upload status without allocating another file', async () => {
+    rows.set(A, [fixture('waiting', A, 'pending')])
+    mount()
+    await screen.findByText('Not ready')
+    rows.set(A, [fixture('waiting')])
+    await userEvent.click(screen.getByRole('button', { name: 'Check upload status' }))
+    expect(await screen.findByRole('button', { name: 'Download waiting.md' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Check upload status' })).not.toBeInTheDocument()
+    expect(calls.every((call) => call.phase === 'list')).toBe(true)
   })
 
   it('confirms removal, supports Cancel and backdrop dismissal, and retains the server tombstone', async () => {
