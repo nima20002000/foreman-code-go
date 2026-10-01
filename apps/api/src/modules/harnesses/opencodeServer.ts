@@ -1,3 +1,5 @@
+import { openCodePermissionTurnId } from './opencodeInteractions.js'
+import { createOpenCodeBoundFetch, type OpenCodeClientFactory } from './opencodeClient.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -67,6 +69,7 @@ interface OwnedTurn {
   generation: number
   submittedAt: number
   idleObserved: boolean
+  activityObserved?: boolean
   scopedError: JsonObject | undefined
   terminalResult: NativeHistory['terminalResult']
   nativeMessageId?: string
@@ -99,6 +102,8 @@ export interface OpenCodeNativeSessionManagerOptions {
   /** Authenticated durable chat admission + execution-host capabilities only. */
   chatFiles?: OpenCodeChatFiles
   responseJournal?: NativeResponseJournal
+  /** Injected beneath the real manager for deterministic transport replay. */
+  clientFactory?: OpenCodeClientFactory
   server: OpenCodeServerController
   ownerAgentId: string
   appMcpServerName?: string
@@ -429,7 +434,10 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             const id = eventSessionId(native)
             if (!id || !(await this.ownedSession(session.nativeSessionId, id, state, signal))) continue
             if (id === session.nativeSessionId && native.type === 'session.error') turn.scopedError = object(object(native.properties).error)
-            if (id === session.nativeSessionId && native.type === 'session.idle') turn.idleObserved = true
+            if (id === session.nativeSessionId && (native.type === 'session.status' && object(native.properties?.status).type === 'busy'
+              || native.type === 'message.updated' && object(native.properties?.info).id === turn.messageID)) turn.activityObserved = true
+            // A stream may already contain the previous session-global idle when subscribed.
+            if (id === session.nativeSessionId && native.type === 'session.idle' && turn.activityObserved) turn.idleObserved = true
             if (native.type === 'permission.asked' && usesOpenCodeNativeAuto(state.configuration)) {
               for (const request of await this.autoReplyPending(session, signal)) {
                 yield this.recordSynthetic(state, 'permission.auto_replied', {
@@ -457,6 +465,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         } finally {
           await response?.body?.cancel().catch(() => undefined)
           response = undefined
+          state.partTypes.clear()
         }
         try {
           const history = await this.reconcile(session, correlationId, signal)
@@ -546,16 +555,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     }
     const pending: PendingNativeInteraction[] = []
     for (const request of await this.ownedPermissions(session, signal)) {
-      let nativeTurnId = request.tool?.messageID ?? request.id
       const rootId = state.turn?.messageID ?? (state.recoveryCorrelationId ? nativeMessageId(state.recoveryCorrelationId) : undefined)
-      if (request.tool && rootId && request.sessionID === session.nativeSessionId) {
-        const message = await this.message(session.nativeSessionId, request.tool.messageID, state.directory, signal)
-        // OpenCode permissions refer to the tool's assistant message, not the
-        // submitted user turn. Normalize only a proven direct parent. Unknown
-        // ancestry keeps the raw identity and the graph bridge remains closed.
-        if (message?.info.id === request.tool.messageID && message.info.role === 'assistant'
-          && message.info.sessionID === session.nativeSessionId && message.info.parentID === rootId) nativeTurnId = rootId
-      }
+      const message = request.tool && rootId && request.sessionID === session.nativeSessionId
+        ? await this.message(session.nativeSessionId, request.tool.messageID, state.directory, signal) : undefined
+      const nativeTurnId = openCodePermissionTurnId(request,
+        rootId ? { nativeSessionId: session.nativeSessionId, nativeTurnId: rootId } : undefined, message)
       pending.push(PendingNativeInteractionSchema.parse({ session,
         turn: { nativeTurnId, nativeRequestId: request.id }, nativeRequestType: 'permission.asked',
         request, responseOptions: optionsForRequest(request.id),
@@ -646,7 +650,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
     const state = this.sessions.get(session.nativeSessionId)
     if (session.harness === 'opencode' && harnessProfile('opencode', session.providerVersion) === 'opencode-1.18.31'
-      && state && (!nativeTurnId || state.turn?.messageID === nativeTurnId)) state.autoReplies.stop()
+      && state && (!nativeTurnId || state.turn?.messageID === nativeTurnId)) {
+      state.autoReplies.stop()
+      // Close facade admission synchronously even while prompt ACK/startup holds the lifecycle.
+      // Serialized cancellation retries durable revocation and reports unresolved cleanup.
+      void state.turn?.files?.bridge.revoke().catch(() => undefined)
+    }
     const combined = this.signal(signal)
     return this.exclusive(async () => {
       await this.ready(combined)
@@ -775,16 +784,28 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async reconcileReady(session: NativeSessionReference, correlationId: string, signal: AbortSignal): Promise<NativeHistory> {
     const state = this.requireSession(session)
+    const generation = this.generation
+    const assertCurrent = () => {
+      signal.throwIfAborted()
+      if (generation !== this.generation || this.requireSession(session) !== state) {
+        throw new OpenCodeNativeDeliveryError('OPENCODE_RECONCILIATION_STALE', 'The native generation changed during history reconciliation.', 'uncertain')
+      }
+    }
+    assertCurrent()
     let turn = state.turn?.correlationId === correlationId ? state.turn : undefined
     if (await this.rejectQuestions(session, signal)) {
       await this.cancelReady(session, signal)
       if (turn) turn.terminalResult = failure('OPENCODE_QUESTION_UNSUPPORTED', 'An owned native question was rejected because this transport supports approvals, not interactive questions.')
     }
     const messageID = nativeMessageId(correlationId)
-    const statusBefore = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
+    const statusBefore = await this.ownedStatus(session, state, signal)
+    assertCurrent()
     const root = await this.message(session.nativeSessionId, messageID, state.directory, signal)
+    assertCurrent()
     const page = await this.messagePage(session.nativeSessionId, state.directory, undefined, signal)
+    assertCurrent()
     const pendingInteractions = await this.pendingReady(session, signal)
+    assertCurrent()
     if (!turn && root?.info.role === 'user') {
       if (state.turn && !state.turn.terminalResult) {
         throw new HarnessExecutionError('OPENCODE_SESSION_BUSY', 'A different owned turn is still active; recovery cannot replace it.')
@@ -824,6 +845,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         if (cursors.has(current.nextCursor) || pages++ > 10_000) throw new Error('OpenCode history pagination did not make bounded progress.')
         boundedSetAdd(cursors, current.nextCursor)
         current = await this.messagePage(session.nativeSessionId, state.directory, current.nextCursor, signal)
+    assertCurrent()
       }
       if (!history.rooted) throw new HarnessExecutionError('OPENCODE_TURN_HISTORY_INCOMPLETE', 'Native history did not include the correlated prompt; no older result was selected.')
       terminalResult = history.result
@@ -835,7 +857,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (root && turn?.files?.bridge.needsAcknowledgement && turn.generation === this.generation && !terminalResult) {
       await turn.files.bridge.acknowledge(signal)
     }
-    const statusAfter = await this.sessionStatus(session.nativeSessionId, state.directory, signal)
+    const statusAfter = await this.ownedStatus(session, state, signal)
+    assertCurrent()
     if (statusBefore !== 'idle' || statusAfter !== 'idle' || pendingInteractions.length
       || (usesOpenCodeNativeAuto(state.configuration) && !state.autoReplies.stopped && state.autoReplies.hasPending)) return result
     // Another observation may have finished while this scan awaited provider I/O.
@@ -1178,6 +1201,19 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     })
   }
 
+  private async ownedStatus(session: NativeSessionReference, state: SessionState, signal: AbortSignal): Promise<string> {
+    const statuses = object(await this.json('/session/status', state.directory, signal))
+    for (const [id, value] of Object.entries(statuses)) {
+      const status = object(value).type
+      if (status === 'idle') continue
+      if (await this.ownedSession(session.nativeSessionId, id, state, signal)) {
+        if (status !== 'busy' && status !== 'retry') throw new Error('Unknown native session status.')
+        return status
+      }
+    }
+    return 'idle'
+  }
+
   private async sessionStatus(id: string, directory: string, signal: AbortSignal): Promise<string> {
     const statuses = object(await this.json('/session/status', directory, signal))
     const status = object(statuses[id]).type
@@ -1247,8 +1283,17 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     return this.options.server.redact ? this.options.server.redact(safe) : safe
   }
 
+  private clientRequest(path: string, init: RequestInit, signal: AbortSignal, generation: number): Promise<Response> {
+    const url = new URL(path, 'http://opencode.invalid')
+    const directory = url.searchParams.get('directory') ?? ''
+    const client = (this.options.clientFactory ?? createOpenCodeBoundFetch)({
+      server: this.options.server, ownerAgentId: this.options.ownerAgentId, directory, generation, signal,
+    })
+    return client(url, init)
+  }
+
   private async json(path: string, directory: string | undefined, signal: AbortSignal): Promise<unknown> {
-    const response = await this.options.server.request(directory ? withDirectory(path, directory) : path, { method: 'GET' }, signal)
+    const response = await this.clientRequest(directory ? withDirectory(path, directory) : path, { method: 'GET' }, signal, this.generation)
     if (!response.ok) throw await responseError(response, response.status === 404 ? 'OPENCODE_SESSION_NOT_FOUND' : 'OPENCODE_SERVER_REQUEST_FAILED', response.status >= 500 ? 'uncertain' : 'definite')
     return response.status === 204 ? undefined : this.sanitize(await readJson(response))
   }
@@ -1256,7 +1301,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   private async mutate(path: string, init: RequestInit, signal: AbortSignal, requireReady = true, notFoundCode?: string): Promise<unknown> {
     if (signal.aborted) throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_NOT_DISPATCHED', 'The native mutation was canceled before dispatch.', 'definite')
     let response: Response
-    try { response = await this.options.server.request(path, init, signal, requireReady ? this.readyGeneration : this.generation) }
+    try { response = await this.clientRequest(path, init, signal, (requireReady ? this.readyGeneration : this.generation) ?? this.generation) }
     catch (error) {
       if (error instanceof OpenCodeNativeDeliveryError) throw error
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native mutation may have been accepted before the connection failed.', 'uncertain', { cause: error })
