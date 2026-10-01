@@ -42,6 +42,8 @@ export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'q
     where c.id=$1 and c.kind in ('agent','operator') and c.harness='codex' and c.deleted_at is null
       and (c.kind='operator' or t.intent<>'steer') and t.message_id=any($2::text[]) and t.native_turn_id is not null
       and c.native_session_id is not null
+      and to_regclass('file_tool_publications') is not null
+      and to_regclass('file_allocations') is not null
       and ((c.kind='agent' and t.payload->>'ownerPrincipalId' is not null)
         or (c.kind='operator' and c.owner_principal_id is not null and c.operator_id is not null
           and c.workspace_id is null and c.workflow_id is null and c.agent_id is null

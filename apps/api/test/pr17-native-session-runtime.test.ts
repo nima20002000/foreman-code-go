@@ -8,6 +8,7 @@ import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTranspor
 import { normalizedHistory } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { bounded, openCodeFixture, session as openCodeSession, start } from './fixtures/pr17-native-runtime.js'
+import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
 
 function nativeCode(code: string) {
   return (error: unknown) => error instanceof HarnessExecutionError && error.result.error?.code === code
@@ -28,10 +29,12 @@ function codexFixture() {
     close: async () => undefined,
   } as unknown as CodexStdioTransport
   const runtime: Runtime = {
-    connectionId: randomUUID(), attached: false, binding: '', ownerId: 'agent', configurationIdentity: '',
+    connectionId: randomUUID(), schemaIdentity: 'fixture-schema', arrivalOrdinal: 0, attached: false, binding: '', ownerId: 'agent', configurationIdentity: '',
     input: {} as NativeSessionStart, workingDirectory: '/workspace',
     configuration: { serviceTier: 'standard' } as CodexHarnessConfiguration,
-    scopedCredentialVariable: undefined, transport, session: codexSession, generation: 0,
+    scopedCredentialVariable: undefined, strippedCredentialVariable: undefined, transport, session: codexSession, generation: 0,
+    qualified: { binary: 'fixture-only', identity: 'fixture-identity', providerVersion: codexSession.providerVersion,
+      protocol: fixtureProtocol, schemaManifestSha256: 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference' },
     phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
     files: undefined, fileCleanup: undefined, fileRequests: new Map(),
     activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined,
@@ -48,11 +51,11 @@ function codexFixture() {
   seam.runtimes.set(codexSession.nativeSessionId, runtime)
   return { manager, runtime, seam, responses: () => responses }
 }
-function waiting(id: string, delivery: Waiting['delivery']): Waiting {
+function waiting(id: string, delivery: Waiting['delivery'], transport: Runtime['transport']): Waiting {
   return {
     pending: { session: codexSession, turn: { nativeTurnId: 'turn-test', nativeRequestId: id },
       nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [option] },
-    requestId: id, method: 'item/commandExecution/requestApproval', generation: 0, signature: id,
+    requestId: id, method: 'item/commandExecution/requestApproval', generation: 0, transport, signature: id,
     responses: new Map([[option.optionId, { option, nativeResponse: { decision: 'accept' } }]]),
     delivery, resolution: new Promise(() => undefined), resolve: () => undefined,
   }
@@ -61,8 +64,8 @@ function waiting(id: string, delivery: Waiting['delivery']): Waiting {
 describe('PR17 native session runtime regressions', () => {
   it('F9: exposes a later pending approval without mutating or replaying an earlier uncertain response', async () => {
     const { manager, runtime, responses } = codexFixture()
-    const first = waiting('first', 'uncertain')
-    const second = waiting('second', 'pending')
+    const first = waiting('first', 'uncertain', runtime.transport)
+    const second = waiting('second', 'pending', runtime.transport)
     runtime.interactions.set('first', first)
     runtime.interactions.set('second', second)
     assert.equal((await manager.pending(codexSession))?.turn.nativeRequestId, 'second')

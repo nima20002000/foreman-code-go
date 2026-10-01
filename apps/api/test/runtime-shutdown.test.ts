@@ -43,13 +43,14 @@ describe('runtime shutdown ownership barrier', () => {
   })
 
   for (const failing of ['stop', 'drain', 'dispose'] as const) {
-    it.each(['throw', 'reject'] as const)(`retains ownership and the rejected result after a ${failing} %s`, async (mode) => {
+    it.each(['throw', 'reject'] as const)(`retains ownership and retries failed cleanup after a ${failing} %s`, async (mode) => {
       const failure = new Error('closure is uncertain')
       const sibling = vi.fn()
       const cleanup = vi.fn(async () => undefined)
       const releaseOwnership = vi.fn(async () => undefined)
+      let fail = true
       const step = (stage: string) => ({ name: stage, run: () => {
-        if (stage !== failing) return
+        if (stage !== failing || !fail) return
         if (mode === 'throw') throw failure
         return Promise.reject(failure)
       } })
@@ -59,11 +60,14 @@ describe('runtime shutdown ownership barrier', () => {
       })
       const result = shutdown.finish()
       await expect(result).rejects.toThrow('runtime ownership was not released')
-      expect(shutdown.finish()).toBe(result)
-      await expect(shutdown.finish()).rejects.toBeInstanceOf(AggregateError)
+      fail = false
+      const retry = shutdown.finish()
+      expect(retry).not.toBe(result)
+      expect(shutdown.finish()).toBe(retry)
+      await retry
       expect(sibling).toHaveBeenCalledTimes(1)
       expect(cleanup).toHaveBeenCalledTimes(1)
-      expect(releaseOwnership).not.toHaveBeenCalled()
+      expect(releaseOwnership).toHaveBeenCalledTimes(1)
     })
   }
 
@@ -94,6 +98,6 @@ describe('runtime shutdown ownership barrier', () => {
     const shutdown = new RuntimeShutdown({ stop: [], drain: [], dispose: [], releaseOwnership })
     await expect(shutdown.finish()).rejects.toBe(failure)
     await expect(shutdown.finish()).rejects.toBe(failure)
-    expect(releaseOwnership).toHaveBeenCalledTimes(1)
+    expect(releaseOwnership).toHaveBeenCalledTimes(2)
   })
 })

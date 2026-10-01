@@ -5,11 +5,18 @@ import { Readable } from 'node:stream'
 import Fastify from 'fastify'
 import { onTestFinished, expect } from 'vitest'
 import { z } from 'zod'
-import { DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema, type NativeSessionReference } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
 import type { SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 import { MAX_FILE_BYTES, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { ManagementActionSchema } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { AgentReferenceService } from '../../src/modules/files/references/agentService.js'
+import { PostgresAgentReferenceAuthorization } from '../../src/modules/files/references/agentAuthorization.js'
+import { PostgresReferenceReadRepository } from '../../src/modules/files/references/agentProvenance.js'
+import { FileReferenceService } from '../../src/modules/files/references/service.js'
+import { PostgresFileReferenceAuthorization } from '../../src/modules/files/references/authorization.js'
+import { agentFileReferenceResolver } from '../../src/modules/files/tools/referenceResolver.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { registerOperatorHttpSecurity } from '../../src/modules/access/http.js'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
@@ -28,7 +35,7 @@ import { nativeMessageId } from '../../src/modules/harnesses/opencodeProtocol.js
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { registerAgentChatRoutes } from '../../src/routes/agentChat.js'
-import { agent3Database, deferred, seedAgent3 } from './wave25Agent3.js'
+import { agent3Database, candidateFor, deferred, seedAgent3 } from './wave25Agent3.js'
 
 export const pin = (value: FileWithRevision): MessageAttachmentRef => ({ fileId: value.file.fileId, revisionId: value.revision.revisionId })
 export async function waitFor(check: () => Promise<boolean>): Promise<void> {
@@ -88,7 +95,7 @@ class PausedNative implements NativeHarnessSessionManager {
   async close() { this.finish() }
 }
 
-export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'codex') {
+export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'codex', selectedRun = false) {
   const database = await agent3Database()
   const root = await mkdtemp(join(process.cwd(), '.af-publications-'))
   const project = join(root, 'project'), hostRoot = join(root, 'host')
@@ -104,31 +111,46 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   for (const configuration of seed.configurations) configuration.harness = harness === 'codex'
     ? { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' }
     : { ...DEFAULT_HARNESS_DEFAULTS.opencode }
-  const fixture = await seedAgent3(database.pool, project, seed, { run: false })
+  const fixture = await seedAgent3(database.pool, project, seed, { run: selectedRun })
   const access = new PostgresAccessService(database.pool)
   const owner = await access.issue({ name: 'AF publication owner', audience: 'operator',
     expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: [...ManagementActionSchema.options], scope: {} }] })
   const reader = await access.issue({ name: 'AF reader', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
     grants: [{ actions: ['agent_chat:read'], scope: { workspaceIds: [fixture.scope.workspaceId] } }] })
+  const runExecution: HarnessExecution = { ...candidateFor(fixture), state: 'completed',
+    nativeSessionId: 'publication-run-source', workingDirectory: project,
+    result: { outcome: 'succeeded' }, finishedAt: fixture.createdAt }
+  if (selectedRun) await database.pool.query(`insert into harness_executions
+    (id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)`,
+  [runExecution.id, runExecution.runId, runExecution.workflowNodeId, runExecution.agentId, JSON.stringify(runExecution)])
   const repository = new PostgresAgentChatRepository(database.pool)
   const agent = new AgentChatService(database.pool, repository, new PostgresOperatorConversationRepository(database.pool),
-    new PostgresWorkflowRepository(database.pool), { getForWorkspace: async () => undefined, async *executionPages() {} },
+    new PostgresWorkflowRepository(database.pool), { // Only source execution/native I/O is synthetic; Run/execution FK rows are real.
+      getForWorkspace: async (workspaceId, runId) => selectedRun && workspaceId === fixture.scope.workspaceId && runId === fixture.run.id
+        ? AcceptedWorkflowRunV3Schema.parse({ ...fixture.run, executionState: 'completed' }) : undefined,
+      async *executionPages() { if (selectedRun) yield [runExecution] },
+    },
     (id) => {
       let native = natives.get(id)
       if (!native) { native = new PausedNative(harness); natives.set(id, native) }
       return native
     }, join(root, 'runtime'))
   const chat = agent
-  const files = new TemporaryFileService(new PostgresFileRepository(database.pool), new FileByteStorage(join(root, 'bytes'), MAX_FILE_BYTES),
-    new PostgresFileConversationAuthorization(database.pool))
+  const fileRepository = new PostgresFileRepository(database.pool), bytes = new FileByteStorage(join(root, 'bytes'), MAX_FILE_BYTES)
+  const files = new TemporaryFileService(fileRepository, bytes, new PostgresFileConversationAuthorization(database.pool))
+  const references = new FileReferenceService(fileRepository, bytes, new PostgresFileReferenceAuthorization(database.pool),
+    new PostgresCommandCoordinator(database.pool))
+  const agentReferences = new AgentReferenceService({ files: fileRepository, bytes,
+    authorization: new PostgresAgentReferenceAuthorization(database.pool), reads: new PostgresReferenceReadRepository(database.pool) })
   registerOperatorHttpSecurity(app, access)
   app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : error instanceof z.ZodError ? 400 : 500)
     .send({ error: { code: error instanceof DomainError ? error.code : 'INVALID_REQUEST' } }))
   registerAgentChatRoutes(app, chat)
-  const service = registerProductionFileTools(app, database.pool, files)
+  const service = registerProductionFileTools(app, database.pool, files, agentFileReferenceResolver(agentReferences, fileRepository, bytes))
   await app.ready()
   const node = fixture.version.definition.nodes[0]!
-  const context = { workflowId: fixture.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId }
+  const context = { workflowId: fixture.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId,
+    ...(selectedRun ? { runId: fixture.run.id } : {}) }
   const workspaceId = fixture.scope.workspaceId
   const request = (conversationId: string | null, changes: Partial<SendAgentChatMessageRequest> = {}): SendAgentChatMessageRequest => ({
     requestId: randomUUID(), content: 'review', context, intent: 'next_turn', expectedConversationId: conversationId, ...changes,
@@ -146,6 +168,13 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
       sha256: createHash('sha256').update(bytes).digest('hex') })
     await files.upload(owner.principal, target, requestId, Readable.from([bytes]))
     return pin((await files.finalize(owner.principal, target, requestId)).value)
+  }
+  async function inheritedReference(bytes = Buffer.from('# inherited workflow reference\n')) {
+    const result = await references.add(owner.principal, { scope: { kind: 'workflow_reference',
+      workspaceId, workflowId: fixture.scope.workflowId }, upload: { requestId: randomUUID(),
+      filename: 'inherited.md', mediaType: 'text/markdown', byteSize: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex') }, contentBase64: bytes.toString('base64') })
+    return pin(result.value)
   }
   async function pause(attachments: MessageAttachmentRef[] = []) {
     native.holdNext = true
@@ -206,6 +235,6 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
     return next
   }
   return { database, root, project, app, access, owner, reader, repository, chat, files, service, fixture,
-    workspaceId, context, conversationId, native, request, upload, pause, settle, stored, publications,
-    resolver, hosts, prepareCodex, readPins, nextTurn }
+    workspaceId, context, conversationId, native, request, upload, inheritedReference, references, pause, settle, stored, publications,
+    resolver, hosts, prepareCodex, readPins, nextTurn, runExecution }
 }

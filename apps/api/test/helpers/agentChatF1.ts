@@ -74,6 +74,11 @@ export class F1Store {
     const id = String(values[1])
     const receipt = this.turns.get(id)
     if (['begin', 'commit', 'rollback'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    // Codex-only publication recovery cannot select this OpenCode fixture row.
+    // Other publication queries remain unsupported rather than assuming no pins.
+    if (sql.startsWith('select t.message_id,t.native_turn_id,')
+      && sql.includes("where c.id=$1 and c.kind in ('agent','operator') and c.harness='codex'")
+      && values[0] === this.row.id && this.row.harness === 'opencode') return result()
     if (sql.startsWith('select * from operator_conversations') || sql.startsWith('select id from operator_conversations')) return result([this.row])
     if (sql.startsWith('select delivery from operator_conversation_turns')) {
       return result([...this.turns.values()].filter((entry) => entry.native_turn_id === values[1] && entry.intent !== 'steer'

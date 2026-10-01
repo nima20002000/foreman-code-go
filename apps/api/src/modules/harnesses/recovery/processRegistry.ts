@@ -2,12 +2,15 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'n
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { connect } from 'node:net'
+import { constants } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger } from '../../../infrastructure/logger.js'
 import { bootIdentity, identityAlive, processIdentity, type LinuxProcessIdentity } from './linuxIdentity.js'
 import { cgroupBoundary, cgroupPopulated, killCgroup, retireCgroup, type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
+import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange } from './registryObservation.js'
+export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
 import { nativeAgentEnvironment } from '../secrets.js'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 
@@ -19,12 +22,14 @@ export interface NativeProcessRecovery {
 }
 // This tracks ordinary sequential subprocesses of the SAME live manager. It is
 // never consulted as closure evidence and cannot be reconstructed on restart.
-const consumedLaunchScopes = new WeakSet<NativeProcessRecovery>()
+const consumedLaunchScopes = new WeakMap<NativeProcessRecovery, { root: string; owner: string; launchId: string }>()
 interface LaunchRecord {
   format: 1; id: string; owner: string; boot: string; parent: LinuxProcessIdentity; controlKey: string
 }
 interface BirthRecord { format: 1; id: string; owner: string; boot: string; guardian: LinuxProcessIdentity; containment?: NativeCgroupBoundary }
-const owned = new WeakMap<ChildProcess, { scope: NativeProcessRecovery; id: string; closed?: boolean }>()
+export interface NativeProcessExit { exitCode: number | null; exitSignal: NodeJS.Signals | null }
+const owned = new WeakMap<ChildProcess, { scope: NativeProcessRecovery; id: string; closed?: boolean;
+  exit?: NativeProcessExit; receiptError?: Error }>()
 const closing = new Map<string, Promise<void>>()
 const key = (owner: string) => createHash('sha256').update(owner).digest('hex')
 const socketName = (id: string) => `\0graphql-native-${id}`
@@ -121,6 +126,7 @@ function retiredOwner(directory: string, owner: string, id?: string): boolean {
 }
 
 function retireRegistration(directory: string, launch: LaunchRecord): void {
+  publishObservation(dirname(dirname(directory)))
   if (!closedRecord(directory, launch)) throw new Error('Unconfirmed native registrations cannot be retired.')
   const rawBirth = readRecord(join(directory, 'birth.json'))
   if (launch.boot === bootIdentity()) {
@@ -195,6 +201,11 @@ function inventory(directory: string, owner: string): string[] {
 /** Backend-owned registry. An empty registry is NOT evidence about pre-upgrade processes. */
 export class NativeProcessRegistry {
   constructor(private readonly root: string) {}
+  snapshot(): NativeRegistrySnapshot { return nativeRegistryProjection(this.root).snapshot() }
+  revision(): string { return nativeRegistryProjection(this.root).revision() }
+  changes(afterRevision: string, signal: AbortSignal): AsyncIterable<NativeRegistryChange> {
+    return nativeRegistryProjection(this.root).changes(afterRevision, signal)
+  }
   scope(owner: string): NativeProcessRecovery {
     if (!owner.trim() || owner.length > 4096) throw new Error('Invalid process owner.')
     return { root: this.root, owner }
@@ -206,6 +217,39 @@ export class NativeProcessRegistry {
     const scope = this.scope(owner)
     if (process.platform !== 'linux') return scope
     return { ...scope, launchId: reserveProcess(scope).id }
+  }
+  /** The original live parent may abandon an exact, never-dispatched reservation
+   * only after its caller revokes future IO and joins admitted tasks. Publication
+   * is synchronous up to the ordinary closure path, so no launch can interleave. */
+  async abandonReservedLaunch(scope: NativeProcessRecovery): Promise<boolean> {
+    if (process.platform !== 'linux' || resolve(scope.root) !== resolve(this.root)
+      || !scope.launchId || !/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid native launch abandonment scope.')
+    const consumed = consumedLaunchScopes.get(scope)
+    if (consumed) {
+      if (consumed.root !== resolve(scope.root) || consumed.owner !== scope.owner || consumed.launchId !== scope.launchId) {
+        throw new Error('The entered native launch scope was modified.')
+      }
+      // Positive in-memory dispatch observation refuses no-start publication.
+      // It is never closure evidence; the factory must still close the owner.
+      return false
+    }
+    const directory = join(privateDirectory(scope.root), key(scope.owner), scope.launchId)
+    const launch = launchRecord(readRecord(join(directory, 'intent.json')))
+    const parent = processIdentity(process.pid)
+    if (launch.id !== scope.launchId || launch.owner !== scope.owner || launch.boot !== bootIdentity()
+      || !parent || launch.parent.pid !== parent.pid || launch.parent.startTicks !== parent.startTicks) {
+      throw new Error('Only the exact original parent can abandon this native launch reservation.')
+    }
+    for (const name of ['claimed.json', 'dispatched.json', 'birth.json', 'containment.json', 'closed.json']) {
+      if (readRecord(join(directory, name)) !== undefined) return false
+    }
+    const previous = readRecord(join(directory, 'not-started.json'))
+    if (previous !== undefined) {
+      const row = recordObject(previous)
+      if (row.id !== launch.id || row.owner !== launch.owner) throw new Error('Conflicting native startup evidence.')
+    } else writeRecord(join(directory, 'not-started.json'), { id: launch.id, owner: launch.owner }, true)
+    await this.closeRegistration(scope, launch.id)
+    return true
   }
   async closeOwner(owner: string, signal?: AbortSignal): Promise<boolean> {
     if (process.platform !== 'linux') return false
@@ -372,6 +416,7 @@ function reserveProcess(scope: NativeProcessRecovery): LaunchRecord {
   writeRecord(join(temporary, 'intent.json'), launch, true)
   renameSync(temporary, join(ownerDirectory, id))
   syncDirectory(ownerDirectory)
+  publishObservation(scope.root)
   return launch
 }
 
@@ -380,7 +425,11 @@ function reserveProcess(scope: NativeProcessRecovery): LaunchRecord {
  * guardian dispatch are synchronous; a live parent cannot race its own cleanup.
  * A foreign recovery process can prove no-dispatch only after that parent dies. */
 function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
-  if (!scope.launchId || consumedLaunchScopes.has(scope)) return reserveProcess(scope)
+  const consumed = consumedLaunchScopes.get(scope)
+  if (consumed && (consumed.root !== resolve(scope.root) || consumed.owner !== scope.owner || consumed.launchId !== scope.launchId)) {
+    throw new Error('The entered native launch scope was modified.')
+  }
+  if (!scope.launchId || consumed) return reserveProcess(scope)
   if (!/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid reserved native launch.')
   const directory = join(privateDirectory(scope.root), key(scope.owner), scope.launchId)
   const launch = launchRecord(readRecord(join(directory, 'intent.json')))
@@ -414,6 +463,10 @@ export function spawnNativeProcess(binary: string, args: string[], options: {
 }
 
 const harnessLog = componentLogger('harness')
+function publishObservation(root: string): void {
+  // Telemetry never changes dispatch or closure qualification on read failure.
+  try { nativeRegistryProjection(root).snapshot() } catch { harnessLog.warn('Native observation publication unavailable') }
+}
 /** Every native harness start and end is logged: binary name, pid, exit code or signal.
  * Arguments and environment are never logged; they can carry prompts and credentials. */
 function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: string, owner: string | undefined) {
@@ -442,7 +495,9 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   // Observe startup errors before sending configuration or exposing the child to the adapter.
   child.on('error', () => undefined)
   owned.set(child, { scope, id })
-  if (scope.launchId) consumedLaunchScopes.add(scope)
+  if (scope.launchId && !consumedLaunchScopes.has(scope)) consumedLaunchScopes.set(scope,
+    { root: resolve(scope.root), owner: scope.owner, launchId: scope.launchId })
+  child.once('exit', () => publishObservation(scope.root))
   let dispatchAttempted = false
   try {
     if (!child.pid) {
@@ -452,6 +507,30 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
     const guardian = processIdentity(child.pid)
     if (!guardian) throw new Error('Native guardian exited before registration.')
     writeRecord(join(directory, 'dispatched.json'), { format: 1, id, guardian }, true)
+    publishObservation(scope.root)
+    // Only the guardian owns this IPC channel; native stdio never carries receipts.
+    // Match the immutable launch and guardian generation before accepting an outcome.
+    child.on('message', (message: unknown) => {
+      const registration = owned.get(child)!
+      try {
+        const row = recordObject(message)
+        if (row.operation === 'observation') {
+          if (row.id === id) publishObservation(scope.root)
+          return
+        }
+        const source = recordObject(row.guardian)
+        if (row.format !== 1 || row.operation !== 'native_exit' || row.id !== id
+          || row.owner !== launch.owner || row.boot !== launch.boot
+          || source.pid !== guardian.pid || source.startTicks !== guardian.startTicks
+          || !Number.isSafeInteger(row.nativePid) || Number(row.nativePid) <= 1
+          || !((Number.isInteger(row.exitCode) && Number(row.exitCode) >= 0 && Number(row.exitCode) <= 255 && row.exitSignal === null)
+            || (row.exitCode === null && typeof row.exitSignal === 'string' && Object.hasOwn(constants.signals, row.exitSignal)))
+          || registration.exit) throw new Error('Invalid native exit receipt for this launch.')
+        registration.exit = { exitCode: row.exitCode as number | null, exitSignal: row.exitSignal as NodeJS.Signals | null }
+      } catch (error) {
+        registration.receiptError = error instanceof Error ? error : new Error('Invalid native exit receipt.')
+      }
+    })
     dispatchAttempted = true
     child.send({ operation: 'start', directory, binary, args, cwd: options.cwd, environment: options.env }, (error) => {
       if (error) { try { child.disconnect() } catch { /* Already disconnected. */ } }
@@ -464,6 +543,15 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
     throw error
   }
   return child
+}
+
+/** A guardian cleanup signal is not the native outcome. Missing receipts retain
+ * the actual wrapper failure; retirement/empty containment never implies success. */
+export function nativeProcessExit(child: ChildProcess, fallback: NativeProcessExit): NativeProcessExit {
+  const registration = owned.get(child)
+  if (registration?.receiptError) throw registration.receiptError
+  if (registration && !registration.exit && fallback.exitCode === 0) throw new Error('Native exit receipt is missing for this launch.')
+  return registration?.exit ?? fallback
 }
 
 /** Registered children MUST NOT fall through to legacy PID/group signaling. */
