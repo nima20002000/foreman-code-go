@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import { GraphActivitySchema, GraphExecutionIdentitySchema, GraphIdSchema, GraphSequenceSchema } from './protocol.js'
+import { GraphActivitySchema, AgentGraphExecutionIdentitySchema, GraphIdSchema, GraphSequenceSchema } from './protocol.js'
 
 /** INTERNAL storage contracts: never embed these native identifiers into wire snapshots/events. */
 export const NativeGraphProjectionKeySchema = z.object({
-  execution: GraphExecutionIdentitySchema, workKind: z.enum(['workflow', 'review']), workId: GraphIdSchema,
+  execution: AgentGraphExecutionIdentitySchema, workKind: z.enum(['workflow', 'review']), workId: GraphIdSchema,
 }).strict().superRefine((value, context) => {
   if (value.workKind === 'workflow' && value.workId !== value.execution.executionId) context.addIssue({ code: 'custom', message: 'workflow activity is keyed by its host execution' })
 })

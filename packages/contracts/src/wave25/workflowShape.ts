@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js'
+import { JobWorkflowNodeSchema } from '../jobWorkflow.js'
 import { GraphqlToolOverrideSchema } from '../graphqlMcpTools.js'
 
 /** Leaf schemas: do not import the root, management or saved DTO entrypoints.
@@ -86,7 +87,8 @@ export const WorkflowChoiceSchema = z.object({
 export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
 
 const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
-export const CurrentWorkflowNodeSchema = z.object({
+export const CurrentAgentWorkflowNodeSchema = z.object({
+  kind: z.literal('agent').optional(),
   id: GraphIdSchema, agentId: GraphIdSchema,
   name: z.string().trim().min(1).optional(), label: z.string().trim().min(1).optional(),
   description: z.string().optional(), initialPrompt: z.string().trim().min(1).optional(),
@@ -98,6 +100,7 @@ export const CurrentWorkflowNodeSchema = z.object({
 }).strict().superRefine((node, context) => {
   if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
 })
+export const CurrentWorkflowNodeSchema = z.union([CurrentAgentWorkflowNodeSchema, JobWorkflowNodeSchema])
 export const CurrentWorkflowRelationshipSchema = z.object({
   id: GraphIdSchema, source: GraphIdSchema, target: GraphIdSchema,
   sourceHandle: Handle, targetHandle: Handle, label: z.string().optional(), kind: z.enum(['execution', 'approval']),
@@ -112,7 +115,7 @@ export const CurrentWorkflowDefinitionBaseSchema = z.object({
   id: GraphIdSchema, workspaceId: GraphIdSchema, name: z.string().trim().min(1), description: z.string().optional(),
   executionSemanticsVersion: CurrentExecutionSemanticsSchema, entryNodeId: GraphIdSchema.nullable(),
   executionCondition: ExecutionConditionSchema, approval: WorkflowApprovalConfigurationSchema.optional(),
-  requiredAgentCount: z.number().int().positive().max(10000).optional(),
+  requiredAgentCount: z.number().int().nonnegative().max(10000).optional(),
   nodes: z.array(CurrentWorkflowNodeSchema).max(1000), edges: z.array(CurrentWorkflowRelationshipSchema).max(8000),
   version: z.number().int().positive().optional(), executionPolicy: WorkflowExecutionPolicySchema.optional(),
   createdAt: TimestampSchema.optional(), updatedAt: TimestampSchema.optional(),

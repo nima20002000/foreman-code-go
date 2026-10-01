@@ -56,5 +56,6 @@ export function makeCurrentWorkflowFixture(suffix = 'current-fixture', form: Cur
   const scope = { workspaceId, workflowId, runId, workflowVersionId: versionId, executionSemanticsVersion: 3 as const }
   const identities = nodes.map((node, index) => ({ workflowNodeId: node.id, executionId: `exec-${suffix}-${index}`, agentId: node.agentId,
     agentConfigurationVersionId: configurations[index]!.id, attempt: 1 }))
-  return { configurations, version, run, scope, identities, createdAt }
+  const agentNodes=version.definition.nodes.map(node=>{if(node.kind==='job')throw new Error('Agent-only fixture unexpectedly contains a job');return node})
+  return { configurations, version:{...version,definition:{...version.definition,nodes:agentNodes}}, run, scope, identities, createdAt }
 }

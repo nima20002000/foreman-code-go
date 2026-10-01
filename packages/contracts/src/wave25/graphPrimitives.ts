@@ -29,11 +29,19 @@ export const GraphEvidenceSchema = z.object({
   sourceId: GraphIdSchema, sourceRevision: GraphSequenceSchema,
 }).strict()
 export type GraphEvidence = z.infer<typeof GraphEvidenceSchema>
-export const GraphExecutionIdentitySchema = z.object({
+export const AgentGraphExecutionIdentitySchema = z.object({
+  kind:z.literal('agent').optional(),
   workflowNodeId: GraphIdSchema, executionId: GraphIdSchema,
   agentId: GraphIdSchema, agentConfigurationVersionId: GraphIdSchema,
   attempt: z.number().int().min(1).max(2147483647),
 }).strict()
+export type AgentGraphExecutionIdentity=z.infer<typeof AgentGraphExecutionIdentitySchema>
+export const JobGraphExecutionIdentitySchema=z.object({kind:z.literal('job'),workflowNodeId:GraphIdSchema,executionId:GraphIdSchema,
+  jobDefinitionId:GraphIdSchema,jobDefinitionVersionId:GraphIdSchema,attempt:z.number().int().min(1).max(2147483647)}).strict()
+export const GraphExecutionIdentitySchema=z.union([AgentGraphExecutionIdentitySchema,JobGraphExecutionIdentitySchema])
+export function extendGraphExecutionIdentitySchema<T extends z.ZodRawShape>(shape:T) {
+  return z.union([AgentGraphExecutionIdentitySchema.extend(shape).strict(),JobGraphExecutionIdentitySchema.extend(shape).strict()])
+}
 export type GraphExecutionIdentity = z.infer<typeof GraphExecutionIdentitySchema>
 
 export const NodeResolutionSchema = z.object({
@@ -179,12 +187,15 @@ export const PublicGraphProjectionSchema = z.object({
 export type PublicGraphProjection = z.infer<typeof PublicGraphProjectionSchema>
 export const PublicGraphTopologySchema = z.object({
   entryNodeId: GraphIdSchema,
-  nodes: z.array(z.object({
-    workflowNodeId: GraphIdSchema, agentId: GraphIdSchema, agentConfigurationVersionId: GraphIdSchema,
+  nodes: z.array(z.union([z.object({
+    kind:z.literal('agent').optional(),workflowNodeId: GraphIdSchema, agentId: GraphIdSchema, agentConfigurationVersionId: GraphIdSchema,
     productRole: z.enum(['orchestrator', 'coder', 'unknown']),
     position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().optional(),
     width: z.number().finite().positive().optional(), height: z.number().finite().positive().optional(),
-  }).strict()).min(1).max(RUN_GRAPH_LIMITS.nodes),
+  }).strict(),z.object({kind:z.literal('job'),workflowNodeId:GraphIdSchema,jobDefinitionId:GraphIdSchema,jobDefinitionVersionId:GraphIdSchema,
+    position:z.object({x:z.number().finite(),y:z.number().finite()}).strict().optional(),
+    width:z.number().finite().positive().optional(),height:z.number().finite().positive().optional(),
+  }).strict()])).min(1).max(RUN_GRAPH_LIMITS.nodes),
   relationships: z.array(z.object({
     relationshipId: GraphIdSchema, kind: z.enum(['execution', 'approval']), source: GraphIdSchema, target: GraphIdSchema,
   }).strict()).max(RUN_GRAPH_LIMITS.relationships),

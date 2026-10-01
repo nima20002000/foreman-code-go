@@ -139,8 +139,9 @@ export function validateRepeatMetadataSnapshotV1(versionValue: unknown, snapshot
     }
     if (!decision) continue
     const exit = version.definition.nodes.find((node) => node.id === block.exitNodeId)!
-    if (decision.exitExecution.workflowNodeId !== exit.id || decision.exitExecution.agentId !== exit.agentId
-      || decision.exitExecution.agentConfigurationVersionId !== version.agentConfigurationVersionIds[exit.agentId]
+    if (decision.exitExecution.workflowNodeId !== exit.id || (decision.exitExecution.kind==='job'
+      ? exit.kind!=='job'||decision.exitExecution.jobDefinitionId!==exit.jobDefinitionId||decision.exitExecution.jobDefinitionVersionId!==exit.jobDefinitionVersionId
+      : exit.kind==='job'||decision.exitExecution.agentId!==exit.agentId||decision.exitExecution.agentConfigurationVersionId!==version.agentConfigurationVersionIds[exit.agentId])
       || ![block.repeatOutcome, block.earlyExitOutcome].includes(decision.outcome)) return fail()
     const early = decision.outcome === block.earlyExitOutcome
     const reason = early ? 'early_exit' : identity.occurrenceIndex === block.maxOccurrences ? 'limit_exit' : 'repeat'
