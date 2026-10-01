@@ -1,10 +1,10 @@
 import { HarnessExecutionError } from '../errors.js'
 import type { NativeMcpInspector } from '../mcpDetection.js'
-import type { NativeHarnessSessionManager, NativeSessionStart } from '../port.js'
+import type { NativeSessionStart } from '../port.js'
 import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import { createClaudeEventNormalizer, type ClaudeEventOwner } from './normalization.js'
 import { claudeNativeEvent } from './nativeEvents.js'
-import { createClaudeNativeSessionManager } from './sessionManager.js'
+import { createClaudeNativeSessionManager, type ClaudeNativeSessionManager } from './sessionManager.js'
 
 type ManagerOptions = Parameters<typeof createClaudeNativeSessionManager>[0]
 export interface ClaudeNativeAllocation extends Omit<ManagerOptions, 'decode' | 'decodeFactory'> {
@@ -21,7 +21,7 @@ export interface ClaudeNativeAllocation extends Omit<ManagerOptions, 'decode' | 
 }
 export interface ClaudeNativeAllocationResult {
   harness: 'claude'
-  manager: NativeHarnessSessionManager
+  manager: ClaudeNativeSessionManager
   inspector?: NativeMcpInspector
 }
 
@@ -40,6 +40,7 @@ export function allocateClaudeNativeHarness(input: ClaudeNativeAllocation): Clau
     runner: input.runner, scope: { ...input.scope }, sdkOptions: { ...input.sdkOptions },
     qualification: { ...input.qualification }, now,
     ...(input.interactionPort ? { interactionPort: input.interactionPort } : {}),
+    ...(input.liveCallbacks ? { liveCallbacks: input.liveCallbacks } : {}),
     ...(input.cancelPendingRequests ? { cancelPendingRequests: input.cancelPendingRequests } : {}),
     ...(input.initializationTimeoutMs !== undefined ? { initializationTimeoutMs: input.initializationTimeoutMs } : {}),
     decodeFactory(start) {
