@@ -233,6 +233,7 @@ describe('NIM-2648 ENG04-D real PostgreSQL repeat regression', () => {
         [seeded.retry.id],
       )).rows[0]!
       expect(native.accepted).toBe(true)
+      assert(seeded.retry.identity.kind !== 'job', 'native retry fixture requires an Agent identity')
       expect(native.record).toMatchObject({
         id: seeded.retry.id,
         runId: seeded.run.id,

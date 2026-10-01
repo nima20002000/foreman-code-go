@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { ManagementActionSchema, type ManagementGrant } from '@graphql/contracts/management'
@@ -20,11 +21,11 @@ type RepeatSavedWorkflow = z.infer<typeof CurrentWorkflowSavedSchema>
 /** Prepare a current V3 graph for an explicit bounded repeat publication. */
 export function repeatReadyAgent3Fixture(fixture: Agent3Fixture): Agent3Fixture {
   const entry = fixture.version.definition.nodes[0]!, exit = fixture.version.definition.nodes[1]!
-  fixture.version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: { ...fixture.version.definition,
+  fixture.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...fixture.version, definition: { ...fixture.version.definition,
     executionPolicy: { maxParallelism: 1, maxNodeExecutions: 6 }, nodes: [entry, { ...exit, choice: { outcomes: [
       { outcome: 'pass', target: { kind: 'branch_end' } }, { outcome: 'issues', target: { kind: 'branch_end' } },
     ] } }],
-  } })
+  } }))
   return fixture
 }
 

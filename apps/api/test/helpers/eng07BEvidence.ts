@@ -13,6 +13,7 @@ import type { Scenario } from './eng07BScenarios.js'
 
 export const digest = (value: unknown) => `sha256:${createHash('sha256').update(canonicalGraphJson(value)).digest('hex')}`
 export function identity(value: RunExecutionSummary) {
+  if (value.kind === 'job') throw new Error('Agent scenario requires an Agent execution identity')
   return { workflowNodeId: value.workflowNodeId, executionId: value.executionId, agentId: value.agentId,
     agentConfigurationVersionId: value.agentConfigurationVersionId, attempt: value.attempt }
 }
@@ -130,6 +131,7 @@ export async function assertScenarioEvidence(f: Harness, started: Started, initi
     const occurrence = expected.repeat ? occurrenceAt(round) : null
     for (const node of expected.executedIndexes) {
       const detail = at(node, round), result = expected.result(node, round)
+      if (detail.execution.kind === 'job') throw new Error('Agent scenario requires an Agent execution')
       expect(detail.execution.agentId).toBe(expected.nodes[node]!.agentId)
       expect(detail.execution.agentConfigurationVersionId).toBe(version.agentConfigurationVersionIds[detail.execution.agentId])
       expect(detail.reportedResult).toEqual(result)

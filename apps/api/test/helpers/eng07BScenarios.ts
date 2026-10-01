@@ -1,7 +1,7 @@
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { AgentConfigurationVersionSchema, type ExecutionResult } from '@graphql/contracts'
 import {
   ExecutableWorkflowV3Schema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
-  type WorkflowDefinitionV3,
 } from '@graphql/contracts/wave25'
 
 export const scenarioIds = ['S3-01', 'S3-02', 'S3-03', 'S3-04', 'S3-05-early', 'S3-05-limit'] as const
@@ -21,7 +21,7 @@ export function scenarioFixture(id: ScenarioId, suffix: string) {
     source.configurations.push(AgentConfigurationVersionSchema.parse({ ...source.configurations[0],
       id: `cfg-${suffix}-${index}`, agentId: `agent-${suffix}-${index}` }))
   }
-  const nodes: WorkflowDefinitionV3['nodes'] = source.configurations.map((configuration, index) => ({
+  const nodes: ReturnType<typeof agentWorkflowVersion>['definition']['nodes'] = source.configurations.map((configuration, index) => ({
     id: `node-${suffix}-${index}`, agentId: configuration.agentId, name: `${id} Worker ${index}`,
   }))
   const pairs = id === 'S3-02' ? [[0, 1], [0, 2], [1, 3], [2, 3]]
@@ -43,12 +43,12 @@ export function scenarioFixture(id: ScenarioId, suffix: string) {
     { outcome: 'issues', target: { kind: 'branch_end' } },
     { outcome: 'pass', target: { kind: 'branch_end' } },
   ] }
-  source.version = WorkflowVersionV3Schema.parse({ ...source.version,
+  source.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...source.version,
     agentConfigurationVersionIds: Object.fromEntries(source.configurations.map((configuration) => [configuration.agentId, configuration.id])),
     definition: { ...source.version.definition, name: id, nodes, edges,
       executionPolicy: { maxParallelism: id === 'S3-02' || id === 'S3-03' ? 2 : 1,
         maxNodeExecutions: repeat ? 6 : count } },
-  })
+  }))
   source.run.agentConfigurationVersionIds = { ...source.version.agentConfigurationVersionIds }
   source.identities = nodes.map((node, index) => ({ workflowNodeId: node.id, executionId: `exec-${suffix}-${index}`,
     agentId: node.agentId, agentConfigurationVersionId: source.version.agentConfigurationVersionIds[node.agentId]!, attempt: 1 }))

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { describe, expect, it } from 'vitest'
 import { NativeSessionReferenceSchema } from '@graphql/contracts'
 import { CURRENT_WORKFLOW_TOOLS, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
@@ -82,7 +83,7 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`ENG07 nat
         expect(f.provider.counts).toEqual({ sessions: 0, starts: 0, responses: 0, attaches: 0 })
         const input = await meaningfulInput(f), count = await versionCount(f), facts = await nativeFacts(f)
         const saved = await saveThrough(f, transport, input)
-        expect(saved.value.version.definition.nodes[0]!.initialPrompt).toBe(input.graph.nodes[0]!.initialPrompt)
+        expect(agentWorkflowNode(saved.value.version.definition.nodes[0]).initialPrompt).toBe(agentWorkflowNode(input.graph.nodes[0]).initialPrompt)
         await assertNewVersionOnly(f, count, input.expectedWorkflowVersionId!)
         expect(await nativeFacts(f)).toEqual(facts)
       } finally { gate.release(); await gate.drive; gate.restore(); await f.close() }
@@ -122,7 +123,8 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`ENG07 nat
         await saveThrough(f, transport, input)
         await assertNewVersionOnly(f, count, input.expectedWorkflowVersionId!)
         const next = await meaningfulInput(f)
-        next.graph.nodes[0]!.initialPrompt += ' / another meaningful edit'
+        const entry = agentWorkflowNode(next.graph.nodes[0])
+        entry.initialPrompt += ' / another meaningful edit'
         const stage = await stageThrough(f, transport, next)
         expect(stage.intent.stops).toHaveLength(0)
         expect(stage.result.current.every((item) => item.settled && !item.nativePending)).toBe(true)

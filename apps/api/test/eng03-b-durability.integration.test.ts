@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { AgentConfigurationVersionSchema } from '@graphql/contracts'
 import { describe, expect, it, vi } from 'vitest'
@@ -40,7 +41,7 @@ function fanInFixture() {
   fixture.configurations = configurations
   fixture.identities = names.map((name) => ({ workflowNodeId: name, executionId: `exec-${fixture.run.id}-${name}`,
     agentId: agent(name), agentConfigurationVersionId: configurations[names.indexOf(name)]!.id, attempt: 1 }))
-  fixture.version = version
+  fixture.version = agentWorkflowVersion(version)
   return fixture
 }
 

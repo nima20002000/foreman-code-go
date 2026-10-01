@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { currentOperatorAuthority } from '../../src/modules/access/runAuthority.js'
 import { requireAuthorization } from '../../src/modules/access/policy.js'
 import type pg from 'pg'
@@ -66,7 +67,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
       f.version.agentConfigurationVersionIds[configuration.agentId] = configuration.id
       f.version.definition.executionPolicy = { maxParallelism: 2, maxNodeExecutions: 3 }
     }
-    f.version = ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version
+    f.version = agentWorkflowVersion(ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version)
     f.run = WorkflowRunV3Schema.parse({ ...f.run, agentConfigurationVersionIds: f.version.agentConfigurationVersionIds })
     await seedAgent3(db.pool, db.directory, f, { run: false })
     const access = new PostgresAccessService(db.pool)

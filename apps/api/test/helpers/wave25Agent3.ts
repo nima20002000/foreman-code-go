@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -85,7 +86,7 @@ export async function seedAgent3(pool: pg.Pool, directory: string, fixture = mak
     graph: { ...fixture.version.definition, id: created.workflow.id, version: created.workflow.version,
       createdAt: created.workflow.createdAt, updatedAt: created.workflow.updatedAt },
   })))).value
-  fixture.version = saved.version
+  fixture.version = agentWorkflowVersion(saved.version)
   fixture.scope = { ...fixture.scope, workflowId: saved.workflowId, workflowVersionId: saved.version.id }
   fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, workflowId: saved.workflowId,
     workflowVersionId: saved.version.id, agentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
@@ -145,7 +146,7 @@ export function deferred<T = void>() {
 }
 
 export function setFixtureVersion(fixture: Agent3Fixture, version: WorkflowVersionV3): Agent3Fixture {
-  fixture.version = version
+  fixture.version = agentWorkflowVersion(version)
   fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds, approval: version.approval })
   return fixture
 }

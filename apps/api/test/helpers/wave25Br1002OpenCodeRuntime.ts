@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { insertProviderRun, providerLaunchCredentials, providerAppEndpoint, stopProviderRun } from './wave25Br1003Runtime.js'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../src/modules/access/workerCredentials.js'
 import { openCodeMcpInspectorAdapter } from '../../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
@@ -107,7 +108,7 @@ export async function br1002OpenCodeRuntime(handler: 'user' | 'orchestrator' = '
       if (node.id !== entry.id) f.version.definition.edges.push({ id: `approval-${node.id}`,
         kind: 'approval', source: entry.id, target: node.id })
     }
-    f.version = ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version
+    f.version = agentWorkflowVersion(ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version)
     f.run = WorkflowRunV3Schema.parse({ ...f.run, approval, agentConfigurationVersionIds: f.version.agentConfigurationVersionIds })
     await seedAgent3(db.pool, db.directory, f, { run: false })
     const access = new PostgresAccessService(db.pool)

@@ -6,6 +6,7 @@ import type { RepeatRepositoryFactory } from '../src/modules/runs/repeatReposito
 import type { AcceptedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'
 import type { RepeatNativeBoundaryEvidence } from '../src/modules/runs/repeatNativeRepository.js'
 import { startFixture } from './eng04-start-fixtures.js'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 
 /** These tests exercise the NEW composition boundary. Reader, native proof,
  * repository and runtime are explicit doubles, not a real Stop/recovery/native
@@ -25,9 +26,10 @@ function fixture() {
   let owned = true
   let evidence: RepeatNativeBoundaryEvidence | undefined
   const prepared = { executionId: 'execution-start-first' }, entered = { executionId: 'execution-start-first' }
+  const entry = agentWorkflowNode(f.version.definition.nodes[0])
   let execution = HarnessExecutionSchema.parse({ id: 'execution-start-first', runId: f.run.id,
-    workflowNodeId: f.version.entryNodeId, agentId: f.version.definition.nodes[0]!.agentId,
-    agentConfigurationVersionId: f.version.agentConfigurationVersionIds[f.version.definition.nodes[0]!.agentId],
+    workflowNodeId: f.version.entryNodeId, agentId: entry.agentId,
+    agentConfigurationVersionId: f.version.agentConfigurationVersionIds[entry.agentId],
     attempt: 1, input: {}, state: 'queued', createdAt: '2026-09-25T00:00:00.000Z' })
   const boundary = vi.fn(async () => undefined)
   const consume = vi.fn()

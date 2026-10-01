@@ -85,6 +85,7 @@ export function graphHarness(f: A1Scenario, options: {
   const candidate = (ref: RepeatNodeRef, attempt: number) => {
     assertRepeatRef(version, f.scope, ref)
     const node = version.definition.nodes.find((item) => item.id === ref.nodeId)!
+    assert(node.kind !== 'job', 'Agent graph harness requires an Agent node')
     const id = repeatId('a1-execution', f.run.id, ref.occurrence?.occurrenceId ?? 'ordinary', ref.nodeId, attempt)
     assert.equal(candidateIds.includes(id), false, 'candidate must be allocated once per exact attempt')
     candidateIds.push(id)

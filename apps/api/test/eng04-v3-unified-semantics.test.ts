@@ -10,6 +10,7 @@ import {
 } from '@graphql/contracts/wave25'
 
 import { at, digest, location, noRepeatScenario, runCandidate } from './helpers/eng04ArchitectureScenarios.js'
+import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { runStartSemantics } from '../src/modules/runs/repeatStartDispatch.js'
 import {
   exitDecision,
@@ -58,7 +59,7 @@ describe('NIM-2648 ENG04-D reusable ENG-S3-ONLY architecture matrix', () => {
     expect(run.executionLocation).toEqual(location(id))
     expect(run.input).toEqual(input)
 
-    const entry = version.definition.nodes.find((item) => item.id === version.entryNodeId)!
+    const entry = agentWorkflowNode(version.definition.nodes.find((item) => item.id === version.entryNodeId))
     const terminal = HarnessExecutionSchema.parse({
       id: `execution-${id}-1`,
       runId: run.id,

@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution } from '@graphql/contracts'
 import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 
@@ -12,7 +13,7 @@ export function br2001Fixture(provider: Br2001Provider, suffix: string) {
       harness: 'opencode', model: 'synthetic-no-native-call', variant: '', nativeAgent: 'build',
       thinking: false, autoApprove: false,
     } }))
-  fixture.version = ExecutableWorkflowV3Schema.parse({
+  fixture.version = agentWorkflowVersion(ExecutableWorkflowV3Schema.parse({
     configurations: fixture.configurations,
     version: { ...fixture.version, definition: { ...fixture.version.definition,
       nodes: fixture.version.definition.nodes.map((node, index) => index === 0 ? {
@@ -22,7 +23,7 @@ export function br2001Fixture(provider: Br2001Provider, suffix: string) {
         ] },
       } : { ...node, name: 'Fixer' }),
     } },
-  }).version
+  }).version)
   const executions = fixture.identities.map((identity) => HarnessExecutionSchema.parse({
     id: identity.executionId, runId: fixture.run.id, workflowNodeId: identity.workflowNodeId,
     agentId: identity.agentId, agentConfigurationVersionId: identity.agentConfigurationVersionId,

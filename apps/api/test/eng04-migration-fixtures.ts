@@ -207,6 +207,7 @@ export function execution(run: RunFixture, occ: OccurrenceFixture | null, option
     record, previousExecutionId: options.previous?.id ?? null }
 }
 export async function insertExecution(sql: Sql, value: ExecutionFixture, newSlot = true): Promise<void> {
+  assert(value.identity.kind !== 'job', 'harness execution fixture requires an Agent identity')
   if (newSlot) await sql.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)
     values($1,$2,$3,$4,$5,$6)`, [value.slotId, value.run.id, value.occurrence?.id ?? null, value.nodeId, text(value.input), digest(value.input)])
   await sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record)

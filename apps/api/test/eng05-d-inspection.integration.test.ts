@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -73,10 +74,10 @@ describe.skipIf(!postgresEnabled)('ENG05-D production Start and bounded inspecti
     { exit: 'limit', maxOccurrences: 14, expectedOccurrences: 14 },
   ] as const)('reads $exit exit through bounded pages, keeps the old pin, and removes repeat for a later ordinary Run', async ({ exit, maxOccurrences, expectedOccurrences }) => {
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'repeat')
-    fixture.version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: { ...fixture.version.definition,
+    fixture.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...fixture.version, definition: { ...fixture.version.definition,
       executionPolicy: { maxParallelism: 1, maxNodeExecutions: maxOccurrences * 2 },
       repeat: { ...fixture.version.definition.repeat!, blocks: fixture.version.definition.repeat!.blocks.map((block) => ({ ...block, maxOccurrences })) },
-    } })
+    } }))
     const exitId = fixture.version.definition.nodes[1]!.id
     let exits = 0
     let seeding = true
@@ -126,6 +127,7 @@ describe.skipIf(!postgresEnabled)('ENG05-D production Start and bounded inspecti
       const exactArgs = { ...args, executionId: entry.executionId }
       const exact = RunExecutionDetailSchema.parse(await pairedRead(f, r, RUN_INSPECTION_TOOLS.execution, exactArgs, measurements))
       expect(exact.acceptedInput.value.runInput).toEqual({ task: 'ENG05-D', exit })
+      if (exact.execution.kind === 'job' || entry.kind === 'job') throw new Error('inspection fixture requires Agent executions')
       expect(exact.execution.agentConfigurationVersionId).toBe(original.version.agentConfigurationVersionIds[entry.agentId])
       const bindings = RunExecutionBindingsPageSchema.parse(await pairedRead(f, r, RUN_INSPECTION_TOOLS.bindings, { ...exactArgs, limit: 1 }, measurements))
       expect(bindings.items).toHaveLength(1)

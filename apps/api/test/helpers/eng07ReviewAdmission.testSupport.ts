@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@graphql/contracts'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema, type RepeatBlockV1 } from '@graphql/contracts/wave25'
@@ -46,6 +47,6 @@ export function reviewerScopeFixture(kind: ReviewerScopeCase) {
   }
   definition.executionPolicy = { maxParallelism: 1,
     maxNodeExecutions: definition.nodes.length + blocks.reduce((total, item) => total + (item.maxOccurrences - 1) * item.nodeIds.length, 0) }
-  f.version = WorkflowVersionV3Schema.parse({ ...f.version, definition })
+  f.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...f.version, definition }))
   return f
 }

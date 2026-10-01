@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
@@ -43,11 +44,11 @@ describe.skipIf(!enabled)('ENG04 native proof accepted v3 PostgreSQL guard slice
   async function fixture() {
     const directory = await mkdtemp(join(db.directory, 'native-proof-'))
     const f = makeCurrentWorkflowFixture(randomUUID()), entry = f.version.definition.nodes[0]!, exit = f.version.definition.nodes[1]!
-    f.version = WorkflowVersionV3Schema.parse({ ...f.version, definition: { ...f.version.definition,
+    f.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...f.version, definition: { ...f.version.definition,
       executionPolicy: { maxParallelism: 1, maxNodeExecutions: 6 }, nodes: [entry, { ...exit, choice: { outcomes: [
         { outcome: 'pass', target: { kind: 'branch_end' } }, { outcome: 'issues', target: { kind: 'branch_end' } },
       ] } }],
-    } })
+    } }))
     await seedAgent3(db.pool, directory, f, { run: false })
     const commands = new PostgresCommandCoordinator(db.pool), access = new PostgresAccessService(db.pool)
     const scope = { workspaceIds: [f.scope.workspaceId], workflowIds: [f.scope.workflowId] }

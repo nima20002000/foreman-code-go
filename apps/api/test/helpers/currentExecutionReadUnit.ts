@@ -20,6 +20,7 @@ export function currentExecutionReadUnit(f: CurrentUnitSnapshot = currentUnitSna
     configurations: f.version.agentConfigurationVersionIds, entryNodeId: f.version.entryNodeId })
   f.run = { ...f.run, executionState: 'running', startedAt: f.createdAt }
   const node = f.version.definition.nodes[0]!
+  assert(node.kind !== 'job', 'execution-read fixture requires an Agent node')
   const candidate = HarnessExecutionSchema.parse({ id: `${f.run.id}-execution`, runId: f.run.id, workflowNodeId: node.id,
     agentId: node.agentId, agentConfigurationVersionId: f.version.agentConfigurationVersionIds[node.agentId], attempt: 1,
     input: {}, state: 'queued', createdAt: f.createdAt })

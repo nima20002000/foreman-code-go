@@ -1,3 +1,4 @@
+import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -194,10 +195,13 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString(),
       })
     })
-    evidence.effectiveHarnesses = configurations.map((item) => ({ agentId: item.agentId, harness: item.harness.harness,
+    evidence.effectiveHarnesses = configurations.map((item) => {
+      if (item.harness.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
+      return { agentId: item.agentId, harness: item.harness.harness,
       model: item.harness.model, ...(item.harness.harness === 'codex' ? { sandbox: item.harness.sandbox,
         approvalPolicy: item.harness.advanced?.approvalPolicy,
-        approvalsReviewer: item.harness.advanced?.approvalsReviewer } : { autoApprove: item.harness.autoApprove }) }))
+        approvalsReviewer: item.harness.advanced?.approvalsReviewer } : { autoApprove: item.harness.autoApprove }) }
+    })
     const nodes = nodeNames.map((name, index) => ({ id: `node-${suffix}-${index}`, name,
       agentId: configurations[index]!.agentId, ...(index === 0 ? {} : { join: { mode: 'all' as const } }) }))
     const edges = ([[0, 1], [0, 2], [1, 3], [2, 3]] as const).map(([source, target], index) => ({
@@ -211,7 +215,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       configurations,
     })
     fixture.configurations = configurations
-    fixture.version = workflowVersion
+    fixture.version = agentWorkflowVersion(workflowVersion)
     await seedAgent3(pool, projectDirectory, fixture, { run: false })
     const access = new PostgresAccessService(pool)
     const authority = await access.issue({ name: 'Current native acceptance authority', audience: 'operator',
@@ -251,6 +255,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
         const config = context.configuration.harness
         if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
+        if (config.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
         return config.harness === 'codex'
           ? new CodexAppServerSessionManager(codexBinary, undefined, undefined, registry.scope(`execution:${context.executionId}`))
           : new OpenCodeNativeSessionManager({ server: new ManagedOpenCodeServer({ binary: openCodeBinary,
