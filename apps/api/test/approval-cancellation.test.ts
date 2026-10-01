@@ -455,6 +455,20 @@ it('keeps cleanup pending when native close fails instead of inventing a termina
   assert.ok(f.calls.includes('release-owner'))
 })
 
+it('restart identifies owner-signal detachment without canceling or settling the execution', async () => {
+  const item = execution('restart-signal')
+  const f = await fixture([item])
+  const attached = await f.coordinator.attachOwnedSession({ executionId: item.id, agentId: item.agentId,
+    harness: 'codex', workingDirectory: '/project' }, { harness: 'codex', providerVersion: '0.154.0',
+    nativeSessionId: `native-${item.id}` })
+  const before = structuredClone(f.rows.get(item.id))
+  await f.coordinator.closeForRestart()
+  assert.equal(attached.signal?.aborted, true)
+  assert.equal(attached.signal?.reason.code, 'ENGINE_RESTART')
+  assert.deepEqual(f.rows.get(item.id), before)
+  assert.ok(!f.calls.some((call) => call.startsWith('cancel:') || call.startsWith('budget:')))
+})
+
 it('shutdown preserves waiting Run facts while draining the captured restart boundary', async () => {
   const cancelRun = vi.fn(async () => undefined)
   const f = engineFixture({ cancelRun } as unknown as ApprovalExecutionCoordinator)
