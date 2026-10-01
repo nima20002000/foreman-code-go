@@ -30,10 +30,10 @@ describe('actual manual job source admission',()=>{
       return {...spec,source:{...spec.source,materializationId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',materializationDigest:'3'.repeat(64)}}
     })
     const adoptFinalBinding=vi.fn(async()=>{expect(transactions).toBe(1);expect(execution).toBeDefined()})
-    const commands={recordDenied:vi.fn(),execute:async(input:{dedicatedConnection?:boolean;authorize:(sql:unknown)=>Promise<void>;perform:()=>Promise<unknown>})=>{
-      expect(input.dedicatedConnection).toBe(true);await input.authorize({query});return {value:await input.perform(),replayed:false}
+    const commands={recordDenied:vi.fn(),execute:async(input:{dedicatedConnection?:boolean;authorize:(sql:unknown)=>Promise<void>;prepare:()=>Promise<void>;perform:(sql:unknown)=>Promise<unknown>})=>{
+      expect(input.dedicatedConnection).toBe(true);await input.authorize({query});await input.prepare();await query('begin');const value=await input.perform({query});expect(execution).toBeDefined();await query('commit');return {value,replayed:false}
     }} as unknown as PostgresCommandCoordinator
-    const service=new JobService(pool,commands,{preparation:{accept,adoptFinalBinding,validate:async()=>({valid:true,reasons:[],sideEffects:false}),choices:vi.fn()},dispatch:{accept:async(_sql,input)=>({attemptId:input.attemptId,operationId:input.operationId,owner:{grantId:'actual-job-owner',epoch:'1'}}),cancel:vi.fn(),wake:vi.fn(async()=>undefined)},artifacts:{read:vi.fn(),list:vi.fn()}})
+    const service=new JobService(pool,commands,{preparation:{revalidateAccepted:vi.fn(),accept,adoptFinalBinding,validate:async()=>({valid:true,reasons:[],sideEffects:false}),choices:vi.fn()},dispatch:{accept:async(_sql,input)=>({attemptId:input.attemptId,operationId:input.operationId,owner:{grantId:'actual-job-owner',epoch:'1'}}),cancel:vi.fn(),wake:vi.fn(async()=>undefined)},artifacts:{read:vi.fn(),list:vi.fn()}})
     const result=await service.start(principal,'mcp','workspace-fixture',{commandId:'actual-start-command',definitionId:definition.id,expectedRevision:1})
     expect(result.acceptedSpec.workflowInput).toBeNull();expect(accept).toHaveBeenCalledOnce();expect(adoptFinalBinding).toHaveBeenCalledOnce();expect(transactions).toBe(0)
   })

@@ -7,10 +7,11 @@ import { ApprovedSourceSchema, SourceRootRecordSchema, SourceMaterializationReco
 import { JobTargetSchema, PreparedJobSpecSchema, type JobDefinitionSpec, type JobAuthoringChoices, type JobExecution } from '@graphql/contracts/jobs'
 import type { PostgresSourceService } from '../sources/service.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../sources/bindingHash.js'
+import { sourceSha256 } from '../sources/manifest.js'
 import { verifiedSourceWorkingTree } from '../sources/nativeStamp.js'
 import { authorizeSource } from '../sources/authority.js'
 import { DomainError } from '../errors.js'
-import { canonical, type JobSql } from './repository.js'
+import { canonical, JobRepository, type JobSql } from './repository.js'
 import { JobPreparationService, type JobPreparationSources } from './preparation.js'
 
 /** W07/CI qualification readback; no probing, installing or pulling during authoring. */
@@ -37,7 +38,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
   private target(root:SourceRootRecord) {
     return JobTargetSchema.parse({schemaVersion:1,mainId:root.binding.mainId,mainInstallationId:root.binding.mainId,hostRef:root.selection.hostRef,registration:root.registration,
       destination:{canonicalProjectRoot:root.binding.canonicalPath,canonicalCwd:root.binding.canonicalPath,managedRuntimeRoot:root.binding.canonicalPath,
-        directoryIdentityHash:root.attestationDigest,rootPolicyId:root.selection.rootPolicyId,rootPolicyRevision:root.selection.rootPolicyRevision,locationRevision:root.selection.locationRevision,attestationId:root.attestationId,attestationHash:root.attestationDigest}})
+        directoryIdentityHash:sourceSha256(Buffer.from(JSON.stringify(root.binding.filesystem))),rootPolicyId:root.selection.rootPolicyId,rootPolicyRevision:root.selection.rootPolicyRevision,locationRevision:root.selection.locationRevision,attestationId:root.attestationId,attestationHash:root.attestationDigest}})
   }
   private async root(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpec) {
     const row=(await sql.query<{record:unknown}>(`select b.record from source_root_catalog c join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision where c.workspace_id=$1 and b.record->>'attestationId'=$2 for share of b,c`,[workspaceId,spec.target.destination.attestationId])).rows
@@ -60,6 +61,17 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     const path=await this.sources.verifyPreparation({principal,record}),tree=verifiedSourceWorkingTree(record,path)
     return PreparedJobSpecSchema.parse({...spec,source:{...spec.source,materializationId:record.receipt.materializationId,materializationDigest:sourceMaterializationDigest(record)},
       target:{...spec.target,destination:{...spec.target.destination,canonicalProjectRoot:tree.canonicalProjectRoot,canonicalCwd:spec.relativeCwd?join(tree.canonicalProjectRoot,spec.relativeCwd):tree.canonicalCwd,directoryIdentityHash:tree.directoryIdentityHash}}})
+  }
+  async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {
+    const row=(await sql.query<{record:unknown;state:string}>('select record,state from source_execution_materializations where materialization_id=$1 and workspace_id=$2 and execution_id=$3 and attempt_id=$4 for share',[execution.acceptedSpec.source.materializationId,execution.workspaceId,execution.id,execution.attemptId])).rows[0]
+    if(!row)throw new DomainError('SOURCE_ATTEMPT_CONFLICT','The original accepted source materialization is missing.',409)
+    const record=SourceMaterializationRecordSchema.parse({...row.record as object,state:row.state})
+    if(!['prepared','running','closed'].includes(record.state)||record.operationId!==execution.operationId||record.finalDispatchBindingHash!==execution.acceptedSpec.bindingHash||sourceMaterializationDigest(record)!==execution.acceptedSpec.source.materializationDigest)throw new DomainError('SOURCE_ATTEMPT_CONFLICT','The original accepted source binding changed.',409)
+    const source={approvedSourceId:execution.acceptedSpec.source.approvedSourceId,snapshotId:execution.acceptedSpec.source.snapshotId,manifestDigest:execution.acceptedSpec.source.manifestDigest}
+    const root=await this.sources.resolveRootBinding(sql,principal,{workspaceId:execution.workspaceId,rootId:record.receipt.binding.rootId,bindingRevision:record.receipt.binding.bindingRevision,source})
+    if(root.attestationId!==execution.acceptedSpec.target.destination.attestationId||root.attestationDigest!==execution.acceptedSpec.target.destination.attestationHash||canonical(root.registration)!==canonical(execution.acceptedSpec.target.registration))throw new DomainError('JOB_ROOT_PIN_CONFLICT','The original accepted root/registration differs from its stored materialization.',409)
+    const definition=await new JobRepository().version(sql,execution.workspaceId,execution.acceptedSpec.definitionVersionId,execution.acceptedSpec.definitionId)
+    await this.runtime.revalidate(sql,principal,root,definition.spec)
   }
   async adoptFinalBinding(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {
     const row=(await sql.query<{record:unknown}>('select record from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 for update',[execution.acceptedSpec.source.materializationId,execution.id,execution.attemptId])).rows[0]

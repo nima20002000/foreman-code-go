@@ -12,6 +12,7 @@ export interface JobDispatchPort {
 }
 /** Authority before any source/root probe; again immediately before dispatch/launch. */
 export interface JobPreparationPort {
+  revalidateAccepted(client:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   adoptFinalBinding(client:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   choices(client: JobSql, principal: ManagementPrincipal, workspaceId: string): Promise<JobAuthoringChoices>
   validate(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpec): Promise<JobValidation>

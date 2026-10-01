@@ -1,4 +1,4 @@
-import { JobDefinitionSpecSchema, type JobExecution } from '@graphql/contracts/jobs'
+import type { JobExecution } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -21,9 +21,7 @@ export class JobPublicationAuthority {
     requireAuthorization(principal,execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
     await this.runtime.require(sql,execution,{attemptId:input.attemptId,owner:input.owner})
     if(execution.process.phase!=='terminal'||!execution.process.processStopped) throw new DomainError('JOB_OUTPUT_NOT_QUIESCENT','Artifact publication requires proven process closure.',409)
-    const definition=await this.repository.version(sql,execution.workspaceId,execution.acceptedSpec.definitionVersionId,execution.acceptedSpec.definitionId)
-    const ready=await this.preparation.validate(sql,principal,execution.workspaceId,JobDefinitionSpecSchema.parse(definition.spec))
-    if(!ready.valid) throw new DomainError('JOB_AUTHORITY_CHANGED','Accepted source or root authority is no longer valid.',409)
+    await this.preparation.revalidateAccepted(sql,principal,execution)
     return {execution,principal}
   }
 }
