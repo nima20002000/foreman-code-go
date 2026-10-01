@@ -7,7 +7,12 @@ import { revisionedOwnershipReader, type OwnershipReader, type OwnershipView } f
 /** Structural read-only subset of HRT's existing registry. No recovery/mutation methods are exposed. */
 export type PassiveNativeRegistry = Pick<NativeProcessRegistry, 'revision' | 'snapshot' | 'changes'>
 /** Resolved from existing accepted HRT/W08/CI facts; owner strings are exact joins only. */
-export interface TrustedNativeScope extends Omit<OwnershipView, 'roots' | 'accountingHandles' | 'launchIds'> { nativeOwner: string }
+export interface TrustedNativeScope extends Omit<OwnershipView, 'roots' | 'accountingHandles' | 'launchIds'> {
+  nativeOwner: string
+  /** Original host-side OCI owner certificates, never incoming telemetry data. */
+  captured?: { launchIds: readonly string[]; roots: OwnershipView['roots'];
+    boundaries: readonly OwnershipView['accountingHandles'][number]['boundary'][]; incomplete: boolean }
+}
 export interface TrustedNativeScopes {
   revision(): string
   snapshot(signal: AbortSignal): Promise<readonly TrustedNativeScope[]>
@@ -26,6 +31,16 @@ export function passiveRegistryOwnershipReader(registry: PassiveNativeRegistry, 
         const launches = native.launches.filter(launch => launch.owner === scope.nativeOwner)
         const roots = new Map<string, OwnershipView['roots'][number]>()
         const handles: OwnershipView['accountingHandles'][number][] = []
+        const certifiedRoots = scope.captured?.roots ?? []
+        if (certifiedRoots.length > 4096) captureTruncated = true
+        for (const process of certifiedRoots.slice(0, 4096)) {
+          if (process.bootId !== scope.selector.host.bootId || scope.lifecycle === 'closed') continue
+          const key = `${process.bootId}:${process.pid}:${process.startTicks}`
+          if (!roots.has(key)) { if (remaining > 0) { roots.set(key, { ...process }); remaining-- } else captureTruncated = true }
+        }
+        if (scope.lifecycle !== 'closed') for (const boundary of scope.captured?.boundaries ?? []) {
+          if (handles.length < 9) handles.push(accountingHandle(boundary, !scope.shared)); else captureTruncated = true
+        }
         for (const launch of launches) {
           if (launch.bootId !== scope.selector.host.bootId || launch.lifecycle === 'closed') continue
           for (const process of [launch.guardian, launch.provider]) if (process) {
@@ -35,9 +50,9 @@ export function passiveRegistryOwnershipReader(registry: PassiveNativeRegistry, 
           }
           if (launch.boundary) { if (handles.length < 9) handles.push(accountingHandle(launch.boundary, !scope.shared)); else captureTruncated = true }
         }
-        return { selector: scope.selector, leaseId: scope.leaseId, launchIds: launches.map(launch => launch.launchId),
+        return { selector: scope.selector, leaseId: scope.leaseId, launchIds: [...new Set([...launches.map(launch => launch.launchId), ...(scope.captured?.launchIds ?? [])])],
           observedDeviceId: scope.observedDeviceId, observedInstallationId: scope.observedInstallationId,
-          captureTruncated, shared: scope.shared, lifecycle: scope.lifecycle, roots: [...roots.values()], accountingHandles: handles }
+          captureTruncated, accountingIncomplete: scope.captured?.incomplete ?? false, shared: scope.shared, lifecycle: scope.lifecycle, roots: [...roots.values()], accountingHandles: handles }
       })
     },
     changes: (afterRevision, signal) => joinedChanges(registry, scopes, afterRevision, signal),

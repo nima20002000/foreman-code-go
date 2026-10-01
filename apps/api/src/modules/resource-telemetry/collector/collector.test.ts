@@ -202,3 +202,15 @@ it('passive ownership source failure cannot suppress valid host memory', async (
   const p = ports(); p.ownership.snapshot = async () => { throw Object.assign(new Error(), { code: 'EACCES' }) }
   const result = await new LinuxSampler(p).capture(identity, signal()); expect(result.host?.memory.state).toBe('ok'); expect(result.owned).toEqual([]); expect(result.diagnostics).toEqual(['permission-denied', 'ownership-unavailable'])
 })
+
+it('captured root birth changes warm CPU instead of reporting an invented zero on PID reuse', async () => {
+  const v = view(); const p = ports([v]); const sampler = new LinuxSampler(p)
+  await sampler.capture(identity, signal()); p.advance(2_000_000_000n)
+  v.roots = [{ ...root, startTicks: '101' }]; p.process.stat = async pid => stat(pid, '101')
+  expect((await sampler.capture(identity, signal())).owned[0]?.cpu.state).toBe('warmup')
+})
+it('unaccounted OCI helper keeps usable boundary values explicitly partial', async () => {
+  const v = view(); v.accountingHandles = [handle('/sys/fs/cgroup/job')]; v.accountingIncomplete = true
+  const row = (await new LinuxSampler(ports([v])).capture(identity, signal())).owned[0]!
+  expect(row.memory.state).toBe('ok'); expect(row.coverage).toMatchObject({ boundary: 'partial', reasons: ['escaped-boundary'] })
+})
