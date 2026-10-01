@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FileScopeSchema, MAX_FILE_BYTES, MAX_FILE_READ_BYTES, type AgentFileReadResult } from './files.js'
+import { FileScopeSchema } from './files.js'
 
 const Id = z.string().min(1).max(500)
 const Hash = z.string().regex(/^[a-f0-9]{64}$/)
@@ -16,7 +16,7 @@ export const ArtifactEdgeBindingSchema = z.object({
   producer: ArtifactAttemptSchema, consumer: ArtifactAttemptSchema, outputKey: Id,
   publication: z.object({ ownerPrincipalId: Id, requestId: Id, binding: Hash }).strict(),
   pins: z.object({ fileId: z.uuid(), revisionId: z.uuid(), sha256: Hash,
-    byteSize: z.number().int().nonnegative().max(MAX_FILE_BYTES) }).strict(),
+    byteSize: z.number().int().nonnegative().max(64 * 1024 * 1024) }).strict(),
   scope: FileScopeSchema, sender: ArtifactAuthoritySchema, receiver: ArtifactAuthoritySchema,
   access: z.literal('read-only'), acceptedAt: z.string().datetime(),
 }).strict().superRefine((v, c) => {
@@ -28,9 +28,9 @@ export type ArtifactAttempt = z.infer<typeof ArtifactAttemptSchema>
 export type ArtifactAuthority = z.infer<typeof ArtifactAuthoritySchema>
 export type ArtifactEdgeBinding = z.infer<typeof ArtifactEdgeBindingSchema>
 export const ArtifactEdgeReadSchema = z.object({ edgeId: Id, offset: z.number().int().nonnegative(),
-  length: z.number().int().positive().max(MAX_FILE_READ_BYTES) }).strict()
+  length: z.number().int().positive().max(256 * 1024) }).strict()
 export interface ArtifactEdgePort {
   pinAccepted(binding: ArtifactEdgeBinding): Promise<ArtifactEdgeBinding>
   readAccepted(edgeId: string, consumer: ArtifactAttempt, authority: ArtifactAuthority,
-    offset: number, length: number): Promise<AgentFileReadResult>
+    offset: number, length: number): Promise<unknown>
 }

@@ -1,0 +1,31 @@
+import { ExecutionResultSchema, type ExecutionResult } from '@graphql/contracts'
+import { NodeResolutionSchema, type RepeatOccurrenceIdentityV1, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import type { JobArtifact, JobExecution } from '@graphql/contracts/jobs'
+import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
+import { blockForNode, repeatConflict, repeatDigest, type RepeatNodeRef, type RepeatResolution } from '../runs/repeatResolution.js'
+
+/** Generated from actual job truth, never a fabricated provider turn or HarnessExecution. */
+export function workflowJobResult(version:WorkflowVersionV3,ref:RepeatNodeRef,execution:JobExecution,artifacts:readonly JobArtifact[]):{result:ExecutionResult;resolution:RepeatResolution} {
+  const node=JobWorkflowNodeSchema.parse(version.definition.nodes.find(node=>node.id===ref.nodeId))
+  if(execution.workflow?.runId!==ref.occurrence?.scope.runId&&ref.occurrence!==null)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT')
+  if(execution.workflow?.workflowId!==version.workflowId||execution.workflow.nodeId!==node.id||execution.acceptedSpec.definitionId!==node.jobDefinitionId||execution.acceptedSpec.definitionVersionId!==node.jobDefinitionVersionId)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT')
+  if(execution.process.phase!=='terminal'||!execution.process.processStopped||!execution.process.outcome||!execution.finishedAt||['pending','collecting'].includes(execution.publication))repeatConflict('JOB_RESULT_PENDING')
+  const ready=execution.publication==='complete'&&!execution.resultIssue
+  const outcome=ready?execution.process.outcome:execution.resultIssue==='log_overflow'||execution.resultIssue==='log_delivery_unknown'?'logs_incomplete':'output_failed'
+  const data={latestDeliverable:{jobExecutionId:execution.id,process:{outcome:execution.process.outcome,exitCode:execution.process.exitCode,signal:execution.process.signal},
+    artifacts:artifacts.map(({fileId,revisionId,sha256,byteSize,path})=>({fileId,revisionId,sha256,byteSize,path}))},
+    remainingFindings:outcome==='succeeded'?[]:[{outcome,exitCode:execution.process.exitCode,publication:execution.publication}]}
+  const routed=node.choice?.outcomes.find(item=>item.outcome===outcome)
+  const accepted=!!routed||(outcome==='succeeded'&&!node.choice)
+  const result=ExecutionResultSchema.parse(accepted?{outcome:'succeeded',output:node.choice?{routing:{outcome},data}:data}:{outcome:outcome==='cancelled'?'canceled':'failed',error:{code:`JOB_${outcome.toUpperCase()}`,message:'The job did not produce its required accepted workflow result.',retryable:false}})
+  const outgoing=version.definition.edges.filter(edge=>edge.kind==='execution'&&edge.source===node.id).map(edge=>edge.id).sort()
+  const exit=blockForNode(version,node.id)?.exitNodeId===node.id
+  const selected=accepted&&!exit?(routed?routed.target.kind==='edge'?[routed.target.relationshipId]:[]:outgoing):[]
+  const identity={kind:'job' as const,workflowNodeId:node.id,executionId:execution.id,jobDefinitionId:node.jobDefinitionId,jobDefinitionVersionId:node.jobDefinitionVersionId,attempt:1}
+  return {result,resolution:{ref,deferredRelationshipIds:accepted&&exit?outgoing:[],value:NodeResolutionSchema.parse({workflowNodeId:node.id,execution:identity,resolution:result.outcome,
+    ...(accepted?{acceptedResultDigest:repeatDigest(result,64*1024)}:{}),...(routed?{outcome}:{}),branchEnded:!exit&&routed?.target.kind==='branch_end',selectedRelationshipIds:selected,
+    unselectedRelationshipIds:outgoing.filter(id=>!selected.includes(id)&&!(accepted&&exit)),resolvedAt:execution.finishedAt})}}
+}
+export function workflowJobIdentity(execution:JobExecution,node:{id:string;jobDefinitionId:string;jobDefinitionVersionId:string},occurrence:RepeatOccurrenceIdentityV1|null) {
+  return {kind:'job' as const,workflowNodeId:node.id,executionId:execution.id,jobDefinitionId:node.jobDefinitionId,jobDefinitionVersionId:node.jobDefinitionVersionId,attempt:1,occurrence}
+}

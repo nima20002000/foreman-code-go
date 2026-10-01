@@ -95,6 +95,74 @@
     "./source-materialization": {
       "types": "./dist/sourceMaterialization.d.ts",
       "import": "./dist/sourceMaterialization.js"
+    },
+    "./claude": {
+      "types": "./dist/claude.d.ts",
+      "import": "./dist/claude.js"
+    },
+    "./placement-readback": {
+      "types": "./dist/placementReadback.d.ts",
+      "import": "./dist/placementReadback.js"
+    },
+    "./artifact-edges": {
+      "types": "./dist/artifactEdges.d.ts",
+      "import": "./dist/artifactEdges.js"
+    },
+    "./remote-execution": {
+      "types": "./dist/remoteExecution.d.ts",
+      "import": "./dist/remoteExecution.js"
+    },
+    "./jobs": {
+      "types": "./dist/jobs.d.ts",
+      "import": "./dist/jobs.js"
+    },
+    "./device-application": {
+      "types": "./dist/deviceApplication.d.ts",
+      "import": "./dist/deviceApplication.js"
+    },
+    "./remote-job-execution": {
+      "types": "./dist/remoteJobExecution.d.ts",
+      "import": "./dist/remoteJobExecution.js"
+    },
+    "./job-artifacts": {
+      "types": "./dist/jobArtifacts.d.ts",
+      "import": "./dist/jobArtifacts.js"
+    },
+    "./job-workflow": {
+      "types": "./dist/jobWorkflow.d.ts",
+      "import": "./dist/jobWorkflow.js"
+    },
+    "./source-admission": {
+      "types": "./dist/sourceAdmission.d.ts",
+      "import": "./dist/sourceAdmission.js"
+    },
+    "./jobs-node": {
+      "types": "./dist/jobsNode.d.ts",
+      "import": "./dist/jobsNode.js"
+    },
+    "./workspace-root-policies": {
+      "types": "./dist/workspaceRootPolicies.d.ts",
+      "import": "./dist/workspaceRootPolicies.js"
+    },
+    "./workspace-bound-location": {
+      "types": "./dist/workspaceBoundLocation.d.ts",
+      "import": "./dist/workspaceBoundLocation.js"
+    },
+    "./byte-transfer": {
+      "types": "./dist/byteTransfer.d.ts",
+      "import": "./dist/byteTransfer.js"
+    },
+    "./job-output-transfer": {
+      "types": "./dist/jobOutputTransfer.d.ts",
+      "import": "./dist/jobOutputTransfer.js"
+    },
+    "./job-runtime": {
+      "types": "./dist/jobRuntime.d.ts",
+      "import": "./dist/jobRuntime.js"
+    },
+    "./command-identity-node": {
+      "types": "./dist/commandIdentityNode.d.ts",
+      "import": "./dist/commandIdentityNode.js"
     }
   },
   "scripts": {

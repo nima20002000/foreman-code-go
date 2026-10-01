@@ -1,3 +1,7 @@
+import { z } from 'zod'
+import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
+import type { DeviceApplicationFrame, DeviceExtensionDescriptor, DeviceNegotiatedExtension } from './deviceApplication.js'
+import type { MainSignedIdentityProof } from './deviceIdentity.js'
 /** Wire compatibility is independent of application and native-provider versions. */
 export const DEVICE_PROTOCOL_VERSION = 1
 export const DEVICE_FRAME_BYTES = 16_384
@@ -5,27 +9,35 @@ export const DEVICE_QUEUE_DEPTH = 32
 export const DEVICE_BUFFER_BYTES = 65_536
 export type DeviceConnectionPhase = 'disconnected' | 'offline' | 'connecting' | 'authenticating' | 'negotiating' | 'synchronizing' | 'ready' | 'backoff' | 'blocked'
 export type DeviceFailureCode = 'authentication' | 'permission' | 'wrong-main' | 'incompatible-protocol' | 'malformed-frame' | 'backpressure' | 'timeout' | 'transport'
-export interface DeviceSessionBinding {
-  mainId: string
-  deviceId: string
-  workerInstallationId: string
-  keyRevision: number
-  authorizationRevision: number
-  bootId: string
-  connectionEpoch: string
-}
+export const DeviceSessionBindingSchema = DeviceConnectionIdentitySchema.extend({ connectionEpoch: z.uuid() }).strict()
+export type DeviceSessionBinding = z.infer<typeof DeviceSessionBindingSchema>
+/** Worker build/wire version and last frame receipt are observed on its authenticated connection. */
+export const DevicePresenceSchema = z.object({
+  binding: DeviceSessionBindingSchema,
+  phase: z.enum(['ready', 'offline']),
+  dispatch: z.boolean(),
+  transfer: z.boolean(),
+  appVersion: z.string().min(1).max(128),
+  protocolVersion: z.literal(DEVICE_PROTOCOL_VERSION),
+  lastSeenAt: z.string().datetime(),
+}).strict()
+export type DevicePresence = z.infer<typeof DevicePresenceSchema>
+
 export interface DeviceHello extends DeviceSessionBinding {
   type: 'hello'
   protocolVersion: number
   appVersion: string
+  nonce: string
+  extensions?: DeviceExtensionDescriptor[]
 }
 export interface DeviceWelcome extends DeviceSessionBinding {
   type: 'welcome'
   protocolVersion: number
   appVersion: string
-  capabilities: { heartbeat: true; dispatch: false; transfer: false }
+  mainIdentityProof: MainSignedIdentityProof
+  capabilities: { heartbeat: true; dispatch: boolean; transfer: boolean; extensions?: DeviceNegotiatedExtension[] }
 }
-export type DeviceFrame = DeviceHello | DeviceWelcome | { type: 'ping' | 'pong'; connectionEpoch: string } | { type: 'blocked'; code: DeviceFailureCode }
+export type DeviceFrame = DeviceApplicationFrame | DeviceHello | DeviceWelcome | { type: 'ping' | 'pong' | 'ready'; connectionEpoch: string } | { type: 'blocked'; code: DeviceFailureCode }
 export interface DeviceConnectionView {
   desired: boolean
   phase: DeviceConnectionPhase
