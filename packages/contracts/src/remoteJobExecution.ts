@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { JobExecutionSchema, type JobExecution } from './jobs.js'
+import { JobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs.js'
 import { MachineReferenceSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 import { RemoteOperationPhaseSchema } from './remoteExecution.js'
@@ -60,4 +60,10 @@ export const RemoteJobExecutionRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.literal('job-dispatch'), intent: RemoteJobDispatchIntentSchema, execution: z.lazy(() => JobExecutionSchema) }).strict(),
   z.object({ method: z.literal('job-status'), intent: RemoteJobDispatchIntentSchema }).strict(),
   z.object({ method: z.literal('job-control'), intent: RemoteJobDispatchIntentSchema, command: RemoteJobOwnerControlSchema }).strict(),
+])
+
+export const RemoteJobMainRpcRequestSchema = z.discriminatedUnion('method', [
+ z.object({ method: z.literal('job-report'), receipt: RemoteJobOperationReceiptSchema }).strict(),
+ z.object({ method: z.literal('job-log'), intent: RemoteJobDispatchIntentSchema, chunk: JobLogChunkSchema }).strict(),
+ z.object({ method: z.literal('job-authorize'), intent: RemoteJobDispatchIntentSchema, action: z.enum(['start','read','control','publish']) }).strict(),
 ])

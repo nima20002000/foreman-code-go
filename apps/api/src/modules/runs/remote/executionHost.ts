@@ -8,6 +8,7 @@ import { RemoteExecutionRpcRequestSchema } from '@graphql/contracts/remote-execu
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
 import type { NativeSessionManagerResolver } from '../../interactions/runtimePorts.js'
 import type { NativeHarnessSessionManager, NativeHistory, ChildProcessEnvironment } from '../../harnesses/port.js'
+import { assertRuntimeLeafPath, assertRuntimeLeafBinding, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { readPlacement } from '../../placement/binding.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 
@@ -18,6 +19,7 @@ export interface RemoteExecutionHostPorts {
   managers: NativeSessionManagerResolver
   authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control'): Promise<void>
   /** Host-local credentials and sandbox policy; never copied from main. */
+  attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest): Promise<RuntimeLeafAttestation>
   preflight(request: HarnessExecutionRequest): Promise<ChildProcessEnvironment | void>
   nativeEvidence(intent: DispatchIntent, session: NativeSessionReference): Promise<RemoteNativeIdentity>
   /** W11/provider closure verification; terminal observation alone is insufficient. */
@@ -77,9 +79,11 @@ export class RemoteExecutionHost {
       || placement.runId !== intent.runId || placement.nodeId !== intent.nodeId || placement.payload.kind !== 'agent'
       || placement.payload.agentConfigurationVersionId !== request.configuration.id || placement.payload.agentId !== request.configuration.agentId
       || request.executionId !== intent.executionId || request.runId !== intent.runId || request.workflowNodeId !== intent.nodeId
-      || request.workingDirectory !== placement.destination.canonicalCwd || request.runtimeDirectory !== placement.destination.managedRuntimeRoot
+      || request.workingDirectory !== placement.destination.canonicalCwd
       || intent.inputDigest !== `sha256:${createHash('sha256').update(canonicalGraphJson(request.input)).digest('hex')}`) throw new Error('Remote launch binding mismatch')
     await this.ports.authorize(intent, placement, 'start')
+    assertRuntimeLeafPath(request.runtimeDirectory, placement)
+    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(intent, placement, request), request.runtimeDirectory, intent, placement)
     this.bindings.set(intent.operationId, { intent, placement })
     await this.ports.journal.accept(intent, this.ports.connection, this.ports.incarnationId)
     const existing = this.residents.get(intent.operationId)
@@ -114,8 +118,10 @@ export class RemoteExecutionHost {
       || !isDeepStrictEqual(status.receipt.intent, raw.intent) || status.receipt.native.sessionId !== raw.session.nativeSessionId) throw new Error('Original native recovery evidence required')
     const placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     if (placement.bindingHash !== raw.intent.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentConfigurationVersionId !== request.configuration.id
-      || request.executionId !== raw.intent.executionId || request.workingDirectory !== placement.destination.canonicalCwd || request.runtimeDirectory !== placement.destination.managedRuntimeRoot) throw new Error('Recovery binding mismatch')
+      || request.executionId !== raw.intent.executionId || request.workingDirectory !== placement.destination.canonicalCwd) throw new Error('Recovery binding mismatch')
     await this.ports.authorize(raw.intent, placement, 'read')
+    assertRuntimeLeafPath(request.runtimeDirectory, placement)
+    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(raw.intent, placement, request), request.runtimeDirectory, raw.intent, placement)
     await this.ports.verifyRecovery(status.receipt, raw.session, raw.evidenceDigest)
     const resolved = this.ports.managers.resolve({ executionId: raw.intent.executionId, agentId: request.configuration.agentId,
       harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })

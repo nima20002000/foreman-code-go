@@ -5,13 +5,17 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@graphql/contracts/node-placement'
+import { JobLogChunkSchema, type JobLogChunk, type JobExecution } from '@graphql/contracts/jobs'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
-  type RemoteOperationStatus, type RemoteOwnerControl,
+  type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
   type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@graphql/contracts/remote-execution'
 
-const JournalSchema = z.object({ schemaVersion: z.literal(1), receipts: z.array(RemoteOperationReceiptSchema),
-  reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128) }).strict()
+import { RemoteJobOperationReceiptSchema, RemoteJobDispatchIntentSchema, RemoteJobOwnerControlSchema, RemoteJobNativeIdentitySchema, RemoteJobTerminalEvidenceSchema,
+  type RemoteJobConnectionIdentity, type RemoteJobOperationReceipt, type RemoteJobDispatchIntent, type RemoteJobOwnerControl, type RemoteJobNativeIdentity, type RemoteJobTerminalEvidence, type RemoteJobOperationStatus } from '@graphql/contracts/remote-job-execution'
+
+const JournalSchema = z.object({ schemaVersion: z.literal(1), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
+  reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
 
 /** Single worker owner; the caller must hold the worker installation's exclusive service lock.
@@ -39,7 +43,7 @@ export class RemoteOperationJournal {
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
         if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-        data = { schemaVersion: 1, receipts: [], reconciliations: [] }
+        data = { schemaVersion: 1, receipts: [], reconciliations: [], jobLogs: [] }
       }
       if (data.receipts.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, lock)
@@ -80,14 +84,14 @@ export class RemoteOperationJournal {
     return task
   }
   private receipt(data: z.infer<typeof JournalSchema>, operationId: string) {
-    const receipt = data.receipts.find(value => value.intent.operationId === operationId)
+    const receipt = data.receipts.find((value): value is RemoteOperationReceipt => !('kind' in value) && value.intent.operationId === operationId)
     if (!receipt) throw new Error('Unknown operation: recovery required')
     return receipt
   }
   async status(operationId: string): Promise<RemoteOperationStatus> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
-    const receipt = this.data.receipts.find(value => value.intent.operationId === operationId)
+    const receipt = this.data.receipts.find((value): value is RemoteOperationReceipt => !('kind' in value) && value.intent.operationId === operationId)
     return receipt ? { status: 'known', receipt: structuredClone(receipt) } : { status: 'unknown', reason: 'journal_absence_requires_reconciliation' }
   }
   accept(intent: DispatchIntent, connection: DeviceConnectionIdentity, workerIncarnationId: string) {
@@ -95,6 +99,7 @@ export class RemoteOperationJournal {
       intent = DispatchIntentSchema.parse(intent)
       const existing = data.receipts.find(value => value.intent.operationId === intent.operationId)
       if (existing) {
+        if ('kind' in existing) throw new Error('Operation subject conflict')
         if (!same(existing.intent, intent)) throw new Error('Operation binding conflict')
         return existing
       }
@@ -232,4 +237,113 @@ export class RemoteOperationJournal {
       data.reconciliations.push(structuredClone(transition)); receipt.intent.owner = transition.nextOwner; receipt.sequence++; return receipt
     })
   }
+  private jobReceipt(data: z.infer<typeof JournalSchema>, operationId: string) {
+    const receipt = data.receipts.find((value): value is RemoteJobOperationReceipt => 'kind' in value && value.intent.operationId === operationId)
+    if (!receipt) throw new Error('Unknown job operation: recovery required')
+    return receipt
+  }
+  async jobStatus(operationId: string): Promise<RemoteJobOperationStatus> {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    const receipt = this.data.receipts.find((value): value is RemoteJobOperationReceipt => 'kind' in value && value.intent.operationId === operationId)
+    return receipt ? { status: 'known', receipt: structuredClone(receipt) } : { status: 'unknown', reason: 'journal_absence_requires_reconciliation' }
+  }
+  jobAccept(raw: RemoteJobDispatchIntent, execution: JobExecution, connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
+    return this.change(data => {
+      const intent = RemoteJobDispatchIntentSchema.parse(raw)
+      const existing = data.receipts.find(value => value.intent.operationId === intent.operationId)
+      if (existing) {
+        if (!('kind' in existing) || !same(existing.intent, intent)) throw new Error('Job operation binding conflict')
+        return existing
+      }
+      if (data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
+      if (data.receipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
+      if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
+      const receipt = RemoteJobOperationReceiptSchema.parse({ schemaVersion: 1, kind: 'job', intent, execution, connection, workerIncarnationId,
+        sequence: 1, observedAt: new Date().toISOString(), phase: 'received', entryAttempted: false, stopFence: false, controls: [], publication: 'pending' })
+      data.receipts.push(receipt); return receipt
+    })
+  }
+  jobReserveEntry(operationId: string) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      if (receipt.stopFence || receipt.phase !== 'received') return { reserved: false, receipt }
+      receipt.entryAttempted = true; receipt.phase = 'native_entry_attempted'; receipt.sequence++; receipt.observedAt = new Date().toISOString()
+      return { reserved: true, receipt }
+    })
+  }
+  jobAcknowledgeLaunch(operationId: string, raw: RemoteJobNativeIdentity) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId), native = RemoteJobNativeIdentitySchema.parse(raw)
+      if (receipt.native) { if (!same(receipt.native, native)) throw new Error('Job native ownership conflict'); return receipt }
+      if (!receipt.entryAttempted || receipt.phase === 'confirmed_terminal') throw new Error('Job entry reservation required')
+      receipt.native = native; receipt.phase = receipt.stopFence ? 'stop_requested' : 'running'; receipt.sequence++; receipt.observedAt = new Date().toISOString(); return receipt
+    })
+  }
+  jobControl(raw: RemoteJobOwnerControl) {
+    return this.change(data => {
+      const command = RemoteJobOwnerControlSchema.parse(raw), receipt = this.jobReceipt(data, command.operationId)
+      const prior = receipt.controls.find(value => value.commandId === command.commandId)
+      if (prior) { if (!same(prior, command)) throw new Error('Job control command conflict'); return { dispatch: false, receipt } }
+      if (command.attemptId !== receipt.intent.attemptId || command.executionId !== receipt.intent.executionId || command.bindingHash !== receipt.intent.bindingHash
+        || !same(command.owner, receipt.intent.owner) || !same(command.subject, receipt.intent.subject)) throw new Error('Stale job control ownership')
+      if (command.native && !same(command.native, receipt.native)) throw new Error('Wrong job native control target')
+      if (receipt.controls.length >= 128) throw new Error('Job control journal full')
+      receipt.controls.push(command); receipt.stopFence = true
+      if (receipt.phase !== 'confirmed_terminal') receipt.phase = 'stop_requested'
+      receipt.sequence++; receipt.observedAt = new Date().toISOString(); return { dispatch: receipt.native !== undefined && !receipt.terminal, receipt }
+    })
+  }
+  jobTerminal(operationId: string, raw: RemoteJobTerminalEvidence) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId), evidence = RemoteJobTerminalEvidenceSchema.parse(raw)
+      if (receipt.terminal) { if (!same(receipt.terminal, evidence)) throw new Error('Job terminal evidence conflict'); return receipt }
+      if (receipt.entryAttempted && !receipt.native) throw new Error('Attempted OCI entry requires original container reconciliation')
+      receipt.terminal = evidence; receipt.phase = 'confirmed_terminal'; receipt.sequence++; receipt.observedAt = new Date().toISOString(); return receipt
+    })
+  }
+  jobPublication(operationId: string, phase: RemoteJobOperationReceipt['publication']) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      if (!receipt.terminal) throw new Error('Physical job closure required before publication')
+      receipt.publication = phase; receipt.sequence++; receipt.observedAt = new Date().toISOString(); return receipt
+    })
+  }
+  jobUncertain(operationId: string, reason: string) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      if (!receipt.terminal) receipt.phase = 'uncertain'
+      receipt.uncertainty = reason.slice(0, 500); receipt.sequence++; receipt.observedAt = new Date().toISOString(); return receipt
+    })
+  }
+
+  jobAppendLog(operationId: string, raw: JobLogChunk) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId), chunk = JobLogChunkSchema.parse(raw)
+      if (chunk.executionId !== receipt.intent.executionId || chunk.attemptId !== receipt.intent.attemptId || Buffer.byteLength(chunk.text) !== chunk.byteSize) throw new Error('Job log binding mismatch')
+      let spool = data.jobLogs.find(value => value.operationId === operationId)
+      if (!spool) { spool = { operationId, acknowledgedSequence: 0, chunks: [] }; data.jobLogs.push(spool) }
+      const prior = spool.chunks.find(value => value.sequence === chunk.sequence)
+      if (prior) { if (!same(prior, chunk)) throw new Error('Job log sequence conflict'); return }
+      if (chunk.sequence !== (spool.chunks.at(-1)?.sequence ?? 0) + 1) throw new Error('Job log sequence gap')
+      if (spool.chunks.length >= 4096 || chunk.byteSize > receipt.execution.acceptedSpec.policy.maxLogChunkBytes
+        || spool.chunks.reduce((sum, value) => sum + value.byteSize, chunk.byteSize) > receipt.execution.acceptedSpec.policy.maxWorkerSpoolBytes) throw new Error('Bounded worker log spool full')
+      spool.chunks.push(chunk)
+    })
+  }
+  async jobPendingLogs(operationId: string) {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    const spool = this.data.jobLogs.find(value => value.operationId === operationId)
+    return structuredClone(spool?.chunks.filter(value => value.sequence > spool.acknowledgedSequence) ?? [])
+  }
+  jobAcknowledgeLog(operationId: string, sequence: number) {
+    return this.change(data => {
+      const spool = data.jobLogs.find(value => value.operationId === operationId)
+      if (!spool || sequence <= spool.acknowledgedSequence) return
+      if (sequence !== spool.acknowledgedSequence + 1 || !spool.chunks.some(value => value.sequence === sequence)) throw new Error('Unpersisted job log acknowledgment')
+      spool.acknowledgedSequence = sequence
+    })
+  }
+
 }
