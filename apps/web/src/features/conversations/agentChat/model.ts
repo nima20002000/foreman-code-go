@@ -80,7 +80,7 @@ export function acceptAgentChatState(previous: AgentChatState | undefined, incom
         if (source === 'receipt' && !incoming.activitySnapshot && !qualificationChanged) return previous
         const activitySnapshot = incoming.activitySnapshot ? reconcileActivitySnapshot(previous.activitySnapshot, incoming.activitySnapshot, incoming.activitySnapshot.scope) : previous.activitySnapshot
         const advanced = previous.activitySnapshot && incoming.activitySnapshot && sourceVectorHasAdvance(previous.activitySnapshot, incoming.activitySnapshot)
-        const messages = advanced ? mergeChatMessages(previous.messages, incoming.messages)
+        const messages = advanced || source === 'read' ? mergeChatMessages(previous.messages, incoming.messages)
           .filter((message) => incoming.messages.some((entry) => entry.id === message.id)) : previous.messages
         if (source === 'receipt' && !qualificationChanged) return { ...previous, messages, ...(activitySnapshot ? { activitySnapshot } : {}) }
         return { ...previous, messages, ...(activitySnapshot ? { activitySnapshot } : {}), capabilities: incoming.capabilities, availability: incoming.availability, responseAvailability: incoming.responseAvailability, qualificationKey: incoming.qualificationKey }

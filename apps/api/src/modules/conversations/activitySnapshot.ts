@@ -34,7 +34,7 @@ export function agentActivitySnapshot(loaded: State): ActivitySnapshotV1 {
       phase: 'active', outcome: null, delivery: null, evidence: activity.status === 'unknown' ? 'unknown' : 'confirmed', startedAt: null })
   }
   return ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope, revision: String(row.revision),
-    sourceRevisions: [{ source: 'scope', id: row.id, revision: String(row.revision) }, ...(loaded.commandActivity?.sourceRevisions ?? []), ...messageSourceRevisions(loaded.messages),
+    sourceRevisions: [{ source: 'scope', id: row.id, revision: String(row.revision) }, ...(loaded.commandActivity?.sourceRevisions ?? []), ...messageSourceRevisions(loaded.messages), ...(loaded.fileSourceRevisions ?? []),
       ...(loaded.publicationReceipts ?? []).flatMap((receipt) => [{ source: 'publication', id: receipt.receiptId, revision: '0' },
         { source: 'file', id: receipt.fileId, revision: receipt.fileActivityRevision }])],
     ...projectActivityStatus({ work, queued: turns.filter((turn) => turn.delivery === 'queued').map((turn) => ref(turn.requestId)),

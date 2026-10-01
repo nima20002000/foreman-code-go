@@ -4,8 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
 import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
 
-import { activityScopeKey, applyCanonicalActivityItems, reconcileActivitySnapshot, sourceVectorIsStale } from '../conversations/agentChat/activityMerge'
-import { mergeChatMessages } from '../conversations/agentChat/model'
+import { newerOperatorConversationState as newer } from './operatorConversationReadback'
 import { useConversationDraftStore } from '../conversations'
 import { ChatAttachmentControl, useConversationAttachments } from '../attachments'
 import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
@@ -17,7 +16,6 @@ import { ApiError } from '../../shared/api/client'
 import { deleteOperatorConversation, restoreOperatorConversation, listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
 import { createStreamReadback } from '../../shared/api/streamReadback'
 import { subscribeOperatorChat, type OperatorChatConnection } from '../../shared/api/operatorChatStream'
-import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
 import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../shared/api/sessionBoundary'
 import { chatStoragePrefix, identityEpoch } from '../../shared/api/protectedChatStorage'
@@ -46,19 +44,6 @@ import './operatorChat.css'
 const listKey = ['operator-chat', 'summaries'] as const
 const detailKey = (id: string) => ['operator-chat', 'conversation', id] as const
 type Summaries = Awaited<ReturnType<typeof listOperatorConversationSummaries>>
-function newer(current: OperatorConversationState | undefined, next: OperatorConversationState, source: 'read' | 'receipt' = 'receipt'): OperatorConversationState {
-  if (current?.activitySnapshot && next.activitySnapshot
-    && (activityScopeKey(current.activitySnapshot.scope) !== activityScopeKey(next.activitySnapshot.scope) || sourceVectorIsStale(current.activitySnapshot, next.activitySnapshot))) return current
-  const currentRevision = current?.activitySnapshot?.revision ?? String(current?.revision ?? 0)
-  const nextRevision = next.activitySnapshot?.revision ?? String(next.revision)
-  const accepted = current && (current.activitySnapshot && !next.activitySnapshot || BigInt(currentRevision) >= BigInt(nextRevision)) ? current : next
-  // A recent server window may move forward while this tab is reading earlier
-  // activity. Retain observed records in Query, merging only accepted revisions.
-  const activitySnapshot = next.activitySnapshot ? reconcileActivitySnapshot(current?.activitySnapshot, next.activitySnapshot, current?.activitySnapshot?.scope ?? next.activitySnapshot.scope) : current?.activitySnapshot
-  const qualification = source === 'read' ? next : current ?? next
-  return { ...accepted, ...(activitySnapshot ? { activitySnapshot } : {}), qualificationKey: qualification.qualificationKey, responseAvailability: qualification.responseAvailability, messages: mergeChatMessages(next.messages, accepted.messages).slice(-100), activities: applyCanonicalActivityItems(mergeOperatorActivity(current?.activities ?? [], next.activities ?? []), activitySnapshot),
-    activityNextCursor: current?.activityNextCursor !== undefined ? current.activityNextCursor : next.activityNextCursor }
-}
 function currentSession(generation: number): boolean {
   return !sessionIsSwitching() && sessionGeneration() === generation
 }

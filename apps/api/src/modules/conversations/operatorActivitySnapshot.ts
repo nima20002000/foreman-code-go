@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type PendingNativeInteraction, type WorkRef, type WorkSummary } from '@graphql/contracts'
+import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type ActivitySourceRevision, type PendingNativeInteraction, type WorkRef, type WorkSummary } from '@graphql/contracts'
 import { readActivityCommands } from './activityCommands.js'
 import { conversationActivityId, conversationActivityKey, publicActivityProvenance } from './activityIdentity.js'
 import { chatInteractionSummary, conversationPublicationItems, conversationTextItems, messageSourceRevisions } from './activityItems.js'
@@ -48,12 +48,13 @@ export async function readOperatorActivitySnapshot(pool: pg.Pool, query: Queryab
     from (select *,sum(octet_length(record::text)) over(order by sequence desc) as bytes from
       (select * from operator_conversation_messages where conversation_id=$1 order by sequence desc limit 100) recent) bounded
     where bytes <= 262144 order by sequence`, [id])).rows
-  const messages = await hydrateMessageAttachments(query, id, messageRows.map((entry) => entry.record))
+  const fileSourceRevisions: ActivitySourceRevision[] = []
+  const messages = await hydrateMessageAttachments(query, id, messageRows.map((entry) => entry.record), (source) => fileSourceRevisions.push(source))
   const publicationReceipts = await readConversationPublicationReceipts(query, id, messages.filter((message) => message.role === 'user').map((message) => message.id))
   const scope = { kind: 'operator_chat' as const, conversationId: id }
   const commandActivity = await readActivityCommands(query, id, scope, row.revision)
   return ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope, revision: row.revision,
-    sourceRevisions: [{ source: 'scope', id, revision: row.revision }, ...commandActivity.sourceRevisions, ...messageSourceRevisions(messages), ...publicationReceipts.flatMap((receipt) => [{ source: 'publication', id: receipt.receiptId, revision: '0' },
+    sourceRevisions: [{ source: 'scope', id, revision: row.revision }, ...commandActivity.sourceRevisions, ...messageSourceRevisions(messages), ...fileSourceRevisions, ...publicationReceipts.flatMap((receipt) => [{ source: 'publication', id: receipt.receiptId, revision: '0' },
       { source: 'file', id: receipt.fileId, revision: receipt.fileActivityRevision }])],
     ...projectActivityStatus({ work, queued: [], latest: latest ? ref(latest.request_id) : null }),
     ...(unfinished.hasMore ? { hasMoreActiveWork: true } : {}),

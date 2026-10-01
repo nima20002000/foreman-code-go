@@ -90,13 +90,16 @@ describe('FIL-10 attachment contracts and receipt compatibility', () => {
 })
 
 describe('FIL-10 message metadata and lifecycle adapter', () => {
-  it('keeps old text-only records and readback unchanged without querying files', async () => {
+  it('keeps text-only readback unchanged without looking up file metadata', async () => {
     const { db, query } = queryable()
     const legacy = { id: 'message', conversationId: 'chat', role: 'user', content: 'hello' }
     expect(message()).toEqual(legacy)
     await validateMessageAttachments(db, 'chat', [])
     expect(await hydrateMessageAttachments(db, 'chat', [legacy])).toEqual([legacy])
-    expect(query).not.toHaveBeenCalled()
+    // User receipts remain eligible for upload-free output recovery, even without input pins.
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query.mock.calls.some(([sql]) => sql.includes('jsonb_to_recordset'))).toBe(false)
+    expect(query.mock.calls.every(([sql]) => sql.includes('operator_conversation_turns'))).toBe(true)
   })
   it('stores pins only, then returns metadata for the pinned revision, never the newer head', async () => {
     const { db, query } = queryable()
