@@ -37,9 +37,9 @@ export const AcceptedChatResponseControlSchema = z.object({
     requestId: z.string().min(1), requestType: z.string().min(1) }).strict(),
   choice: z.object({ optionId: z.string().min(1), semantic: z.string().min(1) }).strict(),
 }).strict().superRefine((value, context) => {
-  if (!['agent_chat', 'selected_run_chat'].includes(value.scope.kind)
+  if (!['operator_chat', 'agent_chat', 'selected_run_chat'].includes(value.scope.kind)
     || !('conversationId' in value.scope) || value.scope.conversationId !== value.conversationId) {
-    context.addIssue({ code: 'custom', message: 'Control metadata must retain the exact Agent conversation scope.' })
+    context.addIssue({ code: 'custom', message: 'Control metadata must retain the exact conversation scope.' })
   }
 })
 export type AcceptedChatResponseControl = z.infer<typeof AcceptedChatResponseControlSchema>
