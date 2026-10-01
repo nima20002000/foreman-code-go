@@ -58,6 +58,8 @@ export type ActivityItem = z.infer<typeof ActivityItemSchema>
 export const ActivitySnapshotV1Schema = z.object({
   schemaVersion: z.literal(1), scope: ActivityScopeSchema, revision: ActivityRevisionSchema,
   active: z.array(WorkSummarySchema), queued: z.array(WorkRefSchema), latest: WorkRefSchema.nullable(),
+  /** The active array is a bounded recovery window when additional unfinished work is known. */
+  hasMoreActiveWork: z.literal(true).optional(),
   pendingInteractions: z.array(InteractionSummarySchema), activities: z.array(ActivityItemSchema),
   page: z.object({ before: z.string().nullable(), nextCursor: z.string().nullable(), hasMore: z.boolean() }).strict(),
 }).strict()
