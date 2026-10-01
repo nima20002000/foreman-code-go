@@ -8,7 +8,7 @@ import { generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
 const require = createRequire(new URL('../../api/package.json', import.meta.url));
 const { tsImport } = await import(require.resolve('tsx/esm/api'));
 const { enrollWorker, boundedPost } = await tsImport('../src/enrollment.mjs', import.meta.url);
-const { loadOrCreateWorkerIdentity, publicKeyFingerprint, mainIdentityProofMessage, pairingProof } = await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
+const { loadOrCreateWorkerIdentity, publicKeyFingerprint, mainEnrollmentProofMessage, mainIdentityProofMessage, pairingProof } = await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'worker-enroll-'));
@@ -28,7 +28,7 @@ test('fresh selected-main proof precedes grant; persisted credential never enter
     calls.push(url);
     if (url.endsWith('/device/challenge')) {
       assert.equal(body.grant, undefined);
-      return { request: body, mainApplicationVersion: '0.1.0', mainPublicKey: f.publicKey, mainPublicKeyFingerprint: f.input.mainPublicKeyFingerprint, signature: sign(null, Buffer.from(mainIdentityProofMessage(body, '0.1.0')), f.key.privateKey).toString('base64url') };
+      return { request: body, mainApplicationVersion: '0.1.0', mainPublicKey: f.publicKey, mainPublicKeyFingerprint: f.input.mainPublicKeyFingerprint, signature: sign(null, Buffer.from(mainEnrollmentProofMessage(body, '0.1.0')), f.key.privateKey).toString('base64url') };
     }
     assert.equal(verify(null, Buffer.from(pairingProof(body)), f.identity.publicKey, Buffer.from(body.signature, 'base64url')), true);
     return { registration: { mainId: f.input.mainId, deviceId: randomUUID(), workerInstallationId: f.identity.workerInstallationId, publicKeyFingerprint: f.identity.publicKeyFingerprint, keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'] }, credential: 'b'.repeat(64), expiresAt: '2026-12-01T00:00:00.000Z' };
@@ -43,6 +43,17 @@ test('fresh selected-main proof precedes grant; persisted credential never enter
 test('forged main proof blocks before sending grant or persisting pairing', async (t) => {
   const f = await fixture(t); let calls = 0;
   await assert.rejects(enrollWorker({ ...f, post: async () => { calls++; return {}; } }), /wrong_main_proof/);
+  assert.equal(calls, 1);
+  await assert.rejects(readFile(join(f.stateDirectory, 'pairing.json')), { code: 'ENOENT' });
+});
+
+test('connection-purpose proof cannot authorize enrollment or release its grant', async (t) => {
+  const f = await fixture(t); let calls = 0;
+  await assert.rejects(enrollWorker({ ...f, post: async (_url, body) => {
+    calls++;
+    const request = { ...body, audience: 'graphql-worker-main-v1' };
+    return { request, mainApplicationVersion: '0.1.0', mainPublicKey: f.publicKey, mainPublicKeyFingerprint: f.input.mainPublicKeyFingerprint, signature: sign(null, Buffer.from(mainIdentityProofMessage(request, '0.1.0')), f.key.privateKey).toString('base64url') };
+  } }), /wrong_main_proof/);
   assert.equal(calls, 1);
   await assert.rejects(readFile(join(f.stateDirectory, 'pairing.json')), { code: 'ENOENT' });
 });

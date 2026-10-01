@@ -1,7 +1,7 @@
 import { randomBytes, sign } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
 import { WorkerEnrollmentInputSchema, DevicePairingResultSchema } from '../../../packages/contracts/src/deviceIdentity.ts';
-import { pairingProof, verifyMainIdentityProof, persistWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
+import { pairingProof, verifyMainEnrollmentProof, persistWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { WorkerError } from './diagnostics.mjs';
 
 export async function boundedPost(url, body, fetchRequest = fetch) {
@@ -27,10 +27,10 @@ export async function enrollWorker({ stateDirectory, identity, enrollmentFile, a
   const endpoint = new URL(enrollment.endpoint);
   if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.pathname !== '/device/connect' || endpoint.search || endpoint.hash) throw new WorkerError('enrollment_endpoint_invalid');
   const http = new URL(endpoint); http.protocol = 'https:';
-  const proofRequest = { audience: 'graphql-worker-main-v1', mainId: enrollment.mainId, workerInstallationId: identity.workerInstallationId, nonce: randomBytes(32).toString('base64url'), protocolVersion: 1, workerApplicationVersion: appVersion };
+  const proofRequest = { audience: 'graphql-worker-main-enrollment-v1', mainId: enrollment.mainId, workerInstallationId: identity.workerInstallationId, nonce: randomBytes(32).toString('base64url'), protocolVersion: 1, workerApplicationVersion: appVersion };
   http.pathname = '/device/challenge';
   const proof = await post(http.href, proofRequest);
-  if (!await verifyMainIdentityProof(proof, proofRequest, enrollment.mainPublicKeyFingerprint)) throw new WorkerError('wrong_main_proof');
+  if (!await verifyMainEnrollmentProof(proof, proofRequest, enrollment.mainPublicKeyFingerprint)) throw new WorkerError('wrong_main_proof');
   // Grant and signed enrollment are sent only after a fresh pinned-key proof.
   const request = { mainId: enrollment.mainId, workerInstallationId: identity.workerInstallationId, publicKey: identity.publicKey, grant: enrollment.grant, requestId: enrollment.requestId };
   const signature = sign(null, Buffer.from(pairingProof(request)), identity.privateKey).toString('base64url');
