@@ -36,6 +36,12 @@ export function revokeDevice(registration: DeviceRegistration): DeviceRegistrati
   return { ...registration, status: 'revoked', authorizationRevision: registration.authorizationRevision + 1 }
 }
 
+export const DeviceTlsTrustSchema = z.object({
+  certificatePem: z.string().min(1).max(8192),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
+export type DeviceTlsTrust = z.infer<typeof DeviceTlsTrustSchema>
+
 export const WorkerPairingConfigurationSchema = z.object({
   formatVersion: z.literal(1), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
   keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
@@ -45,6 +51,7 @@ export const WorkerPairingConfigurationSchema = z.object({
       && (url.protocol === 'wss:' || (url.protocol === 'ws:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)))
   }, 'Use verified WSS or an explicit loopback carrier without URL credentials, query or fragment.'),
   mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  tlsTrust: DeviceTlsTrustSchema.optional(),
   credential: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime(),
 }).strict()
 export type WorkerPairingConfiguration = z.infer<typeof WorkerPairingConfigurationSchema>

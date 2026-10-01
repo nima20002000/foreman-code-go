@@ -127,6 +127,10 @@ footer p { margin: 0; font-size: .8125rem; }
     service_confirmation_required: 'Confirm the reviewed plan to continue.', installation_invalid: 'The installation is not complete or is not in the expected location. Reinstall from the approved package.',
     private_directory_required: 'A required folder is not private to this user. Fix its permissions and retry.', companion_command_failed: 'The companion could not complete that. Retry, or reopen it from the installed launcher.',
     session_expired: 'This setup page expired. Reopen it from the installed launcher.', session_rejected: 'This setup page is no longer valid. Reopen it from the installed launcher.',
+    setup_code_invalid: 'The pairing code is not valid. Copy the full current code from the main and paste it again.',
+    setup_code_identity_mismatch: 'This code belongs to another computer. Get this companion\'s request code and approve it on the main to obtain a matching code.',
+    setup_code_expired: 'The pairing code expired. Ask for a new approval on the main.',
+    setup_code_cancelled: 'Pairing was cancelled. Retry with the original pending code; no new identity is needed.',
     already_paired: 'This computer is already paired.', pairing_in_progress: 'Pairing is already in progress.', enrollment_code_invalid: 'That is not a valid private pairing code.',
     wrong_main_proof: 'The pairing code did not come from the expected main. Create a new one.', pairing_main_unreachable: 'The main could not be reached. Check the network and retry.',
     pairing_outcome_unknown: 'The pairing result is unknown. Check status, then retry with the same code.', pairing_http_rejected: 'The main rejected the pairing code. It may have expired; create a new one.' };
@@ -173,7 +177,7 @@ footer p { margin: 0; font-size: .8125rem; }
       showFacts(report);
       const service = report.service || {};
       $('step4').hidden = !paired; $('step4').dataset.done = String(paired && service.active === true);
-      $('enable').textContent = service.active ? 'Reinstall and restart background service' : 'Confirm and start background service';
+      $('enable').textContent = service.active ? 'Confirm background service configuration' : 'Confirm and start background service';
       $('next').textContent = !paired ? ''
         : service.active ? 'The background service is running. Pairing and the service do not by themselves confirm that workflows or harnesses are ready. You can close this page; the worker keeps running.'
         : service.userManagerAvailable ? 'Paired. The background service is not running. Use "Run in background" above if you want it to keep running.'

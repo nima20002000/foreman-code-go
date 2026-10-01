@@ -207,6 +207,14 @@
     "./device-setup-node": {
       "types": "./dist/deviceSetupNode.d.ts",
       "import": "./dist/deviceSetupNode.js"
+    },
+    "./device-tls-node": {
+      "types": "./dist/deviceTlsNode.d.ts",
+      "import": "./dist/deviceTlsNode.js"
+    },
+    "./execution-authority": {
+      "types": "./dist/executionAuthority.d.ts",
+      "import": "./dist/executionAuthority.js"
     }
   },
   "scripts": {
