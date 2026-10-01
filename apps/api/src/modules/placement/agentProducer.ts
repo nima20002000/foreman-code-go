@@ -58,7 +58,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         if (selection.instance.instanceRevision !== saved!.instanceRevision || !sameWorkflowValue(selection.instance.configuration, config.harness)
           || selection.instance.driverId !== config.harness.harness) this.conflict()
         prepared.push({ selection, pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
-          nodeId: node.id, hostRef: saved!.hostRef, ...(node.name ? { labelAtAcceptance: node.name } : {}), registration: root.registration,
+          nodeId: node.id, hostRef: saved!.hostRef, registration: root.registration,
           destination: { canonicalProjectRoot: root.binding.canonicalPath, canonicalCwd: posix.join(root.binding.canonicalPath, saved!.relativeCwd),
             managedRuntimeRoot: posix.join(policy.managedRuntimeRoot, 'native-executions'),
             directoryIdentityHash: directoryIdentityHash(saved!.hostRef, root.binding.filesystem.device, root.binding.filesystem.inode),
