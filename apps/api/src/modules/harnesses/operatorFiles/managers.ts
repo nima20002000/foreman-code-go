@@ -24,7 +24,7 @@ export function productionOperatorManagers(input: {
   workingDirectory: string
   endpointHost: string
   appMcpEndpoint: string
-  processRegistry: NativeProcessRegistry
+  processRegistry: Pick<NativeProcessRegistry, 'scope'>
   responseJournal: NativeResponseJournal
   managers: Map<string, NativeHarnessSessionManager>
   nativeFactories?: NativeHarnessFactories

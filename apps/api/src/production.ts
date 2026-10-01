@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createWorkflowNativeCaptureChannel } from './modules/interactions/workflowNativeCapture.js'
 import { createReviewNativeCaptureChannel } from './modules/interactions/reviewNativeCapture.js'
 import { ReviewNativeProofServices } from './modules/interactions/reviewNativeProof.js'
@@ -51,6 +52,7 @@ import { HarnessQualificationRegistry } from './modules/harnesses/qualification/
 import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
 import { clearQualificationGate, installQualificationGate } from './modules/harnesses/qualification/gate.js'
 import type { QualificationSuite } from './modules/harnesses/qualification/types.js'
+import { withQualificationIdentity } from './modules/harnesses/qualification/identity.js'
 import type { CompatibilityHarness } from '@graphql/contracts'
 import { NativeHarnessFactories } from './modules/harnesses/runtimeFactory.js'
 import type { ProductionHarnessInfrastructure } from './modules/harnesses/productionInfrastructure.js'
@@ -106,11 +108,12 @@ export function buildProductionApp(
   if (infrastructure?.mode === 'replay' && (!infrastructure.auxiliary
     || !infrastructure.auxiliary.compatibility || !infrastructure.auxiliary.plugins
     || !infrastructure.auxiliary.mcp?.codex || !infrastructure.auxiliary.mcp.opencode
-    || !infrastructure.auxiliary.command || qualificationSuites)) {
+    || !infrastructure.auxiliary.command || !infrastructure.auxiliary.recovery || qualificationSuites)) {
     throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay must inject settings and probes and cannot run installed CLI qualification.', 500)
   }
   const responseJournal = new NativeResponseJournal(resolve(config.harnesses.workspaceRoot, 'native-response-receipts'))
-  const processRegistry = new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
+  const processRegistry = infrastructure?.auxiliary?.recovery
+    ?? new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
   const access = new PostgresAccessService(database.pool)
   const commands = new PostgresCommandCoordinator(database.pool)
   // Producer/consumer halves are installed during construction. Neither HTTP,
@@ -132,11 +135,16 @@ export function buildProductionApp(
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
   const qualificationRepository = new HarnessQualificationRepository(database.pool)
-  const qualificationRegistry = qualificationSuites ? new HarnessQualificationRegistry(qualificationRepository, {
-    codex: qualificationSuites.codex.revision, opencode: qualificationSuites.opencode.revision,
+  const identity = infrastructure?.qualificationIdentity
+  const selectedSuites = qualificationSuites && identity ? {
+    codex: withQualificationIdentity(qualificationSuites.codex, identity.registry, (input) => identity.pin('codex', input)),
+    opencode: withQualificationIdentity(qualificationSuites.opencode, identity.registry, (input) => identity.pin('opencode', input)),
+  } : qualificationSuites
+  const qualificationRegistry = selectedSuites ? new HarnessQualificationRegistry(qualificationRepository, {
+    codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision,
   }) : undefined
-  const harnessQualifications = qualificationSuites && qualificationRegistry ? new HarnessQualificationService(
-    qualificationRepository, qualificationRegistry, qualificationSuites,
+  const harnessQualifications = selectedSuites && qualificationRegistry ? new HarnessQualificationService(
+    qualificationRepository, qualificationRegistry, selectedSuites,
     { codex: config.harnesses.codexBinary, opencode: config.harnesses.openCodeBinary }, commands, settings,
     undefined, (harness) => harnessCompatibility.refreshAfterQualification(harness),
   ) : undefined
@@ -149,7 +157,13 @@ export function buildProductionApp(
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
-  const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal }, infrastructure)
+  const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
+    auxiliaryRecovery: (role) => processRegistry.scope(`${role}:${infrastructure?.mode === 'replay' ? infrastructure.codex.id() : randomUUID()}`),
+    admitRecovery: (recovery) => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+    closeRecovery: async (recovery) => {
+      if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
+    },
+  }, infrastructure)
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary, nativeFactories)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
   const nativeConfigurations = new NativeConfigurationService(
@@ -349,7 +363,7 @@ export function buildProductionApp(
         harness: input.harness, role: 'diagnostics', workingDirectory: input.workingDirectory,
         ownerAgentId: 'mcp-inspection', appMcpAccess: 'none',
       })
-      try { return await inspector.inspect(input) } finally { await manager.dispose() }
+      try { return await inspector.inspect(input) } finally { await nativeFactories.disposeAuxiliary(manager) }
     },
   }, appMcpEndpoint)
   const operatorExtensions = createOperatorExtensions({
@@ -388,6 +402,7 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
       { name: 'harness qualification gate', run: async () => { if (qualificationRegistry) clearQualificationGate() } },
@@ -407,6 +422,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'GraphQL MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Ordinary restart must persist the exact retained Worker/reviewer

@@ -43,12 +43,18 @@ export type NativeFactoryInfrastructure =
 export class NativeHarnessFactories {
   readonly instances = new HarnessInstanceRegistry(localHarnessDrivers)
   private readonly configurations = new Map<string, ConfiguredHarnessInstance>()
+  private auxiliaryClosing = false
+  private readonly auxiliaries = new Map<NativeHarnessSessionManager, { recovery: NativeProcessRecovery | undefined; admitted: boolean; admissionError?: unknown; disposal?: Promise<void> }>()
+  private readonly closedAuxiliaries = new WeakSet<NativeHarnessSessionManager>()
   private readonly inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
   constructor(private readonly config: {
     codexBinary: string
     openCodeBinary: string
     appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
+    auxiliaryRecovery?: (role: 'diagnostics' | 'qualification') => NativeProcessRecovery
+    admitRecovery?: (recovery: NativeProcessRecovery) => void
+    closeRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
   }, private readonly infrastructure: NativeFactoryInfrastructure = { mode: 'native' }) {
     if (infrastructure.mode === 'native' && infrastructure.codex?.mode === 'replay') {
       throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay dependencies require the complete replay environment.', 500)
@@ -78,16 +84,20 @@ export class NativeHarnessFactories {
       && (input.appMcpAccess !== 'none' || input.credentialEnvironmentVariable)) {
       throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This runtime role has no application MCP credentials.', 403)
     }
+    const auxiliary = input.role === 'diagnostics' || input.role === 'qualification'
+    if (auxiliary && this.auxiliaryClosing) throw new DomainError(
+      'NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)
+    const recovery = input.processRecovery ?? (auxiliary ? this.config.auxiliaryRecovery?.(input.role as 'diagnostics' | 'qualification') : undefined)
     let result: NativeHarnessAllocationResult
     if (input.harness === 'codex') {
       const manager = new CodexAppServerSessionManager(this.config.codexBinary, undefined, undefined,
-        input.processRecovery, input.appMcpAccess, input.chatFiles, this.infrastructure.codex)
+        recovery, input.appMcpAccess, input.chatFiles, this.infrastructure.codex)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
-    } else {
+    } else if (input.harness === 'opencode') {
       const options: ManagedOpenCodeServerOptions = {
         binary: this.config.openCodeBinary, workingDirectory: input.workingDirectory,
         ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
-        ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
+        ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
       }
@@ -102,19 +112,77 @@ export class NativeHarnessFactories {
         ...(this.infrastructure.openCodeClient ? { clientFactory: this.infrastructure.openCodeClient } : {}),
       })
       result = { harness: 'opencode', manager, inspector: openCodeMcpInspectorAdapter(manager) }
+    } else {
+      throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'The selected harness driver is unavailable.', 503)
+    }
+    if (auxiliary) {
+      this.auxiliaries.set(result.manager, { recovery, admitted: false })
+      const inspector = result.inspector
+      result.inspector = { inspect: (request) => { this.admitAuxiliary(result.manager); return inspector.inspect(request) } }
     }
     this.inspectors.set(result.manager, result.inspector)
     return result
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
-    const { manager } = this.allocate({ harness: configuration.harness, role: 'qualification',
+    const allocation = this.allocate({ harness: configuration.harness, role: 'qualification',
       workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
       ...(configuration.harness === 'opencode' && configuration.advanced
         ? { advancedConfiguration: configuration.advanced } : {}),
     })
-    try { return await manager.qualifyConfiguration(configuration, workingDirectory, signal) }
-    finally { await manager.dispose() }
+    try {
+      this.admitAuxiliary(allocation.manager)
+      if (allocation.harness === 'codex' && configuration.harness === 'codex') {
+        return await allocation.manager.qualifyConfiguration(configuration, workingDirectory, signal)
+      }
+      if (allocation.harness === 'opencode' && configuration.harness === 'opencode') {
+        return await allocation.manager.qualifyConfiguration(configuration, workingDirectory, signal)
+      }
+      throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The configuration differs from its allocated driver.', 409)
+    } finally { await this.disposeAuxiliary(allocation.manager) }
+  }
+
+  stopAuxiliaries(): void {
+    this.auxiliaryClosing = true
+    // Disposal aborts each real adapter's in-flight diagnostic requests. The
+    // drain/dispose phase joins these same retained attempts and reports failures.
+    for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(() => undefined)
+  }
+
+  admitAuxiliary(manager: NativeHarnessSessionManager): void {
+    if (this.auxiliaryClosing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)
+    const owned = this.auxiliaries.get(manager)
+    if (!owned) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'Only diagnostic and qualification owners use this admission boundary.', 403)
+    if (owned.admissionError) throw owned.admissionError
+    if (!owned.admitted) {
+      // Retain ownership even when write-ahead reservation fails partway through.
+      owned.admitted = true
+      try { if (owned.recovery && this.config.admitRecovery) this.config.admitRecovery(owned.recovery) }
+      catch (error) { owned.admissionError = error; throw error }
+    }
+  }
+
+  disposeAuxiliary(manager: NativeHarnessSessionManager): Promise<void> {
+    if (this.closedAuxiliaries.has(manager)) return Promise.resolve()
+    const owned = this.auxiliaries.get(manager)
+    if (!owned) return Promise.reject(new DomainError(
+      'HARNESS_ROLE_AUTHORITY_INVALID', 'Only diagnostic and qualification owners use this cleanup boundary.', 403))
+    if (owned.disposal) return owned.disposal
+    const attempt = Promise.resolve().then(async () => {
+      await manager.dispose!()
+      if (owned.admitted && owned.recovery && this.config.closeRecovery) await this.config.closeRecovery(owned.recovery)
+      this.auxiliaries.delete(manager)
+      this.closedAuxiliaries.add(manager)
+    })
+    owned.disposal = attempt
+    void attempt.catch(() => { if (owned.disposal === attempt) delete owned.disposal })
+    return attempt
+  }
+
+  async disposeAuxiliaries(): Promise<void> {
+    const results = await Promise.allSettled([...this.auxiliaries.keys()].map((manager) => this.disposeAuxiliary(manager)))
+    const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length) throw new AggregateError(errors, 'Native diagnostic/qualification cleanup was incomplete.')
   }
 
   inspector(manager: NativeHarnessSessionManager): NativeMcpInspector {

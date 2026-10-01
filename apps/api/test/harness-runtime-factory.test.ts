@@ -57,4 +57,44 @@ describe('native runtime construction', () => {
     expect(() => factories.allocate({ ...input, configured: { ...input.configured,
       configuration: { ...input.configured.configuration, reasoningEffort: 'high' } } })).toThrow('immutable')
   })
+
+  it('retains failed diagnostic recovery closure and retries the same owner after admission stops', async () => {
+    const recovery = { root: '/unused-registry', owner: 'diagnostics:recorded' }
+    const closeRecovery = vi.fn<(scope: typeof recovery) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('Closure is unconfirmed.')).mockResolvedValue(undefined)
+    const server = { expectedVersion: '1.18.31', ownerAgentId: 'diagnostics',
+      ensure: vi.fn(), request: vi.fn(), dispose: vi.fn().mockResolvedValue(undefined) }
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused',
+      auxiliaryRecovery: () => recovery, closeRecovery }, { mode: 'native', openCodeServer: () => server })
+    const allocation = factories.allocate({ harness: 'opencode', role: 'diagnostics',
+      ownerAgentId: 'diagnostics', workingDirectory: '/project', appMcpAccess: 'none' })
+    factories.admitAuxiliary(allocation.manager)
+    await expect(factories.disposeAuxiliary(allocation.manager)).rejects.toThrow('unconfirmed')
+    factories.stopAuxiliaries()
+    expect(() => factories.allocate({ harness: 'codex', role: 'qualification', ownerAgentId: 'qualification',
+      workingDirectory: '/project', appMcpAccess: 'none' })).toThrow('shutting down')
+    await factories.disposeAuxiliaries()
+    expect(closeRecovery).toHaveBeenCalledTimes(2)
+    expect(closeRecovery.mock.calls.every(([scope]) => scope === recovery)).toBe(true)
+    expect(server.dispose).toHaveBeenCalledTimes(1)
+    await factories.disposeAuxiliaries()
+    expect(closeRecovery).toHaveBeenCalledTimes(2)
+  })
+
+  it('retains a partially failed reservation and fences native work until cleanup succeeds', async () => {
+    const recovery = { root: '/unused-registry', owner: 'diagnostics:partial' }
+    const admitRecovery = vi.fn(() => { throw new Error('Reservation failed partway through.') })
+    const closeRecovery = vi.fn<(scope: typeof recovery) => Promise<void>>().mockResolvedValue(undefined)
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused',
+      auxiliaryRecovery: () => recovery, admitRecovery, closeRecovery })
+    const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics', ownerAgentId: 'diagnostics',
+      workingDirectory: '/project', appMcpAccess: 'none' })
+    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow('Reservation failed')
+    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow('Reservation failed')
+    expect(admitRecovery).toHaveBeenCalledTimes(1)
+    await factories.disposeAuxiliary(allocation.manager)
+    expect(closeRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
+    await factories.disposeAuxiliary(allocation.manager)
+    expect(closeRecovery).toHaveBeenCalledTimes(1)
+  })
 })
