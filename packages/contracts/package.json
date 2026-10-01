@@ -79,6 +79,14 @@
     "./interaction-activity": {
       "types": "./dist/interaction-activity.d.ts",
       "import": "./dist/interaction-activity.js"
+    },
+    "./device-connection": {
+      "types": "./dist/deviceConnection.d.ts",
+      "import": "./dist/deviceConnection.js"
+    },
+    "./node-placement": {
+      "types": "./dist/nodePlacement.d.ts",
+      "import": "./dist/nodePlacement.js"
     }
   },
   "scripts": {

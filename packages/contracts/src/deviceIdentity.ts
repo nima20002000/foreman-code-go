@@ -35,3 +35,15 @@ export function revokeDevice(registration: DeviceRegistration): DeviceRegistrati
   if (registration.status === 'revoked') return registration
   return { ...registration, status: 'revoked', authorizationRevision: registration.authorizationRevision + 1 }
 }
+
+export const WorkerPairingConfigurationSchema = z.object({
+  formatVersion: z.literal(1), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
+  keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
+  endpoint: z.url().refine(value => new URL(value).protocol === 'wss:' || (new URL(value).protocol === 'ws:' && ['127.0.0.1', '[::1]', 'localhost'].includes(new URL(value).hostname)), 'Use verified WSS or an explicit loopback carrier.'),
+  mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  credential: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime(),
+}).strict()
+export type WorkerPairingConfiguration = z.infer<typeof WorkerPairingConfigurationSchema>
+export const DevicePairingGrantInputSchema = z.object({ workerInstallationId: z.uuid(), publicKey: z.string().max(1024),
+  expectedAuthorizationRevision: z.number().int().positive().optional(), commandId: z.string().min(8).max(200), expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/), scopes: z.array(DeviceScopeSchema).min(1).max(2) }).strict()
+export const DeviceRevokeInputSchema = z.object({ deviceId: z.uuid(), expectedRevision: z.number().int().positive(), commandId: z.string().min(8).max(200) }).strict()
