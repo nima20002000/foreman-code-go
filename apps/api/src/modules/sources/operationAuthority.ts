@@ -8,6 +8,7 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import { DomainError } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { SourceAttemptAuthority } from './executionHosts.js'
+import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import type { MaterializationAttempt } from './ports.js'
 
@@ -60,7 +61,7 @@ export class PostgresSourceOperationAuthority {
         || root.binding.mainId !== binding.mainId || root.binding.workerInstallationId !== binding.workerInstallationId || !root.registration
         || root.registration.keyRevision !== binding.keyRevision || root.registration.authorizationRevision !== binding.authorizationRevision)
         throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not bound to its original current authenticated device.', 409)
-      await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+      if (request.operation !== 'sources.release') await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
       const snapshot = (await sql.query<{ availability: string }>('select availability from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
         [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
       if (request.operation !== 'sources.release' && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
@@ -70,10 +71,10 @@ export class PostgresSourceOperationAuthority {
           [receipt!.materializationId, attempt.executionId, attempt.attemptId, allocated.operation_id])).rows[0]
         record = SourceMaterializationRecordSchema.parse(stored?.record)
         if (!isDeepStrictEqual(record, request.record)) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The submitted record is not the actual immutable Main materialization.', 409)
-        if (record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal, record, record.finalDispatchBindingHash)
+        if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal, record, record.finalDispatchBindingHash)
         if (request.operation === 'sources.release') {
-          physicalClosureConfirmed = await this.closure(sql, record)
-          if (!physicalClosureConfirmed) throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original physical ownership closure is not positively confirmed.', 409)
+          await authorizeClosedSourceRelease(sql, root, record, this.closure)
+          physicalClosureConfirmed = true
         }
       }
       const identity = request.operation === 'sources.prepare' ? request.identity : { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
@@ -82,4 +83,20 @@ export class PostgresSourceOperationAuthority {
       return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed })
     })
   }
+}
+
+/** Cleanup confers no execution authority. Terminal Runs can release only their
+ * exact original claim after positive Main closure and current root/device auth. */
+export async function authorizeClosedSourceRelease(sql: GraphSqlClient, root: SourceRootRecord, record: SourceMaterializationRecord,
+  closure: (sql: GraphSqlClient, record: SourceMaterializationRecord) => Promise<boolean>): Promise<void> {
+  if (!isDeepStrictEqual(root.binding, record.receipt.binding) || record.rootPolicyId !== root.selection.rootPolicyId
+    || record.rootPolicyRevision !== root.selection.rootPolicyRevision || !await closure(sql, record))
+    throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original physical ownership closure is not positively confirmed.', 409)
+  const policy = await sql.query('select 1 from workspace_root_policies where workspace_id=$1 and root_policy_id=$2 and root_policy_revision=$3 and revoked_at is null for share',
+    [root.binding.workspaceId, record.rootPolicyId, record.rootPolicyRevision])
+  if (policy.rowCount !== 1) throw new DomainError('ROOT_POLICY_UNAVAILABLE', 'The exact original root policy is unavailable or revoked.', 409)
+  const registration = await assertDeviceHostInstallation(sql, root.selection.hostRef, root.binding.workerInstallationId ?? root.binding.mainId)
+  if (!root.registration || !registration || registration.keyRevision !== root.registration.keyRevision
+    || registration.authorizationRevision !== root.registration.authorizationRevision)
+    throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Original device authority is unavailable or revoked.', 403)
 }
