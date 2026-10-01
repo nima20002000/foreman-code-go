@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rename, symlink, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { deflateSync } from 'node:zlib'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,7 +19,7 @@ vi.mock('node:fs/promises', async (original) => {
 const roots: string[] = []
 afterEach(async () => { diskState.full = false; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'w09-source-')); roots.push(root); await chmod(root, 0o700)
+  const root = await mkdtemp('/tmp/w09-source-'); roots.push(root); await chmod(root, 0o700)
   const bytes = Buffer.from('accepted source\n')
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
     capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip',

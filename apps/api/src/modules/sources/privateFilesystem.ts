@@ -59,9 +59,6 @@ export async function entryParent(root: FileHandle, path: string, create: boolea
   try {
     for (const component of components) {
       const child = await openChildDirectory(parent, component, create)
-      if ((ancestor.mode & 0o022) !== 0 && (await child.stat()).uid !== process.getuid?.()) {
-        await child.close(); throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Sticky-directory entries must be owned by this worker.')
-      }
       await parent.close(); parent = child
     }
     return { parent, leaf }
