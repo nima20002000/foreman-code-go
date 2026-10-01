@@ -58,12 +58,15 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     if (existing) {
       if (existing.context.agentId !== context.agentId || existing.context.harness !== context.harness
         || existing.context.workingDirectory !== context.workingDirectory
+        || existing.context.purpose !== context.purpose
         || !isDeepStrictEqual(existing.context.configuration, context.configuration)) {
         throw new Error('A durable execution cannot change native manager ownership context.')
       }
       if (existing.lifecycle === 'failed') throw new Error('The failed native manager is being released.')
       return existing.resolved
     }
+    // Pin plain configuration before passing it to the side-effect-free allocator.
+    context = structuredClone(context)
     const manager = this.create(context)
     if (manager.harness !== context.harness) throw new Error('The native manager factory returned the wrong harness.')
     const entry: {
@@ -109,16 +112,19 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
 
   dispose(): Promise<void> {
     this.disposed = true
-    this.disposal ??= Promise.allSettled([...this.entries.entries()].map(async ([executionId, entry]) => {
+    this.disposal ??= Promise.resolve().then(() => Promise.allSettled([...this.entries.entries()].map(async ([executionId, entry]) => {
       const disposable = entry.manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
+      entry.lifecycle = 'failed'
       if (!disposable.dispose) throw new Error('An execution native manager has no disposal contract.')
       await disposable.dispose()
-      if (this.entries.get(executionId) === entry) this.entries.delete(executionId)
-    })).then((results) => {
+      if (this.entries.get(executionId) === entry) { entry.lifecycle = 'released'; this.entries.delete(executionId) }
+    }))).then((results) => {
       const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Execution native manager disposal was incomplete.')
     })
-    return this.disposal
+    const attempt = this.disposal
+    void attempt.catch(() => { if (this.disposal === attempt) this.disposal = undefined })
+    return attempt
   }
 }
 

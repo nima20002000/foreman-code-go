@@ -13,9 +13,10 @@ export interface RuntimeShutdownOptions {
   releaseOwnership(): Promise<void>
 }
 
-function settle(steps: RuntimeShutdownStep[]): Promise<Error[]> {
+function settle(steps: RuntimeShutdownStep[], completed: Set<RuntimeShutdownStep>): Promise<Error[]> {
+  steps = steps.filter((step) => !completed.has(step))
   // Start every sibling even if another throws synchronously or never settles.
-  const work = steps.map(async (step) => step.run())
+  const work = steps.map(async (step) => { await step.run(); completed.add(step) })
   return Promise.allSettled(work).then((results) => results.flatMap((result, index) =>
     result.status === 'rejected'
       ? [new Error(`Runtime shutdown step '${steps[index]!.name}' failed.`, { cause: result.reason })]
@@ -30,6 +31,7 @@ function settle(steps: RuntimeShutdownStep[]): Promise<Error[]> {
  * failure, including timeouts whose underlying work may still be running.
  */
 export class RuntimeShutdown {
+  private readonly completed = new Set<RuntimeShutdownStep>()
   private stopping: Promise<Error[]> | undefined
   private completion: Promise<void> | undefined
 
@@ -40,23 +42,27 @@ export class RuntimeShutdown {
     // Publish the promise before invoking callbacks, including synchronous re-entry.
     let stopped!: (errors: Error[]) => void
     this.stopping = new Promise<Error[]>((resolve) => { stopped = resolve })
-    void settle(this.options.stop).then(stopped)
+    void settle(this.options.stop, this.completed).then(stopped)
   }
 
   finish(): Promise<void> {
     // Publish the shared result before any lifecycle callback can re-enter.
     this.completion ??= Promise.resolve().then(async () => {
-      const errors = await this.stopping!
-      errors.push(...await settle(this.options.drain))
+      const errors = [...await this.stopping!]
+      errors.push(...await settle(this.options.drain, this.completed))
       // Attempt every disposer even when a previous drain failed. Such a failure
       // still forbids unlocking; disposal must not disguise unfinished work.
-      errors.push(...await settle(this.options.dispose))
+      errors.push(...await settle(this.options.dispose, this.completed))
       if (errors.length) {
         throw new AggregateError(errors, 'Production runtime shutdown was incomplete; runtime ownership was not released.')
       }
       await this.options.releaseOwnership()
     })
+    const attempt = this.completion
+    void attempt.catch(() => {
+      if (this.completion === attempt) { this.completion = undefined; this.stopping = undefined }
+    })
     this.begin()
-    return this.completion
+    return attempt
   }
 }
