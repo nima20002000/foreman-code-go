@@ -155,6 +155,10 @@
     "./job-output-transfer": {
       "types": "./dist/jobOutputTransfer.d.ts",
       "import": "./dist/jobOutputTransfer.js"
+    },
+    "./job-runtime": {
+      "types": "./dist/jobRuntime.d.ts",
+      "import": "./dist/jobRuntime.js"
     }
   },
   "scripts": {
