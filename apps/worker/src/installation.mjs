@@ -14,7 +14,7 @@ export function validateManifest(manifest, facts, expected) {
   if (manifest.packageManager !== 'pnpm@11.27.0' || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length > 512) throw new WorkerError('manifest_invalid');
   const names = new Set();
   for (const file of manifest.files) {
-    if (!/^[a-zA-Z0-9_./-]+$/.test(file.path) || file.path.startsWith('/') || file.path.split('/').some((part) => !part || part === '.' || part === '..') || !digest.test(file.sha256) || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > 64 * 1024 * 1024 || names.has(file.path)) throw new WorkerError('manifest_invalid');
+    if (!/^[a-zA-Z0-9_@./-]+$/.test(file.path) || file.path.startsWith('/') || file.path.split('/').some((part) => !part || part === '.' || part === '..') || !digest.test(file.sha256) || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > 64 * 1024 * 1024 || names.has(file.path)) throw new WorkerError('manifest_invalid');
     names.add(file.path);
   }
   if (!names.has('src/cli.mjs')) throw new WorkerError('entrypoint_missing');
