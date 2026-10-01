@@ -20,7 +20,8 @@ function RegistrationFacts({ registration }: { registration: DeviceRegistration 
     <dl className="computer-facts computer-facts--status">
       <div><dt>Registration</dt><dd>{registration.status}</dd></div>
       <div><dt>Permitted device scopes</dt><dd>{registration.scopes.join(', ') || 'None'}</dd></div>
-      <div><dt>Worker connection</dt><dd>{registration.status === 'paired' ? 'See observed connection below' : 'Unavailable for a revoked worker'}</dd></div>
+      <div><dt>Worker connection</dt><dd>{registration.status === 'paired' ? 'See observed connection below'
+        : registration.status === 'pending' ? 'Awaiting pairing' : 'Unavailable for a revoked worker'}</dd></div>
     </dl>
     <details className="computer-details"><summary>Technical details</summary>
       <dl className="computer-facts">
@@ -69,7 +70,8 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
             : computers.isError ? <li className="computer-row computer-row--note"><Alert tone="danger" title="Registered computers could not be read." /><Button onClick={() => void computers.refetch()}>Retry registered computers</Button></li>
               : remote.map(value => <li key={value.applicationInstallationId} className="computer-row">
                 <div className="computer-row-body"><strong className="computer-row-id">{value.label}</strong>
-                  <span>{value.registrationStatus === 'paired' ? 'Paired remote computer' : 'Access revoked'} · open for its connection and installations</span></div>
+                  <span>{value.registrationStatus === 'paired' ? 'Paired remote computer'
+                    : value.registrationStatus === 'pending' ? 'Pairing pending' : 'Access revoked'} · open for its connection and installations</span></div>
                 <Button size="sm" onClick={() => onSelectComputer?.(value.hostRef.deviceId)} disabled={!onSelectComputer} aria-label={`Open ${value.label}`}>Open</Button></li>)}
         {currentMain && computers.isSuccess && !remote.length ? <li className="computer-row computer-row--note">No remote computers are paired yet. Choose “Add computer” to pair one.</li> : null}
       </ul>}
