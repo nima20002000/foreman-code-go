@@ -78,11 +78,12 @@ function evidence(stdout: string, execution: JobExecution): ContainerEvidence {
 export class PodmanJobSupervisor implements JobSupervisor {
   constructor(readonly qualifiedProfile: QualifiedJobProfile | null, private readonly commands: PodmanCommandRunner) {}
 
-  async reconcile(execution: JobExecution): Promise<{ containerId: string; stopped: boolean; exitCode: number; logGapPossible: true } | null> {
+  async reconcile(execution: JobExecution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; logGapPossible: true } | null> {
     const reply = await this.commands.run(['container', 'inspect', jobSupervisorIdentity(execution)])
     if (reply.exitCode !== 0) return null // Missing is uncertainty, never permission to relaunch.
     const row = evidence(reply.stdout, execution)
-    return { containerId: row.Id, stopped: !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited', exitCode: row.State.ExitCode, logGapPossible: true }
+    const stopped = !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
+    return { containerId: row.Id, stopped, exitCode: stopped ? row.State.ExitCode : null, logGapPossible: true }
   }
 
   async launch(plan: JobLaunchPlan) {
@@ -121,14 +122,15 @@ export class PodmanJobSupervisor implements JobSupervisor {
         return stopped
     }
     // Independent of attachment and main connectivity; uncertainty cannot clear this watchdog.
-    const deadline = setTimeout(() => { void stop(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => {}) }, plan.execution.acceptedSpec.policy.executionTimeoutMs)
+    let deadlineFired = false
+    const deadline = setTimeout(() => { deadlineFired = true; void stop(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => {}) }, plan.execution.acceptedSpec.policy.executionTimeoutMs)
     deadline.unref()
     const exited = this.commands.run(['wait', '--condition=exited', containerId], plan.execution.acceptedSpec.policy.executionTimeoutMs + plan.execution.acceptedSpec.policy.cancellationGraceMs + 30000).then(async waited => {
       const row = await inspect()
       if (row.State.Running || row.State.Pid !== 0 || row.State.Status !== 'exited') throw new Error('Wait ended without stopped container proof.')
       clearTimeout(deadline)
       if (waited.exitCode !== 0 || Number(waited.stdout.trim()) !== row.State.ExitCode) throw new Error('Container wait evidence mismatch.')
-      return { exitCode: row.State.ExitCode, signal: null, ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
+      return { exitCode: row.State.ExitCode, signal: null, ...(deadlineFired ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
     })
     void exited.catch(() => {})
     return { stdout: attached.stdout, stderr: attached.stderr, exited, proveStopped, stop }

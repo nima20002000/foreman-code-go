@@ -41,7 +41,7 @@ export interface JobLaunchPlan {
   pty: false
   profile: QualifiedJobProfile
 }
-export interface JobExitEvidence { exitCode: number | null; signal: string | null; execError?: string }
+export interface JobExitEvidence { exitCode: number | null; signal: string | null; execError?: string; timedOut?: boolean }
 export interface JobSupervisedProcess {
   stdout: AsyncIterable<Uint8Array>
   stderr: AsyncIterable<Uint8Array>
@@ -221,7 +221,7 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
     if (!result.processStopped) result.processStopped = await process.stop(spec.policy.cancellationGraceMs).catch(() => false)
     await drains
     if (!result.processStopped) return { ...result, recoveryRequired: true }
-    result.outcome = reason === 'cancelled' ? 'cancelled' : reason === 'timed_out' ? 'timed_out' :
+    result.outcome = reason === 'cancelled' ? 'cancelled' : reason === 'timed_out' || exit.timedOut ? 'timed_out' :
       exit.execError ? 'spawn_failed' : exit.exitCode === 0 ? 'succeeded' : 'build_failed'
     try { await ports.collectOutputs(execution) } catch { result.outputCollectionError = true }
     return result

@@ -35,7 +35,7 @@ function repin(job: JobExecution) {
   Object.assign(job.acceptedSpec, jobSpecDigests({ source, target, argv, inputs, policy, outputs }))
 }
 async function* chunks(value = '') { if (value) yield Buffer.from(value) }
-function ports(exit: { exitCode: number | null; signal: string | null; execError?: string } = { exitCode: 0, signal: null }): JobExecutorPorts {
+function ports(exit: { exitCode: number | null; signal: string | null; execError?: string; timedOut?: boolean } = { exitCode: 0, signal: null }): JobExecutorPorts {
   const process: JobSupervisedProcess = { stdout: chunks('stdout'), stderr: chunks('stderr'), exited: Promise.resolve(exit),
     stop: vi.fn(async () => true), proveStopped: vi.fn(async () => true) }
   return { authority: { recheck: vi.fn(async () => {}), claim: vi.fn(async () => 'launch' as const), launched: vi.fn(async () => {}) },
@@ -140,6 +140,9 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     const result = await executeJob(job, p, new AbortController().signal)
     expect(result).toMatchObject({ processStopped: false, outcome: null, recoveryRequired: true })
     expect(p.collectOutputs).not.toHaveBeenCalled()
+  })
+  it('retains a concrete supervisor deadline even if its watchdog wins the executor timer race', async () => {
+    expect((await executeJob(execution(), ports({ exitCode: 143, signal: null, timedOut: true }), new AbortController().signal)).outcome).toBe('timed_out')
   })
   it('bounds logs and keeps exit outcome when spool/publication fail', async () => {
     const p = ports({ exitCode: 7, signal: null }); p.appendLog = async () => { throw Error('disk full') }

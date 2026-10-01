@@ -55,4 +55,8 @@ describe('production OCI supervisor with command doubles (no installed runtime c
     expect(f.commands.run).toHaveBeenCalledOnce()
     expect(f.commands.attach).not.toHaveBeenCalled()
   })
+  it('does not project a running container default exit code as observed completion', async () => {
+    const f = fixture()
+    expect(await f.supervisor.reconcile(execution)).toMatchObject({ stopped: false, exitCode: null, logGapPossible: true })
+  })
 })
