@@ -80,7 +80,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     } finally { bindingSql.release() }
     const roots = new RegisteredWorkspaceSourceRoots(policies, hosts)
     const sources = new PostgresSourceService(pool, commands, locations, new PrivateSourceSnapshotStore(canonical), mainId, roots,
-      { authorize: nativeNotInvoked, prepare: nativeNotInvoked, verify: nativeNotInvoked, releaseClaim: nativeNotInvoked, authorizeFinal: nativeNotInvoked }, { confirmedClosed: nativeNotInvoked })
+      { authorize: nativeNotInvoked, prepare: nativeNotInvoked, verifyWorkingDirectory: nativeNotInvoked, verify: nativeNotInvoked, releaseClaim: nativeNotInvoked, authorizeFinal: nativeNotInvoked }, { confirmedClosed: nativeNotInvoked })
     const services = { commands, workspaces, locations, sources } as unknown as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })

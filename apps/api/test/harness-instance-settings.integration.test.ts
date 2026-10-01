@@ -49,11 +49,11 @@ it('persists host overrides through actual buildApp authenticated MCP and HTTP w
         driverId: value.driverId, driverRevision: 'fixture-driver', protocolRevision: 'fixture-protocol', suiteRevision: 'fixture-suite',
         environmentGeneration: currentEnvironment, connectionGeneration: 'fixture-connection', authenticated: true, compatible: true, qualified: true, checkedAt: new Date().toISOString() }
     })
-    const createService = () => new HostHarnessOverrideService(settings, commands, authority, async (value, client) => {
+    const createService = () => new HostHarnessOverrideService(settings, commands, authority, async (value, client?: pg.PoolClient) => {
       const proof = await proofs.latest(value.instanceId, value.revision, client)
       if (!proof) return null
       return { target: proof.target, configurationFingerprint: proof.configurationFingerprint,
-        qualified: proof.authenticated && proof.compatible && proof.qualified && proof.driverId === value.driverId
+        qualified: proof.authenticated === true && proof.compatible === true && proof.qualified === true && proof.driverId === value.driverId
           && proof.driverRevision === 'fixture-driver' && proof.protocolRevision === 'fixture-protocol' && proof.suiteRevision === 'fixture-suite'
           && proof.environmentGeneration === currentEnvironment && proof.connectionGeneration === 'fixture-connection' }
     }, new HostHarnessInstanceProfileChecks(settings, proofs, commands, authority, { qualify: nativeReplay }))

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { mkdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -159,7 +160,7 @@ describe.skipIf(!postgresEnabled)('current execution regressions', () => {
     try {
       const saved = await f.workflows.current.save(f.writer.principal, 'mcp', { ...f.input,
         graph: { ...f.input.graph, executionPolicy: { maxParallelism: maximum, maxNodeExecutions: 4 } } })
-      f.f.version = saved.value.version
+      f.f.version = agentWorkflowVersion(saved.value.version)
       f.f.scope.workflowVersionId = saved.value.currentVersionId
       f.f.run.workflowVersionId = saved.value.currentVersionId
       ExecutableWorkflowV3Schema.parse({ version: f.f.version, configurations: f.f.configurations })
