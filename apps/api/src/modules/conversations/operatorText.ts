@@ -25,6 +25,8 @@ export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new M
   }
   if (event.type === 'message.part.delta' && payload.field === 'text' && typeof payload.delta === 'string') {
     const id = String(payload.partID ?? 'assistant')
+    const kind = partKinds.get(id)
+    if (kind && kind !== 'text' && kind !== 'reasoning') return []
     return [{ partId: `${partKinds.get(id) === 'reasoning' ? 'thinking:' : ''}${id}`, text: payload.delta, mode: 'append' }]
   }
   const part = object(payload.part)

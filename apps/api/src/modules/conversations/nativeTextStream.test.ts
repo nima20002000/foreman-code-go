@@ -60,3 +60,9 @@ describe('Claude block source provenance', () => {
     expect(publish).not.toHaveBeenCalled()
   })
 })
+it('does not turn a known tool-part text field into assistant prose', () => {
+  const publish = vi.fn(), stream = createNativeTextStream({ owner, harness: 'opencode', publish, reconcile: vi.fn() })
+  stream.push({ ...delta(1, ''), type: 'message.part.updated', payload: { part: { id: 'tool-part', type: 'tool' } } })
+  stream.push({ ...delta(2, ''), type: 'message.part.delta', payload: { partID: 'tool-part', field: 'text', delta: 'private tool output' } })
+  stream.flush(); expect(publish).not.toHaveBeenCalled(); stream.dispose()
+})
