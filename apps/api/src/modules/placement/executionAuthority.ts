@@ -1,0 +1,84 @@
+import type pg from 'pg'
+import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
+import { sameWorkflowValue } from '@graphql/contracts/wave25'
+import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
+import { readPlacement } from './binding.js'
+import { readExecutionPlacement, readNativePlacement } from './persistence.js'
+import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
+import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
+import { withExclusiveGraphConnection, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
+export interface ExecutionRunAuthorityPort {
+  revalidateRunAuthorization(principalId: string, workspaceId: string, workflowId: string, client: GraphSqlClient, atCommit: boolean): Promise<void>
+}
+import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import type { AgentPlacementProducer } from './agentProducer.js'
+import { DomainError } from '../errors.js'
+
+const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
+/** Read-only admission fence. This NEVER issues an entry capability, command,
+ * new grant, allocation or lease; main and worker entry guards remain mandatory. */
+export async function assertRemoteExecutionAuthority(sql: GraphTransactionSql,
+  locations: ExecutionRunAuthorityPort,
+  raw: unknown, authenticated: DeviceExtensionContext['binding'], producer: AgentPlacementProducer): Promise<void> {
+  const input = ExecutionAuthorityRequestSchema.parse(raw), pin = readPlacement(input.placement)
+  const current = await readReconciledDispatchIntent(sql, input.intent.operationId, true)
+  const persisted = await readExecutionPlacement(sql, input.intent.executionId)
+  if (!current || !persisted || !sameWorkflowValue(current, input.intent) || !sameWorkflowValue(pin, persisted)
+    || pin.hostRef.kind !== 'device' || !pin.registration || authenticated.mainId !== pin.mainId
+    || authenticated.deviceId !== pin.hostRef.deviceId || authenticated.workerInstallationId !== pin.registration.workerInstallationId
+    || authenticated.keyRevision !== pin.registration.keyRevision || authenticated.authorizationRevision !== pin.registration.authorizationRevision) denied()
+  const registration = await assertDeviceHostInstallation(sql, pin.hostRef, pin.registration!.workerInstallationId)
+  if (!registration || registration.keyRevision !== pin.registration!.keyRevision
+    || registration.authorizationRevision !== pin.registration!.authorizationRevision) denied()
+  const row = (await sql.query<{ authorization_principal_id: string; workspace_id: string; workflow_id: string;
+    execution_state: string; stopped: boolean }>(`select r.record->>'authorizationPrincipalId' as authorization_principal_id,
+      r.workspace_id,r.workflow_id,r.execution_state,r.stop_requested_at is not null as stopped
+      from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2 for share of r,e`,
+    [current!.runId, current!.executionId])).rows[0]
+  if (!row) denied()
+  await locations.revalidateRunAuthorization(row!.authorization_principal_id, row!.workspace_id, row!.workflow_id,
+    sql, true)
+  await producer.assertPinsCurrent(sql, pin, await readLiveManagementPrincipal(sql, row!.authorization_principal_id), row!.workspace_id)
+  const grant = await sql.query(`select 1 from execution_dispatch_owner_grants
+    where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked for share`,
+    [current!.executionId, current!.operationId, current!.owner.grantId, current!.owner.epoch])
+  if (grant.rowCount !== 1) denied()
+  const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share', [current!.operationId])).rows[0]
+  if (!origin) denied()
+  const connection = DeviceConnectionIdentitySchema.parse(origin!.connection)
+  if (connection.mainId !== authenticated.mainId || connection.deviceId !== authenticated.deviceId
+    || connection.workerInstallationId !== authenticated.workerInstallationId || connection.keyRevision !== authenticated.keyRevision
+    || connection.authorizationRevision !== authenticated.authorizationRevision
+    || input.action !== 'read' && (connection.bootId !== authenticated.bootId || connection.connectionGeneration !== authenticated.connectionGeneration)) denied()
+  if (input.action === 'start') {
+    if (!await readNativePlacement(sql, current!.executionId)) denied()
+    if (row!.stopped || !['running', 'waiting'].includes(row!.execution_state)) denied()
+    const entry = await sql.query("select 1 from workflow_native_entries where execution_id=$1 and run_id=$2 and phase='entered' for share", [current!.executionId, current!.runId])
+    if (entry.rowCount !== 1) denied()
+  }
+}
+export function createExecutionAuthorityExtension(pool: pg.Pool,
+  locations: ExecutionRunAuthorityPort, producer: AgentPlacementProducer): DeviceExtensionRegistration {
+  return { ...EXECUTION_AUTHORITY_EXTENSION, role: 'server', async handle(raw, context) {
+    if (context.bytes?.byteLength) denied()
+    const facts = ExecutionFactsRequestSchema.safeParse(raw)
+    const input = facts.success ? facts.data.authorization : ExecutionAuthorityRequestSchema.parse(raw)
+    return withExclusiveGraphConnection(pool, connection => connection.transaction(async sql => {
+      const verify = () => assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer)
+      await verify(); beforeGraphCommit(sql, verify)
+      if (facts.success) {
+        const placement = await readExecutionPlacement(sql, input.intent.executionId)
+        const native = await readNativePlacement(sql, input.intent.executionId)
+        if (!placement || !native || placement.payload.kind !== 'agent') denied()
+        const configuration = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and agent_id=$2',
+          [placement!.payload.kind === 'agent' ? placement!.payload.agentConfigurationVersionId : '', placement!.payload.kind === 'agent' ? placement!.payload.agentId : ''])).rows[0]?.record
+        const harness = await producer.harnessFacts(sql, placement!)
+        return { payload: ExecutionFactsResultSchema.parse({ version: 1, intent: input.intent, placement, executionPlacement: native, configuration, harness }) }
+      }
+      return { payload: ExecutionAuthorityResultSchema.parse({ version: 1, action: input.action,
+        operationId: input.intent.operationId, attemptId: input.intent.attemptId, bindingHash: input.intent.bindingHash, owner: input.intent.owner }) }
+    }))
+  } }
+}

@@ -1,3 +1,5 @@
+import { insertAcceptedPlacements } from '../placement/persistence.js'
+import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from '../placement/startPort.js'
 import { randomUUID } from 'node:crypto'
 import type { ScheduleStartGuard } from '../schedules/startGuard.js'
 import type pg from 'pg'
@@ -34,6 +36,7 @@ import { validateReviewerBootstrap } from '../workflows/reviewerBootstrap.js'
  * Install it only with the existing engine's complete v3 lifecycle composition.
  * A no-op producer cannot pass the mandatory same-transaction receipt readback. */
 export interface RepeatStartPublication {
+  readonly placementAdmission?: RunPlacementAdmissionPort
   /** Open existing G1 with historyCoverage='from_admission', publish the queued
    * v3 Run and empty/lazy occurrence projection, on THIS branded transaction.
    * Register the G1 finalizer before returning its validated semantic digest.
@@ -154,7 +157,8 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
 /** The v3 INSERT and canonical initialization share the existing Start G1
  * transaction. This function does not acquire RunOwnership or invoke the graph. */
 export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedRepeatStartV1,
-  publication: RepeatStartPublication, admissionTrigger: RunDropdownTrigger = 'manual'): Promise<AcceptedWorkflowRunV3> {
+  publication: RepeatStartPublication, admissionTrigger: RunDropdownTrigger = 'manual',
+  placementAdmission?: PreparedRunPlacementAdmission): Promise<AcceptedWorkflowRunV3> {
   assertGraphTransaction(sql)
   const accepted = AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(input)))
   const run = acceptedReceipt(accepted.run, accepted.snapshot.request)
@@ -166,6 +170,11 @@ export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedR
   // Required admission write: failure rolls back the Run, authority and command.
   // Internal scheduled admission must pass 'schedule'; never accept it from HTTP/MCP input.
   await insertRunBoardSnapshot(sql, accepted, admissionTrigger)
+  if (placementAdmission) await insertAcceptedPlacements(sql, run.id, accepted.snapshot.executable.version.definition.nodes.filter(node => node.kind !== 'job'),
+    run.agentConfigurationVersionIds, placementAdmission.bind(run.id), placementAdmission.fence(sql))
+  else if (accepted.snapshot.executable.version.definition.nodes.some(node => node.kind !== 'job' && node.placement)) {
+    return conflict('PLACEMENT_ADMISSION_UNAVAILABLE', 'Saved Agent placement requires authenticated source/root admission.')
+  }
   // Do not let an adapter mutate the candidate whose digest/pins we retained.
   const published = await publication.initializeLocked(sql, AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(accepted))))
   const semanticDigest = GraphDigestSchema.parse(published.semanticDigest)
@@ -226,6 +235,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     if (!publication || typeof publication.initializeLocked !== 'function') {
       return conflict('REPEAT_START_RUNTIME_UNAVAILABLE', 'New v3 Runs remain disabled until canonical publication and the complete existing-engine lifecycle are composed.')
     }
+    const preparedPlacements = await publication.placementAdmission?.prepare(input, principal)
     const prepared = await prepareLocation(pool, locations, input)
     return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
       await commandLock(sql)
@@ -256,7 +266,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
         input: input.input, createdAt: new Date().toISOString() })
       admissionBegan = true
       await insertRepeatRun(sql, AcceptedRepeatStartV1Schema.parse({ snapshot, run }), publication,
-        source === 'schedule' ? 'schedule' : 'manual')
+        source === 'schedule' ? 'schedule' : 'manual', preparedPlacements)
       await bindRunAuthority(client, run.id, authority)
       await sql.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
         values($1,'run.start',$2,$3,$4,$5::jsonb)`, [principal.id, input.commandId, target, hash, canonicalGraphJson(run)])

@@ -11,6 +11,7 @@ import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatRe
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { RunOwnership } from './ownership.js'
+import { readAcceptedPlacement, readNativePlacement } from '../placement/persistence.js'
 import { resolveExecutionDirectory } from './executionDirectory.js'
 import { RepeatRunRepository, type RepeatEffect, type RepeatFact, type RepeatLockedHooks, type RepeatRepositoryHost } from './repeatPostgres.js'
 import { requireRepeatNativeHooks, type RepeatNativeBoundaryEvidence, type RepeatNativeChange,
@@ -32,6 +33,10 @@ export interface RepeatCanonicalPublication {
   assertLaunchReceiptLocked(claim: RepeatLaunchClaim, digest: string): Promise<void>
 }
 export interface RepeatRepositoryServices {
+  preparePlacementExecution?(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution): Promise<
+    { workingDirectory: string; runtimeDirectory: string; revalidate(): Promise<void> } | undefined>
+  admitPlacementExecutionLocked?(sql: GraphTransactionSql, owner: RunOwnership, run: AcceptedWorkflowRunV3,
+    execution: HarnessExecution, ref: RepeatNodeRef, inputDigest: string): Promise<void>
   /** Must open the EXISTING canonical publication on this exact transaction and
    * existing head. It must enlist same-transaction receipt checks before COMMIT. */
   openPublicationLocked(sql: GraphTransactionSql, scope: RepeatScope, owner: RunOwnership): Promise<RepeatCanonicalPublication>
@@ -81,6 +86,11 @@ export class RepeatRepositoryFactory {
     const store = new RepeatRunRepository(owner, host, version)
     this.stores.set(owner, { version, store })
     return store
+  }
+
+  preparePlacementExecution(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution) {
+    owner.assertOwned()
+    return this.services.preparePlacementExecution?.(owner, run, execution) ?? Promise.resolve(undefined)
   }
 
   /** Same actual Run owner and locked hooks for the concrete Job store. */
@@ -165,6 +175,12 @@ export class RepeatRepositoryFactory {
     }
     const hooks: RepeatLockedHooks = {
       run,
+      persistDispatchLocked: async (transaction, execution, ref, inputDigest) => {
+        sameTransaction(transaction)
+        const node = version.definition.nodes.find(node => node.id === ref.nodeId)
+        if (node?.kind !== 'job' && node?.placement && !this.services.admitPlacementExecutionLocked) return repeatConflict('REPEAT_NATIVE_HOST_REQUIRED')
+        await this.services.admitPlacementExecutionLocked?.(transaction, owner, run, execution, ref, inputDigest)
+      },
       assertAuthorityLocked: authority,
       assertAdmissionLocked: async (transaction, execution, ref) => {
         sameTransaction(transaction)
@@ -205,8 +221,11 @@ export class RepeatRepositoryFactory {
           assertRepeatExecution(version, scope, ref, execution)
           await authority(sql)
           await configurations()
-          if (paths.workingDirectory !== run.executionLocation.rootPath
-            || paths.runtimeDirectory !== repeatRuntimeDirectory(this.runtimeRoot, scope, execution)) return repeatConflict('RUN_LOCATION_MISSING')
+          const placement = await readAcceptedPlacement(sql, run.id, execution.workflowNodeId)
+          const native = placement && await readNativePlacement(sql, execution.id)
+          if (placement && !native) return repeatConflict('RUN_LOCATION_MISSING')
+          if (paths.workingDirectory !== (native?.workingTree.canonicalCwd ?? run.executionLocation.rootPath)
+            || paths.runtimeDirectory !== repeatRuntimeDirectory(placement?.destination.managedRuntimeRoot ?? this.runtimeRoot, scope, execution)) return repeatConflict('RUN_LOCATION_MISSING')
         },
         assertBoundaryLocked: async (transaction, execution, ref, evidence) => {
           sameTransaction(transaction)

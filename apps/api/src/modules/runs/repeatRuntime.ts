@@ -132,6 +132,7 @@ export interface RepeatNativeObserverContext {
   workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   /** Existing accepted runtime root + repeatExecutionDirectoryKey(executionId). */
+  preparePlacement?(execution: HarnessExecution): Promise<{ workingDirectory: string; runtimeDirectory: string; revalidate(): Promise<void> } | undefined>
   directory(executionId: string): string
 }
 
@@ -197,15 +198,18 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       }
       assertNativeWorkflowConfiguration(configuration.harness, run.approval,
         run.approval.handler === 'orchestrator' && configuration.agentId === run.approval.designatedOrchestratorAgentId)
+      const placement = await context.preparePlacement?.(execution)
       const validate = async () => {
         check()
         await locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
         check()
-        await locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess([configuration]), signal)
+        if (placement) await placement.revalidate()
+        else await locations.revalidateSnapshot(run.workspaceId, run.executionLocation, requiredLocationAccess([configuration]), signal)
         check()
       }
       await validate()
-      const paths = { workingDirectory: run.executionLocation.rootPath, runtimeDirectory: context.directory(execution.id) }
+      const paths = placement ? { workingDirectory: placement.workingDirectory, runtimeDirectory: placement.runtimeDirectory }
+        : { workingDirectory: run.executionLocation.rootPath, runtimeDirectory: context.directory(execution.id) }
       const claimed = await store.claimLaunch(execution.id, paths)
       check()
       execution = claimed ?? await store.recoverSession(execution.id)

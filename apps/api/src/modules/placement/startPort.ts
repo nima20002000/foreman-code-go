@@ -1,4 +1,5 @@
 import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { RunStartV3Input } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { PlacementCommitFence } from './admission.js'
@@ -7,7 +8,7 @@ import type { PlacementCommitFence } from './admission.js'
  * arbitrary placement JSON. Preparation loads those saved records and performs
  * authenticated host/W09 I/O before the existing Start transaction begins. */
 export interface RunPlacementAdmissionPort {
-  prepare(input: RunStartV3Input): Promise<PreparedRunPlacementAdmission>
+  prepare(input: RunStartV3Input, principal: ManagementPrincipal): Promise<PreparedRunPlacementAdmission | undefined>
 }
 export interface PreparedRunPlacementAdmission {
   /** Pure function binds prepared immutable evidence to the NEW Run identity. */

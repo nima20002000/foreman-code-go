@@ -66,6 +66,7 @@ export interface RepeatLockedHooks {
   native?: RepeatNativeLockedHooks
   run: RepeatRuntimeRun
   assertAuthorityLocked(sql: GraphTransactionSql): Promise<void>
+  persistDispatchLocked?(sql: GraphTransactionSql, execution: HarnessExecution, ref: RepeatNodeRef, inputDigest: string): Promise<void>
   assertAdmissionLocked(sql: GraphTransactionSql, execution: HarnessExecution, ref: RepeatNodeRef): Promise<void>
   /** Exact terminal approval acknowledgement AND required native/reviewer cleanup;
    * process absence, graph.resume alone, or a delivered response are insufficient. */
@@ -856,6 +857,7 @@ export class RepeatRunRepository {
         execution.attempt, previousExecutionId, JSON.stringify(identity)])
     }
     await reserveWorkflowNativeEntryLocked(context.sql, workflowNativeReservation(context.scope, ref, execution, inputDigest))
+    await context.hooks.persistDispatchLocked?.(context.sql, execution, ref, inputDigest)
     for (const binding of bindings) await context.sql.query(`insert into run_repeat_bindings
       (binding_id,run_id,recipient_execution_id,source_execution_id,source_result_digest,input_digest,slot_id,ordinal,record)
       values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`, [binding.bindingId, context.scope.runId, execution.id,

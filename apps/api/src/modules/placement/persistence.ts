@@ -1,9 +1,12 @@
-import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent } from '@graphql/contracts/node-placement'
+import { DispatchIntentSchema, type AcceptedNodePlacement, type DispatchIntent, type NativeExecutionPlacement } from '@graphql/contracts/node-placement'
 import { canonicalGraphJson, sameWorkflowValue } from '@graphql/contracts/wave25'
 import { assertGraphTransaction, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
 import type { PlacementCommitFence } from './admission.js'
+import { SourceMaterializationRecordSchema } from '@graphql/contracts/source-admission'
+import { sourceMaterializationDigest } from '../sources/bindingHash.js'
+import { readNativeExecutionBinding } from './executionBinding.js'
 import { readPlacement } from './binding.js'
 
 const conflict = (): never => { throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'Immutable placement or dispatch evidence conflicts.', 409) }
@@ -86,4 +89,39 @@ export async function readDispatchIntent(sql: Pick<GraphTransactionSql, 'query'>
   const placement = await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
   if (!placement || placement.bindingHash !== intent.bindingHash || placement.mainId !== intent.mainId) conflict()
   return intent
+}
+
+/** Accepted root/source envelope for an exact admitted execution. Native
+ * materialization is read separately and may not exist for an unstarted node. */
+export async function readExecutionPlacement(sql: Pick<GraphTransactionSql, 'query'>, executionId: string): Promise<AcceptedNodePlacement | undefined> {
+  const intent = await readDispatchIntent(sql, executionId)
+  return intent ? readAcceptedPlacement(sql, intent.runId, intent.nodeId) : undefined
+}
+
+export async function readNativePlacement(sql: Pick<GraphTransactionSql, 'query'>, executionId: string) {
+  const row = (await sql.query<{ record: unknown }>('select record from execution_native_placements where execution_id=$1', [executionId])).rows[0]
+  if (!row) return undefined
+  const intent = await readDispatchIntent(sql, executionId)
+  const parent = intent && await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
+  if (!intent || !parent) conflict()
+  const binding = readNativeExecutionBinding(parent!, intent!, row.record)
+  // Read the actual adopted source fact; never invent adoption from a digest.
+  const sourceRow = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1', [binding.materialization.receipt.materializationId])).rows[0]
+  if (!sourceRow) conflict()
+  const source = SourceMaterializationRecordSchema.parse({ ...(sourceRow!.record as object), state: sourceRow!.state })
+  if (source.finalDispatchBindingHash !== binding.bindingHash || sourceMaterializationDigest(source) !== sourceMaterializationDigest(binding.materialization)) conflict()
+  return { ...binding, materialization: source }
+}
+export async function insertNativePlacement(sql: GraphTransactionSql, owner: RunOwnership, binding: NativeExecutionPlacement): Promise<void> {
+  assertGraphTransaction(sql); owner.assertOwned()
+  const intent = await readDispatchIntent(sql, binding.executionId)
+  const parent = intent && await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
+  if (!intent || !parent || owner.runId !== intent.runId) conflict()
+  const current = readNativeExecutionBinding(parent!, intent!, binding)
+  await owner.readOneShotFence(sql)
+  await sql.query(`insert into execution_native_placements(execution_id,operation_id,accepted_binding_hash,binding_hash,record)
+    values($1,$2,$3,$4,$5::jsonb)`, [current.executionId, current.operationId, current.acceptedBindingHash, current.bindingHash, canonicalGraphJson(current)])
+  beforeGraphCommit(sql, async () => { owner.assertOwned(); await owner.readOneShotFence(sql)
+    const persisted = await readNativePlacement(sql, current.executionId)
+    if (!persisted || persisted.bindingHash !== current.bindingHash) conflict() })
 }
