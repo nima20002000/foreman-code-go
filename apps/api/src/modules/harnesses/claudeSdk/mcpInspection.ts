@@ -1,5 +1,6 @@
 import { basename } from 'node:path'
 import type { McpDetection, AgentHarness } from '@graphql/contracts'
+import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
 
 export interface ClaudeMcpControlServer {
   name: string
@@ -14,6 +15,8 @@ export interface ClaudeMcpInspection {
   initializationAnswered: true
   servers: readonly ClaudeMcpControlServer[]
   checkedAt: string
+  httpCredentialAcknowledgement?: NativeMcpHttpCredentialAcknowledgement
+  currentAuthorizationScope?: string
 }
 function safeUrl(value: string): string | undefined {
   try {
@@ -22,7 +25,8 @@ function safeUrl(value: string): string | undefined {
     return parsed.toString()
   } catch { return undefined }
 }
-export function decodeClaudeMcpControl(rows: readonly unknown[], generation: string, checkedAt: string): ClaudeMcpInspection {
+export function decodeClaudeMcpControl(rows: readonly unknown[], generation: string, checkedAt: string,
+  credentials: Pick<ClaudeMcpInspection, 'httpCredentialAcknowledgement' | 'currentAuthorizationScope'> = {}): ClaudeMcpInspection {
   if (rows.length > 128) throw new Error('Claude MCP control snapshot exceeds the bounded server window')
   const servers = rows.map((raw): ClaudeMcpControlServer => {
     if (!raw || typeof raw !== 'object') throw new Error('Claude MCP control server is malformed')
@@ -42,16 +46,28 @@ export function decodeClaudeMcpControl(rows: readonly unknown[], generation: str
     return { name: row.name, status: row.status as ClaudeMcpControlServer['status'], configuration, toolNames, credentialEnvironmentVariables,
       ...(typeof row.source === 'string' ? { source: row.source } : {}) }
   })
-  return { generation, initializationAnswered: true, servers, checkedAt }
+  return { generation, initializationAnswered: true, servers, checkedAt, ...credentials }
 }
 export function claudeMcpDetection(snapshot: ClaudeMcpInspection, expected: { serverName: string; url?: string }): McpDetection {
   const server = snapshot.servers.find((entry) => entry.name === expected.serverName)
   const endpointMatches = expected.url ? server?.configuration?.url === safeUrl(expected.url) : null
+  const environmentMatches = server?.configuration?.type === 'stdio'
+    && server.credentialEnvironmentVariables.includes('GRAPHQL_MCP_TOKEN')
+  const acknowledgement = snapshot.httpCredentialAcknowledgement
+  const headerMatches = Boolean(acknowledgement && acknowledgement.source === 'sdk_set_mcp_servers'
+    && acknowledgement.serverName === expected.serverName && snapshot.generation
+    && acknowledgement.generation === snapshot.generation && snapshot.currentAuthorizationScope
+    && acknowledgement.authorizationScope === snapshot.currentAuthorizationScope
+    && expected.url && endpointMatches && server?.configuration?.type === 'http'
+    && server.configuration.url === safeUrl(acknowledgement.endpoint) && server.status === 'connected')
   const state: McpDetection['state'] = !server ? 'not_detected'
     : endpointMatches === false ? 'misconfigured'
       : server.status === 'needs-auth' ? 'authentication_required' : server.status === 'failed' ? 'broken'
         : server.status === 'disabled' ? 'disabled' : server.status === 'pending' ? 'status_unavailable' : 'connected'
   return { harness: 'claude' as AgentHarness, serverName: expected.serverName, state, endpointMatches,
-    credentialEnvironmentVariable: server?.credentialEnvironmentVariables.includes('GRAPHQL_MCP_TOKEN') ? 'GRAPHQL_MCP_TOKEN' : null, checkedAt: snapshot.checkedAt,
+    credentialEnvironmentVariable: environmentMatches ? 'GRAPHQL_MCP_TOKEN' : null,
+    credentialArrangement: headerMatches ? { kind: 'scoped_http_header' }
+      : environmentMatches ? { kind: 'environment_variable', environmentVariable: 'GRAPHQL_MCP_TOKEN' } : { kind: 'unknown' },
+    checkedAt: snapshot.checkedAt,
     detail: 'Observed SDK MCP control status/configuration on the same owned query; saved settings are not connection evidence.' }
 }
