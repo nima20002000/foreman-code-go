@@ -114,7 +114,8 @@ export class JobService {
     const id=workflow?.nodeExecutionId??randomUUID(),attemptId=randomUUID(),operationId=randomUUID()
     const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,{executionId:id,attemptId,operationId})
     const request=definition.spec
-    const {materializationId:_materialization,materializationDigest:_digest,...source}=spec.source
+    const source={approvedSourceId:spec.source.approvedSourceId,snapshotId:spec.source.snapshotId,
+      commit:spec.source.commit,manifestDigest:spec.source.manifestDigest}
     const selection=(target:JobDefinitionSpec['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
       rootPolicyId:target.destination.rootPolicyId,rootPolicyRevision:target.destination.rootPolicyRevision,locationRevision:target.destination.locationRevision})
     if(canonical(source)!==canonical(request.source)||canonical(selection(spec.target))!==canonical(selection(request.target))
