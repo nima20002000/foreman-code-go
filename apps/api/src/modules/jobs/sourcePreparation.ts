@@ -75,7 +75,8 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
   async revalidateAccepted(sql:JobSql,principal:ManagementPrincipal,execution:JobExecution) {
     const row=(await sql.query<{record:unknown;state:string}>('select record,state from source_execution_materializations where materialization_id=$1 and workspace_id=$2 and execution_id=$3 and attempt_id=$4 for share',[execution.acceptedSpec.source.materializationId,execution.workspaceId,execution.id,execution.attemptId])).rows[0]
     if(!row)throw new DomainError('SOURCE_ATTEMPT_CONFLICT','The original accepted source materialization is missing.',409)
-    const record=SourceMaterializationRecordSchema.parse({...row.record as object,state:row.state})
+    const record=SourceMaterializationRecordSchema.parse(row.record)
+    record.state=SourceMaterializationRecordSchema.shape.state.parse(row.state)
     if(!['prepared','running','closed'].includes(record.state)||record.operationId!==execution.operationId||record.finalDispatchBindingHash!==execution.acceptedSpec.bindingHash||sourceMaterializationDigest(record)!==execution.acceptedSpec.source.materializationDigest)throw new DomainError('SOURCE_ATTEMPT_CONFLICT','The original accepted source binding changed.',409)
     const source={approvedSourceId:execution.acceptedSpec.source.approvedSourceId,snapshotId:execution.acceptedSpec.source.snapshotId,manifestDigest:execution.acceptedSpec.source.manifestDigest}
     const root=await this.sources.resolveRootBinding(sql,principal,{workspaceId:execution.workspaceId,rootId:record.receipt.binding.rootId,bindingRevision:record.receipt.binding.bindingRevision,source})

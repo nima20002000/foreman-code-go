@@ -7,6 +7,7 @@ import { JobRuntimeProfileSchema,JobRuntimeFingerprintSchema,JobRuntimeApprovalS
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { PostgresSourceService } from '../src/modules/sources/service.js'
+import { PostgresJobRuntimeHumanAuthority } from '../src/modules/jobs/runtimeHumanAuthority.js'
 import { JobRuntimeProfiles } from '../src/modules/jobs/runtimeProfiles.js'
 import { jobSpec } from './helpers/jobFixture.js'
 const uuid='11111111-1111-4111-8111-111111111111',digest='1'.repeat(64)
@@ -15,12 +16,13 @@ const root=SourceRootRecordSchema.parse({version:1,source:{approvedSourceId:uuid
 const profile=JobRuntimeProfileSchema.parse({schemaVersion:1,id:'runtime-profile',workspaceId:'workspace-fixture',revision:1,name:'Runtime metadata',root,policy:{...jobSpec().policy,isolationPolicyId:'runtime-profile'},limits:{cpuLimit:1,memoryBytes:1024,pidsLimit:32,diskBytes:8192},specDigest:digest,status:'unqualified',measurement:null,createdAt:'2026-10-01T00:00:00.000Z',updatedAt:'2026-10-01T00:00:00.000Z'})
 const fingerprint=JobRuntimeFingerprintSchema.parse({schemaVersion:1,profileId:profile.id,profileRevision:1,specDigest:digest,hostRef:root.selection.hostRef,registration:null,mainInstallationId:'main-installation',bootId:uuid,root,runtimeExecutable:'/usr/bin/podman',runtimeBinarySha256:digest,ociExecutable:'/usr/bin/crun',ociBinarySha256:digest,configurationDigest:digest,imageDigest:profile.policy.imageDigest,toolchainDigest:digest,limits:profile.limits})
 const approval=JobRuntimeApprovalSchema.parse({schemaVersion:1,id:uuid,qualificationId:uuid,workspaceId:profile.workspaceId,profileId:profile.id,profileRevision:1,fingerprint,fingerprintDigest:digest,requestedByPrincipalId:principal.id,status:'awaiting-approval',approvedByPrincipalId:null,approvedAt:null,expiresAt:'2099-01-01T00:00:00.000Z'})
-function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.status;runCommand?:string;runResult?:unknown}={}) {
+function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.status;runCommand?:string;runResult?:unknown;approvalReceipt?:unknown}={}) {
   const state={profile:{...profile},approval:{...approval,status:options.approvalStatus??approval.status},runResult:options.runResult??null}
   if(state.approval.status==='approved'||state.approval.status==='qualifying'){state.approval.approvedAt='2026-10-01T00:00:00.000Z';state.approval.approvedByPrincipalId=principal.id}
   const query=vi.fn(async(text:string,values?:unknown[])=>{
     let rows:unknown[]=[]
     if(text.includes('select id,name,audience,grants'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:options.revoked?new Date():null,delegated_from:null}]
+    else if(text.includes('select result from management_command_receipts'))rows=options.approvalReceipt?[{result:options.approvalReceipt}]:[]
     else if(text.includes('select archived_at'))rows=[{archived_at:null}]
     else if(text.startsWith('select record from job_runtime_profiles'))rows=[{record:state.profile}]
     else if(text.startsWith('select record from job_runtime_qualification_approvals'))rows=[{record:state.approval}]
@@ -36,7 +38,7 @@ function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.statu
   const producer={capture:vi.fn(async()=>fingerprint),run:vi.fn(async()=>({outcome:'denied' as const,closure:'unconfirmed' as const,reasons:['DESCENDANT_CLOSURE_UNCONFIRMED']})),revalidate:vi.fn(async()=>({ready:false,reasons:['UNQUALIFIED']}))}
   const human={require:vi.fn(async()=>undefined)}
   const commands={execute:async(input:{authorize:(sql:unknown)=>Promise<void>;prepare?:()=>Promise<void>;perform:(sql:unknown)=>Promise<unknown>})=>{await input.authorize({query});await input.prepare?.();return {value:await input.perform({query}),replayed:false}}} as unknown as PostgresCommandCoordinator
-  return {state,producer,human,query,service:new JobRuntimeProfiles(pool,commands,{} as PostgresSourceService,producer,human)}
+  return {state,producer,human,query,sql:{query:vi.fn().mockImplementation(query)},service:new JobRuntimeProfiles(pool,commands,{} as PostgresSourceService,producer,human)}
 }
 describe('CI runtime metadata authority and original qualification ownership',()=>{
   it('reads original approval without any candidate capture or native probe',async()=>{
@@ -53,6 +55,15 @@ describe('CI runtime metadata authority and original qualification ownership',()
     const f=fixture()
     await expect(f.service.approve(principal,'mcp',profile.workspaceId,'approval-command',approval.id)).rejects.toMatchObject({code:'JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED'})
     expect(f.human.require).not.toHaveBeenCalled();expect(f.producer.run).not.toHaveBeenCalled()
+  })
+  it('requires the complete original browser approval receipt, with only lifecycle status advancing',async()=>{
+    const original=JobRuntimeApprovalSchema.parse({...approval,status:'approved',approvedByPrincipalId:principal.id,approvedAt:'2026-10-01T00:00:00.000Z'})
+    const f=fixture({approvalReceipt:original}),human=new PostgresJobRuntimeHumanAuthority()
+    await human.require(f.sql,principal,{...original,status:'qualifying'})
+    await expect(human.require(f.sql,principal,{...original,qualificationId:'22222222-2222-4222-8222-222222222222'})).rejects.toMatchObject({code:'JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED'})
+    await expect(human.require(f.sql,principal,{...original,fingerprint:{...original.fingerprint,runtimeExecutable:'/other/runtime'}})).rejects.toMatchObject({code:'JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED'})
+    await expect(human.require(f.sql,principal,{...original,expiresAt:'2098-01-01T00:00:00.000Z'})).rejects.toMatchObject({code:'JOB_RUNTIME_HUMAN_APPROVAL_REQUIRED'})
+    expect(f.producer.run).not.toHaveBeenCalled()
   })
   it('persists unresolved closure as recovery-required without claiming qualification',async()=>{
     const f=fixture({approvalStatus:'approved'})

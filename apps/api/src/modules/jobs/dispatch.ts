@@ -5,7 +5,7 @@ import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptSchema, type RemoteJobDispatchPort, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
-import type { AcceptedJobSpec, JobExecution } from '@graphql/contracts/jobs'
+import { JobExecutionSchema, type AcceptedJobSpec, type JobExecution } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -149,6 +149,44 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     }
     await sql.query('update job_dispatch_intents set receipt_sequence=$2,last_receipt=$3::jsonb where execution_id=$1',[execution.id,receipt.sequence,JSON.stringify(receipt)])
     return true
+  }
+  /** SQL-only accepted closure evidence; never contacts a worker or acquires execution authority. */
+  async readAcceptedClosureReceipt(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;bindingHash:string;owner:JobExecution['owner']}):Promise<RemoteJobOperationReceipt|null> {
+    const row=(await sql.query<{record:unknown;accepted_spec:unknown;intent:unknown;last_receipt:unknown;receipt_sequence:string}>(`select e.record,e.accepted_spec,d.intent,d.last_receipt,d.receipt_sequence::text
+      from job_executions e join job_dispatch_intents d on d.execution_id=e.id and d.workspace_id=e.workspace_id
+      where e.workspace_id=$1 and e.id=$2 and e.attempt_id=$3 and e.operation_id=$4
+        and d.intent->>'bindingHash'=$5 and d.intent #>> '{owner,grantId}'=$6 and d.intent #>> '{owner,epoch}'=$7
+      for share of e,d`,[input.workspaceId,input.executionId,input.attemptId,input.operationId,input.bindingHash,input.owner.grantId,input.owner.epoch])).rows[0]
+    if(!row||!row.last_receipt)return null
+    const execution=JobExecutionSchema.parse(row.record),intent=RemoteJobDispatchIntentSchema.parse(row.intent),receipt=RemoteJobOperationReceiptSchema.parse(row.last_receipt)
+    const subject=execution.workflow?{kind:'workflow-node',workspaceId:execution.workspaceId,...execution.workflow}
+      :{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId}
+    if(execution.workspaceId!==input.workspaceId||execution.id!==input.executionId||execution.attemptId!==input.attemptId||execution.operationId!==input.operationId
+      ||execution.acceptedSpec.bindingHash!==input.bindingHash||canonical(execution.owner)!==canonical(input.owner)
+      ||canonical(execution.acceptedSpec)!==canonical(row.accepted_spec)||canonical(receipt.execution.acceptedSpec)!==canonical(execution.acceptedSpec)
+      ||intent.executionId!==execution.id||intent.attemptId!==execution.attemptId||intent.operationId!==execution.operationId
+      ||intent.bindingHash!==execution.acceptedSpec.bindingHash||intent.inputDigest!==`sha256:${execution.acceptedSpec.specDigest}`
+      ||intent.mainId!==execution.acceptedSpec.target.mainId||canonical(intent.subject)!==canonical(subject)||canonical(intent.owner)!==canonical(execution.owner)
+      ||canonical(receipt.intent)!==canonical(intent)||receipt.sequence!==Number(row.receipt_sequence)) {
+      throw new DomainError('JOB_CLOSURE_PIN_CONFLICT','Closure receipt does not match the exact accepted job intent and main projection.',409)
+    }
+    if(receipt.phase!=='confirmed_terminal'||!receipt.terminal?.processStopped||execution.process.phase!=='terminal'||!execution.process.processStopped)return null
+    const terminal=receipt.terminal,target=execution.acceptedSpec.target,connection=receipt.connection
+    if(execution.finishedAt!==terminal.finishedAt||execution.process.outcome!==terminal.outcome||execution.process.exitCode!==terminal.exitCode||execution.process.signal!==terminal.signal
+      ||connection.mainId!==target.mainId||receipt.execution.id!==execution.id||receipt.execution.workspaceId!==execution.workspaceId
+      ||receipt.execution.operationId!==execution.operationId||receipt.execution.attemptId!==execution.attemptId||canonical(receipt.execution.owner)!==canonical(execution.owner)
+      ||(receipt.entryAttempted?!receipt.native:receipt.native!==undefined||!['cancelled','preparation_failed','spawn_failed'].includes(terminal.outcome))) {
+      throw new DomainError('JOB_CLOSURE_EVIDENCE_CONFLICT','Original physical closure is inconsistent with the accepted main execution.',409)
+    }
+    if(target.hostRef.kind==='device') {
+      if(!('deviceId' in connection)||connection.deviceId!==target.hostRef.deviceId||connection.workerInstallationId!==target.registration?.workerInstallationId
+        ||connection.keyRevision!==target.registration.keyRevision||connection.authorizationRevision!==target.registration.authorizationRevision) {
+        throw new DomainError('JOB_CLOSURE_HOST_CONFLICT','Closure belongs to a different accepted worker identity.',409)
+      }
+    } else if(!('kind' in connection)||connection.kind!=='main'||connection.mainInstallationId!==target.mainInstallationId) {
+      throw new DomainError('JOB_CLOSURE_HOST_CONFLICT','Closure belongs to a different accepted main installation.',409)
+    }
+    return receipt
   }
   private async release(executionId:string) {const active=this.owners.get(executionId);if(!active)return;this.owners.delete(executionId);await active.owner.release()}
   async close():Promise<void> {await Promise.allSettled([...this.owners.keys()].map(id=>this.release(id)))}

@@ -33,6 +33,12 @@ describe('original accepted source revalidation',()=>{
     await expect(f.service.revalidateAccepted({query:f.query as JobSql['query']},principal,f.execution)).rejects.toMatchObject({code:'AUTH_REVOKED'})
     expect(f.runtime.revalidate).not.toHaveBeenCalled()
   })
+  it('uses the current materialization state column rather than stale JSON readiness',async()=>{
+    const f=fixture()
+    f.query.mockResolvedValueOnce({rows:[{record:f.materialization,state:'uncertain'}],rowCount:1,command:'SELECT',oid:0,fields:[]})
+    await expect(f.service.revalidateAccepted({query:f.query as JobSql['query']},principal,f.execution)).rejects.toMatchObject({code:'SOURCE_ATTEMPT_CONFLICT'})
+    expect(f.resolveRootBinding).not.toHaveBeenCalled();expect(f.runtime.revalidate).not.toHaveBeenCalled()
+  })
   it('rejects a switched original dispatch binding before current root lookup',async()=>{
     const f=fixture();f.materialization.finalDispatchBindingHash='2'.repeat(64)
     await expect(f.service.revalidateAccepted({query:f.query as JobSql['query']},principal,f.execution)).rejects.toMatchObject({code:'SOURCE_ATTEMPT_CONFLICT'})
