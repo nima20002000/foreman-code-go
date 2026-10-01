@@ -1,8 +1,9 @@
+import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 export * from './claude.js';
 export * from './claudeQualification.js';
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
-import { InteractionActivityProjectionSchema } from "./interaction-activity.js";
+import { InteractionActivityProjectionSchema, NativeInteractionResponseAvailabilitySchema } from "./interaction-activity.js";
 import { z } from "zod";
 import { FileWithRevisionSchema, MessageAttachmentFields } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
@@ -792,6 +793,10 @@ export const MessageSchema = z
     id: IdSchema,
     conversationId: IdSchema,
     requestId: IdSchema.optional(),
+    activityChannel: z.enum(["assistant", "user", "reasoning"]).optional(),
+    activityNative: ActivityNativeIdentitySchema.optional(),
+    revision: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
+    sequence: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
     nativeMessageId: IdSchema.optional(),
     /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
     nativeParentMessageId: IdSchema.optional(),
@@ -1459,7 +1464,9 @@ export const OperatorActivityQuerySchema = z.object({
 }).strict();
 export type OperatorActivityQuery = z.infer<typeof OperatorActivityQuerySchema>;
 export const OperatorConversationStateSchema = z.object({
-  conversation: ConversationSchema,
+  activitySnapshot: ActivitySnapshotV1Schema.optional(),
+  responseAvailability: NativeInteractionResponseAvailabilitySchema.optional(),
+  qualificationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),  conversation: ConversationSchema,
   settings: OperatorChatSettingsSchema.optional(),
   handoff: z.object({ parentConversationId: IdSchema, sourceHarness: z.enum(['codex', 'opencode', 'claude']),
     sourceMessageSequence: z.string().regex(/^[0-9]+$/), omittedMessages: z.number().int().nonnegative() }).strict().optional(),
