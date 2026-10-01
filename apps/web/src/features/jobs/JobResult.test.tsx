@@ -9,6 +9,14 @@ const root = '*/api/management/workspaces/:workspaceId/jobs/executions/:id'
 function mount() { return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobResult workspaceId={execution.workspaceId} executionId={execution.id} /></QueryClientProvider>) }
 function responses(value = execution) { server.use(http.get(root, () => HttpResponse.json({ execution: value })), http.get(`${root}/logs`, () => HttpResponse.json(logPage)), http.get(`${root}/artifacts`, () => HttpResponse.json({ artifacts: [] }))) }
 
+it('retains a valid long declared output path in its exact job result', async () => {
+  const path = `dist/${'r'.repeat(1000)}.zip`
+  responses({ ...execution, acceptedSpec: { ...execution.acceptedSpec, outputs: [{ path, required: true, mediaType: 'application/zip' }] } })
+  mount()
+  expect((await screen.findByText(path)).textContent).toBe(path)
+  expect(await screen.findByText('Required artifact missing')).toBeInTheDocument()
+})
+
 it('renders exit7 independently from healthy transport and missing required output', async () => {
   responses(); mount()
   expect(await screen.findByText('Process: build failed')).toBeInTheDocument()

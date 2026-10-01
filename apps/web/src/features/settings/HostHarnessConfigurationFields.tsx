@@ -32,15 +32,15 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
     {!Object.keys(value.mcpServers).length ? <p>No MCP servers are configured.</p> : null}
   </div>
   return <div className="harness-form-stack">
-    <TextField label="Model" value={value.model} onChange={event => change({ ...value, model: event.target.value })} />
+    <TextField label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')} onChange={event => change({ ...value, model: event.target.value })} />
     {value.harness === 'codex' ? <>
       <Select label="Effort" value={value.reasoningEffort} options={AgentEffortSchema.options.map(item => ({ value: item, label: item }))}
         onChange={event => change({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
       <Select label="Service tier" value={value.serviceTier} options={[{ value: 'standard', label: 'Standard' }, { value: 'priority', label: 'Priority' }]}
         onChange={event => change({ ...value, serviceTier: event.target.value as typeof value.serviceTier })} />
     </> : <>
-      <TextField label="Provider variant" value={value.variant} onChange={event => change({ ...value, variant: event.target.value })} />
-      <TextField label="Native Agent" value={value.nativeAgent} onChange={event => change({ ...value, nativeAgent: event.target.value })} />
+      <TextField label="Provider variant" value={value.variant} error={fieldMessage(issues ?? [], 'variant')} onChange={event => change({ ...value, variant: event.target.value })} />
+      <TextField label="Native Agent" value={value.nativeAgent} error={fieldMessage(issues ?? [], 'nativeAgent')} onChange={event => change({ ...value, nativeAgent: event.target.value })} />
       <Checkbox label="Show thinking" checked={value.thinking} onChange={event => change({ ...value, thinking: event.target.checked })} />
     </>}
     <p>These are explicit configuration values. Saving does not discover models, install, sign in or qualify a harness. Target-local admission validates provider support.</p>
@@ -51,9 +51,11 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
     <h4>Session behavior</h4>
     <HarnessSectionFields editor={editor} onChange={onChange} section="session" issues={issues} />
     {value.harness === 'codex' ? <Textarea label="Shell environment policy · JSON" value={editor.shellEnvironmentText}
+      error={fieldMessage(issues ?? [], 'advanced.shellEnvironment')}
       hint="Environment policy for this host instance. Native login files and credentials are never copied."
       onChange={event => onChange({ ...editor, shellEnvironmentText: event.target.value })} /> : null}
     <Textarea label="Pinned MCP policy · JSON" value={editor.mcpText}
+      error={fieldMessage(issues ?? [], value.harness === 'codex' ? 'advanced.mcpServers' : 'advanced.mcp')}
       hint="Pinned native configuration requirements only. Editing does not inspect servers or rewrite target connection files."
       onChange={event => onChange({ ...editor, mcpText: event.target.value })} />
   </div>

@@ -43,7 +43,7 @@ export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
     <section aria-label="Job artifacts"><h2>Artifacts</h2>{Boolean(artifacts.error) && <Alert title="Artifacts unavailable" tone="danger">{jobError(artifacts.error)}</Alert>}
       {execution.acceptedSpec.outputs.map(output => {
         const artifact = artifacts.data?.find(item => item.path === output.path)
-        return <Card key={output.path}><CardBody><strong>{output.path}</strong><p>{artifact ? artifact.state : artifacts.isError ? 'Artifact history unavailable' : artifacts.isPending ? 'Loading publication…' : execution.publication === 'complete' ? output.required ? 'Required artifact missing' : 'Optional output absent' : 'Awaiting publication'}</p>
+        return <Card key={output.path}><CardBody><strong className="job-wrap">{output.path}</strong><p>{artifact ? artifact.state : artifacts.isError ? 'Artifact history unavailable' : artifacts.isPending ? 'Loading publication…' : execution.publication === 'complete' ? output.required ? 'Required artifact missing' : 'Optional output absent' : 'Awaiting publication'}</p>
           {artifact && <dl className="job-facts"><dt>File / revision</dt><dd>{artifact.fileId} / {artifact.revisionId}</dd><dt>Digest / size</dt><dd>{artifact.sha256} / {artifact.byteSize} bytes</dd></dl>}
           {artifact && <ArtifactDownload workspaceId={workspaceId} artifact={artifact} />}
         </CardBody></Card>

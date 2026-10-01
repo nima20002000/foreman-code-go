@@ -18,13 +18,13 @@ export function JobsDirectory({ workspaceId, onSelectExecution }: { workspaceId:
     <section aria-label="Saved jobs"><h2>Saved jobs</h2>{Boolean(definitions.error) && <Alert title="Saved jobs unavailable" tone="danger">{jobError(definitions.error)}</Alert>}
       {definitions.isPending && <p role="status">Loading jobs…</p>}
       {definitions.data?.length === 0 && <EmptyState title="No jobs saved" description="Choose a qualified computer, pinned source and isolation policy to save your first command." />}
-      <div className="jobs-list">{definitions.data?.map(definition => <Card key={definition.id}><CardBody><h3>{definition.name}</h3><p>Revision {definition.revision} · {definition.spec.target.labelAtAcceptance ?? definition.spec.target.hostRef.kind}</p><code>{JSON.stringify(definition.spec.argv)}</code><div className="job-toolbar"><Button onClick={() => setLaunch(definition)}>Review and start</Button><Button onClick={() => setEditor({ definition })}>Edit definition</Button></div></CardBody></Card>)}</div>
+      <div className="jobs-list">{definitions.data?.map(definition => <Card key={definition.id}><CardBody><h3 className="job-wrap">{definition.name}</h3><p className="job-wrap">Revision {definition.revision} · {definition.spec.target.labelAtAcceptance ?? definition.spec.target.hostRef.kind}</p><code className="job-command" tabIndex={0}>{JSON.stringify(definition.spec.argv)}</code><div className="job-toolbar"><Button onClick={() => setLaunch(definition)}>Review and start</Button><Button onClick={() => setEditor({ definition })}>Edit definition</Button></div></CardBody></Card>)}</div>
     </section>
     <section aria-label="Execution history"><h2>Execution history</h2>{Boolean(history.error) && <Alert title="History unavailable" tone="danger">{jobError(history.error)}</Alert>}{history.isPending && <p role="status">Loading execution history…</p>}
       {history.data?.length === 0 && <p>No executions yet. Use “Review and start” on a saved job.</p>}
       <div className="jobs-list">{history.data?.map(execution => {
         const name = definitions.data?.find(item => item.id === execution.acceptedSpec.definitionId)?.name ?? execution.acceptedSpec.definitionId
-        return <Card key={execution.id}><CardBody><Button aria-label={`Open result of ${name}, revision ${execution.acceptedSpec.definitionRevision}, ${processLabel(execution)}`} onClick={() => onSelectExecution(execution.id)}>{name} · revision {execution.acceptedSpec.definitionRevision}</Button>
+        return <Card key={execution.id}><CardBody><Button className="job-wrap" aria-label={`Open result of ${name}, revision ${execution.acceptedSpec.definitionRevision}, ${processLabel(execution)}`} onClick={() => onSelectExecution(execution.id)}>{name} · revision {execution.acceptedSpec.definitionRevision}</Button>
           <p>{processLabel(execution)}{execution.transport !== 'connected' ? ` · computer ${execution.transport}` : ''}{execution.publication === 'failed' ? ' · artifacts failed' : ''} · accepted {execution.createdAt}</p>
           <p className="job-id"><code>{execution.id}</code></p></CardBody></Card>
       })}</div>
