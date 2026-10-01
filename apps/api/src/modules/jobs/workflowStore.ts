@@ -1,7 +1,8 @@
+import { publishWorkflowJobStateReadbackLocked } from './workflowReceiptPublication.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { JobExecutionSchema,type JobExecution,type PreparedJobSpec } from '@graphql/contracts/jobs'
-import { AcceptedWorkflowRunV3Schema,AcceptedCurrentNodeResultSchema,GraphDigestSchema,GraphIdSchema,GraphExecutionIdentitySchema,NodeResolutionSchema,RepeatOccurrenceIdentityV1Schema,RepeatOccurrenceV1Schema,RepeatDecisionV1Schema,RepeatDecisionMetadataV1Schema,WorkflowVersionV3Schema,canonicalGraphJson,qualifyRepeatGraphExecution,validateRepeatGraphFactsV3,validateRepeatSuccessorV1,type RepeatGraphFactV3,type WorkflowVersionV3,type RepeatDecisionV1 } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema,AcceptedCurrentNodeResultSchema,GraphDigestSchema,GraphIdSchema,GraphExecutionIdentitySchema,NodeResolutionSchema,RepeatOccurrenceIdentityV1Schema,RepeatExecutionIdentityV1Schema,RepeatGraphExecutionIdentityV3Schema,RepeatOccurrenceV1Schema,RepeatDecisionV1Schema,RepeatDecisionMetadataV1Schema,WorkflowVersionV3Schema,canonicalGraphJson,qualifyRepeatGraphExecution,validateRepeatGraphFactsV3,validateRepeatSuccessorV1,type RepeatGraphFactV3,type WorkflowVersionV3,type RepeatDecisionV1 } from '@graphql/contracts/wave25'
 import type { RunOwnership } from '../runs/ownership.js'
 import { beforeGraphCommit,type GraphTransactionSql } from '../run-graph/connection.js'
 import { openRunGraphPublication } from '../run-graph/publication.js'
@@ -22,7 +23,7 @@ import type { WorkflowJobAdmission,WorkflowJobLockedPort } from './workflowRunti
 import { workflowJobIdentity,workflowJobResult,workflowJobRepeatDecision } from './workflowResult.js'
 
 const Source=z.object({relationshipId:GraphIdSchema,execution:GraphExecutionIdentitySchema,occurrence:RepeatOccurrenceIdentityV1Schema.nullable(),acceptedResultDigest:GraphDigestSchema,acceptedResult:AcceptedCurrentNodeResultSchema}).strict()
-const Entry=z.object({runInput:z.unknown(),external:z.array(Source).max(8000),carry:z.object({decisionId:GraphIdSchema,execution:GraphExecutionIdentitySchema,acceptedResultDigest:GraphDigestSchema,acceptedResult:AcceptedCurrentNodeResultSchema}).strict().nullable()}).strict()
+const Entry=z.object({runInput:z.unknown(),external:z.array(Source).max(8000),carry:z.object({decisionId:GraphIdSchema,execution:RepeatExecutionIdentityV1Schema,acceptedResultDigest:GraphDigestSchema,acceptedResult:AcceptedCurrentNodeResultSchema}).strict().nullable()}).strict()
 const Resolution=z.object({ref:z.object({nodeId:GraphIdSchema,occurrence:RepeatOccurrenceIdentityV1Schema.nullable()}).strict(),value:NodeResolutionSchema,deferredRelationshipIds:z.array(GraphIdSchema).max(8000)}).strict()
 type Occurrence={occurrence:z.infer<typeof RepeatOccurrenceV1Schema>;input:RepeatEntryInput}
 type Context={sql:GraphTransactionSql;scope:RepeatScope;version:WorkflowVersionV3;hooks:RepeatLockedHooks;now:string;fence:{ownerId:string;fence:string}}
@@ -32,7 +33,7 @@ export interface WorkflowJobStorePublication {
   observe(sql:GraphTransactionSql,scope:RepeatScope,execution:JobExecution):Promise<void>
 }
 /** Effects reuse the existing Run head, canonical receipts and repeat ledger. */
-export function workflowJobStorePublication(observe:WorkflowJobStorePublication['observe']):WorkflowJobStorePublication {
+export function workflowJobStorePublication():WorkflowJobStorePublication {
   return {
     async effect(sql,owner,scope,version,effect,mutate,facts){
       const publication=await openRunGraphPublication(sql,scope)
@@ -45,7 +46,7 @@ export function workflowJobStorePublication(observe:WorkflowJobStorePublication[
       requireRepeatCanonicalReceiptBeforeCommit(sql,canonicalRepeatEffectReceipt(scope,effect,result.semanticDigest))
     },
     async assertReceipt(sql,scope,effect){await assertRepeatCanonicalReceiptLocked(sql,canonicalRepeatEffectReceipt(scope,effect))},
-    observe,
+    observe:publishWorkflowJobStateReadbackLocked,
   }
 }
 /** One adapter per existing Run owner; preparation performs no native/source I/O. */
@@ -124,7 +125,7 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
     if(execution.workspaceId!==context.scope.workspaceId||execution.workflow?.runId!==context.scope.runId||execution.workflow.workflowId!==context.scope.workflowId||execution.workflow.nodeId!==ref.nodeId||execution.acceptedSpec.definitionId!==node.jobDefinitionId||execution.acceptedSpec.definitionRevision!==node.jobDefinitionRevision||execution.acceptedSpec.definitionVersionId!==node.jobDefinitionVersionId)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT')
     if(preparation&&(execution.id!==preparation.executionId||execution.attemptId!==preparation.attemptId||execution.operationId!==preparation.operationId||!sameRepeatValue(execution.acceptedSpec.workflowInput,preparation.input)))repeatConflict('JOB_PREPARATION_PIN_CONFLICT')
   }
-  private async slot(context:Context,ref:RepeatNodeRef,executionId:string){const row=(await context.sql.query<{execution_id:string;identity:unknown;input_digest:string;input_json:string}>(`select x.execution_id,x.identity,s.input_digest,s.input_json from run_repeat_executions x join run_repeat_slots s on s.slot_id=x.slot_id where x.run_id=$1 and x.slot_id=$2 order by x.technical_attempt desc limit 1`,[context.scope.runId,repeatSlotId(context.scope.runId,ref)])).rows[0];if(!row||row.execution_id!==executionId||row.input_digest!==repeatDigest(JSON.parse(row.input_json),4*1024*1024))repeatConflict('JOB_WORKFLOW_PIN_CONFLICT');const identity=GraphExecutionIdentitySchema.parse(row.identity);if(identity.kind!=='job'||identity.workflowNodeId!==ref.nodeId||identity.executionId!==executionId)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT');return row}
+  private async slot(context:Context,ref:RepeatNodeRef,executionId:string){const row=(await context.sql.query<{execution_id:string;identity:unknown;input_digest:string;input_json:string}>(`select x.execution_id,x.identity,s.input_digest,s.input_json from run_repeat_executions x join run_repeat_slots s on s.slot_id=x.slot_id where x.run_id=$1 and x.slot_id=$2 order by x.technical_attempt desc limit 1`,[context.scope.runId,repeatSlotId(context.scope.runId,ref)])).rows[0];if(!row||row.execution_id!==executionId||row.input_digest!==repeatDigest(JSON.parse(row.input_json),4*1024*1024))repeatConflict('JOB_WORKFLOW_PIN_CONFLICT');const identity=ref.occurrence?RepeatGraphExecutionIdentityV3Schema.parse(row.identity):GraphExecutionIdentitySchema.parse(row.identity);if(ref.occurrence&&(!('occurrence' in identity)||!sameRepeatValue(identity.occurrence,ref.occurrence)))repeatConflict('REPEAT_OCCURRENCE_CONFLICT');if(identity.kind!=='job'||identity.workflowNodeId!==ref.nodeId||identity.executionId!==executionId)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT');return row}
   async prepareJob(ref:RepeatNodeRef):Promise<WorkflowJobAdmission>{return this.transaction(async context=>{
     this.node(context,ref);const occurrence=await this.occurrence(context,ref),resolutions=await this.resolutions(context,ref.occurrence?.occurrenceId??null),admission=decideRepeatAdmission(context.version,ref,resolutions)
     if(admission.kind==='resolved'){const resolution=resolutions.get(ref.nodeId)!;await this.recorded(context,resolution.value.execution?'terminal.accept':'node.inactive',resolution.value.execution?.executionId??repeatSlotId(context.scope.runId,ref));return {kind:'resolved',resolution}}
@@ -158,7 +159,7 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
       execution=JobExecutionSchema.parse(await this.jobs.admitPrepared(context.sql,ref,preparation,spec));this.assertExecution(context,ref,execution,preparation)
       await context.sql.query('insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,technical_attempt,previous_execution_id,identity) values($1,$2,$3,$4,1,null,$5::jsonb)',[execution.id,context.scope.runId,slotId,ref.occurrence?.occurrenceId??null,JSON.stringify(ref.occurrence?workflowJobIdentity(execution,node,ref.occurrence):bare)])
       for(const binding of bindings){if(!sameRepeatValue(binding.recipient,bare)||binding.inputDigest!==preparation.inputDigest||!sameRepeatValue(binding.recipientOccurrence,ref.occurrence))repeatConflict('JOB_PREPARATION_PIN_CONFLICT');await context.sql.query('insert into run_repeat_bindings(binding_id,run_id,recipient_execution_id,source_execution_id,source_result_digest,input_digest,slot_id,ordinal,record) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',[binding.bindingId,context.scope.runId,execution.id,binding.source.execution.executionId,binding.source.acceptedResultDigest,binding.inputDigest,slotId,binding.ordinal,JSON.stringify(binding)])}
-    },async()=>[{type:'repeat.execution',execution:{identity:qualifyRepeatGraphExecution(bare,ref.occurrence),inputDigest:preparation.inputDigest,previousExecutionId:null,state:'queued',resultOutcome:null}},...bindings.map(binding=>({type:'repeat.input.bound' as const,binding:{bindingId:binding.bindingId,recipient:qualifyRepeatGraphExecution(bare,ref.occurrence),sender:qualifyRepeatGraphExecution(binding.source.execution,'occurrence' in binding.source?binding.source.occurrence:ref.occurrence),acceptedResultDigest:binding.source.acceptedResultDigest,inputDigest:binding.inputDigest,ordinal:binding.ordinal,kind:binding.kind,relationshipId:'relationshipId' in binding.source?binding.source.relationshipId:null,decisionId:'decisionId' in binding.source?binding.source.decisionId:null}}))])
+    },async()=>[{type:'repeat.execution',execution:{identity:qualifyRepeatGraphExecution(bare,ref.occurrence),inputDigest:preparation.inputDigest,previousExecutionId:null,state:'queued',resultOutcome:null}},...bindings.map(binding=>({type:'repeat.input.bound' as const,binding:{bindingId:binding.bindingId,recipient:qualifyRepeatGraphExecution(bare,ref.occurrence),sender:qualifyRepeatGraphExecution(binding.source.execution,'decisionId' in binding.source?binding.source.execution.occurrence:binding.source.occurrence),acceptedResultDigest:binding.source.acceptedResultDigest,inputDigest:binding.inputDigest,ordinal:binding.ordinal,kind:binding.kind,relationshipId:'relationshipId' in binding.source?binding.source.relationshipId:null,decisionId:'decisionId' in binding.source?binding.source.decisionId:null}}))])
     if(!execution)repeatConflict('JOB_PREPARATION_PIN_CONFLICT');return execution
   })}
   async observeJobState(ref:RepeatNodeRef,executionId:string):Promise<JobExecution>{return this.transaction(async context=>{this.node(context,ref);await this.slot(context,ref,executionId);const execution=await this.jobs.read(context.sql,executionId);this.assertExecution(context,ref,execution);await this.publication.observe(context.sql,context.scope,execution);return execution})}

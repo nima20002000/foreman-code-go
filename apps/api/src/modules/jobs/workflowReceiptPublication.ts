@@ -1,9 +1,10 @@
 import { RemoteJobOperationReceiptSchema,type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
 import type { JobExecution } from '@graphql/contracts/jobs'
 import { graphSourceDigest } from '../run-graph/publication.js'
-import { assertRunGraphPublication,type RunGraphPublication } from '../run-graph/publication.js'
+import { assertRunGraphPublication,openRunGraphPublication,type RunGraphPublication } from '../run-graph/publication.js'
 import { readPublicNodeProjection,publicNodeProjectionFacts } from '../run-graph/publicProjection.js'
-import { beforeGraphCommit } from '../run-graph/connection.js'
+import type { RepeatScope } from '../runs/repeatResolution.js'
+import { beforeGraphCommit,type GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatId } from '../runs/repeatResolution.js'
 import { DomainError } from '../errors.js'
 import { canonical,JobRepository } from './repository.js'
@@ -29,4 +30,15 @@ export async function publishWorkflowJobReceiptLocked(publication:RunGraphPublic
     const stored=await new JobRepository().execution(sql,execution.workspaceId,execution.id)
     if(canonical(stored)!==canonical(next))throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','The original receipt state changed before its graph commit.',409)
   })
+}
+
+/** Readback only. It cannot repair an earlier naked receipt mutation: opening
+ * the existing publication enforces its initial canonical/domain consistency. */
+export async function publishWorkflowJobStateReadbackLocked(sql:GraphTransactionSql,scope:RepeatScope,execution:JobExecution):Promise<void> {
+  if(execution.workflow?.runId!==scope.runId||execution.workflow.workflowId!==scope.workflowId||execution.workspaceId!==scope.workspaceId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The actual Job observation belongs to another Run.',409)
+  const publication=await openRunGraphPublication(sql,scope)
+  const facts=publicNodeProjectionFacts(await readPublicNodeProjection(sql,scope,[execution.workflow.nodeId],{jobs:[execution]}))
+  if(!facts.length)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The exact Job node observation is missing.',409)
+  const digest=graphSourceDigest(facts)
+  await publication.source({evidence:{sourceKind:'execution',sourceId:repeatId('job-readback',execution.id,digest),sourceRevision:'1'},sourceDigest:digest,facts},async()=>undefined)
 }
