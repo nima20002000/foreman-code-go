@@ -3,6 +3,8 @@ import type pg from 'pg'
 import type { OperatorActivityChange } from './operatorActivity.js'
 
 export interface ActivityMutationFence {
+  connectionId?: string
+  nativeGeneration?: string
   nativeSessionId?: string
   nativeTurnId?: string
   source?: { eventId?: string; sequence?: string; system?: string; observedAt?: string; connectionId?: string }
@@ -20,7 +22,9 @@ export class PostgresOperatorActivityRepository {
   async append(conversationId: string, requestId: string, input: OperatorActivityChange, fence: ActivityMutationFence = {}): Promise<{ activity: OperatorActivity; revision: number } | undefined> {
     const value = changeSchema.parse(input)
     if (value.requestId !== requestId) throw new Error('Activity belongs to a different request.')
-    if (fence.source?.sequence !== undefined && !/^(0|[1-9][0-9]*)$/.test(fence.source.sequence)) throw new Error('Invalid native source sequence.')
+    for (const sequence of [fence.source?.sequence, fence.source?.nativeSequence]) {
+      if (sequence !== undefined && !/^(0|[1-9][0-9]*)$/.test(sequence)) throw new Error('Invalid native source sequence.')
+    }
     const client = await this.pool.connect()
     try {
       await client.query('begin')
@@ -31,7 +35,10 @@ export class PostgresOperatorActivityRepository {
       const prior = (await client.query<{ record: OperatorActivityChange; source_provenance: ActivityMutationFence['source'] }>(
         `select record,source_provenance from operator_conversation_activity where conversation_id=$1 and request_id=$2 and activity_id=$3 for update`,
       [conversationId, requestId, value.id])).rows[0]
-      const stored = prior?.source_provenance ?? {}
+      const stored = (prior?.source_provenance ?? {}) as NonNullable<ActivityMutationFence['source']> & { connectionId?: string }
+      const orderedNative = source.nativeSequence !== undefined && stored.nativeSequence !== undefined
+      const orderedTransport = source.connectionId !== undefined && source.connectionId === stored.connectionId
+        && source.transportSequence !== undefined && stored.transportSequence !== undefined
       const source = { ...(fence.authoritativeReconciliation ? stored : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source }
       const merged = prior ? { ...prior.record, ...value } : value
       // Compare parsed allowlisted facts, independent of JSONB key order.

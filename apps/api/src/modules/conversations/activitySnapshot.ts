@@ -1,4 +1,5 @@
 import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type ActivityScope, type WorkRef, type WorkSummary } from '@graphql/contracts'
+import { chatInteractionSummary, conversationPublicationItems, conversationTextItems, messageSourceRevisions } from './activityItems.js'
 import type { PostgresAgentChatRepository } from './agentChatRepository.js'
 
 type State = NonNullable<Awaited<ReturnType<PostgresAgentChatRepository['state']>>>
@@ -26,18 +27,22 @@ export function agentActivitySnapshot(loaded: State): ActivitySnapshotV1 {
       phase: 'active', outcome: null, delivery: null, evidence: activity.status === 'unknown' ? 'unknown' : 'confirmed', startedAt: null })
   }
   return ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope, revision: String(row.revision),
+    sourceRevisions: [{ source: 'scope', id: row.id, revision: String(row.revision) }, ...messageSourceRevisions(loaded.messages),
+      ...(loaded.publicationReceipts ?? []).flatMap((receipt) => [{ source: 'publication', id: receipt.receiptId, revision: '0' },
+        { source: 'file', id: receipt.fileId, revision: receipt.fileActivityRevision }])],
     ...projectActivityStatus({ work, queued: turns.filter((turn) => turn.delivery === 'queued').map((turn) => ref(turn.requestId)),
       latest: loaded.latestRequestId ? ref(loaded.latestRequestId) : null }),
     ...(loaded.hasMoreActivities ? { hasMoreActiveWork: true } : {}),
     // Native callback availability is qualified separately by C; a pending callback is not a durable interaction receipt.
-    pendingInteractions: [],
-    activities: loaded.activityPage.activities.map((activity) => ({
-      id: activity.id, revision: loaded.activityPage.itemRevisions[activity.id] ?? String(activity.revision), order: activity.sequence, owner: ref(activity.requestId),
+    pendingInteractions: chatInteractionSummary({ conversationId: row.id, requestId: row.active_request_id, revision: String(row.revision), pending: row.pending_interaction }),
+    activities: [...conversationPublicationItems(row.id, loaded.messages, loaded.publicationReceipts ?? []), ...conversationTextItems(row.id, loaded.messages, { harness: row.harness, sessionId: row.native_session_id,
+      turnIdFor: (requestId) => turns.find((turn) => turn.requestId === requestId)?.nativeTurnId }), ...loaded.activityPage.activities.map((activity) => ({
+      id: activity.id, orderSource: 'conversation_activity', revision: loaded.activityPage.itemRevisions[activity.id] ?? String(activity.revision), order: activity.sequence, owner: ref(activity.requestId),
       source: { schemaVersion: 1, system: 'conversation_record', observedAt: null },
       evidence: activity.status === 'unknown' ? 'unknown' : 'confirmed',
       ...(activity.kind === 'thinking' ? { kind: 'reasoning_summary', summary: activity.title }
-        : { kind: activity.kind === 'subagent' ? 'subagent' : 'tool', title: activity.title, status: activity.status }),
-    })),
+        : { kind: activity.kind === 'subagent' ? 'subagent' : 'tool', toolKind: activity.kind, title: activity.title, status: activity.status }),
+    }))],
     page: { before: null, nextCursor: loaded.activityPage.nextCursor, hasMore: loaded.activityPage.nextCursor !== null },
   })
 }

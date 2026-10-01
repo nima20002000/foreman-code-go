@@ -58,7 +58,7 @@ export const ActivityItemSchema = z.discriminatedUnion('kind', [
 ])
 export type ActivityItem = z.infer<typeof ActivityItemSchema>
 export const ActivitySourceRevisionSchema = z.object({
-  source: z.enum(['scope', 'execution', 'run_activity', 'native_events', 'message', 'interaction', 'file']), id, revision: ActivityRevisionSchema,
+  source: z.enum(['scope', 'execution', 'run_activity', 'native_events', 'message', 'interaction', 'file', 'publication']), id, revision: ActivityRevisionSchema,
 }).strict()
 export type ActivitySourceRevision = z.infer<typeof ActivitySourceRevisionSchema>
 

@@ -11,6 +11,7 @@ import {
 } from '@graphql/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
+import { readConversationPublicationReceipts, type ConversationPublicationReceipt } from './messagePublications.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { OPERATOR_SNAPSHOT_MESSAGE_BYTES, OPERATOR_HISTORY_PAGE_BYTES } from './operatorChatRepository.js'
 
@@ -573,7 +574,7 @@ export class PostgresAgentChatRepository {
   }
 
   async state(id: string, options: { recoverOverflow?: boolean } = {}): Promise<{
-    row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>>
+    publicationReceipts?: ConversationPublicationReceipt[]; row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>>
   } | undefined> {
     const client = await this.pool.connect()
     try {
@@ -612,13 +613,14 @@ export class PostgresAgentChatRepository {
       const recent = (await client.query<{ messages: unknown[]; has_earlier: boolean }>(`with candidates as (
         select m.*,row_number() over (order by m.sequence desc) as ordinal,
           sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-        from (select record,sequence from operator_conversation_messages
+        from (select record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) as record,sequence from operator_conversation_messages
           where conversation_id=$1 order by sequence desc limit ($2::integer+1)) m
       ), selected as (select * from candidates where ordinal<=$2 and bytes<=$3)
       select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
         (select count(*) from candidates)>(select count(*) from selected) as has_earlier`,
       [id, AGENT_CHAT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])).rows[0]!
       const messages = await hydrateMessageAttachments(client, id, recent.messages)
+      const publicationReceipts = await readConversationPublicationReceipts(client, id, messages.filter((message) => message.role === 'user').map((message) => message.id))
       const activity = new PostgresOperatorActivityRepository(this.pool)
       const activityPage = await activity.page(id, { limit: 100 }, client)
       const unfinished = await activity.unfinished(id, client)
@@ -630,7 +632,7 @@ export class PostgresAgentChatRepository {
         ? (await client.query<{ workflowVersionId: string; attemptKey: string }>(`select r.workflow_version_id as "workflowVersionId", e.attempt::text as "attemptKey"
             from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2`, [row.origin_run_id, row.origin_execution_id])).rows[0] ?? null : null
       await client.query('commit')
-      return { row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
+      return { publicationReceipts, row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
         ...(overflow ? { hasMoreTurns: true as const } : {}),
         ...(unfinished.hasMore ? { hasMoreActivities: true as const } : {}) }
     } catch (error) {
@@ -650,7 +652,7 @@ export class PostgresAgentChatRepository {
     const page = (await this.pool.query<{ messages: unknown[]; next_cursor: string | null }>(`with candidates as (
       select m.*,row_number() over (order by m.sequence desc) as ordinal,
         sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-      from (select record,sequence from operator_conversation_messages
+      from (select record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) as record,sequence from operator_conversation_messages
         where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
         order by sequence desc limit ($3::integer+1)) m
     ), selected as (select * from candidates where ordinal<=$3 and (bytes<=$4 or ordinal=1))
