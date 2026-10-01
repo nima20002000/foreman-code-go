@@ -5,6 +5,7 @@ import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } fro
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { AgentChatService } from '../../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
+import type { OperatorActivityChange } from '../../src/modules/conversations/operatorActivity.js'
 import type { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
 import { NativeTurnNotActiveError } from '../../src/modules/harnesses/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSteerInput, NativeTurnInput } from '../../src/modules/harnesses/port.js'
@@ -57,6 +58,7 @@ export class F1Store {
   }
   readonly turns = new Map<string, Receipt>()
   readonly messages = new Map<string, Message>()
+  readonly activityRows: Array<{ record: OperatorActivityChange; sequence: string; revision: string }> = []
   readonly statements: Array<{ sql: string; values: unknown[]; connection: number }> = []
   private connections = 0
   readonly pool = {
@@ -123,7 +125,12 @@ export class F1Store {
     if (sql.startsWith('select record,sequence::text from operator_conversation_messages')) {
       return result([...this.messages.values()].reverse().map((record, index) => ({ record, sequence: String(index + 1) })))
     }
-    if (sql.startsWith('select record,sequence::text,revision::text from operator_conversation_activity')) return result()
+    if (sql.startsWith('select record,sequence::text,revision::text from operator_conversation_activity')) {
+      if (sql.includes("record->>'status' in")) return result(this.activityRows.filter((entry) => entry.record.kind !== 'thinking'
+        && ['pending', 'running', 'unknown'].includes(entry.record.status)).slice(0, Number(values[1])))
+      return result([...this.activityRows].reverse().filter((entry) => values[1] === null || BigInt(entry.sequence) < BigInt(String(values[1])))
+        .slice(0, Number(values[2])))
+    }
     if (sql.startsWith('insert into operator_conversation_messages')) {
       this.messages.set(String(values[0]), JSON.parse(String(values[4])) as Message)
       return result([], 1)
@@ -172,7 +179,13 @@ export class F1Store {
       } else throw new Error(`Unhandled turn update: ${sql}`)
       return result([], 1)
     }
-    if (sql.startsWith('update operator_conversation_activity')) return result()
+    if (sql.startsWith('update operator_conversation_activity')) {
+      for (const entry of this.activityRows) if (entry.record.requestId === values[1] && ['pending', 'running'].includes(entry.record.status)) {
+        entry.record.status = entry.record.kind === 'thinking' ? values[2] ? 'canceled' : 'completed' : 'unknown'
+        entry.revision = String(Number(entry.revision) + 1)
+      }
+      return result()
+    }
     if (sql.startsWith('update operator_conversations')) {
       if (sql.includes('and active_request_id=$2') && this.row.active_request_id !== values[1]) return result()
       if (sql.includes('set active_request_id=$2')) {

@@ -1,6 +1,5 @@
 import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery } from '@graphql/contracts'
 import type pg from 'pg'
-import { DomainError } from '../errors.js'
 import type { OperatorActivityChange } from './operatorActivity.js'
 
 export interface ActivityMutationFence {
@@ -86,15 +85,14 @@ export class PostgresOperatorActivityRepository {
   }
 
   /** The unfinished roster is independent of chronological history paging. */
-  async unfinished(conversationId: string, query: Queryable = this.pool): Promise<OperatorActivity[]> {
+  async unfinished(conversationId: string, query: Queryable = this.pool): Promise<{ activities: OperatorActivity[]; hasMore: boolean }> {
     const limit = 100
     const result = await query.query<{ record: unknown; sequence: string; revision: string }>(`
       select record,sequence::text,revision::text from operator_conversation_activity
       where conversation_id=$1 and record->>'kind' <> 'thinking' and record->>'status' in ('pending','running','unknown')
       order by sequence limit $2`, [conversationId, limit + 1])
-    if (result.rows.length > limit) throw new DomainError('AGENT_CHAT_ACTIVITY_OVERFLOW',
-      'This chat exceeds the unfinished-activity limit. Reconcile unfinished tools before reading its activity snapshot.', 409, { limit })
-    return result.rows.map((row) => OperatorActivitySchema.parse({ ...(row.record as object), sequence: row.sequence, revision: Number(row.revision) }))
+    return { activities: result.rows.slice(0, limit).map((row) => OperatorActivitySchema.parse({ ...(row.record as object), sequence: row.sequence, revision: Number(row.revision) })),
+      hasMore: result.rows.length > limit }
   }
 
   async finish(conversationId: string, requestId: string, canceled: boolean, query: Queryable): Promise<void> {

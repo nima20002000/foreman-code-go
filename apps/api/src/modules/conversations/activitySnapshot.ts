@@ -28,6 +28,7 @@ export function agentActivitySnapshot(loaded: State): ActivitySnapshotV1 {
   return ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope, revision: String(row.revision),
     ...projectActivityStatus({ work, queued: turns.filter((turn) => turn.delivery === 'queued').map((turn) => ref(turn.requestId)),
       latest: loaded.latestRequestId ? ref(loaded.latestRequestId) : null }),
+    ...(loaded.hasMoreActivities ? { hasMoreActiveWork: true } : {}),
     // Native callback availability is qualified separately by C; a pending callback is not a durable interaction receipt.
     pendingInteractions: [],
     activities: loaded.activityPage.activities.map((activity) => ({

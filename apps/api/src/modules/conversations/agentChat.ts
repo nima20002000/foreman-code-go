@@ -405,6 +405,11 @@ export class AgentChatService {
         'This chat has more than 100 unfinished messages. Only a recovery window is shown. Cancel queued messages to free capacity; Stop chat also cancels all queued messages when available. Unconfirmed deliveries still require native evidence.']
         .filter(Boolean).join(' ')
     }
+    if (loaded.hasMoreActivities) {
+      availability.message = [availability.message,
+        'This chat has more than 100 unfinished tools or subagents. Only 100 unfinished entries are shown; additional work remains in activity history.']
+        .filter(Boolean).join(' ')
+    }
     const activities = loaded.activityPage.activities
     return AgentChatStateSchema.parse({
       context, conversation: agentConversation(row), sessionState: this.sessionUnavailable(row, resolution.configuration)

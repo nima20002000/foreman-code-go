@@ -573,7 +573,7 @@ export class PostgresAgentChatRepository {
   }
 
   async state(id: string, options: { recoverOverflow?: boolean } = {}): Promise<{
-    row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>>
+    row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>>
   } | undefined> {
     const client = await this.pool.connect()
     try {
@@ -621,7 +621,7 @@ export class PostgresAgentChatRepository {
       const messages = await hydrateMessageAttachments(client, id, recent.messages)
       const activity = new PostgresOperatorActivityRepository(this.pool)
       const activityPage = await activity.page(id, { limit: 100 }, client)
-      const unfinishedActivities = await activity.unfinished(id, client)
+      const unfinished = await activity.unfinished(id, client)
       const ownership = (await client.query<{ started_at: Date | null; latest_request_id: string | null }>(`select
         (select started_at from operator_conversation_turns where conversation_id=$1 and request_id=$2) as started_at,
         (select request_id from operator_conversation_turns where conversation_id=$1 and intent is not null order by turn_sequence desc limit 1) as latest_request_id`,
@@ -630,8 +630,9 @@ export class PostgresAgentChatRepository {
         ? (await client.query<{ workflowVersionId: string; attemptKey: string }>(`select r.workflow_version_id as "workflowVersionId", e.attempt::text as "attemptKey"
             from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2`, [row.origin_run_id, row.origin_execution_id])).rows[0] ?? null : null
       await client.query('commit')
-      return { row, turns, messages, activityPage, unfinishedActivities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
-        ...(overflow ? { hasMoreTurns: true as const } : {}) }
+      return { row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
+        ...(overflow ? { hasMoreTurns: true as const } : {}),
+        ...(unfinished.hasMore ? { hasMoreActivities: true as const } : {}) }
     } catch (error) {
       await client.query('rollback').catch(() => undefined)
       throw error

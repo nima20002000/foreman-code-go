@@ -102,10 +102,12 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
       { ref: { kind: 'subagent', itemId: 'old-child' }, outcome: null, evidence: 'unknown' },
     ])
   })
-  it('reports explicit unfinished-roster overflow instead of claiming no unfinished work', async () => {
+  it('reports a bounded unfinished-roster recovery window without blocking state readback', async () => {
     for (let index = 0; index < 101; index++) await repository.append('conversation', 'A',
       { ...value('running'), id: `unfinished-${index}` }, fence(String(index + 1)))
-    await expect(repository.unfinished('conversation')).rejects.toMatchObject({ code: 'AGENT_CHAT_ACTIVITY_OVERFLOW', details: { limit: 100 } })
+    const roster = await repository.unfinished('conversation')
+    expect(roster.activities).toHaveLength(100)
+    expect(roster.hasMore).toBe(true)
   })
   it('accepts same-status authoritative history without inventing order and preserves the admitted transport watermark', async () => {
     const transport = { nativeSessionId: 'session', nativeTurnId: 'turn-A', source: { connectionId: 'connection-1', sequence: '8' } }
