@@ -54,6 +54,12 @@ describe('existing message text persistence', () => {
     expect((await appendConversationTextOperation(f.pool, 'conversation', 'A', { ...operation(3, 'unproven'), source: { connectionId: 'new', sequence: 1 } }))?.status).toBe('reconciliation_required')
     expect(f.state()).toEqual(before)
   })
+  it('keeps the native item row key shared with completed-message/cold settlement paths', async () => {
+    const f = fixture(); const value = operation(1, 'draft'); value.identity.partId = 'part-metadata'
+    await appendConversationTextOperation(f.pool, 'conversation', 'A', value)
+    expect(f.state().item?.record.nativeMessageId).toBe('item')
+    expect(f.state().item?.record.activityNative).toMatchObject({ itemId: 'item', partId: 'part-metadata' })
+  })
   it('rejects old turn and incorrect immutable selection before any mutation', async () => {
     const f = fixture(); const old = operation(1, 'old'); old.identity.turnId = 'old-turn'
     expect(await appendConversationTextOperation(f.pool, 'conversation', 'A', old)).toBeUndefined()

@@ -47,7 +47,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
       [selected.runId, selected.workflowVersionId, selected.executionId, selected.attemptKey])
       if (!exact.rowCount) { await client.query('commit'); return undefined }
     }
-    const nativeId = identity.partId ?? identity.itemId
+    const nativeId = identity.itemId
     const prior = (await client.query<{ id: string; record: Record<string, unknown>; content: string; text_provenance: Provenance | null; revision: string }>(
       `select id,record,content,text_provenance,activity_record_revision::text as revision from operator_conversation_messages
         where conversation_id=$1 and native_message_id=$2 for update`, [conversationId, nativeId])).rows[0]

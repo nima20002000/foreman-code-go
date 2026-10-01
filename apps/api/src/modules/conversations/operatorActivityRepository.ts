@@ -7,7 +7,7 @@ export interface ActivityMutationFence {
   nativeGeneration?: string
   nativeSessionId?: string
   nativeTurnId?: string
-  source?: { eventId?: string; sequence?: string; system?: string; observedAt?: string; connectionId?: string }
+  source?: { eventId?: string; sequence?: string; nativeSequence?: string; transportSequence?: number; system?: string; observedAt?: string; connectionId?: string }
   onReconciliationRequired?: () => void
   /** Only reconciled native history may correct terminal content. */
   authoritativeReconciliation?: boolean
@@ -35,21 +35,27 @@ export class PostgresOperatorActivityRepository {
       const prior = (await client.query<{ record: OperatorActivityChange; source_provenance: ActivityMutationFence['source'] }>(
         `select record,source_provenance from operator_conversation_activity where conversation_id=$1 and request_id=$2 and activity_id=$3 for update`,
       [conversationId, requestId, value.id])).rows[0]
-      const stored = (prior?.source_provenance ?? {}) as NonNullable<ActivityMutationFence['source']> & { connectionId?: string }
-      const orderedNative = source.nativeSequence !== undefined && stored.nativeSequence !== undefined
-      const orderedTransport = source.connectionId !== undefined && source.connectionId === stored.connectionId
-        && source.transportSequence !== undefined && stored.transportSequence !== undefined
-      const source = { ...(fence.authoritativeReconciliation ? stored : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source }
+      const stored = prior?.source_provenance ?? {}
+      const connectionId = fence.connectionId ?? fence.source?.connectionId
+      const nativeSequence = fence.source?.nativeSequence ?? (connectionId === undefined ? fence.source?.sequence : undefined)
+      const legacyTransport = connectionId !== undefined && fence.source?.sequence !== undefined ? Number(fence.source.sequence) : undefined
+      const transportSequence = fence.source?.transportSequence ?? (Number.isSafeInteger(legacyTransport) ? legacyTransport : undefined)
+      const source = { ...(fence.authoritativeReconciliation ? stored : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source,
+        connectionId, nativeSequence, transportSequence }
+      const previousNative = stored.nativeSequence ?? (stored.connectionId === undefined ? stored.sequence : undefined)
+      const previousTransport = stored.transportSequence ?? (stored.connectionId !== undefined && stored.sequence !== undefined ? Number(stored.sequence) : undefined)
+      const orderedNative = source.nativeSequence !== undefined && previousNative !== undefined
+      const sameConnection = source.connectionId !== undefined && source.connectionId === stored.connectionId
+      const orderedTransport = sameConnection && source.transportSequence !== undefined && previousTransport !== undefined
       const merged = prior ? { ...prior.record, ...value } : value
       // Compare parsed allowlisted facts, independent of JSONB key order.
       const changed = !prior || JSON.stringify(changeSchema.parse(prior.record)) !== JSON.stringify(changeSchema.parse(merged))
-      const sameConnection = source.connectionId === stored.connectionId
       const stale = fence.source?.eventId !== undefined && fence.source.eventId === stored.eventId
-        || sameConnection && stored.sequence !== undefined && (fence.source?.sequence !== undefined
-          ? BigInt(fence.source.sequence) <= BigInt(stored.sequence) : !fence.authoritativeReconciliation)
+        || orderedNative && BigInt(source.nativeSequence!) <= BigInt(previousNative!)
+        || orderedTransport && source.transportSequence! <= previousTransport!
       const terminal = prior && ['completed', 'failed', 'canceled'].includes(prior.record.status)
       const ambiguous = prior && changed && (stored.connectionId !== undefined && !sameConnection
-        || prior.record.status === value.status && source.sequence === undefined)
+        || prior.record.status === value.status && !orderedNative && !orderedTransport)
       if (stale || terminal && changed && (!fence.authoritativeReconciliation || prior.record.status !== value.status)
         || ambiguous && !fence.authoritativeReconciliation || prior?.record.status === 'running' && value.status === 'pending') {
         await client.query('commit')
@@ -58,7 +64,7 @@ export class PostgresOperatorActivityRepository {
       }
       if (!changed) {
         // An identical newer native observation advances the private watermark, never public revisions.
-        if (sameConnection && source.sequence !== undefined && !fence.authoritativeReconciliation) await client.query(`update operator_conversation_activity set source_provenance=$4::jsonb
+        if ((orderedNative || orderedTransport) && !fence.authoritativeReconciliation) await client.query(`update operator_conversation_activity set source_provenance=$4::jsonb
           where conversation_id=$1 and request_id=$2 and activity_id=$3`, [conversationId, requestId, value.id, JSON.stringify(source)])
         await client.query('commit'); return undefined
       }
