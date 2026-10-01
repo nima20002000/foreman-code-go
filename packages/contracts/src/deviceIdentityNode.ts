@@ -77,7 +77,7 @@ export async function persistWorkerPairing(directory: string, configuration: imp
   try {
     try { await link(temporary, file) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      if (JSON.stringify(await loadWorkerPairing(directory)) !== JSON.stringify(parsed)) throw new Error('Worker is already paired; explicit unpairing is required.')
+      if (JSON.stringify(await loadWorkerPairing(directory)) !== JSON.stringify(parsed)) throw new Error('Worker is already paired; explicit unpairing is required.', { cause: error })
     }
     await syncPath(directory)
   } finally { await unlink(temporary) }

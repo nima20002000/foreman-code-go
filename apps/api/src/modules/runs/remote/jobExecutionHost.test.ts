@@ -83,7 +83,7 @@ async function acceptedClosure(wrongInput=false) {
     }
     throw new Error('Unexpected SQL in closure fixture')
   })
-  const sql={query} as JobSql,pool=new pg.Pool()
+  const sql={query} as unknown as JobSql,pool=new pg.Pool()
   const forbidden=vi.fn(async()=>{throw new Error('Closure getter must not contact hosts or acquire runtime authority')})
   const dispatch=new PostgresJobDispatch(pool,{deliver:forbidden,reconcile:forbidden,control:forbidden},{revalidate:forbidden,authorizeControl:forbidden,observe:forbidden})
   try {
