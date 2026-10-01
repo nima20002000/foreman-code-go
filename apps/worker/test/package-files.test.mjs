@@ -82,6 +82,6 @@ test('libvips preserves its published README license table instead of requiring 
 
 
 test('worker graph rejects database and control-plane server dependencies without disabling its guard', () => {
-  for (const path of ['pg', 'pg-pool', 'postgres', 'fastify', '@fastify/websocket', 'drizzle-orm/node-postgres', 'kysely']) assert.throws(() => assertWorkerDependency(path), /Forbidden/);
+  for (const path of ['pg', 'pg/lib/client', 'pg-pool', 'postgres', 'fastify', '@fastify/websocket', 'drizzle-orm/node-postgres', 'kysely']) assert.throws(() => assertWorkerDependency(path), /Forbidden/);
   for (const path of ['node:fs', 'sharp', 'ws', '@graphql/contracts/jobs']) assertWorkerDependency(path);
 });
