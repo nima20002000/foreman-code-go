@@ -115,6 +115,22 @@
     "./jobs": {
       "types": "./dist/jobs.d.ts",
       "import": "./dist/jobs.js"
+    },
+    "./device-application": {
+      "types": "./dist/deviceApplication.d.ts",
+      "import": "./dist/deviceApplication.js"
+    },
+    "./remote-job-execution": {
+      "types": "./dist/remoteJobExecution.d.ts",
+      "import": "./dist/remoteJobExecution.js"
+    },
+    "./job-artifacts": {
+      "types": "./dist/jobArtifacts.d.ts",
+      "import": "./dist/jobArtifacts.js"
+    },
+    "./job-workflow": {
+      "types": "./dist/jobWorkflow.d.ts",
+      "import": "./dist/jobWorkflow.js"
     }
   },
   "scripts": {

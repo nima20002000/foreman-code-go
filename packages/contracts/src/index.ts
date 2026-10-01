@@ -1635,3 +1635,7 @@ export * from "./nodePlacement.js";
 export * from "./harnessRegistry.js";
 export * from "./sourceMaterialization.js";
 export * from "./jobs.js";
+export * from "./deviceApplication.js";
+export * from "./remoteJobExecution.js";
+export * from "./jobArtifacts.js";
+export * from "./jobWorkflow.js";

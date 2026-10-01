@@ -23,6 +23,9 @@ export interface WorkerLocalIdentity {
 export function publicKeyFingerprint(publicKey: string): string {
   const key = createPublicKey(publicKey)
   if (key.asymmetricKeyType !== 'ed25519') throw new Error('Worker identity requires an Ed25519 key.')
+  if (publicKey.trim() !== key.export({ type: 'spki', format: 'pem' }).toString().trim()) {
+    throw new Error('Publish only a canonical Ed25519 public key, never private key material.')
+  }
   return createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex')
 }
 export async function loadOrCreateWorkerIdentity(directory: string): Promise<WorkerLocalIdentity> {
@@ -71,7 +74,13 @@ export async function persistWorkerPairing(directory: string, configuration: imp
   const file = join(directory, 'pairing.json'), temporary = join(directory, `.pairing-${randomUUID()}`)
   await writeFile(temporary, JSON.stringify(parsed), { mode: 0o600, flag: 'wx' })
   await syncPath(temporary)
-  try { await link(temporary, file); await syncPath(directory) } finally { await unlink(temporary) }
+  try {
+    try { await link(temporary, file) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if (JSON.stringify(await loadWorkerPairing(directory)) !== JSON.stringify(parsed)) throw new Error('Worker is already paired; explicit unpairing is required.', { cause: error })
+    }
+    await syncPath(directory)
+  } finally { await unlink(temporary) }
 }
 export async function loadWorkerPairing(directory: string): Promise<import('./deviceIdentity.js').WorkerPairingConfiguration> {
   const { WorkerPairingConfigurationSchema } = await import('./deviceIdentity.js')
@@ -98,7 +107,7 @@ export function mainIdentityProofMessage(request: import('./deviceIdentity.js').
   return JSON.stringify([request.audience, request.mainId, request.nonce, request.workerInstallationId,
     request.deviceId ?? null, request.bootId ?? null, request.connectionGeneration ?? null,
     request.keyRevision ?? null, request.authorizationRevision ?? null, request.connectionEpoch ?? null, request.mainConnectionEpoch ?? null,
-    request.protocolVersion, request.workerApplicationVersion, mainApplicationVersion])
+    request.protocolVersion, request.workerApplicationVersion, mainApplicationVersion, request.negotiationHash ?? null])
 }
 /** Fresh caller nonce and all claimed identity/version fields must match before accepting authority. */
 export async function verifyMainIdentityProof(proof: unknown, expected: import('./deviceIdentity.js').MainIdentityProofRequest,
