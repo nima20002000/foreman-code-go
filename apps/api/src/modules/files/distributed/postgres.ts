@@ -58,6 +58,8 @@ export class PostgresArtifactEdgeRepository implements ArtifactEdgeRepository {
   async recordRead(b: ArtifactEdgeBinding, readAt: string, authorize: (query: FileQuery) => Promise<void>): Promise<void> {
     await this.transaction(async (query) => {
       await authorize(query); await this.live(query, b)
+      await query.query(`insert into file_tool_read_provenance (binding,run_id,execution_id,file_id,revision_id,read_at)
+        values ($1,$2,$3,$4,$5,$6)`, [`edge:${b.edgeId}`, b.consumer.runId, b.consumer.executionId, b.pins.fileId, b.pins.revisionId, readAt])
       await query.query(`insert into file_artifact_edge_reads (edge_id,consumer_execution_id,consumer_attempt_id,read_at)
         values ($1,$2,$3,$4)`, [b.edgeId, b.consumer.executionId, b.consumer.attemptId, readAt])
     })

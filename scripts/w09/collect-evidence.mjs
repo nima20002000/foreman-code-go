@@ -10,6 +10,10 @@ const { values } = parseArgs({ options: Object.fromEntries([
 const required = ['pc-device-id','laptop-device-id','pc-root-binding','laptop-root-binding','main-endpoint',
   'fixture-manifest','credential-handle','evidence-out']
 for (const name of required) if (!values[name]) throw new Error(`Missing --${name}`)
+const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
+for (const name of ['pc-device-id','laptop-device-id','pc-root-binding','laptop-root-binding']) {
+  if (!uuid.test(values[name])) throw new Error(`Explicit UUID required for --${name}`)
+}
 const main = new URL(values['main-endpoint'])
 if (!['http:','https:'].includes(main.protocol) || main.username || main.password || main.search || main.hash) throw new Error('Explicit main origin without embedded credentials required')
 if (!/^[A-Z][A-Z0-9_]*$/.test(values['credential-handle'])) throw new Error('Credential handle must name an environment variable')
