@@ -37,7 +37,12 @@ export function executableAvailability(path) {
 // Explicit projection: errors, credentials, process arguments and arbitrary metadata never cross this boundary.
 export function doctorReport({ facts, identity, connection, service, executables, errors = [] }) {
   return {
-    versions: { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node },
+    versions: { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node,
+      app: /^\d+\.\d+\.\d+$/.test(facts.appVersion) ? facts.appVersion : null,
+      protocol: Number.isSafeInteger(facts.protocolVersion) ? facts.protocolVersion : null,
+      identityFormat: Number.isSafeInteger(facts.identityFormat) ? facts.identityFormat : null,
+      commit: /^[a-f0-9]{40}$/.test(facts.commit) ? facts.commit : null,
+      lockfileSha256: /^[a-f0-9]{64}$/.test(facts.lockfileSha256) ? facts.lockfileSha256 : null },
     persistentRoot: facts.rootPersistent, persistentHome: facts.homePersistent, persistentState: facts.storagePersistent ?? null,
     executables: Object.fromEntries(['node', 'git', 'codex', 'opencode', 'systemctl'].map((key) => [key, executables[key] === true])),
     service: { active: service.active === true, userManagerAvailable: service.userManagerAvailable === true },
