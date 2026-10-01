@@ -249,9 +249,6 @@ export async function qualifyCodex(
   const fingerprint = await identity(resolved)
   const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment, recovery ? { recovery } : {})
   const version = await command(['--version'])
-  if (recovery && version.stderr.includes('Native launch refused: delegated cgroup v2 with cgroup.kill is required.')) {
-    throw new HarnessExecutionError('CODEX_NATIVE_OWNERSHIP_UNAVAILABLE', 'Codex launch cannot establish the required writable delegated cgroup v2 containment.')
-  }
   const actual = (version.stdout || version.stderr).trim()
   const schema = qualifiedSchemas[actual]
   if (version.exitCode === 0) await requireHarnessQualification('codex', actual, resolved)

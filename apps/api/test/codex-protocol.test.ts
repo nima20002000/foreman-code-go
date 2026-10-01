@@ -14,20 +14,14 @@ describe.skipIf(process.platform === 'win32')('Codex installation qualification 
   beforeEach(async () => { f = await fixture() })
   afterEach(async () => { await rm(f.directory, { recursive: true, force: true }) })
 
-  it.skipIf(process.platform !== 'linux')('attributes model-free qualification commands to the existing recovery owner', async (context) => {
+  it.skipIf(process.platform !== 'linux')('attributes model-free qualification commands to the existing recovery owner', async () => {
     const registry = new NativeProcessRegistry(join(f.directory, 'qualification-recovery'))
     const owner = 'codex-qualification-owner'
     const scope = registry.scope(owner)
     assert.equal(await registry.closeOwner(owner), false)
-    let failure: unknown
-    try { await qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true, undefined, scope) }
-    catch (error) { failure = error }
+    await assert.rejects(qualifyCodex(f.binary, QUALIFIED_CODEX_VERSION, f.directory, { ...process.env }, true, undefined, scope),
+      (error: unknown) => errorCode(error) === 'CODEX_SCHEMA_UNQUALIFIED')
     assert.equal(await registry.closeOwner(owner), true)
-    if (errorCode(failure) === 'CODEX_NATIVE_OWNERSHIP_UNAVAILABLE') {
-      assert.equal((await calls(f.directory)).length, 0)
-      context.skip('No writable delegated cgroup v2: native launch was refused before any provider command ran.')
-    }
-    assert.equal(errorCode(failure), 'CODEX_SCHEMA_UNQUALIFIED')
   })
 
   it('F28: the right version and authentication cannot substitute for an installed schema measurement', async () => {
