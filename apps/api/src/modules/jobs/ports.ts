@@ -1,3 +1,6 @@
+import type { JobRunCleanup } from '@graphql/contracts/job-run-cleanup'
+import type { GraphTransactionSql } from '../run-graph/connection.js'
+import type { RunOwnership } from '../runs/ownership.js'
 import type { JobSql } from './repository.js'
 import type { AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinitionSpec, JobExecution, JobValidation, PreparedJobSpec } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -6,12 +9,14 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 export interface JobDispatchPort {
   accept(client: JobSql, input: { workspaceId: string; executionId: string; attemptId:string; operationId:string; spec: AcceptedJobSpec;
     workflow: JobExecution['workflow']; principal: ManagementPrincipal }): Promise<Pick<JobExecution, 'operationId' | 'attemptId' | 'owner'>>
-  cancel(client: JobSql, execution: JobExecution, commandId: string, principal:ManagementPrincipal): Promise<void>
+  cancel(client: JobSql, execution: JobExecution, commandId: string, principal:ManagementPrincipal,action?:'jobs:cancel'|'runs:stop'): Promise<void>
+  cancelForRunCleanup(client:GraphTransactionSql,execution:JobExecution,owner:RunOwnership,reason:JobRunCleanup['reason']):Promise<JobRunCleanup>
   /** Called after COMMIT only. A lost wakeup is recovered by W08's durable dispatch. */
   wake(executionId: string): Promise<void>
 }
 /** Authority before any source/root probe; again immediately before dispatch/launch. */
 export interface JobPreparationPort {
+  revalidateAccepted(client:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   adoptFinalBinding(client:JobSql,principal:ManagementPrincipal,execution:JobExecution):Promise<void>
   choices(client: JobSql, principal: ManagementPrincipal, workspaceId: string): Promise<JobAuthoringChoices>
   validate(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpec): Promise<JobValidation>

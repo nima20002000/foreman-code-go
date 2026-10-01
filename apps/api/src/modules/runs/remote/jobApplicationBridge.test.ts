@@ -1,0 +1,30 @@
+import { randomUUID } from 'node:crypto'
+import type pg from 'pg'
+import { describe, expect, it, vi } from 'vitest'
+import { jobExecution } from '../../../../test/helpers/jobFixture.js'
+import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
+import { JobApplicationBridge } from './jobApplicationBridge.js'
+vi.mock('../../access/liveManagementPrincipal.js', () => ({ readLiveManagementPrincipal: async () => { throw new Error('starter revoked') } }))
+function fixture() {
+  const execution = jobExecution(), registration={workerInstallationId:randomUUID(),keyRevision:1,authorizationRevision:1}, deviceId=randomUUID()
+  execution.acceptedSpec.target.hostRef={kind:'device',mainId:execution.acceptedSpec.target.mainId,deviceId}
+  execution.acceptedSpec.target.registration=registration
+  const binding={mainId:execution.acceptedSpec.target.mainId,deviceId,...registration,bootId:randomUUID(),connectionGeneration:1,connectionEpoch:randomUUID()}
+  const intent:RemoteJobDispatchIntent={schemaVersion:1,protocolVersion:1,mainId:binding.mainId,subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner}
+  const sql={query:async (query:string)=>({rows:query.startsWith('select record,accepted_spec')?[{record:execution,accepted_spec:execution.acceptedSpec}]:query.startsWith('select intent')?[{intent}]:[{accepted_by:'revoked-starter'}]}),release:vi.fn()}
+  const pool={connect:async()=>sql} as unknown as pg.Pool
+  const dispatch={require:vi.fn(async()=>{throw new Error('cleanup is stop-only')}),requireControl:vi.fn(async()=>{}),requireEvidence:vi.fn(async()=>{}),observeReceipt:vi.fn(async()=>{})}
+  const bridge=new JobApplicationBridge(pool,dispatch,{appendLog:vi.fn()},{authorizePublication:vi.fn()})
+  return {bridge,intent,binding,dispatch,sql}
+}
+describe('job application action-sensitive authority routing with memory ports',()=>{
+  it.each(['read','control'] as const)('uses %s cleanup fence without authenticating the revoked starter',async action=>{
+    const f=fixture();expect(await f.bridge.handle({method:'job-authorize',intent:f.intent,action},f.binding)).toMatchObject({authorized:true})
+    expect(action==='control'?f.dispatch.requireControl:f.dispatch.requireEvidence).toHaveBeenCalledOnce()
+    expect(f.dispatch.require).not.toHaveBeenCalled();expect(f.sql.release).toHaveBeenCalledOnce()
+  })
+  it.each(['start','publish'] as const)('cannot borrow cleanup for %s after starter revocation',async action=>{
+    const f=fixture();await expect(f.bridge.handle({method:'job-authorize',intent:f.intent,action},f.binding)).rejects.toThrow('starter revoked')
+    expect(f.dispatch.requireControl).not.toHaveBeenCalled();expect(f.dispatch.requireEvidence).not.toHaveBeenCalled()
+  })
+})

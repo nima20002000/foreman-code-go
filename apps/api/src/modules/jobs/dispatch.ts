@@ -1,7 +1,11 @@
+import { readRunJobCleanup,requestRunJobCleanup } from './runCleanup.js'
+import type { JobRunCleanup } from '@graphql/contracts/job-run-cleanup'
+import type { RunOwnership } from '../runs/ownership.js'
+import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptSchema, type RemoteJobDispatchPort, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
-import type { AcceptedJobSpec, JobExecution } from '@graphql/contracts/jobs'
+import { JobExecutionSchema, type AcceptedJobSpec, type JobExecution } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -31,22 +35,35 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     await sql.query('insert into job_dispatch_intents(execution_id,workspace_id,intent) values($1,$2,$3::jsonb)',[input.executionId,input.workspaceId,JSON.stringify(intent)])
     return {operationId:intent.operationId,attemptId:intent.attemptId,owner:intent.owner}
   }
-  async cancel(sql:JobSql,execution:JobExecution,commandId:string,principal:ManagementPrincipal):Promise<void> {
-    await sql.query('update job_dispatch_intents set cancel_command_id=coalesce(cancel_command_id,$2),cancel_principal_id=coalesce(cancel_principal_id,$3) where execution_id=$1',[execution.id,commandId,principal.id])
+  async cancel(sql:JobSql,execution:JobExecution,commandId:string,principal:ManagementPrincipal,action:'jobs:cancel'|'runs:stop'='jobs:cancel'):Promise<void> {
+    await sql.query('update job_dispatch_intents set cancel_command_id=coalesce(cancel_command_id,$2),cancel_principal_id=coalesce(cancel_principal_id,$3),cancel_action=coalesce(cancel_action,$4) where execution_id=$1',[execution.id,commandId,principal.id,action])
   }
-  async require(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
+  cancelForRunCleanup(sql:GraphTransactionSql,execution:JobExecution,owner:RunOwnership,reason:JobRunCleanup['reason']) {return requestRunJobCleanup(sql,execution,owner,reason)}
+  private async requireOwner(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
     const row=(await sql.query<{intent:unknown;owner_id:string|null;owner_fence:string|null}>('select intent,owner_id,owner_fence from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
     if(!row)throw new DomainError('JOB_DISPATCH_MISSING','The accepted W08 job dispatch intent is missing.',409)
     const intent=RemoteJobDispatchIntentSchema.parse(row.intent)
-    if(intent.attemptId!==fence.attemptId||intent.owner.grantId!==fence.owner.grantId||intent.owner.epoch!==fence.owner.epoch||intent.bindingHash!==execution.acceptedSpec.bindingHash||!row.owner_id||!row.owner_fence)throw new DomainError('JOB_OWNER_FENCE_INVALID','The accepted job owner/attempt binding is not live.',409)
+    if(intent.executionId!==execution.id||intent.operationId!==execution.operationId||intent.mainId!==execution.acceptedSpec.target.mainId||intent.subject.workspaceId!==execution.workspaceId||intent.inputDigest!==`sha256:${execution.acceptedSpec.specDigest}`||intent.attemptId!==fence.attemptId||intent.owner.grantId!==fence.owner.grantId||intent.owner.epoch!==fence.owner.epoch||intent.bindingHash!==execution.acceptedSpec.bindingHash||!row.owner_id||!row.owner_fence)throw new DomainError('JOB_OWNER_FENCE_INVALID','The accepted job owner/attempt binding is not live.',409)
     const live=(await sql.query(`select 1 from pg_stat_activity a where a.pid::text=$1 and (extract(epoch from a.backend_start)*1000000)::bigint::text=$2 and exists(select 1 from pg_locks l where l.pid=a.pid and l.locktype='advisory' and l.classid=810038::oid and l.objid=(hashtext($3)::bigint & 4294967295)::oid and l.objsubid=2 and l.mode='ExclusiveLock' and l.granted)`,[row.owner_id,row.owner_fence,execution.id])).rows.length
     if(!live)throw new DomainError('JOB_OWNERSHIP_LOST','The original main job owner session is no longer live.',409)
-    const accepted=(await sql.query<{accepted_by:string;cancel_principal_id:string|null}>(`select e.accepted_by,d.cancel_principal_id from job_executions e join job_dispatch_intents d on d.execution_id=e.id where e.id=$1`,[execution.id])).rows[0]!
+  }
+  /** Launch/publication never borrow committed cleanup stop authority. */
+  async require(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
+    await this.requireOwner(sql,execution,fence)
+    if(await readRunJobCleanup(sql,execution))throw new DomainError('JOB_CLEANUP_ONLY','The original Run owner admitted stop/closure only, not launch or publication.',409)
+    const accepted=(await sql.query<{accepted_by:string;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>(`select e.accepted_by,d.cancel_principal_id,d.cancel_action from job_executions e join job_dispatch_intents d on d.execution_id=e.id where e.id=$1`,[execution.id])).rows[0]!
     const principal=await readLiveManagementPrincipal(sql,accepted.cancel_principal_id??accepted.accepted_by)
-    requireAuthorization(principal,accepted.cancel_principal_id?'jobs:cancel':execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
+    requireAuthorization(principal,accepted.cancel_principal_id?accepted.cancel_action!:execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
     if(accepted.cancel_principal_id)await this.host.authorizeControl(sql,execution,principal)
     else await this.host.revalidate(sql,execution,principal)
   }
+  async requireControl(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
+    await this.requireOwner(sql,execution,fence)
+    if(await readRunJobCleanup(sql,execution))return
+    await this.require(sql,execution,fence)
+  }
+  /** Only trusted carrier receipt ingress uses this. No file write/read capability. */
+  async requireEvidence(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {return this.requireControl(sql,execution,fence)}
   async wake(executionId:string):Promise<void> {
     let active=this.owners.get(executionId)
     if(!active) {
@@ -60,15 +77,18 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         const scope=(await sql.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
         if(!scope)throw new DomainError('JOB_NOT_FOUND','The accepted job is missing.',404)
         const execution=await this.repository.execution(sql,scope.workspace_id,executionId,true)
-        const row=(await sql.query<{intent:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null}>('select intent,delivery_attempted,cancel_command_id,cancel_principal_id from job_dispatch_intents where execution_id=$1 for update',[executionId])).rows[0]!
+        const row=(await sql.query<{intent:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select intent,delivery_attempted,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for update',[executionId])).rows[0]!
         const accepted=(await sql.query<{accepted_by:string}>('select accepted_by from job_executions where id=$1',[executionId])).rows[0]!
-        const principal=await readLiveManagementPrincipal(sql,row.cancel_command_id?row.cancel_principal_id!:accepted.accepted_by)
-        requireAuthorization(principal,row.cancel_command_id?'jobs:cancel':execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
-        if(row.cancel_command_id)await this.host.authorizeControl(sql,execution,principal)
-        else await this.host.revalidate(sql,execution,principal)
+        const cleanup=await readRunJobCleanup(sql,execution)
+        if(!cleanup) {
+          const principal=await readLiveManagementPrincipal(sql,row.cancel_command_id?row.cancel_principal_id!:accepted.accepted_by)
+          requireAuthorization(principal,row.cancel_command_id?row.cancel_action!:execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
+          if(row.cancel_command_id)await this.host.authorizeControl(sql,execution,principal)
+          else await this.host.revalidate(sql,execution,principal)
+        }
         const fence=await owner.readFence(sql)
         await sql.query('update job_dispatch_intents set owner_id=$2,owner_fence=$3 where execution_id=$1',[executionId,fence.ownerId,fence.fence])
-        beforeGraphCommit(sql,()=>this.require(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}))
+        beforeGraphCommit(sql,()=>cleanup?this.requireControl(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}):this.require(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}))
         if(execution.process.phase==='terminal'&& !['pending','collecting'].includes(execution.publication))return {execution,intent:RemoteJobDispatchIntentSchema.parse(row.intent),action:'none' as const,cancelCommandId:row.cancel_command_id}
         if(row.cancel_command_id&&!row.delivery_attempted) {
           execution.process={phase:'terminal',outcome:'cancelled',exitCode:null,signal:null,processStopped:true};execution.finishedAt=new Date().toISOString();execution.publication='complete';execution.updatedAt=execution.finishedAt
@@ -85,8 +105,8 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       owner.assertOwned()
       const finished=await owner.connection.transaction(async sql=>{
         const execution=await this.repository.execution(sql,prepared.execution.workspaceId,executionId,true)
-        await this.require(sql,execution,{attemptId:execution.attemptId,owner:execution.owner})
-        beforeGraphCommit(sql,()=>this.require(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}))
+        await this.requireEvidence(sql,execution,{attemptId:execution.attemptId,owner:execution.owner})
+        beforeGraphCommit(sql,()=>this.requireControl(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}))
         if(status.status==='known'&&await this.acceptReceipt(sql,execution,status.receipt))await this.host.observe(sql,execution,status.receipt)
         else {execution.transport='unknown';execution.updatedAt=new Date().toISOString();await this.repository.putExecution(sql,execution)}
         const current=await this.repository.execution(sql,prepared.execution.workspaceId,executionId)
@@ -105,8 +125,8 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     active.owner.assertOwned()
     const terminal=await active.owner.connection.transaction(async sql=>{
       const execution=await this.repository.execution(sql,workspaceId,executionId,true)
-      await this.require(sql,execution,{attemptId:receipt.intent.attemptId,owner:receipt.intent.owner})
-      beforeGraphCommit(sql,()=>this.require(sql,execution,{attemptId:receipt.intent.attemptId,owner:receipt.intent.owner}))
+      await this.requireEvidence(sql,execution,{attemptId:receipt.intent.attemptId,owner:receipt.intent.owner})
+      beforeGraphCommit(sql,()=>this.requireEvidence(sql,execution,{attemptId:receipt.intent.attemptId,owner:receipt.intent.owner}))
       if(await this.acceptReceipt(sql,execution,receipt))await this.host.observe(sql,execution,receipt)
       const current=await this.repository.execution(sql,workspaceId,executionId)
       return current.process.phase==='terminal'&&!['pending','collecting'].includes(current.publication)
@@ -129,6 +149,44 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     }
     await sql.query('update job_dispatch_intents set receipt_sequence=$2,last_receipt=$3::jsonb where execution_id=$1',[execution.id,receipt.sequence,JSON.stringify(receipt)])
     return true
+  }
+  /** SQL-only accepted closure evidence; never contacts a worker or acquires execution authority. */
+  async readAcceptedClosureReceipt(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;bindingHash:string;owner:JobExecution['owner']}):Promise<RemoteJobOperationReceipt|null> {
+    const row=(await sql.query<{record:unknown;accepted_spec:unknown;intent:unknown;last_receipt:unknown;receipt_sequence:string}>(`select e.record,e.accepted_spec,d.intent,d.last_receipt,d.receipt_sequence::text
+      from job_executions e join job_dispatch_intents d on d.execution_id=e.id and d.workspace_id=e.workspace_id
+      where e.workspace_id=$1 and e.id=$2 and e.attempt_id=$3 and e.operation_id=$4
+        and d.intent->>'bindingHash'=$5 and d.intent #>> '{owner,grantId}'=$6 and d.intent #>> '{owner,epoch}'=$7
+      for share of e,d`,[input.workspaceId,input.executionId,input.attemptId,input.operationId,input.bindingHash,input.owner.grantId,input.owner.epoch])).rows[0]
+    if(!row||!row.last_receipt)return null
+    const execution=JobExecutionSchema.parse(row.record),intent=RemoteJobDispatchIntentSchema.parse(row.intent),receipt=RemoteJobOperationReceiptSchema.parse(row.last_receipt)
+    const subject=execution.workflow?{kind:'workflow-node',workspaceId:execution.workspaceId,...execution.workflow}
+      :{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId}
+    if(execution.workspaceId!==input.workspaceId||execution.id!==input.executionId||execution.attemptId!==input.attemptId||execution.operationId!==input.operationId
+      ||execution.acceptedSpec.bindingHash!==input.bindingHash||canonical(execution.owner)!==canonical(input.owner)
+      ||canonical(execution.acceptedSpec)!==canonical(row.accepted_spec)||canonical(receipt.execution.acceptedSpec)!==canonical(execution.acceptedSpec)
+      ||intent.executionId!==execution.id||intent.attemptId!==execution.attemptId||intent.operationId!==execution.operationId
+      ||intent.bindingHash!==execution.acceptedSpec.bindingHash||intent.inputDigest!==`sha256:${execution.acceptedSpec.specDigest}`
+      ||intent.mainId!==execution.acceptedSpec.target.mainId||canonical(intent.subject)!==canonical(subject)||canonical(intent.owner)!==canonical(execution.owner)
+      ||canonical(receipt.intent)!==canonical(intent)||receipt.sequence!==Number(row.receipt_sequence)) {
+      throw new DomainError('JOB_CLOSURE_PIN_CONFLICT','Closure receipt does not match the exact accepted job intent and main projection.',409)
+    }
+    if(receipt.phase!=='confirmed_terminal'||!receipt.terminal?.processStopped||execution.process.phase!=='terminal'||!execution.process.processStopped)return null
+    const terminal=receipt.terminal,target=execution.acceptedSpec.target,connection=receipt.connection
+    if(execution.finishedAt!==terminal.finishedAt||execution.process.outcome!==terminal.outcome||execution.process.exitCode!==terminal.exitCode||execution.process.signal!==terminal.signal
+      ||connection.mainId!==target.mainId||receipt.execution.id!==execution.id||receipt.execution.workspaceId!==execution.workspaceId
+      ||receipt.execution.operationId!==execution.operationId||receipt.execution.attemptId!==execution.attemptId||canonical(receipt.execution.owner)!==canonical(execution.owner)
+      ||(receipt.entryAttempted?!receipt.native:receipt.native!==undefined||!['cancelled','preparation_failed','spawn_failed'].includes(terminal.outcome))) {
+      throw new DomainError('JOB_CLOSURE_EVIDENCE_CONFLICT','Original physical closure is inconsistent with the accepted main execution.',409)
+    }
+    if(target.hostRef.kind==='device') {
+      if(!('deviceId' in connection)||connection.deviceId!==target.hostRef.deviceId||connection.workerInstallationId!==target.registration?.workerInstallationId
+        ||connection.keyRevision!==target.registration.keyRevision||connection.authorizationRevision!==target.registration.authorizationRevision) {
+        throw new DomainError('JOB_CLOSURE_HOST_CONFLICT','Closure belongs to a different accepted worker identity.',409)
+      }
+    } else if(!('kind' in connection)||connection.kind!=='main'||connection.mainInstallationId!==target.mainInstallationId) {
+      throw new DomainError('JOB_CLOSURE_HOST_CONFLICT','Closure belongs to a different accepted main installation.',409)
+    }
+    return receipt
   }
   private async release(executionId:string) {const active=this.owners.get(executionId);if(!active)return;this.owners.delete(executionId);await active.owner.release()}
   async close():Promise<void> {await Promise.allSettled([...this.owners.keys()].map(id=>this.release(id)))}

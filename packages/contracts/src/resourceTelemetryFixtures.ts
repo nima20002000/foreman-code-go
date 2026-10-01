@@ -11,7 +11,7 @@ export const telemetryOwnedFixture: Extract<TelemetrySelector, { scope: 'owned' 
 const sample = (selector: TelemetrySelector): TelemetrySample => ({ schemaVersion: 1, selector, selectorKey: telemetrySelectorKey(selector),
   identity: { mainId, host: selector.host }, sampleId: 'fixture-sample-1', sequence: '1', collectedAtUnixMs: 1000,
   collectionDurationNs: '1000000', receivedAtUnixMs: 1001, serverNowUnixMs: 1001, ageUpperBoundMs: 1, freshUntilUnixMs: 7000,
-  presence: 'online', ownershipState: 'active', coverage: { boundary: 'complete-boundary', shared: false, reasons: [] },
+  presence: 'online', ownershipState: 'active', diagnostics: [], coverage: { boundary: 'complete-boundary', shared: false, reasons: [] },
   cpu: { state: 'fresh', value: { basis: selector.scope === 'computer' ? 'host-active-ticks' : 'cgroup-usage-usec',
     normalization: 'whole-host-capacity', logicalCpuCount: 8, hostCapacityPercent: 0,
     oneCorePercent: selector.scope === 'computer' ? null : 0, elapsedNs: '2000000000', cpuDeltaNs: selector.scope === 'computer' ? null : '0' },
@@ -49,6 +49,7 @@ export const resourceTelemetryFixtures: Record<string, TelemetryReadResult> = {
 /** Visit tokens remain UI-owned; the full selector key must also match each response. */
 export const telemetrySelectionRaceFixture = [
   { visit: 1, selector: telemetryOwnedFixture, response: resourceTelemetryFixtures.freshZero!, delayMs: 300 },
-  { visit: 2, selector: { ...telemetryOwnedFixture, attributionRevision: '2' }, delayMs: 100 },
+  { visit: 2, selector: { ...telemetryOwnedFixture, attributionRevision: '2' },
+    response: { kind: 'sample' as const, sample: sample({ ...telemetryOwnedFixture, attributionRevision: '2' }), lastKnown: null }, delayMs: 100 },
   { visit: 3, selector: telemetryOwnedFixture, response: resourceTelemetryFixtures.notYetSampled!, delayMs: 0 },
 ]

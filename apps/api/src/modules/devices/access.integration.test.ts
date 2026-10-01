@@ -9,7 +9,9 @@ import { applyApplicationMigrations } from '../../infrastructure/migrations.js'
 import { PostgresAccessService } from '../access/postgres.js'
 import { publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { PostgresDeviceAccessService, pairingProof } from './access.js'
+import { loadOrCreateMainDeviceIdentity, mainDeviceIdentityMigration } from './mainIdentity.js'
 import { deviceIdentityMigration } from './migration.js'
+import { authorizeDeviceHost } from './hostAuthorization.js'
 import { registerDeviceManagementTools } from './management.js'
 
 it('persists pair/revoke with denied and authenticated Operator MCP readback across main restart', async () => {
@@ -24,6 +26,10 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     // Root may have integrated this migration already.
     if (!(await pool.query("select to_regclass('device_registrations') as relation")).rows[0]?.relation) await pool.query(deviceIdentityMigration.sql)
     const mainId = (await pool.query('select id from application_installation')).rows[0].id as string
+    if (!(await pool.query("select to_regclass('device_main_identity') as relation")).rows[0]?.relation) await pool.query(mainDeviceIdentityMigration.sql)
+    const mainKeys = await Promise.all([loadOrCreateMainDeviceIdentity(pool, mainId), loadOrCreateMainDeviceIdentity(pool, mainId)])
+    expect(mainKeys[0]!.publicKeyFingerprint).toBe(mainKeys[1]!.publicKeyFingerprint)
+    expect((await loadOrCreateMainDeviceIdentity(pool, mainId)).publicKeyFingerprint).toBe(mainKeys[0]!.publicKeyFingerprint)
     let devices = new PostgresDeviceAccessService(pool, mainId)
     const access = new PostgresAccessService(pool)
     const owner = await access.issue({ name: 'owner', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
@@ -59,6 +65,7 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     devices = new PostgresDeviceAccessService(pool, mainId)
     expect(await devices.pair(input)).toEqual(paired)
     const principal = await devices.authenticateDevice(paired.credential, 'connect')
+    await expect(authorizeDeviceHost(pool, reader.principal, 'harnesses:read', { kind: 'device', mainId, deviceId: paired.registration.deviceId }, args.workerInstallationId)).rejects.toThrow()
     const readback = (await client.callTool({ name: 'devices_list', arguments: {} })).structuredContent as { devices: unknown[] }
     expect(readback.devices).toEqual([paired.registration])
     const revoke = { commandId: randomUUID(), deviceId: paired.registration.deviceId, expectedRevision: 1 }

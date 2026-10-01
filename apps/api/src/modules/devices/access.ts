@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, verify } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { authorizeDevice, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest } from '@graphql/contracts/device-identity'
+import { authorizeDevice, DevicePairingRequestSchema, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest, MainDeviceIdentityPublicSchema, type MainDeviceIdentityPublic } from '@graphql/contracts/device-identity'
 import { pairingProof, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { commandInputHash, PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -26,6 +26,15 @@ export class PostgresDeviceAccessService {
   private async management(client: pg.PoolClient, principal: ManagementPrincipal, write: boolean): Promise<void> {
     requireAuthorization(await readLiveManagementPrincipal(client, principal.id), write ? 'settings:update' : 'settings:read')
   }
+  async readMainIdentity(principal: ManagementPrincipal): Promise<MainDeviceIdentityPublic> {
+    return this.transaction(async client => {
+      await this.management(client, principal, false)
+      const result = await client.query<{ mainPublicKey: string; mainPublicKeyFingerprint: string }>(
+        `select record->>'publicKey' as "mainPublicKey", record->>'publicKeyFingerprint' as "mainPublicKeyFingerprint" from device_main_identity where main_id=$1`, [this.mainId])
+      if (!result.rows[0]) throw new DomainError('DEVICE_MAIN_IDENTITY_UNAVAILABLE', 'Main device authentication has not been initialized.', 503)
+      return MainDeviceIdentityPublicSchema.parse({ mainId: this.mainId, ...result.rows[0] })
+    })
+  }
   async list(principal: ManagementPrincipal): Promise<DeviceRegistration[]> {
     return this.transaction(async client => {
       await this.management(client, principal, false)
@@ -45,15 +54,14 @@ export class PostgresDeviceAccessService {
     const result = await new PostgresCommandCoordinator(this.pool).execute({ principal, source, operation: 'device_pairing_grant_create', commandId: input.commandId,
       targetKey: this.mainId, payload: input, authorize: client => this.management(client, principal, true), perform: async client => {
         const expiresAt = new Date(Date.now() + 300_000).toISOString()
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`device-installation:${input.workerInstallationId}`])
         const existing = await client.query<{ record: DeviceRegistration }>('select record from device_registrations where worker_installation_id=$1 for update', [input.workerInstallationId])
         if (existing.rows[0]) {
           const previous = existing.rows[0].record
           if (previous.status !== 'revoked' || previous.authorizationRevision !== input.expectedAuthorizationRevision) throw new DeviceAccessError('conflict')
           registration = { ...registration, deviceId: previous.deviceId, keyRevision: previous.keyRevision + (previous.publicKeyFingerprint === fingerprint ? 0 : 1), authorizationRevision: previous.authorizationRevision + 1 }
-          await client.query('delete from device_pairing_grants where device_id=$1', [previous.deviceId])
-          await client.query('delete from device_registrations where id=$1', [previous.deviceId])
         }
-        await client.query('insert into device_registrations(id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,$4,$5)', [registration.deviceId, this.mainId, registration.workerInstallationId, input.publicKey, registration])
+        await client.query('insert into device_registrations(id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,$4,$5) on conflict(id) do update set public_key=excluded.public_key,record=excluded.record,credential_hash=null,credential_expires_at=null', [registration.deviceId, this.mainId, registration.workerInstallationId, input.publicKey, registration])
         await client.query('insert into device_pairing_grants(id,token_hash,device_id,authorization_revision,expires_at,principal_id) values($1,$2,$3,$4,$5,$6)', [randomUUID(), digest(grant), registration.deviceId, registration.authorizationRevision, expiresAt, principal.id])
         return { registration, expiresAt }
       } })
@@ -64,7 +72,7 @@ export class PostgresDeviceAccessService {
     const now = Date.now()
     if (now - this.pairingAttempts.window >= 60_000) this.pairingAttempts = { window: now, count: 0 }
     if (++this.pairingAttempts.count > 30) throw new DeviceAccessError('forbidden')
-    if (!/^[0-9a-f-]{36}$/.test(input.requestId) || input.grant.length !== 43) throw new DeviceAccessError('unauthorized')
+    input = DevicePairingRequestSchema.parse(input)
     if (input.mainId !== this.mainId) throw new DeviceAccessError('wrong_main')
     if (!verify(null, Buffer.from(pairingProof(input)), input.publicKey, Buffer.from(input.signature, 'base64url'))) throw new DeviceAccessError('unauthorized')
     return this.transaction(async client => {

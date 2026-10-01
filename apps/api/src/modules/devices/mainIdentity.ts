@@ -4,6 +4,8 @@ import { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema, MainEnro
 import { mainIdentityProofMessage, mainEnrollmentProofMessage, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { DeviceAccessError } from './access.js'
 
+export const mainDeviceIdentityMigration = { version: 282102, sql: 'create table device_main_identity (main_id uuid primary key, record jsonb not null);' } as const
+
 export interface MainDeviceIdentity {
   mainId: string
   publicKey: string

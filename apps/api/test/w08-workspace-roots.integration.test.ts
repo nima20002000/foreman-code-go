@@ -1,0 +1,98 @@
+import { randomUUID } from 'node:crypto'
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+import Fastify from 'fastify'
+import { McpServer } from '@modelcontextprotocol/server'
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { describe, expect, it } from 'vitest'
+import { ManagementActionSchema } from '@graphql/contracts/management'
+import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
+import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { PostgresAccessService, bearerToken } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { registerOperatorHttpSecurity, requireLocalRequest } from '../src/modules/access/http.js'
+import { WorkspaceBoundLocationService } from '../src/modules/workspace-roots/service.js'
+import { registerWorkspaceRootRoutes, registerWorkspaceRootTools } from '../src/modules/workspace-roots/transports.js'
+import { PostgresWorkspaceRootPolicies } from '../src/modules/sources/rootPolicies.js'
+import { InstalledWorkspaceRootHosts } from '../src/modules/sources/rootHosts.js'
+import { openPrivateRoot, identity } from '../src/modules/sources/privateFilesystem.js'
+import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
+import { sourceSha256 } from '../src/modules/sources/manifest.js'
+import { DomainError } from '../src/modules/errors.js'
+
+/** Actual Postgres/main installation/grants/native component-safe temporary FS.
+ * Synthetic human-approved main configuration; no laptop/provider acceptance. */
+describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () => {
+  it('binds an unconfigured workspace without an Agent/Workflow, replays exact receipt and denies a scoped caller', async () => {
+    const db = await currentDatabase(), app = Fastify(), clients: Client[] = []
+    try {
+      const workspaceId = randomUUID(), foreignId = randomUUID()
+      for (const id of [workspaceId, foreignId]) await db.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [id, JSON.stringify({ id, name: 'Independent root fixture' })])
+      const mainId = (await db.pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
+      const basePath = join(db.directory, 'approved-base'), runtimePath = join(db.directory, 'root-runtime')
+      await mkdir(basePath, { mode: 0o700 }); await mkdir(runtimePath, { mode: 0o700 }); await mkdir(join(basePath, 'project'), { mode: 0o700 })
+      const base = await openPrivateRoot(basePath), runtime = await openPrivateRoot(runtimePath)
+      let allowlist: ApprovedRootAllowlist
+      try { allowlist = { schemaVersion: 1, hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId, configurationRevision: '1',
+        bases: [{ baseId: randomUUID(), canonicalPath: basePath, filesystem: await identity(base), accessModes: ['read-only', 'read-write'] }],
+        managedRuntimeRoot: runtimePath, runtimeFilesystem: await identity(runtime) } } finally { await base.close(); await runtime.close() }
+      const access = new PostgresAccessService(db.pool), commands = new PostgresCommandCoordinator(db.pool)
+      const owner = await access.issue({ name: 'Root fixture owner', audience: 'operator', expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
+      const denied = await access.issue({ name: 'Foreign workspace reader', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
+        grants: [{ actions: ['source_roots:read', 'workspace_locations:read'], scope: { workspaceIds: [foreignId] } }] })
+      const hosts = new InstalledWorkspaceRootHosts(allowlist, async (sql, _principal, host, installation) => {
+        const registration = await assertDeviceHostInstallation(sql, host, installation)
+        return registration === null ? null : { workerInstallationId: registration.workerInstallationId,
+          keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }
+      }, { request: async () => { throw new Error('This synthetic main fixture has no remote worker') } })
+      const policies = new PostgresWorkspaceRootPolicies(mainId, hosts)
+      const sql = await db.pool.connect()
+      try { await sql.query('begin'); await policies.publishApprovedHostConfiguration(sql, allowlist, { mainId, hostRef: allowlist.hostRef,
+        applicationInstallationId: mainId, configurationRevision: '1', configurationDigest: sourceSha256(Buffer.from(JSON.stringify(allowlist))) }); await sql.query('commit') }
+      catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+      const service = new WorkspaceBoundLocationService(db.pool, commands, policies)
+      registerOperatorHttpSecurity(app, access); registerWorkspaceRootRoutes(app, service)
+      app.setErrorHandler((error, _request, reply) => reply.code(error instanceof DomainError ? error.status : 500).send({ error: { code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' } }))
+      app.post('/mcp', async (request, reply) => {
+        requireLocalRequest(request); const principal = await access.authenticate(bearerToken(request.headers.authorization), 'operator')
+        const server = new McpServer({ name: 'independent-root-auth-fixture', version: '1' })
+        registerWorkspaceRootTools(server, service, principal, commands)
+        const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+        reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
+        await server.connect(transport); reply.hijack(); await transport.handleRequest(request.raw, reply.raw, request.body)
+      })
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      const connect = async (token: string) => { const client = new Client({ name: 'independent-root-readback', version: '1' }); clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } })); return client }
+      const client = await connect(owner.token), deniedClient = await connect(denied.token), auth = { authorization: `Bearer ${owner.token}` }
+      const baseUrl = `/api/management/workspaces/${workspaceId}`
+      const choices = await app.inject({ method: 'GET', url: `${baseUrl}/root-policies`, headers: auth })
+      expect(choices.statusCode).toBe(200); expect(choices.json().allowlists[0]).toEqual(allowlist)
+      expect((await client.callTool({ name: 'workspace_root_choices_list', arguments: { workspaceId } })).structuredContent).toEqual(choices.json())
+      const selection = { workspaceId, hostRef: allowlist.hostRef, allowedBaseId: allowlist.bases[0]!.baseId, configurationRevision: '1',
+        relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 0, expectedRootPolicyRevision: 0 }
+      const validation = await client.callTool({ name: 'workspace_root_location_validate', arguments: selection })
+      expect(validation.isError).not.toBe(true)
+      expect((validation.structuredContent as { attestation: { canonicalProjectRoot: string } }).attestation.canonicalProjectRoot).toBe(join(basePath, 'project'))
+      const input = { ...selection, commandId: randomUUID() }
+      const saved = await app.inject({ method: 'PUT', url: `${baseUrl}/root-location`, headers: auth, payload: input })
+      expect(saved.statusCode).toBe(200); expect(saved.json().value).toMatchObject({ evidence: 'bound', workspaceId, locationRevision: 1,
+        executionLocation: { runnerId: 'runner-local', rootPath: join(basePath, 'project') } })
+      const replay = await client.callTool({ name: 'workspace_root_location_set', arguments: input })
+      expect(replay.isError).not.toBe(true); expect(replay.structuredContent).toEqual({ ...saved.json(), replayed: true })
+      expect((await service.get(owner.principal, { workspaceId }))).toEqual(saved.json().value)
+      const fresh = new WorkspaceBoundLocationService(db.pool, new PostgresCommandCoordinator(db.pool), new PostgresWorkspaceRootPolicies(mainId, hosts))
+      expect(await fresh.get(owner.principal, { workspaceId })).toEqual(saved.json().value)
+      expect((await app.inject({ method: 'GET', url: `${baseUrl}/root-policies`, headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+      expect((await deniedClient.callTool({ name: 'workspace_root_choices_list', arguments: { workspaceId } })).isError).toBe(true)
+      expect((await deniedClient.callTool({ name: 'workspace_root_location_set', arguments: input })).isError).toBe(true)
+      const stale = await app.inject({ method: 'PUT', url: `${baseUrl}/root-location`, headers: auth, payload: { ...input, commandId: randomUUID() } })
+      expect(stale.statusCode).toBe(409)
+      const receipts = (await db.pool.query('select result from management_command_receipts where principal_id=$1 and command_id=$2', [owner.principal.id, input.commandId])).rows
+      expect(receipts).toHaveLength(1); expect(receipts[0]?.result).toEqual(saved.json().value)
+      expect((await db.pool.query('select count(*)::int as count from workflows')).rows[0]?.count).toBe(0)
+      expect((await db.pool.query('select count(*)::int as count from agents')).rows[0]?.count).toBe(0)
+    } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close(); await db.close() }
+  }, 120_000)
+})

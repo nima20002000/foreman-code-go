@@ -20,6 +20,13 @@ describe('ResourceTelemetry v1 CP1', () => {
     expect(key).toBe(telemetrySelectorKey(Object.fromEntries(Object.entries(telemetryOwnedFixture).reverse()) as typeof telemetryOwnedFixture))
   })
   it('rejects cached prechallenge capture and oversized or uint64-overflow batches', () => {
-    expect(TelemetryCollectedBatchSchema.safeParse({}).success).toBe(false)
+    const selector = telemetryOwnedFixture
+    const valid = { schemaVersion: 1, identity: { mainId: selector.mainId, host: selector.host }, challengeId: 'challenge-1', sequence: '1',
+      collectedAtUnixMs: 1000, challengeReceivedMonoNs: '2', captureStartMonoNs: '2', captureEndMonoNs: '3', logicalCpuCount: 8,
+      host: null, owned: [], diagnostics: [], truncated: false }
+    expect(TelemetryCollectedBatchSchema.safeParse(valid).success).toBe(true)
+    expect(TelemetryCollectedBatchSchema.safeParse({ ...valid, captureStartMonoNs: '1' }).success).toBe(false)
+    expect(TelemetryCollectedBatchSchema.safeParse({ ...valid, sequence: '18446744073709551616' }).success).toBe(false)
+    expect(TelemetryCollectedBatchSchema.safeParse({ ...valid, owned: Array(65).fill({}) }).success).toBe(false)
   })
 })

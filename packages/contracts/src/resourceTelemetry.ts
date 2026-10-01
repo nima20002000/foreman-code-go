@@ -14,12 +14,18 @@ const Time = Bytes
 export const TelemetryReasonSchema = z.enum(['not-yet-sampled', 'unsupported', 'source-failure', 'counter-invalid',
   'permission-denied', 'namespace-restricted', 'stale', 'offline', 'ended', 'closed', 'ownership-unavailable',
   'shared-restricted', 'limit', 'evicted', 'clock-discontinuity', 'warmup', 'process-tree-partial',
-  'short-lived-unobserved', 'identity-changed', 'escaped-boundary', 'nested-boundary', 'source-missing'])
+  'short-lived-unobserved', 'identity-changed', 'escaped-boundary', 'nested-boundary', 'source-missing', 'wall-clock-skew'])
 export const TelemetryHostSchema = z.object({ hostRef: MachineReferenceSchema,
   deviceId: z.uuid(), applicationInstallationId: Id, bootId: z.uuid(), runtimeEpoch: Id,
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable(),
   connectionGeneration: z.number().int().positive().nullable(), collectorGeneration: Id,
-}).strict()
+}).strict().superRefine((host, ctx) => {
+  const remote = host.hostRef.kind === 'device'
+  if ((remote && host.hostRef.kind === 'device' && host.hostRef.deviceId !== host.deviceId)
+    || remote !== (host.keyRevision !== null) || remote !== (host.authorizationRevision !== null)
+    || remote !== (host.connectionGeneration !== null))
+    ctx.addIssue({ code: 'custom', message: 'Observed main/remote host must retain its real registration evidence.' })
+})
 export const TelemetryIdentitySchema = z.object({ mainId: z.uuid(), host: TelemetryHostSchema }).strict()
 const Attempt = DispatchIntentSchema.pick({ executionId: true, attemptId: true, operationId: true, bindingHash: true, owner: true })
 export const TelemetryOwnerSchema = z.discriminatedUnion('kind', [
@@ -37,7 +43,14 @@ export const TelemetrySelectorSchema = z.discriminatedUnion('scope', [
   z.object({ schemaVersion: z.literal(1), scope: z.literal('computer'), mainId: z.uuid(), host: TelemetryHostSchema }).strict(),
   z.object({ schemaVersion: z.literal(1), scope: z.literal('owned'), mainId: z.uuid(), host: TelemetryHostSchema,
     owner: TelemetryOwnerSchema, attributionRef: Id, attributionRevision: Id }).strict(),
-])
+]).superRefine((selector, ctx) => {
+  if (selector.mainId !== selector.host.hostRef.mainId)
+    ctx.addIssue({ code: 'custom', message: 'Selector main and observed host disagree.' })
+  const bounded = (value: unknown): boolean => typeof value === 'string'
+    ? new TextEncoder().encode(value).length <= 128
+    : value !== null && typeof value === 'object' ? Object.values(value).every(bounded) : true
+  if (!bounded(selector)) ctx.addIssue({ code: 'custom', message: 'Telemetry identifiers exceed the v1 wire bound.' })
+})
 export type TelemetrySelector = z.infer<typeof TelemetrySelectorSchema>
 export type TelemetryHost = z.infer<typeof TelemetryHostSchema>
 export type TelemetryIdentity = z.infer<typeof TelemetryIdentitySchema>
@@ -83,7 +96,7 @@ export const TelemetrySampleSchema = z.object({ schemaVersion: z.literal(1), sel
   collectedAtUnixMs: Time, collectionDurationNs: TelemetryUIntSchema, receivedAtUnixMs: Time, serverNowUnixMs: Time,
   ageUpperBoundMs: z.number().finite().nonnegative(), freshUntilUnixMs: Time,
   presence: z.enum(['online', 'offline']), ownershipState: z.enum(['active', 'ended', 'closure-unconfirmed', 'closed']),
-  coverage: TelemetryCoverageSchema, cpu: TelemetryCpuMetricSchema, memory: TelemetryMemoryMetricSchema,
+  coverage: TelemetryCoverageSchema, diagnostics: z.array(TelemetryReasonSchema).max(16), cpu: TelemetryCpuMetricSchema, memory: TelemetryMemoryMetricSchema,
 }).strict().superRefine((sample, ctx) => {
   if (sample.selectorKey !== telemetrySelectorKey(sample.selector) || sample.identity.mainId !== sample.selector.mainId
     || telemetryCanonical(sample.identity.host) !== telemetryCanonical(sample.selector.host))
@@ -97,7 +110,10 @@ export const TelemetryReadResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('no-sample'), selector: TelemetrySelectorSchema, selectorKey: z.string().max(8192),
     reason: TelemetryReasonSchema, identity: TelemetryIdentitySchema.nullable() }).strict(),
   z.object({ kind: z.literal('denied'), selectorKey: z.string().max(8192) }).strict(),
-])
+]).superRefine((result, ctx) => {
+  if (result.kind === 'no-sample' && result.selectorKey !== telemetrySelectorKey(result.selector))
+    ctx.addIssue({ code: 'custom', message: 'No-sample response must match the exact requested selector.' })
+})
 export type TelemetryReason = z.infer<typeof TelemetryReasonSchema>
 export type TelemetrySample = z.infer<typeof TelemetrySampleSchema>
 export type TelemetryReadResult = z.infer<typeof TelemetryReadResultSchema>
@@ -116,7 +132,11 @@ export const TelemetryMemoryCaptureSchema = z.discriminatedUnion('state', [
   z.object({ state: z.enum(['unavailable', 'permission-denied']), reason: TelemetryReasonSchema }).strict(),
 ])
 export const TelemetryCollectedRowSchema = z.object({ selector: TelemetrySelectorSchema, coverage: TelemetryCoverageSchema,
-  cpu: TelemetryCpuCaptureSchema, memory: TelemetryMemoryCaptureSchema }).strict()
+  cpu: TelemetryCpuCaptureSchema, memory: TelemetryMemoryCaptureSchema }).strict().superRefine((row, ctx) => {
+  if (row.memory.state === 'ok' && (row.selector.scope === 'computer') !== (row.memory.value.kind === 'host-used-estimate')
+    || row.cpu.state === 'ok' && (row.selector.scope === 'computer') !== (row.cpu.basis === 'host-active-ticks'))
+    ctx.addIssue({ code: 'custom', message: 'Computer counters cannot be relabeled as owned-scope counters.' })
+})
 export const CollectionChallengeSchema = z.object({ schemaVersion: z.literal(1), identity: TelemetryIdentitySchema,
   challengeId: Id, issuedAtUnixMs: Time, freshUntilUnixMs: Time }).strict()
 export const TelemetryCollectedBatchSchema = z.object({ schemaVersion: z.literal(1), identity: TelemetryIdentitySchema,

@@ -1,0 +1,72 @@
+import { isDeepStrictEqual } from 'node:util'
+import type pg from 'pg'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { RemoteJobMainRpcRequestSchema, RemoteJobDispatchIntentSchema, type RemoteJobDispatchIntent, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
+import { JobRepository } from '../../jobs/repository.js'
+import type { PostgresJobDispatch } from '../../jobs/dispatch.js'
+import type { JobWorkerService } from '../../jobs/worker.js'
+import type { JobPublicationAuthority } from '../../jobs/authority.js'
+import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
+import { requireAuthorization } from '../../access/policy.js'
+
+/** Authenticated W07 handler invokes this with trusted carrier binding, never payload identity. */
+export class JobApplicationBridge {
+  private readonly repository = new JobRepository()
+  constructor(private readonly pool: pg.Pool, private readonly dispatch: Pick<PostgresJobDispatch, 'require'|'requireControl'|'requireEvidence'|'observeReceipt'>,
+    private readonly workers: Pick<JobWorkerService, 'appendLog'>, private readonly publication: Pick<JobPublicationAuthority, 'authorizePublication'>) {}
+  private async authorize(intent: RemoteJobDispatchIntent, binding: Readonly<DeviceSessionBinding>, action: 'start'|'read'|'control'|'publish') {
+    const sql = await this.pool.connect()
+    try {
+      const execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId)
+      const target = execution.acceptedSpec.target
+      if (target.hostRef.kind !== 'device' || target.mainId !== binding.mainId || target.hostRef.deviceId !== binding.deviceId
+        || target.registration?.workerInstallationId !== binding.workerInstallationId || target.registration.keyRevision !== binding.keyRevision
+        || target.registration.authorizationRevision !== binding.authorizationRevision) throw new Error('Authenticated worker does not own the accepted job target')
+      const accepted = (await sql.query<{ intent: unknown }>('select intent from job_dispatch_intents where execution_id=$1', [execution.id])).rows[0]
+      if (!accepted || !isDeepStrictEqual(RemoteJobDispatchIntentSchema.parse(accepted.intent), intent)) throw new Error('Unaccepted or stale job operation')
+      if (action === 'start' || action === 'publish') {
+      const actor = (await sql.query<{ accepted_by: string }>('select accepted_by from job_executions where id=$1', [execution.id])).rows[0]
+      if (!actor) throw new Error('Accepted job principal missing')
+      const principal = await readLiveManagementPrincipal(sql, actor.accepted_by)
+      requireAuthorization(principal, execution.workflow ? 'runs:start' : 'jobs:start', { workspaceId: execution.workspaceId, ...(execution.workflow ? { workflowId: execution.workflow.workflowId, runId: execution.workflow.runId } : {}) })
+      }
+      const fence = { attemptId: intent.attemptId, owner: intent.owner }
+      if (action === 'control') await this.dispatch.requireControl(sql, execution, fence)
+      else if (action === 'read') await this.dispatch.requireEvidence(sql, execution, fence)
+      else await this.dispatch.require(sql, execution, fence)
+      if (action === 'publish') await this.publication.authorizePublication(sql, { workspaceId: execution.workspaceId, executionId: execution.id, attemptId: intent.attemptId, owner: intent.owner })
+      return execution
+    } finally { sql.release() }
+  }
+  async handle(raw: unknown, binding: Readonly<DeviceSessionBinding>) {
+    const frame = RemoteJobMainRpcRequestSchema.parse(raw)
+    const intent = frame.method === 'job-report' ? frame.receipt.intent : frame.intent
+    const execution = await this.authorize(intent, binding, frame.method === 'job-authorize' ? frame.action : 'read')
+    if (frame.method === 'job-authorize') return { authorized: true, operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash, owner: intent.owner }
+    if (frame.method === 'job-log') return this.workers.appendLog(execution.workspaceId, execution.id, { attemptId: intent.attemptId, owner: intent.owner }, frame.chunk)
+    const reporter = frame.receipt.connection
+    if (!('deviceId' in reporter) || reporter.deviceId !== binding.deviceId || reporter.workerInstallationId !== binding.workerInstallationId
+      || reporter.keyRevision !== binding.keyRevision || reporter.authorizationRevision !== binding.authorizationRevision) throw new Error('Job report original identity does not match this authorized worker')
+    await this.dispatch.observeReceipt(execution.workspaceId, execution.id, frame.receipt)
+    return { persistedSequence: frame.receipt.sequence }
+  }
+}
+export interface WorkerJobApplicationChannel { request(namespace: 'execution-v1', payload: unknown): Promise<{ payload: unknown }> }
+/** Worker callbacks use only narrow selected-main application RPC, not a DB handle. */
+export class WorkerJobApplicationSink {
+  constructor(private readonly channel: WorkerJobApplicationChannel) {}
+  async authorize(intent: RemoteJobDispatchIntent, action: 'start'|'read'|'control'|'publish') {
+    const result = (await this.channel.request('execution-v1', { method: 'job-authorize', intent, action })).payload
+    if (!result || typeof result !== 'object' || !('authorized' in result) || result.authorized !== true
+      || !('operationId' in result) || result.operationId !== intent.operationId || !('attemptId' in result) || result.attemptId !== intent.attemptId
+      || !('bindingHash' in result) || result.bindingHash !== intent.bindingHash || !('owner' in result) || !isDeepStrictEqual(result.owner, intent.owner)) throw new Error('Main did not authorize this exact job operation')
+  }
+  async observeReceipt(receipt: RemoteJobOperationReceipt) {
+    const result = (await this.channel.request('execution-v1', { method: 'job-report', receipt })).payload
+    if (!result || typeof result !== 'object' || !('persistedSequence' in result) || result.persistedSequence !== receipt.sequence) throw new Error('Main job receipt acknowledgment uncertain')
+  }
+  async appendLog(intent: RemoteJobDispatchIntent, chunk: Parameters<JobWorkerService['appendLog']>[3]) {
+    const result = (await this.channel.request('execution-v1', { method: 'job-log', intent, chunk })).payload
+    if (!result || typeof result !== 'object' || !('persistedSequence' in result) || typeof result.persistedSequence !== 'number' || result.persistedSequence < chunk.sequence) throw new Error('Main did not persist this log sequence')
+  }
+}
