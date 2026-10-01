@@ -8,11 +8,15 @@ import { createRequire, isBuiltin } from 'node:module';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(join(root, 'apps/worker/package.json'));
 const { build } = require('esbuild');
-const [targetFile, outputDirectory] = process.argv.slice(2);
-if (!targetFile || !outputDirectory) throw new Error('Usage: build-worker-artifact.mjs /approved-target.json /new-output-directory');
+const [targetFile, outputDirectory, runtimeFile] = process.argv.slice(2);
+if (!targetFile || !outputDirectory) throw new Error('Usage: build-worker-artifact.mjs /approved-target.json /new-output-directory [/reviewed-runtime.json]');
 execFileSync('git', ['diff', '--quiet', 'HEAD'], { cwd: root });
 const target = JSON.parse(await readFile(targetFile, 'utf8'));
-if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease) || !['x64', 'arm64'].includes(target.arch) || !/^glibc-\d+\.\d+$/.test(target.libc) || !/^v22\.\d+\.\d+$/.test(target.node)) throw new Error('Unsupported qualified target');
+if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease) || !['x64', 'arm64'].includes(target.arch) || !/^glibc-\d+\.\d+$/.test(target.libc) || !/^v22\.\d+\.\d+$/.test(target.node)) throw new Error('Unsupported build target');
+const runtime = runtimeFile ? JSON.parse(await readFile(runtimeFile, 'utf8')) : null;
+if (runtime && (runtime.format !== 1 || runtime.runtime !== 'node' || runtime.platform !== 'linux' || runtime.arch !== target.arch || runtime.version !== target.node
+  || !/^[a-f0-9]{64}$/.test(runtime.archive?.sha256) || !/^[a-f0-9]{64}$/.test(runtime.nodeExecutable?.sha256)
+  || !/^[A-F0-9]{40}$/.test(runtime.trustedRelease?.primarySignerFingerprint))) throw new Error('Reviewed runtime does not match target');
 // Fresh directories only: never mix files from another release or ship credentials.
 const output = resolve(outputDirectory); await mkdir(output, { mode: 0o700 }); await mkdir(join(output, 'src'));
 const built = await build({ absWorkingDir: root, entryPoints: { cli: 'apps/worker/src/cli.mjs', worker: 'apps/worker/src/workerFactory.mjs' }, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle',
@@ -30,6 +34,7 @@ for (const entry of Object.values(built.metafile.outputs)) for (const dependency
 for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs']) await copyFile(join(root, 'apps/worker/src', name), join(output, 'src', name));
 await mkdir(join(output, 'artifacts'));
 await copyFile(join(root, 'apps/worker/artifacts/graphql-worker.service.in'), join(output, 'artifacts/graphql-worker.service.in'));
+if (runtime) await copyFile(runtimeFile, join(output, 'artifacts/node-runtime.json'));
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const files = [];
 async function walk(directory, prefix = '') {
@@ -41,6 +46,7 @@ async function walk(directory, prefix = '') {
 }
 await walk(output);
 const pkg = JSON.parse(await readFile(join(root, 'apps/worker/package.json'), 'utf8'));
-const manifest = { format: 1, version: pkg.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), lockfileSha256: hash(await readFile(join(root, 'pnpm-lock.yaml'))), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, files };
+const manifest = { format: 1, version: pkg.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), lockfileSha256: hash(await readFile(join(root, 'pnpm-lock.yaml'))), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target,
+  ...(runtime ? { runtime: { metadataPath: 'artifacts/node-runtime.json', version: runtime.version, archiveSha256: runtime.archive.sha256, executableSha256: runtime.nodeExecutable.sha256, qualification: 'future installation requires actual target readback' } } : {}), files };
 await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
 console.log(JSON.stringify({ manifestSha256: hash(await readFile(join(output, 'manifest.json'))), version: pkg.version, commit: manifest.commit, files: files.length }));
