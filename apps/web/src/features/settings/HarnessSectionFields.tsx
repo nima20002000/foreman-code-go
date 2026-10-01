@@ -11,9 +11,9 @@ import { HarnessMcpPolicies } from './HarnessMcpPolicies'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { McpDetectionSettings } from './McpDetectionSettings'
 
-export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, allowAutoReview = false, requiresResume = false, workspaceId, writableDirectories }: {
+export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, allowAutoReview = false, requiresResume = false, workspaceId, writableDirectories, qualified = false, checking = false, checkError }: {
   editor: HarnessEditor; onChange(editor: HarnessEditor): void; section: HarnessSettingsSection;
-  issues?: readonly FieldIssue[]; routedApproval?: boolean; allowAutoReview?: boolean; requiresResume?: boolean; workspaceId?: string; writableDirectories?: ReactNode;
+  issues?: readonly FieldIssue[]; routedApproval?: boolean; allowAutoReview?: boolean; requiresResume?: boolean; workspaceId?: string; writableDirectories?: ReactNode; qualified?: boolean; checking?: boolean; checkError?: string;
 }) {
   const value = withAdvancedDefaults(editor.configuration)
   const error = (path: string) => fieldMessage(issues, path)
@@ -22,6 +22,19 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
   const opencode = (advanced: OpenCodeAdvancedConfiguration) => {
     if (value.harness === 'opencode') change({ ...value, autoApprove: advanced.permissionHandling === 'native_auto', advanced })
   }
+  if (value.harness === 'claude') return <div className="harness-section-fields">
+    {section === 'model' || section === 'permissions' ? <HarnessBasicFields value={value} onChange={change} issues={issues}
+      qualified={qualified} checking={checking} checkError={checkError} /> : section === 'session' ? <>
+      <p>Claude sessions use the accepted profile. Native hooks, plugins and agents are excluded.</p>
+      <p>Accepted instructions: {value.instructions || 'None'}</p>
+    </> : <>
+      <p>Claude uses the tools, approval rules and MCP servers pinned in this configuration. App approval routing is preserved.</p>
+      <p>Enabled tools: {value.tools.join(', ') || 'None'}</p>
+      {value.permissionRules.map((rule) => <p key={rule.tool}>{rule.tool}: {rule.effect}</p>)}
+      {Object.entries(value.mcpServers).map(([name, server]) => <p key={name}>{name}: {server.url}</p>)}
+      {!Object.keys(value.mcpServers).length ? <p>No MCP servers are configured.</p> : null}
+    </>}
+  </div>
   return <div className="harness-section-fields">
     {section === 'model' ? <HarnessBasicFields value={value} onChange={change} issues={issues} includeSandbox={false} /> : null}
             {value.harness === 'codex' && section === 'permissions' ? <>

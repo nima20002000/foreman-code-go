@@ -8,6 +8,7 @@ export function supportedEfforts(model: HarnessOptions['models'][number] | undef
 export function selectNativeModel(configuration: HarnessConfiguration, model: HarnessOptions['models'][number]): HarnessConfiguration {
   if (configuration.harness === 'opencode') return { ...configuration, model: model.id,
     variant: model.variants.includes(configuration.variant) ? configuration.variant : '' }
+  if (configuration.harness === 'claude') return { ...configuration, model: model.id }
   const efforts = supportedEfforts(model)
   // No guess when a catalog has an unknown effort: validation will report the preserved selection.
   return { ...configuration, model: model.id,

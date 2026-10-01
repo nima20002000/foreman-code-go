@@ -1,41 +1,50 @@
 import { useState } from 'react'
-import { type HarnessDefaults, HarnessDefaultsSchema } from '@graphql/contracts'
+import { type HarnessDefaults, type AgentHarness, type ClaudeHarnessConfiguration, ClaudeHarnessConfigurationSchema, HarnessDefaultsSchema } from '@graphql/contracts'
 import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@graphql/contracts/management'
-import { Button, ErrorState, LoadingState } from '../../shared/ui/nocturne'
+import { Button, ErrorState, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
 import { useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
 import { HarnessCompatibilityPanel } from './HarnessCompatibilityPanel'
 import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from './harnessEditor'
-import { issuesAt, withValidationPath } from './fieldValidation'
+import { issuesAt, withValidationPath, fieldMessage, type FieldIssue } from './fieldValidation'
 import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions'
 import { useSettingsValidation } from './useSettingsValidation'
 import { useRevisionedForm, useSettingsDraftStatus } from './revisionedForm'
 import { SettingsChoice, SettingsEditorLayout, SettingsOverview } from './SettingsEditorLayout'
-import { harnessSummary } from './settingsPresentation'
+import { harnessNames, harnessSummary } from './settingsPresentation'
 import { CodexPluginManager } from './CodexPluginManager'
 
-type Harness = 'codex' | 'opencode'
-type DefaultsEditor = { codex: HarnessEditor; opencode: HarnessEditor }
-function editable(value: HarnessDefaults): DefaultsEditor { return { codex: createHarnessEditor(value.codex), opencode: createHarnessEditor(value.opencode) } }
+type Harness = AgentHarness
+type ClaudeSetup = Partial<Pick<ClaudeHarnessConfiguration, 'model' | 'configDirectory' | 'authMode' | 'sandbox'>>
+type DefaultsEditor = { codex: HarnessEditor; opencode: HarnessEditor; claude?: HarnessEditor; claudeSetup?: ClaudeSetup }
+function editable(value: HarnessDefaults, harness?: Harness): DefaultsEditor {
+  return { codex: createHarnessEditor(value.codex), opencode: createHarnessEditor(value.opencode),
+    ...(value.claude ? { claude: createHarnessEditor(value.claude) } : harness === 'claude' ? { claudeSetup: {} } : {}) }
+}
 function prepared(value: DefaultsEditor): HarnessDefaults {
   return HarnessDefaultsSchema.parse({
     codex: withValidationPath(['codex'], () => prepareHarnessEditor(value.codex)),
     opencode: withValidationPath(['opencode'], () => prepareHarnessEditor(value.opencode)),
+    ...(value.claude ? { claude: withValidationPath(['claude'], () => prepareHarnessEditor(value.claude!)) }
+      : value.claudeSetup ? { claude: withValidationPath(['claude'], () => ClaudeHarnessConfigurationSchema.parse({
+        harness: 'claude', permissionMode: 'default', tools: [], permissionRules: [], instructions: '', mcpServers: {}, ...value.claudeSetup,
+      })) } : {}),
   })
 }
 function useProviderDefaults() {
   const catalogQuery = useManagedHarnessCatalogQuery(true)
   const codex = catalogQuery.data?.find((entry) => entry.harness === 'codex')
   const opencode = catalogQuery.data?.find((entry) => entry.harness === 'opencode')
-  const incoming = codex?.defaults.harness === 'codex' && opencode?.defaults.harness === 'opencode' && codex.defaultsRevision === opencode.defaultsRevision
-    ? { value: { codex: codex.defaults, opencode: opencode.defaults }, revision: codex.defaultsRevision }
+  const claude = catalogQuery.data?.find((entry) => entry.harness === 'claude')
+  const incoming = codex?.defaults.harness === 'codex' && opencode?.defaults.harness === 'opencode' && codex.defaultsRevision === opencode.defaultsRevision && (!claude || (claude.defaults.harness === 'claude' && claude.defaultsRevision === codex.defaultsRevision))
+    ? { value: { codex: codex.defaults, opencode: opencode.defaults, ...(claude?.defaults.harness === 'claude' ? { claude: claude.defaults } : {}) }, revision: codex.defaultsRevision }
     : undefined
   return { incoming, query: catalogQuery }
 }
 function ProviderCard({ harness, value, onSelect }: { harness: Harness; value: HarnessDefaults; onSelect(): void }) {
   const status = useSettingsDraftStatus(`settings:harnesses:${harness}`)
-  return <SettingsChoice icon="settings" title={harness === 'codex' ? 'Codex' : 'OpenCode'}
-    description={harness === 'codex' ? 'Native app-server' : 'Native server'} summary={harnessSummary(value[harness]).filter((item) => item.label !== 'Harness')}
+  return <SettingsChoice icon="settings" title={harnessNames[harness]}
+    description={harness === 'codex' ? 'Native app-server' : harness === 'opencode' ? 'Native server' : 'Host-local Claude profile'} summary={value[harness] ? harnessSummary(value[harness]!).filter((item) => item.label !== 'Harness') : [{ label: 'Preset', value: 'Not configured' }]}
     draftStatus={status} onSelect={onSelect} />
 }
 export function HarnessDefaultsSettings({ selectedHarness, section: selectedSection, onSelectHarness, onSectionChange }: {
@@ -54,32 +63,52 @@ export function HarnessDefaultsSettings({ selectedHarness, section: selectedSect
     description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!incoming) return <LoadingState label="Loading harness defaults…" />
   return <SettingsOverview title="Harnesses" description="Choose a provider to edit its preset or manage its connections.">
-    {(['codex', 'opencode'] as const).map((item) => <ProviderCard key={item} harness={item} value={incoming.value} onSelect={() => choose(item)} />)}
+    {(['codex', 'opencode', 'claude'] as const).map((item) => <ProviderCard key={item} harness={item} value={incoming.value} onSelect={() => choose(item)} />)}
   </SettingsOverview>
 }
 function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }: {
   harness: Harness; section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void; onBack(): void; showBack: boolean;
 }) {
   const { incoming, query } = useProviderDefaults()
-  const form = useRevisionedForm<DefaultsEditor>(incoming ? { value: editable(incoming.value), revision: incoming.revision } : undefined, `settings:harnesses:${harness}`)
+  const form = useRevisionedForm<DefaultsEditor>(incoming ? { value: editable(incoming.value, harness), revision: incoming.revision } : undefined, `settings:harnesses:${harness}`)
   const managedSave = useUpdateManagedHarnessDefaultsMutation()
   const root = useSettingsValidation(form.issues)
   const draft = form.draft
-  const name = harness === 'codex' ? 'Codex' : 'OpenCode'
+  const name = harnessNames[harness]
+  const activeSection = harness !== 'codex' && section === 'plugins' ? 'model' : section
   if (!draft && (query.isError || (query.isSuccess && !incoming))) return <ErrorState title="Harness defaults are unavailable" description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!draft) return <LoadingState label="Loading provider defaults…" />
   const update = (next: HarnessEditor) => form.setDraft((current) => current && ({ ...current, [harness]: next }))
   return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`} description="Provider preset for new configurations. Existing agents and sessions keep their settings."
-    backLabel="All harnesses" onBack={onBack} section={harness === 'opencode' && section === 'plugins' ? 'model' : section} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
+    backLabel="All harnesses" onBack={onBack} section={activeSection} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
     feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={form} /></>}
-    footer={section === 'connections' || section === 'workspace' || section === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
+    footer={activeSection === 'connections' || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
         const defaults = prepared(input.value)
         const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
-        return { value: editable(response.value.defaults), revision: response.value.revision }
+        return { value: editable(response.value.defaults, harness), revision: response.value.revision }
       }, (value) => { ManagementHarnessDefaultsSchema.parse(prepared(value)); return value })} />}>
-    {section === 'workspace' ? <HarnessCompatibilityPanel harness={harness} /> : null}
-    {section === 'plugins' && harness === 'codex' ? <CodexPluginManager /> : <HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]} onChange={update} issues={issuesAt(form.issues ?? [], [harness])}
-      section={harness === 'opencode' && section === 'plugins' ? 'model' : section} onSectionChange={onSectionChange} frameless />}
+    {section === 'workspace' && harness !== 'claude' ? <HarnessCompatibilityPanel harness={harness} /> : null}
+    {harness === 'claude' && !draft.claude ? <ClaudePresetSetup value={draft.claudeSetup ?? {}} issues={issuesAt(form.issues ?? [], ['claude'])}
+      onChange={(claudeSetup) => form.setDraft((current) => current && ({ ...current, claudeSetup }))} />
+      : section === 'plugins' && harness === 'codex' ? <CodexPluginManager /> : <HarnessConfigurationFields allowHarnessChange={false} editor={draft[harness]!} onChange={update} issues={issuesAt(form.issues ?? [], [harness])}
+      section={activeSection} onSectionChange={onSectionChange} frameless />}
   </SettingsEditorLayout></div>
+}
+
+function ClaudePresetSetup({ value, onChange, issues }: { value: ClaudeSetup; onChange(value: ClaudeSetup): void; issues: readonly FieldIssue[] }) {
+  return <div className="harness-basic-fields">
+    <p>Claude has no saved preset.</p><p>Enter an actual profile on the selected computer and a model to verify. Choose authentication and sandbox explicitly. New presets enable no tools or MCP servers; approvals use app routing.</p>
+    <TextField label="Model" value={value.model ?? ''} error={fieldMessage(issues, 'model')}
+      onChange={(event) => onChange({ ...value, model: event.target.value })} />
+    <TextField label="Local Claude profile directory" value={value.configDirectory ?? ''} error={fieldMessage(issues, 'configDirectory')}
+      onChange={(event) => onChange({ ...value, configDirectory: event.target.value })} />
+    <Select label="Authentication" value={value.authMode ?? ''} error={fieldMessage(issues, 'authMode')}
+      options={[{ value: '', label: 'Choose authentication', disabled: true }, { value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
+      onChange={(event) => onChange({ ...value, authMode: event.target.value as ClaudeHarnessConfiguration['authMode'] })} />
+    <Select label="Sandbox" value={value.sandbox ?? ''} error={fieldMessage(issues, 'sandbox')}
+      options={[{ value: '', label: 'Choose sandbox', disabled: true }, { value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }]}
+      onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
+    <p>Saving verifies this exact configuration. A saved preset does not establish readiness on another computer.</p>
+  </div>
 }

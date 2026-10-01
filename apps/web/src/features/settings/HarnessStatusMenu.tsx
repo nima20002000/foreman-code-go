@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { AgentHarnessSchema, type AgentHarness } from '@graphql/contracts'
+import { harnessNames } from './settingsPresentation'
 import { getExecutionReadiness } from '../operator-chat/executionReadiness'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
@@ -13,7 +14,7 @@ function HarnessStatus({ harness }: { harness: AgentHarness }) {
     queryFn: ({ signal }) => getExecutionReadiness(harness, signal),
     enabled: !sessionIsSwitching(), retry: false, staleTime: 30_000, refetchInterval: 30_000,
   })
-  const name = harness === 'codex' ? 'Codex' : 'OpenCode'
+  const name = harnessNames[harness]
   const state = query.isError || query.isPaused ? 'unverified' : query.data?.status ?? 'checking'
   const label = state === 'eligible' ? 'Available' : state === 'blocked' ? 'Unavailable' : state === 'checking' ? 'Checking' : 'Unverified'
   const detail = query.isError ? 'Could not check harness availability.' : query.data?.reason?.message ?? 'Availability with saved harness settings. Workspace checks run when execution starts.'

@@ -1,0 +1,93 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@graphql/contracts'
+import { HarnessDefaultsUpdateInputSchema } from '@graphql/contracts/management'
+import { queryKeys } from '../../shared/api/query'
+import { getManagedHarnessCatalog } from '../../shared/api/client'
+import { server } from '../../mocks/server'
+import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
+import { clearRevisionedFormPersistence } from './revisionedForm'
+import { nativeOptionsFixture } from './settingsExperience.fixtures'
+import { savedClaudeConfiguration } from './claudeSettings.fixtures'
+
+vi.mock('../../shared/api/harnessSettings', () => ({
+  useNativeHarnessOptions: (harness: 'codex' | 'opencode' | 'claude') => nativeOptionsFixture(harness === 'claude' ? 'opencode' : harness),
+  useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useAutomaticHarnessCheck: () => ({ current: false, result: { isFetching: false, isSuccess: false, isError: false } }),
+  useHarnessSessionEpoch: () => 0,
+}))
+vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
+const clients: QueryClient[] = []
+afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const client of clients.splice(0)) client.clear() })
+function setup(defaults: HarnessDefaults, conflicted = false) {
+  let persisted = structuredClone(defaults)
+  let revision = 4
+  let submitted: ReturnType<typeof HarnessDefaultsUpdateInputSchema.parse> | undefined
+  server.use(
+    http.get('/api/management/harnesses', () => HttpResponse.json((['codex', 'opencode', 'claude'] as const)
+      .filter((harness) => persisted[harness]).map((harness) => ({ harness, defaults: persisted[harness], defaultsRevision: revision,
+        capability: null, discoveryError: null })))),
+    http.put('/api/management/harnesses/defaults', async ({ request }) => {
+      submitted = HarnessDefaultsUpdateInputSchema.parse(await request.json())
+      if (conflicted) { revision += 1; return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Harness defaults changed since they were read.' } }, { status: 409 }) }
+      expect(submitted.expectedRevision).toBe(revision)
+      persisted = submitted.defaults
+      revision += 1
+      return HttpResponse.json({ value: { defaults: persisted, revision }, replayed: false })
+    }),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}><HarnessDefaultsSettings /></QueryClientProvider>)
+  return { submitted: () => submitted, refresh: () => client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog }) }
+}
+describe('Claude defaults through the HTTP boundary', () => {
+  it.each(['Codex', 'OpenCode'] as const)('keeps exact Claude settings in persisted readback after saving %s', async (name) => {
+    setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: `Edit ${name} defaults` }))
+    if (name === 'Codex') {
+      await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+    } else {
+      await user.click(screen.getByRole('button', { name: 'Session' }))
+      await user.click(screen.getByRole('checkbox', { name: 'Automatic compaction' }))
+    }
+    await user.click(screen.getByRole('button', { name: `Save ${name} preset` }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    const readback = await getManagedHarnessCatalog()
+    expect(readback.find((entry) => entry.harness === 'claude')?.defaults).toEqual(savedClaudeConfiguration)
+    expect(readback.map((entry) => entry.defaultsRevision)).toEqual([5, 5, 5])
+  })
+  it('preserves optional absence when another provider is saved', async () => {
+    const state = setup(DEFAULT_HARNESS_DEFAULTS)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Edit Codex defaults' }))
+    await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+    await user.click(screen.getByRole('button', { name: 'Save Codex preset' }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(state.submitted()?.defaults).not.toHaveProperty('claude')
+    expect((await getManagedHarnessCatalog()).map((entry) => entry.harness)).toEqual(['codex', 'opencode'])
+  })
+  it('preserves the Claude draft and exact permissions after a revision conflict', async () => {
+    const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }, true)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
+    expect(screen.getByText('Claude is awaiting native qualification')).toBeVisible()
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument()
+    const field = screen.getByRole('textbox', { name: 'Local Claude profile directory' })
+    await user.clear(field)
+    await user.type(field, '/chosen/new-profile')
+    await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+    expect(await screen.findByText('Changes were not saved')).toBeVisible()
+    await act(async () => { await state.refresh() })
+    expect(await screen.findByText('These defaults changed elsewhere. Your edits are preserved.')).toBeVisible()
+    expect(field).toHaveValue('/chosen/new-profile')
+    await waitFor(() => expect(state.submitted()?.defaults.claude).toEqual({ ...savedClaudeConfiguration, configDirectory: '/chosen/new-profile' }))
+    expect((await getManagedHarnessCatalog()).find((entry) => entry.harness === 'claude')?.defaults).toEqual(savedClaudeConfiguration)
+  })
+})
