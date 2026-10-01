@@ -79,9 +79,19 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
   if (!draft && (query.isError || (query.isSuccess && !incoming))) return <ErrorState title="Harness defaults are unavailable" description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!draft) return <LoadingState label="Loading provider defaults…" />
   const update = (next: HarnessEditor) => form.setDraft((current) => current && ({ ...current, [harness]: next }))
+  const reapply = () => {
+    if (!form.conflicted || form.isSaving || form.uncertain) return
+    form.reapply()
+    form.setDraft((current) => {
+      if (!current?.claudeSetup || current.claude?.configuration.harness !== 'claude') return current
+      const { claudeSetup, ...next } = current
+      // Setup fields and a newly saved preset describe one provider, not two competing drafts.
+      return { ...next, claude: { ...current.claude, configuration: { ...current.claude.configuration, ...claudeSetup } } }
+    })
+  }
   return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`} description="Provider preset for new configurations. Existing agents and sessions keep their settings."
     backLabel="All harnesses" onBack={onBack} section={activeSection} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
-    feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={form} /></>}
+    feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={{ ...form, reapply }} /></>}
     footer={activeSection === 'connections' || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
         const defaults = prepared(input.value)

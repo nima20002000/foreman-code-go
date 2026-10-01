@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults, type ClaudeHarnessConfiguration } from '@graphql/contracts'
 import { HarnessDefaultsUpdateInputSchema } from '@graphql/contracts/management'
 import { queryKeys } from '../../shared/api/query'
 import { getManagedHarnessCatalog } from '../../shared/api/client'
@@ -42,7 +42,11 @@ function setup(defaults: HarnessDefaults, conflicted = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
   render(<QueryClientProvider client={client}><HarnessDefaultsSettings /></QueryClientProvider>)
-  return { submitted: () => submitted, refresh: () => client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog }) }
+  return { submitted: () => submitted, refresh: () => client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog }),
+    createClaude: async (claude: ClaudeHarnessConfiguration) => {
+      persisted = { ...persisted, claude }; revision += 1
+      await client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog })
+    } }
 }
 describe('Claude defaults through the HTTP boundary', () => {
   it.each(['Codex', 'OpenCode'] as const)('keeps exact Claude settings in persisted readback after saving %s', async (name) => {
@@ -90,4 +94,30 @@ describe('Claude defaults through the HTTP boundary', () => {
     await waitFor(() => expect(state.submitted()?.defaults.claude).toEqual({ ...savedClaudeConfiguration, configDirectory: '/chosen/new-profile' }))
     expect((await getManagedHarnessCatalog()).find((entry) => entry.harness === 'claude')?.defaults).toEqual(savedClaudeConfiguration)
   })
+})
+
+it('reapplies local empty-setup fields onto an externally created Claude preset and saves exact readback', async () => {
+  const state = setup(DEFAULT_HARNESS_DEFAULTS)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
+  await user.type(screen.getByRole('textbox', { name: 'Model' }), 'local-chosen-model')
+  await user.type(screen.getByRole('textbox', { name: 'Local Claude profile directory' }), '/local/chosen-profile')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Authentication' }), 'api-key')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+  await act(async () => { await state.createClaude(savedClaudeConfiguration) })
+  expect(await screen.findByText('These defaults changed elsewhere. Your edits are preserved.')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Reapply my edits to current defaults' }))
+  expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('local-chosen-model')
+  expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveValue('/local/chosen-profile')
+  expect(screen.getByRole('combobox', { name: 'Authentication' })).toHaveValue('api-key')
+  expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('workspace-write')
+  await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+  expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+  const expected = { ...savedClaudeConfiguration, model: 'local-chosen-model', configDirectory: '/local/chosen-profile',
+    authMode: 'api-key', sandbox: 'workspace-write' }
+  expect(state.submitted()?.defaults.claude).toEqual(expected)
+  expect(state.submitted()?.expectedRevision).toBe(5)
+  const readback = await getManagedHarnessCatalog()
+  expect(readback.find((entry) => entry.harness === 'claude')?.defaults).toEqual(expected)
+  expect(readback.map((entry) => entry.defaultsRevision)).toEqual([6, 6, 6])
 })

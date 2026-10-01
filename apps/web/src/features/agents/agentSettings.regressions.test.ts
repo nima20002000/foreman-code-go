@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@graphql/contracts'
 
-import { configuredHarness, defaultAgentForHarness, nextHarnessAgentName } from './agentSettings'
+import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
+import { configuredHarness, defaultAgentForHarness, nextHarnessAgentName, initialModel, effortOptions } from './agentSettings'
 
 const defaults: HarnessDefaults = {
   codex: {
@@ -45,5 +46,35 @@ describe('PR #3 harness defaults and names', () => {
       expect(agents.some((agent) => agent.name === name)).toBe(false)
       agents.push({ id: `agent-${expected}`, name })
     }
+  })
+})
+
+describe('Explicit Claude agent configuration', () => {
+  it('requires an actual profile when creating or switching to Claude', () => {
+    expect(() => defaultAgentForHarness('claude', 'new', 'New')).toThrow(/Claude.*profile/)
+    const codex = defaultAgentForHarness('codex', 'existing', 'Existing')
+    expect(() => configuredHarness(codex, 'claude', 'chosen-model', 'high', true, 'read-only')).toThrow(/Claude.*profile/)
+    expect(initialModel(codex, 'claude')).toBe('')
+  })
+  it('does not replace a mismatched supplied configuration with a provider default', () => {
+    expect(() => defaultAgentForHarness('claude', 'new', 'New', DEFAULT_HARNESS_DEFAULTS.codex)).toThrow(/match/)
+  })
+  it('preserves actual Claude settings while changing its model and supported sandbox', () => {
+    const agent = defaultAgentForHarness('claude', 'claude-1', 'Claude agent', savedClaudeConfiguration)
+    expect(agent.harnessConfiguration).toEqual(savedClaudeConfiguration)
+    expect(agent.effort).toBeUndefined()
+    expect(agent.fastMode).toBeUndefined()
+    expect(configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'workspace-write')).toEqual({
+      ...savedClaudeConfiguration, model: 'chosen-model', sandbox: 'workspace-write',
+    })
+    expect(() => configuredHarness(agent, 'claude', 'chosen-model', 'high', true, 'danger-full-access')).toThrow(/sandbox/)
+    expect(effortOptions('claude', savedClaudeConfiguration.model)).toEqual([])
+  })
+  it('uses only an explicitly supplied Claude creation preset', () => {
+    const agent = defaultAgentForHarness('codex', 'existing', 'Existing')
+    expect(configuredHarness(agent, 'claude', savedClaudeConfiguration.model, 'high', true, 'read-only', {
+      ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration,
+    })).toEqual(savedClaudeConfiguration)
+    expect(nextHarnessAgentName('claude', [{ id: 'existing', name: 'claude-001' }])).toBe('claude-002')
   })
 })

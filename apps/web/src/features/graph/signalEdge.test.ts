@@ -1,5 +1,7 @@
+import { defaultAgentForHarness } from '../agents/agentSettings'
+import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { describe, expect, it } from 'vitest'
-import { AGENT_NODE_SIZE, edgeBend, floatingCurve, relationshipLines } from './signalEdge'
+import { AGENT_NODE_SIZE, edgeBend, floatingCurve, relationshipLines, agentNodeFacts, agentSettingRows } from './signalEdge'
 
 describe('floating agent connections', () => {
   it('leaves and enters each circle on its rim, not at a fixed side handle', () => {
@@ -28,4 +30,12 @@ describe('relationship lines', () => {
     expect(alias.get('review')).toEqual({ lineId: 'handoff', flipped: false })
     expect(alias.get('back')).toEqual({ lineId: 'ca', flipped: true })
   })
+})
+
+it('shows actual Claude facts without invented effort or OpenCode variant', () => {
+  const agent = defaultAgentForHarness('claude', 'claude-1', 'Claude', savedClaudeConfiguration)
+  expect(agentNodeFacts(agent)).toMatchObject({ harness: 'claude', harnessLabel: 'Claude', model: savedClaudeConfiguration.model })
+  expect(agentNodeFacts(agent).meta).toEqual([{ label: 'Role', value: 'Agent' }])
+  expect(agentSettingRows(agent)).toContainEqual({ label: 'Sandbox', value: 'Read only' })
+  expect(agentSettingRows(agent)).not.toContainEqual(expect.objectContaining({ label: 'Variant' }))
 })

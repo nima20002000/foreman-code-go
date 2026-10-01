@@ -28,6 +28,17 @@ export function McpAccessNotice({ error, returnTo, retry }: { error: ApiError; r
 export function McpConnectionCard({ workspaceId, harness, location, returnTo }: {
   workspaceId: string; harness: AgentHarness; location: ExecutionLocation; returnTo: string
 }) {
+  if (harness === 'claude') return <article className="mcp-connection-card" aria-label="Claude">
+    <div className="mcp-provider-heading"><h3>Claude</h3></div>
+    <Alert title="Claude workspace connection checks are not available here.">This native workspace check supports Codex and OpenCode. Claude uses MCP servers pinned in its accepted configuration.</Alert>
+    <Link className="n-button n-button--secondary n-button--sm" to="/settings/harnesses" search={{ harness: 'claude', section: 'tools' }}>Inspect Claude configuration</Link>
+  </article>
+  return <SupportedMcpConnectionCard workspaceId={workspaceId} harness={harness} location={location} returnTo={returnTo} />
+}
+
+function SupportedMcpConnectionCard({ workspaceId, harness, location, returnTo }: {
+  workspaceId: string; harness: Exclude<AgentHarness, 'claude'>; location: ExecutionLocation; returnTo: string
+}) {
   const query = useMcpDetectionQuery(workspaceId, harness)
   const accessError = useProtectedAccessError(query)
   const headingId = useId()
