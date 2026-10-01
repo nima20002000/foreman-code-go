@@ -63,7 +63,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     private readonly pool: pg.Pool,
     private readonly interactions: PostgresInteractionRepository,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly orchestration?: Pick<InteractionService, 'respond'>,
+    private readonly orchestration?: Pick<InteractionService, 'respond'> & Partial<Pick<InteractionService, 'readActivity'>>,
   ) {}
 
   async context(principal: ManagementPrincipal) {
@@ -196,7 +196,11 @@ export class PostgresAppInteractionService implements AppInteractionService {
 
   async get(principal: ManagementPrincipal, interactionId: string) {
     const interaction = requireReadableInteraction(principal, await this.interactions.get(interactionId))
-    return { interaction }
+    let authorized = false
+    try { requireRespondableInteraction(principal, interaction); authorized = await this.canRespond(principal) }
+    catch (error) { if (!(error instanceof DomainError)) throw error }
+    const activity = await this.orchestration?.readActivity?.(interaction, authorized)
+    return { interaction, ...(activity ? { activity } : {}) }
   }
 
   async respond(principal: ManagementPrincipal, input: unknown) {

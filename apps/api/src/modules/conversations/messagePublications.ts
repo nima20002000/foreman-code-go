@@ -25,7 +25,7 @@ export function mergeMessagePins(...groups: readonly (readonly MessageAttachment
  * a live token, mutable host path, current selection, or caller-provided context.
  * This projects already-finalized facts; it cannot authorize another write. */
 export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'query'>,
-  conversationId: string, messageIds: string[]): Promise<Map<string, MessageAttachmentRef[]>> {
+  conversationId: string, messageIds: string[], onReceipt?: (receipt: ConversationPublicationReceipt) => void): Promise<Map<string, MessageAttachmentRef[]>> {
   const result = new Map<string, MessageAttachmentRef[]>()
   if (!messageIds.length) return result
   const turns = (await query.query<{
@@ -59,8 +59,10 @@ export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'q
           ? { runId: turn.origin_run_id, executionId: turn.origin_execution_id } : {}) } },
   }), turn]))
   if (!bindings.size) return result
-  const published = (await query.query<{ binding: string; owner_principal_id: string; file_id: string; revision_id: string }>(`
-    select p.binding,p.owner_principal_id,p.file_id,p.revision_id from file_tool_publications p
+  const published = (await query.query<{ binding: string; owner_principal_id: string; file_id: string; revision_id: string; request_id: string; file_activity_revision: string; file_state: string }>(`
+    select p.binding,p.owner_principal_id,p.file_id,p.revision_id,p.request_id,f.activity_record_revision::text as file_activity_revision,
+      f.state as file_state from file_tool_publications p
+    join files f on f.file_id=p.file_id and f.owner_principal_id=p.owner_principal_id
     join file_allocations a on a.owner_principal_id=p.owner_principal_id and a.request_id=p.request_id
       and a.file_id=p.file_id and a.revision_id=p.revision_id and a.state='finalized'
     where p.binding=any($1::text[]) order by p.request_id`, [[...bindings.keys()]])).rows
@@ -70,6 +72,18 @@ export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'q
     const refs = result.get(turn.message_id) ?? []
     refs.push(MessageAttachmentRefSchema.parse({ fileId: publication.file_id, revisionId: publication.revision_id }))
     result.set(turn.message_id, refs)
+    onReceipt?.({ receiptId: publication.request_id, messageId: turn.message_id, fileId: publication.file_id, fileRevisionId: publication.revision_id,
+      nativeSessionId: turn.native_session_id, nativeTurnId: turn.native_turn_id, fileActivityRevision: publication.file_activity_revision, fileState: publication.file_state })
   }
   return result
+}
+
+export interface ConversationPublicationReceipt {
+  receiptId: string; messageId: string; fileId: string; fileRevisionId: string; nativeSessionId: string; nativeTurnId: string; fileActivityRevision: string; fileState: string
+}
+/** Reuse the same exact receipt/binding/owner checks as attachment hydration. */
+export async function readConversationPublicationReceipts(query: Pick<pg.PoolClient, 'query'>, conversationId: string, messageIds: string[]) {
+  const receipts: ConversationPublicationReceipt[] = []
+  await readCodexMessagePublications(query, conversationId, messageIds, (receipt) => receipts.push(receipt))
+  return receipts
 }

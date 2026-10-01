@@ -5,6 +5,10 @@ function object(value: unknown): ObjectValue { return value && typeof value === 
 /** Deltas are presentation-only; completed public message items are persisted separately. */
 export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new Map<string, string>()): Array<{ partId: string; text: string; mode: 'append' | 'replace' }> {
   const payload = event.payload
+  if (event.type === 'claude.text' && !payload.parentToolUseId && typeof payload.itemId === 'string'
+    && typeof payload.text === 'string' && (payload.operation === 'append' || payload.operation === 'replace')) {
+    return [{ partId: payload.itemId, text: payload.text, mode: payload.operation }]
+  }
   const method = typeof payload.nativeMethod === 'string' ? payload.nativeMethod : event.type
   if (method === 'item/reasoning/summaryTextDelta' && typeof payload.delta === 'string') {
     return [{ partId: `thinking:${String(payload.itemId ?? 'reasoning')}`, text: payload.delta, mode: 'append' }]
@@ -21,6 +25,8 @@ export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new M
   }
   if (event.type === 'message.part.delta' && payload.field === 'text' && typeof payload.delta === 'string') {
     const id = String(payload.partID ?? 'assistant')
+    const kind = partKinds.get(id)
+    if (kind && kind !== 'text' && kind !== 'reasoning') return []
     return [{ partId: `${partKinds.get(id) === 'reasoning' ? 'thinking:' : ''}${id}`, text: payload.delta, mode: 'append' }]
   }
   const part = object(payload.part)
@@ -34,11 +40,20 @@ export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new M
   return []
 }
 
-export function completedNativeAssistantMessage(event: NativeHarnessEvent, harness: 'codex' | 'opencode'):
+export function completedNativeAssistantMessage(event: NativeHarnessEvent, harness: 'codex' | 'opencode' | 'claude'):
   { id: string; text: string; parentMessageId?: string; complete?: boolean } | undefined {
+  if (harness === 'claude' && event.type === 'claude.text' && !event.payload.parentToolUseId
+    && event.payload.operation === 'replace' && typeof event.payload.itemId === 'string'
+    && typeof event.payload.text === 'string') {
+    const parentMessageId = typeof event.payload.messageId === 'string' ? event.payload.messageId : undefined
+    // Without block-parent identity, a provisional snapshot cannot use the terminal-message path.
+    if (!parentMessageId && event.payload.final !== true) return undefined
+    return { id: event.payload.itemId, text: event.payload.text, complete: event.payload.final === true,
+      ...(parentMessageId ? { parentMessageId } : {}) }
+  }
   if (harness === 'codex' && event.type === 'item.completed') {
     const item = object(event.payload.item)
-    if (item.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string' && item.text) {
+    if (item.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string') {
       return { id: item.id, text: item.text }
     }
   }

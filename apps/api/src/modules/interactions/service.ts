@@ -91,7 +91,11 @@ export class InteractionService {
     const qualified = this.activityEvidence ? await this.activityEvidence(interaction) : {
       response: { qualified: false, usable: false, path: null, authorized: false },
     } satisfies InteractionActivityEvidence
-    return projectInteractionActivity(interaction, { ...qualified, response: { ...qualified.response, authorized } })
+    const acknowledgment = await this.interactions.activityAcknowledgment(interaction)
+    const turnMatches = !acknowledgment.nativeTurnId || !qualified.nativeTurnId
+      || acknowledgment.nativeTurnId === qualified.nativeTurnId
+    return projectInteractionActivity(interaction, { ...qualified, ...acknowledgment,
+      response: { ...qualified.response, authorized, usable: qualified.response.usable && turnMatches } })
   }
 
   async listVisible(principal: ManagementPrincipal, input: {

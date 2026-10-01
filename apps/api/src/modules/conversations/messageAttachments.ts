@@ -111,12 +111,9 @@ export async function hydrateMessageAttachments(query: Queryable, conversationId
   }
   const pins = (message: typeof messages[number]) => mergeMessagePins(message.attachmentRefs ?? [], message.publicationRefs ?? [])
   const rows = await readPins(query, conversationId, messages.flatMap(pins))
-  // Input pins identify candidate messages; the recovery query verifies exact
+  // Bounded user messages identify candidates, including turns with inherited references and no new uploads. The recovery query verifies exact
   // Codex receipt/session/sender bindings, independent of current token authority.
-  const candidates = messages.filter((message) => message.role === 'user' && message.attachmentRefs?.some((ref) => {
-    const scope = rows.get(identity(ref))?.file.scope
-    return scope?.kind === 'temporary'
-  })).map((message) => message.id)
+  const candidates = messages.filter((message) => message.role === 'user').map((message) => message.id)
   const recovered = await readCodexMessagePublications(query, conversationId, candidates)
   const missing = [...recovered.values()].flat().filter((ref) => !rows.has(identity(ref)))
   for (const [key, value] of await readPins(query, conversationId, missing)) rows.set(key, value)

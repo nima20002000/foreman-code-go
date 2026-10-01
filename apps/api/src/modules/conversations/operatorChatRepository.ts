@@ -15,6 +15,12 @@ import { messageAttachmentIdentity } from '@graphql/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
+import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
+import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+import { appendConversationTextOperation } from './conversationTextRepository.js'
+import type { ActivityMutationFence } from './operatorActivityRepository.js'
+import { OperatorChatCommands } from './operatorChatCommands.js'
+import { readOperatorActivitySnapshot } from './operatorActivitySnapshot.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
@@ -143,6 +149,27 @@ export class PostgresOperatorConversationRepository {
     }))
   }
 
+  createControlCommands() { return new OperatorChatCommands(this.pool) }
+
+  appendAssistantTextOperation(id: string, requestId: string, operation: ActivityTextOperation, fence: ActivityMutationFence = {}) {
+    return appendConversationTextOperation(this.pool, id, requestId, operation, fence)
+  }
+
+  /** State, text/files and activity revision share one repeatable-read transaction. */
+  async getWithActivity(id: string) {
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin isolation level repeatable read read only')
+      const state = await this.get(id, client)
+      const activitySnapshot = state ? await readOperatorActivitySnapshot(this.pool, client, id) : undefined
+      await client.query('commit')
+      return state && activitySnapshot ? { ...state, activitySnapshot } : undefined
+    } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+  }
+  async activitySnapshot(id: string) {
+    return (await this.getWithActivity(id))?.activitySnapshot
+  }
+
   async get(id: string, query: Queryable = this.pool): Promise<OperatorConversationState | undefined> {
     // One statement gives the bounded recent window and state the same MVCC
     // snapshot. Large/older messages remain accessible through history().
@@ -155,7 +182,7 @@ export class PostgresOperatorConversationRepository {
         then (select sequence::text from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 99 limit 1) end as activity_cursor,
       coalesce((select jsonb_agg(retained.record order by retained.sequence) from (
         select recent.*,sum(octet_length(recent.record::text)) over (order by recent.sequence desc) as bytes
-        from (select m.record || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end as record,m.sequence from operator_conversation_messages m
+        from (select m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text) || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end as record,m.sequence from operator_conversation_messages m
           where m.conversation_id=c.id order by m.sequence desc limit $2) recent
         ) retained where retained.bytes<=$3),'[]'::jsonb) as messages
       from operator_conversations c where c.id=$1`, [id, OPERATOR_SNAPSHOT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])
@@ -183,15 +210,17 @@ export class PostgresOperatorConversationRepository {
    * Receipts are joined to the exact accepted user message, including after the
    * active request clears or browser enrollment erases its local outbox.
    */
-  async history(id: string, input: Partial<OperatorConversationHistoryQuery> = {}): Promise<OperatorConversationHistoryPage | undefined> {
+  async history(id: string, input: Partial<OperatorConversationHistoryQuery> = {}, query: Queryable = this.pool): Promise<OperatorConversationHistoryPage | undefined> {
     const { before, limit } = OperatorConversationHistoryQuerySchema.parse(input)
-    const result = await this.pool.query<{
+    if (query === this.pool) return withConversationPageRead(this.pool, (sql) => this.history(id, input, sql))
+    await assertConversationCursor(query, id, before, 'messages')
+    const result = await query.query<{
       id: string; revision: number | string; active_request_id: string | null;
       entries: Array<{ message: unknown; sequence: string; receipt: unknown }>; next_cursor: string | null;
     }>(`with candidates as (
         select m.*,row_number() over (order by m.sequence desc) as ordinal,
           sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-        from (select sequence,record || case when client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',client_request_id) end as record,client_request_id from operator_conversation_messages
+        from (select sequence,record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) || case when client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',client_request_id) end as record,client_request_id from operator_conversation_messages
           where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
           order by sequence desc limit ($3::integer+1)) m
       ), selected as (
@@ -213,7 +242,7 @@ export class PostgresOperatorConversationRepository {
     if (!row) return undefined
     // One oversized message is returned over HTTP so the cursor always advances;
     // it is never put in a live SSE snapshot.
-    const messages = await hydrateMessageAttachments(this.pool, id, row.entries.map((entry) => entry.message))
+    const messages = await hydrateMessageAttachments(query, id, row.entries.map((entry) => entry.message))
     return OperatorConversationHistoryPageSchema.parse({ conversationId: row.id, revision: Number(row.revision),
       activeRequestId: row.active_request_id, entries: row.entries.map((entry, index) => ({ ...entry, message: messages[index] })), nextCursor: row.next_cursor })
   }
@@ -474,6 +503,8 @@ export class PostgresOperatorConversationRepository {
         await client.query('update operator_conversation_turns set retryable=false,result=null where conversation_id=$1 and request_id=$2', [id, input.requestId])
         const title = ConversationSchema.parse(row.record).title
         const record = title === 'New conversation' ? { ...ConversationSchema.parse(row.record), title: input.content.replace(/\s+/g, ' ').slice(0, 72) } : row.record
+        await client.query(`update operator_conversation_turns set message_id=(select id from operator_conversation_messages
+          where conversation_id=$1 and client_request_id=$2),started_at=coalesce(started_at,now()) where conversation_id=$1 and request_id=$2`, [id, input.requestId])
         await client.query(`update operator_conversations set active_request_id=$2,active_native_turn_id=null,
           active_phase='accepted',cancel_requested=false,turn_state='starting',last_error=null,last_result=null,
           pending_interaction=null,response_delivery=null,revision=revision+1,record=$3::jsonb,updated_at=now() where id=$1`,
@@ -514,13 +545,16 @@ export class PostgresOperatorConversationRepository {
       update operator_conversations set active_native_turn_id=$3,active_phase='submitted',
         turn_state=case when cancel_requested then 'canceling' else 'active' end,revision=revision+1,updated_at=now()
         where id=$1 and active_request_id=$2 and (active_native_turn_id is null or active_native_turn_id=$3)
+          and (active_native_turn_id is distinct from $3 or active_phase is distinct from 'submitted'
+            or turn_state is distinct from case when cancel_requested then 'canceling' else 'active' end
+            or exists(select 1 from operator_conversation_turns t where t.conversation_id=$1 and t.request_id=$2 and t.native_turn_id is distinct from $3))
         returning id,native_session_id,handoff_context,fork_request_id
     ), initialized as (
-      update operator_conversation_turns t set payload=t.payload || jsonb_build_object('handoffContextSessionId',a.native_session_id)
-        from acknowledged a where t.conversation_id=a.id and t.request_id=$2
-          and a.handoff_context is not null and a.native_session_id is not null
+      update operator_conversation_turns t set native_turn_id=$3,payload=case when a.handoff_context is not null and a.native_session_id is not null
           and (t.payload->>'handoffContextIncluded'='true'
             or (not (t.payload ? 'handoffContextIncluded') and t.request_id=a.fork_request_id))
+          then t.payload || jsonb_build_object('handoffContextSessionId',a.native_session_id) else t.payload end
+        from acknowledged a where t.conversation_id=a.id and t.request_id=$2
       returning t.request_id
     ) select id from acknowledged`, [id, requestId, nativeTurnId])
     return result.rowCount === 1
@@ -558,7 +592,6 @@ export class PostgresOperatorConversationRepository {
   /** Codex messages are immutable; OpenCode public parts keep their first position while streaming. */
   async appendAssistantMessage(id: string, requestId: string, nativeMessageId: string, content: string,
     nativePart?: { parentMessageId: string; complete: boolean }, precedingActivityId?: string | null): Promise<boolean> {
-    if (!content && !nativePart) return false
     const client = await this.pool.connect()
     try {
       await client.query('begin')
@@ -579,18 +612,18 @@ export class PostgresOperatorConversationRepository {
             'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id,requestId])).rows[0]?.sequence
       if (activity === undefined) throw new Error('The public message activity predecessor was not persisted.')
       if (existing) {
-        if (!nativePart || existing.nativeMessageComplete !== false) {
+        if (existing.nativeMessageComplete !== false) {
           if (existing.content !== content && (!nativePart || nativePart.complete)) {
             throw new DomainError('NATIVE_MESSAGE_CONFLICT', 'A completed provider message changed after persistence.', 409)
           }
           // A late incomplete snapshot must never replace a completed part.
           if (precedingActivityId === undefined || existing.afterActivitySequence === activity) { await client.query('commit'); return false }
-        } else if (!nativePart.complete && !content.startsWith(existing.content)) {
+        } else if (nativePart && !nativePart.complete && !content.startsWith(existing.content)) {
           await client.query('commit'); return false // Older partial snapshot; await complete native evidence.
         }
-        const mutable = nativePart && existing.nativeMessageComplete === false
+        const mutable = existing.nativeMessageComplete === false
         const message = MessageSchema.parse({ ...existing,
-          ...(mutable ? { content, nativeMessageComplete: nativePart.complete } : {}),
+          ...(mutable ? { content, nativeMessageComplete: nativePart?.complete ?? true } : {}),
           afterActivitySequence: activity, updatedAt: new Date().toISOString() })
         if (message.content === existing.content && message.nativeMessageComplete === existing.nativeMessageComplete
           && message.afterActivitySequence === existing.afterActivitySequence) { await client.query('commit'); return false }
@@ -600,7 +633,7 @@ export class PostgresOperatorConversationRepository {
         const now = new Date().toISOString()
         const message = MessageSchema.parse({ id: randomUUID(), conversationId: id, requestId, role: 'assistant', content,
           nativeMessageId, afterActivitySequence: activity,
-          ...(nativePart ? { nativeParentMessageId: nativePart.parentMessageId, nativeMessageComplete: nativePart.complete } : {}),
+          ...(nativePart ? { nativeParentMessageId: nativePart.parentMessageId, nativeMessageComplete: nativePart.complete } : { nativeMessageComplete: true }),
           createdAt: now, updatedAt: now })
         await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,native_message_id,record)
           values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id,id,content,nativeMessageId,JSON.stringify(message)])
@@ -623,13 +656,13 @@ export class PostgresOperatorConversationRepository {
       if (result.outcome === 'succeeded' && nativeMessageId) {
         const output = result.output
         const content = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
-          ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : '' : ''
+          ? typeof output.text === 'string' ? output.text : typeof output.content === 'string' ? output.content : undefined : undefined
         // OpenCode's terminal result repeats the text of its already persisted
         // native parts. A real parent message ID must not create a second answer.
         const prior = await client.query(`select 1 from operator_conversation_messages
           where conversation_id=$1 and (native_message_id=$2 or
             (record->>'nativeParentMessageId'=$2 and record->>'requestId'=$3)) limit 1`, [id,nativeMessageId,requestId])
-        if (content && !prior.rowCount) {
+        if (content !== undefined && !prior.rowCount) {
           const activity = await client.query<{ sequence: string }>(
             'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id,requestId])
           const now = new Date().toISOString()

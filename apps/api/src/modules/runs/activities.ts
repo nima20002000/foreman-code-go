@@ -1,3 +1,4 @@
+import { readRunActivitySnapshot } from './activitySnapshot.js'
 import type pg from 'pg'
 import { z } from 'zod'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -149,7 +150,9 @@ export class RunActivitiesService {
           workflowVersionId: version.id, mode: 'newer',
           position: mode === 'newer' && hasMore && last ? last : through,
           through: mode === 'newer' && hasMore ? through : '0' })
-        const page = RunActivitiesPageSchema.parse({ scope, items, mode,
+        const activitySnapshot = await readRunActivitySnapshot(sql as unknown as Pick<pg.PoolClient, 'query'>,
+          { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId }, version)
+        const page = RunActivitiesPageSchema.parse({ scope, items, mode, activitySnapshot,
           highWater: through, retainedFrom: bounds.retained_from, nextCursor, olderCursor, hasMore })
         canonicalGraphJson(page, 128 * 1024)
         return page
