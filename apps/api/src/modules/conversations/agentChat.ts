@@ -238,7 +238,9 @@ export class AgentChatService {
       const run = await this.runs.getForWorkspace(context.workspaceId, context.runId).catch(() => undefined)
       if (!run || run.id !== context.runId || run.workflowId !== context.workflowId) return blocked('context_stale', 'The selected Run does not belong to this workflow.')
       const version = await this.workflows.getSavedVersion(run.workflowVersionId)
-      if (!version?.definition.nodes.some((node) => node.id === context.workflowNodeId && node.agentId === context.agentId)) {
+      const node = version?.definition.nodes.find((entry) => entry.id === context.workflowNodeId)
+      if (node?.kind === 'job') return { context, key, blocked: { reason: 'agent_missing', message: 'Jobs do not support Agent chat.' } }
+      if (!version || !node || node.agentId !== context.agentId) {
         return blocked('agent_missing', 'This Agent is not part of the selected Run.')
       }
       if (!selectedRun && !TERMINAL_RUN_STATES.has(run.executionState)) {
@@ -321,7 +323,9 @@ export class AgentChatService {
     }
     const version = await this.workflows.getCurrentSavedVersion(context.workspaceId, context.workflowId)
     if (!version) return blocked('context_stale', 'The workflow was not found.')
-    if (!version.definition.nodes.some((node) => node.id === context.workflowNodeId && node.agentId === context.agentId)) {
+    const node = version.definition.nodes.find((entry) => entry.id === context.workflowNodeId)
+    if (node?.kind === 'job') return { context, key, blocked: { reason: 'agent_missing', message: 'Jobs do not support Agent chat.' } }
+    if (!node || node.agentId !== context.agentId) {
       return blocked('agent_missing', 'This Agent is no longer part of the saved workflow.')
     }
     if (row) {

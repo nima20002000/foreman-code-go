@@ -3,9 +3,10 @@ import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HarnessExecutionSchema, MessageSchema, type HarnessExecution } from '@graphql/contracts'
 import { AgentChatTurnSchema, type AgentChatContext, type AgentChatTurn } from '@graphql/contracts/agent-chat'
+import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { RunBoardSnapshotSchema } from '@graphql/contracts/run-snapshots'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { makeCurrentWorkflowFixture, type SavedWorkflowVersion } from '@graphql/contracts/wave25'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { agentChatKey, type AgentConversationRow, type PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
@@ -19,6 +20,7 @@ afterEach(async () => { await Promise.all(cleanup.splice(0).map((chat) => chat.s
 /** In-memory storage/Run ports only. Real schemas, selection code and AgentChatService are exercised. */
 function fixture() {
   const saved = makeCurrentWorkflowFixture(`sch06-${randomUUID()}`, 'sequential')
+  const version: SavedWorkflowVersion = saved.version
   const node = saved.version.definition.nodes[0]!
   const configuration = saved.configurations.find((item) => item.agentId === node.agentId)!
   const context: AgentChatContext = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId,
@@ -41,11 +43,13 @@ function fixture() {
   executions.set(saved.run.id, [source])
   function capture(runId: string) {
     snapshots.set(runId, RunBoardSnapshotSchema.parse({ kind: 'available', workspaceId: target.workspaceId,
-      workflowId: target.workflowId, runId, workflowVersionId: saved.version.id, capturedAt: saved.createdAt,
-      nodes: saved.version.definition.nodes.map((entry) => ({ id: entry.id, name: entry.name ?? 'Snapshot node', agentId: entry.agentId,
-        agentConfigurationVersionId: saved.version.agentConfigurationVersionIds[entry.agentId],
+      workflowId: target.workflowId, runId, workflowVersionId: version.id, capturedAt: saved.createdAt,
+      nodes: version.definition.nodes.map((entry) => ({ id: entry.id, name: entry.name ?? 'Snapshot node',
+        ...(entry.kind === 'job' ? { kind: entry.kind, jobDefinitionId: entry.jobDefinitionId,
+          jobDefinitionRevision: entry.jobDefinitionRevision, jobDefinitionVersionId: entry.jobDefinitionVersionId }
+          : { kind: entry.kind, agentId: entry.agentId, agentConfigurationVersionId: version.agentConfigurationVersionIds[entry.agentId] }),
         position: entry.position ?? { x: 0, y: 0 }, size: { width: entry.width ?? 208, height: entry.height ?? 112 } })),
-      edges: saved.version.definition.edges }))
+      edges: version.definition.edges }))
   }
   capture(saved.run.id)
   function row(execution = source, id = 'sch06-conversation-a', legacy = false) {
@@ -86,13 +90,22 @@ function fixture() {
   const repository = {
     get: vi.fn(async (id: string) => conversations.get(id)),
     byKey: vi.fn(async (key: string) => [...conversations.values()].find((item) => item.agent_key === key)),
-    state: vi.fn(async (id: string) => ({ row: conversations.get(id), turns: [], messages: [message(id)], hasEarlierMessages: false })),
+    state: vi.fn(async (id: string): ReturnType<PostgresAgentChatRepository['state']> => {
+      const row = conversations.get(id)
+      if (!row) return undefined
+      const run = row.origin_run_id ? runs.get(row.origin_run_id) : undefined
+      const execution = run ? executions.get(run.id)?.find((item) => item.id === row.origin_execution_id) : undefined
+      return { row, turns: [], messages: [message(id)], hasEarlierMessages: false,
+        selection: run && execution ? { workflowVersionId: run.workflowVersionId, attemptKey: String(execution.attempt) } : null,
+        latestRequestId: null, activeStartedAt: null, unfinishedActivities: [],
+        activityPage: { activities: [], nextCursor: null, itemRevisions: {} } }
+    }),
     history: vi.fn(async (id: string) => ({ messages: [message(id)], nextCursor: null })),
     receipts: vi.fn(async () => ({ turns: [], nextCursor: null })),
     turn: vi.fn(async (): Promise<AgentChatTurn | undefined> => undefined), admit: vi.fn(),
   }
-  const workflows = { getSavedVersion: vi.fn(async () => saved.version),
-    getCurrentSavedVersion: vi.fn(async () => { throw new Error('Historical chat must not inspect the current workflow') }),
+  const workflows = { getSavedVersion: vi.fn(async () => version),
+    getCurrentSavedVersion: vi.fn(async (): Promise<SavedWorkflowVersion> => { throw new Error('Historical chat must not inspect the current workflow') }),
     getAgentConfiguration: vi.fn(async (id: string) => configurations.get(id)) }
   const runPort = { getForWorkspace: async (workspaceId: string, id: string) => {
     const run = runs.get(id); return run?.workspaceId === workspaceId ? run : undefined
@@ -102,7 +115,7 @@ function fixture() {
     new PostgresOperatorConversationRepository(pool), workflows, runPort as unknown as Pick<PostgresRunRepository, 'getForWorkspace' | 'executionPages'>,
     managers as () => NativeHarnessSessionManager, '/sch06-fixture')
   cleanup.push(chat)
-  return { saved, context, target, principal, live, runs, source, configurations, executions, snapshots, conversations,
+  return { saved, version, context, target, principal, live, runs, source, configurations, executions, snapshots, conversations,
     stored, capture, row, query, repository, workflows, managers, chat }
 }
 
@@ -112,7 +125,85 @@ async function selected(f: ReturnType<typeof fixture>, runId = f.target.runId, e
   return value
 }
 
+function addJob(f: ReturnType<typeof fixture>) {
+  const job = JobWorkflowNodeSchema.parse({ kind: 'job', id: 'sch06-job-node', name: 'Build',
+    jobDefinitionId: 'sch06-job', jobDefinitionRevision: 2, jobDefinitionVersionId: 'sch06-job-version' })
+  f.version.definition.nodes.unshift(job)
+  f.capture(f.target.runId)
+  return job
+}
+
 describe('SCH-06 historical Agent chat identity and fail-closed selection', () => {
+  it.each([undefined, 'agent'] as const)('keeps exact Agent provenance in a mixed snapshot with kind %s', async (kind) => {
+    const f = fixture()
+    if (kind) f.version.definition.nodes[0]!.kind = kind
+    else delete f.version.definition.nodes[0]!.kind
+    addJob(f)
+    const before = structuredClone(f.source)
+    const value = await selected(f)
+    expect(value.key).toEqual({ ...f.target, executionId: f.source.id, agentId: f.context.agentId, conversationId: f.stored.id })
+    expect(value.state.conversation?.agentConfigurationVersionId).toBe(f.source.agentConfigurationVersionId)
+    expect(f.workflows.getSavedVersion).toHaveBeenCalledWith(f.version.id)
+    f.stored.native_session_id = f.source.nativeSessionId!
+    await expect(f.chat.sendSelectedRun(f.principal, { selection: value.selection,
+      message: { requestId: 'source-send', expectedConversationId: f.stored.id, content: 'Do not mutate source' } }))
+      .rejects.toMatchObject({ code: 'AGENT_CHAT_UNAVAILABLE' })
+    await expect(f.chat.interruptSelectedRun(f.principal, { key: value.key, request: { requestId: 'source-interrupt' } }))
+      .rejects.toMatchObject({ code: 'AGENT_CHAT_UNAVAILABLE' })
+    expect(f.source).toEqual(before)
+    expect(f.repository.admit).not.toHaveBeenCalled(); expect(f.managers).not.toHaveBeenCalled()
+    expect(f.workflows.getCurrentSavedVersion).not.toHaveBeenCalled()
+  })
+
+  it('reports a selected Job explicitly unavailable without selecting a neighboring Agent or reserving a command', async () => {
+    const f = fixture(), job = addJob(f)
+    const target = { ...f.target, workflowNodeId: job.id }
+    expect(await f.chat.readSelectedRun(f.principal, { selection: { ...target, executionId: f.source.id } }))
+      .toEqual({ kind: 'unavailable', target, reason: 'job_node' })
+    await expect(f.chat.sendSelectedRun(f.principal, { selection: { ...target, executionId: f.source.id },
+      message: { requestId: 'job-send', expectedConversationId: null, content: 'Do not run an Agent' } }))
+      .rejects.toMatchObject({ code: 'AGENT_CHAT_UNAVAILABLE' })
+    await expect(f.chat.interruptSelectedRun(f.principal, { key: { ...target, executionId: f.source.id,
+      agentId: f.context.agentId, conversationId: f.stored.id }, request: { requestId: 'job-interrupt' } }))
+      .rejects.toMatchObject({ code: 'AGENT_CHAT_CONTEXT_STALE' })
+    expect(f.workflows.getSavedVersion).not.toHaveBeenCalled()
+    expect(f.repository.state).not.toHaveBeenCalled(); expect(f.repository.turn).not.toHaveBeenCalled()
+    expect(f.repository.admit).not.toHaveBeenCalled(); expect(f.managers).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('blocks Job targets in the saved-definition chat flow (Run: %s)', async (historical) => {
+    const f = fixture(), job = addJob(f)
+    f.version.definition.nodes = f.version.definition.nodes.map((node) => node.id === f.context.workflowNodeId
+      ? { ...job, id: node.id } : node)
+    f.workflows.getCurrentSavedVersion.mockResolvedValue(f.version)
+    // A retained Agent row/receipt must not turn a now-Job target into a chat replay.
+    f.repository.byKey.mockResolvedValue(f.stored)
+    f.repository.turn.mockResolvedValue(AgentChatTurnSchema.parse({ requestId: 'job-definition-send', sequence: '1',
+      intent: 'next_turn', delivery: 'completed', messageId: 'old-message', createdAt: f.saved.createdAt, updatedAt: f.saved.createdAt }))
+    const { workspaceId, runId, ...agentContext } = f.context
+    const context = { ...agentContext, ...(historical ? { runId } : {}) }
+    const state = await f.chat.read(f.principal, workspaceId, context)
+    expect(state.conversation).toBeNull()
+    expect(state.availability).toMatchObject({ canSend: false, reason: 'agent_missing', message: 'Jobs do not support Agent chat.' })
+    await expect(f.chat.send(f.principal, workspaceId, { context, requestId: 'job-definition-send',
+      expectedConversationId: null, content: 'Do not create chat', intent: 'next_turn', attachments: [] }))
+      .rejects.toMatchObject({ code: 'AGENT_CHAT_UNAVAILABLE' })
+    expect(f.workflows.getAgentConfiguration).not.toHaveBeenCalled()
+    expect(f.repository.turn).not.toHaveBeenCalled()
+    expect(f.repository.admit).not.toHaveBeenCalled(); expect(f.managers).not.toHaveBeenCalled()
+  })
+
+  it('denies a wrong-scope authenticated principal before exposing mixed snapshot target kinds', async () => {
+    const f = fixture(), job = addJob(f)
+    f.live.grants = [{ actions: ['agent_chat:read'], scope: { workflowIds: ['other-workflow'] } }]
+    for (const workflowNodeId of [f.context.workflowNodeId, job.id]) {
+      await expect(f.chat.readSelectedRun(f.principal, { selection: { ...f.target, workflowNodeId } }))
+        .rejects.toMatchObject({ status: 403 })
+    }
+    expect(f.query.mock.calls.some(([sql]) => sql.includes('run_board_snapshots'))).toBe(false)
+    expect(f.repository.state).not.toHaveBeenCalled(); expect(f.managers).not.toHaveBeenCalled()
+  })
+
   it('reads a removed Agent from immutable facts with the exact conversation, native session, transcript and key', async () => {
     const f = fixture()
     const value = await selected(f)

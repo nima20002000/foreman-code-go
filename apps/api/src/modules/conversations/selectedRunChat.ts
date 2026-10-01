@@ -112,6 +112,7 @@ export async function resolveRunChatSelection(query: Queryable, runs: Pick<Postg
     || snapshot.runId !== input.runId || snapshot.workflowVersionId !== row.workflow_version_id) staleRunChat()
   const node = snapshot.nodes.find((entry) => entry.id === input.workflowNodeId)
   if (!node) throw new DomainError('RUN_CHAT_NODE_NOT_FOUND', 'Node not found in the selected Run snapshot.', 404)
+  if (node.kind === 'job') return { kind: 'unavailable', target, reason: 'job_node' }
   const context: AgentChatContext = { ...target, agentId: node.agentId }
   const selected = await selectRunChatExecution(runs.executionPages(input.runId), context, node.agentConfigurationVersionId, input.executionId)
   if (!selected) return { kind: 'unavailable', target, reason: 'execution_missing' }
