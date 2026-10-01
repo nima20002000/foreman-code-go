@@ -33,7 +33,7 @@ export const WorkSummarySchema = z.object({
   native: ActivityNativeIdentitySchema.optional(),
 }).strict()
 export type WorkSummary = z.infer<typeof WorkSummarySchema>
-export const ActivitySourceSchema = z.object({ schemaVersion: z.literal(1), system: id, eventId: id.optional(), sequence: ActivityRevisionSchema.optional(), observedAt: timestamp }).strict()
+export const ActivitySourceSchema = z.object({ schemaVersion: z.literal(1), system: id, eventId: id.optional(), sequence: ActivityRevisionSchema.optional(), observedAt: timestamp.nullable() }).strict()
 export type ActivitySource = z.infer<typeof ActivitySourceSchema>
 export const InteractionSummarySchema = z.object({
   id, revision: ActivityRevisionSchema, owner: WorkRefSchema, native: ActivityNativeIdentitySchema.optional(),
