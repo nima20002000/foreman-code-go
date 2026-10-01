@@ -15,3 +15,15 @@ export const InteractionActivityProjectionSchema = z.object({
     reason: z.enum(['available', 'not_pending', 'unauthorized', 'unqualified', 'callback_unavailable', 'identity_mismatch']) }).strict(),
 }).strict()
 export type InteractionActivityProjection = z.infer<typeof InteractionActivityProjectionSchema>
+
+/** Action qualification changes independently of the durable interaction or conversation revision. */
+export const NativeInteractionResponseAvailabilitySchema = z.object({
+  nativeSessionId: z.string().min(1), nativeRequestId: z.string().min(1).optional(),
+  nativeRequestType: z.string().min(1), nativeTurnId: z.string().min(1).optional(),
+  available: z.boolean(), status: z.enum(['available', 'recovery_required', 'unavailable']),
+  path: z.enum(['live_callback', 'qualified_recovery']).nullable(), generation: z.string().min(1).optional(),
+  reason: z.enum(['live_callback', 'qualified_recovery', 'request_consumed', 'callback_lost', 'session_closed',
+    'unqualified', 'identity_mismatch', 'response_in_flight', 'unsupported', 'unauthorized', 'missing_request_identity']),
+  message: z.string().min(1),
+}).strict()
+export type NativeInteractionResponseAvailability = z.infer<typeof NativeInteractionResponseAvailabilitySchema>
