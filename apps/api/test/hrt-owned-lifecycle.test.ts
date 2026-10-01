@@ -1,3 +1,4 @@
+import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentConfigurationVersion } from '@graphql/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
@@ -60,4 +61,30 @@ describe('execution allocation cleanup ownership', () => {
     expect(() => resolver.resolve(mutable)).toThrow('cannot change')
     expect(createSession).not.toHaveBeenCalled()
   })
+})
+
+
+it('passes actual Run owners through a private live getter without cloning or serializing them', async () => {
+  const first = { runId: 'accepted-run', assertOwned: vi.fn() } as unknown as RunOwnership
+  const next = { runId: 'accepted-run', assertOwned: vi.fn() } as unknown as RunOwnership
+  let getOwner!: () => RunOwnership | undefined
+  const resolver = new ExecutionScopedNativeSessionManagerResolver((input, getter) => {
+    expect('owner' in input).toBe(false)
+    expect(getter()).toBeUndefined() // Construction cannot mint a resident native authority.
+    getOwner = getter
+    return { harness: 'codex', dispose: async () => undefined } as unknown as NativeHarnessSessionManager
+  })
+  const resolved = resolver.resolve(context, first)
+  expect(getOwner()).toBe(first)
+  expect(resolver.resolve(context, next).manager).toBe(resolved.manager)
+  expect(getOwner()).toBe(next)
+  const wrong = { runId: 'another-run', assertOwned() {} } as unknown as RunOwnership
+  expect(() => resolver.resolve(context, wrong)).toThrow('another Run owner')
+  expect(getOwner()).toBe(next)
+  resolver.release(context, resolved.manager)
+  expect(getOwner()).toBeUndefined()
+  resolver.resolve(context, first)
+  expect(getOwner()).toBe(first)
+  await resolver.dispose()
+  expect(getOwner()).toBeUndefined()
 })

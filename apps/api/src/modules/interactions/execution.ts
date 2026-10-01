@@ -520,8 +520,8 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  private resolveManager(context: NativeManagerResolutionContext) {
-    const resolved = this.managers.resolve(context)
+  private resolveManager(context: NativeManagerResolutionContext, owner?: RunOwnership) {
+    const resolved = this.managers.resolve(context, owner)
     if (resolved.manager.harness !== context.harness) {
       throw new Error('The resolved native manager does not match the durable execution harness.')
     }
@@ -1266,7 +1266,7 @@ export class ApprovalExecutionCoordinator {
           if (resident.session && session) this.assertSessionIdentity(resident.session, session)
         }
       }
-      resolved = this.resolveManager(context)
+      resolved = this.resolveManager(context, input.owner)
       if (resolved.processState === 'needs_start') resolved.beginStart?.()
       manager = resolved.manager
       ownedSession = this.ownSession(execution, context, manager)

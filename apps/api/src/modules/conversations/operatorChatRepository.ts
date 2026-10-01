@@ -1,3 +1,4 @@
+import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 import {
