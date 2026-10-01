@@ -680,7 +680,7 @@ export class OperatorChatService {
   async cancel(id: string, requestId: string, principal: ManagementPrincipal, commandId?: string, source: 'http' | 'mcp' = 'http') {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:cancel')
-    const key = commandId ?? `operator-cancel:${commandInputHash([requestId]).slice(7)}`
+    const key = commandId ?? `operator-cancel:${commandInputHash([id, requestId]).slice(7)}`
     return this.receipts().execute(principal, source, id, key, { kind: 'cancel', requestId },
       (markDispatchAttempt) => this.cancelNative(id, requestId, principal, markDispatchAttempt), () => this.controlRead(id, principal, 'operator_chat:cancel'))
   }
@@ -741,7 +741,7 @@ export class OperatorChatService {
           sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId,
           requestId: input.nativeRequestId, requestType: pending.nativeRequestType },
         choice: { optionId: option.optionId, semantic: option.semantic } }) : undefined
-    const key = input.commandId ?? `operator-respond:${commandInputHash([input.requestId, input.nativeRequestId]).slice(7)}`
+    const key = input.commandId ?? `operator-respond:${commandInputHash([id, input.requestId, input.nativeRequestId]).slice(7)}`
     return this.receipts().execute(principal, source, id, key,
       { kind: 'respond', requestId: input.requestId, nativeRequestId: input.nativeRequestId, optionId: input.optionId },
       (markDispatchAttempt) => this.respondNative(id, input, principal, markDispatchAttempt, (proof) => { providerAcknowledgment = proof }),

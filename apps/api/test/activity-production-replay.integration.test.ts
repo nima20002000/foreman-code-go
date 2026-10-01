@@ -366,6 +366,16 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(f.replay.calls.filter((entry) => entry.method === 'turn/interrupt')).toHaveLength(nativeCancels)
     expect((await f.db.pool.query(`select count(*)::int as count from management_command_receipts where principal_id=$1
       and operation='operator_chat_control' and command_id=$2`, [f.writer.principal.id, cancel.commandId])).rows[0]!.count).toBe(1)
+    for (const title of ['First implicit control scope', 'Second implicit control scope']) {
+      const newConversation = await f.http('POST', '/api/operator/conversations', { title })
+      expect(newConversation.statusCode, newConversation.body).toBe(201)
+      const otherId = newConversation.json().conversation.id
+      expect((await f.http('POST', `/api/operator/conversations/${otherId}/messages`, { requestId: 'same-per-conversation-model-id', content: 'Own independent cancellation' })).statusCode).toBe(202)
+      const implicit = await f.http('POST', `/api/operator/conversations/${otherId}/cancel`, { requestId: 'same-per-conversation-model-id' })
+      expect(implicit.statusCode, implicit.body).toBe(200)
+      const implicitRetry = await f.call('operator_chat_cancel', { conversationId: otherId, request: { requestId: 'same-per-conversation-model-id' } })
+      expect(implicitRetry.isError).not.toBe(true)
+    }
     await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [f.writer.principal.id,
       JSON.stringify([{ actions: ['operator_chat:read'], scope: {} }])])
     const noAction = await f.call('operator_chat_respond', { conversationId: id, request })
