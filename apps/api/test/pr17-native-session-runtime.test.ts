@@ -32,7 +32,7 @@ function codexFixture() {
     connectionId: randomUUID(), schemaIdentity: 'fixture-schema', arrivalOrdinal: 0, attached: false, binding: '', ownerId: 'agent', configurationIdentity: '',
     input: {} as NativeSessionStart, workingDirectory: '/workspace',
     configuration: { serviceTier: 'standard' } as CodexHarnessConfiguration,
-    scopedCredentialVariable: undefined, transport, session: codexSession, generation: 0,
+    scopedCredentialVariable: undefined, strippedCredentialVariable: undefined, transport, session: codexSession, generation: 0,
     qualified: { binary: 'fixture-only', identity: 'fixture-identity', providerVersion: codexSession.providerVersion,
       protocol: fixtureProtocol, schemaManifestSha256: 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference' },
     phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
