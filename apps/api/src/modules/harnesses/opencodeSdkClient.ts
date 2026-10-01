@@ -25,10 +25,12 @@ export function createOpenCodeSdkClient(options: OpenCodeBoundFetchOptions) {
         catch (error) { validity('invalid'); throw error }
         const contentType = response.headers.get('content-type')?.split(';')[0]?.trim()
         const json = !contentType || contentType === 'application/json' || contentType.endsWith('+json')
+        let bodyValidity: OpenCodeHttpEvidence['bodyValidity'] = 'valid'
         if (json || !response.ok) {
-          try { if (text || !response.ok) JSON.parse(text); validity('valid') }
-          catch { validity(json ? 'invalid' : 'valid') }
-        } else validity('valid')
+          try { if (text || !response.ok) JSON.parse(text) }
+          catch { if (json) bodyValidity = 'invalid' }
+        }
+        validity(bodyValidity)
         return text
       }
       return response

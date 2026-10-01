@@ -84,3 +84,16 @@ it('does not invent a body parse failure when application code fails after a dec
     async sdk => { await sdk.global.health(); throw new Error('application failure') }), /application failure/)
   assert.deepEqual(evidence.map(value => value.bodyValidity), ['unread', 'valid'])
 })
+
+it('does not relabel decoded bodies when the evidence observer throws', async () => {
+  const evidence: OpenCodeHttpEvidence[] = []
+  const server: OpenCodeServerController = {
+    generation: 1, ownerAgentId: 'owner', expectedVersion: '1.18.31', ensure: async () => {}, dispose: async () => {},
+    request: async () => new Response(JSON.stringify({ healthy: true, version: '1.18.31' }), { headers: { 'content-type': 'application/json' } }),
+  }
+  await assert.rejects(callOpenCodeSdk({ server, ownerAgentId: 'owner', directory: '/work', generation: 1, onEvidence: value => {
+    evidence.push(value)
+    if (value.bodyValidity === 'valid') throw new Error('observer failure')
+  } }, sdk => sdk.global.health()), /observer failure/)
+  assert.deepEqual(evidence.map(value => value.bodyValidity), ['unread', 'valid'])
+})
