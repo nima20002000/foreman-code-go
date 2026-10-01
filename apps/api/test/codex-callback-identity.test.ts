@@ -19,9 +19,14 @@ async function fixture(id: string | number = 901, files = true) {
   const source = input('/callback-no-io')
   const manager = new CodexAppServerSessionManager('not-executed')
   const writes: Array<{ operation: string; id: string | number; method?: string }> = []
-  const transport: CodexTransport = { start: async () => undefined, request: async () => ({}), close: async () => undefined,
+  let heldResponse: ReturnType<typeof gate> | undefined
+  const transport: CodexTransport = { start: async () => undefined, request: async (method) => {
+    assert.equal(method, 'turn/start')
+    return { turn: { id: 'next-callback-turn', status: 'inProgress', itemsView: 'full', items: [],
+      error: null, startedAt: 1, completedAt: null, durationMs: null } }
+  }, close: async () => undefined,
     reject: async (id) => { writes.push({ operation: 'reject', id }) },
-    respond: async (id, method) => { writes.push({ operation: 'respond', id, method }) }, isConnected: () => true }
+    respond: async (id, method) => { writes.push({ operation: 'respond', id, method }); await heldResponse?.promise }, isConnected: () => true }
   const seam = manager as unknown as {
     runtime(prepared: Prepared, session: NativeSessionReference, transport: CodexTransport): Runtime
     runtimes: Map<string, Runtime>; transports: Set<CodexTransport>
@@ -57,7 +62,21 @@ async function fixture(id: string | number = 901, files = true) {
   const query = { nativeRequestId: pending.turn.nativeRequestId!, nativeRequestType: pending.nativeRequestType,
     expectedNativeTurnId: pending.turn.nativeTurnId! }
   return { manager, session, runtime, seam, writes, completion, approval, file, query, pending, calls: () => calls,
-    cleanup: async () => { completion.release(); await flush(); await manager.shutdown() } }
+    holdResponse: () => { heldResponse = gate(); return heldResponse },
+    cleanup: async () => { completion.release(); heldResponse?.release(); await flush(); await manager.shutdown() } }
+}
+
+async function nextTurn(f: Awaited<ReturnType<typeof fixture>>) {
+  const turnId = f.runtime.activeTurnId!
+  f.seam.handleNotification(f.runtime, 'turn/completed', { threadId: f.session.nativeSessionId,
+    turn: { id: turnId, status: 'completed', itemsView: 'full', items: [], error: null, startedAt: 1, completedAt: 2, durationMs: 1 } })
+  await flush()
+  assert.equal(f.runtime.files?.closed, true)
+  const iterator = f.manager.startTurn(f.session, { prompt: 'in-memory next turn', clientCorrelationId: 'next-correlation' })[Symbol.asyncIterator]()
+  assert.equal((await iterator.next()).value?.type, 'turn.started')
+  assert.equal(f.runtime.activeTurnId, 'next-callback-turn')
+  assert.equal(f.runtime.fileRequests.size, 0)
+  return iterator
 }
 
 describe('connection-scoped typed callback identity across files and approvals', () => {
@@ -188,5 +207,81 @@ describe('connection-scoped typed callback identity across files and approvals',
       assert.deepEqual(first.writes, [])
       assert.deepEqual(replacement.writes, [])
     } finally { await Promise.all([first.cleanup(), replacement.cleanup()]) }
+  })
+
+  for (const id of [901, '901']) it(`reserves the ${typeof id} file ID across actual turn cleanup while its response write is held`, async () => {
+    const f = await fixture(id)
+    const held = f.holdResponse()
+    let iterator: Awaited<ReturnType<typeof nextTurn>> | undefined
+    try {
+      await f.seam.handleRequest(f.runtime, f.file)
+      f.completion.release(); await flush()
+      assert.deepEqual(f.writes, [{ operation: 'respond', id, method: 'item/tool/call' }])
+      iterator = await nextTurn(f)
+      await f.seam.handleRequest(f.runtime, { ...f.approval, params: { ...f.approval.params, turnId: f.runtime.activeTurnId } })
+      assert.equal(await f.manager.pending(f.session), undefined)
+      assert.equal(f.writes.length, 1)
+      held.release(); await flush()
+      assert.equal(await f.manager.pending(f.session), undefined)
+      assert.equal(f.writes.length, 1)
+    } finally { held.release(); await iterator?.return?.(); await f.cleanup() }
+  })
+
+  it('separates numeric/string IDs and fresh connections while a predecessor response remains held across turns', async () => {
+    const f = await fixture(901)
+    const replacement = await fixture(901)
+    const held = f.holdResponse()
+    let iterator: Awaited<ReturnType<typeof nextTurn>> | undefined
+    try {
+      await f.seam.handleRequest(f.runtime, f.file)
+      f.completion.release(); await flush()
+      iterator = await nextTurn(f)
+      const independent = { ...f.approval, id: '901', params: { ...f.approval.params, turnId: f.runtime.activeTurnId } }
+      await f.seam.handleRequest(f.runtime, independent)
+      const pending = await f.manager.pending(f.session)
+      assert.ok(pending)
+      assert.equal((await f.manager.inspectResponseAvailability(f.session, { nativeRequestId: pending.turn.nativeRequestId!,
+        nativeRequestType: pending.nativeRequestType, expectedNativeTurnId: pending.turn.nativeTurnId! })).state, 'available')
+      await replacement.seam.handleRequest(replacement.runtime, replacement.approval)
+      assert.equal((await replacement.manager.inspectResponseAvailability(replacement.session, replacement.query)).state, 'available')
+      assert.equal(f.writes.length, 1)
+      assert.deepEqual(replacement.writes, [])
+    } finally { held.release(); await iterator?.return?.(); await Promise.all([f.cleanup(), replacement.cleanup()]) }
+  })
+
+  it('preserves a held response reservation under bounded completed-callback retention pressure', async () => {
+    const f = await fixture()
+    const held = f.holdResponse()
+    let iterator: Awaited<ReturnType<typeof nextTurn>> | undefined
+    try {
+      await f.seam.handleRequest(f.runtime, f.file)
+      f.completion.release(); await flush()
+      iterator = await nextTurn(f)
+      for (let id = 1_000; id < 2_050; id += 1) {
+        await f.seam.handleRequest(f.runtime, { ...f.approval, id, params: { ...f.approval.params, turnId: f.runtime.activeTurnId } })
+        f.seam.handleNotification(f.runtime, 'serverRequest/resolved', { threadId: f.session.nativeSessionId, requestId: id })
+      }
+      assert.ok(f.runtime.resolvedRequests.size <= 1_024)
+      await f.seam.handleRequest(f.runtime, { ...f.approval, params: { ...f.approval.params, turnId: f.runtime.activeTurnId } })
+      assert.equal(await f.manager.pending(f.session), undefined)
+      assert.equal(f.writes.length, 1)
+    } finally { held.release(); await iterator?.return?.(); await f.cleanup() }
+  })
+
+  it('bounds pending response reservations across next-turn cache cleanup without writing an untracked reply', async () => {
+    const f = await fixture()
+    const held = f.holdResponse()
+    let iterator: Awaited<ReturnType<typeof nextTurn>> | undefined
+    try {
+      for (let id = 1_000; id < 1_128; id += 1) await f.seam.handleRequest(f.runtime, { ...f.file, id })
+      f.completion.release(); await flush()
+      assert.equal(f.writes.length, 128)
+      iterator = await nextTurn(f)
+      await f.seam.handleRequest(f.runtime, { ...f.file, id: 9_090,
+        params: { ...f.file.params, turnId: f.runtime.activeTurnId, callId: 'new-file-call' } })
+      assert.equal(f.writes.length, 128)
+      assert.equal(f.runtime.resolvedRequests.size, 128)
+      assert.ok((await f.manager.history(f.session)).events.some((event) => event.type === 'files.response_capacity_exceeded'))
+    } finally { held.release(); await iterator?.return?.(); await f.cleanup() }
   })
 })

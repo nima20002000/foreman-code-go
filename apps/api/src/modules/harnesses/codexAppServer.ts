@@ -93,6 +93,8 @@ interface ResolvedRequest {
   nativeTurnId: string | undefined
   method: string
   generation: number
+  /** File identity is reserved before work/response awaits, not native acceptance. */
+  pending?: boolean
 }
 interface TurnSnapshot {
   activeTurnId: string | undefined
@@ -1794,17 +1796,21 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
     const prior = runtime.fileRequests.get(key)
     if (prior?.pending || prior?.conflictingIdentity) return
-    const denied = { success: false, contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }] }
-    if (runtime.fileRequests.size >= MAX_INTERACTIONS && !prior) {
-      this.rememberResolvedRequest(runtime, key, { signature, nativeRequestId: undefined,
-        nativeTurnId: text(params.turnId), method: request.method, generation })
-      await transport.respond(request.id, request.method, denied); return
+    if ([...runtime.resolvedRequests.values()].filter((entry) => entry.pending).length >= MAX_INTERACTIONS) {
+      this.record(runtime, 'files.response_capacity_exceeded', { nativeRequestKey: key }); return
     }
+    const reservation: ResolvedRequest = { signature, nativeRequestId: undefined,
+      nativeTurnId: text(params.turnId), method: request.method, generation, pending: true }
+    // This connection-owned identity survives next-turn file-cache cleanup and
+    // remains pinned until the entire file call and transport response settle.
+    this.rememberResolvedRequest(runtime, key, reservation)
+    const denied = { success: false, contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }] }
+    const capacityExceeded = runtime.fileRequests.size >= MAX_INTERACTIONS && !prior
     const receipt: NonNullable<typeof prior> = prior ?? { signature, pending: true }
     receipt.pending = true
-    runtime.fileRequests.set(key, receipt)
+    if (!capacityExceeded) runtime.fileRequests.set(key, receipt)
     try {
-      if (runtime.closed || runtime.disposed || runtime.terminalResult || params.turnId !== runtime.activeTurnId
+      if (capacityExceeded || runtime.closed || runtime.disposed || runtime.terminalResult || params.turnId !== runtime.activeTurnId
         || !runtime.files || typeof params.callId !== 'string' || typeof params.tool !== 'string'
         || (params.namespace != null && typeof params.namespace !== 'string')) {
         await transport.respond(request.id, request.method, denied); return
@@ -1819,10 +1825,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
     } finally {
       receipt.pending = false
-      // Retain identity even for denied or uncertain replies; this does not
-      // assert native acceptance or revive a file callback after turn cleanup.
-      this.rememberResolvedRequest(runtime, key, { signature, nativeRequestId: undefined,
-        nativeTurnId: text(params.turnId), method: request.method, generation })
+      reservation.pending = false
     }
   }
 
@@ -1912,7 +1915,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private rememberResolvedRequest(runtime: Runtime, key: string, request: ResolvedRequest): void {
     runtime.resolvedRequests.set(key, request)
-    if (runtime.resolvedRequests.size > MAX_EVENTS) runtime.resolvedRequests.delete(runtime.resolvedRequests.keys().next().value!)
+    if (runtime.resolvedRequests.size > MAX_EVENTS) {
+      const expired = [...runtime.resolvedRequests].find(([, entry]) => !entry.pending)
+      if (expired) runtime.resolvedRequests.delete(expired[0])
+    }
   }
 
   private handleDisconnect(runtime: Runtime): void {
