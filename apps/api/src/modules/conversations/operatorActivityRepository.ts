@@ -1,11 +1,13 @@
 import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery } from '@graphql/contracts'
 import type pg from 'pg'
+import { DomainError } from '../errors.js'
 import type { OperatorActivityChange } from './operatorActivity.js'
 
 export interface ActivityMutationFence {
   nativeSessionId?: string
   nativeTurnId?: string
-  source?: { eventId?: string; sequence?: string; system?: string; observedAt?: string }
+  source?: { eventId?: string; sequence?: string; system?: string; observedAt?: string; connectionId?: string }
+  onReconciliationRequired?: () => void
   /** Only reconciled native history may correct terminal content. */
   authoritativeReconciliation?: boolean
 }
@@ -30,22 +32,27 @@ export class PostgresOperatorActivityRepository {
       const prior = (await client.query<{ record: OperatorActivityChange; source_provenance: ActivityMutationFence['source'] }>(
         `select record,source_provenance from operator_conversation_activity where conversation_id=$1 and request_id=$2 and activity_id=$3 for update`,
       [conversationId, requestId, value.id])).rows[0]
-      const source = { schemaVersion: 1, system: 'conversation_activity', ...fence.source }
       const stored = prior?.source_provenance ?? {}
+      const source = { ...(fence.authoritativeReconciliation ? stored : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source }
       const merged = prior ? { ...prior.record, ...value } : value
       // Compare parsed allowlisted facts, independent of JSONB key order.
       const changed = !prior || JSON.stringify(changeSchema.parse(prior.record)) !== JSON.stringify(changeSchema.parse(merged))
-      const stale = source.eventId !== undefined && source.eventId === stored.eventId
-        || stored.sequence !== undefined && (source.sequence === undefined || BigInt(source.sequence) <= BigInt(stored.sequence))
+      const sameConnection = source.connectionId === stored.connectionId
+      const stale = fence.source?.eventId !== undefined && fence.source.eventId === stored.eventId
+        || sameConnection && stored.sequence !== undefined && (fence.source?.sequence !== undefined
+          ? BigInt(fence.source.sequence) <= BigInt(stored.sequence) : !fence.authoritativeReconciliation)
       const terminal = prior && ['completed', 'failed', 'canceled'].includes(prior.record.status)
-      const ambiguous = prior && prior.record.status === value.status && source.sequence === undefined && changed
+      const ambiguous = prior && changed && (stored.connectionId !== undefined && !sameConnection
+        || prior.record.status === value.status && source.sequence === undefined)
       if (stale || terminal && changed && (!fence.authoritativeReconciliation || prior.record.status !== value.status)
         || ambiguous && !fence.authoritativeReconciliation || prior?.record.status === 'running' && value.status === 'pending') {
-        await client.query('commit'); return undefined
+        await client.query('commit')
+        if (ambiguous && !stale && !fence.authoritativeReconciliation) fence.onReconciliationRequired?.()
+        return undefined
       }
       if (!changed) {
         // An identical newer native observation advances the private watermark, never public revisions.
-        if (source.sequence !== undefined) await client.query(`update operator_conversation_activity set source_provenance=$4::jsonb
+        if (sameConnection && source.sequence !== undefined && !fence.authoritativeReconciliation) await client.query(`update operator_conversation_activity set source_provenance=$4::jsonb
           where conversation_id=$1 and request_id=$2 and activity_id=$3`, [conversationId, requestId, value.id, JSON.stringify(source)])
         await client.query('commit'); return undefined
       }
@@ -76,6 +83,18 @@ export class PostgresOperatorActivityRepository {
       nextCursor: result.rows.length > limit ? result.rows[limit - 1]!.sequence : null,
     })
     return { ...page, itemRevisions: Object.fromEntries(rows.map((row) => [(row.record as { id: string }).id, row.revision])) }
+  }
+
+  /** The unfinished roster is independent of chronological history paging. */
+  async unfinished(conversationId: string, query: Queryable = this.pool): Promise<OperatorActivity[]> {
+    const limit = 100
+    const result = await query.query<{ record: unknown; sequence: string; revision: string }>(`
+      select record,sequence::text,revision::text from operator_conversation_activity
+      where conversation_id=$1 and record->>'kind' <> 'thinking' and record->>'status' in ('pending','running','unknown')
+      order by sequence limit $2`, [conversationId, limit + 1])
+    if (result.rows.length > limit) throw new DomainError('AGENT_CHAT_ACTIVITY_OVERFLOW',
+      'This chat exceeds the unfinished-activity limit. Reconcile unfinished tools before reading its activity snapshot.', 409, { limit })
+    return result.rows.map((row) => OperatorActivitySchema.parse({ ...(row.record as object), sequence: row.sequence, revision: Number(row.revision) }))
   }
 
   async finish(conversationId: string, requestId: string, canceled: boolean, query: Queryable): Promise<void> {

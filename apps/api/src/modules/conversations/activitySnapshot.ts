@@ -20,7 +20,7 @@ export function agentActivitySnapshot(loaded: State): ActivitySnapshotV1 {
     outcome: null, delivery: turns.find((turn) => turn.requestId === row.active_request_id)?.delivery ?? 'unknown',
     evidence: row.turn_state === 'uncertain' ? 'reconciling' : 'confirmed', startedAt: loaded.activeStartedAt?.toISOString() ?? null,
     ...(native ? { native } : {}) }] : []
-  for (const activity of loaded.activityPage.activities) {
+  for (const activity of loaded.unfinishedActivities) {
     if (activity.kind === 'thinking' || !['pending', 'running', 'unknown'].includes(activity.status)) continue
     work.push({ ref: { kind: activity.kind === 'subagent' ? 'subagent' : 'tool', itemId: activity.id },
       phase: 'active', outcome: null, delivery: null, evidence: activity.status === 'unknown' ? 'unknown' : 'confirmed', startedAt: null })

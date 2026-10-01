@@ -20,6 +20,7 @@ import { nativeCorrelation, PostgresOperatorConversationRepository, type Convers
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
 import { completedNativeAssistantMessage } from './operatorText.js'
+import { nativeActivityFence } from './nativeActivityFence.js'
 import { createNativeTextStream } from './nativeTextStream.js'
 
 export { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
@@ -236,14 +237,25 @@ export class OperatorChatService {
     return this.repository.activity.page(id, input)
   }
 
-  private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent) {
+  private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false) {
     const change = operatorActivity(event, runtime.manager.harness, requestId)
     if (!change) return
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
       ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
     if (change.kind === 'thinking' && !showThinking) return
     const safe = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})).value(change)
-    const accepted = await this.repository.activity.append(id, requestId, safe)
+    if (!runtime.session || !nativeTurnId) {
+      this.events.publish(id, 'state', { requestId, snapshotRequired: true })
+      void this.control(id, () => this.observe(id, requestId, runtime)).catch(() => undefined)
+      return
+    }
+    const accepted = await this.repository.activity.append(id, requestId, safe, {
+      ...nativeActivityFence(runtime.session, nativeTurnId, event, authoritativeReconciliation),
+      onReconciliationRequired: () => {
+        this.events.publish(id, 'state', { requestId, snapshotRequired: true })
+        void this.control(id, () => this.observe(id, requestId, runtime)).catch(() => undefined)
+      },
+    })
     if (accepted) this.events.publish(id, 'activity', accepted)
   }
   private async recordAssistantMessage(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, precedingActivityId?: string | null) {
@@ -463,7 +475,7 @@ export class OperatorChatService {
         reconcile: () => this.events.publish(id, 'state', { requestId: input.requestId, snapshotRequired: true }),
       })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
-      for await (const event of runtime.manager.startTurn(runtime.session, {
+      for await (const event_ of runtime.manager.startTurn(runtime.session, {
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
         onSubmitted: async (nativeTurnId) => {
           submittedTurnId = nativeTurnId
@@ -506,17 +518,18 @@ export class OperatorChatService {
       }, signal)) {
         // After native output, errors from pending/history reads are not prompt rejections.
         submitted = true
-        if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
-        textStream.before(event)
-        await this.recordActivity(id, input.requestId, runtime, event)
-        if (await this.recordAssistantMessage(id, input.requestId, runtime, event)) textStream.push(event)
-        else textStream.rejected(event)
-        if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
-          const pending = await runtime.manager.pending(runtime.session, signal)
-          if (pending) {
-            await this.repository.pending(id, input.requestId, pending)
-            this.events.publish(id, 'state', { requestId: input.requestId, pending: true })
-            return // Native request stays resident. The periodic reconciler observes its continuation.
+        for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
+          textStream.before(event)
+          await this.recordActivity(id, input.requestId, runtime, event, submittedTurnId)
+          if (await this.recordAssistantMessage(id, input.requestId, runtime, event)) textStream.push(event)
+          else textStream.rejected(event)
+          if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
+            const pending = await runtime.manager.pending(runtime.session, signal)
+            if (pending) {
+              await this.repository.pending(id, input.requestId, pending)
+              this.events.publish(id, 'state', { requestId: input.requestId, pending: true })
+              return // Native request stays resident. The periodic reconciler observes its continuation.
+            }
           }
         }
       }
@@ -572,7 +585,7 @@ export class OperatorChatService {
     if (!row || row.active_request_id !== requestId) return
     const correlationId = nativeCorrelation(id, requestId)
     const history: NativeHistory = await runtime.manager.reconcile(runtime.session, correlationId, signal)
-    if (history.correlationId !== correlationId || !history.nativeTurnId
+    if (runtime.session.nativeSessionId !== row.native_session_id || history.correlationId !== correlationId || !history.nativeTurnId
       || (row.active_native_turn_id && row.active_native_turn_id !== history.nativeTurnId)) {
       await this.repository.uncertain(id, requestId, 'The provider has not proven the identity of this request. No new turn will be submitted.')
       return
@@ -583,7 +596,7 @@ export class OperatorChatService {
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
       ? runtime.configuration.harness.thinking : runtime.configuration?.showThinking === true
     for (const event of currentOperatorHistory(history, runtime.manager.harness)) {
-      await this.recordActivity(id, requestId, runtime, event)
+      await this.recordActivity(id, requestId, runtime, event, history.nativeTurnId, true)
       const change = operatorActivity(event, runtime.manager.harness, requestId)
       if (change && (change.kind !== 'thinking' || showThinking)) precedingActivityId = change.id
       await this.recordAssistantMessage(id, requestId, runtime, event,

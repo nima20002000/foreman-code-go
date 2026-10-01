@@ -317,3 +317,53 @@ it('W05 does not advertise authoritative final text when its repository mutation
     expect(deltas).toEqual([])
   } finally { unsubscribe(); await f.chat.shutdown() }
 })
+
+it('mounts exact transport fences and authoritative same-status history in Operator activity writers', async () => {
+  const f = fixture()
+  const calls: unknown[][] = []
+  const activity = { append: async (...args: unknown[]) => { calls.push(args); return undefined } }
+  Object.assign(f.repository, { activity })
+  const event = (sequence: number, output: string): NativeHarnessEvent => ({ connectionId: 'operator-connection', sequence,
+    occurredAt: '2026-10-01T00:00:00Z', type: 'item.snapshot', payload: { turnId: 'review-turn-1',
+      item: { id: 'operator-tool', type: 'commandExecution', status: 'running', aggregatedOutput: output },
+    } })
+  f.manager.emitted = [event(1, 'first'), event(2, 'second')]
+  f.manager.finish = true
+  f.manager.reconcile = async () => ({ ...f.manager.nativeHistory, events: [event(0, 'history correction')] })
+  try {
+    await f.chat.send(f.row.id, { requestId: 'operator-activity', content: 'Use tool' }, f.owner)
+    await eventually(() => f.finishResults.length === 1)
+    expect(calls.map((call) => (call[2] as { output?: string }).output)).toEqual(['first', 'second', 'history correction'])
+    expect(calls[0]?.[3]).toMatchObject({ nativeSessionId: 'review-native-session', nativeTurnId: 'review-turn-1',
+      authoritativeReconciliation: false, source: { connectionId: 'operator-connection', sequence: '1' } })
+    expect(calls[2]?.[3]).toMatchObject({ nativeSessionId: 'review-native-session', nativeTurnId: 'review-turn-1',
+      authoritativeReconciliation: true, source: { system: 'codex_history' } })
+    expect((calls[2]?.[3] as { source: { sequence?: string } }).source.sequence).toBeUndefined()
+  } finally { await f.chat.shutdown() }
+})
+
+it('retains OpenCode prefix-before-metadata and later suffix through the mounted Operator consumer', async () => {
+  const f = fixture(), deltas: Array<{ text: unknown; mode: unknown }> = [], committed: string[] = []
+  Object.defineProperty(f.manager, 'harness', { value: 'opencode' })
+  f.manager.session.harness = 'opencode'; f.row.harness = 'opencode'
+  f.repository.appendAssistantMessage = async (_id, _request, _native, text) => { committed.push(text); return true }
+  const base = { connectionId: 'operator-connection', occurredAt: '2026-10-01T00:00:00Z' }
+  f.manager.emitted = [
+    { ...base, sequence: 1, type: 'message.part.updated', payload: { part: { sessionID: f.manager.session.nativeSessionId,
+      messageID: 'assistant', id: 'text-part', type: 'text', text: 'prefix ' } } },
+    { ...base, sequence: 2, type: 'message.updated', payload: { info: { sessionID: f.manager.session.nativeSessionId,
+      id: 'assistant', role: 'assistant', parentID: 'review-turn-1' } } },
+    { ...base, sequence: 3, type: 'message.part.delta', payload: { sessionID: f.manager.session.nativeSessionId,
+      messageID: 'assistant', partID: 'text-part', field: 'text', delta: 'suffix' } },
+  ]
+  f.manager.finish = true
+  const unsubscribe = f.chat.events.subscribe(f.row.id, (event) => {
+    if (event.type === 'delta') deltas.push({ text: event.data.text, mode: event.data.mode })
+  })
+  try {
+    await f.chat.send(f.row.id, { requestId: 'operator-prefix', content: 'Use native stream' }, f.owner)
+    await eventually(() => f.finishResults.length === 1)
+    expect(committed).toEqual(['prefix '])
+    expect(deltas).toEqual([{ text: 'prefix ', mode: 'replace' }, { text: 'suffix', mode: 'append' }])
+  } finally { unsubscribe(); await f.chat.shutdown() }
+})

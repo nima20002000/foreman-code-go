@@ -269,7 +269,7 @@ export function fixture(store = new F1Store()) {
     pump(id: string): void
   }
   ;(service as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
-    execute: async (...args: unknown[]) => (args.at(-1) as () => Promise<unknown>)(), drain: async () => undefined,
+    execute: async (...args: unknown[]) => (args[5] as () => Promise<unknown>)(), drain: async () => undefined,
   }
   internals.runtimes.set(store.row.id, { manager, session: manager.session, configuration })
   const request = (requestId: string, extra: Partial<SendAgentChatMessageRequest> = {}): SendAgentChatMessageRequest => ({

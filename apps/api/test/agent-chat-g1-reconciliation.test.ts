@@ -57,7 +57,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
   override async open() { return [await this.get()] }
   override async state() { return { row: await this.get(), turns: structuredClone(this.storedReceipts), messages: [], hasEarlierMessages: false,
     activeStartedAt: null, latestRequestId: this.storedReceipts.at(-1)?.requestId ?? null, selection: null,
-    activityPage: { activities: [], nextCursor: null, itemRevisions: {} } } }
+    unfinishedActivities: [], activityPage: { activities: [], nextCursor: null, itemRevisions: {} } } }
   override async restoreUnsettled() {
     this.recovered++
     if (!this.row.active_request_id) {

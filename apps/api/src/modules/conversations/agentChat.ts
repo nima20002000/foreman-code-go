@@ -38,6 +38,7 @@ import { PostgresOperatorActivityRepository } from './operatorActivityRepository
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import { completedNativeAssistantMessage } from './operatorText.js'
+import { nativeActivityFence } from './nativeActivityFence.js'
 import { createNativeTextStream } from './nativeTextStream.js'
 import type { ActivityScope } from '@graphql/contracts/activity'
 import {
@@ -596,7 +597,7 @@ export class AgentChatService {
         const target = await this.repository.interrupt(id, input.expectedNativeTurnId)
         await this.interruptActive(id, true, target)
         return this.readConversation(principal, workspaceId, id)
-      })
+      }, () => this.readConversation(principal, workspaceId, id))
     })
   }
   cancelQueued(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string,
@@ -613,7 +614,7 @@ export class AgentChatService {
         this.events.publish(id, 'turn', { requestId: turnRequestId, delivery: 'canceled' })
         this.pump(id)
         return this.readConversation(principal, workspaceId, id)
-      })
+      }, () => this.readConversation(principal, workspaceId, id))
     })
   }
   respond(principal: ManagementPrincipal, workspaceId: string, id: string,
@@ -638,7 +639,7 @@ export class AgentChatService {
           this.events.publish(id, 'state', { pending: Boolean(next) })
         })
         return this.readConversation(principal, workspaceId, id)
-      })
+      }, () => this.readConversation(principal, workspaceId, id))
     })
   }
 
@@ -858,7 +859,7 @@ export class AgentChatService {
       const redact = nativePersistenceRedactor([])
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
-      for await (const event of runtime.manager.startTurn(session, {
+      for await (const event_ of runtime.manager.startTurn(session, {
         prompt: prompt.text, clientCorrelationId: correlationId,
         onSubmitted: async (id_) => {
           nativeTurnId = id_; submitted = true
@@ -871,17 +872,18 @@ export class AgentChatService {
         },
       }, streamSignal)) {
         submitted = true
-        if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
-        textStream.before(event)
-        if (await this.record(id, turn.requestId, runtime, event, redact)) textStream.push(event)
-        else textStream.rejected(event)
-        if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
-          // Share the response lock so an older observation cannot overwrite its next approval.
-          await this.control(id, async () => {
-            const pending = await runtime!.manager.pending(session, signal)
-            await this.repository.pending(id, turn.requestId, pending)
-            this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
-          })
+        for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
+          textStream.before(event)
+          if (await this.record(id, turn.requestId, runtime, event, redact, nativeTurnId)) textStream.push(event)
+          else textStream.rejected(event)
+          if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
+            // Share the response lock so an older observation cannot overwrite its next approval.
+            await this.control(id, async () => {
+              const pending = await runtime!.manager.pending(session, signal)
+              await this.repository.pending(id, turn.requestId, pending)
+              this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
+            })
+          }
         }
       }
       textStream.flush()
@@ -922,10 +924,14 @@ export class AgentChatService {
     }
   }
 
-  private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>) {
+  private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>, nativeTurnId: string | null, authoritativeReconciliation = false) {
     const change = operatorActivity(event, runtime.manager.harness, requestId)
     if (change && change.kind !== 'thinking') {
-      const accepted = await this.activity.append(id, requestId, redact.value(change))
+      if (!runtime.session || !nativeTurnId) { this.scheduleReconcile(id); return true }
+      const accepted = await this.activity.append(id, requestId, redact.value(change), {
+        ...nativeActivityFence(runtime.session, nativeTurnId, event, authoritativeReconciliation),
+        onReconciliationRequired: () => this.scheduleReconcile(id),
+      })
       if (accepted) this.events.publish(id, 'activity', accepted)
     }
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
@@ -953,7 +959,7 @@ export class AgentChatService {
     }
     await this.repository.accepted(id, requestId, history.nativeTurnId)
     const redact = nativePersistenceRedactor([])
-    for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.record(id, requestId, runtime, event, redact)
+    for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.record(id, requestId, runtime, event, redact, history.nativeTurnId, true)
     const pending = history.pendingInteraction ?? history.pendingInteractions[0]
     if (history.terminalResult && !pending) {
       await this.settle(id, requestId, history.terminalResult, history.nativeMessageId)

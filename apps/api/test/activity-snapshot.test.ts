@@ -10,7 +10,7 @@ const state = (): State => ({
   turns: [{ requestId: 'A', sequence: '1', delivery: 'accepted', intent: 'next_turn', messageId: 'a', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T01:00:00Z' },
     { requestId: 'B', sequence: '2', delivery: 'queued', intent: 'next_turn', messageId: 'b', createdAt: '2026-10-01T01:00:00Z', updatedAt: '2026-10-01T01:00:00Z' }],
   latestRequestId: 'B', activeStartedAt: new Date('2026-10-01T00:00:00Z'), activityPage: { activities: [], nextCursor: null, itemRevisions: {} }, selection: null,
-  messages: [], hasEarlierMessages: false,
+  unfinishedActivities: [], messages: [], hasEarlierMessages: false,
 })
 describe('persisted Agent activity adapter', () => {
   it('reads exact revision and keeps active A, queued B, latest B with stable start', () => {
@@ -24,11 +24,21 @@ describe('persisted Agent activity adapter', () => {
   it('preserves unresolved children and omits private tool input/output', () => {
     const loaded = state(); loaded.row.active_request_id = null
     loaded.activityPage.activities.push({ id: 'child', requestId: 'A', sequence: '5', revision: 2, kind: 'subagent', title: 'Child', status: 'unknown', input: 'secret args', output: 'secret output' })
+    loaded.unfinishedActivities.push(loaded.activityPage.activities[0]!)
     loaded.activityPage.itemRevisions.child = '9007199254740993'
     const snapshot = agentActivitySnapshot(loaded)
     expect(snapshot.activities[0]?.revision).toBe('9007199254740993')
     expect(snapshot.active).toMatchObject([{ ref: { kind: 'subagent', itemId: 'child' }, evidence: 'unknown', outcome: null }])
     expect(JSON.stringify(snapshot)).not.toContain('secret')
+  })
+  it('keeps an unfinished child active when chronological history contains only newer completions', () => {
+    const loaded = state(); loaded.row.active_request_id = null
+    loaded.activityPage.activities = Array.from({ length: 100 }, (_, index) => ({ id: `completed-${index}`, requestId: 'A',
+      sequence: String(index + 2), revision: 1, kind: 'tool', title: 'Completed', status: 'completed' }))
+    loaded.unfinishedActivities = [{ id: 'old-child', requestId: 'A', sequence: '1', revision: 2, kind: 'subagent', title: 'Child', status: 'unknown' }]
+    const snapshot = agentActivitySnapshot(loaded)
+    expect(snapshot.active).toMatchObject([{ ref: { kind: 'subagent', itemId: 'old-child' }, evidence: 'unknown', outcome: null }])
+    expect(snapshot.activities.some((entry) => entry.id === 'old-child')).toBe(false)
   })
   it('keeps immutable selected origin and rejects missing origin facts', () => {
     const loaded = state(); loaded.row.origin_run_id = 'run'; loaded.row.origin_execution_id = 'execution'

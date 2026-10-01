@@ -3,6 +3,8 @@ import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorActivityRepository } from '../src/modules/conversations/operatorActivityRepository.js'
+import { fixture } from './helpers/agentChatF1.js'
+import { agentActivitySnapshot } from '../src/modules/conversations/activitySnapshot.js'
 import { activitySnapshotMigration } from '../src/infrastructure/activitySnapshotMigration.js'
 
 // Orchestrator executes against its owned disposable TEST_DATABASE_URL. No provider I/O.
@@ -76,4 +78,88 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
     expect(await repository.append('conversation', 'A', value('completed', 'reconciled'), { ...fence('3'), authoritativeReconciliation: true })).toBeDefined()
     expect((await pool.query('select record from operator_conversation_activity')).rows[0].record.title).toBe('reconciled')
   })
+  it('keeps an old unfinished child in active after parent settlement and 101 newer completed entries', async () => {
+    await pool.query(`alter table operator_conversations add column workspace_id text default 'workspace',
+      add column workflow_id text default 'workflow', add column workflow_node_id text default 'node', add column agent_id text default 'agent',
+      add column harness text default 'codex', add column origin_run_id text, add column origin_execution_id text;
+      alter table operator_conversation_turns add column turn_sequence bigint generated always as identity,
+      add column message_id text default 'message', add column native_turn_id text, add column target_native_turn_id text,
+      add column delivery_error jsonb, add column result jsonb, add column input_hash text default 'fixture',
+      add column payload jsonb default '{}'::jsonb, add column created_at timestamptz default now();
+      create table operator_conversation_messages (record jsonb, sequence bigint generated always as identity);
+      insert into operator_conversation_turns (conversation_id,request_id,intent,delivery,updated_at)
+        values ('conversation','A','next_turn','accepted',now())`)
+    await repository.append('conversation', 'A', { ...value('running'), id: 'old-child', kind: 'subagent' }, fence('1'))
+    for (let index = 0; index < 101; index++) await repository.append('conversation', 'A',
+      { ...value('completed'), id: `done-${index}` }, fence(String(index + 2)))
+    await pool.query("update operator_conversations set active_native_turn_id=null where id='conversation'")
+    const chat = new PostgresAgentChatRepository(pool)
+    expect(await chat.finish('conversation', 'A', { outcome: 'succeeded' })).toBe(true)
+    const loaded = (await chat.state('conversation'))!
+    expect(loaded.activityPage.activities).toHaveLength(100)
+    expect(loaded.activityPage.activities.some((entry) => entry.id === 'old-child')).toBe(false)
+    expect(agentActivitySnapshot(loaded).active).toMatchObject([
+      { ref: { kind: 'subagent', itemId: 'old-child' }, outcome: null, evidence: 'unknown' },
+    ])
+  })
+  it('reports explicit unfinished-roster overflow instead of claiming no unfinished work', async () => {
+    for (let index = 0; index < 101; index++) await repository.append('conversation', 'A',
+      { ...value('running'), id: `unfinished-${index}` }, fence(String(index + 1)))
+    await expect(repository.unfinished('conversation')).rejects.toMatchObject({ code: 'AGENT_CHAT_ACTIVITY_OVERFLOW', details: { limit: 100 } })
+  })
+  it('accepts same-status authoritative history without inventing order and preserves the admitted transport watermark', async () => {
+    const transport = { nativeSessionId: 'session', nativeTurnId: 'turn-A', source: { connectionId: 'connection-1', sequence: '8' } }
+    await repository.append('conversation', 'A', value('running'), transport)
+    expect(await repository.append('conversation', 'A', value('running', 'current history'), {
+      nativeSessionId: 'session', nativeTurnId: 'turn-A', source: { system: 'codex_history' }, authoritativeReconciliation: true,
+    })).toBeDefined()
+    expect(await repository.append('conversation', 'A', value('running', 'late stream'), { ...transport, source: { ...transport.source, sequence: '7' } })).toBeUndefined()
+    expect(await repository.append('conversation', 'A', value('running', 'stale history'), { ...transport, source: { ...transport.source, sequence: '7' }, authoritativeReconciliation: true })).toBeUndefined()
+    const item = (await pool.query('select source_provenance,record from operator_conversation_activity')).rows[0]
+    expect(item.record.title).toBe('current history'); expect(item.source_provenance.sequence).toBe('8')
+  })
+
+  for (const ordered of [true, false]) it(`persists ${ordered ? 'ordered snapshots' : 'unsequenced authoritative correction'} through the actual Agent service`, async () => {
+    const f = fixture()
+    Object.assign(f.service, { activity: repository })
+    const manager: import('../src/modules/harnesses/port.js').NativeHarnessSessionManager = f.manager
+    manager.startTurn = async function* (_session, input) {
+      const event = (sequence: number, output: string) => ({ ...(ordered ? { connectionId: 'mounted-connection' } : {}), sequence,
+        occurredAt: '2026-10-01T00:00:00Z', type: 'item.snapshot', payload: {
+          turnId: 'turn-A', item: { id: 'mounted-tool', type: 'commandExecution', status: 'running', aggregatedOutput: output },
+        } })
+      f.manager.histories.set(input.clientCorrelationId, { correlationId: input.clientCorrelationId, nativeTurnId: 'turn-A',
+        events: [event(0, 'authoritative correction')], pendingInteractions: [], terminalResult: { outcome: 'succeeded' } })
+      await input.onSubmitted?.('turn-A')
+      yield event(1, 'first'); yield event(2, 'second')
+    }
+    const outputs: unknown[] = []
+    const unsubscribe = f.service.events.subscribe('conversation', (event) => {
+      if (event.type === 'activity') outputs.push((event.data.activity as { output?: string }).output)
+    })
+    try {
+      await f.send('A'); await f.idle()
+      expect(outputs).toEqual(ordered ? ['first', 'second', 'authoritative correction'] : ['first', 'authoritative correction'])
+      const stored = (await pool.query("select record,revision::text,source_provenance from operator_conversation_activity where activity_id='mounted-tool'")).rows[0]
+      expect(stored.record.output).toBe('authoritative correction'); expect(stored.revision).toBe(ordered ? '2' : '1')
+      expect(stored.source_provenance.system).toBe('codex_history')
+      expect(stored.source_provenance.sequence).toBe(ordered ? '2' : undefined)
+    } finally { unsubscribe(); await f.service.shutdown() }
+  })
+
+  it('requests authoritative reconciliation when a transport connection changes without promoting its reset sequence', async () => {
+    let requested = 0
+    await repository.append('conversation', 'A', value('running'), {
+      nativeSessionId: 'session', nativeTurnId: 'turn-A', source: { connectionId: 'connection-old', sequence: '50' },
+    })
+    expect(await repository.append('conversation', 'A', value('running', 'new connection'), {
+      nativeSessionId: 'session', nativeTurnId: 'turn-A', source: { connectionId: 'connection-new', sequence: '1' },
+      onReconciliationRequired: () => { requested++ },
+    })).toBeUndefined()
+    expect(requested).toBe(1)
+    const stored = (await pool.query('select source_provenance,record from operator_conversation_activity')).rows[0]
+    expect(stored.source_provenance).toMatchObject({ connectionId: 'connection-old', sequence: '50' })
+    expect(stored.record.title).toBe('Tool')
+  })
+
 })
