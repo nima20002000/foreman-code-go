@@ -70,4 +70,15 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   assert.equal(native.cancelRun.mock.calls.length, 0)
   assert.equal(native.finishRun.mock.calls.length, 0)
   await assert.rejects(engine.start(f.run.id), { code: 'ENGINE_CLOSING' })
+  if (uncertain) {
+    native.closeForRestart.mockResolvedValueOnce(undefined)
+    const retry = engine.shutdown()
+    assert.notEqual(retry, shutdown)
+    assert.equal(engine.shutdown(), retry)
+    await retry
+    assert.equal(native.closeForRestart.mock.calls.length, 2)
+    assert.equal(native.cancelRun.mock.calls.length, 0)
+    assert.equal(native.finishRun.mock.calls.length, 0)
+    await assert.rejects(engine.start(f.run.id), { code: 'ENGINE_CLOSING' })
+  }
 })
