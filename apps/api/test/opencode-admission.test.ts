@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
+import { nativeMessageId } from '../src/modules/harnesses/opencodeProtocol.js'
 import { advanced, configuration, errorCode, FixtureServer, json, manager, sessionFor } from './opencode-fixtures.js'
 
 it('ignores pre-submission idle with ACK and persisted root before later completion', async () => {
@@ -7,8 +8,10 @@ it('ignores pre-submission idle with ACK and persisted root before later complet
   const native = manager(server)
   const session = await sessionFor(native)
   server.onConnection = count => {
-    if (count === 1) server.emit('session.idle', { sessionID: session.nativeSessionId })
-    else server.complete('admission', 'later completion')
+    if (count === 1) {
+      server.emit('session.status', { sessionID: session.nativeSessionId, status: { type: 'busy' } })
+      server.emit('session.idle', { sessionID: session.nativeSessionId })
+    } else server.complete('admission', 'later completion')
   }
   server.onPrompt = () => { server.statuses.delete(session.nativeSessionId) }
   try {
@@ -133,5 +136,24 @@ it('drops old-generation stream error before it can settle a recovered turn', as
     const history = await native.reconcile(session, 'stale-stream')
     assert.equal(history.terminalResult?.error?.code, 'OPENCODE_TURN_INTERRUPTED')
     assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 1)
+  } finally { await native.dispose() }
+})
+
+it('persists a proven prompt ACK identity before honoring observer detachment', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  const session = await sessionFor(native)
+  const observer = new AbortController()
+  const submitted: string[] = []
+  server.onPrompt = () => observer.abort(new Error('observer detached before ACK'))
+  try {
+    await assert.rejects(async () => {
+      for await (const event of native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'accepted-detach',
+        onSubmitted: async id => { submitted.push(id) },
+      }, observer.signal)) void event
+    })
+    assert.deepEqual(submitted, [nativeMessageId('accepted-detach')])
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 1)
+    assert.equal(server.calls.filter(call => call.path.includes('/abort')).length, 0)
   } finally { await native.dispose() }
 })
