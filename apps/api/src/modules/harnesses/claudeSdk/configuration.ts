@@ -1,17 +1,41 @@
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import { ClaudeQualificationProofSchema, ClaudeQualificationPinSchema, claudeQualificationCapabilities, type ClaudeQualificationPin } from '@graphql/contracts/claude-qualification'
+import { isDeepStrictEqual } from 'node:util'
 import { ClaudeHarnessConfigurationSchema, type ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
 import { inheritedAgentEnvironment } from '../secrets.js'
 import { HarnessExecutionError } from '../errors.js'
 
+/** Only the existing HRT repository/producer supplies this exact accepted host-profile proof. */
 export interface ClaudePolicyQualification {
-  /** Exact release checks, supplied by local qualification; never inferred from SDK types. */
-  settingsIsolation: boolean
-  backgroundTasksDisabled: boolean
-  alwaysAppliedToolHook: boolean
-  readOnlySandbox: boolean
-  workspaceWriteSandbox: boolean
+  override: HostHarnessOverride
+  persistedProof: HostHarnessProfileEvidence
+  currentBinding: Pick<HostHarnessProfileEvidence, 'target' | 'instanceRevision' | 'configurationFingerprint'
+    | 'driverId' | 'driverRevision' | 'protocolRevision' | 'suiteRevision' | 'environmentGeneration' | 'connectionGeneration'> & {
+      instanceId: string
+      pin: ClaudeQualificationPin
+    }
+}
+
+export function qualifiedClaudeCapabilities(configuration: ClaudeHarnessConfiguration, qualification: ClaudePolicyQualification) {
+  const { override, persistedProof: proof, currentBinding: binding } = qualification
+  const vector = ClaudeQualificationProofSchema.parse(proof.claudeProof)
+  const pin = ClaudeQualificationPinSchema.parse(binding.pin)
+  const fields = ['target', 'instanceRevision', 'configurationFingerprint', 'driverId', 'driverRevision',
+    'protocolRevision', 'suiteRevision', 'environmentGeneration', 'connectionGeneration'] as const
+  if (!override.enabled || binding.instanceId !== override.instanceId
+    || !isDeepStrictEqual(override.configuration, configuration)
+    || !isDeepStrictEqual(override.target, proof.target) || override.instanceRevision !== proof.instanceRevision
+    || override.configurationFingerprint !== proof.configurationFingerprint || override.driverId !== proof.driverId
+    || fields.some((field) => !isDeepStrictEqual(proof[field], binding[field]))
+    || !isDeepStrictEqual(vector.pin, pin) || pin.profilePath !== configuration.configDirectory
+    || !proof.authenticated || !proof.compatible || !proof.qualified) {
+    throw new HarnessExecutionError('CLAUDE_QUALIFICATION_MISMATCH', 'The persisted Claude proof differs from the current accepted host, installation, instance, profile or native runtime.')
+  }
+  return claudeQualificationCapabilities(vector)
 }
 export interface ClaudeCompiledConfiguration {
   configuration: ClaudeHarnessConfiguration
+  qualification: ReturnType<typeof claudeQualificationCapabilities>
   cwd: string
   model: string
   permissionMode: 'default'
@@ -41,22 +65,30 @@ export function claudeEnvironment(configuration: ClaudeHarnessConfiguration, sou
   return env
 }
 
-export function compileClaudeConfiguration(raw: unknown, cwd: string, qualification: ClaudePolicyQualification,
-  source: NodeJS.ProcessEnv = process.env, apiKey?: string): ClaudeCompiledConfiguration {
-  const configuration = ClaudeHarnessConfigurationSchema.parse(raw)
-  if (!cwd.startsWith('/') || cwd.includes('\0')) throw new HarnessExecutionError('CLAUDE_CWD_INVALID', 'An accepted absolute working directory is required.')
-  if (!qualification.settingsIsolation || !qualification.backgroundTasksDisabled || !qualification.alwaysAppliedToolHook
-    || !(configuration.sandbox === 'read-only' ? qualification.readOnlySandbox : qualification.workspaceWriteSandbox)) {
+export function requireClaudePolicyQualification(configuration: ClaudeHarnessConfiguration, qualification: ClaudePolicyQualification) {
+  const capabilities = qualifiedClaudeCapabilities(configuration, qualification)
+  const observedTools = qualification.persistedProof.claudeProof?.observedTools ?? []
+  if (configuration.tools.some((tool) => !observedTools.includes(tool))) throw new HarnessExecutionError('CLAUDE_TOOLS_UNQUALIFIED', 'The accepted tools were not observed by the exact root qualification.')
+  if (!capabilities.sdk || !capabilities.basicTurns || !capabilities.policy.settingsIsolation || !capabilities.policy.backgroundTasksDisabled || !capabilities.policy.alwaysAppliedToolHook
+    || !(configuration.sandbox === 'read-only' ? capabilities.policy.readOnlySandbox : capabilities.policy.workspaceWriteSandbox)) {
     throw new HarnessExecutionError('CLAUDE_POLICY_UNQUALIFIED', 'The selected Claude release has not proved the accepted settings, tool policy and sandbox boundaries.')
   }
   if (configuration.tools.some((tool) => ['Agent', 'Task', 'TaskOutput', 'TaskStop'].includes(tool))) {
     throw new HarnessExecutionError('CLAUDE_CHILD_TOOLS_UNQUALIFIED', 'Native child and background tools are disabled until their authority and lifecycle are qualified.')
   }
+  return capabilities
+}
+
+export function compileClaudeConfiguration(raw: unknown, cwd: string, qualification: ClaudePolicyQualification,
+  source: NodeJS.ProcessEnv = process.env, apiKey?: string): ClaudeCompiledConfiguration {
+  const configuration = ClaudeHarnessConfigurationSchema.parse(raw)
+  if (!cwd.startsWith('/') || cwd.includes('\0')) throw new HarnessExecutionError('CLAUDE_CWD_INVALID', 'An accepted absolute working directory is required.')
+  const capabilities = requireClaudePolicyQualification(configuration, qualification)
   // AskUserQuestion is a real available tool; allowedTools only configures approval, not availability.
   const tools = [...configuration.tools]
   const allowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'allow' && rule.tool !== 'AskUserQuestion').map((rule) => rule.tool)
   const disallowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'deny').map((rule) => rule.tool)
-  return { configuration: structuredClone(configuration), cwd, model: configuration.model, permissionMode: 'default',
+  return { configuration: structuredClone(configuration), qualification: capabilities, cwd, model: configuration.model, permissionMode: 'default',
     tools, allowedTools, disallowedTools, strictMcpConfig: true, settingSources: [], systemPrompt: configuration.instructions,
     mcpServers: structuredClone(configuration.mcpServers), env: claudeEnvironment(configuration, source, apiKey),
     sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false } }

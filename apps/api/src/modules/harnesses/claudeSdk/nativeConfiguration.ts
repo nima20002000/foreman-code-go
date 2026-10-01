@@ -1,3 +1,5 @@
+import { ClaudeHarnessConfigurationSchema } from '@graphql/contracts/claude'
+import { requireClaudePolicyQualification, type ClaudePolicyQualification } from './configuration.js'
 import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
 import type { HarnessOptions } from '@graphql/contracts/management'
 import type { HarnessQualification } from '@graphql/contracts'
@@ -15,4 +17,28 @@ export function claudeSettingSupport(): HarnessOptions['settings'] {
     { field: 'instructions', support: 'conditional', detail: 'Only accepted pinned instructions are delivered; ambient settings and plugins are excluded.' },
     { field: 'mcp', support: 'conditional', detail: 'Only explicitly approved endpoints; app and file authorization remain server-side.' },
   ]
+}
+
+/** Uses the same persisted HRT profile proof and current host binding as production admission. */
+export class ClaudeCheckedNativeConfigurationPort implements ClaudeNativeConfigurationPort {
+  constructor(private readonly source: {
+    accepted(configuration: ClaudeHarnessConfiguration, workingDirectory: string, signal: AbortSignal): Promise<ClaudePolicyQualification>
+    discover: ClaudeNativeConfigurationPort['discover']
+  }) {}
+  async qualify(raw: ClaudeHarnessConfiguration, workingDirectory: string, signal: AbortSignal): Promise<HarnessQualification> {
+    signal.throwIfAborted()
+    const configuration = ClaudeHarnessConfigurationSchema.parse(raw)
+    const accepted = await this.source.accepted(configuration, workingDirectory, signal)
+    signal.throwIfAborted()
+    // Explicit API-key provisioning is checked by the actual native host; this read-only path never delivers a key.
+    const capabilities = requireClaudePolicyQualification(configuration, accepted)
+    const supportedSettings = ['model', 'permissions', 'sandbox', 'instructions', 'mcp']
+    return { harness: 'claude', version: accepted.currentBinding.pin.cliVersion, authenticated: accepted.persistedProof.authenticated, ready: capabilities.sdk && capabilities.basicTurns,
+      structuredEvents: capabilities.basicTurns, supportsResume: capabilities.resume, supportsCancellation: capabilities.cancellation,
+      supportsWorkingDirectory: capabilities.workingDirectory, supportsStartupPrompt: capabilities.startupPrompt,
+      supportedNativeTools: accepted.persistedProof.claudeProof?.observedTools ?? [], supportedSettings,
+      unsupportedCapabilities: ['Exact-turn steering', 'Restartable SDK callbacks', 'Child approvals', 'Background continuation',
+        ...(!capabilities.history ? ['Native history'] : []), ...(!capabilities.fork ? ['Native fork'] : [])] }
+  }
+  discover(workingDirectory: string, signal: AbortSignal) { return this.source.discover(workingDirectory, signal) }
 }
