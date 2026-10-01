@@ -48,7 +48,9 @@ describe('production exact-host profile failure evidence', () => {
     // The real manager completed its auth/protocol boundary before rejecting model settings.
     expect(f.native).toHaveBeenCalledTimes(1); expect(f.model).toHaveBeenCalledTimes(1)
     expect(proof).toMatchObject({ authenticated: null, compatible: null, qualified: false,
-      failure: { code, message: expect.any(String) }, target: f.value.target,
+      failure: { code, message: code === 'CODEX_MODEL_UNAVAILABLE'
+        ? 'This model is not available to the signed-in native harness.'
+        : 'The native harness does not support this model, effort, or setting combination.' }, target: f.value.target,
       configurationFingerprint: f.value.configurationFingerprint })
     expect(JSON.stringify(proof)).not.toContain('credential=secret')
     expect(f.dispose).toHaveBeenCalledTimes(1)
@@ -81,7 +83,9 @@ describe('production exact-host profile failure evidence', () => {
     f.model.mockRejectedValue(new HarnessExecutionError('CODEX_MODEL_UNAVAILABLE', 'Native secret'))
     const result = await service.check(principal, 'mcp', { commandId: f.value.instanceId, instanceId: f.value.instanceId,
       expectedRevision: f.value.revision, target: f.value.target })
-    expect(result.proof).toMatchObject({ qualified: false, failure: { code: 'CODEX_MODEL_UNAVAILABLE' } })
+    expect(result.value.qualification).toBe('unqualified')
+    expect(result.proof).toMatchObject({ authenticated: null, compatible: null, qualified: false,
+      failure: { code: 'CODEX_MODEL_UNAVAILABLE', message: 'This model is not available to the signed-in native harness.' } })
     expect(proofs.append).toHaveBeenCalledTimes(1)
     expect((await service.list(principal, scope, 'mcp')).overrides[0]?.qualification).toBe('unqualified')
     await expect(service.check({ ...principal, grants: [{ actions: ['harnesses:read'], scope: {} }] }, 'mcp',
