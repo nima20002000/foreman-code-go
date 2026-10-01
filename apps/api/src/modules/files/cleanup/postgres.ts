@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import type { ArtifactPhysicalDeletionOwnership } from '../distributed/cleanup.js'
 
 import { PostgresFileArtifactCleanupRepository } from './artifacts.js'
 
@@ -15,7 +16,7 @@ const projection = `f.file_id,r.revision_id,r.storage_key,f.owner_principal_id,a
 const joins = `join file_revisions r on r.file_id=f.file_id
   left join file_allocations a on a.file_id=r.file_id and a.revision_id=r.revision_id
   left join file_retention_preferences p on p.owner_principal_id=f.owner_principal_id`
-const eligible = `f.scope_kind='temporary' and
+const eligible = `f.scope_kind in ('temporary','job_execution') and
   ((f.state in ('pending','ready','expired') and f.expires_at<=statement_timestamp()) or f.state='removed')`
 function candidate(row: Row): FileCleanupCandidate {
   return { fileId: row.file_id, revisionId: row.revision_id, storageKey: row.storage_key,
@@ -34,13 +35,13 @@ function matches(row: Row | undefined, expected: FileCleanupCandidate): row is R
  * and the bounded objects/staging walk finds failed deletions, old revisions and late upload residue. */
 export class PostgresFileCleanupRepository implements FileCleanupRepository {
   readonly artifacts: PostgresFileArtifactCleanupRepository
-  constructor(private readonly pool: pg.Pool) {
+  constructor(private readonly pool: pg.Pool, private readonly physicalOwnership?: ArtifactPhysicalDeletionOwnership) {
     this.artifacts = new PostgresFileArtifactCleanupRepository(pool)
   }
 
   async findDue(afterFileId: string | null, limit: number): Promise<FileCleanupCandidate[]> {
     const result = await this.pool.query<Row>(`select ${projection} from files f ${joins}
-      where f.scope_kind='temporary' and f.state in ('pending','ready') and f.expires_at<=statement_timestamp()
+      where f.scope_kind in ('temporary','job_execution') and f.state in ('pending','ready') and f.expires_at<=statement_timestamp()
         and r.revision_id=f.current_revision_id and ($1::text is null or f.file_id>$1)
       order by f.file_id limit $2`, [afterFileId, cleanupBatchSize(limit)])
     return result.rows.map(candidate)
@@ -85,7 +86,7 @@ export class PostgresFileCleanupRepository implements FileCleanupRepository {
       // Revision storage keys are UNIQUE and immutable in FIL-03. No other revision (permanent
       // or temporary) can claim this object pathname; hard links at other keys are not removed.
       const result = await client.query<Row>(`select ${projection} from files f ${joins}
-        where f.file_id=$1 and r.revision_id=$2 and f.scope_kind='temporary' for update of f`,
+        where f.file_id=$1 and r.revision_id=$2 and f.scope_kind in ('temporary','job_execution') for update of f`,
       [expected.fileId, expected.revisionId])
       check(); return result.rows[0]
     }
@@ -102,7 +103,7 @@ export class PostgresFileCleanupRepository implements FileCleanupRepository {
       if (!matches(before, expected)) return 'stale'
       if (before.state === 'pending' || before.state === 'ready') {
         const marked = await client.query(`update files set state='expired' where file_id=$1
-          and scope_kind='temporary' and state in ('pending','ready')
+          and scope_kind in ('temporary','job_execution') and state in ('pending','ready')
           and expires_at=$2::timestamptz and expires_at<=clock_timestamp() returning file_id`,
         [expected.fileId, expected.expiresAt])
         if (!marked.rowCount) return 'stale'
@@ -113,6 +114,9 @@ export class PostgresFileCleanupRepository implements FileCleanupRepository {
       await begin()
       const current = await read()
       if (!matches(current, expected) || (current.state !== 'expired' && current.state !== 'removed')) return 'stale'
+      check()
+      // Holds defer physical deletion only. The already committed tombstone still denies access.
+      if (this.physicalOwnership && !await this.physicalOwnership.assertCanDelete(expected, client)) return 'busy'
       check()
       const complete = await removeBytes()
       await commit()

@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
 import { intersectGrants } from './operatorDelegation.js'
@@ -14,7 +15,7 @@ interface LivePrincipalRow {
 }
 
 /** Reuse the caller's connection and revalidate delegation rather than persisting authority. */
-export async function readLiveManagementPrincipal(client: Pick<pg.ClientBase,'query'>, principalId: string): Promise<ManagementPrincipal> {
+export async function readLiveManagementPrincipal(client: GraphSqlClient, principalId: string): Promise<ManagementPrincipal> {
   const seen = new Set<string>()
   let id: string | null = principalId
   let subject: ManagementPrincipal | undefined
