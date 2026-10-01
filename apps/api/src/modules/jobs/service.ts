@@ -1,3 +1,4 @@
+import { jobSpecDigests } from '@graphql/contracts/jobs-node'
 import type { RunInput } from '@graphql/contracts'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -110,8 +111,8 @@ export class JobService {
   /** Workflow adapter calls inside its own accepted-node transaction; no Operator token enters a build. */
   async admit(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow'],workflowInput:RunInput|null=null):Promise<JobExecution> {
     if((workflow===null)!==(workflowInput===null))throw new DomainError('JOB_INPUT_BINDING_MISSING','A workflow job requires its exact accepted input snapshot.',409)
-    const id=workflow?.nodeExecutionId??randomUUID(),attemptId=randomUUID()
-    const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,{executionId:id,attemptId})
+    const id=workflow?.nodeExecutionId??randomUUID(),attemptId=randomUUID(),operationId=randomUUID()
+    const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,{executionId:id,attemptId,operationId})
     const request=definition.spec
     const {materializationId:_materialization,materializationDigest:_digest,...source}=spec.source
     const selection=(target:JobDefinitionSpec['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
@@ -121,13 +122,14 @@ export class JobService {
       throw new DomainError('JOB_ACCEPTANCE_PIN_CONFLICT','Preparation cannot change the saved source selection, command, policy or target authority.',409)
     }
     const acceptedSpec=AcceptedJobSpecSchema.parse({...spec,workflowInput,definitionId:definition.id,definitionRevision:definition.revision,definitionVersionId:definition.versionId,
-      scriptDigest:jobDigest(spec.argv),outputSpecDigest:jobDigest(spec.outputs),specDigest:jobDigest({...spec,workflowInput}),bindingHash:jobDigest({target:spec.target,source:spec.source})})
+      ...jobSpecDigests(spec,workflowInput)})
     const now=this.clock().toISOString()
-    const binding=await this.ports.dispatch.accept(sql,{workspaceId:definition.workspaceId,executionId:id,attemptId,spec:acceptedSpec,workflow,principal})
+    const binding=await this.ports.dispatch.accept(sql,{workspaceId:definition.workspaceId,executionId:id,attemptId,operationId,spec:acceptedSpec,workflow,principal})
     const execution=JobExecutionSchema.parse({schemaVersion:1,id,workspaceId:definition.workspaceId,acceptedSpec,...binding,workflow,
       process:{phase:'queued',outcome:null,exitCode:null,signal:null,processStopped:false},transport:'unknown',publication:'pending',
       startedAt:null,finishedAt:null,lastSeenAt:null,resultIssue:null,cancelRequestedAt:null,createdAt:now,updatedAt:now})
     await sql.query('insert into job_executions(id,workspace_id,definition_version_id,operation_id,attempt_id,record,accepted_spec,accepted_by) values($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)',[id,definition.workspaceId,definition.versionId,execution.operationId,execution.attemptId,JSON.stringify(execution),JSON.stringify(acceptedSpec),principal.id])
+    await this.ports.preparation.adoptFinalBinding(sql,principal,execution)
     return execution
   }
   getExecution(principal:ManagementPrincipal,workspaceId:string,id:string) {
