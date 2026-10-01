@@ -1,3 +1,4 @@
+import type { ClaudeHarnessConfiguration } from './claude.js';
 import {
   AgentEffortSchema,
   DEFAULT_CODEX_ADVANCED_CONFIGURATION,
@@ -12,8 +13,10 @@ import {
 /** Legacy absence is supported. Never mutate the shared defaults or a saved snapshot. */
 export function withAdvancedDefaults(value: CodexHarnessConfiguration): CodexHarnessConfiguration;
 export function withAdvancedDefaults(value: OpenCodeHarnessConfiguration): OpenCodeHarnessConfiguration;
+export function withAdvancedDefaults(value: ClaudeHarnessConfiguration): ClaudeHarnessConfiguration;
 export function withAdvancedDefaults(value: HarnessConfiguration): HarnessConfiguration;
 export function withAdvancedDefaults(value: HarnessConfiguration): HarnessConfiguration {
+  if (value.harness === 'claude') return structuredClone(value);
   if (value.harness === 'codex') {
     return structuredClone({ ...value, advanced: value.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION });
   }
@@ -50,5 +53,5 @@ export function changeCodexSandbox(
 
 /** This projection is optional; a provider variant is not a product effort enum. */
 export function legacyEffortForHarness(value: HarnessConfiguration): AgentEffort | undefined {
-  return value.harness === 'codex' ? value.reasoningEffort : AgentEffortSchema.safeParse(value.variant).data;
+  return value.harness === 'codex' ? value.reasoningEffort : value.harness === 'opencode' ? AgentEffortSchema.safeParse(value.variant).data : undefined;
 }

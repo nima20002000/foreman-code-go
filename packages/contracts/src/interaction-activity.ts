@@ -6,7 +6,7 @@ export const InteractionActivityProjectionSchema = z.object({
   owner: z.object({ workspaceId: z.string(), workflowId: z.string(), runId: z.string(),
     executionId: z.string(), agentId: z.string() }).strict(),
   native: z.object({ harness: z.string(), sessionId: z.string(), requestId: z.string(),
-    turnId: z.string().optional() }).strict(),
+    turnId: z.string().optional(), messageId: z.string().optional() }).strict(),
   phase: z.enum(['needs_answer', 'answer_recorded', 'delivery_pending', 'uncertain', 'delivered', 'failed', 'canceled']),
   answerRecorded: z.boolean(),
   nativeDelivery: z.enum(['not_started', 'pending', 'submitted', 'uncertain', 'delivered', 'failed']),

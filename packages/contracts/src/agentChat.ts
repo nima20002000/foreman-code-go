@@ -1,3 +1,4 @@
+import { NativeMessageSubmissionSchema } from './claude.js';
 import { z } from "zod";
 import { ActivitySnapshotV1Schema } from "./activity.js";
 import { MessageAttachmentFields } from "./files.js";
@@ -147,6 +148,7 @@ export const AgentChatTurnSchema = z.object({
   /** User message this turn delivered. */
   messageId: IdSchema,
   nativeTurnId: IdSchema.optional(),
+  nativeSubmission: NativeMessageSubmissionSchema.optional(),
   /** For steer / interrupt_and_send: the active turn this input targeted. */
   targetNativeTurnId: IdSchema.optional(),
   error: z.object({ code: z.string().min(1), message: z.string().min(1) }).strict().optional(),

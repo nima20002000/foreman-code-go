@@ -1,3 +1,4 @@
+import { ClaudeQualificationProofSchema } from './claudeQualification.js'
 import { z } from 'zod'
 import { HarnessConfigurationSchema, type HarnessConfiguration } from './index.js'
 import { DevicePresenceSchema } from './deviceConnection.js'
@@ -115,6 +116,8 @@ export const HostHarnessProfileEvidenceSchema = z.object({
   driverId: Identity, driverRevision: Identity, protocolRevision: Identity, suiteRevision: Identity,
   environmentGeneration: Identity, connectionGeneration: Identity,
   authenticated: z.boolean(), compatible: z.boolean(), qualified: z.boolean(), checkedAt: z.string().datetime(),
+  /** Native-produced provider checks stored in this same exact-host profile proof. */
+  claudeProof: ClaudeQualificationProofSchema.optional(),
 }).strict()
 export type HostHarnessProfileEvidence = z.infer<typeof HostHarnessProfileEvidenceSchema>
 export const HostHarnessInstanceCheckResultSchema = z.object({

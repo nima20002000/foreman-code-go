@@ -9,7 +9,7 @@ export const AgentSettingsSearchSchema = z.object({
   section: z.enum(["model", "permissions", "session", "tools"]).optional().catch(undefined),
 });
 export const HarnessSettingsSearchSchema = z.object({
-  harness: z.enum(["codex", "opencode"]).optional().catch(undefined),
+  harness: z.enum(["codex", "opencode", "claude"]).optional().catch(undefined),
   section: HarnessSettingsSectionSchema.optional().catch(undefined),
   pluginView: z.enum(['installed', 'available']).optional().catch(undefined),
   pluginQuery: z.string().max(100).optional().catch(undefined),

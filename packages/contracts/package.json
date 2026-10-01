@@ -163,6 +163,10 @@
     "./command-identity-node": {
       "types": "./dist/commandIdentityNode.d.ts",
       "import": "./dist/commandIdentityNode.js"
+    },
+    "./claude-qualification": {
+      "types": "./dist/claudeQualification.d.ts",
+      "import": "./dist/claudeQualification.js"
     }
   },
   "scripts": {

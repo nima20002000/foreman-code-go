@@ -1,3 +1,6 @@
+import { ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
+export * from './claude.js';
+export * from './claudeQualification.js';
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { InteractionActivityProjectionSchema } from "./interaction-activity.js";
 import { z } from "zod";
@@ -35,14 +38,9 @@ export * from "./harnessQualification.js";
 export * from "./approvalTopology.js";
 export * from "./graphqlMcpTools.js";
 
-/** Runner-owned directory inherited by every workflow and Agent in a workspace. */
-export const ExecutionLocationSchema = z
-  .object({
-    runnerId: IdSchema,
-    rootPath: z.string().min(1).refine((value) => !value.includes("\0"), "rootPath cannot contain NUL"),
-  })
-  .strict();
-export type ExecutionLocation = z.infer<typeof ExecutionLocationSchema>;
+import { ExecutionLocationSchema } from "./executionLocation.js";
+export { ExecutionLocationSchema } from "./executionLocation.js";
+export type { ExecutionLocation } from "./executionLocation.js";
 
 /** Immutable location accepted together with a new Run. */
 export const RunExecutionLocationSchema = ExecutionLocationSchema.extend({
@@ -103,7 +101,7 @@ export const HarnessSummarySchema = z
   .strict();
 export type HarnessSummary = z.infer<typeof HarnessSummarySchema>;
 
-export const AgentHarnessSchema = z.enum(["codex", "opencode"]);
+export const AgentHarnessSchema = z.enum(["codex", "opencode", "claude"]);
 export type AgentHarness = z.infer<typeof AgentHarnessSchema>;
 export const AgentEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 export type AgentEffort = z.infer<typeof AgentEffortSchema>;
@@ -261,12 +259,13 @@ export type OpenCodeHarnessConfiguration = z.infer<typeof OpenCodeHarnessConfigu
 export const HarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
   OpenCodeHarnessConfigurationSchema,
+  ClaudeHarnessConfigurationSchema,
 ]);
 export type HarnessConfiguration = z.infer<typeof HarnessConfigurationSchema>;
 
 /** Preserve native variants in harnessConfiguration; this is only a legacy display projection. */
 export function projectHarnessEffort(configuration: HarnessConfiguration): AgentEffort | undefined {
-  const value = configuration.harness === "codex" ? configuration.reasoningEffort : configuration.variant;
+  const value = configuration.harness === "codex" ? configuration.reasoningEffort : configuration.harness === "opencode" ? configuration.variant : undefined;
   const effort = AgentEffortSchema.safeParse(value);
   return effort.success ? effort.data : undefined;
 }
@@ -355,6 +354,8 @@ export const HarnessDefaultsSchema = z
   .object({
     codex: CodexHarnessConfigurationSchema,
     opencode: OpenCodeHarnessConfigurationSchema,
+    /** Absent until an owner selects an actual host-local Claude profile. */
+    claude: ClaudeHarnessConfigurationSchema.optional(),
   })
   .strict();
 export type HarnessDefaults = z.infer<typeof HarnessDefaultsSchema>;
@@ -571,9 +572,10 @@ export const NativeSessionReferenceSchema = z.object({
 }).strict();
 export type NativeSessionReference = z.infer<typeof NativeSessionReferenceSchema>;
 export const NativeTurnReferenceSchema = z.object({
-  nativeTurnId: IdSchema,
+  nativeTurnId: IdSchema.optional(),
+  nativeMessageId: IdSchema.optional(),
   nativeRequestId: IdSchema.optional(),
-}).strict();
+}).strict().refine((value) => (value.nativeTurnId !== undefined) !== (value.nativeMessageId !== undefined), { message: "Exactly one observed native turn or message identity is required." });
 export type NativeTurnReference = z.infer<typeof NativeTurnReferenceSchema>;
 export const NativeHarnessEventSchema = z.object({
   connectionId: IdSchema.optional(),
@@ -589,7 +591,9 @@ export const PendingNativeInteractionSchema = z.object({
   nativeRequestType: z.string().trim().min(1),
   request: z.json(),
   responseOptions: z.array(ApprovalResponseOptionSchema).min(1),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.session.harness !== "claude" && !value.turn.nativeTurnId) context.addIssue({ code: "custom", path: ["turn", "nativeTurnId"], message: "This native provider requires its observed turn identity." });
+});
 export type PendingNativeInteraction = z.infer<typeof PendingNativeInteractionSchema>;
 
 export const ActiveTimeBudgetSchema = z.object({
@@ -1396,9 +1400,11 @@ export const OperatorChatSettingsSchema = z.discriminatedUnion("harness", [
     serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
   z.object({ harness: z.literal("opencode"), model: z.string().trim().min(1), variant: z.string(),
     showThinking: z.boolean() }).strict(),
+  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), showThinking: z.boolean() }).strict(),
 ]);
 export type OperatorChatSettings = z.infer<typeof OperatorChatSettingsSchema>;
 export function operatorChatSettings(harness: HarnessConfiguration, showThinking = false): OperatorChatSettings {
+  if (harness.harness === "claude") return { harness: "claude", model: harness.model, showThinking };
   return harness.harness === "codex"
     ? { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort, serviceTier: harness.serviceTier, showThinking }
     : { harness: "opencode", model: harness.model, variant: harness.variant, showThinking: harness.thinking };
@@ -1406,6 +1412,7 @@ export function operatorChatSettings(harness: HarnessConfiguration, showThinking
 /** Apply chat controls without replacing the accepted execution permissions. */
 export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
   if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
+  if (settings.harness === "claude") return HarnessConfigurationSchema.parse({ ...base, model: settings.model });
   return HarnessConfigurationSchema.parse(settings.harness === "codex"
     ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
     : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking });
@@ -1414,13 +1421,13 @@ export const OperatorChatSetupQuerySchema = z.object({
   conversationId: IdSchema.optional(),
   requestId: IdSchema.optional(),
   configurationVersionId: IdSchema.optional(),
-  harness: z.enum(["codex", "opencode"]).optional(),
+  harness: z.enum(["codex", "opencode", "claude"]).optional(),
   expectedDefaultsRevision: z.coerce.number().int().nonnegative().optional(),
 }).strict().refine((value) => !value.requestId || Boolean(value.conversationId), "A request needs its conversation.");
 export type OperatorChatSetupQuery = z.infer<typeof OperatorChatSetupQuerySchema>;
 export const OperatorChatSetupSchema = z.object({
   routing: z.enum(["automatic", "fixed"]).optional(),
-  harness: z.enum(["codex", "opencode"]),
+  harness: z.enum(["codex", "opencode", "claude"]),
   status: z.enum(["configured", "setup_required"]),
   endpoint: z.string().url(),
   checkedAt: TimestampSchema,
@@ -1454,7 +1461,7 @@ export type OperatorActivityQuery = z.infer<typeof OperatorActivityQuerySchema>;
 export const OperatorConversationStateSchema = z.object({
   conversation: ConversationSchema,
   settings: OperatorChatSettingsSchema.optional(),
-  handoff: z.object({ parentConversationId: IdSchema, sourceHarness: z.enum(['codex', 'opencode']),
+  handoff: z.object({ parentConversationId: IdSchema, sourceHarness: z.enum(['codex', 'opencode', 'claude']),
     sourceMessageSequence: z.string().regex(/^[0-9]+$/), omittedMessages: z.number().int().nonnegative() }).strict().optional(),
   hasEarlierMessages: z.boolean().optional(),
   messages: z.array(MessageSchema),
@@ -1463,6 +1470,7 @@ export const OperatorConversationStateSchema = z.object({
   turnState: z.enum(["idle", "starting", "active", "canceling", "uncertain", "error"]),
   revision: z.number().int().nonnegative().default(0),
   activeRequestId: IdSchema.nullable().default(null),
+  nativeSubmission: NativeMessageSubmissionSchema.optional(),
   pendingInteraction: PendingNativeInteractionSchema.optional(),
   responseDelivery: z.enum(["offered", "submitted", "uncertain"]).optional(),
   lastResult: ExecutionResultSchema.optional(),
