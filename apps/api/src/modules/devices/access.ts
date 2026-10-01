@@ -1,8 +1,8 @@
 import { createHash, createHmac, randomBytes, randomUUID, verify } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { authorizeDevice, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope } from '@graphql/contracts/device-identity'
-import { publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
+import { authorizeDevice, DeviceRegistrationSchema, revokeDevice, type DevicePrincipal, type DeviceRegistration, type DeviceScope, type DevicePairingRequest } from '@graphql/contracts/device-identity'
+import { pairingProof, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { commandInputHash, PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
@@ -12,10 +12,8 @@ export class DeviceAccessError extends DomainError {
   constructor(readonly code: 'unauthorized' | 'revoked' | 'expired' | 'conflict' | 'forbidden' | 'wrong_main') { super(code, `Device access rejected: ${code}`, 403) }
 }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
-export interface PairDeviceInput { grant: string; requestId: string; mainId: string; workerInstallationId: string; publicKey: string; signature: string }
-export function pairingProof(input: Omit<PairDeviceInput, 'signature'>): string {
-  return JSON.stringify(['graphql-worker-pair-v1', input.mainId, input.workerInstallationId, publicKeyFingerprint(input.publicKey), input.requestId, digest(input.grant)])
-}
+export type PairDeviceInput = DevicePairingRequest
+export { pairingProof } from '@graphql/contracts/device-identity-node'
 interface DeviceRow { record: DeviceRegistration; public_key: string; credential_expires_at: Date }
 export class PostgresDeviceAccessService {
   constructor(private readonly pool: pg.Pool, readonly mainId: string, private readonly onRevoked?: (deviceId: string) => void) {}

@@ -113,3 +113,8 @@ export async function verifyMainIdentityProof(proof: unknown, expected: import('
       && verify(null, Buffer.from(mainIdentityProofMessage(parsed.request, parsed.mainApplicationVersion)), parsed.mainPublicKey, Buffer.from(parsed.signature, 'base64url'))
   } catch { return false }
 }
+
+export function pairingProof(input: Omit<import('./deviceIdentity.js').DevicePairingRequest, 'signature'>): string {
+  return JSON.stringify(['graphql-worker-pair-v1', input.mainId, input.workerInstallationId, publicKeyFingerprint(input.publicKey),
+    input.requestId, createHash('sha256').update(input.grant).digest('hex')])
+}

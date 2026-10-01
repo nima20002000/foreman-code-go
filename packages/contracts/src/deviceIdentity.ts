@@ -62,3 +62,17 @@ export const MainSignedIdentityProofSchema = z.object({ request: MainIdentityPro
   mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/), signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
 }).strict()
 export type MainSignedIdentityProof = z.infer<typeof MainSignedIdentityProofSchema>
+
+export const WorkerEnrollmentInputSchema = z.object({ mainId: z.uuid(),
+  mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/), endpoint: WorkerPairingConfigurationSchema.shape.endpoint,
+  grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/), requestId: z.uuid(),
+}).strict()
+export type WorkerEnrollmentInput = z.infer<typeof WorkerEnrollmentInputSchema>
+export const DevicePairingRequestSchema = z.object({ mainId: z.uuid(), workerInstallationId: z.uuid(),
+  publicKey: z.string().max(1024), grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/), requestId: z.uuid(),
+  signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
+}).strict()
+export type DevicePairingRequest = z.infer<typeof DevicePairingRequestSchema>
+export const DevicePairingResultSchema = z.object({ registration: DeviceRegistrationSchema,
+  credential: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime(),
+}).strict()
