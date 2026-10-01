@@ -11,6 +11,7 @@ import {
   type NativeSessionReference, type PendingNativeInteraction,
 } from '@graphql/contracts'
 
+import { DomainError } from '../errors.js'
 import { HarnessExecutionError, NativeTurnNotActiveError } from './errors.js'
 import { CodexRuntimeFileTurn, type CodexChatFiles } from './codexFiles/runtime.js'
 import { codexChatFileDeclarations, codexChatFileTools } from './codexFiles/declarations.js'
@@ -576,10 +577,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     runtime.cancellation = undefined
     runtime.seenNotifications.clear()
     const abort = () => {
-      starting.cancelRequested = true
-      starting.preparationController.abort()
+      const restarting = signal?.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
+      if (!restarting) starting.cancelRequested = true
+      starting.preparationController.abort(signal?.reason)
       void this.finishFiles(runtime).catch(() => undefined)
-      if (runtime.activeTurnId && !runtime.terminalResult) void this.interrupt(runtime).catch(() => undefined)
+      if (!restarting && runtime.activeTurnId && !runtime.terminalResult) void this.interrupt(runtime).catch(() => undefined)
     }
     signal?.addEventListener('abort', abort, { once: true })
     let cursor = runtime.sequence

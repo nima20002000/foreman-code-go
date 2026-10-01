@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { CodexHarnessConfiguration, NativeSessionReference, PendingNativeInteraction } from '@graphql/contracts'
 import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 
+import { DomainError } from '../src/modules/errors.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
@@ -616,6 +617,25 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.deepEqual(await first, session)
     assert.equal((await wire('thread/resume')).length, 1)
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'usable' }))
+  })
+
+  it('detaches engine restart without interrupt and attaches the same thread without resending its prompt', async () => {
+    const session = await manager.createSession(source)
+    const controller = new AbortController()
+    const stream = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'restart-turn' }, controller.signal))
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'turn.started'))
+    controller.abort(new DomainError('ENGINE_RESTART', 'Restart the engine', 409))
+    await stream.catch((error: unknown) => {
+      assert(error instanceof DomainError && error.code === 'ENGINE_RESTART')
+    })
+    await manager.close(session)
+    const replacement = makeManager()
+    assert.deepEqual(await replacement.attachSession(session, source), session)
+    const recovered = await replacement.reconcile(session, 'restart-turn')
+    assert.equal(recovered.nativeTurnId, 'turn-1')
+    assert.equal((await wire('thread/start')).length, 1)
+    assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('turn/interrupt')).length, 0)
   })
 
   it('detaches an idle pending iterator without cancelling the native turn', async () => {
