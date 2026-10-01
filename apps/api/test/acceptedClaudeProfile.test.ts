@@ -1,0 +1,76 @@
+import { describe, expect, it, vi } from 'vitest'
+import type pg from 'pg'
+import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
+import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
+import { AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from '../src/modules/harnesses/instanceSettings/acceptedProfile.js'
+import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
+import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
+import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
+import { claudeDiscoveryDeclaration } from '../src/modules/harnesses/claudeDiscovery.js'
+
+function fixture() {
+  const target = { hostRef: { kind: 'main' as const, mainId: 'main' }, applicationInstallationId: 'main', harnessInstallationId: 'cli', installationFingerprint: 'hash' }
+  const configuration = { harness: 'claude' as const, model: 'model', authMode: 'subscription' as const, configDirectory: '/profile', permissionMode: 'default' as const,
+    sandbox: 'read-only' as const, tools: [], permissionRules: [], instructions: '', mcpServers: {} }
+  const value: HostHarnessOverride = { instanceId: 'instance', instanceRevision: '1', revision: 1, target, presetId: 'preset', enabled: true,
+    driverId: 'claude', configuration, configurationFingerprint: 'config', qualification: 'unqualified' }
+  const pin = { sdkVersion: 'sdk', sdkIntegrity: 'integrity', cliVersion: 'cli', executableSha256: 'a'.repeat(64), profilePath: '/profile', configRevision: 'config' }
+  const proof: HostHarnessProfileEvidence = { target, instanceRevision: '1', configurationFingerprint: 'config', driverId: 'claude', driverRevision: '1',
+    protocolRevision: 'p', suiteRevision: 's', environmentGeneration: 'e', connectionGeneration: 'c', authenticated: true, compatible: true,
+    qualified: true, checkedAt: '2026-10-01T00:00:00Z', claudeProof: { pin, checks: {} } }
+  const client = {} as pg.PoolClient
+  const settings = { readAuthorized: async <T>(fn: (client: pg.PoolClient) => Promise<T>) => fn(client), latest: vi.fn(async () => value), lockRevision: vi.fn(async () => {}) }
+  const proofs = { latest: vi.fn(async () => proof) }
+  const registry = { selection: { instanceId: value.instanceId, instanceRevision: '1', driverId: 'claude', hostRef: target.hostRef,
+    harnessInstallationId: 'cli', installationFingerprint: 'hash' }, instance: { configuration }, installation: {
+    driverRevision: '1', protocolRevision: 'p', environmentGeneration: 'e', connectionGeneration: 'c' } } as RegistryHarnessSelection
+  const authority: AcceptedProfileAuthority<string> = { authorize: vi.fn(async () => {}), assertCurrent: vi.fn(),
+    current: vi.fn(async () => ({ registry, applicationInstallationId: 'main', suiteRevision: 's', pin })) }
+  const admission = new AcceptedClaudeProfileAdmission(settings as unknown as HarnessInstanceSettingsRepository, proofs as unknown as HostHarnessProfileEvidenceRepository, authority)
+  return { value, proof, client, settings, proofs, authority, registry, admission, selector: { instanceId: value.instanceId, instanceRevision: '1', target } }
+}
+describe('exact accepted Claude profile admission', () => {
+  it('reads existing same-client proof and freezes independent snapshots without inferring qualification from settings', async () => {
+    const f = fixture(); const result = await f.admission.admit('actual-owner', f.selector)
+    expect(f.proofs.latest).toHaveBeenCalledWith('instance', 1, f.client)
+    expect(Object.isFrozen(result.currentBinding.pin)).toBe(true)
+    f.proof.claudeProof!.pin.sdkVersion = 'changed'
+    expect(result.persistedProof.claudeProof!.pin.sdkVersion).toBe('sdk')
+    expect(f.authority.authorize).toHaveBeenCalledTimes(2)
+  })
+  it('denies the owner before reading a profile', async () => {
+    const f = fixture(); vi.mocked(f.authority.authorize).mockRejectedValue(new Error('revoked owner'))
+    await expect(f.admission.admit('denied', f.selector)).rejects.toThrow('revoked owner')
+    expect(f.settings.latest).not.toHaveBeenCalled()
+  })
+  it.each(['instanceRevision', 'configurationFingerprint', 'driverRevision', 'protocolRevision', 'suiteRevision', 'environmentGeneration', 'connectionGeneration'] as const)('rejects stale %s proof', async key => {
+    const f = fixture(); f.proof[key] = 'stale'
+    await expect(f.admission.admit('owner', f.selector)).rejects.toThrow('stale')
+  })
+  it('rejects changed instance head, target and configuration instead of matching another profile', async () => {
+    for (const mutate of [(f: ReturnType<typeof fixture>) => { f.value.instanceRevision = '2' },
+      (f: ReturnType<typeof fixture>) => { f.registry.selection = { ...f.registry.selection, installationFingerprint: 'new' } },
+      (f: ReturnType<typeof fixture>) => { f.registry.instance = { ...f.registry.instance, configuration: {} } }]) {
+      const f = fixture(); mutate(f)
+      await expect(f.admission.admit('owner', f.selector)).rejects.toThrow('stale')
+    }
+  })
+  it('rejects owner revocation during profile admission', async () => {
+    const f = fixture(); vi.mocked(f.authority.authorize).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('revoked'))
+    await expect(f.admission.admit('owner', f.selector)).rejects.toThrow('revoked')
+  })
+  it('rejects old SDK pin and revalidates revocation before native effect', async () => {
+    const f = fixture(); const accepted = await f.admission.admit('owner', f.selector)
+    f.proof.claudeProof!.pin.sdkIntegrity = 'different'
+    await expect(f.admission.revalidate('owner', accepted)).rejects.toThrow('stale')
+    vi.mocked(f.authority.authorize).mockRejectedValue(new Error('revoked'))
+    await expect(f.admission.revalidate('owner', accepted)).rejects.toThrow('revoked')
+  })
+  it('registers Claude configuration without a manager or default profile', () => {
+    const f = fixture(); const registry = new HarnessInstanceRegistry(localHarnessDrivers)
+    registry.reload([{ instanceId: 'explicit', instanceRevision: '1', driverId: 'claude', enabled: true, configuration: f.value.configuration }])
+    expect(registry.select('explicit').driverId).toBe('claude')
+    expect(claudeDiscoveryDeclaration({ harnessInstallationId: 'cli', requestedLauncher: '/cli', payloadPaths: ['/sdk'], protocolRevision: 'p' }).driverId).toBe('claude')
+    expect(() => claudeDiscoveryDeclaration({ harnessInstallationId: 'cli', requestedLauncher: '/cli', payloadPaths: [], protocolRevision: 'p' })).toThrow('payload')
+  })
+})

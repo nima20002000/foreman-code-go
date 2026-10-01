@@ -63,7 +63,7 @@ export class HarnessInstanceRegistry {
   }
 }
 
-export const localHarnessDrivers: readonly HarnessDriverRegistration[] = ['codex', 'opencode'].map((driverId) => ({
+export const localHarnessDrivers: readonly HarnessDriverRegistration[] = ['codex', 'opencode', 'claude'].map((driverId) => ({
   driverId, driverRevision: '1', decodeConfiguration: (value: unknown) => {
     const configuration = HarnessConfigurationSchema.parse(value)
     if (configuration.harness !== driverId) throw new Error('Harness configuration driver mismatch.')
