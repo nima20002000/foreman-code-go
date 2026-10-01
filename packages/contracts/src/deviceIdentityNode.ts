@@ -93,3 +93,23 @@ export async function updateWorkerEndpoint(directory: string, endpoint: string):
   try { await rename(temporary, join(directory, 'pairing.json')); await syncPath(directory) }
   catch (error) { await unlink(temporary).catch(() => undefined); throw error }
 }
+
+export function mainIdentityProofMessage(request: import('./deviceIdentity.js').MainIdentityProofRequest, mainApplicationVersion: string): string {
+  return JSON.stringify([request.audience, request.mainId, request.nonce, request.workerInstallationId,
+    request.deviceId ?? null, request.bootId ?? null, request.connectionGeneration ?? null,
+    request.keyRevision ?? null, request.authorizationRevision ?? null, request.connectionEpoch ?? null, request.mainConnectionEpoch ?? null,
+    request.protocolVersion, request.workerApplicationVersion, mainApplicationVersion])
+}
+/** Fresh caller nonce and all claimed identity/version fields must match before accepting authority. */
+export async function verifyMainIdentityProof(proof: unknown, expected: import('./deviceIdentity.js').MainIdentityProofRequest,
+  expectedFingerprint: string): Promise<boolean> {
+  const { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema } = await import('./deviceIdentity.js')
+  const { verify } = await import('node:crypto')
+  try {
+    const parsed = MainSignedIdentityProofSchema.parse(proof), request = MainIdentityProofRequestSchema.parse(expected)
+    return parsed.mainPublicKeyFingerprint === expectedFingerprint
+      && publicKeyFingerprint(parsed.mainPublicKey) === expectedFingerprint
+      && mainIdentityProofMessage(parsed.request, parsed.mainApplicationVersion) === mainIdentityProofMessage(request, parsed.mainApplicationVersion)
+      && verify(null, Buffer.from(mainIdentityProofMessage(parsed.request, parsed.mainApplicationVersion)), parsed.mainPublicKey, Buffer.from(parsed.signature, 'base64url'))
+  } catch { return false }
+}

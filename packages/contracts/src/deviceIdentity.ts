@@ -47,3 +47,18 @@ export type WorkerPairingConfiguration = z.infer<typeof WorkerPairingConfigurati
 export const DevicePairingGrantInputSchema = z.object({ workerInstallationId: z.uuid(), publicKey: z.string().max(1024),
   expectedAuthorizationRevision: z.number().int().positive().optional(), commandId: z.string().min(8).max(200), expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/), scopes: z.array(DeviceScopeSchema).min(1).max(2) }).strict()
 export const DeviceRevokeInputSchema = z.object({ deviceId: z.uuid(), expectedRevision: z.number().int().positive(), commandId: z.string().min(8).max(200) }).strict()
+
+export const MainIdentityProofRequestSchema = z.object({
+  audience: z.literal('graphql-worker-main-v1'), mainId: z.uuid(),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/), workerInstallationId: z.uuid(),
+  deviceId: z.uuid().optional(), bootId: z.uuid().optional(), connectionGeneration: z.number().int().positive().optional(),
+  keyRevision: z.number().int().positive().optional(), authorizationRevision: z.number().int().positive().optional(),
+  connectionEpoch: z.uuid().optional(), mainConnectionEpoch: z.uuid().optional(),
+  protocolVersion: z.number().int().positive(), workerApplicationVersion: z.string().min(1).max(128),
+}).strict()
+export type MainIdentityProofRequest = z.infer<typeof MainIdentityProofRequestSchema>
+export const MainSignedIdentityProofSchema = z.object({ request: MainIdentityProofRequestSchema,
+  mainApplicationVersion: z.string().min(1).max(128), mainPublicKey: z.string().max(1024),
+  mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/), signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
+}).strict()
+export type MainSignedIdentityProof = z.infer<typeof MainSignedIdentityProofSchema>
