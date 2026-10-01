@@ -1,11 +1,12 @@
 import type pg from 'pg'
 import { withAdvancedDefaults } from '@graphql/contracts'
-import { HostHarnessOverrideListInputSchema, HostHarnessOverrideSaveSchema, type HostHarnessOverride, type HostHarnessOverrideListInput, type HostHarnessOverrideSave } from '@graphql/contracts/harness-registry'
+import { HostHarnessOverrideListInputSchema, HostHarnessOverrideSaveSchema, type HostHarnessOverride, type HostHarnessOverrideListInput, type HostHarnessOverrideSave, type HostHarnessInstanceCheckInput } from '@graphql/contracts/harness-registry'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
 import { DomainError } from '../../errors.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../../commands/postgres.js'
+import type { HostHarnessInstanceProfileChecks } from './profileChecks.js'
 import { harnessHostKey, type HarnessInstanceSettingsRepository } from './repository.js'
 
 export interface HostHarnessOverrideAuthority {
@@ -23,8 +24,21 @@ export class HostHarnessOverrideService {
   constructor(private readonly repository: HarnessInstanceSettingsRepository,
     private readonly commands: PostgresCommandCoordinator,
     private readonly authority: HostHarnessOverrideAuthority,
-    private readonly evidence: (value: HostHarnessOverride) => Promise<HostHarnessOverrideEvidence | null> = async () => null,
+    private readonly evidence: (value: HostHarnessOverride) => Promise<HostHarnessOverrideEvidence | null>,
+    private readonly profileChecks?: HostHarnessInstanceProfileChecks,
   ) {}
+  get qualificationSupported(): boolean { return Boolean(this.profileChecks) }
+  async closeChecks(): Promise<void> { await this.profileChecks?.close() }
+  async check(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HostHarnessInstanceCheckInput) {
+    try {
+      if (!this.profileChecks) throw new DomainError('HARNESS_PROFILE_CHECK_UNAVAILABLE', 'Exact-host profile qualification is not composed.', 503)
+      const result = await this.profileChecks.check(principal, source, raw)
+      return { value: await this.describe(result.value.override), proof: result.value.proof, replayed: result.replayed }
+    } catch (error) {
+      if (error instanceof DomainError && error.status === 403) await this.commands.recordDenied(principal.id, source, 'harness_instance_check', `harness-instance:${raw.instanceId}`)
+      throw error
+    }
+  }
   private async describe(value: HostHarnessOverride): Promise<HostHarnessOverride> {
     if (!value.enabled) return { ...value, qualification: 'disabled' }
     // Missing/remote failed evidence remains unavailable, never substitutes local discovery.

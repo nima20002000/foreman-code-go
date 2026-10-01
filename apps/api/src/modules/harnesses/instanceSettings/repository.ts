@@ -28,8 +28,11 @@ export class HarnessInstanceSettingsRepository {
     const result = await client.query<{ record: unknown }>('select record from harness_instance_settings where instance_id=$1 order by revision desc limit 1', [instanceId])
     return result.rows[0] ? HostHarnessOverrideSchema.parse(result.rows[0].record) : null
   }
+  async lockRevision(client: pg.ClientBase, instanceId: string): Promise<void> {
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', [`harness-instance:${instanceId}`])
+  }
   async append(client: pg.PoolClient, principalId: string, expectedRevision: number, value: HostHarnessOverride): Promise<HostHarnessOverride> {
-    await client.query('select pg_advisory_xact_lock(hashtext($1))', [`harness-instance:${value.instanceId}`])
+    await this.lockRevision(client, value.instanceId)
     const previous = await this.latest(client, value.instanceId)
     if ((previous?.revision ?? 0) !== expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Host harness settings changed since they were read.', 409, { currentRevision: previous?.revision ?? 0 })
     if (previous && (harnessHostKey(previous.target.hostRef) !== harnessHostKey(value.target.hostRef)
