@@ -43,3 +43,12 @@ export const WorkspaceRootListResultSchema = z.object({ workspaceId: IdSchema, p
 export const WorkspaceRootBrowseResultSchema = z.object({ relativePath: z.string().max(1024),
   directories: z.array(z.object({ name: z.string().min(1), relativePath: z.string().max(1024) }).strict()).max(256), truncated: z.boolean() }).strict()
 export type WorkspaceRootBrowseResult = z.infer<typeof WorkspaceRootBrowseResultSchema>
+
+export const WorkspaceRootWorkerRequestSchema = z.discriminatedUnion('operation', [
+  z.object({ version: z.literal(1), operation: z.literal('workspace-roots.attest'), selection: WorkspaceRootSelectionSchema }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('workspace-roots.browse'), selection: WorkspaceRootSelectionSchema, relativePath: z.string().max(1024) }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('workspace-roots.source-namespace'), policy: WorkspaceRootPolicySchema }).strict(),
+])
+export type WorkspaceRootWorkerRequest = z.infer<typeof WorkspaceRootWorkerRequestSchema>
+export const WORKSPACE_ROOT_WORKER_OPERATIONS = ['workspace-roots.attest', 'workspace-roots.browse', 'workspace-roots.source-namespace'] as const
+export const WORKSPACE_ROOT_EXTENSION = { namespace: 'workspace-roots-v1', version: 1, maxPayloadBytes: 1024 * 1024, maxPending: 8 } as const
