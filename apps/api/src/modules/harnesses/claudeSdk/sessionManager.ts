@@ -78,6 +78,7 @@ interface Runtime {
   toolOwners: Map<string, Turn>
   restoredReceipts: Map<string, ClaudeMessageSubmission>
   active?: Turn
+  controlPending?: boolean
   pumping?: Promise<void>
   decode?: (raw: unknown) => readonly Pick<NativeHarnessEvent, 'type' | 'payload'>[]
   failure?: unknown
@@ -153,8 +154,10 @@ export function createClaudeNativeSessionManager(options: {
   }
   async function ownedControl<T>(runtime: Runtime, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted()
-    // Before model input this scope may be closed to settle all SDK RPC waiters; never kill active work for a read timeout.
-    if (runtime.active) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'The pre-input control operation cannot run while model work is active.')
+    // Reserve before the first await and keep input fenced through actual SDK cleanup.
+    if (runtime.active || runtime.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'The pre-input control operation cannot overlap model work or another control operation.')
+    if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query is closed.')
+    runtime.controlPending = true
     let closing: Promise<void> | undefined
     const close = () => {
       runtime.closed = true
@@ -171,7 +174,7 @@ export function createClaudeNativeSessionManager(options: {
     } finally {
       clearTimeout(timer)
       signal?.removeEventListener('abort', close)
-      if (closing) await closing
+      try { if (closing) await closing } finally { runtime.controlPending = false }
     }
   }
   function makeRuntime(start: NativeSessionStart): Runtime {
@@ -226,6 +229,8 @@ export function createClaudeNativeSessionManager(options: {
     const identity = JSON.stringify(start)
     const runtime = !resume && prepared ? await prepared.opening : makeRuntime(start)
     if (!resume && prepared && prepared.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Initial input differs from the exact inspected owner/configuration/environment.')
+    if (runtime.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
+    if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned SDK query is closed.')
     if (initial) {
       runtime.onSessionObserved = initial.onSessionObserved
       runtime.turns.set(initial.turn.correlationId, initial.turn)
@@ -474,7 +479,8 @@ export function createClaudeNativeSessionManager(options: {
       signal?.throwIfAborted()
       if (options.appMcpAccess !== 'management') throw new HarnessExecutionError('CLAUDE_MANAGEMENT_MCP_FORBIDDEN', 'This owner has no management MCP credential authority.')
       if (!prepared) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_REQUIRED', 'Credential delivery requires the existing inspected SDK query.')
-      const runtime = await prepared.opening
+      const inspected = prepared
+      const runtime = await inspected.opening
       if (runtime.active || runtime.session || runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_ALREADY_STARTED', 'Pre-input credential delivery cannot mutate an active/native session.')
       const withoutCredentials = (value: NativeSessionStart): string => {
         const variables = { ...value.environment?.variables }
@@ -482,7 +488,7 @@ export function createClaudeNativeSessionManager(options: {
         const agentId = value.environment?.agentId ?? (value.kind === 'operator' ? value.configuration.operatorId : value.request.configuration.agentId)
         return JSON.stringify({ ...value, environment: { agentId, variables } })
       }
-      const original = JSON.parse(prepared.identity) as NativeSessionStart
+      const original = JSON.parse(inspected.identity) as NativeSessionStart
       if (withoutCredentials(original) !== withoutCredentials(start)) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Credential delivery changed the accepted owner/configuration or noncredential environment.')
       const configured = options.sdkOptions.mcpServers && typeof options.sdkOptions.mcpServers === 'object' ? options.sdkOptions.mcpServers as Record<string, unknown> : {}
       const topology = (entries: Readonly<Record<string, unknown>>) => JSON.stringify(Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => {
@@ -499,17 +505,19 @@ export function createClaudeNativeSessionManager(options: {
         throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
       }
       if (!runtime.sdk.setMcpServers) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK scoped MCP control update is unavailable.')
-      const raw = await ownedControl(runtime, () => runtime.sdk.setMcpServers!(servers), signal)
-      const response = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-      if (!Array.isArray(response.added) || !Array.isArray(response.removed) || !response.errors || typeof response.errors !== 'object' || Object.keys(response.errors).length) {
-        throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
-      }
-      signal?.throwIfAborted()
-      prepared.identity = JSON.stringify(start) // Only after actual SDK update ACK, never by mutating spawned options/env.
-      if (!runtime.sdk.mcpServerStatus) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK MCP control status is unavailable')
-      const rows = await ownedControl(runtime, () => runtime.sdk.mcpServerStatus!(), signal)
-      signal?.throwIfAborted()
-      return decodeClaudeMcpControl(rows, runtime.generation, now())
+      return ownedControl(runtime, async () => {
+        const raw = await runtime.sdk.setMcpServers!(servers)
+        const response = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+        if (!Array.isArray(response.added) || !Array.isArray(response.removed) || !response.errors || typeof response.errors !== 'object' || Object.keys(response.errors).length) {
+          throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
+        }
+        signal?.throwIfAborted()
+        inspected.identity = JSON.stringify(start) // Only after actual SDK update ACK, never by mutating spawned options/env.
+        if (!runtime.sdk.mcpServerStatus) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK MCP control status is unavailable')
+        const rows = await runtime.sdk.mcpServerStatus!()
+        signal?.throwIfAborted()
+        return decodeClaudeMcpControl(rows, runtime.generation, now())
+      }, signal)
     },
     async prepareInspection(start, signal) {
       const runtime = await prepareRuntime(start, signal)
@@ -564,6 +572,7 @@ export function createClaudeNativeSessionManager(options: {
       const runtime = runtimeFor(session)
       if (runtime.failure) throw runtime.failure
       if (runtime.closed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned native output stream is closed.')
+      if (runtime.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
       if (runtime.active) throw new HarnessExecutionError('CLAUDE_TURN_ACTIVE', 'A Claude message is still active or uncertain; no second prompt may be offered.')
       if (runtime.turns.has(rawInput.clientCorrelationId) || runtime.restoredReceipts.has(rawInput.clientCorrelationId)) throw new HarnessExecutionError('CLAUDE_PROMPT_REPLAY_FORBIDDEN', 'This correlation was already offered; use read-only reconciliation.')
       const input = rawInput as ClaudeMessageTurnInput

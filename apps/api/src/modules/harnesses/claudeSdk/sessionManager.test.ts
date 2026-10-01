@@ -25,13 +25,27 @@ function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSessionMana
     }, getSessionInfo: async (sessionId) => ({ sessionId }), getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'fork' }),
   }
   const runner = createClaudeSdkRunner({ loadClient: async () => client })
+  const offers = vi.fn()
+  const open = runner.open
+  runner.open = async (input) => {
+    const session = await open(input)
+    const offer = session.offer
+    session.offer = (message, signal) => { offers(message); return offer(message, signal) }
+    return session
+  }
   const manager = createClaudeNativeSessionManager({ runner, scope, sdkOptions: {}, qualification, ...extra, ...(decodeFactory ? { decodeFactory } : {}) })
-  return { frames, close, manager, runner, client, statuses, queries, setServers, nextMessage: async () => {
+  return { frames, close, manager, runner, client, statuses, queries, setServers, offers, nextMessage: async () => {
     await started
     const value = (await messages.next()).value
     if (value) frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
     return value!
   } }
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
 }
 async function drain<T>(input: AsyncIterable<T>) { const values: T[] = []; for await (const value of input) values.push(value); return values }
 
@@ -373,6 +387,117 @@ describe('Claude native session manager admission', () => {
     expect(f.queries).toHaveBeenCalledTimes(1); expect(f.close).toHaveBeenCalled()
     await f.manager.dispose?.()
   })
+  const controlRaces = (['prepare', 'inspect', 'refresh-update', 'refresh-health'] as const).flatMap((controlKind) =>
+    (controlKind.startsWith('refresh') ? ['initial'] as const : ['initial', 'later'] as const).flatMap((inputKind) =>
+      (['abort', 'timeout'] as const).map((ending) => ({ controlKind, inputKind, ending }))))
+  it.each(controlRaces)('$controlKind fences $inputKind input through $ending cleanup', async ({ controlKind, inputKind, ending }) => {
+    const refresh = controlKind.startsWith('refresh')
+    const servers = { graphql: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app' } }
+    const f = fixture(undefined, { initializationTimeoutMs: 50, appMcpAccess: 'management', sdkOptions: { mcpServers: servers } })
+    const joined = deferred<void>(); const closed = deferred<void>(); const entered = deferred<void>()
+    const waiting = deferred<Awaited<ReturnType<typeof f.statuses>>>()
+    const update = deferred<Awaited<ReturnType<typeof f.setServers>>>()
+    const query = f.client.query
+    f.client.query = (input) => ({ ...query(input), joinClosed: () => joined.promise })
+    await f.manager.prepareInspection(start)
+    let session: import('@graphql/contracts').NativeSessionReference | undefined
+    if (inputKind === 'later') {
+      const result = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one', onSessionObserved: async (value) => { session = value } }))
+      const message = await f.nextMessage()
+      f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: message.uuid })
+      f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
+      await result
+    }
+    if (controlKind === 'refresh-update') f.setServers.mockImplementationOnce(() => { entered.resolve(); return update.promise })
+    else f.statuses.mockImplementationOnce(() => { entered.resolve(); return waiting.promise })
+    f.close.mockImplementation(() => {
+      const error = new Error('owned delayed control closed')
+      if (controlKind === 'refresh-update') update.reject(error); else waiting.reject(error)
+      f.frames.close(); closed.resolve()
+    })
+    const abort = new AbortController()
+    const control = refresh ? f.manager.refreshInspectionCredentials(start, servers, abort.signal)
+      : controlKind === 'prepare' ? f.manager.prepareInspection(start, abort.signal) : f.manager.inspectMcp(abort.signal)
+    let settled = false
+    const outcome = control.then(() => { settled = true; return undefined }, (error: unknown) => { settled = true; return error })
+    await entered.promise
+    const baseline = f.offers.mock.calls.length
+    let initialError: unknown
+    if (inputKind === 'initial') {
+      const observer = drain(f.manager.startInitialTurn(start, { prompt: 'blocked', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
+      void observer.catch((error: unknown) => { initialError = error })
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    } else {
+      try { f.manager.startTurn(session!, { prompt: 'blocked', clientCorrelationId: 'request-blocked' }) } catch (error) { initialError = error }
+    }
+    const offersWhileControlPending = f.offers.mock.calls.length
+    if (ending === 'abort') abort.abort(new Error('inspection cancelled'))
+    await closed.promise
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const settledBeforeJoin = settled
+    joined.resolve()
+    expect(await outcome).toBeInstanceOf(Error)
+    expect(initialError).toMatchObject({ result: { error: { code: 'CLAUDE_INSPECTION_BUSY' } } })
+    expect(offersWhileControlPending).toBe(baseline)
+    expect(settledBeforeJoin).toBe(false)
+    expect(f.offers).toHaveBeenCalledTimes(baseline)
+    expect(f.queries).toHaveBeenCalledTimes(1)
+    expect(f.close).toHaveBeenCalledTimes(1)
+    await f.manager.dispose?.()
+  })
+
+  it('releases a successful control reservation before accepting a fenced reusable correlation', async () => {
+    const f = fixture()
+    await f.manager.prepareInspection(start)
+    f.frames.offer({ type: 'system', subtype: 'init', session_id: 'native-session', claude_code_version: '2.1.284', cwd: '/work' })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
+    const entered = deferred<void>(); const status = deferred<Awaited<ReturnType<typeof f.statuses>>>()
+    f.statuses.mockImplementationOnce(() => { entered.resolve(); return status.promise })
+    const inspecting = f.manager.inspectMcp()
+    await entered.promise
+    expect(() => f.manager.startTurn(session, { prompt: 'later', clientCorrelationId: 'fenced-correlation' })).toThrow('control operation is pending')
+    await expect(f.manager.inspectMcp()).rejects.toThrow('another control operation')
+    status.resolve(await f.statuses.mock.results[0]!.value)
+    await inspecting
+    const result = drain(f.manager.startTurn(session, { prompt: 'later', clientCorrelationId: 'fenced-correlation' }))
+    const message = await f.nextMessage()
+    f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'later-reply', user_message_uuid: message.uuid })
+    f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'later-result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
+    await result
+    expect(f.offers).toHaveBeenCalledTimes(1)
+    expect(f.close).not.toHaveBeenCalled()
+    await f.manager.dispose?.()
+  })
+
+  it.each(['update', 'health'] as const)('holds credential refresh reservation through delayed %s and its ACK-to-health handoff', async (phase) => {
+    const baseServers = { graphql: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app' } }
+    const f = fixture(undefined, { sdkOptions: { mcpServers: baseServers }, appMcpAccess: 'management' })
+    await f.manager.prepareInspection(start)
+    const entered = deferred<void>(); const update = deferred<Awaited<ReturnType<typeof f.setServers>>>()
+    const health = deferred<Awaited<ReturnType<typeof f.statuses>>>()
+    if (phase === 'update') f.setServers.mockImplementationOnce(() => { entered.resolve(); return update.promise })
+    else f.statuses.mockImplementationOnce(() => { entered.resolve(); return health.promise })
+    const refreshing = f.manager.refreshInspectionCredentials(start, baseServers)
+    await entered.promise
+    const observer = drain(f.manager.startInitialTurn(start, { prompt: 'blocked', clientCorrelationId: 'operator:one', onSessionObserved: async () => undefined }))
+    let inputError: unknown
+    void observer.catch((error: unknown) => { inputError = error })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const offersWhilePending = f.offers.mock.calls.length
+    if (phase === 'update') update.resolve({ added: ['graphql'], removed: [], errors: {} })
+    else health.resolve(await f.statuses.mock.results[0]!.value)
+    const result = await refreshing
+    expect(inputError).toMatchObject({ result: { error: { code: 'CLAUDE_INSPECTION_BUSY' } } })
+    expect(offersWhilePending).toBe(0)
+    expect(result.servers[0]?.status).toBe('connected')
+    expect(f.setServers).toHaveBeenCalledTimes(1)
+    expect(f.statuses).toHaveBeenCalledTimes(2)
+    expect(f.queries).toHaveBeenCalledTimes(1)
+    expect(f.close).not.toHaveBeenCalled()
+    await f.manager.dispose?.()
+  })
+
   it('wakes the owned iterator from exact actual callback notification and returns complete pending state', async () => {
     let pending: import('@graphql/contracts').PendingNativeInteraction[] = []
     const f = fixture(() => (raw) => {
