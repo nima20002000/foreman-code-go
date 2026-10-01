@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
+import { SourcePinSchema, SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema } from './sourceAdmission.js'
 import { GraphIdSchema, IdSchema } from './schemaPrimitives.js'
 
 /** v0 interface checkpoint uses wire version 1; unknown versions fail closed. */
@@ -16,6 +17,8 @@ export const SavedNodePlacementSchema = z.object({
   projectRoot: z.string().min(1), cwdPolicy: z.enum(['project-root', 'project-subdirectory']),
   relativeCwd: z.string(), instanceId: IdSchema, instanceRevision: IdSchema,
   harnessInstallationId: IdSchema,
+  source: SourcePinSchema.optional(),
+  rootBinding: z.object({ rootId: z.uuid(), bindingRevision: z.number().int().positive() }).strict().optional(),
 }).strict()
 export type SavedNodePlacement = z.infer<typeof SavedNodePlacementSchema>
 export const AcceptedDestinationSchema = z.object({
@@ -43,8 +46,11 @@ export const AcceptedNodePlacementSchema = z.object({
   registration: z.object({ workerInstallationId: z.uuid(), keyRevision: z.number().int().positive(),
     authorizationRevision: z.number().int().positive() }).strict().nullable(),
   mainInstallationId: IdSchema, destination: AcceptedDestinationSchema,
-  source: z.object({ revisionId: IdSchema, manifestDigest: PlacementDigestSchema,
+  source: z.union([z.object({ revisionId: IdSchema, manifestDigest: PlacementDigestSchema,
     materializationId: IdSchema, materializationDigest: PlacementDigestSchema }).strict(),
+    z.object({ kind: z.literal('pending'), approvedSourceId: z.uuid(), snapshotId: z.uuid(),
+      revisionId: IdSchema, manifestDigest: PlacementDigestSchema, rootId: z.uuid(), bindingRevision: z.number().int().positive(),
+      materializationId: z.null(), materializationDigest: z.null() }).strict()]),
   payload: z.discriminatedUnion('kind', [AgentPayload, JobPayload]), bindingHash: PlacementDigestSchema,
 }).strict().superRefine((value, context) => {
   if (value.mainId !== value.hostRef.mainId || (value.hostRef.kind === 'device') !== (value.registration !== null)) {
@@ -96,3 +102,13 @@ export interface PlacementDispatchPort {
   reconcile(intent: DispatchIntent, placement: AcceptedNodePlacement): Promise<WorkerObservation | null>
   control(command: OwnerControl, placement: AcceptedNodePlacement): Promise<void>
 }
+
+/** Lazy verified clone; separate from immutable Run root/source pins and native
+ * ownership. No accepted-but-unstarted node claims materialization occurred. */
+export const NativeExecutionPlacementSchema = z.object({ version: z.literal(1),
+  acceptedBindingHash: PlacementDigestSchema, runId: IdSchema, nodeId: GraphIdSchema,
+  executionId: IdSchema, attemptId: IdSchema, operationId: IdSchema,
+  materialization: SourceMaterializationRecordSchema, workingTree: VerifiedSourceWorkingTreeSchema,
+  bindingHash: PlacementDigestSchema,
+}).strict()
+export type NativeExecutionPlacement = z.infer<typeof NativeExecutionPlacementSchema>
