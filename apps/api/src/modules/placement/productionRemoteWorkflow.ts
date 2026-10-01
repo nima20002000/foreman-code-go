@@ -1,7 +1,6 @@
 import type pg from 'pg'
-import { DurableInteractionSchema, type HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution } from '@graphql/contracts'
 import { sameWorkflowValue, canonicalGraphJson } from '@graphql/contracts/wave25'
-import { RemoteOwnerControlSchema } from '@graphql/contracts/remote-execution'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
@@ -23,6 +22,7 @@ import { remoteWorkflowSourceDigest } from '../runs/remote/workflowPhysicalReado
 import type { WorkflowOriginalNativeSource, WorkflowNativeCapture, WorkflowNativeCaptureInput } from '../interactions/workflowNativeCapture.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
+import { prepareRemoteOwnerControl } from '../runs/remote/ownerControl.js'
 
 /** One Main owner and its actual authenticated worker sources. Allocation is
  * IO-free; preparation/prefetch runs before the existing canonical transaction. */
@@ -138,26 +138,7 @@ export function createProductionRemoteWorkflow(input: {
         controlFor: async command => {
           if (interactionConnection.getStore()) throw new DomainError('REMOTE_CONTROL_TRANSACTION_UNAVAILABLE', 'Remote native response delivery requires an admitted effect outside the Main delivery transaction.', 409)
           const owner = requireOwner()
-          return owner.oneShotConnection().transaction(async sql => {
-            await owner.readOneShotFence(sql)
-            let commandId: string, action: { kind: 'stop' } | { kind: 'respond'; interactionId: string; interactionRevision: string; nativeInteractionId: string; response: unknown }
-            if (command.kind === 'stop') {
-              const cleanup = (await sql.query<{ requested_at: Date }>('select requested_at from run_cleanup_intents where run_id=$1 and pending for share', [owner.runId])).rows[0]
-              if (!cleanup) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE', 'The original accepted Run cleanup intent is required for remote Stop.', 409)
-              commandId = `stop:${binding.intent.operationId}:${cleanup.requested_at.toISOString()}`; action = { kind: 'stop' }
-            } else {
-              const rows = await sql.query<{ record: unknown }>('select record from durable_interactions where execution_id=$1 and native_session_id=$2 and native_request_id=$3 for share', [binding.intent.executionId, command.native.sessionId, command.nativeRequestId])
-              const interaction = rows.rows.length === 1 ? DurableInteractionSchema.parse(rows.rows[0]!.record) : undefined
-              const selected = interaction?.responseOptions.find(option => option.optionId === interaction.selectedOptionId)
-              if (!interaction || !selected || interaction.status === 'pending' || !sameWorkflowValue(selected, command.option)
-                || interaction.revision < 1 || interaction.runId !== owner.runId) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE', 'The actual committed exact native response decision is required.', 409)
-              commandId = `respond:${interaction.id}:${interaction.revision}`
-              action = { kind: 'respond', interactionId: interaction.id, interactionRevision: String(interaction.revision), nativeInteractionId: interaction.nativeRequestId, response: selected }
-            }
-            return RemoteOwnerControlSchema.parse({ schemaVersion: 1, protocolVersion: 1, commandId,
-              operationId: binding.intent.operationId, attemptId: binding.intent.attemptId, executionId: binding.intent.executionId,
-              bindingHash: binding.intent.bindingHash, owner: binding.intent.owner, native: command.native, action })
-          })
+          return owner.oneShotConnection().transaction(sql => prepareRemoteOwnerControl(sql, owner, binding, command))
         },
       })
     },

@@ -168,4 +168,132 @@ describe('actual worker native-port adapter', () => {
   it('revocation fences and requests physical cancellation without inventing closure', async () => { const { host, journal, intent, placement, request, state } = await setup(); await host.prepare({ intent, placement, request }); state.allowed = false; await host.refreshAuthority(); expect(state.cancels).toBe(1); const status = await journal.status('operation'); expect(status.status === 'known' && status.receipt.stopFence).toBe(true); expect(status.status === 'known' && status.receipt.phase).toBe('stop_requested') })
   it.each(['/runtime','/runtime/../other','/project/runtime','/another/runtime'])('rejects unbound runtime leaf %s before native work', async runtimeDirectory => { const { host, intent, placement, request, state } = await setup(); await expect(host.prepare({ intent, placement, request: { ...request, runtimeDirectory } })).rejects.toThrow('runtime leaf'); expect(state.starts).toBe(0) })
   it('rejects placement/input drift and revoked authority before native work', async () => { const { host, intent, placement, request, state } = await setup(); await expect(host.prepare({ intent, placement, request: { ...request, input: { edited: true } } })).rejects.toThrow('binding mismatch'); state.allowed = false; await expect(host.prepare({ intent, placement, request })).rejects.toThrow('revoked'); expect(state.starts).toBe(0) })
+  it('recovers the surviving original resident after observation uncertainty without native start or attach', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.journal.uncertain(f.intent.operationId, 'lost observation')
+    f.ports.verifyRecovery = vi.fn(async () => {})
+    f.manager.attachSession = vi.fn(async () => { throw new Error('must not attach a replacement') })
+    const recovered = await f.host.recover({ ...f, evidenceDigest: 'a'.repeat(64) })
+    expect(recovered.status).toMatchObject({ status: 'known', receipt: { phase: 'start_acknowledged' } })
+    expect(f.state.starts).toBe(1)
+    expect(f.manager.attachSession).not.toHaveBeenCalled()
+  })
+  it('refuses cold allocation even with provider-thread recovery proof', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.journal.uncertain(f.intent.operationId, 'lost host')
+    const attach = vi.fn(async () => f.session)
+    f.manager.attachSession = attach
+    const cold = new RemoteExecutionHost({ ...f.ports,
+      managers: new ExecutionScopedNativeSessionManagerResolver(() => f.manager), verifyRecovery: async () => {} })
+    hosts.push(cold)
+    await expect(cold.recover({ ...f, evidenceDigest: 'a'.repeat(64) })).rejects.toThrow('cold recovery unavailable')
+    expect(attach).not.toHaveBeenCalled()
+    expect(f.state.starts).toBe(1)
+    expect(await f.journal.status(f.intent.operationId)).toMatchObject({ status: 'known', receipt: { phase: 'uncertain' } })
+  })
+  it.each(['input', 'runId', 'workflowNodeId', 'workingDirectory'] as const)('rejects recovery request drift in %s before manager allocation', async field => {
+    const f = await setup()
+    await f.host.prepare(f)
+    f.ports.verifyRecovery = vi.fn(async () => {})
+    const request = { ...f.request, [field]: field === 'input' ? { edited: true } : 'changed' }
+    await expect(f.host.recover({ ...f, request, evidenceDigest: 'a'.repeat(64) })).rejects.toThrow('Recovery binding mismatch')
+    expect(f.ports.verifyRecovery).not.toHaveBeenCalled()
+    expect(f.state.starts).toBe(1)
+  })
+  it('retains uncertainty when original physical process proof changes during recovery', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.journal.uncertain(f.intent.operationId, 'lost observation')
+    f.ports.verifyRecovery = async () => {}
+    f.ports.nativeEvidence = async () => ({ sessionId: f.session.nativeSessionId, processIdentityDigest: 'b'.repeat(64) })
+    await expect(f.host.recover({ ...f, evidenceDigest: 'a'.repeat(64) })).rejects.toThrow('original native lifetime')
+    expect(await f.journal.status(f.intent.operationId)).toMatchObject({ status: 'known', receipt: { phase: 'uncertain' } })
+  })
+  it('observes an attached original session source before returning it and retains disposal guard on failed observation', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    const observe = vi.fn(async () => { throw new Error('physical evidence missing') })
+    const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: (_method, frame) => f.host.handle(frame) }, observeReceipt: async () => {},
+      observeOriginalSource: observe, controlFor: async () => { throw new Error('unused') } })
+    await expect(proxy.attachSession(f.session, { request: f.request, correlationId: 'execution:execution' })).rejects.toThrow('physical evidence missing')
+    expect(observe).toHaveBeenCalledWith(expect.anything(), { type: 'session_created', session: f.session })
+    await expect(proxy.dispose()).rejects.toThrow('disposal is unconfirmed')
+    expect(f.state.starts).toBe(1)
+  })
+  it.each(['owner', 'sequence', 'process'] as const)('rejects proxy %s drift before receipt observation', async field => {
+    const f = await setup()
+    let forged = false
+    const observed = vi.fn(async () => {})
+    const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: async (_method, frame) => {
+        const response = await f.host.handle(frame)
+        if (!forged) return response
+        const status = await f.journal.status(f.intent.operationId)
+        if (status.status !== 'known') throw new Error('missing receipt')
+        if (field === 'owner') status.receipt.intent.owner.epoch = '2'
+        if (field === 'sequence') status.receipt.sequence--
+        if (field === 'process') status.receipt.native!.processIdentityDigest = 'b'.repeat(64)
+        return { session: f.session, status }
+      } }, observeReceipt: observed, controlFor: async () => { throw new Error('unused') } })
+    await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    forged = true
+    await expect(proxy.attachSession(f.session, { request: f.request, correlationId: 'execution:execution' })).rejects.toThrow(/receipt (binding mismatch|changed)/)
+    expect(observed).toHaveBeenCalledTimes(1)
+    expect(f.state.starts).toBe(1)
+  })
+
+  it('reattaches only the exact resident through authenticated RPC without provider attach or launch', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    f.manager.attachSession = vi.fn(async () => { throw new Error('replacement forbidden') })
+    const original = await f.journal.status(f.intent.operationId)
+    const frame = { method: 'reattach', intent: f.intent, placement: f.placement, request: f.request, session: f.session }
+    expect(await f.host.handle(frame)).toEqual({ session: f.session, status: original })
+    await expect(f.host.handle({ ...frame, request: { ...f.request, runtimeDirectory: '/runtime/replacement' } })).rejects.toThrow('reattachment binding mismatch')
+    expect(f.manager.attachSession).not.toHaveBeenCalled()
+    expect(f.state.starts).toBe(1)
+    await f.journal.uncertain(f.intent.operationId, 'lost native observation')
+    await expect(f.host.handle(frame)).rejects.toThrow('requires reconciliation')
+  })
+
+  it('recovers a lost prepare acknowledgement by observing the original resident without replaying prepare', async () => {
+    const f = await setup(), sources: string[] = []
+    const methods: string[] = []
+    const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
+      transport: { request: async (method, frame) => {
+        methods.push(method)
+        const response = await f.host.handle(frame)
+        if (method === 'prepare') throw new Error('lost prepare acknowledgement')
+        return response
+      } }, observeReceipt: async () => {}, observeOriginalSource: async (_receipt, source) => { sources.push(source.type) },
+      controlFor: async () => { throw new Error('unused') } })
+    await expect(proxy.createSession({ request: f.request, correlationId: 'execution:execution' })).rejects.toThrow('lost prepare acknowledgement')
+    expect(await proxy.attachSession(f.session, { request: f.request, correlationId: 'execution:execution' })).toEqual(f.session)
+    expect(methods).toEqual(['prepare', 'reattach'])
+    expect(sources).toEqual(['session_created'])
+    expect(f.state.starts).toBe(1)
+  })
+
+  it('does not replay an exact response whose native acknowledgement was lost', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution')
+    await f.host.drain()
+    const option = CODEX_APPROVAL_OPTIONS_FIXTURE[0]!
+    f.manager.pending = async () => ({ session: f.session, turn: { nativeTurnId: 'native-turn', nativeRequestId: 'question' }, nativeRequestType: 'approval', request: {}, responseOptions: [option] })
+    f.manager.respond = async () => { f.state.responds++; throw new Error('lost acknowledgement') }
+    const status = await f.journal.status(f.intent.operationId)
+    if (status.status !== 'known') throw new Error('missing original')
+    const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'original-response', operationId: f.intent.operationId,
+      attemptId: f.intent.attemptId, executionId: f.intent.executionId, bindingHash: f.intent.bindingHash, owner: f.intent.owner, native: status.receipt.native,
+      action: { kind: 'respond', interactionId: 'interaction', interactionRevision: '1', nativeInteractionId: 'question', response: option } }
+    expect(await f.host.control(command)).toMatchObject({ status: 'known', receipt: { phase: 'uncertain' } })
+    expect(await f.host.control(command)).toMatchObject({ status: 'known', receipt: { phase: 'uncertain' } })
+    expect(f.state.responds).toBe(1)
+    expect(f.state.starts).toBe(1)
+  })
+
 })

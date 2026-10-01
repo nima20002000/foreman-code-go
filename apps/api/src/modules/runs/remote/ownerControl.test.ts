@@ -1,0 +1,79 @@
+import type pg from 'pg'
+import { randomUUID } from 'node:crypto'
+import { describe, expect, it } from 'vitest'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, type DurableInteraction } from '@graphql/contracts'
+import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
+import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
+import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
+import type { RunOwnership } from '../ownership.js'
+import { prepareRemoteOwnerControl } from './ownerControl.js'
+
+const native = { sessionId: 'session', turnId: 'turn', processIdentityDigest: 'a'.repeat(64) }
+const intent = { schemaVersion: 1 as const, protocolVersion: 1 as const, mainId: randomUUID(), runId: 'run', nodeId: 'node', executionId: 'execution',
+  occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1, attemptId: 'attempt', operationId: 'operation', bindingHash: 'a'.repeat(64),
+  inputDigest: `sha256:${'a'.repeat(64)}`, owner: { grantId: 'grant', epoch: '1' } }
+const option = CODEX_APPROVAL_OPTIONS_FIXTURE[0]!
+const now = '2026-10-01T00:00:00.000Z'
+function fixture() {
+  const receipt: RemoteOperationReceipt = { schemaVersion: 1, intent, native, connection: { mainId: intent.mainId, deviceId: randomUUID(),
+    workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 },
+    workerIncarnationId: randomUUID(), sequence: 5, phase: 'running', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [] }
+  const interaction: DurableInteraction = { id: 'interaction', revision: 4, workspaceId: 'workspace', workflowId: 'workflow', runId: 'run', executionId: 'execution',
+    requestingAgentId: 'agent', harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'session', nativeRequestId: 'question', nativeRequestType: 'approval',
+    graphThreadId: 'run', request: {}, approval: { handler: 'user' }, responseOptions: [option], status: 'decided', selectedOptionId: option.optionId,
+    selectedSemantic: option.semantic, nativeResponse: { decision: 'approved' }, deliveryState: 'not_started', decidedAt: now, createdAt: now, updatedAt: now }
+  const state = { receipt: receipt as RemoteOperationReceipt | undefined, interaction: interaction as DurableInteraction | undefined,
+    cleanup: new Date(now) as Date | undefined, owned: true, queries: [] as string[] }
+  const raw = { query: async (text: string) => {
+    state.queries.push(text)
+    const rows = text.startsWith('select receipt') ? state.receipt ? [{ receipt: state.receipt }] : []
+      : text.startsWith('select record') ? state.interaction ? [{ record: state.interaction }] : []
+        : text.startsWith('select requested_at') ? state.cleanup ? [{ requested_at: state.cleanup }] : [] : []
+    return { rows, rowCount: rows.length }
+  } } as unknown as pg.ClientBase
+  const owner = { runId: 'run', assertOwned: () => { if (!state.owned) throw new Error('owner lost') }, readOneShotFence: async () => ({ ownerId: 'owner', fence: 'fence' }) } as unknown as RunOwnership
+  const db = new ExclusiveGraphConnection(raw, () => owner.assertOwned())
+  const binding = { intent, placement: { bindingHash: intent.bindingHash } } as AcceptedExecutionBinding
+  const prepare = (kind: 'stop' | 'respond') => db.transaction(sql => prepareRemoteOwnerControl(sql, owner, binding,
+    kind === 'stop' ? { kind, native } : { kind, native, nativeRequestId: 'question', option }))
+  return { state, db, prepare }
+}
+describe('SQL-only admitted remote control preparation', () => {
+  it('prepares the exact committed decision without issuing IO or mutation', async () => {
+    const f = fixture()
+    expect(await f.prepare('respond')).toMatchObject({ commandId: 'respond:interaction:4', native, owner: intent.owner,
+      action: { kind: 'respond', interactionId: 'interaction', nativeInteractionId: 'question', response: option } })
+    expect(f.state.queries.every(text => /^(begin|select|commit)/.test(text))).toBe(true)
+    await f.db.close()
+  })
+  it('reuses a Stop identity from the durable cleanup request', async () => {
+    const f = fixture()
+    expect(await f.prepare('stop')).toEqual(await f.prepare('stop'))
+    f.state.cleanup = undefined
+    await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
+    await f.db.close()
+  })
+  it.each(['native', 'owner', 'terminal', 'absent'] as const)('rejects %s ownership before producing a command', async kind => {
+    const f = fixture()
+    if (kind === 'native') f.state.receipt!.native = { ...native, sessionId: 'replacement' }
+    if (kind === 'owner') f.state.receipt!.intent = { ...intent, owner: { grantId: 'other', epoch: '2' } }
+    if (kind === 'terminal') { f.state.receipt!.phase = 'confirmed_terminal'; f.state.receipt!.terminal = { kind: 'cancelled', closureEvidenceDigest: 'a'.repeat(64) } }
+    if (kind === 'absent') f.state.receipt = undefined
+    await expect(f.prepare('respond')).rejects.toThrow('original native ownership')
+    await f.db.close()
+  })
+  it.each(['session', 'execution', 'canceled', 'option'] as const)('rejects a changed %s interaction', async kind => {
+    const f = fixture()
+    if (kind === 'session') f.state.interaction!.nativeSessionId = 'replacement'
+    if (kind === 'execution') f.state.interaction!.executionId = 'replacement'
+    if (kind === 'canceled') f.state.interaction!.status = 'canceled'
+    if (kind === 'option') {
+      const other = CODEX_APPROVAL_OPTIONS_FIXTURE[1]!
+      f.state.interaction!.responseOptions.push(other)
+      f.state.interaction!.selectedOptionId = other.optionId
+      f.state.interaction!.selectedSemantic = other.semantic
+    }
+    await expect(f.prepare('respond')).rejects.toThrow('exact native response decision')
+    await f.db.close()
+  })
+})

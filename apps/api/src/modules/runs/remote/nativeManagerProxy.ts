@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { NativeSessionReferenceSchema, NativeHarnessEventSchema, PendingNativeInteractionSchema, NativeHarnessCapabilitiesSchema,
@@ -8,7 +9,7 @@ import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteO
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
 
 export interface RemoteNativeTransport {
-  request(method: 'prepare' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'status' | 'reconcile-response' | 'renew-owner', payload: unknown, signal?: AbortSignal): Promise<unknown>
+  request(method: 'prepare' | 'reattach' | 'start-turn' | 'history' | 'pending' | 'capabilities' | 'inspect-mcp' | 'control' | 'status' | 'reconcile-response' | 'renew-owner', payload: unknown, signal?: AbortSignal): Promise<unknown>
 }
 const StatusSchema = z.discriminatedUnion('status', [z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(), z.object({ status: z.literal('unknown'), reason: z.literal('journal_absence_requires_reconciliation') }).strict()])
 const HistorySchema = z.object({ correlationId: z.string().optional(), nativeTurnId: z.string().optional(), nativeMessageId: z.string().optional(),
@@ -43,24 +44,33 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     void _operationId
     return this.options.transport.request(method, { method, intent: this.intent, placement: this.options.placement, ...fields }, signal)
   }
-  private async status(raw: unknown) {
+  private async status(raw: unknown, intent = this.intent) {
     const status = StatusSchema.parse(raw)
     if (status.status !== 'known') throw new Error('Original worker journal requires reconciliation')
-    const receipt = status.receipt, intent = this.intent
-    if (receipt.intent.operationId !== intent.operationId || receipt.intent.attemptId !== intent.attemptId
-      || receipt.intent.executionId !== intent.executionId || receipt.intent.bindingHash !== intent.bindingHash) throw new Error('Remote receipt binding mismatch')
+    const receipt = status.receipt
+    if (!isDeepStrictEqual(receipt.intent, intent)) throw new Error('Remote receipt binding mismatch')
+    if (this.receipt) {
+      const original = this.receipt
+      if (!isDeepStrictEqual(receipt.connection, original.connection) || receipt.workerIncarnationId !== original.workerIncarnationId
+        || receipt.sequence < original.sequence || receipt.sequence === original.sequence && !isDeepStrictEqual(receipt, original)
+        || original.native && (!receipt.native || receipt.native.sessionId !== original.native.sessionId
+          || receipt.native.processIdentityDigest !== original.native.processIdentityDigest
+          || original.native.turnId !== undefined && receipt.native.turnId !== original.native.turnId)
+        || original.terminal && !isDeepStrictEqual(receipt.terminal, original.terminal)) throw new Error('Original remote receipt changed')
+    }
     await this.options.observeReceipt(receipt)
     this.receipt = receipt
     return receipt
   }
   private assertSession(session: NativeSessionReference) {
-    if (!this.session || this.session.nativeSessionId !== session.nativeSessionId || this.session.harness !== session.harness) throw new Error('Wrong remote native session')
+    if (!this.session || !isDeepStrictEqual(this.session, session)) throw new Error('Wrong remote native session')
   }
   async renewOwner(transition: RemoteOwnerReconciliation, signal?: AbortSignal) {
     const next = { ...this.intent, owner: transition.nextOwner }
     const raw = await this.options.transport.request('renew-owner', { method: 'renew-owner', intent: next, placement: this.options.placement, transition }, signal)
+    const receipt = await this.status(raw, next)
     this.intent = next
-    return this.status(raw)
+    return receipt
   }
   async capabilities(signal?: AbortSignal) { return NativeHarnessCapabilitiesSchema.parse(await this.request('capabilities', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
   async inspectMcp(signal?: AbortSignal) { return McpDetectionSchema.parse(await this.request('inspect-mcp', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
@@ -73,16 +83,23 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     this.prepareAttempted = true
     const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement, request: input.request, ...(applicationAccess ? { applicationAccess } : {}) }, signal))
     await this.status(value.status)
-    this.session = value.session
+    if (this.receipt?.native?.sessionId !== value.session.nativeSessionId || value.session.harness !== this.harness) throw new Error('Original remote session recovery required')
+    this.session = structuredClone(value.session)
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'session_created', session: value.session })
     return value.session
   }
-  async attachSession(session: NativeSessionReference, _input: NativeSessionStart, signal?: AbortSignal) {
+  async attachSession(session: NativeSessionReference, input: NativeSessionStart, signal?: AbortSignal) {
+    if (input.kind === 'operator' || input.request.executionId !== this.intent.executionId
+      || input.correlationId !== `execution:${this.intent.executionId}` || session.harness !== this.harness) throw new Error('Remote session execution mismatch')
+    this.prepareAttempted = true
     // Attachment is observation of this exact original session; worker recovery must already have proven/rebound it.
-    const receipt = await this.status(await this.request('status', { operationId: this.intent.operationId }, signal))
-    if (receipt.native?.sessionId !== session.nativeSessionId || session.harness !== this.harness) throw new Error('Original remote session recovery required')
-    this.session = session
-    return session
+    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('reattach', { request: input.request, session }, signal))
+    const receipt = await this.status(value.status)
+    if (!isDeepStrictEqual(value.session, session) || receipt.native?.sessionId !== session.nativeSessionId || session.harness !== this.harness) throw new Error('Original remote session recovery required')
+    await this.options.observeOriginalSource?.(receipt, { type: 'session_created', session })
+    this.session = structuredClone(session)
+    this.detached = false
+    return structuredClone(session)
   }
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.assertSession(session)
