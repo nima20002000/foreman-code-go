@@ -4,9 +4,48 @@ import { WorkerEnrollmentInputSchema, DevicePairingResultSchema } from '../../..
 import { pairingProof, verifyMainEnrollmentProof, persistWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { WorkerError } from './diagnostics.mjs';
 
+const retryHint = 'Keep the original state directory, identity, enrollment file and requestId. Retry the same pair command; do not create a new identity or requestId.';
+const recoveryHints = {
+  pairing_file_missing: 'Provide the existing private enrollment file at the absolute --enrollment-file path.',
+  pairing_file_unreadable: 'Check ownership and read access to the existing enrollment file.',
+  private_enrollment_file_required: 'Use an owned regular file, mode 0600, at most 16384 bytes; do not print its contents.',
+  pairing_file_json_invalid: 'Correct the enrollment file JSON locally; preserve its original grant and requestId.',
+  pairing_file_schema_invalid: 'Check mainId, mainPublicKeyFingerprint, endpoint, grant and requestId against the enrollment format; preserve the original requestId.',
+  enrollment_endpoint_invalid: 'Use the approved wss:// main endpoint with path /device/connect and no credentials, query or fragment.',
+  pairing_main_unreachable: 'Check the approved main endpoint, TLS trust and connectivity, then retry with the same enrollment file and requestId.',
+  pairing_challenge_response_invalid: 'Check the selected main version and device listener before retrying with the same enrollment file.',
+  wrong_main_proof: 'Verify the selected main and pinned fingerprint with the main administrator before retrying. Do not change the pin to bypass this check.',
+  enrollment_identity_mismatch: `The response does not match the original identity. Verify the selected main before retrying. ${retryHint}`,
+  pairing_outcome_unknown: retryHint,
+  pairing_persistence_failed: `The main may have accepted pairing but local persistence failed. Check state-directory access. ${retryHint}`,
+  already_paired: 'Read doctor for the existing selected main; pairing cannot overwrite it.',
+};
+
+// Only fixed local codes and validated HTTP status numbers reach terminal output.
+export function pairingErrorMessage(error) {
+  if (error?.code === 'pairing_http_rejected' && /^enrollment_http_[1-5][0-9]{2}$/.test(error.reason)) {
+    const status = Number(error.reason.slice(-3));
+    const hint = [401, 403].includes(status)
+      ? 'Ask the main administrator to check the original grant, installation authorization and expiry; do not replace identity or requestId.'
+      : status === 409 ? 'Verify the selected main and original requestId with the main administrator.'
+        : 'Check the enrollment input and selected main device listener before retrying the original request.';
+    return `pairing_http_rejected (HTTP ${status}): ${hint}`;
+  }
+  const hint = Object.hasOwn(recoveryHints, error?.code) ? recoveryHints[error.code] : null;
+  const reason = ['enrollment_transport_failed', 'enrollment_response_invalid', 'enrollment_response_too_large', 'pairing_response_schema_invalid'].includes(error?.reason) || /^enrollment_http_[1-5][0-9]{2}$/.test(error?.reason) ? ` (${error.reason})` : '';
+  if (hint) return `${error.code}${reason}: ${hint}`;
+  return `pairing_failed: Read doctor and check the installation and private state directory. ${retryHint}`;
+}
+
 export async function boundedPost(url, body, fetchRequest = fetch) {
-  const response = await fetchRequest(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(10_000) });
-  if (!response.ok || !response.body) throw new WorkerError('enrollment_rejected');
+  let response;
+  try { response = await fetchRequest(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(10_000) }); }
+  catch { throw new WorkerError('enrollment_transport_failed'); }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new WorkerError(`enrollment_http_${response.status}`);
+  }
+  if (!response.body) throw new WorkerError('enrollment_response_invalid');
   let size = 0; const chunks = [];
   const reader = response.body.getReader();
   try {
@@ -16,27 +55,54 @@ export async function boundedPost(url, body, fetchRequest = fetch) {
       if (size > 16_384) throw new WorkerError('enrollment_response_too_large');
       chunks.push(Buffer.from(next.value));
     }
-  } finally { await reader.cancel().catch(() => {}); }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch (error) { throw error instanceof WorkerError ? error : new WorkerError('enrollment_transport_failed'); }
+  finally { await reader.cancel().catch(() => {}); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw new WorkerError('enrollment_response_invalid'); }
+}
+
+async function enrollmentPost(post, url, body, pairing) {
+  try { return await post(url, body); }
+  catch (error) {
+    const status = /^enrollment_http_[1-5][0-9]{2}$/.test(error?.code) ? Number(error.code.slice(-3)) : null;
+    const definiteRejection = status !== null && status < 500 && ![408, 429].includes(status);
+    const code = definiteRejection ? 'pairing_http_rejected' : pairing ? 'pairing_outcome_unknown'
+      : status !== null || error?.code === 'enrollment_transport_failed' || !(error instanceof WorkerError) ? 'pairing_main_unreachable' : 'pairing_challenge_response_invalid';
+    const failure = new WorkerError(code);
+    failure.reason = error instanceof WorkerError ? error.code : 'enrollment_transport_failed';
+    throw failure;
+  }
 }
 
 export async function enrollWorker({ stateDirectory, identity, enrollmentFile, appVersion, post = boundedPost }) {
-  const file = await lstat(enrollmentFile);
+  let file, contents;
+  try { file = await lstat(enrollmentFile); }
+  catch (error) { throw new WorkerError(error.code === 'ENOENT' ? 'pairing_file_missing' : 'pairing_file_unreadable'); }
   if (!file.isFile() || file.uid !== process.getuid() || (file.mode & 0o077) || file.size > 16_384) throw new WorkerError('private_enrollment_file_required');
-  const enrollment = WorkerEnrollmentInputSchema.parse(JSON.parse(await readFile(enrollmentFile, 'utf8')));
+  try { contents = await readFile(enrollmentFile, 'utf8'); }
+  catch { throw new WorkerError('pairing_file_unreadable'); }
+  let json;
+  try { json = JSON.parse(contents); }
+  catch { throw new WorkerError('pairing_file_json_invalid'); }
+  const parsed = WorkerEnrollmentInputSchema.safeParse(json);
+  if (!parsed.success) throw new WorkerError('pairing_file_schema_invalid');
+  const enrollment = parsed.data;
   const endpoint = new URL(enrollment.endpoint);
   if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.pathname !== '/device/connect' || endpoint.search || endpoint.hash) throw new WorkerError('enrollment_endpoint_invalid');
   const http = new URL(endpoint); http.protocol = 'https:';
   const proofRequest = { audience: 'graphql-worker-main-enrollment-v1', mainId: enrollment.mainId, workerInstallationId: identity.workerInstallationId, nonce: randomBytes(32).toString('base64url'), protocolVersion: 1, workerApplicationVersion: appVersion };
   http.pathname = '/device/challenge';
-  const proof = await post(http.href, proofRequest);
+  const proof = await enrollmentPost(post, http.href, proofRequest, false);
   if (!await verifyMainEnrollmentProof(proof, proofRequest, enrollment.mainPublicKeyFingerprint)) throw new WorkerError('wrong_main_proof');
   // Grant and signed enrollment are sent only after a fresh pinned-key proof.
   const request = { mainId: enrollment.mainId, workerInstallationId: identity.workerInstallationId, publicKey: identity.publicKey, grant: enrollment.grant, requestId: enrollment.requestId };
   const signature = sign(null, Buffer.from(pairingProof(request)), identity.privateKey).toString('base64url');
   http.pathname = '/device/pair';
-  const result = DevicePairingResultSchema.parse(await post(http.href, { ...request, signature }));
+  const parsedResult = DevicePairingResultSchema.safeParse(await enrollmentPost(post, http.href, { ...request, signature }, true));
+  if (!parsedResult.success) { const failure = new WorkerError('pairing_outcome_unknown'); failure.reason = 'pairing_response_schema_invalid'; throw failure; }
+  const result = parsedResult.data;
   if (result.registration.mainId !== enrollment.mainId || result.registration.workerInstallationId !== identity.workerInstallationId || result.registration.publicKeyFingerprint !== identity.publicKeyFingerprint || result.registration.keyRevision !== identity.keyRevision || result.registration.status !== 'paired') throw new WorkerError('enrollment_identity_mismatch');
-  await persistWorkerPairing(stateDirectory, { formatVersion: 1, mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, keyRevision: result.registration.keyRevision, authorizationRevision: result.registration.authorizationRevision, endpoint: enrollment.endpoint, mainPublicKeyFingerprint: enrollment.mainPublicKeyFingerprint, credential: result.credential, expiresAt: result.expiresAt });
+  try { await persistWorkerPairing(stateDirectory, { formatVersion: 1, mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, keyRevision: result.registration.keyRevision, authorizationRevision: result.registration.authorizationRevision, endpoint: enrollment.endpoint, mainPublicKeyFingerprint: enrollment.mainPublicKeyFingerprint, credential: result.credential, expiresAt: result.expiresAt }); }
+  catch { throw new WorkerError('pairing_persistence_failed'); }
   return { mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, authorizationRevision: result.registration.authorizationRevision };
 }

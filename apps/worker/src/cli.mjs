@@ -2,19 +2,32 @@ import { readFile } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { loadOrCreateWorkerIdentity, loadWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { doctorReport, executableAvailability, hostFacts, WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
 import { readWorkerStatus } from './runtime.mjs';
-import { prepareWorkerState, startConfiguredWorker } from './workerFactory.mjs';
-import { enrollWorker } from './enrollment.mjs';
 
 const execute = promisify(execFile);
 const args = process.argv.slice(2);
 const command = args[0];
 const stateDirectory = [3, 5].includes(args.length) && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
 let runtime;
+let pairingErrorMessage;
+const help = `Usage:
+  graphql-worker run|doctor|identity --state /absolute/private/state
+  graphql-worker pair --state /absolute/private/state --enrollment-file /absolute/private/enrollment.json
+
+Install: node /approved/artifact/src/install-cli.mjs install --root /private/app --state /private/state --artifact /approved/artifact --manifest-sha256 APPROVED_SHA256
+Update: use the same install command with the new approved artifact and hash, adding --approve-stopped-update yes.
+Rollback: node /approved/artifact/src/install-cli.mjs rollback --root /private/app --state /private/state --approve-stopped-update yes
+Before update or rollback, complete the approved drain/stop policy and stop the worker service. An active worker blocks replacement.
+Keep app and state in separate private persistent directories. Pairing retries reuse the original enrollment file, requestId and state identity.
+`;
 async function main() {
+  if (!args.length || args.includes('--help') || args.includes('-h')) { process.stdout.write(help); return; }
   if (!stateDirectory || !['run', 'doctor', 'identity', 'pair'].includes(command) || (command !== 'pair' && args.length !== 3) || (command === 'pair' && (args.length !== 5 || args[3] !== '--enrollment-file' || !isAbsolute(args[4])))) throw new WorkerError('usage: graphql-worker run|doctor|identity|pair --state /absolute/private/directory [--enrollment-file /private/file]');
+  const { loadOrCreateWorkerIdentity, loadWorkerPairing } = await import('../../../packages/contracts/src/deviceIdentityNode.ts');
+  const { prepareWorkerState, startConfiguredWorker } = await import('./workerFactory.mjs');
+  const enrollment = command === 'pair' ? await import('./enrollment.mjs') : null;
+  pairingErrorMessage = enrollment?.pairingErrorMessage;
   const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
   if (command === 'doctor') {
     let identity; const errors = [];
@@ -52,7 +65,7 @@ async function main() {
     try { await readFile(`${stateDirectory}/pairing.json`); throw new WorkerError('already_paired'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     const identity = await loadOrCreateWorkerIdentity(stateDirectory);
-    console.log(JSON.stringify(await enrollWorker({ stateDirectory, identity, enrollmentFile: args[4], appVersion: manifest.version })));
+    console.log(JSON.stringify(await enrollment.enrollWorker({ stateDirectory, identity, enrollmentFile: args[4], appVersion: manifest.version })));
     return;
   }
   if (command === 'identity') {
@@ -67,4 +80,4 @@ async function main() {
   };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
-main().catch((error) => { console.error(error instanceof WorkerError ? error.code : 'worker_start_failed'); process.exitCode = 1; });
+main().catch((error) => { console.error(command === 'pair' && pairingErrorMessage ? pairingErrorMessage(error) : error instanceof WorkerError ? error.code : 'worker_start_failed'); process.exitCode = 1; });

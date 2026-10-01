@@ -7,11 +7,22 @@ import { renderUserService } from './service.mjs';
 
 const [command, ...args] = process.argv.slice(2);
 const options = {};
-for (let i = 0; i < args.length; i += 2) {
-  if (!args[i]?.startsWith('--') || !args[i + 1] || options[args[i]]) throw new WorkerError('installer_arguments_invalid');
-  options[args[i]] = args[i + 1];
-}
+const help = `Usage:
+  node /approved/artifact/src/install-cli.mjs install --root /private/app --state /private/state --artifact /approved/artifact --manifest-sha256 APPROVED_SHA256
+  node /approved/artifact/src/install-cli.mjs rollback --root /private/app --state /private/state --approve-stopped-update yes
+  node /approved/artifact/src/install-cli.mjs service --root /private/app --state /private/state --node /absolute/node --home /approved/home --path /usr/bin:/bin
+
+Update: use install with the new approved artifact and manifest hash, adding --approve-stopped-update yes.
+Before update or rollback, complete the approved drain/stop policy and stop the worker service. An active worker blocks replacement; the approval flag does not stop it.
+App and state must be separate private persistent directories. Update and rollback preserve the state identity and pairing.
+service only prints a unit for human review.
+`;
 async function main() {
+  if (!command || command === '--help' || command === '-h' || args.includes('--help') || args.includes('-h')) { process.stdout.write(help); return; }
+  for (let i = 0; i < args.length; i += 2) {
+    if (!args[i]?.startsWith('--') || !args[i + 1] || options[args[i]]) throw new WorkerError('installer_arguments_invalid');
+    options[args[i]] = args[i + 1];
+  }
   const root = options['--root'], state = options['--state'];
   if (!root || !state || !isAbsolute(root) || !isAbsolute(state) || root === state || state.startsWith(`${root}/`) || root.startsWith(`${state}/`)) throw new WorkerError('separate_private_roots_required');
   if (command === 'service') {
