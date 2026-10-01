@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import type { HostHarnessOverride } from '@graphql/contracts/harness-registry'
 import { useCheckHostHarnessInstance } from '../../shared/api/computerSettings'
+import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { Button } from '../../shared/ui/nocturne'
@@ -11,12 +12,16 @@ export function HostHarnessProfileCheck({ value, draftDirty }: { value: HostHarn
   const attempt = useRef(new CommandAttempt<Input>()).current
   const original = useRef<Input | undefined>(undefined)
   const submit = async () => {
+    const hadUnknownOutcome = attempt.unresolved
     original.current ??= { instanceId: value.instanceId, expectedRevision: value.revision, target: value.target }
     try { await check.mutateAsync(attempt.input(original.current)); attempt.succeeded(); original.current = undefined }
-    catch (error) { attempt.failed(error); if (!attempt.unresolved) original.current = undefined }
+    catch (error) {
+      if (!(hadUnknownOutcome && error instanceof ApiError && (error.status === 401 || error.status === 403))) attempt.failed(error)
+      if (!attempt.unresolved) original.current = undefined
+    }
   }
   return <section aria-label="Saved host profile check">
-    <UnsavedEditorGuard editor={{ label: 'host profile diagnostic', dirty: attempt.unresolved, busy: check.isPending || attempt.unresolved,
+    <UnsavedEditorGuard editor={{ label: 'host profile diagnostic', dirty: attempt.unresolved, busy: check.isPending, uncertain: attempt.unresolved,
       save: submit, discard: () => { if (!attempt.unresolved) check.reset() }, error: check.error?.message }} />
     <h4>Check this profile</h4>
     <p className="computer-hint">Runs native diagnostics on this computer with the saved profile. Unsaved edits are not included.</p>

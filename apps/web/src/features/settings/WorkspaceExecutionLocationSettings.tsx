@@ -137,7 +137,7 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Prop
   }
   const runBrowse = async () => { if (selection && chosen) try { await browse.mutateAsync({ input: selection, expectedHost: chosen.host }) } catch { /* Mutation exposes the scoped error. */ } }
   const runValidate = async () => { if (selection && chosen) try { await validate.mutateAsync({ input: selection, expectedHost: chosen.host }) } catch { /* Mutation exposes the scoped error. */ } }
-  const guard = <UnsavedEditorGuard editor={{ label: 'execution folder command', dirty: operation.attempt.unresolved, busy: busy || operation.attempt.unresolved,
+  const guard = <UnsavedEditorGuard editor={{ label: 'execution folder command', dirty: operation.attempt.unresolved, busy, uncertain: operation.attempt.unresolved,
     save: submit, discard: () => { if (!operation.attempt.unresolved) update(scope, () => empty()) }, error: save.error?.message }} />
   const recovery = operation.attempt.unresolved ? <><Alert tone="warning" title="A submitted folder command has an unknown outcome. Its original selection is retained." />
     <Button disabled={busy} onClick={() => void submit()}>Reconcile original selection</Button></> : null
