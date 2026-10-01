@@ -113,10 +113,11 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
   const error = feed.isError ? feed.error : older.error
   const items = visit.isCurrent() && !error && !denied && feed.isFetchedAfterMount ? scopedItems : undefined
   const agents = [...new Map(items?.flatMap((item) => [item.actor, item.subject]
-    .filter((agent) => agent !== undefined).map((agent) => [agent.agentId, agent] as const)) ?? []).values()]
+    .filter((agent) => agent !== undefined && 'agentId' in agent).map((agent) => [agent.agentId, agent] as const)) ?? []).values()]
     .sort((a, b) => a.agentName.localeCompare(b.agentName))
   const visible = items?.filter((item) => (chat || !kind || item.kind === kind)
-    && (chat || !agentId || item.actor?.agentId === agentId || item.subject?.agentId === agentId))
+    && (chat || !agentId || item.actor && 'agentId' in item.actor && item.actor.agentId === agentId
+      || item.subject && 'agentId' in item.subject && item.subject.agentId === agentId))
   return <section className="board-activities" aria-label="Activities" data-run-id={scope.runId}
     data-execution-id={chat?.selection.executionId} data-conversation-id={chat?.key?.conversationId}>
     <header><h3>Activities</h3><Button size="sm" variant="ghost" disabled={feed.isFetching}
@@ -149,8 +150,10 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
 }
 
 function ActivityRow({ item }: { item: RunActivityPublic }) {
+  const participant = item.actor ?? item.subject
+  const label = participant ? 'agentId' in participant ? participant.agentName : `Job · ${participant.nodeName}` : 'Workflow'
   return <li><time dateTime={item.occurredAt}>{new Date(item.occurredAt).toLocaleString()}</time>
-    <div><strong>{item.actor?.agentName ?? item.subject?.agentName ?? 'Workflow'}</strong>
+    <div><strong>{label}</strong>
       <span className={`board-activity-status is-${item.severity}`}>{item.status.replaceAll('_', ' ')}</span>
       <p>{item.summary}</p>{item.detail ? <p className="board-activity-detail">{item.detail}</p> : null}
       {item.usage ? <small>{item.usage.used} used · {item.usage.limit === null ? 'no connection cap' : `${item.usage.limit} limit`}</small> : null}
