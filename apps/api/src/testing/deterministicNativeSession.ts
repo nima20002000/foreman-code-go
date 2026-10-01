@@ -38,9 +38,12 @@ export class DeterministicNativeSessionManager implements NativeHarnessSessionMa
   private nextSession = 0
 
   readonly providerVersion: string
+  readonly harness: 'codex' | 'opencode'
 
-  constructor(readonly harness: AgentHarness, providerVersion = harness === 'codex' ? '0.154.0' : '1.18.31') {
+  constructor(harness: AgentHarness, providerVersion = harness === 'codex' ? '0.154.0' : '1.18.31') {
+    if (harness === 'claude') throw new Error('FIXTURE_PROVIDER_UNSUPPORTED')
     if (harnessProfile(harness, providerVersion) === null) throw new Error('FIXTURE_PROVIDER_UNQUALIFIED')
+    this.harness = harness
     this.providerVersion = providerVersion
   }
 

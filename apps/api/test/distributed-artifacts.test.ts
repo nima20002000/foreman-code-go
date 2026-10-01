@@ -100,7 +100,7 @@ describe('verified transfer publication through the existing ledger', () => {
     const attempt = { workspaceId: chat.workspaceId, workflowId: chat.workflowId, runId: chat.runId!, nodeId: 'node-a',
       executionId: chat.executionId!, attemptId: randomUUID(), placementHash: hash('placement') }
     const transferContext = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
-      keyRevision: 1, authorizationRevision: 1, bootId: 'boot', connectionEpoch: 1 }
+      keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID() }
     const accepted: AcceptedArtifactPublication = { context, attempt, transferContext }
     const receipt: VerifiedTransferReceipt = { version: 1, receiptId: randomUUID(), transferId: randomUUID(), sha256: hash('result'), byteSize: 6,
       verifiedAt: f.clock().toISOString(), intent: { version: 1, ...transferContext, transferId: '', operationId: randomUUID(),

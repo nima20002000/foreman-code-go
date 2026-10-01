@@ -271,7 +271,7 @@ export class CurrentWorkflowAuthoring {
       [input.workspaceId, input.workflowId, intentId ?? null])).rowCount) return fail('WORKFLOW_EDITS_UNRESOLVED', 'Reconcile the existing staged edit before publishing another definition.')
     }
     const agentIds = Object.keys(configurationPins).sort()
-    const nodeAgents = input.graph.nodes.map((node) => node.agentId).sort()
+    const nodeAgents = input.graph.nodes.filter((node) => node.kind !== 'job').map((node) => node.agentId).sort()
     if (!sameWorkflowValue(agentIds, nodeAgents)) return fail('AGENT_CONFIGURATION_CONFLICT', 'Pins must describe exactly the authored Agent set.')
     await lockAgentConfigurations(client, agentIds)
     const heads = (await client.query<{ id: string; current_configuration_version_id: string | null }>(

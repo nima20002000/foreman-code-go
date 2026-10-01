@@ -28,7 +28,7 @@ export class NodePlacementChoicesService {
         where w.workspace_id=$1 and w.id=$2 and w.archived_at is null`, [input.workspaceId, input.workflowId])).rows[0]
       if (!row) throw new DomainError('WORKFLOW_NOT_SAVED', 'Placement choices require a saved workflow.', 409)
       const version = WorkflowVersionV3Schema.parse(row.record), node = version.definition.nodes.find(n => n.id === input.nodeId)
-      if (!node || version.agentConfigurationVersionIds[node.agentId] !== input.agentConfigurationVersionId) throw new DomainError(
+      if (!node || node.kind === 'job' || version.agentConfigurationVersionIds[node.agentId] !== input.agentConfigurationVersionId) throw new DomainError(
         'PLACEMENT_CONFIGURATION_CONFLICT', 'Placement choices require the saved node configuration.', 409)
       authorize(principal); authorize(live); await client.query('commit')
       return live

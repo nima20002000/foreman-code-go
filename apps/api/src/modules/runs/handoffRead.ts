@@ -38,7 +38,7 @@ export class RunHandoffReadService {
         }
         const endpoint = (id: string) => {
           const node = version.definition.nodes.find((item) => item.id === id)
-          if (!node) throw new DomainError('HANDOFF_READ_EVIDENCE_CONFLICT', 'A saved connection has no pinned node.', 409)
+          if (!node || node.kind === 'job') throw new DomainError('HANDOFF_READ_EVIDENCE_CONFLICT', 'A work handoff connection must have a pinned Agent node.', 409)
           const name = safeNodeName(node.name ?? node.label) ?? 'Agent'
           return { nodeId: node.id, nodeName: name, agentId: node.agentId, agentName: name }
         }
