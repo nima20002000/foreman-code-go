@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile, readlink, rm, symlink, chmod, read
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { installVersion, rollbackVersion } from '../src/installation.mjs';
 import { doctorReport, persistentFilesystems } from '../src/diagnostics.mjs';
 import { startWorker, readWorkerStatus } from '../src/runtime.mjs';
@@ -84,6 +85,24 @@ test('partial staging failure leaves installed version intact and removes own st
   await assert.rejects(installVersion({ ...f, updatePolicy: async () => true }), { code: 'ENOENT' });
   assert.equal(await readlink(join(f.root, 'current')), first);
   assert.equal((await readdir(join(f.root, 'versions'))).some((name) => name.startsWith('.stage-')), false);
+});
+
+test('killed updater leaves current intact and blocks retry until explicit owned-lock recovery', async (t) => {
+  const f = await fixture(t); await installVersion(f);
+  const first = await readlink(join(f.root, 'current'));
+  f.manifest.version = '1.1.0'; f.approvedManifestSha256 = await f.save();
+  const source = new URL('../src/installation.mjs', import.meta.url).href;
+  const options = { root: f.root, artifact: f.artifact, facts, expected, approvedManifestSha256: f.approvedManifestSha256 };
+  const code = `import {installVersion} from ${JSON.stringify(source)};
+    await installVersion({...${JSON.stringify(options)},updatePolicy:()=>{process.stdout.write('locked');return new Promise(()=>setInterval(()=>{},1000))}});`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  await once(child.stdout, 'data'); const closed = once(child, 'close'); child.kill('SIGKILL'); await closed;
+  assert.equal(await readlink(join(f.root, 'current')), first);
+  await assert.rejects(installVersion(f), /install_busy/);
+  // Explicit recovery applies only to this test-owned, known-dead installer.
+  await rm(join(f.root, '.install-lock'), { recursive: true });
+  await installVersion({ ...f, updatePolicy: async () => true });
 });
 
 test('read-only app root fails without changing installed version', async (t) => {

@@ -33,7 +33,7 @@ async function main() {
     service.active = service.active && status?.active === true;
     if (!status?.active) errors.push('service_not_running');
     const phase = status?.phase;
-    const connection = { state: phase === 'ready' ? 'connected' : ['authenticating', 'negotiating', 'synchronizing'].includes(phase) ? 'connecting' : phase === 'disconnected' ? 'stopped' : phase };
+    const connection = { state: phase === 'ready' ? 'connected' : ['authenticating', 'negotiating', 'synchronizing'].includes(phase) ? 'connecting' : phase === 'disconnected' ? 'stopped' : phase, failure: status?.failure };
     if (!facts.rootPersistent) errors.push('nonpersistent_root');
     if (!facts.homePersistent) errors.push('nonpersistent_home');
     console.log(JSON.stringify(doctorReport({ facts, identity, service, connection, executables: executableAvailability(process.env.PATH ?? ''), errors })));

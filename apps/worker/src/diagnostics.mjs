@@ -44,8 +44,8 @@ export function doctorReport({ facts, identity, connection, service, executables
     identity: { installationId: identity?.workerInstallationId ?? null, selectedMainId: identity?.mainId ?? null, selectedMainFingerprint: identity?.mainPublicKeyFingerprint ?? null },
     pairing: identity?.deviceId ? 'paired' : 'unpaired',
     connection: ['connected', 'connecting', 'backoff', 'blocked', 'offline', 'stopped'].includes(connection?.state) ? connection.state : 'offline',
-    errors: errors.filter((code) => SAFE_ERRORS.has(code)),
+    errors: [...new Set([...errors, connection?.failure].filter((code) => SAFE_ERRORS.has(code)))],
   };
 }
 
-const SAFE_ERRORS = new Set(['nonpersistent_root', 'nonpersistent_home', 'private_directory_required', 'identity_invalid', 'identity_read_only', 'systemd_user_manager_missing', 'connection_unavailable', 'service_not_running']);
+const SAFE_ERRORS = new Set(['nonpersistent_root', 'nonpersistent_home', 'private_directory_required', 'identity_invalid', 'identity_read_only', 'systemd_user_manager_missing', 'connection_unavailable', 'service_not_running', 'authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport']);

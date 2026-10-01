@@ -39,7 +39,7 @@ export async function acquireWorkerLock(stateDirectory, status = () => ({ active
 // are explicitly injected from W07-A/B; execution admission is a later W08 port.
 export async function startWorker({ stateDirectory, loadIdentity, createConnection, shutdownMs = 10_000 }) {
   let connection;
-  const unlock = await acquireWorkerLock(stateDirectory, () => ({ active: true, phase: connection?.status?.().phase ?? 'connecting' }));
+  const unlock = await acquireWorkerLock(stateDirectory, () => ({ active: true, phase: connection?.status?.().phase ?? 'connecting', failure: connection?.status?.().failure ?? null }));
   try {
     const identity = await loadIdentity(stateDirectory);
     const bootId = randomUUID();
