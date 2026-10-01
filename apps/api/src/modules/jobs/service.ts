@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
 import { JobArtifactSchema, AcceptedJobSpecSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema,
-  JobStartSchema, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec, type JobExecution, type JobStart } from '@graphql/contracts/jobs'
+  JobStartSchema, type JobDefinition, type JobDefinitionSave, type JobDefinitionSpec, type JobExecution, type PreparedJobSpec, type JobStart } from '@graphql/contracts/jobs'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -108,13 +108,23 @@ export class JobService {
     await this.ports.dispatch.wake(execution.id).catch(()=>undefined)
     return this.read(principal,workspaceId,'jobs:start',sql=>this.repository.execution(sql,workspaceId,execution.id))
   }
+  prepareDefinition(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,identity:{executionId:string;attemptId:string;operationId:string}) {
+    return this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,identity)
+  }
   /** Workflow adapter calls inside its own accepted-node transaction; no Operator token enters a build. */
   async admit(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow'],workflowInput:RunInput|null=null):Promise<JobExecution> {
     if((workflow===null)!==(workflowInput===null))throw new DomainError('JOB_INPUT_BINDING_MISSING','A workflow job requires its exact accepted input snapshot.',409)
     const id=workflow?.nodeExecutionId??randomUUID(),attemptId=randomUUID(),operationId=randomUUID()
     const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,{executionId:id,attemptId,operationId})
+    return this.admitPrepared(sql,principal,definition,workflow,workflowInput,spec,{executionId:id,attemptId,operationId})
+  }
+  /** Same admission writer after a workflow driver performs source I/O outside the Run-owner transaction. */
+  async admitPrepared(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow'],workflowInput:RunInput|null,spec:PreparedJobSpec,identity:{executionId:string;attemptId:string;operationId:string}):Promise<JobExecution> {
+    if((workflow===null)!==(workflowInput===null)||workflow&&workflow.nodeExecutionId!==identity.executionId)throw new DomainError('JOB_INPUT_BINDING_MISSING','The prepared job must match its exact workflow execution and input.',409)
+    const {executionId:id,attemptId,operationId}=identity
     const request=definition.spec
     const {materializationId:_materialization,materializationDigest:_digest,...source}=spec.source
+    void _materialization;void _digest
     const selection=(target:JobDefinitionSpec['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
       rootPolicyId:target.destination.rootPolicyId,rootPolicyRevision:target.destination.rootPolicyRevision,locationRevision:target.destination.locationRevision})
     if(canonical(source)!==canonical(request.source)||canonical(selection(spec.target))!==canonical(selection(request.target))

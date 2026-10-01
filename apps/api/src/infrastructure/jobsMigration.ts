@@ -16,7 +16,7 @@ create function preserve_job_definition_version() returns trigger language plpgs
 create trigger job_definition_version_immutable before update or delete on job_definition_versions for each row execute function preserve_job_definition_version();
 create table job_dispatch_intents (
  execution_id text primary key, workspace_id text not null references workspaces(id), intent jsonb not null,
- owner_id text, owner_fence text, receipt_sequence bigint not null default 0, last_receipt jsonb, delivery_attempted boolean not null default false, cancel_command_id text,cancel_principal_id text references management_principals(id)
+ owner_id text, owner_fence text, receipt_sequence bigint not null default 0, last_receipt jsonb, delivery_attempted boolean not null default false, cancel_command_id text,cancel_principal_id text references management_principals(id),cancel_action text check(cancel_action in ('jobs:cancel','runs:stop'))
 );
 create table job_executions (
  id text primary key, workspace_id text not null references workspaces(id),
@@ -27,6 +27,10 @@ create table job_executions (
  log_bytes bigint not null default 0 check(log_bytes>=0),
  log_sequence bigint not null default 0 check(log_sequence>=0), log_truncated boolean not null default false,
  unique(workspace_id,id)
+);
+create table workflow_job_preparations (
+ slot_id text primary key references run_repeat_slots(slot_id), run_id text not null references runs(id),
+ preparation jsonb not null, bindings jsonb not null
 );
 create table workflow_job_executions (
  run_id text not null references runs(id), node_execution_id text not null,

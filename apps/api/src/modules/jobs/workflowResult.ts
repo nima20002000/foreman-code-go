@@ -1,8 +1,8 @@
 import { ExecutionResultSchema, type ExecutionResult } from '@graphql/contracts'
-import { NodeResolutionSchema, type RepeatOccurrenceIdentityV1, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
+import { NodeResolutionSchema, parseRepeatExitResultV1, validateRepeatDecisionV1, type RepeatOccurrenceIdentityV1, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import type { JobArtifact, JobExecution } from '@graphql/contracts/jobs'
 import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
-import { blockForNode, repeatConflict, repeatDigest, type RepeatNodeRef, type RepeatResolution } from '../runs/repeatResolution.js'
+import { blockForNode, repeatConflict, repeatDigest, repeatId, type RepeatNodeRef, type RepeatResolution } from '../runs/repeatResolution.js'
 
 /** Generated from actual job truth, never a fabricated provider turn or HarnessExecution. */
 export function workflowJobResult(version:WorkflowVersionV3,ref:RepeatNodeRef,execution:JobExecution,artifacts:readonly JobArtifact[]):{result:ExecutionResult;resolution:RepeatResolution} {
@@ -28,4 +28,16 @@ export function workflowJobResult(version:WorkflowVersionV3,ref:RepeatNodeRef,ex
 }
 export function workflowJobIdentity(execution:JobExecution,node:{id:string;jobDefinitionId:string;jobDefinitionVersionId:string},occurrence:RepeatOccurrenceIdentityV1|null) {
   return {kind:'job' as const,workflowNodeId:node.id,executionId:execution.id,jobDefinitionId:node.jobDefinitionId,jobDefinitionVersionId:node.jobDefinitionVersionId,attempt:1,occurrence}
+}
+export function workflowJobRepeatDecision(version:WorkflowVersionV3,occurrence:import('@graphql/contracts/wave25').RepeatOccurrenceV1,execution:JobExecution,result:ExecutionResult,decidedAt:string) {
+  const block=version.definition.repeat!.blocks.find(block=>block.id===occurrence.identity.blockId)!
+  const node=JobWorkflowNodeSchema.parse(version.definition.nodes.find(node=>node.id===block.exitNodeId))
+  const envelope=parseRepeatExitResultV1(result,node.choice!)
+  const early=envelope.routing.outcome===block.earlyExitOutcome
+  if(!early&&envelope.routing.outcome!==block.repeatOutcome)repeatConflict('REPEAT_OUTCOME_UNDECLARED')
+  const reason=early?'early_exit' as const:occurrence.identity.occurrenceIndex===block.maxOccurrences?'limit_exit' as const:'repeat' as const
+  const target=early?node.choice!.outcomes.find(item=>item.outcome===envelope.routing.outcome)!.target:reason==='limit_exit'?block.limitExit:{kind:'next_occurrence' as const,entryNodeId:block.entryNodeId,occurrenceIndex:occurrence.identity.occurrenceIndex+1}
+  const acceptedResultDigest=repeatDigest(result,64*1024)
+  return validateRepeatDecisionV1(version,{contractVersion:1,decisionId:repeatId('repeat-decision',occurrence.identity.occurrenceId,execution.id,acceptedResultDigest),occurrence,
+    exitExecution:workflowJobIdentity(execution,node,occurrence.identity),acceptedResultDigest,outcome:envelope.routing.outcome,reason,target,decidedAt,resultData:envelope.data},result)
 }
