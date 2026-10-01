@@ -28,6 +28,7 @@ export interface PinnedHarnessSelection {
   readonly installationFingerprint: string
 }
 export interface RegistryHarnessSelection {
+  readonly inventoryRevision: number
   readonly selection: PinnedHarnessSelection
   readonly instance: HarnessInstanceProjection
   readonly installation: HarnessInstallationRecord
@@ -61,12 +62,13 @@ export class HarnessInstallationRegistry {
       throw new Error('Harness installation unavailable or stale on selected host.')
     }
     // Return independent serializable snapshots; no process/session/token state is shared.
-    return { instance, installation: structuredClone(record), selection: Object.freeze({ driverId: instance.driverId, instanceId: instance.instanceId, instanceRevision: instance.instanceRevision, hostRef: Object.freeze({ ...input.hostRef }), harnessInstallationId: record.harnessInstallationId, installationFingerprint: record.installationFingerprint }) }
+    return { inventoryRevision: this.epoch, instance, installation: structuredClone(record), selection: Object.freeze({ driverId: instance.driverId, instanceId: instance.instanceId, instanceRevision: instance.instanceRevision, hostRef: Object.freeze({ ...input.hostRef }), harnessInstallationId: record.harnessInstallationId, installationFingerprint: record.installationFingerprint }) }
   }
   async metadata<T>(binding: RegistryHarnessSelection, suiteRevision: string, load: () => Promise<T>): Promise<T> {
+    if (binding.inventoryRevision !== this.epoch) throw new Error('Harness metadata binding is stale.')
     const { instance, installation } = binding
     const key = JSON.stringify([hostKey(installation.hostRef), installation.harnessInstallationId, installation.installationFingerprint,
-      instance.instanceId, instance.instanceRevision, instance.driverRevision, suiteRevision, installation.environmentGeneration, installation.connectionGeneration])
+      instance.instanceId, instance.instanceRevision, instance.driverRevision, installation.protocolRevision, suiteRevision, installation.environmentGeneration, installation.connectionGeneration])
     let entry = this.cache.get(key)
     if (!entry) {
       if (this.cache.size >= 128) throw new Error('Harness metadata cache is full; refresh inventory.')
