@@ -70,3 +70,20 @@ export async function insertDispatchIntent(sql: GraphTransactionSql, owner: RunO
   beforeGraphCommit(sql, verify)
   return intent
 }
+
+/** Immutable evidence read only. Callers still authorize the live owner/grant
+ * before publishing artifacts or control; a receipt is not a delegation. */
+export async function readDispatchIntent(sql: Pick<GraphTransactionSql, 'query'>, executionId: string): Promise<DispatchIntent | undefined> {
+  const rows = await sql.query<{ operation_id: string; execution_id: string; run_id: string; node_id: string;
+    binding_hash: string; attempt_id: string; record: unknown }>(`select operation_id,execution_id,run_id,node_id,
+      binding_hash,attempt_id,record from execution_dispatch_intents where execution_id=$1`, [executionId])
+  const row = rows.rows[0]
+  if (!row) return undefined
+  const intent = DispatchIntentSchema.parse(row.record)
+  if (rows.rows.length !== 1 || intent.operationId !== row.operation_id || intent.executionId !== executionId
+    || intent.executionId !== row.execution_id || intent.runId !== row.run_id || intent.nodeId !== row.node_id
+    || intent.bindingHash !== row.binding_hash || intent.attemptId !== row.attempt_id) conflict()
+  const placement = await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
+  if (!placement || placement.bindingHash !== intent.bindingHash || placement.mainId !== intent.mainId) conflict()
+  return intent
+}

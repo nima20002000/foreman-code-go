@@ -1,5 +1,5 @@
 import { DeviceRegistrationSchema, type DeviceRegistration } from '@graphql/contracts/device-identity'
-import { AcceptedDestinationSchema, type AcceptedNodePlacement, type SavedNodePlacement } from '@graphql/contracts/node-placement'
+import { AcceptedDestinationSchema, SavedNodePlacementSchema, type AcceptedNodePlacement, type SavedNodePlacement } from '@graphql/contracts/node-placement'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { posix } from 'node:path'
 import { DomainError } from '../errors.js'
@@ -23,7 +23,10 @@ export interface PlacementCommitFence {
 export async function preparePlacement(port: PlacementValidationPort, saved: SavedNodePlacement,
   identity: Pick<AcceptedNodePlacement, 'mainId' | 'mainInstallationId' | 'runId' | 'nodeId' | 'labelAtAcceptance'>,
   expectedPayload: AcceptedNodePlacement['payload'], access: 'read-only' | 'read-write'): Promise<AcceptedNodePlacement> {
-  const evidence = await port.validate(structuredClone(saved), access)
+  saved = SavedNodePlacementSchema.parse(structuredClone(saved))
+  identity = structuredClone(identity)
+  expectedPayload = structuredClone(expectedPayload)
+  const evidence = structuredClone(await port.validate(structuredClone(saved), access))
   const fail = () => { throw new DomainError('PLACEMENT_CONFLICT', 'Destination evidence does not match the selected immutable placement.', 409) }
   if (!sameWorkflowValue(evidence.hostRef, saved.hostRef) || saved.hostRef.mainId !== identity.mainId) fail()
   const destination = AcceptedDestinationSchema.parse(evidence.destination)
