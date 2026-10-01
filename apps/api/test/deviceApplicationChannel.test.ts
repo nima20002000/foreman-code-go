@@ -76,6 +76,13 @@ describe('authenticated namespace carrier mechanics', () => {
       expect(await pair.main.request('execution-v1', 'fresh')).toEqual({ payload: 'fresh' })
     } finally { await pair.close() }
   })
+  it('joins the raw domain promise after cancellation has settled its transport wrapper', async () => {
+    let finish!: (result: { payload: unknown }) => void
+    const pair = setup(async () => new Promise((resolve) => { finish = resolve }))
+    const pending = pair.main.request('execution-v1', {}); void pending.catch(() => {}); await flush(); await pair.close(); await expect(pending).rejects.toThrow()
+    let joined = false; const drain = pair.worker.join().then(() => { joined = true }); await flush(); expect(joined).toBe(false)
+    finish({ payload: 'late-and-fenced' }); await drain; expect(joined).toBe(true); await pair.main.join()
+  })
   it('connection revocation rejects pending requests and fences handler generations', async () => {
     let handlerSignal!: AbortSignal
     const pair = setup(async (_payload, context) => { handlerSignal = context.signal; return new Promise(() => {}) })

@@ -33,6 +33,7 @@ export function deviceNegotiationHash(extensions: DeviceNegotiatedExtension[]) {
 /** One reader per authenticated epoch. Chunk ACKs attest receipt only, never task acceptance. */
 export class DeviceApplicationChannel {
   private readonly abort = new AbortController()
+  private readonly tasks = new Set<Promise<unknown>>()
   private readonly extensions: DeviceNegotiatedExtension[]
   private readonly registrations: DeviceExtensionRegistration[]
   private readonly binding: Readonly<DeviceSessionBinding>
@@ -51,6 +52,7 @@ export class DeviceApplicationChannel {
     extensions: DeviceNegotiatedExtension[]; registrations: DeviceExtensionRegistration[]
     /** Main live device authorization, separate from the handler's operation authority. */
     revalidate?(): Promise<void>
+    onObservedFrame?(observedAt: string): void
   }) {
     this.extensions = options.extensions.map((item) => Object.freeze({ ...item }))
     this.registrations = options.registrations.map((item) => Object.freeze({ ...item }))
@@ -59,6 +61,19 @@ export class DeviceApplicationChannel {
     options.signal.addEventListener('abort', close, { once: true })
     this.detach = () => options.signal.removeEventListener('abort', close)
     if (options.signal.aborted) close()
+  }
+  private track<T>(task: Promise<T>): Promise<T> {
+    this.tasks.add(task)
+    void task.then(() => this.tasks.delete(task), () => this.tasks.delete(task))
+    return task
+  }
+  /** Joins physical callbacks as well as canceled deadline wrappers. Close first for shutdown. */
+  async join(): Promise<void> { while (this.tasks.size) await Promise.allSettled([...this.tasks]) }
+  currentBinding(): Readonly<DeviceSessionBinding> { this.current(); return this.binding }
+  currentBindingForIncoming(namespace: string): Readonly<DeviceSessionBinding> { this.current(); this.negotiated(namespace, false); return this.binding }
+  captureRequest(namespace: string) {
+    this.current(); this.negotiated(namespace, true)
+    return Object.freeze({ binding: this.binding, request: (payload: unknown, options?: DeviceApplicationRequestOptions) => this.request(namespace, payload, options) })
   }
   capabilities(): DeviceNegotiatedExtension[] { return this.extensions.map((item) => ({ ...item })) }
   private current() { if (this.abort.signal.aborted) throw this.failure ?? new DeviceConnectionError('transport') }
@@ -70,10 +85,13 @@ export class DeviceApplicationChannel {
   }
   private async authorized() {
     this.current()
-    if (this.options.revalidate) await withDeviceDeadline(this.options.revalidate(), this.abort.signal, 10_000)
+    if (this.options.revalidate) await withDeviceDeadline(this.track(this.options.revalidate()), this.abort.signal, 10_000)
     this.current()
   }
-  async request(namespace: string, payload: unknown, options: DeviceApplicationRequestOptions = {}): Promise<DeviceApplicationResult> {
+  request(namespace: string, payload: unknown, options: DeviceApplicationRequestOptions = {}): Promise<DeviceApplicationResult> {
+    return this.track(this.requestInternal(namespace, payload, options))
+  }
+  private async requestInternal(namespace: string, payload: unknown, options: DeviceApplicationRequestOptions): Promise<DeviceApplicationResult> {
     const extension = this.negotiated(namespace, true)
     this.current()
     if (this.pending.size >= DEVICE_APPLICATION_IN_FLIGHT) throw new DeviceApplicationError('backpressure')
@@ -136,6 +154,7 @@ export class DeviceApplicationChannel {
     if (typeof frame.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(frame.id)) throw new DeviceConnectionError('malformed-frame')
     const id = frame.id
     if (frame.type === 'application-ack') {
+      if (typeof frame.offset !== 'number' || !Number.isSafeInteger(frame.offset) || frame.offset < 0) throw new DeviceConnectionError('malformed-frame')
       const ack = this.acknowledgements.get(id)
       if (!ack) return // Cancellation can race a chunk receipt; receipts acquire no authority.
       if (frame.offset !== ack.offset) throw new DeviceConnectionError('malformed-frame')
@@ -173,7 +192,7 @@ export class DeviceApplicationChannel {
     sendFrame(this.options.socket, { type: 'application-ack', id, offset: assembly.received })
     if (assembly.received === assembly.jsonBytes + assembly.binaryBytes) {
       this.assemblies.delete(id); (assembly.kind === 'request' ? this.handlers : this.replies).set(id, assembly.abort)
-      void this.complete(id, assembly).catch((error: unknown) => this.close(error instanceof Error ? error : new DeviceConnectionError('transport')))
+      void this.track(this.complete(id, assembly)).catch((error: unknown) => this.close(error instanceof Error ? error : new DeviceConnectionError('transport')))
     }
   }
   private async complete(id: string, assembly: Assembly) {
@@ -196,7 +215,7 @@ export class DeviceApplicationChannel {
       if (!registration?.handle || assembly.abort.signal.aborted) return
       let result: DeviceApplicationResult
       try {
-        result = await withDeviceDeadline(registration.handle(payload, { binding: Object.freeze({ ...this.binding }), signal: assembly.abort.signal, ...(bytes ? { bytes } : {}) }), assembly.abort.signal, 900_000)
+        result = await withDeviceDeadline(this.track(registration.handle(payload, { binding: Object.freeze({ ...this.binding }), signal: assembly.abort.signal, ...(bytes ? { bytes } : {}) })), assembly.abort.signal, 900_000)
         await this.authorized()
       } catch (error) {
         if (assembly.abort.signal.aborted || this.abort.signal.aborted) return
@@ -212,7 +231,8 @@ export class DeviceApplicationChannel {
       }
     } finally { this.inboundBytes -= assembly.jsonBytes + assembly.binaryBytes; (assembly.kind === 'request' ? this.handlers : this.replies).delete(id); assembly.abort.abort() }
   }
-  async run(iterator: AsyncIterator<string>, heartbeatMs: number): Promise<void> {
+  run(iterator: AsyncIterator<string>, heartbeatMs: number): Promise<void> { return this.track(this.runInternal(iterator, heartbeatMs)) }
+  private async runInternal(iterator: AsyncIterator<string>, heartbeatMs: number): Promise<void> {
     let lastHeartbeat = Date.now(), timer: ReturnType<typeof setInterval> | undefined
     const worker = this.options.side === 'worker'
     if (worker) {
@@ -223,6 +243,7 @@ export class DeviceApplicationChannel {
       while (!this.abort.signal.aborted) {
         const next = await nextFrame(iterator, this.abort.signal, Math.max(1, lastHeartbeat + heartbeatMs * (worker ? 2 : 1) - Date.now()))
         if (next.done) throw new DeviceConnectionError('transport')
+        const observedAt = new Date().toISOString()
         const frame = readFrame(next.value)
         if (frame.type === (worker ? 'pong' : 'ping')) {
           if (frame.connectionEpoch !== this.binding.connectionEpoch) throw new DeviceConnectionError('malformed-frame')
@@ -230,6 +251,7 @@ export class DeviceApplicationChannel {
           if (!worker) sendFrame(this.options.socket, { type: 'pong', connectionEpoch: this.binding.connectionEpoch })
         } else if (frame.type === 'blocked') throw new DeviceConnectionError(classify(frame.code))
         else this.receive(frame)
+        this.current(); this.options.onObservedFrame?.(observedAt)
       }
       if (this.failure) throw this.failure
     } catch (error) { this.close(error instanceof Error ? error : new DeviceConnectionError('transport')); throw error } finally { if (timer) clearInterval(timer); this.close() }
