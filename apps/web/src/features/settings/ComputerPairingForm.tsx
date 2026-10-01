@@ -68,39 +68,46 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
   return <section aria-label="Add computer">
     <UnsavedEditorGuard editor={{ label: 'computer pairing command', dirty: attempt.unresolved, busy: approval.isPending, uncertain: attempt.unresolved,
       save: submit, discard: () => { if (!attempt.unresolved) reset() }, error: approval.error?.message }} />
-    <h2>Add computer</h2>
-    <p>Open the companion on the computer, copy its request code and paste it here. You approve the computer, then enter the private pairing code it receives into the companion.</p>
-    <p>SSH connectivity does not prove application pairing. A pending computer becomes paired only after the main confirms it.</p>
+    <h2 className="computers-title">Add computer</h2>
+    <ol className="computer-steps">
+      <li>Open the companion on the computer and copy its request code.</li>
+      <li>Paste the code here and approve the computer.</li>
+      <li>Enter the private pairing code you get into the companion.</li>
+    </ol>
+    <p className="computer-hint">SSH connectivity does not prove application pairing. A pending computer becomes paired only after the main confirms it.</p>
     {options.isPending ? <p role="status">Reading computer setup configuration…</p> : null}
     {options.error ? <p role="alert">{options.error.message}</p> : null}
-    {options.data && !options.data.available ? <p role="alert">{options.data.reason ? unavailable[options.data.reason] : 'Computer setup is unavailable.'}</p> : null}
+    {options.data && !options.data.available ? <div role="alert" className="computer-unavailable">
+      <p>Adding a computer isn’t available yet. This main needs setup before it can accept one; the code can’t be approved until then.</p>
+      <details className="computer-details"><summary>Technical details</summary>
+        <p>{options.data.reason ? unavailable[options.data.reason] : 'Computer setup is unavailable.'}</p></details></div> : null}
     {main.error ? <p role="alert">{main.error.message}</p> : null}
     {main.data && main.data.mainId !== mainId ? <p role="alert">The selected main changed. Reload this page.</p> : null}
     <Textarea label="Computer request code" value={code} disabled={locked} autoComplete="off" spellCheck={false} onChange={event => update(event.target.value)} />
     {identity === null ? <p role="alert">This is not a valid computer request code. Copy it again from the companion.</p> : null}
-    {identity && !approval.data ? <details>
+    {identity && !approval.data ? <details className="computer-details" open>
       <summary>Confirm details</summary>
-      <dl>
-        <dt>Computer ID</dt><dd>{identity.workerInstallationId}</dd>
-        <dt>Computer key fingerprint</dt><dd>{identity.publicKeyFingerprint}</dd>
-        <dt>This main · fingerprint</dt><dd>{mainFingerprint ?? 'Reading…'}</dd>
-        <dt>Device endpoint</dt><dd>{endpoint ?? 'Unavailable'}</dd>
-        <dt>Access</dt><dd>Connect and heartbeat only</dd>
+      <dl className="computer-facts">
+        <div><dt>Computer ID</dt><dd>{identity.workerInstallationId}</dd></div>
+        <div><dt>Computer key fingerprint</dt><dd>{identity.publicKeyFingerprint}</dd></div>
+        <div><dt>This main · fingerprint</dt><dd>{mainFingerprint ?? 'Reading…'}</dd></div>
+        <div><dt>Device endpoint</dt><dd>{endpoint ?? 'Unavailable'}</dd></div>
+        <div><dt>Access</dt><dd>Connect and heartbeat only</dd></div>
       </dl>
     </details> : null}
     {expired ? <p role="status">The one-use pairing code expired. Read the computer status before requesting a fresh code.</p> : null}
     {approval.error ? <p role="alert">{approval.error.message}</p> : null}
-    {!approval.data ? <Button disabled={approval.isPending || !input}
-      onClick={() => void submit()}>{approval.isPending ? 'Approving…' : attempt.unresolved ? 'Reconcile original pairing command' : 'Approve this computer'}</Button> : <>
+    {!approval.data ? <div className="computer-actions"><Button variant="primary" disabled={approval.isPending || !input}
+      onClick={() => void submit()}>{approval.isPending ? 'Approving…' : attempt.unresolved ? 'Reconcile original pairing command' : 'Approve this computer'}</Button></div> : <div className="computer-pairing-result">
       <p role="status">Computer {paired ? 'paired' : `${approval.data.registration.status}; waiting for the computer to finish pairing`}. Pairing code expires <time dateTime={approval.data.expiresAt}>{approval.data.expiresAt}</time>.</p>
       {paired ? null : <>
         <TextField label="Private pairing code · secret" type={revealed ? 'text' : 'password'} readOnly autoComplete="off" value={approval.data.enrollmentCode} />
-        <Button onClick={() => setRevealed(value => !value)}>{revealed ? 'Hide pairing code' : 'Show pairing code'}</Button>
-        <Button onClick={() => void copy()}>Copy pairing code</Button>
+        <div className="computer-actions"><Button onClick={() => setRevealed(value => !value)}>{revealed ? 'Hide pairing code' : 'Show pairing code'}</Button>
+        <Button onClick={() => void copy()}>Copy pairing code</Button></div>
         {copied ? <p role="status">{copied === 'done' ? 'Copied. Paste it into the companion.' : 'Copy was blocked. Show the code and copy it manually.'}</p> : null}
         <p>Paste this code into the companion. Keep it out of screenshots and logs.</p>
       </>}
       <Button onClick={() => { reset(); clear(); setRevealed(false); setCopied(undefined) }}>{paired ? 'Done' : 'Discard pairing code'}</Button>
-    </>}
+    </div>}
   </section>
 }

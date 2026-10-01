@@ -35,7 +35,7 @@ function OverrideEditor({ value, seed, onCreated, onCancelled }: { value?: HostH
   }, input => { prepareHarnessEditor(input.editor); return input })
   return <section className="computer-inventory-item" aria-label={`${draft.editor.configuration.harness} host settings`}>
     <h3>{draft.editor.configuration.harness} · {value ? 'host override' : 'new host override'}</h3>
-    <dl className="computer-facts computer-facts--status">
+    <dl className="computer-facts computer-facts--status computer-facts--inline">
       <div><dt>Saved immutable revision</dt><dd>{value?.instanceRevision ?? 'Not created'}</dd></div>
       <div><dt>Qualification</dt><dd>{value?.qualification ?? 'Unqualified'}</dd></div>
     </dl>
@@ -75,10 +75,11 @@ export function HostHarnessOverrides({ target }: { target: HostHarnessOverrideLi
   const choices = inventory.isSuccess ? inventory.data.installations.filter(installation => installation.installed && installation.installationFingerprint !== null).flatMap(installation => inventory.data.instances.filter(preset => preset.availability === 'available' && preset.configuration && preset.driverId === installation.driverId)
     .map(preset => ({ installation, preset, id: JSON.stringify([installation.harnessInstallationId, installation.installationFingerprint, preset.instanceId, preset.instanceRevision]) }))) : []
   const selected = choices.find(choice => choice.id === selection)
-  return <section aria-label="Host instance settings"><h2>Host instance settings</h2>
+  return <section aria-label="Host instance settings"><h2 className="computers-title">Host instance settings</h2>
+    <p className="computer-hint">Overrides apply to this computer only. Global defaults stay unchanged.</p>
     {overrides.data.overrides.map(value => <OverrideEditor key={`${value.instanceId}:${value.target.installationFingerprint}`} value={value} />)}
-    {!overrides.data.overrides.length ? <p>No overrides yet. This computer uses the global presets until you create one.</p> : null}
-    {seed ? <OverrideEditor key={seed.instanceId} seed={seed} onCreated={() => put(scope)} onCancelled={() => put(scope)} /> : <>
+    {!overrides.data.overrides.length ? <p className="computer-hint">No overrides yet. This computer uses the global presets until you create one.</p> : null}
+    {seed ? <OverrideEditor key={seed.instanceId} seed={seed} onCreated={() => put(scope)} onCancelled={() => put(scope)} /> : <div className="computer-new-override">
       <Select label="Installation and global preset for new override" value={selection ?? ''} options={[{ value: '', label: 'Choose an installation and preset' }, ...choices.map(choice => ({ value: choice.id, label: `${choice.preset.driverId} · ${choice.installation.harnessInstallationId} · ${choice.preset.instanceId}` }))]}
         onChange={event => select(scope, event.target.value)} />
       <Button disabled={!selected || !selected.preset.configuration || !selected.installation.installationFingerprint} onClick={() => {
@@ -89,6 +90,6 @@ export function HostHarnessOverrides({ target }: { target: HostHarnessOverrideLi
       {inventory.isError ? <Alert tone="danger" title="Installation choices could not be read. Reload this computer to try again." /> : null}
       {inventory.isSuccess && !choices.length ? <p className="computer-hint">No installed harness with an available global preset was reported for this computer, so there is nothing to override yet.</p> : null}
       <p className="computer-hint">Creating an override copies the preset’s values for this computer. Login files and credentials are not copied.</p>
-    </>}
+    </div>}
   </section>
 }
