@@ -228,7 +228,7 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
       const binding = context.binding, current = input.deviceBinding(binding.deviceId), observed = input.presence(binding.deviceId)
       if (binding.mainId !== input.mainContext()!.mainId || !observed || telemetryCanonical(observed.binding) !== telemetryCanonical(binding)) return false
       if (current && (telemetryCanonical(current) !== telemetryCanonical(binding)
-        || !input.deviceCapabilities(binding.deviceId).some(value => value.namespace === 'resource-telemetry' && value.version === 1 && value.mainCanRequest && value.workerCanRequest))) return false
+        || !input.deviceCapabilities(binding.deviceId).some(value => value.namespace === 'resource-telemetry' && value.version === 1 && value.mainCanRequest))) return false
       if (!current && observed.phase !== 'offline') return false
       const allowed = await computerAllowed(sql, { schemaVersion: 1, scope: 'computer', mainId: binding.mainId,
         hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId } })

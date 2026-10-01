@@ -96,7 +96,7 @@ function setup() {
       binding = value; presence = { binding: value, phase: 'ready', dispatch: true, transfer: true, appVersion: 'actual-worker-version', protocolVersion: 1, lastSeenAt: new Date().toISOString() }
       registration = { mainId: value.mainId, deviceId: value.deviceId, workerInstallationId: value.workerInstallationId, keyRevision: value.keyRevision,
         authorizationRevision: value.authorizationRevision, status: 'paired', scopes: ['connect', 'heartbeat'], publicKeyFingerprint: 'a'.repeat(64) }
-      capabilities = [{ namespace: 'resource-telemetry', version: 1, mainCanRequest: true, workerCanRequest: true, maxJsonBytes: 65536, maxBinaryBytes: 0 }]
+      capabilities = [{ namespace: 'resource-telemetry', version: 1, mainCanRequest: true, workerCanRequest: false, maxJsonBytes: 65536, maxBinaryBytes: 0 }]
     }, offline() { binding = null; presence!.phase = 'offline' }, denyCapability() { capabilities = [] },
     revokeDevice() { registration!.authorizationRevision++ }, expireCredential() { credentialExpires = new Date(0) } }
 }

@@ -1,5 +1,32 @@
 # W11-B owner handoff (NIM-2855)
 
+## 2026-10-01 authenticated carrier continuation
+
+`carrier.ts` exports `mainResourceTelemetryExtension` (Main client),
+`startRemoteTelemetrySession({service,binding,signal,request})` and
+`createWorkerResourceTelemetryExtension({signal,currentBinding,createCollector})` (worker server).
+The request function must be W07's captured `resource-telemetry` request for the exact supplied binding.
+The Main loop issues a challenge, accepts the bounded response through the existing service, and skips
+missed ticks. Worker initialization consumes A's `createPassiveLinuxResourceCollector` with the actual
+registry and native-scope projection. Its collector uses connection/application lifetime rather than
+individual request lifetime; a changed authenticated collector identity closes and joins the old sampler.
+Both returned owners expose `close()`; Main also exposes `completion`, which the composition owner observes.
+Ordinary transport loss stops requests while preserving authorized offline last-known state; live revocation
+checks and a new authenticated handshake fence prior callbacks and generations.
+
+The negotiated extension needs `mainCanRequest`; worker push is absent. The production authority direction
+check now matches this request/response carrier. Five focused carrier cases include real W07 channel chunk
+assembly/negotiation/revalidation, spoofed installation, stale callback, revoked authority and collector lifetime.
+The combined carrier/authority/ingestion/HTTP-MCP adapter run passed 66 cases across four files.
+Pinned heavy-job API `tsc --noEmit`, owned-file ESLint and `git diff --check` passed for this continuation.
+
+Unfinished gates remain explicit: current device scope contract only contains `connect` and `heartbeat`,
+so no explicit telemetry reporting grant is available and no registration was broadened. Root must settle
+that contract before physical metrics qualification. Current production owned authority resolves genuine
+local workflow captures only; remote workflow, role-specific conversations and CI require their original
+accepted/native/lease/OCI projections. C/root exclusively own mounts and physical acceptance. No additional
+role implementation, database, native, installation or security work was performed in this continuation.
+
 Local/unpublished lane baseline: `0b23598c48a58e27151d891b4d4a9dcf183cbaff`.
 CP1: `a195d043a298d186dcd5953bc816cdc2e9f7c371`; first lint/coverage correction: `f1db825a`.
 The final lane commit includes subsequent wire bounds/source-role validation and ingestion/read adapters.

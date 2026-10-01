@@ -1,0 +1,121 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
+import { negotiateDeviceExtensions } from '@graphql/contracts/device-application'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { CollectionChallenge, TelemetryCollectedBatch, TelemetryIdentity } from '@graphql/contracts/resource-telemetry'
+import { createWorkerResourceTelemetryExtension, mainResourceTelemetryExtension, remoteTelemetryContext, startRemoteTelemetrySession } from './carrier.js'
+import { ResourceTelemetryService } from './service.js'
+import { DeviceApplicationChannel, extensionDescriptors } from '../../devices/deviceApplicationChannel.js'
+import { adaptDeviceSocket } from '../../devices/deviceWire.js'
+
+class Socket extends EventEmitter {
+  bufferedAmount = 0
+  peer?: Socket
+  closed = false
+  send(text: string) { queueMicrotask(() => { if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false) }) }
+  close() { if (this.closed) return; this.closed = true; this.emit('close'); this.peer?.close() }
+}
+
+const binding: DeviceSessionBinding = { mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222',
+  workerInstallationId: '33333333-3333-4333-8333-333333333333', keyRevision: 1,
+  authorizationRevision: 1, bootId: '44444444-4444-4444-8444-444444444444', connectionEpoch: '55555555-5555-4555-8555-555555555555', connectionGeneration: 1 }
+function batch(c: CollectionChallenge): TelemetryCollectedBatch {
+  return { schemaVersion: 1, identity: c.identity, challengeId: c.challengeId, sequence: '1', collectedAtUnixMs: 1000,
+    challengeReceivedMonoNs: '1', captureStartMonoNs: '2', captureEndMonoNs: '3', logicalCpuCount: 1,
+    host: { selector: { schemaVersion: 1, scope: 'computer', mainId: c.identity.mainId, host: c.identity.host },
+      coverage: { boundary: 'complete-boundary', shared: false, reasons: [] }, cpu: { state: 'warmup', reason: 'warmup' },
+      memory: { state: 'ok', value: { kind: 'host-used-estimate', bytes: 0, totalBytes: 1, availableBytes: 1, sharedPagesMayDoubleCount: false } } },
+    owned: [], diagnostics: [], truncated: false }
+}
+function setup() {
+  const lifetime = new AbortController()
+  let current: DeviceSessionBinding | null = binding, authorized = true
+  const service = new ResourceTelemetryService({ clock: { monotonicMs: () => Date.now(), unixMs: () => Date.now() },
+    sessions: { active: async () => authorized, presence: async () => 'online' },
+    reads: { allow: async () => true, allowSharedOwner: async () => true }, ownership: { resolve: async () => null } })
+  const collectors: { signal: AbortSignal; close: ReturnType<typeof vi.fn> }[] = []
+  const createCollector = vi.fn(async (_identity: TelemetryIdentity, signal: AbortSignal) => {
+    let pending: TelemetryCollectedBatch | undefined, stopped = false, wake: (() => void) | undefined
+    const close = vi.fn(async () => { stopped = true; wake?.() })
+    collectors.push({ signal, close })
+    return { offer(c: CollectionChallenge) { pending = batch(c); wake?.(); return 'accepted' as const },
+      async *samples() { while (!stopped && !signal.aborted) {
+        if (!pending) await new Promise<void>(resolve => { wake = resolve })
+        if (pending) { const value = pending; pending = undefined; yield value }
+      } }, close }
+  })
+  const worker = createWorkerResourceTelemetryExtension({ signal: lifetime.signal, currentBinding: () => current, createCollector })
+  const request = vi.fn(async (payload: unknown, options: { signal?: AbortSignal }) => worker.extension.handle!(payload,
+    { binding, signal: options.signal ?? lifetime.signal }))
+  const challenge = async () => {
+    const context = remoteTelemetryContext(binding)
+    await service.handshake(context, 'collector', lifetime.signal)
+    return (await service.challenge(context, lifetime.signal))!
+  }
+  return { lifetime, service, worker, request, challenge, createCollector, collectors,
+    revoke() { authorized = false }, change(value: DeviceSessionBinding | null) { current = value } }
+}
+afterEach(() => vi.useRealTimers())
+describe('authenticated W07 passive telemetry carrier', () => {
+  it('carries bounded challenge samples over negotiated W07 chunks with current authorization rechecks', async () => {
+    const s = setup(), mainRaw = new Socket(), workerRaw = new Socket()
+    mainRaw.peer = workerRaw; workerRaw.peer = mainRaw
+    const mainSocket = adaptDeviceSocket(mainRaw), workerSocket = adaptDeviceSocket(workerRaw)
+    const extensions = negotiateDeviceExtensions(extensionDescriptors([mainResourceTelemetryExtension]), extensionDescriptors([s.worker.extension]))
+    expect(extensions[0]).toMatchObject({ mainCanRequest: true, workerCanRequest: false, maxJsonBytes: 65536, maxBinaryBytes: 0 })
+    let granted = true
+    const revalidate = vi.fn(async () => { if (!granted) throw new Error('permission') })
+    const main = new DeviceApplicationChannel({ side: 'main', binding, socket: mainSocket, signal: s.lifetime.signal,
+      extensions, registrations: [mainResourceTelemetryExtension], revalidate })
+    const worker = new DeviceApplicationChannel({ side: 'worker', binding, socket: workerSocket, signal: s.lifetime.signal,
+      extensions, registrations: [s.worker.extension] })
+    const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 10000), worker.run(workerSocket.messages[Symbol.asyncIterator](), 5000)]
+    for (const task of tasks) void task.catch(() => undefined)
+    try {
+      const c = await s.challenge(), response = await main.request('resource-telemetry', { operation: 'collect', challenge: c })
+      expect(response.payload).toEqual(batch(c))
+      await expect(s.service.ingest(remoteTelemetryContext(binding), JSON.stringify(response.payload), s.lifetime.signal)).resolves.toMatchObject({ status: 'accepted' })
+      expect(revalidate).toHaveBeenCalled()
+      granted = false
+      await expect(main.request('resource-telemetry', { operation: 'collect', challenge: c })).rejects.toThrow('permission')
+      expect(s.createCollector).toHaveBeenCalledTimes(1)
+    } finally {
+      s.lifetime.abort(); main.close(); worker.close(); await Promise.allSettled(tasks)
+      await s.worker.close(); await main.join(); await worker.join(); await s.service.close()
+    }
+  })
+  it('collects on the existing request channel and preserves the exact remote host identity', async () => {
+    vi.useFakeTimers(); const s = setup()
+    const session = await startRemoteTelemetrySession({ service: s.service, binding, signal: s.lifetime.signal, request: s.request })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.request).toHaveBeenCalledTimes(1)
+    const c = s.request.mock.calls[0]![0] as { challenge: CollectionChallenge }
+    expect(c.challenge.identity.host).toMatchObject({ hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId }, applicationInstallationId: binding.workerInstallationId })
+    await vi.advanceTimersByTimeAsync(1999); expect(s.request).toHaveBeenCalledTimes(1)
+    s.lifetime.abort(); await session.close(); await s.worker.close(); await s.service.close()
+    expect(s.collectors[0]!.close).toHaveBeenCalledTimes(1)
+  })
+  it('denies revoked authority before sending a collection request', async () => {
+    const s = setup(); s.revoke()
+    await expect(startRemoteTelemetrySession({ service: s.service, binding, signal: s.lifetime.signal, request: s.request })).rejects.toThrow('authorization')
+    expect(s.request).not.toHaveBeenCalled(); await s.worker.close(); await s.service.close()
+  })
+  it('rejects spoofed installations and stale callbacks before initializing a collector', async () => {
+    const s = setup(), challenge = await s.challenge()
+    challenge.identity.host.applicationInstallationId = 'other'
+    await expect(s.request({ operation: 'collect', challenge }, {})).rejects.toThrow('identity')
+    s.change({ ...binding, connectionEpoch: 'replacement' })
+    await expect(s.request({ operation: 'collect', challenge }, {})).rejects.toThrow('session-generation')
+    expect(s.createCollector).not.toHaveBeenCalled(); await s.worker.close(); await s.service.close()
+  })
+  it('uses collector lifetime rather than request lifetime and joins the prior generation', async () => {
+    const s = setup(), challenge = await s.challenge(), request = new AbortController()
+    await s.request({ operation: 'collect', challenge }, { signal: request.signal })
+    request.abort(); expect(s.collectors[0]!.signal.aborted).toBe(false)
+    const next = structuredClone(challenge); next.identity.host.collectorGeneration = 'new'; next.challengeId = 'new'
+    await s.request({ operation: 'collect', challenge: next }, {})
+    expect(s.collectors[0]!.signal.aborted).toBe(true); expect(s.collectors[0]!.close).toHaveBeenCalledTimes(1)
+    expect(s.createCollector).toHaveBeenCalledTimes(2)
+    await s.worker.close(); await s.service.close()
+  })
+})
