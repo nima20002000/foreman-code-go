@@ -1,7 +1,8 @@
-import { HarnessNativeEventSchema, type HarnessNativeEvent } from '@graphql/contracts'
+import { ExecutionResultSchema, HarnessNativeEventSchema, type HarnessNativeEvent } from '@graphql/contracts'
 import {
   canonicalGraphJson, graphJsonBytes, parseNativeGraphObservation, sameGraphScope,
   assertNativeGraphProjectionAuthority, type GraphFact, type NativeGraphObservation, type NativeGraphCorrelationRecord, type RunGraphScope,
+  type NativeGraphProjectionKey,
 } from '@graphql/contracts/wave25'
 import { poisonGraphTransaction } from './connection.js'
 import { readCurrentNativeActivities, type CurrentNativeActivity } from './currentActivity.js'
@@ -77,8 +78,10 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
   if (native.rows.length !== 1) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
   const nativeSequence = native.rows[0]!.sequence
   const selected = selectNativeGraphEvidence(event.type, event.payload)
+  const claudeEvidence = ['message.submitted', 'interaction.pending', 'turn.completed'].includes(event.type)
+    && event.payload.nativeMessageId !== undefined
   // Irrelevant token/prose/keepalive events perform no checkpoint/correlation reads at all.
-  if (selected.kind !== 'evidence' && ordered.every((item) => !item.observation && !item.currentView)) {
+  if (selected.kind !== 'evidence' && !claudeEvidence && ordered.every((item) => !item.observation && !item.currentView)) {
     if (selected.kind === 'invalid') result.rejected = ordered.length
     else result.ignored = ordered.length
     return result
@@ -115,7 +118,10 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
       [scope.runId, key.execution.executionId, key.workKind, key.workId])).rows[0]
     const previous = checkpoint ? parseNativeCheckpoint(checkpoint.checkpoint) : undefined
     let normalized: Pick<ProjectionEvent, 'type' | 'payload'> | undefined
-    try { normalized = normalizedEvidence(scope, item.observation, event, binding, selected) }
+    try { normalized = normalizedEvidence(scope, item.observation ?? (binding.provider === 'claude'
+      ? claudeNativeGraphObservation(scope, key, event, { nativeSessionId: binding.nativeSessionId,
+        nativeMessageId: binding.nativeTurnId, clientCorrelationId: item.correlationKey,
+        connectionGeneration: binding.connectionGeneration, terminalReady: true }) : undefined), event, binding, selected) }
     catch { result.rejected++; continue }
     if (!normalized && !item.currentView) { result.ignored++; continue }
     const cut = { nativeSequence, sourcePosition: String(event.sequence),
@@ -194,6 +200,9 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
 function normalizedEvidence(scope: RunGraphScope, observation: NativeGraphObservation | undefined, event: HarnessNativeEvent, binding: ProjectionBinding,
   selected: ReturnType<typeof selectNativeGraphEvidence>): Pick<ProjectionEvent, 'type' | 'payload'> | undefined {
   if (!observation) {
+    // Claude frames require their actual message/session correlation. A familiar
+    // turn event name cannot be repaired into provider turn evidence.
+    if (binding.provider === 'claude') return undefined
     if (selected.kind !== 'evidence') return undefined
     // Exact current connection/session binding is already locked above. Fill only
     // missing session metadata; contradictory provider metadata is never overwritten.
@@ -209,9 +218,34 @@ function normalizedEvidence(scope: RunGraphScope, observation: NativeGraphObserv
     || value.sourceStreamId !== nativeProjectionId('stream', event.executionId, event.connectionId ?? null)
     || value.observedAt !== event.occurredAt || canonicalGraphJson(value.work) !== canonicalGraphJson(binding.key) || value.source.sourceId !== source.sourceId
     || value.source.sourceRevision !== source.sourceRevision || value.sourcePosition !== String(event.sequence)
-    || value.connectionGeneration !== binding.connectionGeneration) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
-  const payload = { sessionID: binding.nativeSessionId, turnId: binding.nativeTurnId }
+    || value.connectionGeneration !== binding.connectionGeneration
+    || value.kind !== 'transport' && value.submissionId !== binding.nativeTurnId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+  const payload = binding.provider === 'claude'
+    ? { nativeSessionId: binding.nativeSessionId, nativeMessageId: binding.nativeTurnId }
+    : { sessionID: binding.nativeSessionId, turnId: binding.nativeTurnId }
   if (value.kind === 'transport') return value.transport === 'closed' ? { type: 'graph.native.disconnected', payload } : undefined
   if (value.kind === 'submission') return { type: value.state === 'acknowledged' ? 'graph.native.acknowledged' : 'graph.native.uncertain', payload }
   return { type: 'graph.native.terminal', payload: { ...payload, terminal: value.terminal } }
+}
+
+/** Positive SDK receipts carry the actual consumed input message. Native turn
+ * aliases, idle/history echoes and unattributed results cannot acknowledge it. */
+export function claudeNativeGraphObservation(scope: RunGraphScope, work: NativeGraphProjectionKey,
+  event: HarnessNativeEvent, binding: { nativeSessionId: string; nativeMessageId: string | null;
+    clientCorrelationId: string; connectionGeneration: string; terminalReady: boolean }): NativeGraphObservation | undefined {
+  const payload = event.payload
+  if (!binding.nativeMessageId || payload.nativeSessionId !== binding.nativeSessionId
+    || payload.nativeMessageId !== binding.nativeMessageId || payload.clientCorrelationId !== binding.clientCorrelationId) return undefined
+  const base = { scope, work, source: nativeGraphSource(event),
+    sourceStreamId: nativeProjectionId('stream', event.executionId, event.connectionId ?? null),
+    sourcePosition: String(event.sequence), connectionGeneration: binding.connectionGeneration,
+    observedAt: event.occurredAt, submissionId: binding.nativeMessageId }
+  if (event.type === 'message.submitted' || event.type === 'interaction.pending'
+    && typeof payload.nativeRequestId === 'string' && payload.nativeRequestId.length > 0
+    && String(payload.generation) === binding.connectionGeneration) return { ...base, kind: 'submission', state: 'acknowledged' }
+  if (event.type !== 'turn.completed' || !binding.terminalReady) return undefined
+  const result = ExecutionResultSchema.safeParse(payload.result)
+  if (!result.success) return undefined
+  return { ...base, kind: 'terminal', terminal: { outcome: result.data.outcome,
+    evidenceKind: 'provider_terminal', evidenceId: base.source.sourceId, nativeSettled: true } }
 }

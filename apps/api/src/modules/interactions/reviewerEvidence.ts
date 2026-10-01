@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@graphql/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
 import { harnessProfile } from '../harnesses/qualification/profiles.js'
@@ -83,6 +83,24 @@ export class ReviewEvidenceTracker {
   observeEvent(event: NativeHarnessEvent): void {
     this.count += 1
     const payload = event.payload
+    if (this.session.harness === 'claude') {
+      // The admitted SDK reports consumed input messages, not provider turns.
+      // A result/session echo without that exact message cannot settle a review.
+      if (payload.nativeSessionId !== this.session.nativeSessionId
+        || payload.clientCorrelationId !== this.correlationId || typeof payload.nativeMessageId !== 'string'
+        || !payload.nativeMessageId) return
+      if (this.providerId && payload.nativeMessageId !== this.providerId) { this.identityConflict = true; return }
+      if (event.type === 'message.submitted' || event.type === 'interaction.pending'
+        && typeof payload.nativeRequestId === 'string' && payload.nativeRequestId.length > 0) {
+        this.acknowledge(payload.nativeMessageId)
+        this.busy(payload.nativeMessageId)
+      } else if (event.type === 'turn.completed' && payload.nativeMessageId === this.providerId
+        && ExecutionResultSchema.safeParse(payload.result).success) {
+        this.terminal = true
+        this.idle()
+      }
+      return
+    }
     if ((typeof payload.threadId === 'string' && payload.threadId !== this.session.nativeSessionId)
       || (typeof payload.sessionID === 'string' && payload.sessionID !== this.session.nativeSessionId)) return
     const turn = object(payload.turn)
