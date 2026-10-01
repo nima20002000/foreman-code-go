@@ -11,6 +11,7 @@ export interface OwnershipView {
   observedInstallationId: string
   roots: readonly ProcessIdentity[]
   accountingHandles: readonly AccountingHandle[]
+  accountingIncomplete?: boolean
   captureTruncated?: boolean
   shared: boolean
   lifecycle: 'active' | 'ended' | 'closure-unconfirmed' | 'closed'

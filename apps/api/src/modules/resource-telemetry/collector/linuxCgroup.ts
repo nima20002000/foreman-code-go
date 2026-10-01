@@ -12,6 +12,7 @@ export interface AccountingHandle {
   read(signal: AbortSignal): Promise<AccountingResult>
 }
 export function accountingHandle(boundary: NativeCgroupBoundary, exclusive: boolean): AccountingHandle {
+  boundary = { ...boundary }
   return { boundary: { ...boundary }, exclusive, async read(signal) {
     signal.throwIfAborted()
     if (!boundary.path.startsWith('/sys/fs/cgroup/') || normalize(boundary.path) !== boundary.path) throw new Error('identity-changed')

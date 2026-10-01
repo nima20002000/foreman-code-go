@@ -23,3 +23,9 @@ it('rejects symlink open without alternative path', async () => { fake.open.mock
 it('preserves missing versus denied with independent RAM', async () => { fake.read.mockImplementation(async path => { if (path.endsWith('cpu.stat')) throw Object.assign(new Error(), { code: 'EACCES' }); return '0' }); expect(await accountingHandle(boundary, true).read(new AbortController().signal)).toMatchObject({ cpu: null, cpuFailure: 'permission-denied', memory: 0 }); expect(fake.close).toHaveBeenCalledOnce() })
 it('abort after read still closes pinned fd', async () => { const abort = new AbortController(); fake.read.mockImplementation(async path => { if (path.endsWith('memory.current')) abort.abort(); return path.endsWith('cpu.stat') ? 'usage_usec 100' : '0' }); await expect(accountingHandle(boundary, true).read(abort.signal)).rejects.toThrow(); expect(fake.close).toHaveBeenCalledOnce() })
 it('invalid memory does not erase valid CPU', async () => { fake.read.mockImplementation(async path => path.endsWith('cpu.stat') ? 'usage_usec 100' : '-1'); expect(await accountingHandle(boundary, true).read(new AbortController().signal)).toMatchObject({ cpu: 100n, memory: null, memoryFailure: 'invalid-counter' }) })
+it('retains the original certificate when its producer record is later replaced', async () => {
+  const captured = { ...boundary }; const handle = accountingHandle(captured, true)
+  captured.path = '/sys/fs/cgroup/replacement'; captured.inode = '99'
+  expect(await handle.read(new AbortController().signal)).toMatchObject({ cpu: 100n, memory: 2048 })
+  expect(fake.open.mock.calls[0]?.[0]).toBe(boundary.path); expect(handle.boundary).toEqual(boundary)
+})

@@ -93,7 +93,7 @@ export class LinuxSampler {
     const capturedMemberships: Array<{ row: TelemetryCollectedRow; identities: Set<string> }> = []
     for (const view of views) {
       signal.throwIfAborted()
-      const key = createHash('sha256').update(telemetryCanonical(view.selector) + ':' + view.leaseId + ':' + [...view.launchIds].sort().join(',')).digest('hex')
+      const key = createHash('sha256').update(telemetryCanonical(view.selector) + ':' + view.leaseId + ':' + telemetryCanonical({ launches: [...view.launchIds].sort(), roots: view.roots.map(root => `${root.bootId}:${root.pid}:${root.startTicks}`).sort() })).digest('hex')
       alive.add(key)
       const selector = view.selector
       if (selector.mainId !== identity.mainId || telemetryCanonical(selector.host) !== telemetryCanonical(identity.host)
@@ -145,6 +145,7 @@ export class LinuxSampler {
         memory = result.rssBytes === null ? failure : { state: 'ok', value: { kind: 'rss-sum', bytes: result.rssBytes, totalBytes: null, availableBytes: null, sharedPagesMayDoubleCount: true } }
       }
       if (cpu.state !== 'ok' && cpu.state !== 'warmup') { const baseline = this.baselines.get(key); if (baseline) delete baseline.cpu }
+      if (view.accountingIncomplete) { coverage.boundary = 'partial'; if (!coverage.reasons.includes('escaped-boundary')) coverage.reasons.push('escaped-boundary') }
       if (view.captureTruncated) { coverage.boundary = 'partial'; if (!coverage.reasons.includes('limit')) coverage.reasons.push('limit') }
       const row = { selector, coverage, cpu, memory }; owned.push(row)
       capturedMemberships.push({ row, identities: new Set(captured.map(value => `${value.bootId}:${value.pid}:${value.startTicks}`)) })
