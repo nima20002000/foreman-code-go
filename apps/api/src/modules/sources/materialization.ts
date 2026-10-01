@@ -24,6 +24,9 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     MaterializationReceiptSchema.shape.attemptId.parse(attempt.attemptId)
     MaterializationReceiptSchema.shape.keyRevision.parse(attempt.keyRevision)
     MaterializationReceiptSchema.shape.authorizationRevision.parse(attempt.authorizationRevision)
+    if ((binding.deviceId === null) !== (binding.workerInstallationId === null)
+      || (binding.deviceId === null) !== (attempt.keyRevision === null && attempt.authorizationRevision === null))
+      throw new SourceError('SOURCE_HOST_IDENTITY_INVALID', 'Original-main roots have no worker registration; device roots require actual worker authorization pins.')
     await this.authorize(binding, attempt)
     if (this.active >= SOURCE_LIMITS.concurrent) throw new SourceError('SOURCE_CAPACITY', 'Materialization concurrency is exhausted.')
     this.active++

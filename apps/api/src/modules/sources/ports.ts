@@ -6,7 +6,7 @@ export interface SourceByteReader {
   read(snapshot: SourceSnapshotPin, entry: SourceEntry, signal: AbortSignal): Promise<Uint8Array>
 }
 export type MaterializationAttempt = {
-  placementHash: string; executionId: string; attemptId: string; keyRevision: number; authorizationRevision: number
+  placementHash: string; executionId: string; attemptId: string; keyRevision: number | null; authorizationRevision: number | null
 }
 export interface SourceMaterializationPort {
   prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<MaterializationReceipt>
