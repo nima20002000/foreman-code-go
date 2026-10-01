@@ -59,6 +59,26 @@
     "./selected-run-chat": {
       "types": "./dist/selectedRunChat.d.ts",
       "import": "./dist/selectedRunChat.js"
+    },
+    "./device-identity": {
+      "types": "./dist/deviceIdentity.d.ts",
+      "import": "./dist/deviceIdentity.js"
+    },
+    "./device-identity-node": {
+      "types": "./dist/deviceIdentityNode.d.ts",
+      "import": "./dist/deviceIdentityNode.js"
+    },
+    "./activity": {
+      "types": "./dist/activity.d.ts",
+      "import": "./dist/activity.js"
+    },
+    "./activity-text": {
+      "types": "./dist/activityText.d.ts",
+      "import": "./dist/activityText.js"
+    },
+    "./interaction-activity": {
+      "types": "./dist/interaction-activity.d.ts",
+      "import": "./dist/interaction-activity.js"
     }
   },
   "scripts": {
