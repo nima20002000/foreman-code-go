@@ -1,3 +1,13 @@
+import type { ChatResponseAcknowledgment } from '@graphql/contracts/interaction-activity'
+import { acceptedResponseControl } from './acceptedResponseControl.js'
+import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
+import { qualifyChatActivity } from './qualifiedActivity.js'
+import { reconcileKnownActivities } from './reconcileKnownActivities.js'
+import { knownNativeActivity } from './knownNativeActivity.js'
+import { committedNativeText } from './committedNativeText.js'
+import { activityTextEnvelope } from './activityTextEnvelope.js'
+import { nativeInteractionAvailability } from './interactionAvailability.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type pg from 'pg'
@@ -26,7 +36,8 @@ import {
 } from './selectedRunChat.js'
 import { agentActivitySnapshot } from './activitySnapshot.js'
 import { AgentChatCommands } from './agentChatCommands.js'
-import { requireAuthorization } from '../access/policy.js'
+import { requireAuthorization, isAuthorized } from '../access/policy.js'
+import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { NativeTurnNotActiveError } from '../harnesses/errors.js'
 import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../harnesses/port.js'
@@ -201,9 +212,11 @@ export class AgentChatService {
     const row = await this.repository.get(id)
     if (!row || row.workspace_id !== workspaceId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
     this.authorize(principal, action, { workspaceId, workflowId: row.workflow_id, ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) })
+    const live = await readLiveManagementPrincipal(this.pool, principal.id)
+    this.authorize(live, action, { workspaceId, workflowId: row.workflow_id, ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) })
     // Commands return transcript/activity/approval state: check its authority
     // before command reservation or any native/database mutation, also on replay.
-    if (action !== 'agent_chat:read') this.authorize(principal, 'agent_chat:read', { workspaceId, workflowId: row.workflow_id,
+    if (action !== 'agent_chat:read') this.authorize(live, 'agent_chat:read', { workspaceId, workflowId: row.workflow_id,
       ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) })
     if (action !== 'agent_chat:read' && row.record.origin.kind === 'run_execution'
       && row.native_session_id === row.record.origin.sourceNativeSessionId) {
@@ -382,8 +395,10 @@ export class AgentChatService {
     }
   }
 
-  private async state(resolution: Resolution): Promise<AgentChatState> {
+  private async state(resolution: Resolution, principal: ManagementPrincipal): Promise<AgentChatState> {
     const { context, blocked } = resolution
+    const livePrincipal = await readLiveManagementPrincipal(this.pool, principal.id)
+    this.authorize(livePrincipal, 'agent_chat:read', context)
     const capabilities = this.capabilities(resolution.configuration, resolution.row)
     if (blocked && ['native_session_missing', 'harness_unavailable', 'agent_missing'].includes(blocked.reason)) {
       capabilities.resume = false; capabilities.queueNextTurn = false; capabilities.interruptAndSend = false
@@ -394,7 +409,9 @@ export class AgentChatService {
     const availability = blocked ? { canSend: false, reason: blocked.reason, message: blocked.message } : { canSend: true, message: 'GraphQL workflow tools are not available in chat. The scoped GraphQL App MCP server is disabled for chat only; other accepted Agent settings are retained.' }
     if (!resolution.row) {
       return AgentChatStateSchema.parse({ context, conversation: null, sessionState: 'none', availability, capabilities,
-        activeTurn: null, turns: [], messages: [], hasEarlierMessages: false, activities: [], revision: 0 })
+        activeTurn: null, turns: [], messages: [], hasEarlierMessages: false, activities: [], revision: 0,
+        qualificationKey: commandInputHash({ principal: livePrincipal, configurationId: resolution.configuration?.id ?? null,
+          availability, capabilities }).slice(7) })
     }
     const loaded = await this.repository.state(resolution.row.id, { recoverOverflow: true })
     if (!loaded) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
@@ -410,6 +427,23 @@ export class AgentChatService {
         'This chat has more than 100 unfinished tools or subagents. Only 100 unfinished entries are shown; additional work remains in activity history.']
         .filter(Boolean).join(' ')
     }
+    const runtime = this.runtimes.get(row.id)
+    const responseAvailability = row.pending_interaction ? await nativeInteractionAvailability(row.pending_interaction,
+      isAuthorized(livePrincipal, 'agent_chat:respond', { workspaceId: row.workspace_id, workflowId: row.workflow_id,
+        ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) }),
+      runtime?.session ? { manager: runtime.manager, session: runtime.session } : undefined,
+      { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
+        isCurrent: () => this.runtimes.get(row.id) === runtime && !!runtime?.session && !runtime.disposal && !this.closing }) : undefined
+    const finalPrincipal = await readLiveManagementPrincipal(this.pool, principal.id)
+    this.authorize(finalPrincipal, 'agent_chat:read', context)
+    const qualifiedResponse = responseAvailability && !isAuthorized(finalPrincipal, 'agent_chat:respond', { workspaceId: context.workspaceId, workflowId: context.workflowId, ...(context.runId ? { runId: context.runId } : {}) })
+      ? { ...responseAvailability, available: false, status: 'unavailable' as const, path: null,
+        reason: 'unauthorized' as const, message: 'Your current grants do not allow responding to this interaction.' } : responseAvailability
+    const activitySnapshot = qualifyChatActivity(agentActivitySnapshot(loaded), qualifiedResponse)
+    const qualificationKey = commandInputHash({ principal: finalPrincipal, configurationId: resolution.configuration?.id ?? null,
+      availability, capabilities, scope: activitySnapshot.scope, revision: activitySnapshot.revision,
+      sourceRevisions: 'sourceRevisions' in activitySnapshot ? activitySnapshot.sourceRevisions : null,
+      responseAvailability: qualifiedResponse ?? null }).slice(7)
     const activities = loaded.activityPage.activities
     return AgentChatStateSchema.parse({
       context, conversation: agentConversation(row), sessionState: this.sessionUnavailable(row, resolution.configuration)
@@ -421,14 +455,15 @@ export class AgentChatService {
       ...(loaded.hasMoreTurns ? { hasMoreTurns: true } : {}),
       ...(row.pending_interaction ? { pendingInteraction: row.pending_interaction } : {}),
       ...(row.last_result ? { lastResult: row.last_result } : {}),
-      revision: Number(row.revision), activitySnapshot: agentActivitySnapshot(loaded),
+      revision: Number(row.revision), activitySnapshot, qualificationKey,
+      ...(qualifiedResponse ? { responseAvailability: qualifiedResponse } : {}),
     })
   }
 
   async read(principal: ManagementPrincipal, workspaceId: string, query: AgentChatQuery): Promise<AgentChatState> {
     const context: AgentChatContext = { workspaceId, ...query }
     this.authorize(principal, 'agent_chat:read', context)
-    return this.state(await this.resolve(context))
+    return this.state(await this.resolve(context), principal)
   }
   async readConversation(principal: ManagementPrincipal, workspaceId: string, id: string): Promise<AgentChatState> {
     const row = await this.conversation(workspaceId, id, principal, 'agent_chat:read')
@@ -437,7 +472,7 @@ export class AgentChatService {
     const resolution = await this.resolve(context, row.origin_execution_id ?? undefined,
       !!context.runId && !!row.origin_execution_id && row.agent_key === runChatStorageKey(context, row.origin_execution_id))
     if (resolution.row?.id !== id) staleRunChat()
-    return this.state(resolution)
+    return this.state(resolution, principal)
   }
   async history(principal: ManagementPrincipal, workspaceId: string, id: string, before: string | undefined, limit: number) {
     await this.conversation(workspaceId, id, principal, 'agent_chat:read')
@@ -461,7 +496,7 @@ export class AgentChatService {
       if (selected.kind !== 'selected') return ReadSelectedRunChatResponseSchema.parse(selected)
       const resolution = await this.resolve(selected.context, selected.selection.executionId, true)
       if (resolution.blocked?.reason === 'context_stale') staleRunChat()
-      const state = await this.state(resolution)
+      const state = await this.state(resolution, principal)
       const id = state.conversation?.id
       return ReadSelectedRunChatResponseSchema.parse({ kind: 'selected', selection: selected.selection, state,
         key: id ? SelectedRunChatKeySchema.parse({ ...selected.selection, agentId: selected.context.agentId, conversationId: id }) : null,
@@ -533,7 +568,7 @@ export class AgentChatService {
       if (prior) {
         // Same key and input returns the stored receipt; a different input is a conflict. Never re-sends.
         const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', assertCurrent })
-        return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true,
+        return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun), principal), turn: admitted.turn, replayed: true,
           ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
       }
     }
@@ -547,15 +582,15 @@ export class AgentChatService {
     const create = resolution.create ? { ...resolution.create, context } : undefined
     const admitted = await this.repository.admit({ key, request: input, context, delivery: 'queued', ownerPrincipalId: principal.id, assertCurrent,
       ...(create ? { create } : {}) })
-    if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true,
+    if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun), principal), turn: admitted.turn, replayed: true,
       ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
     this.events.publish(admitted.conversationId, 'turn', { requestId: input.requestId, delivery: admitted.turn.delivery })
     if (input.intent === 'interrupt_and_send') await this.interruptActive(admitted.conversationId, false, admitted.interruptTarget)
     this.pump(admitted.conversationId)
-    return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: false }
+    return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun), principal), turn: admitted.turn, replayed: false }
   }
 
-  private async steer(_principal: ManagementPrincipal, context: AgentChatContext, key: string, input: SendAgentChatMessageRequest, resolution: Resolution, selectedRun: boolean, assertCurrent: RunChatAuthorityCheck = async () => {}) {
+  private async steer(principal: ManagementPrincipal, context: AgentChatContext, key: string, input: SendAgentChatMessageRequest, resolution: Resolution, selectedRun: boolean, assertCurrent: RunChatAuthorityCheck = async () => {}) {
     const row = resolution.row
     const runtime = row ? this.runtimes.get(row.id) : undefined
     if (!row || !row.active_request_id || !row.active_native_turn_id || !runtime?.session) {
@@ -571,7 +606,7 @@ export class AgentChatService {
     return this.control(row.id, async () => {
       await assertCurrent()
       const admitted = await this.repository.admit({ key, request: input, context, delivery: 'submitting', targetNativeTurnId: target, assertCurrent })
-      if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn: admitted.turn, replayed: true }
+      if (admitted.replayed) return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun), principal), turn: admitted.turn, replayed: true }
       try {
         const steered = await runtime.manager.steerTurn!(runtime.session!, {
           prompt: input.content, clientCorrelationId: agentChatCorrelation(row.id, input.requestId), expectedTurnId: target,
@@ -588,7 +623,7 @@ export class AgentChatService {
       }
       this.events.publish(row.id, 'turn', { requestId: input.requestId })
       const turn = (await this.repository.turn(row.id, input.requestId))!
-      return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun)), turn, replayed: false }
+      return { state: await this.state(await this.resolve(context, resolution.executionId, selectedRun), principal), turn, replayed: false }
     })
   }
 
@@ -597,12 +632,16 @@ export class AgentChatService {
     return this.command(async () => {
       const input = InterruptAgentChatRequestSchema.parse(value)
       await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
-      return this.commands.execute(principal, source, id, input.requestId, { kind: 'interrupt', workspaceId, ...input }, async () => {
+      return this.commands.execute(principal, source, id, input.requestId, { kind: 'interrupt', workspaceId, ...input }, async (markDispatchAttempt) => {
         await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
         const target = await this.repository.interrupt(id, input.expectedNativeTurnId)
+        if (target) markDispatchAttempt()
         await this.interruptActive(id, true, target)
         return this.readConversation(principal, workspaceId, id)
-      }, () => this.readConversation(principal, workspaceId, id))
+      }, async () => {
+        await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
+        return this.readConversation(principal, workspaceId, id)
+      })
     })
   }
   cancelQueued(principal: ManagementPrincipal, workspaceId: string, id: string, turnRequestId: string,
@@ -611,6 +650,7 @@ export class AgentChatService {
       const input = CancelQueuedAgentChatTurnRequestSchema.parse(value)
       await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
       return this.commands.execute(principal, source, id, input.requestId, { kind: 'cancel_queued', workspaceId, turnRequestId, ...input }, async () => {
+        await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
         if (!await this.repository.cancelQueued(id, turnRequestId)) {
           const turn = await this.repository.turn(id, turnRequestId)
           if (!turn) throw new DomainError('AGENT_CHAT_TURN_NOT_FOUND', 'That message was not found.', 404)
@@ -619,7 +659,10 @@ export class AgentChatService {
         this.events.publish(id, 'turn', { requestId: turnRequestId, delivery: 'canceled' })
         this.pump(id)
         return this.readConversation(principal, workspaceId, id)
-      }, () => this.readConversation(principal, workspaceId, id))
+      }, async () => {
+        await this.conversation(workspaceId, id, principal, 'agent_chat:cancel')
+        return this.readConversation(principal, workspaceId, id)
+      })
     })
   }
   respond(principal: ManagementPrincipal, workspaceId: string, id: string,
@@ -627,7 +670,9 @@ export class AgentChatService {
     return this.command(async () => {
       const input = RespondAgentChatInteractionRequestSchema.parse(value)
       await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
-      return this.commands.execute(principal, source, id, input.requestId, { kind: 'respond', workspaceId, ...input }, async () => {
+      let providerAcknowledgment: ChatResponseAcknowledgment | undefined
+      const acceptedControl = acceptedResponseControl(await this.readConversation(principal, workspaceId, id), input.nativeRequestId, input.optionId)
+      return this.commands.execute(principal, source, id, input.requestId, { kind: 'respond', workspaceId, ...input }, async (markDispatchAttempt) => {
         await this.control(id, async () => {
           const row = await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
           const pending = row.pending_interaction
@@ -638,13 +683,26 @@ export class AgentChatService {
           const option = pending.responseOptions.find((entry) => entry.optionId === input.optionId)
           if (!option) throw new DomainError('AGENT_CHAT_INTERACTION_OPTION_INVALID', 'That option was not offered.', 422)
           const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
+          markDispatchAttempt()
           await runtime.manager.respond(runtime.session, input.nativeRequestId, option, signal)
+          if (runtime.manager.reconcileResponse) {
+            const history = await runtime.manager.reconcileResponse(runtime.session, { nativeRequestId: input.nativeRequestId,
+              nativeRequestType: pending.nativeRequestType, option }, signal)
+            const proofs = (history.responseDeliveries ?? []).filter((proof) => proof.nativeSessionId === runtime.session!.nativeSessionId
+              && proof.nativeRequestId === input.nativeRequestId)
+            if (proofs.length && proofs.every((proof) => proof.harness === runtime.session!.harness
+              && proof.providerVersion === runtime.session!.providerVersion && proof.nativeRequestType === pending.nativeRequestType
+              && proof.optionId === option.optionId && proof.semantic === option.semantic)) providerAcknowledgment = proofs[0]
+          }
           const next = await runtime.manager.pending(runtime.session, signal)
           await this.repository.pending(id, row.active_request_id, next)
           this.events.publish(id, 'state', { pending: Boolean(next) })
         })
         return this.readConversation(principal, workspaceId, id)
-      }, () => this.readConversation(principal, workspaceId, id))
+      }, async () => {
+        await this.conversation(workspaceId, id, principal, 'agent_chat:respond')
+        return this.readConversation(principal, workspaceId, id)
+      }, acceptedControl, () => providerAcknowledgment)
     })
   }
 
@@ -852,16 +910,23 @@ export class AgentChatService {
       }
       let nativeTurnId: string | null = null
       const streamSignal = AbortSignal.any([signal, observer.signal])
+      const textOwner = () => ({ scope, requestId: turn.requestId, sessionId: session.nativeSessionId,
+        ...(nativeTurnId ? { turnId: nativeTurnId } : {}) })
+      const redact = nativePersistenceRedactor([])
+      const committed = committedNativeText({ id, requestId: turn.requestId, repository: this.messages,
+        harness: runtime.manager.harness, session, owner: textOwner, sanitize: (operation) => redact.value(operation),
+        reconcile: () => this.scheduleReconcile(id) })
       textStream = createNativeTextStream({
         signal: streamSignal, harness: runtime.manager.harness,
-        owner: () => ({ scope: { ...scope, requestId: turn.requestId }, requestId: turn.requestId,
-          sessionId: session.nativeSessionId, ...(nativeTurnId ? { turnId: nativeTurnId } : {}) }),
-        publish: (operation) => this.events.publish(id, 'delta', { partId: operation.identity.partId,
-          text: operation.text, mode: operation.mode, requestId: turn.requestId }),
+        owner: textOwner,
+        publish: (operation) => {
+          if (operation.identity.channel !== 'assistant') return
+          this.events.publish(id, 'delta', { requestId: turn.requestId, activityChange: activityTextEnvelope(redact.value(operation), runtime!.manager.harness),
+            ...(committed.revision() ? { scopeRevision: committed.revision() } : {}) })
+        },
         reconcile: () => this.events.publish(id, 'state', { requestId: turn.requestId, snapshotRequired: true }),
       })
       const currentEvent = openCodeTurnEvents(session.nativeSessionId, () => nativeTurnId)
-      const redact = nativePersistenceRedactor([])
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
       for await (const event_ of runtime.manager.startTurn(session, {
@@ -879,8 +944,12 @@ export class AgentChatService {
         submitted = true
         for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
           textStream.before(event)
-          if (await this.record(id, turn.requestId, runtime, event, redact, nativeTurnId)) textStream.push(event)
+          const text = await committed.record(event, nativeTurnId)
+          const recorded = await this.record(id, turn.requestId, runtime, event, redact, nativeTurnId, false, text.handled)
+          if (recorded && text.allowed) textStream.push(event)
           else textStream.rejected(event)
+          if (text.final) this.events.publish(id, 'message', { requestId: turn.requestId, snapshotRequired: true,
+            scopeRevision: committed.revision() })
           if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
             // Share the response lock so an older observation cannot overwrite its next approval.
             await this.control(id, async () => {
@@ -929,9 +998,13 @@ export class AgentChatService {
     }
   }
 
-  private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>, nativeTurnId: string | null, authoritativeReconciliation = false) {
+  private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>, nativeTurnId: string | null, authoritativeReconciliation = false, textHandled = false) {
+    const known = knownNativeActivity(event, runtime.manager.harness)
+    const settled = known ? await this.activity.settleKnownByNative(id, known.change, known.native) : undefined
+    if (settled) this.events.publish(id, 'activity', settled)
     const change = operatorActivity(event, runtime.manager.harness, requestId)
-    if (change && change.kind !== 'thinking') {
+    if (!settled && change && change.kind !== 'thinking'
+      && (!known || known.native.sessionId === runtime.session?.nativeSessionId && known.native.turnId === nativeTurnId)) {
       if (!runtime.session || !nativeTurnId) { this.scheduleReconcile(id); return true }
       const accepted = await this.activity.append(id, requestId, redact.value(change), {
         ...nativeActivityFence(runtime.session, nativeTurnId, event, authoritativeReconciliation),
@@ -939,6 +1012,7 @@ export class AgentChatService {
       })
       if (accepted) this.events.publish(id, 'activity', accepted)
     }
+    if (textHandled) return true
     const message = completedNativeAssistantMessage(event, runtime.manager.harness)
     if (!message) return true
     if (await this.messages.appendAssistantMessage(id, requestId, message.id, message.text,
@@ -965,7 +1039,9 @@ export class AgentChatService {
     await this.repository.accepted(id, requestId, history.nativeTurnId)
     const redact = nativePersistenceRedactor([])
     for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.record(id, requestId, runtime, event, redact, history.nativeTurnId, true)
-    const pending = history.pendingInteraction ?? history.pendingInteractions[0]
+    const current = await this.repository.get(id)
+    if (!current || current.active_request_id !== requestId || current.native_session_id !== row.native_session_id) return
+    const pending = pendingInteractionAfterHistory(current.pending_interaction, history)
     if (history.terminalResult && !pending) {
       await this.settle(id, requestId, history.terminalResult, history.nativeMessageId)
     } else {
@@ -985,6 +1061,7 @@ export class AgentChatService {
       const observer = this.runtimes.get(id)?.observer
       if (observer?.requestId === requestId) observer.controller.abort(new Error('Agent chat turn settled.'))
       this.events.publish(id, 'message', { requestId })
+      this.scheduleReconcile(id)
       // Rejected creation may have become canceled under the repository lock. Invalidate rather
       // than publishing an outcome chosen before that concurrent Stop committed.
       this.events.publish(id, 'state', { requestId,
@@ -1021,6 +1098,13 @@ export class AgentChatService {
       const target = steers.find((entry) => entry.targetRequestId && entry.targetNativeTurnId)
       const recoveryRequestId = requestId ?? target?.targetRequestId
       if (!recoveryRequestId) {
+        const remaining = await reconcileKnownActivities({ kind: 'agent', conversationId: id, activity: this.activity,
+          signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
+          runtimeFor: (candidate) => {
+            const runtime = this.runtimes.get(candidate)
+            return runtime?.session && !runtime.disposal && !runtime.retiring ? { manager: runtime.manager, session: runtime.session } : undefined
+          }, publish: (candidate, settled) => this.events.publish(candidate, 'activity', settled) })
+        if (remaining && this.runtimes.get(id)?.manager.harness === 'codex') this.scheduleReconcile(id)
         for (const steer of steers) if (steer.delivery === 'submitting') {
           await this.repository.unknown(id, steer.requestId, 'The original steering target is not established. No input was resent.')
           this.events.publish(id, 'turn', { requestId: steer.requestId, delivery: 'unknown' })

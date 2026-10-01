@@ -34,8 +34,21 @@ function receipt(index: number, delivery: AgentChatTurn['delivery'] = 'unknown')
     input_hash: 'unused', payload: { content: `message ${index}` }, created_at: now, updated_at: now }
 }
 type Sql = (sql: string, values: readonly unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>
-function poolFor(query: Sql): pg.Pool {
-  const execute = (text: string, values: readonly unknown[] = []) => query(text.replace(/\s+/g, ' ').trim(), values)
+function poolFor(query: Sql, stateReads = false): pg.Pool {
+  const execute = (text: string, values: readonly unknown[] = []) => {
+    const sql = text.replace(/\s+/g, ' ').trim()
+    if (stateReads && ['begin isolation level repeatable read read only', 'begin', 'commit', 'rollback'].includes(sql)) return Promise.resolve(result())
+    if (stateReads && sql.includes('from management_command_receipts')) return Promise.resolve(result())
+    if (stateReads && sql.includes('from file_tool_publications')) return Promise.resolve(result())
+    if (stateReads && sql.startsWith('select conversation_id from operator_conversation_turns')) return Promise.resolve(result([{ conversation_id: 'chat-g4' }]))
+    if (stateReads && sql.includes('from operator_conversation_activity')) return Promise.resolve(result())
+    if (stateReads && sql.startsWith('select (select started_at from operator_conversation_turns')) return Promise.resolve(result([{ started_at: now, latest_request_id: values[1] ?? null }]))
+    if (sql.startsWith('select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals')) return Promise.resolve(result([
+      { id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
+        expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null },
+    ]))
+    return query(sql, values)
+  }
   return { query: execute, connect: async () => ({ query: execute, release() {} }) } as unknown as pg.Pool
 }
 function result(rows: unknown[] = []) { return { rows, rowCount: rows.length } }
@@ -69,7 +82,7 @@ describe('G4 readback and legacy receipt recovery', () => {
       if (sql.startsWith('with candidates as')) return result([{ messages: [], has_earlier: false }])
       if (sql.includes('from operator_conversation_activity')) return result()
       throw new Error(`Unexpected SQL: ${sql}`)
-    })
+    }, true)
     const repository = new PostgresAgentChatRepository(pool)
     const before = structuredClone(stored)
     await assert.rejects(repository.state('chat-g4'), { code: 'AGENT_CHAT_RECEIPT_OVERFLOW', status: 409 })
@@ -80,7 +93,7 @@ describe('G4 readback and legacy receipt recovery', () => {
     assert.equal(loaded.turns.at(-1)?.requestId, 'request-104')
     assert.equal(loaded.turns.at(-1)?.delivery, 'queued')
     assert.deepEqual(stored, before, 'A read must not cancel or discard overflow receipts.')
-    const state = await service(pool, repository)['state']({ context, row: row() })
+    const state = await service(pool, repository)['state']({ context, row: row() }, principal)
     assert.equal(AgentChatStateSchema.safeParse(state).success, true)
     assert.equal(state.availability.canSend, false)
     assert.match(state.availability.message!, /recovery window/)
@@ -95,7 +108,7 @@ describe('G4 readback and legacy receipt recovery', () => {
       if (sql.startsWith('with open as')) return result(stored)
       if (sql.startsWith('with candidates as')) return result([{ messages: [], has_earlier: false }])
       throw new Error(`Unexpected SQL: ${sql}`)
-    })
+    }, true)
     const loaded = await new PostgresAgentChatRepository(pool).state('chat-g4', { recoverOverflow: true })
     assert.equal(loaded?.hasMoreTurns, undefined)
     assert.deepEqual(loaded?.turns.map((entry) => entry.requestId), stored.map((entry) => entry.request_id))
@@ -110,7 +123,7 @@ describe('G4 readback and legacy receipt recovery', () => {
       const before = values[1] as string | null
       return result(stored.filter((entry) => before === null || BigInt(entry.turn_sequence) < BigInt(before))
         .slice().reverse().slice(0, Number(values[2]) + 1))
-    })
+    }, true)
     const repository = new PostgresAgentChatRepository(pool)
     const newest = await repository.receipts('chat-g4', undefined, 2)
     assert.deepEqual(newest.turns.map((entry) => entry.requestId), ['request-4', 'request-5'])
@@ -128,9 +141,9 @@ describe('G4 readback and legacy receipt recovery', () => {
       if (sql.startsWith('with candidates as')) return result([{ messages: [], has_earlier: true }])
       if (sql.includes('from operator_conversation_activity')) return result()
       throw new Error(`Unexpected SQL: ${sql}`)
-    })
+    }, true)
     const chat = service(pool)
-    const state = await chat['state']({ context, row: row() })
+    const state = await chat['state']({ context, row: row() }, principal)
     const message = { id: 'large-g4', conversationId: 'chat-g4', role: 'assistant' as const, requestId: 'request-1',
       content: '界'.repeat(150_000), createdAt: now.toISOString(), updatedAt: now.toISOString() }
     const history = { conversationId: 'chat-g4', messages: [message], nextCursor: '2' }

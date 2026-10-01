@@ -50,6 +50,7 @@ describe('authoritative interaction activity', () => {
 
 it('shared authenticated read projects current response authority and rejects denied actors before runtime inspection', async () => {
   const repository = Object.create(Wave25InteractionRepository.prototype) as Wave25InteractionRepository
+  repository.activityAcknowledgment = vi.fn(async () => ({}))
   repository.get = vi.fn(async () => ({ ...interaction, approval: { handler: 'user' as const } }))
   const inspect = vi.fn(async () => live)
   const service = new InteractionService(repository, {} as PostgresApprovalBudgetRepository,

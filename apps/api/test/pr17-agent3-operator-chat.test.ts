@@ -305,7 +305,7 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
 
 it('W05 does not advertise authoritative final text when its repository mutation was declined', async () => {
   const f = fixture(), deltas: unknown[] = []
-  f.repository.appendAssistantMessage = async () => false
+  f.repository.appendAssistantTextOperation = async () => ({ status: 'ignored', revision: String(f.row.revision) })
   f.manager.emitted = [{ sequence: 1, type: 'item.completed', occurredAt: new Date().toISOString(),
     payload: { item: { id: 'uncommitted-item', type: 'agentMessage', text: 'uncommitted text' } } },
     { sequence: 2, type: 'assistant.delta', occurredAt: new Date().toISOString(), payload: { itemId: 'uncommitted-item', text: 'late' } }]
@@ -335,7 +335,7 @@ it('mounts exact transport fences and authoritative same-status history in Opera
     await eventually(() => f.finishResults.length === 1)
     expect(calls.map((call) => (call[2] as { output?: string }).output)).toEqual(['first', 'second', 'history correction'])
     expect(calls[0]?.[3]).toMatchObject({ nativeSessionId: 'review-native-session', nativeTurnId: 'review-turn-1',
-      authoritativeReconciliation: false, source: { connectionId: 'operator-connection', sequence: '1' } })
+      authoritativeReconciliation: false, connectionId: 'operator-connection', source: { transportSequence: 1 } })
     expect(calls[2]?.[3]).toMatchObject({ nativeSessionId: 'review-native-session', nativeTurnId: 'review-turn-1',
       authoritativeReconciliation: true, source: { system: 'codex_history' } })
     expect((calls[2]?.[3] as { source: { sequence?: string } }).source.sequence).toBeUndefined()
@@ -346,7 +346,7 @@ it('retains OpenCode prefix-before-metadata and later suffix through the mounted
   const f = fixture(), deltas: Array<{ text: unknown; mode: unknown }> = [], committed: string[] = []
   Object.defineProperty(f.manager, 'harness', { value: 'opencode' })
   f.manager.session.harness = 'opencode'; f.row.harness = 'opencode'
-  f.repository.appendAssistantMessage = async (_id, _request, _native, text) => { committed.push(text); return true }
+  f.repository.appendAssistantTextOperation = async (_id, _request, operation) => { committed.push(operation.text); return { status: 'committed', revision: String(f.row.revision), messageRevision: String(f.row.revision) } }
   const base = { connectionId: 'operator-connection', occurredAt: '2026-10-01T00:00:00Z' }
   f.manager.emitted = [
     { ...base, sequence: 1, type: 'message.part.updated', payload: { part: { sessionID: f.manager.session.nativeSessionId,
@@ -358,12 +358,12 @@ it('retains OpenCode prefix-before-metadata and later suffix through the mounted
   ]
   f.manager.finish = true
   const unsubscribe = f.chat.events.subscribe(f.row.id, (event) => {
-    if (event.type === 'delta') deltas.push({ text: event.data.text, mode: event.data.mode })
+    if (event.type === 'delta') deltas.push({ text: (event.data.activityChange as { change: { text: string } }).change.text, mode: (event.data.activityChange as { change: { kind: string } }).change.kind === 'text.append' ? 'append' : 'replace' })
   })
   try {
     await f.chat.send(f.row.id, { requestId: 'operator-prefix', content: 'Use native stream' }, f.owner)
     await eventually(() => f.finishResults.length === 1)
-    expect(committed).toEqual(['prefix '])
+    expect(committed).toEqual(['prefix ', 'suffix'])
     expect(deltas).toEqual([{ text: 'prefix ', mode: 'replace' }, { text: 'suffix', mode: 'append' }])
   } finally { unsubscribe(); await f.chat.shutdown() }
 })

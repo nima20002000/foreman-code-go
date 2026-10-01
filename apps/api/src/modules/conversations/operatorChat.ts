@@ -1,3 +1,13 @@
+import { AcceptedChatResponseControlSchema } from '@graphql/contracts/interaction-activity'
+import type { OperatorChatCommands } from './operatorChatCommands.js'
+import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
+import { qualifyChatActivity } from './qualifiedActivity.js'
+import { reconcileKnownActivities } from './reconcileKnownActivities.js'
+import { knownNativeActivity } from './knownNativeActivity.js'
+import { committedNativeText } from './committedNativeText.js'
+import { activityTextEnvelope } from './activityTextEnvelope.js'
+import { nativeInteractionAvailability } from './interactionAvailability.js'
+import { commandInputHash } from '../commands/postgres.js'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { access, mkdir, realpath } from 'node:fs/promises'
@@ -12,7 +22,7 @@ import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/m
 import type { OperatorConversationHistoryQuery } from '@graphql/contracts/operator-chat'
 
 import { DomainError } from '../errors.js'
-import { requireAuthorization } from '../access/policy.js'
+import { requireAuthorization, isAuthorized } from '../access/policy.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory } from '../harnesses/port.js'
 import type { PostgresOperatorRepository } from '../operators/postgres.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
@@ -122,6 +132,7 @@ export class OperatorChatService {
   private reconciliation: Promise<void> | undefined
   private closing = false
   private shutdownTask: Promise<void> | undefined
+  private commandReceipts: OperatorChatCommands | undefined
   private setupCheck: { configurationId: string; promise: Promise<OperatorChatSetup> } | undefined
 
   constructor(
@@ -131,6 +142,12 @@ export class OperatorChatService {
     private readonly workingDirectory: string,
     private readonly authority: OperatorChatAuthority,
   ) {}
+
+  private receipts() { return this.commandReceipts ??= this.repository.createControlCommands() }
+  private async controlRead(id: string, principal: ManagementPrincipal, action: 'operator_chat:cancel' | 'operator_chat:respond') {
+    await this.assertAccess(id, principal, action)
+    return this.get(id, principal)
+  }
 
   private control<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.controls.get(id) ?? Promise.resolve()
@@ -183,6 +200,7 @@ export class OperatorChatService {
   }
   async assertAccess(id: string, principal: ManagementPrincipal, action: ManagementAction = 'operator_chat:read', includeDeleted = false) {
     requireAuthorization(principal, action)
+    requireAuthorization(await this.authority.current(principal.id), action)
     const row = await this.repository.active(id)
     if (!row || (!includeDeleted && row.deleted_at) || row.owner_principal_id !== principal.id) {
       throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
@@ -213,9 +231,24 @@ export class OperatorChatService {
   }
   async get(id: string, principal: ManagementPrincipal) {
     await this.assertAccess(id, principal)
-    const state = await this.repository.get(id)
+    const state = await this.repository.getWithActivity(id)
     if (!state) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
-    return state
+    const current = await this.authority.current(principal.id)
+    requireAuthorization(current, 'operator_chat:read')
+    const runtime = this.runtimes.get(id)
+    const responseAvailability = state.pendingInteraction ? await nativeInteractionAvailability(state.pendingInteraction,
+      isAuthorized(current, 'operator_chat:respond'), runtime?.session ? { manager: runtime.manager, session: runtime.session } : undefined,
+      { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
+        isCurrent: () => this.runtimes.get(id) === runtime && !!runtime?.session && !runtime.disposal && !this.closing }) : undefined
+    const finalPrincipal = await this.authority.current(principal.id)
+    requireAuthorization(finalPrincipal, 'operator_chat:read')
+    const qualifiedResponse = responseAvailability && !isAuthorized(finalPrincipal, 'operator_chat:respond')
+      ? { ...responseAvailability, available: false, status: 'unavailable' as const, path: null,
+        reason: 'unauthorized' as const, message: 'Your current grants do not allow responding to this interaction.' } : responseAvailability
+    const activitySnapshot = qualifyChatActivity(state.activitySnapshot, qualifiedResponse)
+    return { ...state, activitySnapshot, ...(qualifiedResponse ? { responseAvailability: qualifiedResponse } : {}),
+      qualificationKey: commandInputHash({ principal: finalPrincipal, revision: state.revision, sourceRevisions: state.activitySnapshot.sourceRevisions,
+        responseAvailability: qualifiedResponse ?? null }).slice(7) }
   }
 
   async history(id: string, principal: ManagementPrincipal, query: Partial<OperatorConversationHistoryQuery> = {}) {
@@ -238,6 +271,12 @@ export class OperatorChatService {
   }
 
   private async recordActivity(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, nativeTurnId: string | null, authoritativeReconciliation = false) {
+    const known = knownNativeActivity(event, runtime.manager.harness)
+    if (known) {
+      const settled = await this.repository.activity.settleKnownByNative(id, known.change, known.native)
+      if (settled) { this.events.publish(id, 'activity', settled); return }
+      if (known.native.sessionId !== runtime.session?.nativeSessionId || known.native.turnId !== nativeTurnId) return
+    }
     const change = operatorActivity(event, runtime.manager.harness, requestId)
     if (!change) return
     const showThinking = runtime.configuration?.harness.harness === 'opencode'
@@ -465,13 +504,22 @@ export class OperatorChatService {
       const hint = input.context && Object.values(input.context).some(Boolean)
         ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
       let submittedTurnId = row.active_native_turn_id
+      const textOwner = () => ({ scope: { kind: 'operator_chat' as const, conversationId: id },
+        requestId: input.requestId, sessionId: runtime.session!.nativeSessionId,
+        ...(submittedTurnId ? { turnId: submittedTurnId } : {}) })
+      const redactText = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
+      const committed = committedNativeText({ id, requestId: input.requestId, repository: this.repository,
+        harness: runtime.manager.harness, session: runtime.session, owner: textOwner, sanitize: (operation) => redactText.value(operation),
+        reconcile: () => { void this.control(id, () => this.observe(id, input.requestId, runtime)).catch(() => undefined) } })
       textStream = createNativeTextStream({
         signal, harness: runtime.manager.harness,
-        owner: () => ({ scope: { kind: 'operator_chat', conversationId: id, requestId: input.requestId },
-          requestId: input.requestId, sessionId: runtime.session!.nativeSessionId,
-          ...(submittedTurnId ? { turnId: submittedTurnId } : {}) }),
-        publish: (operation) => this.events.publish(id, 'delta', { partId: operation.identity.partId,
-          text: operation.text, mode: operation.mode, requestId: input.requestId }),
+        owner: textOwner,
+        publish: (operation) => {
+          // Raw reasoning is never promoted to a public assistant answer; safe summaries use activity records.
+          if (operation.identity.channel !== 'assistant') return
+          this.events.publish(id, 'delta', { requestId: input.requestId, activityChange: activityTextEnvelope(redactText.value(operation), runtime.manager.harness),
+            ...(committed.revision() ? { scopeRevision: committed.revision() } : {}) })
+        },
         reconcile: () => this.events.publish(id, 'state', { requestId: input.requestId, snapshotRequired: true }),
       })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
@@ -521,8 +569,11 @@ export class OperatorChatService {
         for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
           textStream.before(event)
           await this.recordActivity(id, input.requestId, runtime, event, submittedTurnId)
-          if (await this.recordAssistantMessage(id, input.requestId, runtime, event)) textStream.push(event)
+          const text = await committed.record(event, submittedTurnId)
+          if (text.allowed && (text.handled || await this.recordAssistantMessage(id, input.requestId, runtime, event))) textStream.push(event)
           else textStream.rejected(event)
+          if (text.final) this.events.publish(id, 'message', { requestId: input.requestId, snapshotRequired: true,
+            scopeRevision: committed.revision() })
           if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
             const pending = await runtime.manager.pending(runtime.session, signal)
             if (pending) {
@@ -602,7 +653,9 @@ export class OperatorChatService {
       await this.recordAssistantMessage(id, requestId, runtime, event,
         runtime.manager.harness === 'opencode' ? precedingActivityId : undefined)
     }
-    const pending = history.pendingInteraction ?? history.pendingInteractions[0]
+    const currentOwner = await this.repository.active(id)
+    if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== row.native_session_id) return
+    const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
     await this.repository.pending(id, requestId, pending)
     if (history.terminalResult && !pending) {
       await this.complete(id, requestId, history.terminalResult, history.nativeMessageId)
@@ -624,7 +677,15 @@ export class OperatorChatService {
     this.events.publish(id, 'state', { requestId: row.active_request_id, turnState: 'canceling' })
   }
 
-  async cancel(id: string, requestId: string, principal: ManagementPrincipal) {
+  async cancel(id: string, requestId: string, principal: ManagementPrincipal, commandId?: string, source: 'http' | 'mcp' = 'http') {
+    this.assertOpen()
+    await this.assertAccess(id, principal, 'operator_chat:cancel')
+    const key = commandId ?? `operator-cancel:${commandInputHash([requestId]).slice(7)}`
+    return this.receipts().execute(principal, source, id, key, { kind: 'cancel', requestId },
+      (markDispatchAttempt) => this.cancelNative(id, requestId, principal, markDispatchAttempt), () => this.controlRead(id, principal, 'operator_chat:cancel'))
+  }
+
+  private async cancelNative(id: string, requestId: string, principal: ManagementPrincipal, markDispatchAttempt: () => void) {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:cancel')
     // Intent is a request-fenced database transition, not a native write. Do not
@@ -642,6 +703,7 @@ export class OperatorChatService {
       try {
         const runtime = this.runtimes.get(id)
         if (runtime && row.active_native_turn_id) {
+          markDispatchAttempt()
           await this.interrupt(id, row, runtime)
           await this.observe(id, requestId, runtime, AbortSignal.timeout(5_000))
         }
@@ -665,7 +727,26 @@ export class OperatorChatService {
     return this.get(id, principal)
   }
 
-  async respond(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal) {
+  async respond(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal, source: 'http' | 'mcp' = 'http') {
+    this.assertOpen()
+    await this.assertAccess(id, principal, 'operator_chat:respond')
+    const observed = await this.get(id, principal), pending = observed.pendingInteraction
+    const option = pending?.responseOptions.find((choice) => choice.optionId === input.optionId)
+    const acceptedControl = pending && option && observed.activeRequestId === input.requestId
+      && pending.turn.nativeRequestId === input.nativeRequestId && observed.activitySnapshot
+      ? AcceptedChatResponseControlSchema.parse({ schemaVersion: 1, kind: 'respond', conversationId: id,
+        modelRequestId: input.requestId, scope: observed.activitySnapshot.scope,
+        native: { harness: pending.session.harness, providerVersion: pending.session.providerVersion,
+          sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId,
+          requestId: input.nativeRequestId, requestType: pending.nativeRequestType },
+        choice: { optionId: option.optionId, semantic: option.semantic } }) : undefined
+    const key = input.commandId ?? `operator-respond:${commandInputHash([input.requestId, input.nativeRequestId]).slice(7)}`
+    return this.receipts().execute(principal, source, id, key,
+      { kind: 'respond', requestId: input.requestId, nativeRequestId: input.nativeRequestId, optionId: input.optionId },
+      (markDispatchAttempt) => this.respondNative(id, input, principal, markDispatchAttempt), () => this.controlRead(id, principal, 'operator_chat:respond'), acceptedControl)
+  }
+
+  private async respondNative(id: string, input: RespondOperatorInteractionRequest, principal: ManagementPrincipal, markDispatchAttempt: () => void) {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:respond')
     await this.control(id, async () => {
@@ -686,6 +767,7 @@ export class OperatorChatService {
       let delivered = false
       this.responding.add(id)
       try {
+        markDispatchAttempt()
         await runtime.manager.respond(runtime.session, input.nativeRequestId, option, this.lifetime.signal)
         delivered = true
         await this.repository.pending(id, input.requestId)
@@ -729,6 +811,12 @@ export class OperatorChatService {
   }
 
   private async reconcile() {
+    await reconcileKnownActivities({ kind: 'operator', activity: this.repository.activity,
+      signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
+      runtimeFor: (id) => {
+        const runtime = this.runtimes.get(id)
+        return runtime?.session && !runtime.disposal ? { manager: runtime.manager, session: runtime.session } : undefined
+      }, publish: (id, settled) => this.events.publish(id, 'activity', settled) })
     for (const candidate of await this.repository.unfinished()) {
       if (this.closing) break
       let revoked = false
@@ -801,6 +889,7 @@ export class OperatorChatService {
       ])
       const second = await Promise.allSettled([...this.runtimes.keys()].map((id) => this.release(id)))
       const errors = [...first, ...second].flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+      await this.commandReceipts?.drain()
       if (errors.length) throw new AggregateError(errors, 'Operator chat shutdown was incomplete.')
     })()
     return this.shutdownTask
