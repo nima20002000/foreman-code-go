@@ -1,3 +1,6 @@
+import { createRemoteExecutionHandler } from './executionRouter.js'
+import { jobExecution } from '../../../../test/helpers/jobFixture.js'
+import type { RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -36,6 +39,19 @@ async function setup(expectedToken?: string) {
   return { host, manager, session, journal, intent, placement, request, state }
 }
 describe('actual worker native-port adapter', () => {
+  it('keeps a workflow-only host available without substituting it for the missing OCI Job runtime', async () => {
+    const { host } = await setup()
+    const execution = jobExecution()
+    const intent: RemoteJobDispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: execution.acceptedSpec.target.mainId,
+      subject: { kind: 'manual-job', workspaceId: execution.workspaceId, jobExecutionId: execution.id, definitionId: execution.acceptedSpec.definitionId },
+      executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId,
+      bindingHash: execution.acceptedSpec.bindingHash, inputDigest: `sha256:${execution.acceptedSpec.specDigest}`, owner: execution.owner }
+    const called = vi.spyOn(host, 'handle')
+    const handler = createRemoteExecutionHandler(host)
+    expect(() => handler({ method: 'job-status', intent })).toThrow('no installed Job runtime')
+    expect(called).not.toHaveBeenCalled()
+  })
+
   it('joins a pending native allocation and disposes its actual manager before shutdown returns', async () => {
     const { host, manager, session, intent, placement, request, state } = await setup()
     let enter!: () => void, release!: () => void

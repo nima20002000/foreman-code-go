@@ -43,6 +43,8 @@ function cookieToken(value: string | undefined): string | undefined {
 
 function actionFor(request: FastifyRequest) {
   const url = request.url.split('?')[0] ?? request.url
+  if (url === '/api/devices' || url === '/api/devices/main' || url === '/api/devices/setup-options') return 'settings:read' as const
+  if (url === '/api/devices/pairing-grants' || url === '/api/devices/revoke' || url === '/api/devices/setup-codes') return 'settings:update' as const
   if (/^\/api\/workspaces\/[^/]+\/reference-files(?:\/|$)/.test(url)) {
     return request.method === 'GET' ? 'workspaces:read' as const : 'workspaces:update' as const
   }

@@ -1,3 +1,9 @@
+import { operatorToolAvailable } from './availability.js'
+import { registerHarnessRegistryTools } from '../../modules/harnesses/registryManagement.js'
+import { registerWorkspaceRootTools } from '../../modules/workspace-roots/transports.js'
+import { registerHostHarnessOverrideTools } from '../../modules/harnesses/instanceSettings/management.js'
+import { registerResourceTelemetryTools } from './resourceTelemetry.js'
+import { registerResourceTelemetrySelectorTools } from './resourceTelemetrySelector.js'
 import { registerJobTools } from './tools/jobs.js'
 import { registerJobRuntimeTools } from './tools/jobRuntimeProfiles.js'
 import { registerDeviceOperatorTools } from './tools/devices.js'
@@ -31,6 +37,15 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
 }
 
 export function registerOperatorTools(server: McpServer, context: OperatorRequestContext): void {
+  if (context.services.resourceTelemetry) {
+    const audit = (tool: string) => ({ record: (principalId: string, source: 'http' | 'mcp', selectorKey: string) =>
+      context.services.commands.recordDenied(principalId, source, tool, selectorKey) })
+    if (operatorToolAvailable(context, 'resource_telemetry_read')) registerResourceTelemetryTools(server, context.principal, context.services.resourceTelemetry.reads, audit('resource_telemetry_read'))
+    if (operatorToolAvailable(context, 'resource_telemetry_selector_get')) registerResourceTelemetrySelectorTools(server, context.principal, context.services.resourceTelemetry.selectors, audit('resource_telemetry_selector_get'))
+  }
+  if (context.services.harnessRegistry) registerHarnessRegistryTools(server, context.services.harnessRegistry, context.principal)
+  if (context.services.workspaceRoots) registerWorkspaceRootTools(server, context.services.workspaceRoots, context.principal, context.services.commands)
+  if (context.services.harnessInstances) registerHostHarnessOverrideTools(server, context.services.harnessInstances, context.principal)
   registerSourceTools(server, context)
   registerJobTools(server, context)
   registerJobRuntimeTools(server, context)

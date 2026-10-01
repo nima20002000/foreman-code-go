@@ -1,3 +1,7 @@
+import { registerHarnessRegistryRoutes } from '../modules/harnesses/registryManagement.js'
+import { registerDeviceManagementRoutes } from '../modules/devices/management.js'
+import { registerWorkspaceRootRoutes } from '../modules/workspace-roots/transports.js'
+import { registerHostHarnessOverrideRoutes } from '../modules/harnesses/instanceSettings/management.js'
 import { registerSourceRoutes } from '../modules/sources/routes.js'
 import { CurrentWorkflowCreateInputSchema, RunActivitiesInputSchema,
   RunHandoffsReadInputSchema } from '@graphql/contracts/wave25'
@@ -68,6 +72,10 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
+  if (services.harnessRegistry) registerHarnessRegistryRoutes(app, services.harnessRegistry, async request => requirePrincipal(request))
+  if (services.devices) registerDeviceManagementRoutes(app, services.devices, async request => requirePrincipal(request))
+  if (services.workspaceRoots) registerWorkspaceRootRoutes(app, services.workspaceRoots)
+  if (services.harnessInstances) registerHostHarnessOverrideRoutes(app, services.harnessInstances, async request => requirePrincipal(request))
   if (services.sources) registerSourceRoutes(app, services.sources)
   registerCurrentWorkflowRoutes(app, services.workflows, services.runs)
   registerCurrentVersionReadRoutes(app, services)

@@ -5,6 +5,8 @@ export interface DeviceListenerConfig {
   port: number
   certificateFile: string
   privateKeyFile: string
+  /** Explicit public installer endpoint; bind addresses are never advertised implicitly. */
+  advertisedEndpoint?: string
 }
 
 /** Source configuration alone grants no pairing, task or provider credentials. */
@@ -21,5 +23,11 @@ export function readDeviceListenerConfig(environment: NodeJS.ProcessEnv, apiPort
   if (!certificateFile || !privateKeyFile || !isAbsolute(certificateFile) || !isAbsolute(privateKeyFile)) {
     throw new Error('The enabled device listener requires absolute TLS certificate and private key files.')
   }
-  return { host, port, certificateFile, privateKeyFile }
+  const advertisedEndpoint = environment.DEVICE_LISTENER_ADVERTISED_ENDPOINT?.trim()
+  if (advertisedEndpoint) {
+    const endpoint = new URL(advertisedEndpoint)
+    if (endpoint.protocol !== 'wss:' || endpoint.pathname !== '/device/connect' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+      || ['0.0.0.0', '[::]', '::'].includes(endpoint.hostname)) throw new Error('The advertised device endpoint must be an explicit reachable WSS device URL.')
+  }
+  return { host, port, certificateFile, privateKeyFile, ...(advertisedEndpoint ? { advertisedEndpoint } : {}) }
 }

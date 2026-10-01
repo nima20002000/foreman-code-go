@@ -1,6 +1,14 @@
 import type { ManagementAction, OperatorToolName } from '@graphql/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
+  { name: 'harness_registry_get', action: 'harnesses:read' },
+  { name: 'workspace_root_choices_list', action: 'source_roots:read' },
+  { name: 'workspace_root_location_get', action: 'workspace_locations:read' },
+  { name: 'workspace_root_location_validate', action: 'workspace_locations:validate' },
+  { name: 'workspace_root_directories_list', action: 'workspace_locations:validate' },
+  { name: 'workspace_root_location_set', action: 'workspace_locations:update' },
+  { name: 'resource_telemetry_read', action: 'devices:read' },
+  { name: 'resource_telemetry_selector_get', action: 'devices:read' },
   {name:'source_list',action:'sources:read'}, {name:'source_get',action:'sources:read'}, {name:'source_approve',action:'sources:approve'},
   {name:'source_root_get',action:'source_roots:read'}, {name:'source_root_list',action:'source_roots:read'}, {name:'source_root_bind',action:'source_roots:bind'},
   { name: 'repeat_capabilities_get', action: 'capabilities:read' },
@@ -15,6 +23,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'operator_chat_send', action: 'operator_chat:write' },
   { name: 'operator_chat_cancel', action: 'operator_chat:cancel' },
   { name: 'operator_chat_respond', action: 'operator_chat:respond' },
+  { name: 'device_setup_options_get', action: 'settings:read' },
+  { name: 'device_setup_code_create', action: 'settings:update' },
   { name: 'device_main_identity_get', action: 'settings:read' },
   { name: 'devices_list', action: 'settings:read' },
   { name: 'device_pairing_grant_create', action: 'settings:update' },

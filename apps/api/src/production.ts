@@ -1,3 +1,5 @@
+import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
+import { registerWorkspaceRootRoutes } from './modules/workspace-roots/transports.js'
 import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
 import { RemoteJobMainRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
 import { JOB_INPUT_NAMESPACE } from './modules/files/jobInputs/service.js'
@@ -832,6 +834,8 @@ export function buildProductionApp(
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
+      runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
+      registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
       runtimeServices.jobs = jobRuntime.jobs
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles

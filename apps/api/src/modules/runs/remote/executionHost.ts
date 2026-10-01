@@ -44,6 +44,7 @@ export class RemoteExecutionHost {
   private async shutdownOwned(): Promise<void> {
     this.closing = true
     for (const controller of this.launchControllers.values()) controller.abort(new Error('Worker execution host is shutting down.'))
+    for (const owned of this.residents.values()) owned.controller.abort(new Error('Worker execution host is shutting down.'))
     await Promise.allSettled([...this.preparations])
     const active = [...this.residents.values()]
     for (const owned of active) owned.controller.abort(new Error('Worker execution host is shutting down.'))
@@ -54,8 +55,17 @@ export class RemoteExecutionHost {
       await manager.dispose()
     }))
   }
-  async handle(raw: unknown) {
-    if (this.closing) throw new Error('Worker execution host is shutting down.')
+  handle(raw: unknown) {
+    return this.track(() => this.handleOwned(raw))
+  }
+  private track<T>(work: () => Promise<T>): Promise<T> {
+    if (this.closing) return Promise.reject(new Error('Worker execution host is shutting down.'))
+    const task = work()
+    this.preparations.add(task)
+    void task.then(() => this.preparations.delete(task), () => this.preparations.delete(task))
+    return task
+  }
+  private async handleOwned(raw: unknown) {
     const frame = RemoteExecutionRpcRequestSchema.parse(raw)
     const placement = readPlacement(frame.placement)
     if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
@@ -97,11 +107,7 @@ export class RemoteExecutionHost {
     return resolved.manager[method]()
   }
   prepare(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
-    if (this.closing) return Promise.reject(new Error('Worker execution host is shutting down.'))
-    const task = this.prepareOwned(raw)
-    this.preparations.add(task)
-    void task.then(() => this.preparations.delete(task), () => this.preparations.delete(task))
-    return task
+    return this.track(() => this.prepareOwned(raw))
   }
   private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; applicationAccess?: RemoteApplicationAccess | undefined }) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
@@ -192,7 +198,10 @@ export class RemoteExecutionHost {
     await this.ports.authorize(resident.intent, resident.placement, action)
     return resident
   }
-  async startTurn(operationId: string, prompt: string, correlationId: string) {
+  startTurn(operationId: string, prompt: string, correlationId: string) {
+    return this.track(() => this.startTurnOwned(operationId, prompt, correlationId))
+  }
+  private async startTurnOwned(operationId: string, prompt: string, correlationId: string) {
     const resident = await this.resident(operationId, 'start')
     if (correlationId !== `execution:${resident.intent.executionId}` || !prompt || prompt.length > 1_000_000) throw new Error('Native turn correlation mismatch')
     const reserved = await this.ports.journal.reserveTurn(operationId, { correlationId, promptDigest: createHash('sha256').update(prompt).digest('hex') })

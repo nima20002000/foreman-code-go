@@ -1,3 +1,4 @@
+import { DeviceSetupApproveInputSchema, DeviceSetupApproveResultSchema, DeviceSetupOptionsSchema } from '@graphql/contracts/device-setup'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { DeviceListResultSchema, DevicePairingGrantInputSchema, DevicePairingGrantResultSchema,
@@ -8,7 +9,7 @@ import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
 
-export const DEVICE_OPERATOR_TOOLS = ['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke'] as const
+export const DEVICE_OPERATOR_TOOLS = ['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'] as const
 export function registerDeviceOperatorTools(server: McpServer, context: OperatorRequestContext): void {
   const service = context.services.devices
   if (!service) return
@@ -26,6 +27,14 @@ export function registerDeviceOperatorTools(server: McpServer, context: Operator
     inputSchema: DevicePairingGrantInputSchema, outputSchema: DevicePairingGrantResultSchema,
     annotations: { ...reads, readOnlyHint: false },
   }, input => invokeOperatorTool(context, 'device_pairing_grant_create', () => service.createPairingGrant(context.principal, input, 'mcp')))
+  if (operatorToolAvailable(context, 'device_setup_options_get')) server.registerTool('device_setup_options_get', {
+    description: 'Read the explicitly configured public companion WSS endpoint and actual listener start state. Requires global settings:read; no guessed host, private TLS paths or connectivity claim.',
+    inputSchema: z.object({}).strict(), outputSchema: DeviceSetupOptionsSchema, annotations: reads,
+  }, () => invokeOperatorTool(context, 'device_setup_options_get', () => service.readSetupOptions(context.principal)))
+  if (operatorToolAvailable(context, 'device_setup_code_create')) server.registerTool('device_setup_code_create', {
+    description: 'Approve an exact companion public identity-request code and approved LAN WSS endpoint. Requires global settings:update; returns a private key-bound enrollment code with its original expiry. Retries retain original approval facts; this does not prove connectivity.',
+    inputSchema: DeviceSetupApproveInputSchema, outputSchema: DeviceSetupApproveResultSchema, annotations: { ...reads, readOnlyHint: false },
+  }, input => invokeOperatorTool(context, 'device_setup_code_create', () => service.createSetupCode(context.principal, input, 'mcp')))
   if (operatorToolAvailable(context, 'device_revoke')) server.registerTool('device_revoke', {
     description: 'Revision-check and durably revoke device authorization before fencing connections. Requires global settings:update. Retries use commandId. An unreachable process cannot be physically stopped; task leases are separate.',
     inputSchema: DeviceRevokeInputSchema, outputSchema: DeviceRegistrationSchema,

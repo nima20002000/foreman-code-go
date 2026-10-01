@@ -113,22 +113,31 @@ const extensions: Partial<Record<OperatorToolName,{scope:ScopeKind;extension:key
   },
 }
 
+export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:read', 'runs:read', 'jobs:read', 'agent_chat:read', 'operator_chat:read']
+
 export function operatorToolRequirements(name: OperatorToolName, resource?: AuthorizedResource): Requirement[] {
   void resource
+  if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') return TELEMETRY_READ_ACTIONS.map(action => ({ action, scope: action === 'devices:read' ? 'global' : 'resource' }))
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
   if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_chat_cancel','operator_chat_respond','operator_handoff_history_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
-  if (name === 'execution_readiness_get') scope = 'global'
+  if (name === 'execution_readiness_get' || name === 'harness_registry_get') scope = 'global'
+  if (name.startsWith('workspace_root_')) scope = 'workspace'
   if (name.startsWith('source_')) scope = 'workspace'
-  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke'].includes(name)) scope = 'global'
+  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name)) scope = 'global'
   if (name === 'run_start') scope = 'workflow'
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name === 'operator_get_capabilities') scope = 'caller'
   if (['operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'codex_plugins_list', 'codex_plugin_get'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
+  if (name.startsWith('workspace_root_')) {
+    if (entry.action !== 'source_roots:read') result.push({ action: 'source_roots:read', scope: 'workspace' })
+    if (entry.action !== 'workspace_locations:read') result.push({ action: 'workspace_locations:read', scope: 'workspace' })
+    if (name === 'workspace_root_location_set') result.push({ action: 'source_roots:bind', scope: 'workspace' }, { action: 'workspace_locations:validate', scope: 'workspace' })
+  }
   if (name === 'source_approve') result.push({action:'sources:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
   if (name.startsWith('source_root_')) result.push({action:'sources:read',scope:'workspace'})
   if (name === 'source_root_bind') result.push({action:'source_roots:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
@@ -177,8 +186,16 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (retiredExecutionTool(name)) return false
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
+  if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') {
+    if (!service.resourceTelemetry) return false
+    return TELEMETRY_READ_ACTIONS.some(action => action === 'devices:read'
+      ? isAuthorized(context.principal, action, {})
+      : resource && Object.keys(resource).length ? isAuthorized(context.principal, action, resource) : hasAction(context.principal, action))
+  }
+  if (name === 'harness_registry_get' && !service.harnessRegistry) return false
+  if (name.startsWith('workspace_root_') && !service.workspaceRoots) return false
   if (name.startsWith('source_') && !service.sources) return false
-  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke'].includes(name) && !service.devices) return false
+  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name) && !service.devices) return false
   if (name.startsWith('run_') && !service.runs) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false

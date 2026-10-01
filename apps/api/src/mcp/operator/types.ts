@@ -22,6 +22,15 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  jobs?: import('../../modules/jobs/service.js').JobService
+  jobRuntimeProfiles?: import('../../modules/jobs/runtimeProfiles.js').JobRuntimeProfiles
+  resourceTelemetry?: {
+    reads: import('@graphql/contracts/resource-telemetry').TelemetryReadService<ManagementPrincipal>
+    selectors: import('@graphql/contracts/resource-telemetry').TelemetrySelectorService<ManagementPrincipal>
+  }
+  workspaceRoots?: import('../../modules/workspace-roots/service.js').WorkspaceBoundLocationService
+  harnessInstances?: import('../../modules/harnesses/instanceSettings/service.js').HostHarnessOverrideService
+  harnessRegistry?: import('../../modules/harnesses/productionRegistry.js').ProductionHarnessRegistry
   devices?: DeviceManagementService
   sources?: import('../../modules/sources/service.js').PostgresSourceService
   fileReferences?: FileReferenceService

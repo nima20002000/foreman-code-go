@@ -26,11 +26,14 @@ export class ProductionDeviceRuntime {
   private endpoint: DeviceEndpoint | undefined
   private presence: ProductionDevicePresence | undefined
   private listener: ProductionDeviceListener | undefined
+  private listenerStarted = false
   private readonly pending = new Set<Promise<unknown>>()
   private runtimeIdentity: RuntimeIdentity | undefined
   readonly management: DeviceManagementService = {
+    readSetupOptions: (principal) => this.track(() => this.access().readSetupOptions(principal)),
     readMainIdentity: (principal) => this.track(() => this.access().readMainIdentity(principal)),
     list: (principal) => this.track(() => this.access().list(principal)),
+    createSetupCode: (principal, input, source) => this.track(() => this.access().createSetupCode(principal, input, source)),
     createPairingGrant: (principal, input, source) => this.track(() => this.access().createPairingGrant(principal, input, source)),
     revoke: (principal, deviceId, revision, commandId, source) => this.track(() => this.access().revoke(principal, deviceId, revision, commandId, source)),
   }
@@ -71,7 +74,7 @@ export class ProductionDeviceRuntime {
     const identity = await loadOrCreateMainDeviceIdentity(this.pool, mainId)
     this.assertOpen()
     const presence = new ProductionDevicePresence(mainId)
-    const access = new PostgresDeviceAccessService(this.pool, mainId, (deviceId, authorizationRevision) => this.endpoint?.revoke(deviceId, authorizationRevision))
+    const access = new PostgresDeviceAccessService(this.pool, mainId, (deviceId, authorizationRevision) => this.endpoint?.revoke(deviceId, authorizationRevision), () => this.setupOptions())
     const sign = (request: Parameters<typeof signMainIdentityProof>[1]) =>
       this.track(async () => signMainIdentityProof(identity, request, API_APPLICATION_VERSION))
     const signEnrollment = (request: Parameters<typeof signMainEnrollmentProof>[1]) =>
@@ -104,13 +107,21 @@ export class ProductionDeviceRuntime {
     if (!this.endpoint) throw new DomainError('DEVICE_RUNTIME_UNAVAILABLE', 'The selected-main device endpoint has not initialized.', 503)
     return this.endpoint
   }
+  private setupOptions(): import('@graphql/contracts/device-setup').DeviceSetupOptions {
+    if (!this.listenerConfig) return { endpoint: null, available: false, reason: 'listener-unconfigured' }
+    const endpoint = this.listenerConfig.advertisedEndpoint ?? null
+    if (!endpoint) return { endpoint, available: false, reason: 'endpoint-unconfigured' }
+    return { endpoint, available: this.listenerStarted, reason: this.listenerStarted ? null : 'listener-not-started' }
+  }
   async startListener(): Promise<void> {
     this.assertOpen()
     if (!this.service) throw new DomainError('DEVICE_RUNTIME_UNAVAILABLE', 'Device identity must initialize before the dedicated listener.', 503)
     await this.listener?.start()
+    this.listenerStarted = Boolean(this.listener)
   }
   stop(): void {
     this.stopped = true
+    this.listenerStarted = false
     this.endpoint?.close()
     this.presence?.close()
   }
