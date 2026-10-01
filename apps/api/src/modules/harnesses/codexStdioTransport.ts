@@ -144,9 +144,11 @@ export class CodexStdioTransport {
       throw new HarnessExecutionError('NATIVE_RESPONSE_INVALID', 'The response does not match the qualified native schema; nothing was submitted.')
     }
     this.assertConnected('NATIVE_RESPONSE_DELIVERY_FAILED')
-    this.encode({ id, result })
+    try { this.encode({ id, result }) } catch {
+      throw new HarnessExecutionError('NATIVE_RESPONSE_INVALID', 'The native response exceeds the bounded frame size; nothing was submitted.')
+    }
     if (this.writes.size >= MAX_OPERATIONS) throw new HarnessExecutionError(
-      'CODEX_WRITE_LIMIT', 'Too many outstanding provider writes; nothing was submitted.')
+      'NATIVE_RESPONSE_DELIVERY_FAILED', 'Too many outstanding provider writes; nothing was submitted.')
     try { await this.write({ id, result }) } catch {
       throw new HarnessExecutionError('NATIVE_RESPONSE_DELIVERY_UNCERTAIN', 'The native response may have been submitted; wait for native resolution before retrying.')
     }
