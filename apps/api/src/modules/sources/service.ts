@@ -277,16 +277,22 @@ export class PostgresSourceService implements SourceAdmissionPort {
       await this.reservations.retain(sql, state.reservation!, 'owned'); return record
     })
   }
+  async verifyPreparation(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string> {
+    return this.verifyPrepared(input, false)
+  }
   async verifyExecution(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string> {
+    return this.verifyPrepared(input, true)
+  }
+  private async verifyPrepared(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }, final: boolean): Promise<string> {
     const record = SourceMaterializationRecordSchema.parse(input.record)
-    if (!record.finalDispatchBindingHash) throw new DomainError('SOURCE_DISPATCH_NOT_ADOPTED', 'Source-ready is not native entry authority; the main must adopt the final dispatch binding.', 409)
+    if (final && !record.finalDispatchBindingHash) throw new DomainError('SOURCE_DISPATCH_NOT_ADOPTED', 'Source-ready is not native entry authority; the main must adopt the final dispatch binding.', 409)
     await this.transaction(async sql => {
       const stored = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1 for share', [record.receipt.materializationId])).rows[0]
       if (!stored || !isDeepStrictEqual(stored.record, record) || stored.state !== 'prepared') throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Only the exact retained prepared attempt may enter native execution.', 409)
       const root = await this.rootGetInTransaction(sql, input.principal, record)
       await this.executions.authorize(sql, input.principal, { workspaceId: root.binding.workspaceId, root,
         attempt: record.receipt, operationId: record.operationId })
-      await this.executions.authorizeFinal(sql, input.principal, record, record.finalDispatchBindingHash!)
+      if (final) await this.executions.authorizeFinal(sql, input.principal, record, record.finalDispatchBindingHash!)
     })
     return this.executions.verify(record)
   }

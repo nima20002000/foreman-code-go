@@ -16,7 +16,7 @@ export async function identity(handle: FileHandle): Promise<{ device: string; in
  * The app-private root must exclude other principals; same-UID hostile processes
  * are outside this filesystem qualification, not secured by leaf O_NOFOLLOW.
  */
-export async function openPrivateRoot(path: string): Promise<FileHandle> {
+export async function openPrivateRoot(path: string, privateOnly = true): Promise<FileHandle> {
   if (process.platform !== 'linux' || !isAbsolute(path) || path !== await realpath(path))
     throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'An approved canonical Linux private root is required.')
   let parent = await open('/', directoryFlags)
@@ -33,8 +33,8 @@ export async function openPrivateRoot(path: string): Promise<FileHandle> {
       await parent.close(); parent = child
     }
     const stat = await parent.stat()
-    if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || (stat.mode & 0o700) !== 0o700)
-      throw new SourceError('SOURCE_ROOT_NOT_PRIVATE', 'The approved root must be owned by this worker with mode 0700.')
+    if (stat.uid !== process.getuid?.() || (privateOnly ? (stat.mode & 0o077) !== 0 || (stat.mode & 0o700) !== 0o700 : (stat.mode & 0o022) !== 0 || (stat.mode & 0o500) !== 0o500))
+      throw new SourceError('SOURCE_ROOT_NOT_PRIVATE', privateOnly ? 'The approved root must be owned by this worker with mode 0700.' : 'The approved base must be worker-owned and protected from other writers.')
     const current = await open(path, directoryFlags)
     try { if (JSON.stringify(await identity(current)) !== JSON.stringify(await identity(parent))) throw new SourceError('SOURCE_ROOT_CHANGED', 'Root changed during validation.') }
     finally { await current.close() }

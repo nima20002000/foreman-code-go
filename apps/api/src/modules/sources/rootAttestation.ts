@@ -29,16 +29,18 @@ export function rootAttestationDigest(value: Omit<WorkspaceRootAttestation, 'att
 }
 async function openRootDirectory(base: string, relativePath: string, expectedIdentity: ApprovedRootAllowlist['runtimeFilesystem']): Promise<FileHandle> {
   rootRelativePath(relativePath)
-  let directory = await openPrivateRoot(base)
+  let directory = await openPrivateRoot(base, false)
   try {
+    let privatePrefix = ((await directory.stat()).mode & 0o077) === 0
     if (!isDeepStrictEqual(await identity(directory), expectedIdentity)) throw new SourceError('ROOT_BASE_CHANGED', 'The explicitly approved root base was replaced.')
     for (const component of relativePath.split('/').filter(Boolean)) {
       const next = await open(anchored(directory, component), directoryFlags)
       try {
         const stat = await next.stat(), parentIdentity = await identity(directory), childIdentity = await identity(next)
-        if (stat.uid !== process.getuid?.() || parentIdentity.device !== childIdentity.device || parentIdentity.mountId !== childIdentity.mountId)
+        if (stat.uid !== process.getuid?.() || (!privatePrefix && (stat.mode & 0o022) !== 0) || parentIdentity.device !== childIdentity.device || parentIdentity.mountId !== childIdentity.mountId)
           throw new SourceError('ROOT_FILESYSTEM_UNSUPPORTED', 'Selected folders must be worker-owned and protected from other writers on the approved filesystem.')
       } catch (error) { await next.close(); throw error }
+      privatePrefix ||= ((await next.stat()).mode & 0o077) === 0
       await directory.close(); directory = next
     }
     return directory
@@ -54,7 +56,7 @@ function selectBase(allowlist: ApprovedRootAllowlist, selection: WorkspaceRootSe
 }
 export async function attestWorkspaceRoot(raw: ApprovedRootAllowlist, input: WorkspaceRootSelection): Promise<WorkspaceRootAttestation> {
   const allowlist = ApprovedRootAllowlistSchema.parse(raw), selection = WorkspaceRootSelectionSchema.parse(input), base = selectBase(allowlist, selection)
-  const baseHandle = await openPrivateRoot(base.canonicalPath)
+  const baseHandle = await openPrivateRoot(base.canonicalPath, false)
   try { if (!isDeepStrictEqual(await identity(baseHandle), base.filesystem)) throw new SourceError('ROOT_BASE_CHANGED', 'The explicitly approved root base was replaced.') }
   finally { await baseHandle.close() }
   const directory = await openRootDirectory(base.canonicalPath, selection.relativePath, base.filesystem), runtime = await openPrivateRoot(allowlist.managedRuntimeRoot)
@@ -98,7 +100,7 @@ export async function qualifyApprovedRootAllowlist(input: Omit<ApprovedRootAllow
 }): Promise<ApprovedRootAllowlist> {
   const bases: ApprovedRootAllowlist['bases'] = []
   for (const base of input.bases) {
-    const handle = await openPrivateRoot(base.canonicalPath)
+    const handle = await openPrivateRoot(base.canonicalPath, false)
     try { bases.push({ ...base, filesystem: await identity(handle) }) } finally { await handle.close() }
   }
   const runtime = await openPrivateRoot(input.managedRuntimeRoot)
@@ -110,7 +112,9 @@ export async function attestSourceNamespace(allowlist: ApprovedRootAllowlist, po
   const selection: WorkspaceRootSelection = { workspaceId: policy.workspaceId, hostRef: policy.hostRef, allowedBaseId: policy.allowedBaseId,
     configurationRevision: policy.configurationRevision, relativePath: policy.relativePath, accessMode: policy.accessMode,
     expectedLocationRevision: Number(policy.locationRevision), expectedRootPolicyRevision: Number(policy.rootPolicyRevision) }
-  await attestWorkspaceRoot(allowlist, selection)
+  const observed = await attestWorkspaceRoot(allowlist, selection)
+  if (!isDeepStrictEqual(observed.filesystem, policy.filesystem) || observed.canonicalProjectRoot !== policy.canonicalProjectRoot || observed.directoryIdentityHash !== policy.directoryIdentityHash)
+    throw new SourceError('ROOT_DIRECTORY_CHANGED', 'The originally bound project directory was replaced; validate and bind its new identity explicitly.')
   if (policy.applicationInstallationId !== allowlist.applicationInstallationId || policy.managedRuntimeRoot !== allowlist.managedRuntimeRoot)
     throw new SourceError('ROOT_CONFIGURATION_CONFLICT', 'Source namespaces belong only to the original approved installation/runtime root.')
   const runtime = await openPrivateRoot(allowlist.managedRuntimeRoot)
@@ -147,7 +151,7 @@ export async function verifyApprovedRootAllowlist(raw: ApprovedRootAllowlist): P
   if (new Set(allowlist.bases.map(base => base.baseId)).size !== allowlist.bases.length || new Set(allowlist.bases.map(base => base.canonicalPath)).size !== allowlist.bases.length)
     throw new SourceError('ROOT_CONFIGURATION_CONFLICT', 'Approved root bases must have unique identities and paths.')
   for (const base of allowlist.bases) {
-    const handle = await openPrivateRoot(base.canonicalPath)
+    const handle = await openPrivateRoot(base.canonicalPath, false)
     try { if (!isDeepStrictEqual(await identity(handle), base.filesystem)) throw new SourceError('ROOT_BASE_CHANGED', 'An explicitly approved root base changed.') }
     finally { await handle.close() }
   }

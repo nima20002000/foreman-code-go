@@ -22,6 +22,7 @@ export class InstalledWorkspaceRootHosts implements WorkspaceRootHostPort {
     return this.authorizeInstallation(sql, principal, host, installationId)
   }
   async configurations(sql: Pick<pg.PoolClient, 'query'>, _workspaceId: string): Promise<ApprovedRootAllowlist[]> {
+    void _workspaceId
     const rows = await sql.query<{ record: unknown }>(`select c.record from workspace_root_host_configuration_heads h
       join workspace_root_host_configurations c on c.host_scope=h.host_scope and c.configuration_revision=h.configuration_revision
       where c.main_id=$1 order by h.host_scope`, [this.main.hostRef.mainId])
@@ -45,6 +46,7 @@ export class InstalledWorkspaceRootHosts implements WorkspaceRootHostPort {
       { version: 1, operation: 'workspace-roots.browse', selection: root.selection, relativePath }))
   }
   async sourceNamespace(policy: WorkspaceRootPolicy, _rootId: string) {
+    void _rootId
     if (policy.hostRef.kind === 'main') {
       if (policy.hostRef.mainId !== this.main.hostRef.mainId || policy.applicationInstallationId !== this.main.applicationInstallationId)
         throw new DomainError('ROOT_INSTALLATION_CONFLICT', 'Source namespace belongs to another main.', 409)

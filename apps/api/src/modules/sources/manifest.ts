@@ -64,6 +64,6 @@ export function createSourceManifest(input: Omit<SourceManifest, 'manifestDigest
 }
 export function verifySourceBytes(entry: SourceEntry, bytes: Uint8Array): void {
   if (bytes.byteLength !== entry.byteSize || sourceSha256(bytes) !== entry.sha256) throw new SourceError('SOURCE_BYTES_INVALID', 'Source content does not match its accepted manifest.')
-  if (/-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(Buffer.from(bytes).toString('latin1')))
+  if (/^-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----\r?$/m.test(Buffer.from(bytes).toString('latin1')))
     throw new SourceError('SOURCE_SECRET_CONTENT', 'Private key content is not approved source.')
 }

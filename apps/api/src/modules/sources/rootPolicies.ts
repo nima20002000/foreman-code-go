@@ -17,6 +17,7 @@ export function workspaceRootHostScope(host: ApprovedRootAllowlist['hostRef']): 
  * policies; no Workflow, Agent, provider token or source snapshot is required.
  */
 export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
+  private readonly actors = new WeakMap<AuthorizedWorkspaceRoot, ManagementPrincipal>()
   constructor(private readonly mainId: string, private readonly hosts: WorkspaceRootHostPort) {}
   private async authorizeWorkspace(sql: Sql, principal: ManagementPrincipal, workspaceId: string, write = false) {
     const live = await authorizeSource(sql, principal, write ? 'source_roots:bind' : 'source_roots:read', workspaceId)
@@ -69,7 +70,12 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     for (const raw of configurations) {
       const configuration = ApprovedRootAllowlistSchema.parse(raw)
       if (configuration.hostRef.mainId !== this.mainId) continue
-      await this.hosts.authorize(sql, principal, configuration.hostRef, configuration.applicationInstallationId)
+      try { await this.hosts.authorize(sql, principal, configuration.hostRef, configuration.applicationInstallationId) } catch (error) {
+        // Unavailable device configuration cannot authorize IO, and must not
+        // block independent main choices. Original policy facts stay readable.
+        if (configuration.hostRef.kind === 'device') continue
+        throw error
+      }
       const accepted = await this.configuration(sql, configuration.hostRef)
       if (!isDeepStrictEqual(accepted, configuration)) throw new DomainError('ROOT_CONFIGURATION_CONFLICT', 'Configured root inventory is not the main\'s accepted configuration.', 409)
       allowlists.push(configuration)
@@ -86,9 +92,11 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
       throw new DomainError('ROOT_ACCESS_DENIED', 'Select an allowed base/access mode from the current human-approved host configuration.', 403)
     const row = (await sql.query<{ root_policy_revision: string }>('select root_policy_revision from workspace_root_policy_heads where workspace_id=$1 and host_scope=$2 for share', [selection.workspaceId, workspaceRootHostScope(selection.hostRef)])).rows[0]
     if (Number(row?.root_policy_revision ?? 0) !== selection.expectedRootPolicyRevision) throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The selected host root policy changed.', 409, { currentRootPolicyRevision: Number(row?.root_policy_revision ?? 0) })
-    return { selection, allowlist, ownerPrincipalId: live.ownerId, registration }
+    const root = { selection, allowlist, ownerPrincipalId: live.ownerId, registration }
+    this.actors.set(root, structuredClone(principal)); return root
   }
   async attest(root: AuthorizedWorkspaceRoot): Promise<WorkspaceRootAttestation> {
+    if (!this.actors.has(root)) throw new DomainError('ROOT_AUTHORIZATION_MISSING', 'Attestation requires the actual main-authorized root object.', 403)
     const attestation = WorkspaceRootAttestationSchema.parse(await this.hosts.attest(root))
     const { attestationDigest, ...facts } = attestation
     if (attestation.requestDigest !== rootSelectionDigest(root.selection) || attestationDigest !== rootAttestationDigest(facts)
@@ -99,8 +107,16 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
       throw new DomainError('ROOT_ATTESTATION_CONFLICT', 'Host attestation does not match the exact authorized root selection.', 409)
     return attestation
   }
-  browse(root: AuthorizedWorkspaceRoot, relativePath: string) { return this.hosts.browse(root, relativePath) }
+  browse(root: AuthorizedWorkspaceRoot, relativePath: string) {
+    if (!this.actors.has(root)) throw new DomainError('ROOT_AUTHORIZATION_MISSING', 'Folder browsing requires the actual main-authorized root object.', 403)
+    return this.hosts.browse(root, relativePath)
+  }
   async fence(sql: Sql, root: AuthorizedWorkspaceRoot): Promise<void> {
+    const principal = this.actors.get(root)
+    if (!principal) throw new DomainError('ROOT_AUTHORIZATION_MISSING', 'Original scoped root authority is missing.', 403)
+    await this.authorizeWorkspace(sql, principal, root.selection.workspaceId)
+    const registration = await this.hosts.authorize(sql, principal, root.selection.hostRef, root.allowlist.applicationInstallationId)
+    if (!isDeepStrictEqual(registration, root.registration)) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The actual host authorization changed during validation.', 409)
     const row = (await sql.query<{ location_revision: string; archived_at: Date | null }>('select location_revision,archived_at from workspaces where id=$1 for share', [root.selection.workspaceId])).rows[0]
     if (!row || row.archived_at || Number(row.location_revision) !== root.selection.expectedLocationRevision) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed during host validation.', 409)
     const accepted = await this.configuration(sql, root.selection.hostRef)
@@ -111,6 +127,7 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     // authorizer is still called on bind/resolve with the actual principal.
   }
   async bind(sql: Sql, principal: ManagementPrincipal, root: AuthorizedWorkspaceRoot, raw: WorkspaceRootAttestation, nextLocationRevision: number): Promise<WorkspaceRootPolicy> {
+    if (this.actors.get(root)?.id !== principal.id) throw new DomainError('ROOT_AUTHORIZATION_MISSING', 'Root binding belongs to another scoped caller.', 403)
     const live = await this.authorizeWorkspace(sql, principal, root.selection.workspaceId, true)
     requireAuthorization(principal, 'workspace_locations:update', { workspaceId: root.selection.workspaceId }); requireAuthorization(live.principal, 'workspace_locations:update', { workspaceId: root.selection.workspaceId })
     if (nextLocationRevision !== root.selection.expectedLocationRevision + 1 || live.locationRevision !== nextLocationRevision)
@@ -153,9 +170,6 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     const rows = await sql.query<{ record: unknown }>(`select p.record from workspace_root_policy_heads h join workspace_root_policies p
       on p.root_policy_id=h.root_policy_id and p.root_policy_revision=h.root_policy_revision
       where h.workspace_id=$1 and p.revoked_at is null order by h.host_scope`, [workspaceId])
-    const policies: WorkspaceRootPolicy[] = []
-    for (const row of rows.rows) { const p = WorkspaceRootPolicySchema.parse(row.record)
-      policies.push(await this.resolve(sql, principal, { workspaceId, hostRef: p.hostRef, rootPolicyId: p.rootPolicyId, rootPolicyRevision: p.rootPolicyRevision, locationRevision: p.locationRevision })) }
-    return policies
+    return rows.rows.map(row => WorkspaceRootPolicySchema.parse(row.record)) // Metadata-only history; resolve fences every IO/continuation.
   }
 }

@@ -60,3 +60,11 @@ export type SourceMaterializationRecord = z.infer<typeof SourceMaterializationRe
 
 export const SourceRootListInputSchema = z.object({ workspaceId: IdSchema, limit: z.number().int().positive().max(100).default(100) }).strict()
 export const SourceRootListResultSchema = z.object({ items: z.array(SourceRootRecordSchema).max(100), readiness: z.literal('metadata-only') }).strict()
+
+export const VerifiedSourceWorkingTreeSchema = z.object({ materializationId: z.uuid(), materializationDigest: SourceHashSchema,
+  canonicalProjectRoot: z.string().startsWith('/'), canonicalCwd: z.string().startsWith('/'), directoryIdentityHash: SourceHashSchema,
+  filesystem: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
+  accessMode: z.enum(['read-only', 'exclusive-write']),
+  privateGit: z.object({ gitDirectory: z.string().startsWith('/'), generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict().nullable(),
+}).strict()
+export type VerifiedSourceWorkingTree = z.infer<typeof VerifiedSourceWorkingTreeSchema>

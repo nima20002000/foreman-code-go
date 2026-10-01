@@ -197,5 +197,6 @@ describe('canonical source namespace and private repository', () => {
     await expect(readFile(join(repository.gitDirectory, 'hooks', 'pre-commit'))).rejects.toThrow()
     await expect(readFile(join(repository.workTree, '.git'))).rejects.toThrow()
     expect(await materializer.resolve(receipt, f)).toBe(repository.workTree)
+    expect(await createPrivateSourceRepository({ receipt, manifest: f.manifest, materializer, attempt: f.attempt })).toEqual(repository)
   })
 })

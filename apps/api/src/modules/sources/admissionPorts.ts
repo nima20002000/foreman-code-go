@@ -27,6 +27,7 @@ export interface SourceAdmissionPort {
   /** The caller allocates the real execution/attempt first; no synthetic Run or Agent. */
   prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord>
+  verifyPreparation(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string>
   verifyExecution(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string>
 }
 export interface SourceClosureProofPort {
