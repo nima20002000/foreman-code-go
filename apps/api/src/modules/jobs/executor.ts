@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
-import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type JobDefinitionSpec, type JobExecution } from '@graphql/contracts'
+import { AcceptedJobSpecSchema, JobExecutionSchema, type AcceptedJobSpec, type PreparedJobSpec, type JobExecution } from '@graphql/contracts'
+import { jobSpecDigests } from '@graphql/contracts/jobs-node'
+export { jobSpecDigests } from '@graphql/contracts/jobs-node'
 
 /** These ports are supplied by W08/W09/W07, never by the untrusted build. */
 export interface JobLaunchAuthority {
@@ -80,16 +82,6 @@ export function jobSupervisorIdentity(execution: JobExecution): string {
   return `graphql-job-${createHash('sha256').update(JSON.stringify([execution.id, execution.attemptId, execution.operationId, execution.owner, execution.acceptedSpec.specDigest])).digest('hex')}`
 }
 
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical)
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, entry]) => [key, canonical(entry)]))
-  return value
-}
-export function jobSpecDigests(spec: JobDefinitionSpec) {
-  const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
-  return { scriptDigest: hash(spec.argv), outputSpecDigest: hash(spec.outputs), specDigest: hash(spec), bindingHash: hash({ target: spec.target, source: spec.source }) }
-}
-
 function requireProfile(spec: AcceptedJobSpec, profile: QualifiedJobProfile | null): QualifiedJobProfile {
   if (!profile || !profile.qualificationId || !profile.runtimeVersion || !profile.ociRuntimeVersion || !profile.kernelVersion ||
     profile.policyId !== spec.policy.isolationPolicyId || profile.policyRevision !== spec.policy.isolationPolicyRevision ||
@@ -129,9 +121,10 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
   try {
     plan = await prepareWithinBudget(spec.policy.preparationTimeoutMs, cancellation, async signal => {
       if (!spec.argv[0] || spec.argv.some(argument => argument.includes('\0'))) throw new Error('Executable/argv rejected.')
-      const definition: JobDefinitionSpec = { source: spec.source, target: spec.target, argv: spec.argv, inputs: spec.inputs,
+      if ((execution.workflow === null) !== (spec.workflowInput === null)) throw new Error('Accepted workflow input binding mismatch.')
+      const preparedSpec: PreparedJobSpec = { source: spec.source, target: spec.target, argv: spec.argv, inputs: spec.inputs,
         policy: spec.policy, outputs: spec.outputs, ...(spec.relativeCwd ? { relativeCwd: spec.relativeCwd } : {}) }
-      for (const [key, digest] of Object.entries(jobSpecDigests(definition))) {
+      for (const [key, digest] of Object.entries(jobSpecDigests(preparedSpec, spec.workflowInput))) {
         if (spec[key as keyof ReturnType<typeof jobSpecDigests>] !== digest) throw new Error('Accepted specification digest mismatch.')
       }
       await ports.authority.recheck(execution)

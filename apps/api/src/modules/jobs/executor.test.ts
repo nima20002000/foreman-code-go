@@ -2,7 +2,15 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { JobExecution } from '@graphql/contracts'
+import type pg from 'pg'
+import type { JobDefinition, JobExecution, RunInput } from '@graphql/contracts'
+import { ManagementPrincipalSchema } from '@graphql/contracts/management'
+import type { PostgresCommandCoordinator } from '../commands/postgres.js'
+import { JobPreparationService, type JobPreparationSources } from './preparation.js'
+import { JobService } from './service.js'
+import type { JobSql } from './repository.js'
+import type { JobDispatchPort } from './ports.js'
+import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { executeJob, jobSpecDigests, jobSupervisorIdentity, type JobExecutorPorts, type JobSupervisedProcess, type QualifiedJobProfile } from './executor.js'
 import { podmanCreateArgv } from './executorPodman.js'
 import { readDeclaredJobOutputs } from './executorOutputs.js'
@@ -18,7 +26,7 @@ function execution(): JobExecution {
     process: { phase: 'queued', outcome: null, exitCode: null, signal: null, processStopped: false }, transport: 'connected', publication: 'pending',
     cancelRequestedAt: null, startedAt: null, finishedAt: null, lastSeenAt: null, resultIssue: null,
     createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', acceptedSpec: {
-      definitionId: id, definitionRevision: 1, definitionVersionId: id, scriptDigest: digest, outputSpecDigest: digest, specDigest: digest, bindingHash: digest,
+      workflowInput: null, definitionId: id, definitionRevision: 1, definitionVersionId: id, scriptDigest: digest, outputSpecDigest: digest, specDigest: digest, bindingHash: digest,
       source: { approvedSourceId: id, snapshotId: id, commit: 'a'.repeat(40), manifestDigest: digest, materializationId: id, materializationDigest: digest },
       target: { schemaVersion: 1, mainId: id, hostRef: { kind: 'main', mainId: id }, registration: null, mainInstallationId: id,
         destination: { canonicalProjectRoot: '/private/source', canonicalCwd: '/private/source', managedRuntimeRoot: '/private/runtime', directoryIdentityHash: digest,
@@ -26,13 +34,13 @@ function execution(): JobExecution {
       argv: ['node', 'fixture.mjs', '$(touch /escape); &'], inputs: [], outputs: [],
       policy: { isolationPolicyId: id, isolationPolicyRevision: 1, imageDigest: `sha256:${digest}`, toolchainDigest: digest, environmentScopeRefs: [], network: 'none',
         queueTimeoutMs: 10000, preparationTimeoutMs: 1000, executionTimeoutMs: 1000, cancellationGraceMs: 1, maxLogChunkBytes: 8,
-        maxLogBytes: 1024, maxWorkerSpoolBytes: 1024, logOverflow: 'stop', maxOutputBytes: 1024, retentionSeconds: 1000 } } }
+        maxLogBytes: 1024, maxWorkerSpoolBytes: 1024, logOverflow: 'stop', maxOutputBytes: 1024, retentionSeconds: 3600 } } }
   repin(job)
   return job
 }
 function repin(job: JobExecution) {
-  const { source, target, argv, inputs, policy, outputs } = job.acceptedSpec
-  Object.assign(job.acceptedSpec, jobSpecDigests({ source, target, argv, inputs, policy, outputs }))
+  const { source, target, argv, inputs, policy, outputs, relativeCwd, workflowInput } = job.acceptedSpec
+  Object.assign(job.acceptedSpec, jobSpecDigests({ source, target, argv, inputs, policy, outputs, ...(relativeCwd ? { relativeCwd } : {}) }, workflowInput))
 }
 async function* chunks(value = '') { if (value) yield Buffer.from(value) }
 function ports(exit: { exitCode: number | null; signal: string | null; execError?: string; timedOut?: boolean } = { exitCode: 0, signal: null }): JobExecutorPorts {
@@ -42,6 +50,102 @@ function ports(exit: { exitCode: number | null; signal: string | null; execError
     source: { verify: vi.fn(async () => ({ privateRepositoryRoot: '/private/source', directoryIdentityHash: digest, privateGit: true as const, diskQuotaBytes: 1024 })) },
     supervisor: { qualifiedProfile: profile, launch: vi.fn(async () => process) }, appendLog: vi.fn(async () => {}), collectOutputs: vi.fn(async () => {}) }
 }
+
+async function admit(workflowInput: RunInput | null) {
+  const fixture = execution()
+  const { source, target, argv, policy, outputs } = fixture.acceptedSpec
+  const selectedSource = { approvedSourceId: source.approvedSourceId, snapshotId: source.snapshotId, commit: source.commit, manifestDigest: source.manifestDigest }
+  const definition: JobDefinition = { schemaVersion: 1, id, workspaceId: id, name: 'Accepted producer fixture', revision: 1, versionId: id,
+    createdAt: fixture.createdAt, updatedAt: fixture.updatedAt, spec: { source: selectedSource, target: structuredClone(target), argv, policy, outputs,
+      relativeCwd: 'build', inputs: [{ path: 'inputs/config.json', fileId: id, revisionId: id, sha256: digest, byteSize: 12 }] } }
+  definition.spec.target.destination.canonicalCwd = '/private/source/build'
+  const principal = ManagementPrincipalSchema.parse({ id, name: 'Accepted node actor', audience: 'operator',
+    grants: [{ actions: ['runs:start'], scope: { workspaceIds: [id] } }], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null })
+  const query = vi.fn<JobSql['query']>(async () => ({ command: 'INSERT', rowCount: 1, oid: 0, fields: [], rows: [] }))
+  const sql = { query } as unknown as JobSql
+  const materialize = vi.fn<JobPreparationSources['materialize']>(async (_sql, _principal, _workspaceId, spec, identity) => ({ ...spec,
+    source: { ...spec.source, materializationId: identity.executionId, materializationDigest: digest } }))
+  const adoptFinalBinding = vi.fn(async () => {})
+  const preparation = new JobPreparationService({
+    choices: async () => ({ targets: [{ id, label: 'Approved main', target: definition.spec.target, ready: true, reasons: [] }],
+      sources: [definition.spec.source], policies: [definition.spec.policy] }), materialize, adoptFinalBinding,
+  })
+  const accept = vi.fn<JobDispatchPort['accept']>(async (_sql, input) => ({ operationId: input.operationId, attemptId: input.attemptId, owner: { grantId: id, epoch: '1' } }))
+  const service = new JobService({} as pg.Pool, {} as PostgresCommandCoordinator,
+    { preparation, dispatch: { accept, cancel: async () => {}, wake: async () => {} }, artifacts: { read: vi.fn(), list: async () => [] } })
+  const workflow = workflowInput === null ? null : { workflowId: id, runId: id, nodeId: id, nodeExecutionId: id }
+  const job = await service.admit(sql, principal, definition, workflow, workflowInput)
+  return { job, definition, query, materialize, adoptFinalBinding, accept }
+}
+
+describe('real main admission to worker executor contract (SQL/source/supervisor doubles)', () => {
+  it('executes the unchanged published CI-B manual receipt', async () => {
+    const job = jobExecution(), p = ports(), spec = job.acceptedSpec
+    p.supervisor.qualifiedProfile = { ...profile, policyId: spec.policy.isolationPolicyId, imageDigest: spec.policy.imageDigest,
+      toolchainDigest: spec.policy.toolchainDigest, diskBytes: 4096 }
+    p.source.verify = vi.fn(async () => ({ privateRepositoryRoot: spec.target.destination.canonicalProjectRoot,
+      directoryIdentityHash: spec.target.destination.directoryIdentityHash, privateGit: true as const, diskQuotaBytes: 1024 }))
+    expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('succeeded')
+    expect(p.supervisor.launch).toHaveBeenCalledOnce()
+  })
+  it.each([null, { request: { text: 'Build the accepted revision', parameters: [1, true, null] } },
+    { z: { 'a!': 1, Z: 2, a: 3, A: 4 }, '9': 'numeric key', '!': 'punctuation' }])(
+    'executes real preparation/admission with exact manual/workflow input %j', async workflowInput => {
+      const accepted = await admit(workflowInput), p = ports()
+      expect(accepted.job.acceptedSpec.workflowInput).toEqual(workflowInput)
+      expect(accepted.materialize.mock.calls[0]![4]).toEqual({ executionId: accepted.job.id,
+        attemptId: accepted.job.attemptId, operationId: accepted.job.operationId })
+      expect(accepted.query).toHaveBeenCalledOnce()
+      const persisted = JSON.parse(accepted.query.mock.calls[0]![1]![6] as string)
+      expect(persisted).toEqual(accepted.job.acceptedSpec)
+      expect(accepted.adoptFinalBinding).toHaveBeenCalledWith(expect.anything(), expect.anything(), accepted.job)
+      expect((await executeJob(accepted.job, p, new AbortController().signal)).outcome).toBe('succeeded')
+      expect(p.source.verify).toHaveBeenCalledWith(accepted.job.acceptedSpec, expect.any(AbortSignal))
+      const plan = vi.mocked(p.supervisor.launch).mock.calls[0]![0]
+      expect(plan.execution.acceptedSpec).toEqual(persisted)
+      expect(plan.cwd).toBe('/private/source/build')
+      expect(plan.execution.acceptedSpec.inputs[0]!.path).toBe('inputs/config.json')
+    })
+  it('rejects differing Run input before any source verification or launch claim', async () => {
+    const { job } = await admit({ request: 'accepted' }), p = ports()
+    job.acceptedSpec.workflowInput = { request: 'different' }
+    expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
+    expect(p.authority.recheck).not.toHaveBeenCalled()
+    expect(p.source.verify).not.toHaveBeenCalled()
+    expect(p.authority.claim).not.toHaveBeenCalled()
+    expect(p.supervisor.launch).not.toHaveBeenCalled()
+  })
+  it.each(['path', 'revisionId', 'sha256', 'byteSize'] as const)('rejects changed immutable file input %s', async field => {
+    const { job } = await admit(null), p = ports(), input = job.acceptedSpec.inputs[0]!
+    if (field === 'byteSize') input.byteSize++
+    else input[field] = field === 'sha256' ? 'b'.repeat(64) : 'changed'
+    expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
+    expect(p.source.verify).not.toHaveBeenCalled()
+    expect(p.authority.claim).not.toHaveBeenCalled()
+  })
+  it.each([null, { request: 'accepted' }])('rejects inconsistent manual/workflow binding even with recomputed digests %j', async workflowInput => {
+    const { job } = await admit(workflowInput), p = ports()
+    job.acceptedSpec.workflowInput = workflowInput === null ? {} : null
+    repin(job)
+    expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
+    expect(p.authority.claim).not.toHaveBeenCalled()
+  })
+  it('rejects missing accepted workflow input instead of applying a compatibility default', async () => {
+    const { job } = await admit({ request: 'accepted' }), p = ports()
+    const missing = structuredClone(job) as unknown as { acceptedSpec: Record<string, unknown> }
+    delete missing.acceptedSpec.workflowInput
+    await expect(executeJob(missing as unknown as JobExecution, p, new AbortController().signal)).rejects.toThrow()
+    expect(p.authority.claim).not.toHaveBeenCalled()
+  })
+  it('still requires source authority for the accepted immutable inputs', async () => {
+    const { job } = await admit({ request: 'accepted' }), p = ports()
+    p.source.verify = vi.fn(async () => { throw new Error('Pinned input bytes unavailable') })
+    expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
+    expect(p.source.verify).toHaveBeenCalledOnce()
+    expect(p.authority.claim).not.toHaveBeenCalled()
+    expect(p.supervisor.launch).not.toHaveBeenCalled()
+  })
+})
 
 describe('noninteractive worker job executor (supervisor doubles, not live isolation proof)', () => {
   it('preserves argv and closes stdin without inherited credentials', async () => {
