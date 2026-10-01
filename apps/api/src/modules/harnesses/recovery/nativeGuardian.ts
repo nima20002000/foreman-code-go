@@ -44,11 +44,11 @@ function birth(path, value) {
   const dir = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
   try { fs.fsyncSync(dir) } finally { fs.closeSync(dir) }
 }
-function identity() {
-  const value=fs.readFileSync('/proc/self/stat','utf8')
+function identity(pid=process.pid) {
+  const value=fs.readFileSync('/proc/'+pid+'/stat','utf8')
   const parts=value.slice(value.lastIndexOf(')')+2).trim().split(/\\s+/)
   if(parts.length<20 || !/^\\d+$/.test(parts[19]))throw new Error('Invalid Linux identity')
-  return {pid:process.pid,startTicks:parts[19],group:Number(parts[2]),session:Number(parts[3]),state:parts[0]}
+  return {pid,startTicks:parts[19],group:Number(parts[2]),session:Number(parts[3]),state:parts[0]}
 }
 // This child may only launch native code inside an already-delegated cgroup v2
 // subtree. No controller, mount, permission, or host-security setting is changed.
@@ -161,8 +161,20 @@ process.on('message',input=>{
         if(stopping || !process.connected){stop();return}
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
           detached:false,stdio:['inherit','inherit','inherit'],windowsHide:true})
+        // Capture the actual CLI generation while it is still our direct child.
+        // A very short-lived child may disappear before /proc capture; never guess.
+        let provider
+        try{if(native.pid)provider=identity(native.pid)}catch{}
+        birth(join(dir,'provider.json'),{format:1,id:intent.id,owner:intent.owner,boot,
+          guardian:live,...(provider?{provider}:{}),capture:provider?'captured':'unavailable'})
+        if(process.connected)process.send({operation:'observation',id:intent.id})
         native.once('error',stop)
         native.once('exit',(exitCode,exitSignal)=>{
+          try {
+            birth(join(dir,'provider-exit.json'),{format:1,id:intent.id,owner:intent.owner,boot,
+              ...(provider?{provider}:{}),code:exitCode,signal:exitSignal})
+            if(process.connected)process.send({operation:'observation',id:intent.id})
+          }catch{}
           try {
             const outcome={format:1,operation:'native_exit',id:intent.id,owner:intent.owner,boot,
               guardian:{pid:live.pid,startTicks:live.startTicks},nativePid:native.pid,exitCode,exitSignal}
