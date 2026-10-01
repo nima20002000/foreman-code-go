@@ -28,3 +28,7 @@ export type JobInputEntry=z.infer<typeof JobInputEntrySchema>
 export type JobInputManifest=z.infer<typeof JobInputManifestSchema>
 export type JobInputAdmission=z.infer<typeof JobInputAdmissionSchema>
 export type JobInputDeliveryReceipt=z.infer<typeof JobInputDeliveryReceiptSchema>
+
+export const JobBuildInputManifestSchema=z.object({version:z.literal(1),inputSnapshotDigest:FileSha256Schema,workflowInput:RunInputSchema.nullable(),
+  files:z.array(z.object({relativePath:Relative,...JobInputRevisionSchema.omit({path:true}).shape}).strict()).max(256)}).strict()
+export type JobBuildInputManifest=z.infer<typeof JobBuildInputManifestSchema>
