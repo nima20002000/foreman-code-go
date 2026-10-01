@@ -219,7 +219,10 @@ describe('AgentChatPanel commands and drafts', () => {
   })
 
   it('unknown delivery requires the explicit new-message warning and a fresh requestId', async () => {
-    const mounted = mountChat(agentChatFixtures.unknownDelivery); await mounted.ready()
+    const state: AgentChatState = structuredClone(agentChatFixtures.unknownDelivery)
+    state.messages[0]!.originalInput = { requestId: state.turns[0]!.requestId, content: 'Summarize the repository.', attachments: [] }
+    state.messages[0]!.content = 'Displayed text is not the admitted send input.'
+    const mounted = mountChat(state); await mounted.ready()
     await userEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
     const warning = screen.getByRole('alertdialog')
     expect(within(warning).getByText(/original message may already have been accepted/)).toBeInTheDocument()
@@ -490,7 +493,8 @@ it('cold readback keeps completed parent/unresolved child work visible instead o
   active: [{ ref: { kind: 'subagent', itemId: 'child' }, phase: 'active', outcome: null, delivery: null, evidence: 'unknown', startedAt: null }],
   queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
   const view = mountChat(state); await view.ready()
-  expect(screen.getByText('Background work remains')).toBeInTheDocument()
+  expect(screen.getByText('Unfinished work unconfirmed')).toBeInTheDocument()
+  expect(screen.getByText('Some tools or subagents have no confirmed outcome.')).toBeInTheDocument()
 })
 it('keeps a persisted unavailable question visible with disabled reply options and the qualified recovery message', async () => {
   installChatSource()
