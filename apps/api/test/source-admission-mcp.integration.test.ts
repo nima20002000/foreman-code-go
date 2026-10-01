@@ -14,9 +14,7 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { PostgresSourceService } from '../src/modules/sources/service.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
-import { sourceMetadataMigration } from '../src/modules/sources/migration.js'
 import { PostgresWorkspaceRootPolicies } from '../src/modules/sources/rootPolicies.js'
-import { workspaceRootPoliciesMigration } from '../src/modules/sources/rootPoliciesMigration.js'
 import { InstalledWorkspaceRootHosts } from '../src/modules/sources/rootHosts.js'
 import { RegisteredWorkspaceSourceRoots } from '../src/modules/sources/registeredSourceRoots.js'
 import { qualifyApprovedRootAllowlist } from '../src/modules/sources/rootAttestation.js'
@@ -43,7 +41,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
   const workspaces = new WorkspaceManagementService(pool, commands, locations)
   let app: ReturnType<typeof buildApp> | undefined
   try {
-    await applyApplicationMigrations(pool); await pool.query(sourceMetadataMigration.sql); await pool.query(workspaceRootPoliciesMigration.sql)
+    await applyApplicationMigrations(pool)
     const mainId = (await pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
     const owner = await access.issue({ name: 'Source owner', audience: 'operator', grants: [{ actions: [...ManagementActionSchema.options], scope: {} }], expiresAt: new Date(Date.now() + 300_000) })
     const created = await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Source workspace' })

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
-import type { FileRevision, MessageAttachmentRef } from '@graphql/contracts/files'
+import { FileRevisionSchema, type FileRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { checkFileCondition, type OpenCodeAcceptedFileReader, type OpenCodeFilePart, type OpenCodeFileService,
   type OpenCodeRegisteredFile } from './types.js'
 
@@ -25,7 +25,7 @@ export async function readPinnedInput(read: OpenCodeAcceptedFileReader,
     signal.throwIfAborted()
     const result = await read({ ...ref, offset, length: CHUNK_BYTES }, signal)
     checkFileCondition(result.status === 'ready', 'FILE_ATTACHMENT_UNAVAILABLE', 'An attachment is unavailable.')
-    const value = result.revision
+    const value = FileRevisionSchema.parse(result.revision)
     checkFileCondition(value.fileId === ref.fileId && value.revisionId === ref.revisionId
       && Number.isSafeInteger(value.byteSize) && value.byteSize >= 0 && value.byteSize <= maxBytes,
     'FILE_ATTACHMENT_INVALID', 'The attachment does not match its bounded pinned revision.')

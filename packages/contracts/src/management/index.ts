@@ -36,6 +36,8 @@ export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
+  "sources:read", "sources:approve", "source_roots:read", "source_roots:bind",
+  "job_definitions:read", "job_definitions:write", "jobs:start", "jobs:read", "jobs:cancel", "job_logs:read", "job_artifacts:read",
   "agents:create",
   "agents:update",
   "agents:archive",
@@ -635,6 +637,7 @@ export const REPEAT_OPERATOR_TOOL_NAMES = [
 export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
 
 export const OperatorToolNameSchema = z.enum([
+  "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
