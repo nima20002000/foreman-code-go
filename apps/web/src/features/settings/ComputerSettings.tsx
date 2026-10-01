@@ -56,8 +56,8 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
             <Button onClick={() => onSelectComputer?.(value.hostRef.deviceId)} disabled={!onSelectComputer}>{value.label}</Button>
             <span>{value.registrationStatus} · open for its connection and installations</span></li>)}</ul>
             : <p>No workers are paired with this main yet. Use “Pair a new worker” below.</p>}
-    {host && (!registration || registration.status === 'paired') ? <Inventory key={`${host.mainId}:${deviceId ?? 'main'}`} host={host} applicationInstallationId={registration?.workerInstallationId ?? host.mainId} /> : null}
-    {host && (!registration || registration.status === 'paired') ? <HostHarnessOverrides key={`${host.mainId}:${deviceId ?? 'main'}`} target={{ hostRef: host, applicationInstallationId: registration?.workerInstallationId ?? host.mainId }} /> : null}
+    {host && (!registration || registration.status === 'paired') ? <Inventory key={`inventory:${host.mainId}:${deviceId ?? 'main'}`} host={host} applicationInstallationId={registration?.workerInstallationId ?? host.mainId} /> : null}
+    {host && (!registration || registration.status === 'paired') ? <HostHarnessOverrides key={`overrides:${host.mainId}:${deviceId ?? 'main'}`} target={{ hostRef: host, applicationInstallationId: registration?.workerInstallationId ?? host.mainId }} /> : null}
     {registration?.status === 'revoked' ? <Alert tone="warning" title="This worker’s application access is revoked." /> : null}
     {currentMain ? <details className="computer-details"><summary>Pair a new worker</summary><ComputerPairingForm key={currentMain.mainId} mainId={currentMain.mainId} /></details>
       : <p className="computer-hint">Read the selected main before pairing a worker.</p>}
