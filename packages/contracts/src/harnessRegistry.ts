@@ -115,7 +115,8 @@ export const HostHarnessProfileEvidenceSchema = z.object({
   target: HostHarnessOverrideTargetSchema, instanceRevision: Identity, configurationFingerprint: Identity,
   driverId: Identity, driverRevision: Identity, protocolRevision: Identity, suiteRevision: Identity,
   environmentGeneration: Identity, connectionGeneration: Identity,
-  authenticated: z.boolean(), compatible: z.boolean(), qualified: z.boolean(), checkedAt: z.string().datetime(),
+  authenticated: z.boolean().nullable(), compatible: z.boolean().nullable(), qualified: z.boolean(), checkedAt: z.string().datetime(),
+  failure: z.object({ code: Identity, message: z.string().min(1).max(500) }).strict().optional(),
   /** Native-produced provider checks stored in this same exact-host profile proof. */
   claudeProof: ClaudeQualificationProofSchema.optional(),
 }).strict()
