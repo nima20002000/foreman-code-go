@@ -2,13 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import type { QualificationSuiteInput } from '../src/modules/harnesses/qualification/types.js'
 
-vi.mock('../src/modules/harnesses/process.js', () => ({ runCommand: vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 0.158.0', stderr: '' })) }))
 vi.mock('node:fs/promises', async (original) => ({ ...await original<typeof import('node:fs/promises')>(), mkdtemp: vi.fn(async () => '/qualification-owned'), rm: vi.fn(async () => undefined) }))
-vi.mock('../src/modules/harnesses/compatibility/probe.js', async (original) => ({ ...await original<typeof import('../src/modules/harnesses/compatibility/probe.js')>(), nativeCompatibilityProbe: vi.fn() }))
+vi.mock('../src/modules/harnesses/compatibility/probe.js', async (original) => ({ ...await original<typeof import('../src/modules/harnesses/compatibility/probe.js')>(), nativeCompatibilityProbe: vi.fn(() => ({ inspect: vi.fn(async () => ({ version: '0.158.0' })), close: vi.fn(async () => undefined) })) }))
 
 import { rm } from 'node:fs/promises'
 import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
-import { runCommand } from '../src/modules/harnesses/process.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
 
 function gate<T = void>() {
@@ -19,9 +17,9 @@ function gate<T = void>() {
 
 function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationService>[6] = async () => 'schema') {
   const inspectBinary = vi.fn(async () => ({ binary: '/fixture/codex', sha256: 'a'.repeat(64) }))
-  const save = vi.fn(async () => undefined)
-  const run = vi.fn(async (_input: QualificationSuiteInput) => ({ checks: [{ id: 'live', passed: true, detail: null }], evidence: {} }))
-  const audit = vi.fn(async () => undefined)
+  const save = vi.fn(async (qualification: import('@graphql/contracts/harness-qualification').HarnessQualification, evidence?: Record<string, unknown>): Promise<void> => { void qualification; void evidence })
+  const run = vi.fn(async (input: QualificationSuiteInput) => { void input; return { checks: [{ id: 'live', passed: true, detail: null }], evidence: {} } })
+  const audit = vi.fn(async (): Promise<void> => undefined)
   const settings = vi.fn(async () => ({ revision: 0, defaults: DEFAULT_HARNESS_DEFAULTS }))
   const service = new HarnessQualificationService({ find: async () => undefined, save } as never,
     { inspectBinary, trusted: async () => true } as never,
@@ -31,9 +29,47 @@ function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationS
   return { service, inspectBinary, save, run, audit, settings }
 }
 
-afterEach(() => { vi.clearAllMocks(); vi.mocked(rm).mockResolvedValue(undefined) })
+afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); vi.mocked(rm).mockResolvedValue(undefined) })
 
 describe('qualification stop/cancel/join', () => {
+  it('releases operation deadline timers after successful settlement', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    await f.service.begin('codex')
+    await f.service.join()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(f.run).toHaveBeenCalledTimes(1)
+    await f.service.shutdown()
+  })
+
+  it('joins an admitted management audit before shutdown can complete', async () => {
+    const f = fixture(), audit = gate()
+    f.audit.mockReturnValue(audit.promise)
+    const principal = { id: 'principal', name: 'Fixture', audience: 'operator' as const,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null,
+      grants: [{ actions: ['harnesses:update' as const], scope: {} }] }
+    const request = f.service.run(principal, 'mcp', 'codex')
+    await vi.waitFor(() => expect(f.audit).toHaveBeenCalledTimes(1))
+    let joined = false
+    const shutdown = f.service.shutdown().then(() => { joined = true })
+    await Promise.resolve(); expect(joined).toBe(false)
+    audit.resolve(); await request; await shutdown
+    expect(f.audit).toHaveBeenCalledWith('principal', 'mcp', 'harness.qualification.run', 'codex', 'succeeded')
+  })
+
+  it('refuses qualification trust when settings change before or during persistence', async () => {
+    for (const duringSave of [false, true]) {
+      const f = fixture()
+      let revision = 0
+      f.settings.mockImplementation(async () => ({ revision, defaults: DEFAULT_HARNESS_DEFAULTS }))
+      if (duringSave) f.save.mockImplementationOnce(async () => undefined).mockImplementationOnce(async () => { revision = 1 })
+      else f.run.mockImplementation(async () => { revision = 1; return { checks: [{ id: 'live', passed: true, detail: null }], evidence: {} } })
+      await f.service.begin('codex'); await f.service.join()
+      expect(f.save.mock.calls.at(-1)?.[0]).toMatchObject({ status: 'failed' })
+      await f.service.shutdown()
+    }
+  })
+
   it('registers preparation before its first await and stops before any version process starts', async () => {
     const f = fixture(), inspecting = gate<Awaited<ReturnType<typeof f.inspectBinary>>>()
     f.inspectBinary.mockReturnValueOnce(inspecting.promise)
@@ -45,7 +81,7 @@ describe('qualification stop/cancel/join', () => {
     expect(joined).toBe(false)
     inspecting.resolve({ binary: '/fixture/codex', sha256: 'a'.repeat(64) })
     await rejection; await shutdown
-    expect(runCommand).not.toHaveBeenCalled()
+    expect(nativeCompatibilityProbe).not.toHaveBeenCalled()
     await expect(f.service.begin('codex')).rejects.toMatchObject({ name: 'AbortError' })
   })
 
@@ -96,9 +132,9 @@ describe('qualification stop/cancel/join', () => {
   })
 
   it('retains a partially acquired diagnostic probe and retries its positive close barrier', async () => {
-    const close = vi.fn(async () => { throw new Error('process closure uncertain') })
+    const close = vi.fn(async (): Promise<void> => { throw new Error('process closure uncertain') })
     const probe = { inspect: vi.fn(async () => { throw new Error('probe failed') }), close }
-    vi.mocked(nativeCompatibilityProbe).mockReturnValue(probe as never)
+    vi.mocked(nativeCompatibilityProbe).mockReturnValueOnce({ inspect: async () => ({ version: '0.158.0' }), close: async () => undefined } as never).mockReturnValueOnce(probe as never)
     const f = fixture(undefined)
     // Explicit undefined selects the production static probe rather than a fixture check.
     const service = new HarnessQualificationService({ find: async () => undefined, save: f.save } as never,
@@ -114,7 +150,7 @@ describe('qualification stop/cancel/join', () => {
   })
 
   it('retries registered native cleanup before removing its project and never repeats the suite', async () => {
-    const f = fixture(), close = vi.fn(async () => { throw new Error('cgroup nonempty') })
+    const f = fixture(), close = vi.fn(async (): Promise<void> => { throw new Error('cgroup nonempty') })
     f.run.mockImplementation(async (input) => {
       input.ownCleanup?.(close)
       throw new AggregateError([new Error('partial acquisition')], 'Native cleanup failed')

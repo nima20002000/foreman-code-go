@@ -81,13 +81,13 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
         get processState() { return entry.lifecycle === 'resident' ? 'resident' : 'needs_start' },
         get lifecycle() { return entry.lifecycle },
         beginStart: () => {
-          if (this.entries.get(context.executionId) !== entry || entry.lifecycle !== 'allocated') {
+          if (this.disposed || this.entries.get(context.executionId) !== entry || entry.lifecycle !== 'allocated') {
             throw new Error('The native manager is already starting, resident, or released.')
           }
           entry.lifecycle = 'starting'
         },
         markResident: () => {
-          if (this.entries.get(context.executionId) !== entry
+          if (this.disposed || this.entries.get(context.executionId) !== entry
             || (entry.lifecycle !== 'starting' && entry.lifecycle !== 'resident')) {
             throw new Error('An unstarted or released native manager cannot become resident.')
           }

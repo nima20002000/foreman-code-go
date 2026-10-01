@@ -11,13 +11,13 @@ function gate() {
 
 const context = {
   harness: 'codex' as const, executionId: 'execution-1', agentId: 'agent-1', workingDirectory: '/fixture',
-  configuration: { id: 'config-1', prompt: { text: 'pinned' } } as unknown as AgentConfigurationVersion,
+  configuration: { id: 'config-1', prompt: { system: 'pinned' } } as unknown as AgentConfigurationVersion,
 }
 
 describe('execution allocation cleanup ownership', () => {
   it('joins concurrent disposal, retains a failed allocation, and retries only remaining owners', async () => {
     const closing = gate()
-    const first = { harness: 'codex', dispose: vi.fn(async () => { await closing.promise; throw new Error('cgroup not empty') }) }
+    const first = { harness: 'codex', dispose: vi.fn(async (): Promise<void> => { await closing.promise; throw new Error('cgroup not empty') }) }
     const second = { harness: 'codex', dispose: vi.fn(async () => undefined) }
     const factory = vi.fn((input) => input.executionId === 'execution-1' ? first : second)
     const resolver = new ExecutionScopedNativeSessionManagerResolver(factory as never)
@@ -26,6 +26,8 @@ describe('execution allocation cleanup ownership', () => {
     const attempt = resolver.dispose()
     expect(resolver.dispose()).toBe(attempt)
     expect(() => resolver.resolve(context)).toThrow('shutting down')
+    expect(() => failed.beginStart?.()).toThrow('already starting')
+    expect(() => failed.markResident?.()).toThrow('cannot become resident')
     closing.resolve()
     await expect(attempt).rejects.toThrow('disposal was incomplete')
     expect(failed.lifecycle).toBe('failed')
@@ -54,7 +56,7 @@ describe('execution allocation cleanup ownership', () => {
     const resolver = new ExecutionScopedNativeSessionManagerResolver(() => ({ harness: 'codex', createSession } as unknown as NativeHarnessSessionManager))
     const mutable = structuredClone(context)
     resolver.resolve(mutable)
-    mutable.configuration.prompt = { text: 'changed' }
+    mutable.configuration.prompt = { system: 'changed' }
     expect(() => resolver.resolve(mutable)).toThrow('cannot change')
     expect(createSession).not.toHaveBeenCalled()
   })
