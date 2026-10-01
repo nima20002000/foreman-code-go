@@ -8,12 +8,14 @@ import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
 import { identity } from '../sources/privateFilesystem.js'
 import type { JobSql } from './repository.js'
 import { jobSpec } from '../../../test/helpers/jobFixture.js'
-import { createInstalledJobRuntimeHost, InstalledJobRuntimeConfigurationSchema, readInstalledRuntimeConfiguration } from './installedRuntimeHost.js'
+import { captureInstalledRuntimeConfiguration, createInstalledJobRuntimeHost, InstalledJobRuntimeCaptureInputSchema, InstalledJobRuntimeConfigurationSchema, readInstalledRuntimeConfiguration } from './installedRuntimeHost.js'
+import * as qualification from './qualification.js'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
 
 const id = '11111111-1111-4111-8111-111111111111'
 const digest = '1'.repeat(64)
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'ci-installed-reader-')); roots.push(root)
   const source = join(root, 'source'); await mkdir(source, { mode: 0o700 })
@@ -42,6 +44,31 @@ async function fixture() {
 }
 
 describe('protected installed runtime reader, no DB or native runtime execution', () => {
+  it('installer capture computes host pins instead of accepting supplied digests or readiness', async () => {
+    const f = await fixture()
+    const { pins, ...installation } = f.configuration
+    const input = { ...installation, imageDigest: pins.imageDigest, toolchainDigest: pins.toolchainDigest, diskBytes: pins.diskBytes }
+    const measuredConfiguration = { actualMetadataFixture: true }
+    const capture = vi.spyOn(qualification, 'captureJobRuntimeConfiguration').mockResolvedValue(measuredConfiguration as unknown as Awaited<ReturnType<typeof qualification.captureJobRuntimeConfiguration>>)
+    const result = await captureInstalledRuntimeConfiguration(input)
+    const binaryDigest = createHash('sha256').update('pinned fixture bytes').digest('hex')
+    expect(result.pins).toEqual({ ...pins, runtimeBinarySha256: binaryDigest, ociBinarySha256: binaryDigest, findmntBinarySha256: binaryDigest,
+      configurationDigest: createHash('sha256').update(canonicalGraphJson(measuredConfiguration)).digest('hex') })
+    expect(capture).toHaveBeenCalledWith(input.runtimeRoot, input.controllerEnvironment, { findmntBinary: input.findmntExecutable,
+      findmntBinarySha256: binaryDigest, backingFile: input.backingFile, backingBytes: input.diskBytes })
+    expect(InstalledJobRuntimeCaptureInputSchema.safeParse({ ...input, pins }).success).toBe(false)
+    expect(InstalledJobRuntimeCaptureInputSchema.safeParse({ ...input, ready: true }).success).toBe(false)
+    expect('measurement' in result).toBe(false)
+  })
+  it('installer capture rejects stale root identities before capturing installation configuration', async () => {
+    const f = await fixture()
+    const { pins, ...installation } = f.configuration
+    installation.root.binding.filesystem.inode = '0'
+    const capture = vi.spyOn(qualification, 'captureJobRuntimeConfiguration')
+    await expect(captureInstalledRuntimeConfiguration({ ...installation, imageDigest: pins.imageDigest, toolchainDigest: pins.toolchainDigest,
+      diskBytes: pins.diskBytes })).rejects.toMatchObject({ details: { reason: 'passive_identity_changed' } })
+    expect(capture).not.toHaveBeenCalled()
+  })
   it('missing configuration is explicit unavailable, never defaulted or admitted', async () => {
     const f = await fixture(); const reserve = vi.fn()
     const host = createInstalledJobRuntimeHost({ configuration: null, identity: f.sql, reserve })

@@ -28,6 +28,10 @@ export const InstalledJobRuntimeConfigurationSchema = z.object({
     configurationDigest: digest, imageDigest: target.imageDigest, toolchainDigest: digest, diskBytes: z.number().int().positive() }).strict(),
 }).strict()
 export type InstalledJobRuntimeConfiguration = z.infer<typeof InstalledJobRuntimeConfigurationSchema>
+export const InstalledJobRuntimeCaptureInputSchema = InstalledJobRuntimeConfigurationSchema.omit({ pins: true }).extend({
+  imageDigest: target.imageDigest, toolchainDigest: digest, diskBytes: z.number().int().positive(),
+}).strict()
+export type InstalledJobRuntimeCaptureInput = z.infer<typeof InstalledJobRuntimeCaptureInputSchema>
 export interface InstalledRuntimeConfigurationLocation { path: string; ownerUid: number }
 export interface InstalledRuntimeHostDependencies {
   /** Existing application-installation/device authority, no provider inventory. */
@@ -42,6 +46,31 @@ export interface InstalledRuntimeHostDependencies {
 }
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 function unavailable(reason: string): never { throw new DomainError('JOB_RUNTIME_INSTALLATION_UNAVAILABLE', 'The selected job runtime has no current protected installed configuration.', 409, { reason }) }
+
+/** Installer-only passive capture. The existing source binding and approved
+ * image/toolchain remain inputs; binary, boot and configuration pins are read
+ * from this host. Does not install, execute, approve or qualify anything. */
+export async function captureInstalledRuntimeConfiguration(input: InstalledJobRuntimeCaptureInput): Promise<InstalledJobRuntimeConfiguration> {
+  const parsed = InstalledJobRuntimeCaptureInputSchema.parse(input)
+  const { imageDigest, toolchainDigest, diskBytes, ...installation } = parsed
+  if (hash(installation.target.hostRef) !== hash(installation.root.selection.hostRef) ||
+    hash(installation.target.registration) !== hash(installation.root.registration) ||
+    installation.target.mainInstallationId !== installation.root.binding.mainId || installation.root.binding.accessMode !== 'exclusive-write') unavailable('root_context_changed')
+  const [runtime, oci, findmnt, source] = await Promise.all([
+    fingerprintQualificationPath(installation.runtimeExecutable, true), fingerprintQualificationPath(installation.ociExecutable, true),
+    fingerprintQualificationPath(installation.findmntExecutable, true), fingerprintQualificationPath(installation.root.binding.canonicalPath),
+  ])
+  const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim()
+  const mountId = qualificationMountId(source.path, await readFile('/proc/self/mountinfo', 'utf8'))
+  if (source.device !== installation.root.binding.filesystem.device || source.inode !== installation.root.binding.filesystem.inode ||
+    mountId !== installation.root.binding.filesystem.mountId) unavailable('passive_identity_changed')
+  const configurationDigest = hash(await captureJobRuntimeConfiguration(installation.runtimeRoot, installation.controllerEnvironment, {
+    findmntBinary: installation.findmntExecutable, findmntBinarySha256: findmnt.sha256!, backingFile: installation.backingFile, backingBytes: diskBytes,
+  }))
+  return InstalledJobRuntimeConfigurationSchema.parse({ ...installation, pins: { bootId,
+    runtimeBinarySha256: runtime.sha256, ociBinarySha256: oci.sha256, findmntBinarySha256: findmnt.sha256,
+    configurationDigest, imageDigest, toolchainDigest, diskBytes } })
+}
 
 /** Read only. No default paths, env, image, pin or readiness can be fabricated. */
 export async function readInstalledRuntimeConfiguration(location: InstalledRuntimeConfigurationLocation | null): Promise<InstalledJobRuntimeConfiguration> {
