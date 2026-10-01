@@ -139,7 +139,7 @@ interface Runtime extends TurnSnapshot {
   starting: StartingTurn | undefined
   files: CodexRuntimeFileTurn | undefined
   fileCleanup: Promise<void> | undefined
-  fileRequests: Map<string, { signature: string; pending: boolean }>
+  fileRequests: Map<string, { signature: string; pending: boolean; conflictingIdentity?: boolean }>
   cancellation: { turnId: string; promise: Promise<boolean> } | undefined
   interactions: Map<string, WaitingRequest>
   resolvedRequests: Map<string, ResolvedRequest>
@@ -1726,6 +1726,24 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async handleRequest(runtime: Runtime, request: RpcRequest, staged = false): Promise<void> {
     const params = request.params ?? {}
+    const key = requestKey(runtime.generation, request.id)
+    const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
+    const existing = runtime.interactions.get(key)
+    const resolved = runtime.resolvedRequests.get(key)
+    const file = runtime.fileRequests.get(key)
+    if (existing || resolved || file) {
+      // All callbacks share one connection/generation/typed RPC-ID namespace.
+      // Never reply to a conflicting envelope using the original callback's ID.
+      if ((existing?.signature ?? resolved?.signature ?? file?.signature) !== signature) {
+        if (existing) existing.conflictingIdentity = true
+        if (file) file.conflictingIdentity = true
+        this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
+        return
+      }
+      // Equivalent file retries retain their existing receipt, never a second
+      // concurrent writer. Consumed identities from earlier turns stay fenced.
+      if (!file || file.conflictingIdentity || request.method !== 'item/tool/call') return
+    }
     if (params.threadId !== runtime.session.nativeSessionId) {
       await runtime.transport.reject(request.id, -32602, 'This request belongs to another thread.'); return
     }
@@ -1736,18 +1754,6 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       void this.handleFileCall(runtime, request).catch(() => {
         this.record(runtime, 'files.response_unconfirmed', {})
       })
-      return
-    }
-    const key = requestKey(runtime.generation, request.id)
-    const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
-    const existing = runtime.interactions.get(key)
-    const resolved = runtime.resolvedRequests.get(key)
-    if (existing || resolved) {
-      // Do not send an error using a still-live original request ID.
-      if ((existing?.signature ?? resolved?.signature) !== signature) {
-        if (existing) existing.conflictingIdentity = true
-        this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key })
-      }
       return
     }
     if (runtime.interactions.size >= MAX_INTERACTIONS) {
@@ -1785,31 +1791,39 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const transport = runtime.transport
     const generation = runtime.generation
     const key = requestKey(generation, request.id)
-    const signature = createHash('sha256').update(canonical(params)).digest('hex')
+    const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
     const prior = runtime.fileRequests.get(key)
-    if (prior && prior.signature !== signature) {
-      // Never answer a conflicting envelope using a legitimate in-flight ID.
-      this.record(runtime, 'protocol.conflicting_request_identity', { nativeRequestKey: key }); return
-    }
-    if (prior?.pending) return // One response writer for an in-flight native request ID.
+    if (prior?.pending || prior?.conflictingIdentity) return
     const denied = { success: false, contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }] }
-    if (runtime.closed || runtime.disposed || runtime.terminalResult || params.turnId !== runtime.activeTurnId
-      || !runtime.files || typeof params.callId !== 'string' || typeof params.tool !== 'string'
-      || (params.namespace != null && typeof params.namespace !== 'string') || runtime.fileRequests.size >= MAX_INTERACTIONS && !prior) {
+    if (runtime.fileRequests.size >= MAX_INTERACTIONS && !prior) {
+      this.rememberResolvedRequest(runtime, key, { signature, nativeRequestId: undefined,
+        nativeTurnId: text(params.turnId), method: request.method, generation })
       await transport.respond(request.id, request.method, denied); return
     }
-    const receipt = prior ?? { signature, pending: true }
+    const receipt: NonNullable<typeof prior> = prior ?? { signature, pending: true }
     receipt.pending = true
     runtime.fileRequests.set(key, receipt)
     try {
+      if (runtime.closed || runtime.disposed || runtime.terminalResult || params.turnId !== runtime.activeTurnId
+        || !runtime.files || typeof params.callId !== 'string' || typeof params.tool !== 'string'
+        || (params.namespace != null && typeof params.namespace !== 'string')) {
+        await transport.respond(request.id, request.method, denied); return
+      }
       const result = await runtime.files.dispatch({ threadId: runtime.session.nativeSessionId,
         turnId: String(params.turnId), callId: params.callId, tool: params.tool, arguments: params.arguments,
         ...(typeof params.namespace === 'string' ? { namespace: params.namespace } : {}),
       })
-      if (runtime.transport === transport && runtime.generation === generation && !runtime.disposed && !runtime.closed) {
+      if (runtime.transport === transport && runtime.generation === generation && !runtime.disposed && !runtime.closed
+        && runtime.fileRequests.get(key) === receipt && !receipt.conflictingIdentity) {
         await transport.respond(request.id, request.method, { ...result })
       }
-    } finally { receipt.pending = false }
+    } finally {
+      receipt.pending = false
+      // Retain identity even for denied or uncertain replies; this does not
+      // assert native acceptance or revive a file callback after turn cleanup.
+      this.rememberResolvedRequest(runtime, key, { signature, nativeRequestId: undefined,
+        nativeTurnId: text(params.turnId), method: request.method, generation })
+    }
   }
 
   private translateRequest(runtime: Runtime, request: RpcRequest, signature: string): WaitingRequest | undefined {
@@ -1884,10 +1898,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private resolveInteraction(runtime: Runtime, key: string, waiting: WaitingRequest, result: 'resolved' | 'cleared'): void {
     if (runtime.interactions.get(key) !== waiting) return
     runtime.interactions.delete(key)
-    runtime.resolvedRequests.set(key, { signature: waiting.signature,
+    this.rememberResolvedRequest(runtime, key, { signature: waiting.signature,
       nativeRequestId: waiting.pending.turn.nativeRequestId, nativeTurnId: waiting.pending.turn.nativeTurnId,
       method: waiting.method, generation: waiting.generation })
-    if (runtime.resolvedRequests.size > MAX_EVENTS) runtime.resolvedRequests.delete(runtime.resolvedRequests.keys().next().value!)
     waiting.resolve(result)
     // Native "resolved" means answered OR cleared, not proof of a permission grant.
     this.record(runtime, `interaction.${result}`, {
@@ -1895,6 +1908,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       ...(waiting.selectedOptionId ? { submittedOptionId: waiting.selectedOptionId } : {}),
       evidence: result === 'resolved' ? 'serverRequest/resolved' : 'terminal_turn',
     })
+  }
+
+  private rememberResolvedRequest(runtime: Runtime, key: string, request: ResolvedRequest): void {
+    runtime.resolvedRequests.set(key, request)
+    if (runtime.resolvedRequests.size > MAX_EVENTS) runtime.resolvedRequests.delete(runtime.resolvedRequests.keys().next().value!)
   }
 
   private handleDisconnect(runtime: Runtime): void {
