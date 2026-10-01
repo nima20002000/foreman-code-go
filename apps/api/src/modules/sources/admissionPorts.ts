@@ -1,0 +1,37 @@
+import type pg from 'pg'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ApprovedSource, ApprovedSourcePin, SourceRootRecord, SourceRootSelection, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { RootBinding } from '@graphql/contracts/source-materialization'
+import type { MaterializationAttempt } from './ports.js'
+
+export interface AuthorizedSourceRoot {
+  workspaceId: string; selection: SourceRootSelection; ownerPrincipalId: string
+  mainId: string; deviceId: string | null; workerInstallationId: string | null
+  /** Registered app-owned runtime namespace, never the user's source directory. */
+  canonicalPath: string; authorizationRevision: number | null; keyRevision: number | null
+}
+/** Existing workspace/host/root catalog MUST authorize before any path probe.
+ * Host I/O runs outside SQL; fence only rechecks persisted live authority.
+ */
+export interface RegisteredSourceRootPort {
+  authorize(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+    input: { workspaceId: string; selection: SourceRootSelection; accessMode: RootBinding['accessMode'] }): Promise<AuthorizedSourceRoot>
+  attest(root: AuthorizedSourceRoot): Promise<{ canonicalPath: string; filesystem: RootBinding['filesystem']; attestationId: string; attestationDigest: string }>
+  fence(sql: Pick<pg.PoolClient, 'query'>, root: AuthorizedSourceRoot): Promise<void>
+}
+export interface SourceAdmissionPort {
+  resolveApprovedSource(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+    workspaceId: string, pin: ApprovedSourcePin): Promise<ApprovedSource>
+  resolveRootBinding(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+    input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord>
+  /** The caller allocates the real execution/attempt first; no synthetic Run or Agent. */
+  prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
+    source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord>
+  verifyExecution(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string>
+}
+export interface SourceClosureProofPort {
+  /** Actual original W08 operation/attempt physical closure plus main projection.
+   * A disconnect, lease timeout, PID absence or expiry is never closure proof.
+   */
+  confirmedClosed(record: SourceMaterializationRecord): Promise<boolean>
+}
