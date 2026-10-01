@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'n
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { connect } from 'node:net'
+import { constants } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger } from '../../../infrastructure/logger.js'
@@ -24,7 +25,9 @@ interface LaunchRecord {
   format: 1; id: string; owner: string; boot: string; parent: LinuxProcessIdentity; controlKey: string
 }
 interface BirthRecord { format: 1; id: string; owner: string; boot: string; guardian: LinuxProcessIdentity; containment?: NativeCgroupBoundary }
-const owned = new WeakMap<ChildProcess, { scope: NativeProcessRecovery; id: string; closed?: boolean }>()
+export interface NativeProcessExit { exitCode: number | null; exitSignal: NodeJS.Signals | null }
+const owned = new WeakMap<ChildProcess, { scope: NativeProcessRecovery; id: string; closed?: boolean;
+  exit?: NativeProcessExit; receiptError?: Error }>()
 const closing = new Map<string, Promise<void>>()
 const key = (owner: string) => createHash('sha256').update(owner).digest('hex')
 const socketName = (id: string) => `\0graphql-native-${id}`
@@ -452,6 +455,25 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
     const guardian = processIdentity(child.pid)
     if (!guardian) throw new Error('Native guardian exited before registration.')
     writeRecord(join(directory, 'dispatched.json'), { format: 1, id, guardian }, true)
+    // Only the guardian owns this IPC channel; native stdio never carries receipts.
+    // Match the immutable launch and guardian generation before accepting an outcome.
+    child.on('message', (message: unknown) => {
+      const registration = owned.get(child)!
+      try {
+        const row = recordObject(message)
+        const source = recordObject(row.guardian)
+        if (row.format !== 1 || row.operation !== 'native_exit' || row.id !== id
+          || row.owner !== launch.owner || row.boot !== launch.boot
+          || source.pid !== guardian.pid || source.startTicks !== guardian.startTicks
+          || !Number.isSafeInteger(row.nativePid) || Number(row.nativePid) <= 1
+          || !((Number.isInteger(row.exitCode) && Number(row.exitCode) >= 0 && Number(row.exitCode) <= 255 && row.exitSignal === null)
+            || (row.exitCode === null && typeof row.exitSignal === 'string' && Object.hasOwn(constants.signals, row.exitSignal)))
+          || registration.exit) throw new Error('Invalid native exit receipt for this launch.')
+        registration.exit = { exitCode: row.exitCode as number | null, exitSignal: row.exitSignal as NodeJS.Signals | null }
+      } catch (error) {
+        registration.receiptError = error instanceof Error ? error : new Error('Invalid native exit receipt.')
+      }
+    })
     dispatchAttempted = true
     child.send({ operation: 'start', directory, binary, args, cwd: options.cwd, environment: options.env }, (error) => {
       if (error) { try { child.disconnect() } catch { /* Already disconnected. */ } }
@@ -464,6 +486,15 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
     throw error
   }
   return child
+}
+
+/** A guardian cleanup signal is not the native outcome. Missing receipts retain
+ * the actual wrapper failure; retirement/empty containment never implies success. */
+export function nativeProcessExit(child: ChildProcess, fallback: NativeProcessExit): NativeProcessExit {
+  const registration = owned.get(child)
+  if (registration?.receiptError) throw registration.receiptError
+  if (registration && !registration.exit && fallback.exitCode === 0) throw new Error('Native exit receipt is missing for this launch.')
+  return registration?.exit ?? fallback
 }
 
 /** Registered children MUST NOT fall through to legacy PID/group signaling. */

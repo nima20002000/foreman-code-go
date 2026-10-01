@@ -162,7 +162,16 @@ process.on('message',input=>{
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
           detached:false,stdio:['inherit','inherit','inherit'],windowsHide:true})
         native.once('error',stop)
-        native.once('exit',stop)
+        native.once('exit',(exitCode,exitSignal)=>{
+          try {
+            const outcome={format:1,operation:'native_exit',id:intent.id,owner:intent.owner,boot,
+              guardian:{pid:live.pid,startTicks:live.startTicks},nativePid:native.pid,exitCode,exitSignal}
+            // Flush the exact native outcome before cleanup kills this guardian too.
+            // Pipe output stays unchanged; a disconnected manager cannot receive success.
+            if(process.connected)process.send(outcome,()=>stop())
+            else stop()
+          }catch{stop()}
+        })
       }catch{stop()}
     })
   }catch{stop()}
