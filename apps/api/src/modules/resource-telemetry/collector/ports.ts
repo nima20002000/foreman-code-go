@@ -3,6 +3,16 @@ import { boundedReader } from './io.js'
 import { qualifyHostConstants, type HostConstants } from './linuxProcfs.js'
 import { createResourceCollector, type CollectorClock } from './lifecycle.js'
 import type { OwnershipReader } from './ownership.js'
+import { passiveRegistryOwnershipReader, type PassiveNativeRegistry, type TrustedNativeScopes } from './registryAdapter.js'
+
+/** Mount the existing passive registry and exact owner projection on either host. */
+export function createPassiveLinuxResourceCollector(input: Omit<Parameters<typeof createLinuxResourceCollector>[0], 'ownership'> & {
+  registry: PassiveNativeRegistry
+  nativeScopes(identity: TelemetryIdentity): TrustedNativeScopes
+}): Promise<ResourceCollector> {
+  return createLinuxResourceCollector({ ...input,
+    ownership: passiveRegistryOwnershipReader(input.registry, input.nativeScopes(structuredClone(input.identity))) })
+}
 
 /** Worker/main composition seam; no DB, bootstrap, provider acquisition or runtime-owner acquisition. */
 export async function createLinuxResourceCollector(input: {
