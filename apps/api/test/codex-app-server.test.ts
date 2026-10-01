@@ -86,6 +86,123 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     if (failure?.status === 'rejected') throw failure.reason
   })
 
+  it('reattaches an original resident without launching, resuming, replaying or reading turn history', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval')
+    const waiting = await pending(session)
+    const lifetime = manager.originalSessionLifetime(session, source)!
+    assert(lifetime.residency.nativeTurnId)
+    lifetime.assertCurrent()
+    const launches = (await calls(f.directory)).filter((entry) => typeof entry.pid === 'number').length
+    assert.deepEqual(await manager.reattachOriginalSession(session, source, lifetime.residency), session)
+    assert.equal((await wire('thread/resume')).length, 0)
+    assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('thread/turns/list')).length, 0)
+    assert.equal((await calls(f.directory)).filter((entry) => typeof entry.pid === 'number').length, launches)
+    const read = (await wire('thread/read')).at(-1)!.params as JsonObject
+    assert.equal(read.includeTurns, false)
+    await manager.respondOriginal(session, source, lifetime.residency, waiting.turn.nativeRequestId!, waiting.responseOptions[0]!)
+    await result
+  })
+
+  it('refuses cold original recovery before launching and never labels a resumed saved thread original', async () => {
+    const session = await manager.createSession(source)
+    const pin = manager.originalSessionLifetime(session, source)!.residency
+    await manager.closeForRestart(session)
+    const replacement = makeManager()
+    const before = await calls(f.directory)
+    assert.equal(replacement.originalSessionLifetime(session, source), undefined)
+    await assertCode(replacement.reattachOriginalSession(session, source, pin), 'CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE')
+    assert.deepEqual(await calls(f.directory), before)
+    await replacement.attachSession(session, source)
+    assert.equal(replacement.originalSessionLifetime(session, source), undefined)
+    await assertCode(replacement.reattachOriginalSession(session, source, pin), 'CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE')
+  })
+
+  it('never restores original residency after a disconnected manager resumes in a new generation', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const lifetime = manager.originalSessionLifetime(session, source)!
+    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    assert(launched && typeof launched.pid === 'number')
+    process.kill(launched.pid, 'SIGTERM')
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'transport.disconnected'))
+    await result
+    assert.equal(manager.originalSessionLifetime(session, source), undefined)
+    await manager.reconcile(session, 'turn-correlation')
+    assert.equal(manager.originalSessionLifetime(session, source), undefined)
+    assert.throws(lifetime.assertCurrent)
+    const before = await wire()
+    await assertCode(manager.cancelOriginalTurn(session, source, lifetime.residency), 'CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE')
+    assert.deepEqual(await wire(), before)
+  })
+
+  it('fences original controls by owner, accepted configuration, environment, connection and exact turn', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const lifetime = manager.originalSessionLifetime(session, source)!
+    const pin = lifetime.residency
+    const before = await wire()
+    await assertCode(manager.cancelOriginalTurn(session, input(f.directory, 'other-agent'), pin), 'CODEX_SESSION_OWNER_MISMATCH')
+    const changed = structuredClone(source); codex(changed).sandbox = 'danger-full-access'
+    await assertCode(manager.cancelOriginalTurn(session, changed, pin), 'CODEX_SESSION_CONFIGURATION_MISMATCH')
+    const changedEnvironment = structuredClone(source)
+    changedEnvironment.environment = { agentId: changedEnvironment.environment!.agentId,
+      variables: { ...changedEnvironment.environment!.variables, GRAPHQL_MCP_TOKEN: 'different-token' } }
+    await assertCode(manager.cancelOriginalTurn(session, changedEnvironment, pin), 'CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED')
+    for (const changedPin of [{ ...pin, connectionId: 'other' }, { ...pin, runtimeGeneration: 1 },
+      { ...pin, nativeTurnId: 'other-turn' }, { ...pin, session: { ...session, nativeSessionId: 'other-session' } }]) {
+      await assertCode(manager.cancelOriginalTurn(session, source, changedPin), 'CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE')
+    }
+    await assertCode(manager.cancelOriginalTurn(session, { ...source, nativeTurnId: 'other-turn' }, pin), 'CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE')
+    assert.deepEqual(await wire(), before)
+    assert.equal(await manager.cancelOriginalTurn(session, source, pin), true)
+    await result
+  })
+
+  it('does not expose original turn control before durable ACK admission completes', async () => {
+    const session = await manager.createSession(source)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let entered = false
+    const events = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'blocked-admission',
+      onSubmitted: async () => { entered = true; await gate } }))
+    await until(async () => entered)
+    assert.equal(manager.originalSessionLifetime(session, source), undefined)
+    release()
+    await until(async () => manager.originalSessionLifetime(session, source))
+    const pin = manager.originalSessionLifetime(session, source)!.residency
+    assert.equal(await manager.cancelOriginalTurn(session, source, pin), true)
+    await events
+  })
+
+  it('captured original lifetime cannot be retargeted by mutable readbacks or a later turn', async () => {
+    const session = await manager.createSession(source)
+    const lifetime = manager.originalSessionLifetime(session, source)!
+    lifetime.residency.session.nativeSessionId = 'caller-mutation'
+    lifetime.assertCurrent()
+    const { result } = await start(session)
+    assert.throws(lifetime.assertCurrent, (error: unknown) => errorCode(error) === 'CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE')
+    await finish(f.directory, session.nativeSessionId)
+    await result
+  })
+
+  it('rejects late original reattachment after its live channel disconnects', async () => {
+    const session = await manager.createSession(source)
+    const lifetime = manager.originalSessionLifetime(session, source)!
+    await flag('read-delay')
+    const read = manager.reattachOriginalSession(session, source, lifetime.residency)
+    void read.catch(() => undefined)
+    await until(async () => (await wire('thread/read')).length > 0)
+    const launched = (await calls(f.directory)).find((entry) => typeof entry.pid === 'number')
+    assert(launched && typeof launched.pid === 'number')
+    process.kill(launched.pid, 'SIGTERM')
+    await assert.rejects(read)
+    assert.equal(manager.originalSessionLifetime(session, source), undefined)
+    assert.throws(lifetime.assertCurrent)
+    assert.equal((await wire('thread/resume')).length, 0)
+  })
+
   it('recognizes the managed worker launcher and permits only its scoped execution credential', async () => {
     const entry = nativeConnection('codex', appLauncherConnection())
     await json('mcp.json', { enabled: true, transport: { ...entry, type: 'stdio' } })
@@ -312,6 +429,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
       const session = await scoped.createSession(fixtureSource.source)
       const events = collect(scoped.startTurn(session, { prompt: 'approval', clientCorrelationId: `${surface}-fixture-turn` }))
       const value = await until(() => scoped.pending(session))
+      const lifetime = scoped.originalSessionLifetime(session, fixtureSource.source)!
+      assert(lifetime)
+      assert.equal(lifetime.residency.nativeTurnId, value.turn.nativeTurnId)
+      assert.deepEqual(await scoped.reattachOriginalSession(session, fixtureSource.source, lifetime.residency), session)
+      lifetime.assertCurrent()
       const query = responseQuery(value)
       const before = await wire()
       const inspected = await scoped.inspectResponseAvailability(session, query)

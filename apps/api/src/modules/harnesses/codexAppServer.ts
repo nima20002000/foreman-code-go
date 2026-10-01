@@ -67,6 +67,21 @@ export interface CodexInspectionOptions {
   workingDirectory?: string
 }
 
+/** Manager-local residency evidence, never physical process or remote writer authority.
+ * A saved thread resumed in a replacement app-server cannot produce this pin. */
+export interface CodexOriginalResidency {
+  readonly session: NativeSessionReference
+  readonly connectionId: string
+  readonly runtimeGeneration: number
+  /** Only a native ACK past the onSubmitted admission gate establishes a turn here. */
+  readonly nativeTurnId: string | undefined
+}
+export interface CodexOriginalSessionLifetime {
+  readonly residency: CodexOriginalResidency
+  /** Compose with the caller's existing Main/device/writer fence. */
+  assertCurrent(): void
+}
+
 export { QUALIFIED_CODEX_VERSION, QUALIFIED_CODEX_SCHEMA_SHA256 }
 const MAX_EVENTS = 1_024
 const MAX_EVENT_BYTES = 8 * 1024 * 1024
@@ -536,6 +551,96 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
       throw error
     }
+  }
+
+  /** Passive lookup; never launches, reads history, renews credentials or replaces ownership. */
+  originalSessionLifetime(session: NativeSessionReference, source: NativeSessionStart): CodexOriginalSessionLifetime | undefined {
+    this.assertSessionVersion(session)
+    const runtime = this.runtimes.get(session.nativeSessionId)
+    if (!runtime) return undefined
+    const input = structuredClone(source), reference = structuredClone(session)
+    this.assertOriginalBinding(runtime, session, input)
+    if (!this.isOriginalResident(runtime)) return undefined
+    const residency: CodexOriginalResidency = {
+      session: structuredClone(runtime.session), connectionId: runtime.connectionId,
+      runtimeGeneration: runtime.generation, nativeTurnId: runtime.activeTurnId,
+    }
+    // Capture a private copy: mutating a caller's readback cannot retarget the fence.
+    const pin = structuredClone(residency)
+    return { residency, assertCurrent: () => { this.requireOriginalResidency(reference, input, pin) } }
+  }
+
+  /** Reattach only the surviving original stdio runtime. Cold/generation reconnect is unsupported. */
+  async reattachOriginalSession(session: NativeSessionReference, source: NativeSessionStart,
+    residency: CodexOriginalResidency, signal?: AbortSignal): Promise<NativeSessionReference> {
+    const input = structuredClone(source), pin = structuredClone(residency)
+    return this.exclusive(session.nativeSessionId, async () => {
+      signal?.throwIfAborted()
+      const runtime = this.requireOriginalResidency(session, input, pin)
+      const response = object(await runtime.transport.request('thread/read', {
+        threadId: session.nativeSessionId, includeTurns: false,
+      }, signal))
+      // A late read must not bless a disconnected, replaced or differently admitted turn.
+      signal?.throwIfAborted()
+      this.requireOriginalResidency(session, input, pin)
+      if (object(response.thread).id !== session.nativeSessionId) {
+        throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex read a different native thread.')
+      }
+      return structuredClone(runtime.session)
+    })
+  }
+
+  /** Control is restricted to the exact admitted original turn; no cold-attach fallback. */
+  async cancelOriginalTurn(session: NativeSessionReference, source: NativeSessionStart,
+    residency: CodexOriginalResidency, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    this.requireOriginalResidency(session, source, residency)
+    if (!residency.nativeTurnId) throw new NativeTurnNotActiveError()
+    return this.cancel(session, signal, residency.nativeTurnId)
+  }
+
+  async respondOriginal(session: NativeSessionReference, source: NativeSessionStart,
+    residency: CodexOriginalResidency, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    const runtime = this.requireOriginalResidency(session, source, residency)
+    const waiting = [...runtime.interactions.values()].find((entry) => entry.pending.turn.nativeRequestId === nativeRequestId)
+    if (!residency.nativeTurnId || runtime.terminalResult
+      || waiting && waiting.pending.turn.nativeTurnId !== residency.nativeTurnId) throw new NativeTurnNotActiveError()
+    return this.respond(session, nativeRequestId, option, signal)
+  }
+
+  private isOriginalResident(runtime: Runtime): boolean {
+    return !runtime.attached && runtime.generation === 0 && !runtime.closed && !runtime.disposed
+      && !runtime.starting && runtime.phase !== 'uncertain' && this.transports.has(runtime.transport)
+      && runtime.transport.isConnected?.() === true
+      && !this.shutdownController.signal.aborted
+  }
+
+  private assertOriginalBinding(runtime: Runtime, session: NativeSessionReference, input: NativeSessionStart): void {
+    if (runtime.session.providerVersion !== session.providerVersion) {
+      throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
+    }
+    this.assertBinding(runtime, input)
+    if (input.nativeTurnId !== undefined && input.nativeTurnId !== runtime.activeTurnId) {
+      throw new HarnessExecutionError('CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE', 'The accepted native turn does not match the resident turn.')
+    }
+    if (credentialIdentity(runtime.input) !== credentialIdentity(input)) {
+      throw new HarnessExecutionError('CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED', 'Original residency requires the accepted process environment.')
+    }
+  }
+
+  private requireOriginalResidency(session: NativeSessionReference, input: NativeSessionStart, pin: CodexOriginalResidency): Runtime {
+    this.assertSessionVersion(session)
+    const runtime = this.runtimes.get(session.nativeSessionId)
+    if (!runtime) throw new HarnessExecutionError('CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE', 'The original stdio runtime is not resident; saved history cannot recover its process or callbacks.')
+    this.assertOriginalBinding(runtime, session, input)
+    if (!this.isOriginalResident(runtime) || pin.session.harness !== session.harness
+      || pin.session.providerVersion !== session.providerVersion || pin.session.nativeSessionId !== session.nativeSessionId
+      || pin.connectionId !== runtime.connectionId || pin.runtimeGeneration !== runtime.generation
+      || pin.nativeTurnId !== runtime.activeTurnId) {
+      throw new HarnessExecutionError('CODEX_ORIGINAL_RESIDENCY_UNAVAILABLE', 'The original connection, generation or admitted turn is no longer current.')
+    }
+    return runtime
   }
 
   async attachSession(session: NativeSessionReference, source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
