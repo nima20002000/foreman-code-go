@@ -58,7 +58,7 @@ async function fixture() {
   const reader={open:vi.fn(async()=>Readable.from([Buffer.from('<html>result</html>')]))}
   const port=new CanonicalJobArtifactPort(pool,files,ledger,authority,reader,()=>now)
   const input={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,owner:execution.owner,
-    commandId:randomUUID(),path:'dist/index.html',mediaType:'text/html',sha256:hash('<html>result</html>'),byteSize:19}
+    commandId:randomUUID(),path:'dist/index.html',mediaType:'text/html' as const,sha256:hash('<html>result</html>'),byteSize:19}
   return {execution,principal,query,sql,pool,repository,bytes,links,runtime,preparation,reader,port,input,
     revoke:()=>{revoked=true},advance:()=>{now=new Date(now.getTime()+3600_000)}}
 }
@@ -137,7 +137,7 @@ describe('explicit CI byte capability preserves document policy',()=>{
       await expect(ci.receive(id,Readable.from([invalid]),expected)).rejects.toMatchObject({code:'JOB_ARTIFACT_TYPE_INVALID'})
       expect(await readdir(join(root,'staging',id))).toEqual([])
       await expect(ci.receive(randomUUID(),Readable.from([Buffer.from('ok')]),{filename:'ok.md',mediaType:'text/markdown',sha256:hash('ok'),byteSize:2})).rejects.toMatchObject({code:'FILE_BYTE_CLASS_DENIED'})
-      expect(FileWithRevisionSchema.safeParse({file:{fileId:'f',currentRevisionId:'r',createdAt:'2026-10-01T00:00:00Z',scope:{kind:'workspace_reference',workspaceId:'w'},state:'ready'},revision:{byteClass:'ci-output',fileId:'f',revisionId:'r',createdAt:'2026-10-01T00:00:00Z',filename:'index.html',mediaType:'text/html',sha256:hash('ok'),byteSize:2,origin:'job_output'}}).success).toBe(false)
+      expect(FileWithRevisionSchema.safeParse({file:{fileId:'f',currentRevisionId:'r',createdAt:'2026-10-01T00:00:00Z',scope:{kind:'workspace_reference',workspaceId:'w'},state:'ready'},revision:{byteClass:'ci-output',fileId:'f',revisionId:'r',createdAt:'2026-10-01T00:00:00Z',filename:'index.html',mediaType:'text/html' as const,sha256:hash('ok'),byteSize:2,origin:'job_output'}}).success).toBe(false)
     } finally {await rm(root,{recursive:true,force:true})}
   })
 })

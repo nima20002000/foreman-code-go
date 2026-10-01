@@ -76,7 +76,7 @@ describe.skipIf(!databaseUrl)('CI canonical artifact authenticated persistence',
   afterAll(async()=>{await app?.close();await pool?.end();if(root)await rm(root,{recursive:true,force:true});if(admin){try{await admin.query(`drop schema ${schema} cascade`)}finally{await admin.end()}}})
   it('finalizes and adopts one exact standalone artifact, then authenticates HTTP/MCP readback and denial',async()=>{
     const input={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,owner:execution.owner,
-      commandId:'ci-output-command',path:outputPath,mediaType:'application/json',sha256:digest(data),byteSize:data.length}
+      commandId:'ci-output-command',path:outputPath,mediaType:'application/json' as const,sha256:digest(data),byteSize:data.length}
     const publication=await artifacts.publishAccepted(input),replay=await artifacts.publishAccepted(input,'mcp')
     expect(replay.artifact).toEqual(publication.artifact);expect(replay.replayed).toBe(true)
     await artifacts.verifyRequiredOutputs(pool,execution)

@@ -8,17 +8,17 @@ import { fileStateAt, type FileWithRevision } from '@graphql/contracts/files'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { JobArtifactPort } from '../../jobs/ports.js'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
+import { JobRepository } from '../../jobs/repository.js'
 import type { JobSql } from '../../jobs/repository.js'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { DomainError } from '../../errors.js'
+import type { FileMutationSource } from '../repository.js'
+import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
 import type { FileStorageService } from '../service.js'
 import { completedBytes } from '../tools/transfers.js'
 
-export interface JobOutputPublicationInput {
-  workspaceId: string; executionId: string; attemptId: string; owner: JobExecution['owner']; commandId: string
-  path: string; mediaType: string; sha256: string; byteSize: number
-}
+export type { JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
 export interface TrustedJobOutputReader {
   /** Main verifies receipt/exact ownership, or opens an immutable collected output after proven closure.
    * No caller path is opened by this adapter. The declared relative path is metadata, not a main disk path. */
@@ -63,6 +63,22 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     requireAuthorization(live, 'job_artifacts:read', { workspaceId })
     return live
   }
+  /** Main-only Run result projection, after its caller proves actual Run ownership. No bearer enters a build. */
+  async listCanonicalOutputs(query: JobSql, execution: JobExecution): Promise<JobArtifact[]> {
+    const current=await new JobRepository().execution(query,execution.workspaceId,execution.id)
+    if (!current.workflow || current.process.phase!=='terminal' || !current.process.processStopped
+      || current.attemptId!==execution.attemptId || current.acceptedSpec.specDigest!==execution.acceptedSpec.specDigest
+      || current.owner.grantId!==execution.owner.grantId || current.owner.epoch!==execution.owner.epoch) {
+      throw new DomainError('JOB_RESULT_PIN_CONFLICT','Only the actual accepted closed workflow job can project canonical outputs.',409)
+    }
+    const linked=await query.query(`select 1 from workflow_job_executions where job_execution_id=$1 and run_id=$2 and node_execution_id=$3 and accepted=true`,
+      [current.id,current.workflow.runId,current.workflow.nodeExecutionId])
+    if (linked.rows.length!==1) throw new DomainError('JOB_RESULT_PIN_CONFLICT','The real job is not accepted by this persisted Run node.',409)
+    return (await this.ledger.list(query,current.workspaceId,current.id)).filter(({link})=>link.attemptId===current.attemptId
+      && link.owner.grantId===current.owner.grantId && link.owner.epoch===current.owner.epoch
+      && link.specDigest===current.acceptedSpec.specDigest && link.outputSpecDigest===current.acceptedSpec.outputSpecDigest)
+      .map(({link,value})=>this.artifact(link,value))
+  }
   async list(query: JobSql, principal: ManagementPrincipal, workspaceId: string, executionId: string): Promise<JobArtifact[]> {
     await this.authorizeRead(query, principal, workspaceId)
     const records = await this.ledger.list(query, workspaceId, executionId)
@@ -87,7 +103,8 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       values ($1,$2,'job_artifact.read',$3,'succeeded',$4::jsonb)`,[principal.id,source,`job:${executionId}`,JSON.stringify({fileId,revisionId,sha256:artifact.sha256})])
     return {artifact,bytes}
   }
-  async publishAccepted(input: JobOutputPublicationInput, source: 'http'|'mcp' = 'http') {
+  private async reserve(input: JobOutputPublicationInput, source: FileMutationSource) {
+    input = JobOutputPublicationInputSchema.parse(input)
     const initial = await this.transaction(sql=>this.authority.authorizePublication(sql,input))
     const execution = initial.execution
     const output = execution.acceptedSpec.outputs.find(value=>value.path===input.path)
@@ -111,6 +128,16 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     const allocated = await this.files.allocateJobOutput(initial.principal,scope(input.workspaceId,input.executionId),{
       requestId,filename:basename(input.path),mediaType:input.mediaType,byteSize:input.byteSize,sha256:input.sha256,
     },inputHash,execution.acceptedSpec.policy.retentionSeconds,guard)
+    return {input,initial,execution,requestId,inputHash,guard,allocated,check}
+  }
+  /** Before transfer issuance: stable canonical allocation is durable before any staging I/O. */
+  async reserveAccepted(input: JobOutputPublicationInput, source: FileMutationSource = 'http'): Promise<FileWithRevision> {
+    return (await this.reserve(input,source)).allocated.value
+  }
+  async publishAccepted(input: JobOutputPublicationInput, source: FileMutationSource = 'http') {
+    const state=await this.reserve(input,source)
+    const {initial,execution,requestId,inputHash,guard,allocated,check}=state
+    input=state.input
     await this.ledger.link({kind:'job_execution',ownerPrincipalId:initial.principal.id,requestId,
       binding:digest(['job_execution',execution.id,execution.attemptId,execution.owner.grantId,execution.owner.epoch]),
       executionId:execution.id,workspaceId:execution.workspaceId,attemptId:execution.attemptId,owner:execution.owner,

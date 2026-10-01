@@ -2,7 +2,7 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { File, FilePage, FileScope, FileWithRevision, PermanentFileScope, MessageAttachmentRef } from '@graphql/contracts/files'
 
 export type FileQuery = GraphSqlClient
-export type FileMutationSource = 'http' | 'mcp'
+export type FileMutationSource = 'http' | 'mcp' | 'device'
 /** Reference writes revalidate live grants and lineage in the same transaction as their metadata/audit. */
 export interface FileMutationContext {
   source: FileMutationSource

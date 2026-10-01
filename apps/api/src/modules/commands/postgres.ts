@@ -24,7 +24,7 @@ export class PostgresCommandCoordinator {
 
   async execute<T>(input: {
     principal: ManagementPrincipal
-    source: 'http' | 'mcp'
+    source: 'http' | 'mcp' | 'device'
     operation: string
     commandId: string
     targetKey: string
@@ -134,7 +134,7 @@ export class PostgresCommandCoordinator {
     }
   }
 
-  async recordDenied(principalId: string | undefined, source: 'http' | 'mcp', action: string, targetKey: string): Promise<void> {
+  async recordDenied(principalId: string | undefined, source: 'http' | 'mcp' | 'device', action: string, targetKey: string): Promise<void> {
     await this.pool.query(
       `insert into management_audit (principal_id, source, action, target_key, outcome, details)
        values ($1, $2, $3, $4, 'denied', '{}'::jsonb)`,
@@ -144,7 +144,7 @@ export class PostgresCommandCoordinator {
 
   async recordAudit(
     principalId: string | undefined,
-    source: 'http' | 'mcp',
+    source: 'http' | 'mcp' | 'device',
     action: string,
     targetKey: string,
     outcome: 'succeeded' | 'failed' | 'uncertain',
