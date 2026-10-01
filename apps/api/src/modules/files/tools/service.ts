@@ -2,7 +2,7 @@ import { Readable } from 'node:stream'
 import {
   AgentFileListInputSchema, AgentFileListResultSchema, AgentFileReadInputSchema,
   AgentFileCreateWorkingCopyInputSchema, AgentFileCreateWorkingCopyResultSchema,
-  AgentFilePublishInputSchema, AgentFilePublishResultSchema, FileWithRevisionSchema,
+  AgentFilePublishInputSchema, AgentFilePublishResultSchema, FileWithRevisionSchema, FileRevisionSchema,
   MAX_FILE_BYTES, fileStateAt, parseAgentFileReadResult,
   type FileScope, type FileWithRevision, type MessageAttachmentRef,
 } from '@graphql/contracts/files'
@@ -29,6 +29,7 @@ export class AgentFileToolService {
     private readonly references?: FileReferenceResolver, private readonly clock: () => Date = () => new Date()) {}
 
   private scope(caller: AuthorizedFileCaller, scope: FileScope): void {
+    if (scope.kind === 'job_execution') throw new Unavailable('forbidden')
     if (scope.kind === 'temporary') {
       if (fileScopeIdentity(scope) !== fileScopeIdentity(caller.context.scope)) throw new Unavailable('forbidden')
       return
@@ -73,6 +74,7 @@ export class AgentFileToolService {
   async list(token: string, raw: unknown) {
     const caller = await this.sessions.authenticate(token, 'files.list')
     const input = AgentFileListInputSchema.parse(raw)
+    if (input.scope.kind === 'job_execution') throw new Unavailable('forbidden')
     this.scope(caller, input.scope)
     let result
     const page = { limit: input.limit, ...(input.cursor ? { cursor: input.cursor } : {}) }
@@ -107,6 +109,7 @@ export class AgentFileToolService {
     const ref = { fileId: input.fileId, revisionId: input.revisionId }
     try {
       const stored = await this.files.repository.read(ref.fileId, ref.revisionId)
+      if (stored?.value.file.scope.kind === 'job_execution') throw new Unavailable('forbidden')
       if (stored && stored.value.file.scope.kind !== 'temporary') {
         if (!this.references) throw new DomainError('FILE_REFERENCE_RESOLVER_REQUIRED', 'Reference reads require the FIL-37 resolver.', 409)
         const result = await this.references.read(caller, input)
@@ -153,7 +156,8 @@ export class AgentFileToolService {
     }
     const data = await completedBytes(opened.stream, MAX_FILE_BYTES)
     await this.metadata(await this.sessions.authenticate(token, 'files.create_working_copy'), input.source)
-    const handle = await this.artifacts.create(token, opened.value.revision.filename, opened.value.revision.mediaType,
+    const document = FileRevisionSchema.parse(opened.value.revision)
+    const handle = await this.artifacts.create(token, document.filename, document.mediaType,
       { ref: input.source, sha256: opened.value.revision.sha256 }, 'files.create_working_copy')
     // Pass detached complete bytes, never a reference-storage hard link or a caller-supplied path.
     await this.artifacts.completeWrite(token, handle.artifactId, handle.writeId, Readable.from([data]),

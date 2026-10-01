@@ -56,7 +56,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     const state = fileStateAt(job.file, this.clock().toISOString())
     return JobArtifactSchema.parse({ executionId: link.executionId, publicationId: link.requestId, path: link.path,
       fileId: job.file.fileId, revisionId: job.revision.revisionId, sha256: job.revision.sha256, byteSize: job.revision.byteSize,
-      mediaType: job.revision.mediaType, expiresAt: job.file.expiresAt, state: state === 'ready' ? 'available' : state === 'removed' ? 'tombstoned' : 'expired' })
+      mediaType: job.revision.mediaType, state: state === 'ready' ? 'available' : state === 'removed' ? 'tombstoned' : 'expired' })
   }
   private async authorizeRead(query: JobSql, principal: ManagementPrincipal, workspaceId: string) {
     const live = await readLiveManagementPrincipal(query, principal.id)
