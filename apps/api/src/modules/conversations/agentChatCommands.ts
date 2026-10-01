@@ -1,3 +1,4 @@
+import { AcceptedChatResponseControlSchema, type AcceptedChatResponseControl } from '@graphql/contracts/interaction-activity'
 import type pg from 'pg'
 import { AgentChatStateSchema, type AgentChatState } from '@graphql/contracts/agent-chat'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -5,10 +6,11 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 
-type Outcome =
+type Outcome = { acceptedControl?: AcceptedChatResponseControl } & (
   | { status: 'pending' | 'uncertain' }
   | { status: 'completed'; state: AgentChatState }
   | { status: 'rejected'; error: { code: string; message: string; status: number; details?: Record<string, unknown> } }
+)
 interface Receipt { target_key: string; input_hash: string; result: Outcome }
 const OPERATION = 'agent_chat_control'
 
@@ -33,9 +35,10 @@ export class AgentChatCommands {
 
   execute(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
     payload: unknown, perform: () => Promise<AgentChatState>,
-    readCurrent?: () => Promise<AgentChatState>): Promise<AgentChatState> {
+    readCurrent?: () => Promise<AgentChatState>,
+    acceptedControl?: AcceptedChatResponseControl): Promise<AgentChatState> {
     if (this.closing) return Promise.reject(new DomainError('AGENT_CHAT_CLOSING', 'Agent chat is shutting down.', 503))
-    const task = this.reserve(principal, source, conversationId, requestId, payload, perform, readCurrent)
+    const task = this.reserve(principal, source, conversationId, requestId, payload, perform, readCurrent, acceptedControl)
     this.pending.add(task)
     void task.finally(() => { this.pending.delete(task) }).catch(() => undefined)
     return task
@@ -48,19 +51,23 @@ export class AgentChatCommands {
 
   private async reserve(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
     payload: unknown, perform: () => Promise<AgentChatState>,
-    readCurrent?: () => Promise<AgentChatState>): Promise<AgentChatState> {
+    readCurrent?: () => Promise<AgentChatState>,
+    acceptedControl?: AcceptedChatResponseControl): Promise<AgentChatState> {
     // Current scope/authority is checked even for conflicts, rejections and receipt replay.
     if (readCurrent) await readCurrent()
+    const control = acceptedControl ? AcceptedChatResponseControlSchema.parse(acceptedControl) : undefined
+    if (control && control.conversationId !== conversationId) throw new DomainError(
+      'AGENT_CHAT_CONTROL_SCOPE_CONFLICT', 'Accepted response metadata changed its conversation scope.', 409)
     const hash = commandInputHash(payload)
     const key = [principal.id, OPERATION, requestId]
     // All control kinds share the same namespace; changing kind or target also conflicts.
     const admitted = await this.pool.query(`with claimed as (
       insert into management_command_receipts (principal_id,operation,command_id,target_key,input_hash,result)
-      values ($1,$2,$3,$4,$5,'{"status":"pending"}'::jsonb)
+      values ($1,$2,$3,$4,$5,$7::jsonb)
       on conflict (principal_id,operation,command_id) do nothing returning 1
     ) insert into management_audit (principal_id,source,action,target_key,outcome,details)
       select $1,$6,$2,$4,'uncertain',jsonb_build_object('commandId',$3::text,'phase','reserved') from claimed returning 1`,
-    [...key, conversationId, hash, source])
+    [...key, conversationId, hash, source, JSON.stringify({ status: 'pending', ...(control ? { acceptedControl: control } : {}) })])
     if (!admitted.rowCount) {
       const prior = (await this.pool.query<Receipt>(`select target_key,input_hash,result from management_command_receipts
         where principal_id=$1 and operation=$2 and command_id=$3`, key)).rows[0]
@@ -88,6 +95,7 @@ export class AgentChatCommands {
         ...(error.details ? { details: error.details } : {}),
       } } : { status: 'uncertain' }
     }
+    if (control) outcome = { ...outcome, acceptedControl: control }
     try {
       const saved = await this.pool.query(`with settled as (
         update management_command_receipts set result=$4::jsonb

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ActivityScopeSchema } from './activity.js'
 
 /** Read projection only. Neither a recorded answer nor a callback is delivery evidence. */
 export const InteractionActivityProjectionSchema = z.object({
@@ -27,3 +28,18 @@ export const NativeInteractionResponseAvailabilitySchema = z.object({
   message: z.string().min(1),
 }).strict()
 export type NativeInteractionResponseAvailability = z.infer<typeof NativeInteractionResponseAvailabilitySchema>
+
+/** Accepted caller choice on the existing control receipt. This is not a native delivery or model-turn receipt. */
+export const AcceptedChatResponseControlSchema = z.object({
+  schemaVersion: z.literal(1), kind: z.literal('respond'), conversationId: z.string().min(1), modelRequestId: z.string().min(1),
+  scope: ActivityScopeSchema,
+  native: z.object({ harness: z.string().min(1), sessionId: z.string().min(1), turnId: z.string().min(1),
+    requestId: z.string().min(1), requestType: z.string().min(1) }).strict(),
+  choice: z.object({ optionId: z.string().min(1), semantic: z.string().min(1) }).strict(),
+}).strict().superRefine((value, context) => {
+  if (!['agent_chat', 'selected_run_chat'].includes(value.scope.kind)
+    || !('conversationId' in value.scope) || value.scope.conversationId !== value.conversationId) {
+    context.addIssue({ code: 'custom', message: 'Control metadata must retain the exact Agent conversation scope.' })
+  }
+})
+export type AcceptedChatResponseControl = z.infer<typeof AcceptedChatResponseControlSchema>
