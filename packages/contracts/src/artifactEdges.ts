@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FileScopeSchema, type AgentFileReadResult } from './files.js'
+import { FileScopeSchema, MAX_FILE_READ_BYTES, type AgentFileReadResult } from './files.js'
 
 const Id = z.string().min(1).max(500)
 const Hash = z.string().regex(/^[a-f0-9]{64}$/)
@@ -28,7 +28,7 @@ export type ArtifactAttempt = z.infer<typeof ArtifactAttemptSchema>
 export type ArtifactAuthority = z.infer<typeof ArtifactAuthoritySchema>
 export type ArtifactEdgeBinding = z.infer<typeof ArtifactEdgeBindingSchema>
 export const ArtifactEdgeReadSchema = z.object({ edgeId: Id, offset: z.number().int().nonnegative(),
-  length: z.number().int().positive().max(256 * 1024) }).strict()
+  length: z.number().int().positive().max(MAX_FILE_READ_BYTES) }).strict()
 export interface ArtifactEdgePort {
   pinAccepted(binding: ArtifactEdgeBinding): Promise<ArtifactEdgeBinding>
   readAccepted(edgeId: string, consumer: ArtifactAttempt, authority: ArtifactAuthority,
