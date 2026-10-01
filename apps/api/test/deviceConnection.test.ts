@@ -1,3 +1,4 @@
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { deviceNegotiationHash, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
 import { mainIdentityProofMessage } from '@graphql/contracts/device-identity-node'
@@ -31,10 +32,10 @@ const hello = { ...identity, connectionEpoch: '55555555-5555-4555-8555-555555555
 const welcome = { ...hello, type: 'welcome', connectionEpoch: '66666666-6666-4666-8666-666666666666', capabilities: { heartbeat: true, dispatch: false, transfer: false } }
 const signedWelcome = async (sent: Record<string, unknown>, epoch = welcome.connectionEpoch) => ({ ...welcome, connectionEpoch: epoch, connectionGeneration: sent.connectionGeneration, mainIdentityProof: await proof({ audience: 'graphql-worker-main-v1', ...identity, nonce: sent.nonce as string, connectionGeneration: sent.connectionGeneration as number, connectionEpoch: sent.connectionEpoch as string, mainConnectionEpoch: epoch, protocolVersion: 1, workerApplicationVersion: 'build', negotiationHash: deviceNegotiationHash([]) }) })
 const flush = async () => { for (let i = 0; i < 80; i++) await Promise.resolve() }
-const makeEndpoint = (extensions?: DeviceExtensionRegistration[], handshakeMs = 100) => {
+const makeEndpoint = (extensions?: DeviceExtensionRegistration[], handshakeMs = 100, reconcile: (binding: DeviceSessionBinding, signal: AbortSignal) => Promise<void> = async () => {}) => {
   const presence = vi.fn()
   const auth = { authenticateDevice: vi.fn(async () => principal), revalidateDevice: vi.fn(async () => {}) }
-  const endpoint = new DeviceEndpoint({ mainId: identity.mainId, appVersion: 'build', signMainIdentityProof: proof, auth, reconcile: async () => {}, presence, handshakeMs, heartbeatMs: 100, ...(extensions ? { extensions } : {}) })
+  const endpoint = new DeviceEndpoint({ mainId: identity.mainId, appVersion: 'build', signMainIdentityProof: proof, auth, reconcile, presence, handshakeMs, heartbeatMs: 100, ...(extensions ? { extensions } : {}) })
   return { endpoint, auth, presence }
 }
 afterEach(() => { vi.useRealTimers() })
@@ -179,7 +180,11 @@ describe('pinned ws adapter on disposable loopback transport', () => {
   it('negotiates signed actual duplex handlers and binds both request directions to the authenticated epoch', async () => {
     const mainHandler = vi.fn(async (payload: unknown) => ({ payload: { mainReceipt: payload } }))
     const mainExtension: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 2048, maxBinaryBytes: 0, handle: mainHandler }
-    const { endpoint, presence } = makeEndpoint([mainExtension], 2000)
+    let synchronizedReply: unknown
+    const { endpoint, presence } = makeEndpoint([mainExtension], 2000, async (_binding, signal) => {
+      synchronizedReply = (await endpoint.request(identity.deviceId, 'execution-v1', { grant: 'exact-operation' }, { signal })).payload
+      expect(presence.mock.calls.some(([view]) => view.phase === 'ready')).toBe(false)
+    })
     const server = createServer(), carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
     server.on('upgrade', deviceUpgradeHandler(endpoint, carrier)); server.listen(0, '127.0.0.1'); await once(server, 'listening')
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing address')
@@ -192,7 +197,7 @@ describe('pinned ws adapter on disposable loopback transport', () => {
     try {
       worker.start(); await vi.waitFor(() => expect(worker.status().phase).toBe('ready'), { timeout: 2000, interval: 10 })
       await vi.waitFor(() => expect(endpoint.capabilities(identity.deviceId)).toHaveLength(1))
-      expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'ready', dispatch: true, transfer: false })
+      expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'ready', dispatch: true, transfer: false }); expect(synchronizedReply).toMatchObject({ receipt: 'actual-handler' })
       await expect(endpoint.request(identity.deviceId, 'execution-v1', { grant: 'heartbeat-only' })).rejects.toThrow('forbidden')
       const response = await endpoint.request(identity.deviceId, 'execution-v1', { grant: 'exact-operation' })
       expect(response.payload).toMatchObject({ receipt: 'actual-handler' })

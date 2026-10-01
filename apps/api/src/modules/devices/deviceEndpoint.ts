@@ -87,8 +87,6 @@ export class DeviceEndpoint {
       binding = { mainId: principal.mainId, deviceId: principal.deviceId, workerInstallationId: principal.workerInstallationId, keyRevision: principal.keyRevision, authorizationRevision: principal.authorizationRevision, bootId: hello.bootId, connectionEpoch: epoch, connectionGeneration: Number(hello.connectionGeneration) }
       const session = this.sessions.get(principal.deviceId)
       if (session?.abort === abort) session.binding = binding
-      await withDeviceDeadline(this.options.reconcile(binding, abort.signal), abort.signal, this.options.handshakeMs ?? 10_000)
-      if (!current()) throw new DeviceConnectionError('transport')
       try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
       if (!current()) throw new DeviceConnectionError('transport')
       let extensions
@@ -106,8 +104,12 @@ export class DeviceEndpoint {
       if (!current()) throw new DeviceConnectionError('transport')
       const channel = new DeviceApplicationChannel({ side: 'main', binding, socket, signal: abort.signal, extensions, registrations: this.options.extensions ?? [], revalidate: async () => { try { await this.options.auth.revalidateDevice(principal, 'heartbeat') } catch (error) { throw permanentAuth(error) } } })
       this.channels.set(principal.deviceId, channel)
+      const channelTask = channel.run(iterator, this.options.heartbeatMs ?? 30_000).catch((error: unknown) => { abort.abort(); throw error })
+      void channelTask.catch(() => undefined)
+      await withDeviceDeadline(this.options.reconcile(binding, abort.signal), abort.signal, this.options.handshakeMs ?? 10_000)
+      if (!current()) throw new DeviceConnectionError('transport')
       this.options.presence({ binding, phase: 'ready', dispatch: welcome.capabilities.dispatch, transfer: welcome.capabilities.transfer })
-      await channel.run(iterator, this.options.heartbeatMs ?? 30_000)
+      await channelTask
     } catch (error) {
       try { sendFrame(socket, { type: 'blocked', code: error instanceof DeviceConnectionError ? error.code : 'transport' }) } catch { /* socket already unavailable */ }
     } finally {
