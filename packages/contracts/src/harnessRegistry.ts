@@ -39,7 +39,8 @@ export const PinnedHarnessSelectionSchema = z.object({
 export type PinnedHarnessSelectionDto = z.infer<typeof PinnedHarnessSelectionSchema>
 /** References to W09/W08 permitted roots, never a new root authority or filesystem proof. */
 export const HarnessWorkspaceRootReferenceSchema = z.object({
-  rootId: z.uuid(), rootPolicyId: Identity, rootPolicyRevision: z.number().int().positive(),
+  rootId: z.uuid(), bindingRevision: z.number().int().positive(), rootPolicyId: Identity,
+  rootPolicyRevision: z.string().regex(/^[1-9][0-9]*$/), locationRevision: z.string().regex(/^[1-9][0-9]*$/),
   workspaceId: Identity, rootPath: z.string().min(1), accessMode: z.enum(['read-only', 'exclusive-write']),
 }).strict()
 export const HarnessHostInventoryMetadataSchema = z.object({
@@ -50,7 +51,7 @@ export const HarnessHostInventoryMetadataSchema = z.object({
 }).strict()
 export type HarnessHostInventoryMetadata = z.infer<typeof HarnessHostInventoryMetadataSchema>
 export const HarnessRegistryReadbackSchema = z.object({
-  host: HarnessHostInventoryMetadataSchema.optional(),
+  hostMetadata: HarnessHostInventoryMetadataSchema.optional(),
   instances: z.array(ConfiguredHarnessInstanceSchema), installations: z.array(HostHarnessInstallationSchema),
 }).strict()
 export type HarnessRegistryReadback = z.infer<typeof HarnessRegistryReadbackSchema>
