@@ -26,7 +26,7 @@ export const RootBindingSchema = z.object({
   version: z.literal(1), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
   workspaceId: z.uuid(), rootId: z.uuid(), bindingRevision: z.number().int().positive(),
   locationRevision: z.number().int().positive(), canonicalPath: z.string().min(1),
-  filesystem: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict(),
+  filesystem: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
   accessMode: z.enum(['read-only', 'exclusive-write']), snapshotId: z.uuid(), manifestDigest: SourceHashSchema,
 }).strict()
 export type RootBinding = z.infer<typeof RootBindingSchema>
@@ -36,6 +36,6 @@ export const MaterializationReceiptSchema = z.object({
   keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
   verifiedManifestDigest: SourceHashSchema, verifiedEntries: z.number().int().nonnegative(),
   verifiedBytes: z.number().int().nonnegative(), verifiedAt: z.string().datetime(),
-  localTreeIdentity: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/) }).strict(),
+  localTreeIdentity: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
 }).strict()
 export type MaterializationReceipt = z.infer<typeof MaterializationReceiptSchema>

@@ -1,0 +1,23 @@
+# Exact source materialization v1
+
+The source namespace is separate from FileRevision, document upload policy and native journals. `captureGitSource` reads only exact approved Git objects with `cat-file`, never archive export filters or the mutable working tree. Every tree path must be explicitly approved; secrets, symlinks, submodules and LFS pointers fail. Git history/bundle intake is unsupported in v1 rather than importing unqualified prerequisites or repository configuration. `captureExplicitSource` requires a qualified writer-exclusion adapter; it never asserts that a best-effort directory walk is coherent. Its entries describe the complete approved resulting tree; deletions and overlayBaseDigest record provenance.
+
+`PrivateSourceSnapshotStore` is the main-only canonical byte reader/sink. Allocate its canonical mode-0700 root separately from execution roots, transfer staging and recovery. Capture failure and interrupted commit are quarantined, never exposed as ready. The main must persist the accepted manifest and authorization atomically in its own metadata service; this filesystem class does not confer API access or worker database authority. Source approvals and accepted snapshots have no backward fallback to a branch, working-copy head or latest file revision. No existing location or Run record is rewritten, and existing runner-local behavior is unchanged.
+
+`PrivateSourceMaterializer` accepts the immutable manifest, a destination-owned RootBinding and exact W08 attempt pins. Its mandatory authorization callback must validate current W07 identity/auth revisions, placement/attempt ownership, root revisions, access mode and source approval; caller-supplied paths are never sufficient authorization. Linux procfs directory descriptors anchor component operations, with mode-0700 roots owned by the worker. Root identities include device, inode and mount ID. This qualification excludes hostile processes sharing the worker's UID or control over its private root; such a deployment must return unsupported. A filesystem or platform lacking these guarantees must not relax the sandbox.
+
+Every materialization reserves a new UUID directory and exclusively claims rootId across revisions, verifies all entries and atomically activates only inside its fresh private reservation. References are copied, never hardlinked. Failed/uncertain claims survive restart. Only W08/W01 ownership reconciliation can release the exact receipt's claim; disconnect alone cannot. Automated deletion is deliberately absent. A failed attempt with no receipt requires explicit ownership reconciliation by the composing service; retrying blindly cannot recover authority.
+
+Source limits: 4,096 regular files, 16 MiB per file, 128 MiB expanded/package bytes, depth 32, 30 seconds preparation and two active materializations per service. Materialization space estimates include three byte copies plus entry overhead; retained directories still consume actual free space. The authenticated admission/transfer service must reserve aggregate disk/capture quotas across processes before calling these ports. No archive extractor or document upload-limit change is included.
+
+`resolve` verifies the exact persisted receipt, root and complete accepted source again. Native launch must consume it immediately under the same reconciled ownership and enforce the binding's read-only/exclusive-write harness security. File modes alone do not grant or implement a same-UID sandbox. `createPrivateSourceRepository` generates a new private Git object store adjacent to the verified tree, with no copied hooks, config, credentials, shared `.git`, or source history. CI receives explicit workTree/gitDirectory; the generated commit is separate from sourceCommit and cannot masquerade as the original Git identity.
+
+The committed driver is `runSourceMaterializationFixture` in `acceptanceDriver.ts`. W09-C supplies its authenticated SourceByteReader and W07/W08 authorization callback. The runnable focused local fixture command is:
+
+```sh
+corepack pnpm --filter @graphql/api exec vitest run src/modules/sources/sourceMaterialization.test.ts --maxWorkers=1
+```
+
+This command exercises local filesystem/failure/Git fixtures only. It does not close the orchestrator-only production HTTP/MCP, real carrier, physical laptop, expiry/retention, bounded overhead or native execution gates. The composing W09-C driver must run those after W07-HUMAN approvals.
+
+Integration patch: add `./source-materialization` in the root-owned contracts manifest, with types `./dist/sourceMaterialization.d.ts` and import `./dist/sourceMaterialization.js`. Metadata migrations and root/Run pin serialization belong to the orchestrator/W08-A; no migration or shared entrypoint is modified here.

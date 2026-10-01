@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '../../../../../../packages/contracts/src/sourceMaterialization.js'
+import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '@graphql/contracts/source-materialization'
 
 export class SourceError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'SourceError' }
@@ -7,7 +7,7 @@ export class SourceError extends Error {
 export const SOURCE_LIMITS = Object.freeze({ entries: 4096, bytes: 128 * 1024 * 1024,
   fileBytes: 16 * 1024 * 1024, depth: 32, preparationMs: 30_000, concurrent: 2 })
 export function sourcePath(path: string): string {
-  if (!path || path.length > 1024 || path.normalize('NFC') !== path || /[\\\x00-\x1f\x7f:]/u.test(path)
+  if (!path || path.length > 1024 || path.normalize('NFC') !== path || /[\\:]/u.test(path) || [...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
     || path.startsWith('/') || path.split('/').some((part) => !part || part === '.' || part === '..' || /[. ]$/.test(part))
     || path.split('/').length > SOURCE_LIMITS.depth) throw new SourceError('SOURCE_PATH_INVALID', 'Source paths must be unambiguous relative paths.')
   const parts = path.toLowerCase().split('/')
@@ -44,10 +44,11 @@ export function verifySourceManifest(input: unknown): SourceManifest {
     for (let i = 1; i < components.length; i++) if (paths.has(components.slice(0, i).join('/'))) throw new SourceError('SOURCE_PATH_COLLISION', 'A file cannot also be a directory.')
   }
   previous = ''
+  const removed = new Set<string>()
   for (const deletion of manifest.deletions) {
     sourcePath(deletion)
-    if (previous && previous >= deletion || paths.has(deletion.toLowerCase())) throw new SourceError('SOURCE_PATH_COLLISION', 'Deletion paths must be sorted and separate from included files.')
-    previous = deletion
+    if (previous && previous >= deletion || paths.has(deletion.toLowerCase()) || removed.has(deletion.toLowerCase())) throw new SourceError('SOURCE_PATH_COLLISION', 'Deletion paths must be sorted and separate from included files.')
+    previous = deletion; removed.add(deletion.toLowerCase())
   }
   if (manifest.totalEntries !== manifest.entries.length || manifest.totalBytes !== bytes || manifestDigest(manifest) !== manifest.manifestDigest)
     throw new SourceError('SOURCE_MANIFEST_INVALID', 'Source totals or digest do not match the complete manifest.')
@@ -62,6 +63,6 @@ export function createSourceManifest(input: Omit<SourceManifest, 'manifestDigest
 }
 export function verifySourceBytes(entry: SourceEntry, bytes: Uint8Array): void {
   if (bytes.byteLength !== entry.byteSize || sourceSha256(bytes) !== entry.sha256) throw new SourceError('SOURCE_BYTES_INVALID', 'Source content does not match its accepted manifest.')
-  if (Buffer.from(bytes).includes(Buffer.from('-----BEGIN PRIVATE KEY-----')) || Buffer.from(bytes).includes(Buffer.from('-----BEGIN OPENSSH PRIVATE KEY-----')))
+  if (/-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(Buffer.from(bytes).toString('latin1')))
     throw new SourceError('SOURCE_SECRET_CONTENT', 'Private key content is not approved source.')
 }
