@@ -1,3 +1,8 @@
+import type { AcceptedClaudeProfileAdmission, AcceptedProfileAuthority } from './instanceSettings/acceptedProfile.js'
+import type { ClaudeProfileOwner } from './claudeSdk/production.js'
+import type { ClaudeFileSdk } from '../files/claude/server.js'
+import type { ProductionHarnessRegistry } from './productionRegistry.js'
+import type { productionClaudeManager } from './claudeSdk/production.js'
 import type { CompatibilityOptions } from './compatibility/service.js'
 import type { CodexPluginAdapter } from './codexPlugins.js'
 import type { NativeMcpAdapter } from './nativeMcpCommon.js'
@@ -21,9 +26,15 @@ export interface AuxiliaryHarnessInfrastructure {
   command: typeof runCommand
 }
 export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
+  /** Concrete role-authorized profile admission and below-adapter replay client. */
+  claudeProfiles?: AcceptedClaudeProfileAdmission<ClaudeProfileOwner>
+  /** Genuine installed SDK/CLI pin producer; never derived from stored proof. */
+  claudeCurrentProfile?: AcceptedProfileAuthority<ClaudeProfileOwner>['current']
+  claudeClient?: Parameters<typeof productionClaudeManager>[0]['loadClient']
+  claudeFileSdk?: () => Promise<ClaudeFileSdk>
   deviceListener?: DeviceListenerConfig
   deviceDomains?: DeviceDomainComposition
-  inventoryDiscovery?: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads }
+  inventoryDiscovery?: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads; claude?: NonNullable<NonNullable<ConstructorParameters<typeof ProductionHarnessRegistry>[6]>['claude']> }
   qualificationIdentity?: {
     registry: HarnessInstallationRegistry
     pin: (harness: 'codex' | 'opencode', input: QualificationSuiteInput) => RegistryHarnessSelection

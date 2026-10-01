@@ -17,10 +17,21 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   private readonly credentials = new Map<string, { environment: ChildProcessEnvironment; ownerId: string; removeRoute: () => Promise<void> }>()
   constructor(private readonly pool: pg.Pool, private readonly access: PostgresAccessService,
     private readonly rollout: NativeRollout, private readonly directory: string, private readonly endpoint: string,
-    private readonly inspectorFor?: (manager: NativeHarnessSessionManager) => NativeMcpInspector) {}
+    private readonly inspectorFor?: (manager: NativeHarnessSessionManager) => NativeMcpInspector,
+    private readonly deliverClaudeCredential?: (manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion,
+      environment: ChildProcessEnvironment, signal: AbortSignal) => Promise<void>) {}
 
   current(principalId: string) { return this.access.currentOperator(principalId) }
-  assertConfiguration(configuration: OperatorConfigurationVersion) { this.rollout.assertChat(configuration) }
+  assertConfiguration(configuration: OperatorConfigurationVersion) {
+    if (configuration.harness.harness === 'claude') {
+      if (!configuration.harnessProfileSelection || !this.deliverClaudeCredential) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
+        'Claude Operator chat requires an explicit host profile and composed native admission.', 409)
+      // Current native proof is read asynchronously by the exact role owner;
+      // OpenCode rollout flags cannot qualify or disable a Claude profile.
+      return
+    }
+    this.rollout.assertChat(configuration)
+  }
 
   async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {
     const result = { harness: manager.harness, endpoint: this.endpoint, checkedAt: new Date().toISOString() }
@@ -41,7 +52,8 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     const automatic = entry.automaticEndpoint === true && entry.transport === 'stdio'
     const configured = entry.name === APP_MCP_SERVER_NAME && entry.enabled !== false && entry.status !== 'disabled'
       && (automatic || entry.endpoint === this.endpoint && entry.transport === 'streamable-http')
-      && entry.credentialEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE
+      && (manager.harness === 'claude' ? Boolean(this.deliverClaudeCredential)
+        : entry.credentialEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE)
     return { ...result, status: configured ? 'configured' : 'setup_required', routing: automatic ? 'automatic' : 'fixed' }
   }
 
@@ -89,6 +101,11 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       const environment = { agentId: configuration.operatorId, variables: { [OPERATOR_MCP_ENVIRONMENT_VARIABLE]: issued.token } }
       removeRoute = await registerAppRoute(issued.token, this.endpoint, issued.principal.expiresAt)
       signal.throwIfAborted()
+      if (manager.harness === 'claude') {
+        if (!this.deliverClaudeCredential) this.invalidSetup()
+        await this.deliverClaudeCredential(manager, configuration, environment, signal)
+        signal.throwIfAborted()
+      }
       this.credentials.set(conversationId, { environment, ownerId: principalId, removeRoute })
       return environment
     } catch (error) {

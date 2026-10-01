@@ -1,0 +1,27 @@
+import { createAdmittedNativeManager } from '../admittedManager.js'
+import type { ClaudeNativeAllocationResult } from './composition.js'
+import type { ClaudeNativeSessionManager } from './sessionManager.js'
+
+/** Claude adds its actual first-input and owned-control capability to the shared
+ * admitted lifetime; it never advertises a pre-input native session ID. */
+export function createAdmittedClaudeManager(initialize: (signal: AbortSignal) => Promise<ClaudeNativeAllocationResult>) {
+  const admitted = createAdmittedNativeManager('claude', initialize)
+  const manager: ClaudeNativeSessionManager = {
+    ...admitted.manager,
+    prepareInspection: async (start, signal) => (await admitted.actual(signal)).prepareInspection(start, signal),
+    refreshInspectionCredentials: async (start, servers, signal) => (await admitted.actual(signal)).refreshInspectionCredentials(start, servers, signal),
+    async *startInitialTurn(start, input, signal) { yield* (await admitted.actual(signal)).startInitialTurn(start, input, signal) },
+    nativeCallbackContext: (sessionId, toolUseId) => {
+      // Synchronous callbacks can run only after initialization. Keep the exact
+      // provider's process-local map rather than recreating callback identities.
+      return current?.nativeCallbackContext(sessionId, toolUseId)
+    },
+    callbackAuthority: context => current?.callbackAuthority(context),
+    notifyPendingChanged: notification => current?.notifyPendingChanged(notification),
+    waitNativeCallbackContext: async (toolUseId, signal, sessionId) => (await admitted.actual(signal)).waitNativeCallbackContext(toolUseId, signal, sessionId),
+  }
+  let current: ClaudeNativeSessionManager | undefined
+  const capture = admitted.actual
+  admitted.actual = async signal => { current = await capture(signal); return current }
+  return { harness: 'claude' as const, manager, inspector: admitted.inspector }
+}

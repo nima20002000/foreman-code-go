@@ -1,3 +1,5 @@
+import { registerDeviceOperatorTools } from './tools/devices.js'
+import { registerOperatorControlTools } from './tools/operatorControls.js'
 import { registerFileReferenceTools } from './tools/fileReferences.js'
 import { McpServer } from '@modelcontextprotocol/server'
 
@@ -26,6 +28,8 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
 }
 
 export function registerOperatorTools(server: McpServer, context: OperatorRequestContext): void {
+  registerDeviceOperatorTools(server, context)
+  registerOperatorControlTools(server, context)
   registerFileReferenceTools(server, context)
   registerContextTools(server, context)
   registerHarnessTools(server, context)

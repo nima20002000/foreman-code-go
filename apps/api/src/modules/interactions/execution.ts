@@ -516,6 +516,7 @@ export class ApprovalExecutionCoordinator {
     }
     return {
       harness: configuration.harness.harness, executionId: execution.id, agentId: execution.agentId,
+      runId: execution.runId, attempt: execution.attempt,
       workingDirectory: execution.workingDirectory, configuration,
     }
   }

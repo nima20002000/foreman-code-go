@@ -1,3 +1,6 @@
+import { createAdmittedNativeManager } from './admittedManager.js'
+import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
+import { createAdmittedClaudeManager } from './claudeSdk/admittedManager.js'
 import { allocateClaudeNativeHarness, type ClaudeNativeAllocation, type ClaudeNativeAllocationResult } from './claudeSdk/composition.js'
 import type { HarnessConfiguration, OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
@@ -31,6 +34,7 @@ interface AllocationContext {
   processRecovery?: NativeProcessRecovery
   appMcpAccess: 'scoped' | 'none'
   credentialEnvironmentVariable?: string
+  revalidateSelection?: (signal?: AbortSignal) => Promise<void>
 }
 export type NativeHarnessAllocation = AllocationContext & (
   | { harness: 'codex'; chatFiles?: CodexChatFiles }
@@ -66,6 +70,7 @@ export class NativeHarnessFactories {
   private readonly auxiliaries = new Map<NativeHarnessSessionManager, { recovery: NativeProcessRecovery | undefined; admitted: boolean; admissionError?: unknown; disposal?: Promise<void> }>()
   private readonly closedAuxiliaries = new WeakSet<NativeHarnessSessionManager>()
   private readonly codexDiagnostics = new Set<CodexDiagnosticLifetime>()
+  private readonly versionDiagnostics = new Set<CodexDiagnosticLifetime>()
   private readonly inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
   constructor(private readonly config: {
     codexBinary: string
@@ -81,6 +86,7 @@ export class NativeHarnessFactories {
     admitRecovery?: (recovery: NativeProcessRecovery) => void
     abandonRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
     closeRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
+    claudeVersionCommand?: typeof runCommand
   }, private readonly infrastructure: NativeFactoryInfrastructure = { mode: 'native' }) {
     this.instances = config.instances ?? new HarnessInstanceRegistry(localHarnessDrivers)
     if (infrastructure.mode === 'native' && infrastructure.codex?.mode === 'replay') {
@@ -90,6 +96,29 @@ export class NativeHarnessFactories {
       || !infrastructure.openCodeServer || !infrastructure.openCodeClient)) {
       throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay requires every provider infrastructure port.', 500)
     }
+  }
+
+  allocateAdmitted(harness: 'codex' | 'opencode', prepare: (signal: AbortSignal) => Promise<NativeHarnessAllocation>) {
+    const result = createAdmittedNativeManager<NativeHarnessSessionManager>(harness, async signal => {
+      const accepted = await prepare(signal)
+      signal.throwIfAborted()
+      return this.allocate(accepted)
+    })
+    this.inspectors.set(result.manager, result.inspector)
+    return { manager: result.manager, inspector: result.inspector }
+  }
+
+  allocateAdmittedClaude(prepare: (signal: AbortSignal) => Promise<ClaudeNativeAllocation>,
+    allocated?: (result: ClaudeNativeAllocationResult) => void): ClaudeNativeAllocationResult {
+    const result = createAdmittedClaudeManager(async signal => {
+      const admitted = await prepare(signal)
+      signal.throwIfAborted()
+      const result = this.allocate(admitted)
+      allocated?.(result)
+      return result
+    })
+    this.inspectors.set(result.manager, result.inspector)
+    return result
   }
 
   allocate(input: ClaudeNativeAllocation): ClaudeNativeAllocationResult
@@ -154,18 +183,21 @@ export class NativeHarnessFactories {
     const recovery = input.processRecovery ?? (auxiliary ? this.config.auxiliaryRecovery?.(input.role as 'diagnostics' | 'qualification') : undefined)
     let result: NativeHarnessAllocationResult
     if (input.harness === 'codex') {
-      const dependencies: CodexSessionDependencies | undefined = this.infrastructure.mode === 'native'
+      let dependencies: CodexSessionDependencies | undefined = this.infrastructure.mode === 'native'
         ? { ...this.infrastructure.codex, mode: 'native',
           qualify: async (binary, version, cwd, environment, authenticated, signal) => {
+            await input.revalidateSelection?.(signal)
             if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
             const qualified = await (this.infrastructure.codex?.qualify
               ?? ((selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal) =>
                 qualifyCodex(selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal, recovery)))(
               binary, version, cwd, environment, authenticated, signal)
+            await input.revalidateSelection?.(signal)
             if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
             return qualified
           },
           assertUnchanged: async (qualified) => {
+            await input.revalidateSelection?.()
             await (this.infrastructure.codex?.assertUnchanged ?? assertCodexUnchanged)(qualified)
             if (input.selection) await this.assertInstallationUnchanged(input.selection)
           },
@@ -176,6 +208,24 @@ export class NativeHarnessFactories {
             return result
           }, recovery) }
         : this.infrastructure.codex
+      if (this.infrastructure.mode === 'replay' && input.revalidateSelection) {
+        const replay = this.infrastructure.codex
+        dependencies = { ...replay,
+          qualify: async (...args) => {
+            await input.revalidateSelection?.(args[5])
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[5])
+            const result = await replay.qualify(...args)
+            await input.revalidateSelection?.(args[5])
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, args[5])
+            return result
+          },
+          assertUnchanged: async qualified => {
+            await input.revalidateSelection?.()
+            await replay.assertUnchanged(qualified)
+            if (input.selection) await this.assertInstallationUnchanged(input.selection)
+          },
+        }
+      }
       const manager = new CodexAppServerSessionManager(input.selection?.installation.launcher.resolvedLauncher ?? this.config.codexBinary, undefined, undefined,
         recovery, input.appMcpAccess, input.chatFiles, dependencies)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
@@ -186,7 +236,10 @@ export class NativeHarnessFactories {
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
-        ...(input.selection ? { assertInstallation: (signal?: AbortSignal) => this.assertInstallationUnchanged(input.selection!, signal) } : {}),
+        ...(input.selection ? { assertInstallation: async (signal?: AbortSignal) => {
+          await input.revalidateSelection?.(signal)
+          await this.assertInstallationUnchanged(input.selection!, signal)
+        } } : {}),
       }
       const server = this.infrastructure.openCodeServer
         ? this.infrastructure.openCodeServer(options) : new ManagedOpenCodeServer(options)
@@ -227,6 +280,8 @@ export class NativeHarnessFactories {
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
+    if (configuration.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
+      'Claude settings checks require an explicit accepted host profile; default configuration checks cannot select one.', 409)
     const selection = this.config.selectConfiguration?.(configuration)
     const allocation = this.allocate({ harness: configuration.harness, role: 'qualification',
       ...(selection ? { selection, configured: selection.instance } : {}), workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
@@ -245,9 +300,61 @@ export class NativeHarnessFactories {
     } finally { await this.disposeAuxiliary(allocation.manager) }
   }
 
+  observeClaudeVersion(binding: RegistryHarnessSelection, workingDirectory: string, signal?: AbortSignal): Promise<ClaudeOwnedVersionObservation> {
+    if (binding.selection.driverId !== 'claude' || !binding.installation.launcher.resolvedLauncher) return Promise.reject(new DomainError(
+      'HARNESS_CONFIGURATION_MISMATCH', 'A Claude version probe requires the exact installed Claude binding.', 409))
+    if (this.auxiliaryClosing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics are shutting down.', 503))
+    if (!this.config.auxiliaryRecovery || !this.config.admitRecovery || !this.config.abandonRecovery || !this.config.closeRecovery
+      || !this.config.claudeVersionCommand) return Promise.reject(new DomainError('HARNESS_DIAGNOSTIC_OWNER_REQUIRED',
+      'Claude version inspection requires an injected command and positive owned process closure.', 503))
+    if ([...this.versionDiagnostics].some(owned => !owned.active)) return Promise.reject(new DomainError('HARNESS_DIAGNOSTIC_CLEANUP_PENDING', 'Retry retained version diagnostic cleanup before another inspection.', 409))
+    if (this.versionDiagnostics.size >= 32) return Promise.reject(new DomainError('HARNESS_DIAGNOSTIC_LIMIT', 'Too many version diagnostics are owned.', 503))
+    const recovery = this.config.auxiliaryRecovery('diagnostics')
+    const owned: CodexDiagnosticLifetime = { recovery, writerOwner: undefined, controller: new AbortController(), operations: new Set(), active: true, admitted: false }
+    const combined = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
+    this.versionDiagnostics.add(owned)
+    const task = Promise.resolve().then(async () => {
+      combined.throwIfAborted()
+      await this.assertInstallationUnchanged(binding, combined)
+      owned.admitted = true
+      this.config.admitRecovery!(recovery)
+      const environment: NodeJS.ProcessEnv = { PATH: binding.installation.launcher.environment.path }
+      for (const name of ['LANG', 'LC_ALL', 'TMPDIR']) if (process.env[name] !== undefined) environment[name] = process.env[name]
+      const observed = await this.config.claudeVersionCommand!(binding.installation.launcher.resolvedLauncher!, ['--version'], workingDirectory,
+        combined, environment, { recovery, maxOutputBytes: 16_384 })
+      combined.throwIfAborted()
+      await this.assertInstallationUnchanged(binding, combined)
+      const version = /^(\d+\.\d+\.\d+)(?: \(Claude Code\))?\s*$/u.exec(observed.stdout)?.[1]
+      if (observed.exitCode !== 0 || !version) throw new DomainError('CLAUDE_VERSION_UNAVAILABLE', 'The owned Claude version probe returned no exact CLI version.', 409)
+      return { launcher: binding.installation.launcher.resolvedLauncher!, installationFingerprint: binding.selection.installationFingerprint,
+        environmentGeneration: binding.installation.environmentGeneration, version, positiveProcessClosure: true }
+    }).finally(async () => {
+      owned.active = false
+      owned.controller.abort(new Error('Version diagnostic is closed.'))
+      await this.closeVersionDiagnostic(owned)
+    }).then(result => {
+      signal?.throwIfAborted()
+      if (this.auxiliaryClosing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics are shutting down.', 503)
+      return result
+    })
+    owned.task = task
+    return task
+  }
+
+  private closeVersionDiagnostic(owned: CodexDiagnosticLifetime): Promise<void> {
+    if (owned.cleanup) return owned.cleanup
+    const cleanup = Promise.resolve().then(async () => {
+      if (owned.admitted) { await this.config.abandonRecovery!(owned.recovery); await this.config.closeRecovery!(owned.recovery) }
+      this.versionDiagnostics.delete(owned)
+    })
+    owned.cleanup = cleanup
+    void cleanup.catch(() => { if (owned.cleanup === cleanup) delete owned.cleanup })
+    return cleanup
+  }
+
   stopAuxiliaries(): void {
     this.auxiliaryClosing = true
-    for (const owned of this.codexDiagnostics) owned.controller.abort(new Error('Native diagnostics are shutting down.'))
+    for (const owned of [...this.codexDiagnostics, ...this.versionDiagnostics]) owned.controller.abort(new Error('Native diagnostics are shutting down.'))
     // Disposal aborts each real adapter's in-flight diagnostic requests. The
     // drain/dispose phase joins these same retained attempts and reports failures.
     for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(() => undefined)
@@ -287,9 +394,10 @@ export class NativeHarnessFactories {
   }
 
   async disposeAuxiliaries(): Promise<void> {
-    await Promise.allSettled([...this.codexDiagnostics].flatMap((owned) => owned.task ? [owned.task] : []))
+    await Promise.allSettled([...this.codexDiagnostics, ...this.versionDiagnostics].flatMap((owned) => owned.task ? [owned.task] : []))
     const results = await Promise.allSettled([...this.auxiliaries.keys()].map((manager) => this.disposeAuxiliary(manager)))
     results.push(...await Promise.allSettled([...this.codexDiagnostics].map((owned) => this.closeCodexDiagnostics(owned))))
+    results.push(...await Promise.allSettled([...this.versionDiagnostics].map(owned => this.closeVersionDiagnostic(owned))))
     const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Native diagnostic/qualification cleanup was incomplete.')
   }

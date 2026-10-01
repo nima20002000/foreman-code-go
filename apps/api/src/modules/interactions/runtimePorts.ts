@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 
+import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, NativeSessionReference } from '@graphql/contracts'
 
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
@@ -18,6 +19,10 @@ export interface NativeManagerOwnershipContext {
 export interface NativeManagerResolutionContext extends NativeManagerOwnershipContext {
   /** Immutable configuration version pinned by the durable execution. */
   configuration: AgentConfigurationVersion
+  runId?: string
+  attempt?: number
+  /** Exact immutable W08 placement loaded by the existing continuation owner. */
+  acceptedPlacement?: AcceptedNodePlacement
 }
 
 export type NativeManagerLifecycle = 'allocated' | 'starting' | 'resident' | 'released' | 'failed'
@@ -62,6 +67,8 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
       if (existing.context.agentId !== context.agentId || existing.context.harness !== context.harness
         || existing.context.workingDirectory !== context.workingDirectory
         || existing.context.purpose !== context.purpose
+        || existing.context.runId !== context.runId || existing.context.attempt !== context.attempt
+        || !isDeepStrictEqual(existing.context.acceptedPlacement, context.acceptedPlacement)
         || !isDeepStrictEqual(existing.context.configuration, context.configuration)) {
         throw new Error('A durable execution cannot change native manager ownership context.')
       }

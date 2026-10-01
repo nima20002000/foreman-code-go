@@ -1,3 +1,4 @@
+import type { discoverInstalledClaudeSdk } from './claudeSdk/currentPin.js'
 import { randomUUID } from 'node:crypto'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
 import type pg from 'pg'
@@ -37,7 +38,8 @@ export class ProductionHarnessRegistry {
     private readonly profiles: HostHarnessProfileEvidenceRepository,
     private readonly currentRemoteBinding: (deviceId: string) => DeviceSessionBinding | null,
     private readonly environment: NodeJS.ProcessEnv = process.env,
-    private readonly discovery: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads }
+    private readonly discovery: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads;
+      claude?: (host: Extract<CanonicalMachineReference, { kind: 'main' }>, environment: TargetEnvironment, signal?: AbortSignal) => Promise<Awaited<ReturnType<typeof discoverInstalledClaudeSdk>> | null> }
       = { launcher: discoverLauncher, payloads: passiveDriverPayloads },
     private readonly collectingBinding: (deviceId: string) => DeviceSessionBinding | null = currentRemoteBinding,
     private readonly connection: (deviceId: string) => DevicePresence | null = () => null) {}
@@ -87,6 +89,20 @@ export class ProductionHarnessRegistry {
     const environment = this.targetEnvironment()
     const records: HarnessInstallationRecord[] = []
     for (const driver of localHarnessDrivers) {
+      if (driver.driverId === 'claude') {
+        const discovered = await this.discovery.claude?.(hostRef, environment, signal)
+        this.assertOpen(); signal?.throwIfAborted()
+        const launcher = discovered?.launcher ?? { requested: 'installed Claude SDK native executable', resolvedLauncher: null,
+          fingerprint: null, status: 'missing' as const, interpreter: null, diagnostics: ['The actual installed Claude SDK native declaration is unavailable.'],
+          environment, checkedAt: new Date().toISOString() }
+        records.push({ hostRef, harnessInstallationId: discovered?.declaration.harnessInstallationId
+          ?? commandInputHash({ hostRef, driverId: driver.driverId, unavailable: 'sdk-native-declaration' }),
+          installationFingerprint: discovered ? launcher.fingerprint : null, driverId: driver.driverId, driverRevision: driver.driverRevision,
+          protocolRevision: discovered?.declaration.protocolRevision ?? 'claude-sdk-unavailable', environmentGeneration: environment.generation,
+          connectionGeneration: this.mainGeneration, launcher, observedVersion: null,
+          installed: Boolean(discovered), authenticated: null, compatible: null, qualified: null })
+        continue
+      }
       const requested = driver.driverId === 'codex' ? this.binaries.codexBinary : this.binaries.openCodeBinary
       let launcher = await this.discovery.launcher(requested, environment, [], signal)
       let complete = false

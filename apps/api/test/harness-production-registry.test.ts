@@ -1,5 +1,5 @@
 import pg from 'pg'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { passiveDriverPayloads } from '../src/modules/harnesses/payloadDiscovery.js'
@@ -28,6 +28,9 @@ it('pins actual main installation payloads and invalidates selections after pass
     expect(selection.installation.installationFingerprint).toBe('payload-A')
     expect(selection.installation.qualified).toBeNull()
     expect(reads).toBe(4)
+    expect(registry.installations.list().find(value => value.driverId === 'claude')).toMatchObject({
+      installed: false, installationFingerprint: null, authenticated: null, qualified: null,
+    })
     await registry.refreshMain()
     expect(() => registry.installations.assertCurrent(selection)).not.toThrow()
     payload = 'payload-B'
@@ -37,4 +40,32 @@ it('pins actual main installation payloads and invalidates selections after pass
     registry.stop()
     expect(() => registry.pinDefault('codex')).toThrow('shutting down')
   } finally { await pool.end() }
+})
+
+
+it('consumes the explicit passive Claude SDK declaration without default profiles or OpenCode launcher fallback', async () => {
+  const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
+  const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
+  const launcher: typeof discoverLauncher = vi.fn<typeof discoverLauncher>(async (requested, environment) => ({ requested,
+    resolvedLauncher: `/recorded/${requested}`, fingerprint: 'generic', status: 'installed', interpreter: null,
+    diagnostics: [], environment, checkedAt: '2026-10-01T00:00:00.000Z' }))
+  const claude = vi.fn<NonNullable<NonNullable<ConstructorParameters<typeof ProductionHarnessRegistry>[6]>['claude']>>(async (_host, environment) => ({ sdkVersion: '0.3.284', sdkIntegrity: 'recorded-installed-integrity',
+    launcher: { requested: '/recorded/sdk-native', resolvedLauncher: '/recorded/sdk-native', fingerprint: 'sdk-and-cli-payloads',
+      status: 'installed' as const, interpreter: null, diagnostics: [], environment, checkedAt: '2026-10-01T00:00:00.000Z' },
+    declaration: { harnessInstallationId: 'sdk-installation', requestedLauncher: '/recorded/sdk-native',
+      payloadPaths: ['/recorded/sdk.mjs'], driverId: 'claude', driverRevision: '1', protocolRevision: 'claude-sdk-0.3.284' },
+  }))
+  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
+    async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }), new HostHarnessProfileEvidenceRepository(pool), () => null,
+    { PATH: '/recorded' }, { launcher, payloads: async () => ({ complete: true, paths: [] }), claude })
+  try {
+    await registry.initialize('d46e2a2b-130f-46de-a93b-78a2352b9c9d')
+    expect(registry.installations.list().find(value => value.driverId === 'claude')).toMatchObject({
+      harnessInstallationId: 'sdk-installation', installationFingerprint: 'sdk-and-cli-payloads', installed: true,
+      observedVersion: null, authenticated: null, compatible: null, qualified: null, protocolRevision: 'claude-sdk-0.3.284',
+    })
+    expect(claude).toHaveBeenCalledOnce()
+    expect(vi.mocked(launcher).mock.calls.map(([requested]) => requested)).toEqual(['codex', 'codex', 'opencode', 'opencode'])
+    expect(registry.instances.list().some(value => value.driverId === 'claude')).toBe(false)
+  } finally { registry.stop(); await pool.end() }
 })

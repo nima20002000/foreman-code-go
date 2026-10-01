@@ -1,3 +1,22 @@
+import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
+import { createClaudeProductionDiscovery } from './modules/harnesses/claudeSdk/bootstrap.js'
+import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
+import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
+import { runCommand } from './modules/harnesses/process.js'
+import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harnesses/claudeSdk/production.js'
+import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
+import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
+import { credentialAuthority } from './modules/interactions/wave25/credentialAuthority.js'
+import type { GraphSqlClient } from './modules/run-graph/connection.js'
+import { currentOperatorAuthority } from './modules/access/runAuthority.js'
+import { requireAuthorization } from './modules/access/policy.js'
+import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
+import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
+import { HarnessExecutionRequestSchema } from '@graphql/contracts'
+import { operatorCodexFileAdmissions } from './modules/harnesses/operatorFiles/codex.js'
+import { adoptOperatorFilePublications, resolveOperatorOpenCodeFileAdmission } from './modules/harnesses/operatorFiles/postgres.js'
+import { OPERATOR_MCP_ENVIRONMENT_VARIABLE } from './modules/conversations/operatorChatAuthority.js'
+import { nativeCorrelation } from './modules/conversations/operatorChatRepository.js'
 import { randomUUID } from 'node:crypto'
 import { createWorkflowNativeCaptureChannel } from './modules/interactions/workflowNativeCapture.js'
 import { createReviewNativeCaptureChannel } from './modules/interactions/reviewNativeCapture.js'
@@ -21,6 +40,7 @@ import type { TemporaryFileService } from './modules/files/service.js'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
 import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
 import { codexChatHostDirectory, localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
+import { productionFileTools } from './modules/files/tools/production.js'
 import { FileRetentionService } from './modules/files/retention.js'
 import { registerFileRetentionRoutes } from './routes/fileRetention.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
@@ -107,7 +127,7 @@ import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instan
 import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
 import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
 import { commandInputHash } from './modules/commands/postgres.js'
-import { authorizeDeviceHost } from './modules/devices/hostAuthorization.js'
+import { authorizeDeviceHost, assertDeviceHostInstallation } from './modules/devices/hostAuthorization.js'
 
 /** The startup composition is shared with regression tests; infrastructure owns its lifecycle. */
 export function buildProductionApp(
@@ -171,10 +191,13 @@ export function buildProductionApp(
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const hostProfileEvidence = new HostHarnessProfileEvidenceRepository(database.pool)
+  const claudeDiscovery = createClaudeProductionDiscovery({ registry: () => harnessRegistry, factories: () => nativeFactories,
+    workingDirectory: config.harnesses.workspaceRoot })
   const harnessRegistry = new ProductionHarnessRegistry(database.pool, config.harnesses,
     (client) => settings.getManagedHarnessDefaults(client), hostProfileEvidence,
     (deviceId) => { const view = deviceRuntime.presenceFor(deviceId); return view?.phase === 'ready' ? view.binding : null },
-    process.env, infrastructure?.inventoryDiscovery, (deviceId) => deviceRuntime.currentBinding(deviceId),
+    process.env, infrastructure?.inventoryDiscovery ?? { launcher: discoverLauncher, payloads: passiveDriverPayloads,
+      claude: claudeDiscovery.discover }, (deviceId) => deviceRuntime.currentBinding(deviceId),
     (deviceId) => deviceRuntime.presenceFor(deviceId))
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
   const operators = new PostgresOperatorRepository(database.pool)
@@ -232,6 +255,7 @@ export function buildProductionApp(
     auxiliaryRecovery: (role) => processRegistry.scope(`${role}:${infrastructure?.mode === 'replay' ? infrastructure.codex.id() : randomUUID()}`),
     admitRecovery: (recovery) => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
     abandonRecovery: async (recovery) => { await processRegistry.abandonReservedLaunch(recovery) },
+    claudeVersionCommand: infrastructure?.auxiliary?.command ?? runCommand,
     closeRecovery: async (recovery) => {
       if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
     },
@@ -246,6 +270,39 @@ export function buildProductionApp(
       await connection.query('commit')
     } catch (error) { await connection.query('rollback'); throw error } finally { connection.release() }
   } }
+  const profileAuthority: AcceptedProfileAuthority<ClaudeProfileOwner> = {
+    async authorize(binding, selector, client) {
+      binding.admissionSignal?.throwIfAborted()
+      if (binding.kind === 'workflow') {
+        const current = await credentialAuthority(client as unknown as GraphSqlClient, binding.executionId, binding.purpose ?? 'workflow')
+        if (current.run.id !== binding.runId || current.execution.attempt !== binding.attempt) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact Run attempt changed.', 409)
+        if (!current.nativeSessionId && binding.purpose !== 'reviewer') {
+          const owner = binding.getOwner()
+          if (!owner || owner.runId !== binding.runId) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The original native launch owner is unavailable.', 409)
+          owner.assertOwned(); await owner.readOneShotFence(owner.client as unknown as GraphSqlClient)
+        }
+        const row = (await client.query<{ principal_id: string }>("select record->>'authorizationPrincipalId' as principal_id from runs where id=$1", [binding.runId])).rows[0]
+        if (!row?.principal_id) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The accepted Run principal is unavailable.', 409)
+        const principal = (await currentOperatorAuthority(client, row.principal_id)).principal
+        requireAuthorization(principal, 'runs:start', { workspaceId: current.run.workspaceId, workflowId: current.run.workflowId })
+      } else await new PostgresClaudeInteractionAuthority(client, binding, { nativeCallbackContext: () => undefined }).callbackAdmission()
+      await assertDeviceHostInstallation(client, selector.target.hostRef, selector.target.applicationInstallationId)
+      binding.admissionSignal?.throwIfAborted()
+    },
+    async current(binding, value, client) {
+      if (value.driverId === 'claude') {
+        const current = infrastructure?.claudeCurrentProfile ?? (infrastructure?.mode === 'replay' ? undefined : claudeDiscovery.current)
+        if (!current) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude replay requires its current installed profile metadata port.', 500)
+        return current(binding, value, client)
+      }
+      if (!await harnessRegistry.profileEvidence(value, client)) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The exact accepted native profile proof is stale.', 409)
+      return { registry: harnessRegistry.pinOverride(value), applicationInstallationId: value.target.applicationInstallationId,
+        suiteRevision: `${value.driverId}-profile-check-v1` }
+    },
+    assertCurrent: binding => harnessRegistry.installations.assertCurrent(binding),
+  }
+  const selectedProfiles = new AcceptedHarnessProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
+  const claudeProfiles = infrastructure?.claudeProfiles ?? new AcceptedClaudeProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
   const hostProfileChecks = new HostHarnessInstanceProfileChecks(hostSettings, hostProfileEvidence, commands, hostAuthority,
     new ProductionHostHarnessProfileQualifier(harnessRegistry, nativeFactories, () => deviceRuntime.endpointForDomains(), config.harnesses.workspaceRoot))
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
@@ -271,7 +328,8 @@ export function buildProductionApp(
     }, appMcpEndpoint),
   }
   const launchScopes = new WeakMap<NativeHarnessSessionManager, NativeProcessRecovery>()
-  const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
+  const claudeLaunches = new WeakMap<NativeHarnessSessionManager, ReturnType<typeof productionClaudeManager>>()
+  const managers = new ExecutionScopedNativeSessionManagerResolver((context, getOwner) => {
     const configuration = context.configuration.harness
     if (configuration.harness !== context.harness) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The pinned configuration does not match the execution harness.', 409)
@@ -279,6 +337,52 @@ export function buildProductionApp(
     // Object allocation remains native/registry IO-free. The coordinator reserves
     // this SAME scope immediately before its lifetime/entered commits.
     const recovery = processRegistry.scope(`execution:${context.executionId}`)
+    const placement = context.acceptedPlacement
+    let selector: AcceptedProfileSelector | undefined
+    if (placement) {
+      if (placement.payload.kind !== 'agent' || placement.payload.agentId !== context.agentId
+        || placement.payload.agentConfigurationVersionId !== context.configuration.id
+        || placement.runId !== context.runId || placement.destination.canonicalCwd !== context.workingDirectory
+        || placement.payload.driverId !== configuration.harness) throw new DomainError('PLACEMENT_BINDING_CONFLICT',
+        'The native role must use its exact accepted workflow placement.', 409)
+      selector = { instanceId: placement.payload.instanceId, instanceRevision: placement.payload.instanceRevision,
+        target: { hostRef: placement.hostRef, applicationInstallationId: placement.hostRef.kind === 'main'
+          ? placement.hostRef.mainId : placement.registration!.workerInstallationId,
+        harnessInstallationId: placement.payload.harnessInstallationId, installationFingerprint: placement.payload.installationFingerprint } }
+    }
+    if (configuration.harness === 'claude') {
+      if (!context.runId || !context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE',
+        'Claude requires the persisted Run and execution attempt.', 409)
+      const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
+        profiles: claudeProfiles, ...(selector ? { selector } : {}),
+        binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner },
+        role: 'workflow', configuration, workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
+        recovery, appMcpAccess: 'scoped', mode: infrastructure?.mode ?? 'native',
+        ...(infrastructure?.claudeClient ? { loadClient: infrastructure.claudeClient } : {}),
+        inspectionStart: async () => {
+          const owner = getOwner()
+          if (!owner) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The workflow native owner is unavailable.', 409)
+          const execution = await runs.getExecution(context.executionId, owner), run = await runs.get(context.runId!, owner)
+          if (!execution || !run || execution.attempt !== context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The persisted execution attempt changed.', 409)
+          const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
+            workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
+            runtimeDirectory: execution.runtimeDirectory, configuration: context.configuration, input: execution.input })
+          return execution.nativeSessionId ? { kind: 'workflow', correlationId: `execution:${execution.id}`, request } : { request }
+        },
+      })
+      claudeLaunches.set(claude.manager, claude)
+      launchScopes.set(claude.manager, recovery)
+      return claude.manager
+    }
+    if (selector) {
+      if (!context.runId || !context.attempt) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact Run attempt is unavailable.', 409)
+      const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
+        selector, binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner,
+          ...(context.purpose ? { purpose: context.purpose } : {}) },
+        configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId, recovery, appMcpAccess: 'scoped' })
+      launchScopes.set(manager, recovery)
+      return manager
+    }
     const selection = harnessRegistry.initialized ? harnessRegistry.pinAccepted(context.configuration) : undefined
     const { manager } = nativeFactories.allocate({
       ...(selection ? { selection } : {}),
@@ -310,10 +414,37 @@ export function buildProductionApp(
       }
       const context = {
         executionId: execution.id, agentId: execution.agentId, harness: input.harness,
-        workingDirectory: input.workingDirectory, configuration,
+        workingDirectory: input.workingDirectory, configuration, runId: execution.runId, attempt: execution.attempt,
       }
       const { manager } = managers.resolve(context)
       const detection = new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint)
+      if (input.harness === 'claude') {
+        const claude = claudeLaunches.get(manager)
+        if (!claude || configuration.harness.harness !== 'claude') throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The exact Claude launch is unavailable.', 409)
+        const inspected = await nativeFactories.inspector(manager).inspect({ harness: 'claude', runnerId: run.executionLocation.runnerId,
+          workingDirectory: input.workingDirectory, serverName: 'graphql', phase: 'configuration', ...(input.signal ? { signal: input.signal } : {}) })
+        const entry = inspected.entry
+        if (!entry || entry.name !== 'graphql' || entry.transport !== 'streamable-http' || entry.endpoint !== appMcpEndpoint
+          || entry.enabled === false || !['connected', 'authentication_required', 'status_unavailable'].includes(entry.status ?? '')) {
+          throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The owned Claude query has no accepted GraphQL HTTP endpoint.', 409)
+        }
+        await credentials.revokeSupersededForExecution(input.executionId)
+        input.signal?.throwIfAborted()
+        const credential = await (input.purpose === 'reviewer' ? credentials.issueForReviewer(input.executionId) : credentials.issueForExecution(input.executionId))
+        try {
+          const token = credential.environment.variables.GRAPHQL_MCP_TOKEN
+          const configured = configuration.harness.mcpServers.graphql
+          if (!token || configured?.type !== 'http' || configured.url !== appMcpEndpoint) throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'The accepted Claude settings cannot receive this scoped HTTP credential.', 409)
+          const start = { ...await claude.inspectionStart(), environment: credential.environment }
+          await claude.manager.refreshInspectionCredentials(start, { ...configuration.harness.mcpServers,
+            graphql: { ...configured, headers: { Authorization: `Bearer ${token}` } } }, input.signal)
+          const checked = await detection.preflight({ harness: 'claude', runnerId: run.executionLocation.runnerId,
+            workingDirectory: input.workingDirectory, ...(input.signal ? { signal: input.signal } : {}) })
+          if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('APP_MCP_PREFLIGHT_FAILED', 'Claude did not acknowledge the scoped HTTP credential on its current query.', 409)
+          await appRoutes.refresh()
+          return { credential, detection: checked }
+        } catch (error) { await credentials.revoke(credential); throw error }
+      }
       const launch = new WorkerLaunchCredentialService(detection, credentials, run.executionLocation.runnerId)
       // The coordinator reserved and retained this exact manager lifetime
       // BEFORE preflight. It owns disposal + durable closure on every failure;
@@ -355,20 +486,71 @@ export function buildProductionApp(
   registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
+  const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
     endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
+    createSelected: (configuration, conversationId, fileInputs, recovery) => {
+      if (!configuration.harnessProfileSelection || configuration.harness.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The selected Operator driver profile is unavailable.', 409)
+      return productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
+        selector: configuration.harnessProfileSelection, binding: { kind: 'operator', conversationId, repository: operatorConversations },
+        configuration: configuration.harness, role: 'operator', workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
+        recovery, appMcpAccess: fileInputs ? 'none' : 'scoped',
+        ...(!fileInputs && configuration.harness.harness === 'opencode' ? { credentialEnvironmentVariable: OPERATOR_MCP_ENVIRONMENT_VARIABLE } : {}),
+        ...(fileInputs ? { files: productionCodexChatFiles(() => app, conversationId, operatorCodexFileAdmissions(() => app, database.pool,
+          configuration, operatorWorkingDirectory, fileStorageRoot)),
+          openCodeFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost, {
+            resolve: (pool, id, identity) => resolveOperatorOpenCodeFileAdmission(pool, id, configuration, operatorWorkingDirectory, identity),
+            adoptPublished: adoptOperatorFilePublications,
+          }) } : {}),
+      }).manager
+    },
+    createClaude: (configuration, conversationId, fileInputs, recovery) => {
+      if (configuration.harness.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude requires the pinned Claude configuration.', 409)
+      const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
+        profiles: claudeProfiles,
+        ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
+        binding: { kind: 'operator', conversationId, repository: operatorConversations }, role: 'operator',
+        configuration: configuration.harness, workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
+        recovery, appMcpAccess: fileInputs ? 'none' : 'scoped', mode: infrastructure?.mode ?? 'native',
+        ...(fileInputs ? { files: { service: () => productionFileTools(app), ...(infrastructure?.claudeFileSdk ? { sdk: infrastructure.claudeFileSdk } : {}) } } : {}),
+        ...(infrastructure?.claudeClient ? { loadClient: infrastructure.claudeClient } : {}),
+        inspectionStart: async () => {
+          const row = await operatorConversations.active(conversationId)
+          if (!row?.active_request_id || row.operator_configuration_version_id !== configuration.id) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE', 'The accepted Operator turn is unavailable.', 409)
+          return { kind: 'operator', correlationId: nativeCorrelation(conversationId, row.active_request_id), configuration,
+            workingDirectory: operatorWorkingDirectory, environment: { agentId: configuration.operatorId, variables: {} } }
+        },
+      })
+      claudeLaunches.set(claude.manager, claude)
+      return claude.manager
+    },
     selectInstallation: (configuration) => harnessRegistry.initialized
       ? harnessRegistry.pinAccepted({ ...configuration, agentId: configuration.operatorId }) : undefined,
   })
   const chatAuthority = new PostgresOperatorChatAuthority(
     database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
     (manager) => nativeFactories.inspector(manager),
+    async (manager, configuration, environment, signal) => {
+      const claude = claudeLaunches.get(manager)
+      const configured = configuration.harness.harness === 'claude' ? configuration.harness.mcpServers.graphql : undefined
+      const token = environment.variables.GRAPHQL_MCP_TOKEN
+      if (!claude || !configured || configured.type !== 'http' || configured.url !== appMcpEndpoint || !token) throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'The accepted Claude HTTP credential arrangement is unavailable.', 409)
+      await claude.manager.refreshInspectionCredentials({ ...await claude.inspectionStart(), environment }, {
+        ...(configuration.harness.harness === 'claude' ? configuration.harness.mcpServers : {}),
+        graphql: { ...configured, headers: { Authorization: `Bearer ${token}` } },
+      }, signal)
+      const checked = await new McpDetectionService(nativeFactories.inspector(manager), appMcpEndpoint).preflight({
+        harness: 'claude', runnerId: 'runner-local', workingDirectory: operatorWorkingDirectory, signal,
+      })
+      if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Claude did not acknowledge the scoped Operator credential on its current query.', 409)
+    },
   )
   const chat = new OperatorChatService(
-    new PostgresOperatorConversationRepository(database.pool), operators,
+    operatorConversations, operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
   )
+  const agentConversations = new PostgresAgentChatRepository(database.pool)
   const agentChatManagers = new Map<string, NativeHarnessSessionManager>()
   const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory) => {
     const existing = agentChatManagers.get(conversationId)
@@ -376,6 +558,30 @@ export function buildProductionApp(
     // Chat processes have their own owner scope; they never share a workflow execution's manager.
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
+    if (harness.harness === 'claude') {
+      const { manager } = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
+        profiles: claudeProfiles,
+        ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
+        binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
+        role: 'agent-chat', configuration: harness, workingDirectory, ownerAgentId: configuration.agentId, recovery,
+        appMcpAccess: 'none', mode: infrastructure?.mode ?? 'native',
+        files: { service: () => productionFileTools(app), ...(infrastructure?.claudeFileSdk ? { sdk: infrastructure.claudeFileSdk } : {}) },
+        ...(infrastructure?.claudeClient ? { loadClient: infrastructure.claudeClient } : {}),
+        inspectionStart: async () => { throw new DomainError('CLAUDE_MANAGEMENT_MCP_FORBIDDEN', 'Agent chat has no management MCP inspection authority.', 403) },
+      })
+      agentChatManagers.set(conversationId, manager)
+      return manager
+    }
+    if (configuration.harnessProfileSelection) {
+      const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
+        selector: configuration.harnessProfileSelection,
+        binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
+        configuration: harness, role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId, recovery, appMcpAccess: 'none',
+        files: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions),
+        openCodeFiles: (server) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost) })
+      agentChatManagers.set(conversationId, manager)
+      return manager
+    }
     const selection = harnessRegistry.initialized ? harnessRegistry.pinAccepted(configuration) : undefined
     const { manager } = nativeFactories.allocate({
       ...(selection ? { selection } : {}),
@@ -387,13 +593,13 @@ export function buildProductionApp(
         chatFiles: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions) }
         : { harness: 'opencode' as const,
           ...(harness.advanced ? { advancedConfiguration: harness.advanced } : {}),
-          chatFiles: (server) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost) }),
+          chatFiles: (server: OpenCodeServerController) => productionOpenCodeChatFiles(() => app, database.pool, config, conversationId, server, endpointHost) }),
     })
     agentChatManagers.set(conversationId, manager)
     return manager
   }
   resolveAgentChatManager.release = (conversationId) => { agentChatManagers.delete(conversationId) }
-  const agentChat = new AgentChatService(database.pool, new PostgresAgentChatRepository(database.pool),
+  const agentChat = new AgentChatService(database.pool, agentConversations,
     new PostgresOperatorConversationRepository(database.pool), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)
   const reviews = new AutomaticReviewService(database.pool, runs, approvals, locations, rollout,
     async (runId) => {
@@ -444,7 +650,7 @@ export function buildProductionApp(
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
     ...(harnessQualifications ? { harnessQualifications } : {}),
-    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators),
+    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances),
     runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
     commands,
     interactions: new OperatorInteractionService(interactions),
@@ -457,6 +663,7 @@ export function buildProductionApp(
         throw new DomainError('RUNNER_UNSUPPORTED', 'This API can inspect only its local runner.', 409)
       }
       // Diagnostics allocate their own credential-free child, never a workflow manager.
+      if (input.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Claude diagnostics require an explicit accepted profile owner.', 409)
       const { manager, inspector } = nativeFactories.allocate({
         harness: input.harness, role: 'diagnostics', workingDirectory: input.workingDirectory,
         ownerAgentId: 'mcp-inspection', appMcpAccess: 'none',
@@ -467,7 +674,7 @@ export function buildProductionApp(
   const operatorExtensions = createOperatorExtensions({
     pool: database.pool, commands, catalog: harnessCatalog, native: nativeConfigurations,
     detection, locations,
-    provisioningRoot: projectRoot,
+    provisioningRoot: projectRoot, harnessProfiles: harnessInstances,
   })
   const app = buildApp({
     runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),

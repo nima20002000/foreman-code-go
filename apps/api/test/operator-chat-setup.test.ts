@@ -84,11 +84,15 @@ it('uses the registered typed inspector for Claude without concrete manager-clas
   const inspect = vi.fn(async () => ({ harness: 'claude' as const, providerVersion: '2.1.284', runnerId: 'runner-local',
     workingDirectory: '/operator', inspectedAt: '2026-10-01T00:00:00.000Z', entry: {
       name: 'graphql', transport: 'streamable-http' as const, endpoint, enabled: true,
-      credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', status: 'authentication_required' as const,
+      credentialArrangement: { kind: 'unknown' as const }, status: 'authentication_required' as const,
     } }))
-  const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint, () => ({ inspect }))
+  const delivery = vi.fn(async () => undefined)
+  const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint, () => ({ inspect }), delivery)
   expect(await owner.setup(manager, signal)).toMatchObject({ harness: 'claude', status: 'configured', routing: 'fixed' })
   expect(inspect).toHaveBeenCalledWith(expect.objectContaining({ harness: 'claude', phase: 'configuration', signal }))
+  expect(delivery).not.toHaveBeenCalled()
+  const uncomposed = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint, () => ({ inspect }))
+  expect(await uncomposed.setup(manager, signal)).toMatchObject({ status: 'setup_required' })
   inspect.mockResolvedValueOnce({ ...(await inspect()), workingDirectory: '/another-actor' })
   await expect(owner.setup(manager, signal)).rejects.toMatchObject({ code: 'MCP_INSPECTION_CONTEXT_MISMATCH' })
 })

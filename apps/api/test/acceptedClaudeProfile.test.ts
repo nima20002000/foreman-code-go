@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
 import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
-import { AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from '../src/modules/harnesses/instanceSettings/acceptedProfile.js'
+import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from '../src/modules/harnesses/instanceSettings/acceptedProfile.js'
 import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
 import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
@@ -73,4 +73,22 @@ describe('exact accepted Claude profile admission', () => {
     expect(claudeDiscoveryDeclaration({ harnessInstallationId: 'cli', requestedLauncher: '/cli', payloadPaths: ['/sdk'], protocolRevision: 'p' }).driverId).toBe('claude')
     expect(() => claudeDiscoveryDeclaration({ harnessInstallationId: 'cli', requestedLauncher: '/cli', payloadPaths: [], protocolRevision: 'p' })).toThrow('payload')
   })
+})
+
+
+it.each(['codex', 'opencode'] as const)('admits the exact selected %s profile without manufacturing a Claude pin', async driver => {
+  const { DEFAULT_HARNESS_DEFAULTS } = await import('@graphql/contracts')
+  const f = fixture()
+  const configuration = DEFAULT_HARNESS_DEFAULTS[driver]
+  f.value.driverId = driver; f.value.configuration = configuration
+  f.proof.driverId = driver; delete f.proof.claudeProof
+  Object.assign(f.registry, { selection: { ...f.registry.selection, driverId: driver }, instance: { ...f.registry.instance, configuration } })
+  const admission = new AcceptedHarnessProfileAdmission(f.settings as unknown as HarnessInstanceSettingsRepository,
+    f.proofs as unknown as HostHarnessProfileEvidenceRepository, f.authority)
+  const accepted = await admission.admit('actual-owner', f.selector)
+  expect(accepted.override.driverId).toBe(driver)
+  expect(accepted.currentBinding.pin).toBeUndefined()
+  expect(Object.isFrozen(accepted.override.configuration)).toBe(true)
+  f.value.instanceRevision = 'new-profile-revision'
+  await expect(admission.revalidate('actual-owner', accepted)).rejects.toThrow('stale')
 })
