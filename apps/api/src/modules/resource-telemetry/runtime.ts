@@ -4,7 +4,7 @@ import {
 import { newCollectorGeneration } from './collector/lifecycle.js'
 import { createLinuxResourceCollector } from './collector/ports.js'
 import { passiveRegistryOwnershipReader, type PassiveNativeRegistry, type TrustedNativeScopes } from './collector/registryAdapter.js'
-import { ResourceTelemetryService } from './ingestion/service.js'
+import { ResourceTelemetryService, TelemetryRejected } from './ingestion/service.js'
 import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryReadAuthority, TelemetrySessionAuthority } from './ingestion/ports.js'
 import { ResourceTelemetrySelectors, type TelemetryTargetAuthority } from './readback/selector.js'
 
@@ -69,7 +69,11 @@ export async function createResourceTelemetryRuntime(input: ResourceTelemetryRun
   const pump = run(async () => {
     for await (const batch of activeCollector.samples(controller.signal)) {
       controller.signal.throwIfAborted()
-      await service.ingest(input.localContext, JSON.stringify(batch), controller.signal)
+      try { await service.ingest(input.localContext, JSON.stringify(batch), controller.signal) }
+      catch (error) {
+        // Ownership may change after capture, or a delayed capture may outlive its challenge. Neither frame becomes fresh.
+        if (!(error instanceof TelemetryRejected) || error.reason !== 'owner-binding' && error.reason !== 'challenge') throw error
+      }
     }
     if (!controller.signal.aborted) throw new Error('Telemetry collector ended before runtime shutdown.')
   })
