@@ -74,10 +74,11 @@ export class PostgresDeviceAccessService {
         'select d.record,d.public_key,d.credential_expires_at,g.expires_at,g.consumed_request_id,g.authorization_revision,g.principal_id from device_pairing_grants g join device_registrations d on d.id=g.device_id where g.token_hash=$1 for update of g,d', [digest(input.grant)])
       const row = result.rows[0]
       if (!row || row.record.workerInstallationId !== input.workerInstallationId || row.record.publicKeyFingerprint !== publicKeyFingerprint(input.publicKey)) throw new DeviceAccessError('unauthorized')
-      requireAuthorization(await readLiveManagementPrincipal(client, row.principal_id), 'settings:update')
+      if (!row.consumed_request_id) requireAuthorization(await readLiveManagementPrincipal(client, row.principal_id), 'settings:update')
       if (Number(row.authorization_revision) !== row.record.authorizationRevision) throw new DeviceAccessError('unauthorized')
       if (row.record.status === 'revoked') throw new DeviceAccessError('revoked')
       if (row.consumed_request_id && row.consumed_request_id !== input.requestId) throw new DeviceAccessError('conflict')
+      if (row.consumed_request_id && row.credential_expires_at.getTime() <= Date.now()) throw new DeviceAccessError('expired')
       if (!row.consumed_request_id && row.expires_at.getTime() <= Date.now()) throw new DeviceAccessError('expired')
       const credential = digest(JSON.stringify(['graphql-worker-credential-v1', input.grant, input.requestId]))
       const registration = { ...row.record, status: 'paired' as const }
