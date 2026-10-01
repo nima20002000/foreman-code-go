@@ -2,6 +2,7 @@ import { runAsQualificationCandidate } from './gate.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import type { CompatibilityHarness } from '@graphql/contracts'
 import type { HarnessQualification } from '@graphql/contracts/harness-qualification'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -9,9 +10,7 @@ import { requireAuthorization } from '../../access/policy.js'
 import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'
 import type { PostgresSettingsRepository } from '../../settings/postgres.js'
-import { runCommand } from '../process.js'
 import { QUALIFICATION_TARGET_PROFILE } from './profiles.js'
-import { parseInstalledVersion } from '../compatibility/probe.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe } from '../compatibility/probe.js'
 import type { HarnessQualificationRepository } from './repository.js'
 import type { HarnessQualificationRegistry } from './registry.js'
@@ -22,6 +21,7 @@ class QualificationCleanupError extends AggregateError {}
 export class HarnessQualificationService {
   private readonly cancellation = new AbortController()
   private readonly tasks = new Set<Promise<unknown>>()
+  private readonly blocked = new Set<CompatibilityHarness>()
   private readonly failures = new Set<unknown>()
   private readonly cleanups = new Set<() => Promise<void>>()
   private readonly probes = new Set<CompatibilityProbe>()
@@ -40,7 +40,7 @@ export class HarnessQualificationService {
     return { qualifications: await this.repository.list() }
   }
 
-  run(principal: ManagementPrincipal, source: 'http' | 'mcp', harness: CompatibilityHarness): Promise<{ qualification: HarnessQualification }> {
+  async run(principal: ManagementPrincipal, source: 'http' | 'mcp', harness: CompatibilityHarness): Promise<{ qualification: HarnessQualification }> {
     requireAuthorization(principal, 'harnesses:update')
     this.assertRunning()
     return this.track(this.runAudited(principal, source, harness))
@@ -58,7 +58,7 @@ export class HarnessQualificationService {
   }
 
   begin(harness: CompatibilityHarness, force = false): Promise<HarnessQualification> {
-    try { this.assertRunning() } catch (error) { return Promise.reject(error) }
+    try { this.assertRunning(harness) } catch (error) { return Promise.reject(error) }
     return this.track(this.prepare(harness, force))
   }
 
@@ -73,7 +73,7 @@ export class HarnessQualificationService {
         ...[...this.cleanups].map(async (close) => { await close(); this.cleanups.delete(close) }),
         ...[...this.probes].map(async (probe) => { await probe.close?.(); this.probes.delete(probe) }),
       ])
-      if (!this.failures.size && cleanup.every((result) => result.status === 'fulfilled')) {
+      if (!this.failures.size && !cleanup.some((result) => result.status === 'rejected')) {
         cleanup.push(...await Promise.allSettled([...this.directories].map((directory) => this.removeDirectory(directory))))
       }
       const errors = [...this.failures, ...cleanup.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])]
@@ -88,7 +88,11 @@ export class HarnessQualificationService {
 
   shutdown(): Promise<void> { this.stop(); return this.join() }
 
-  private assertRunning(): void { this.cancellation.signal.throwIfAborted() }
+  private assertRunning(harness?: CompatibilityHarness): void {
+    this.cancellation.signal.throwIfAborted()
+    if (harness && this.blocked.has(harness)) throw new DomainError('HARNESS_QUALIFICATION_CLEANUP_PENDING',
+      'The previous qualification still has unconfirmed cleanup.', 409)
+  }
 
   private async timed<T>(milliseconds: number, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const deadline = new AbortController()
@@ -121,11 +125,14 @@ export class HarnessQualificationService {
     const suite = this.suites[harness]
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
     this.assertRunning()
-    const output = await this.timed(5000, (signal) => runCommand(binary, ['--version'], process.cwd(), signal))
-    if (output.exitCode !== 0) throw new DomainError('HARNESS_VERSION_UNAVAILABLE', 'The harness version could not be read.', 409)
-    const version = parseInstalledVersion(harness, output.stdout, output.stderr)
+    const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd())
+    this.probes.add(probe)
+    let version: string
+    try { version = (await this.timed(5000, (signal) => probe.inspect(harness, signal))).version }
+    finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()
+    this.assertRunning(harness)
     if (!force && (previous?.status === 'qualified' || previous?.status === 'failed')) return previous
     if (!this.flights.has(harness)) {
       const task = this.track(Promise.resolve().then(() => this.execute(harness, suite, binary, sha256, version)), true)
@@ -154,6 +161,7 @@ export class HarnessQualificationService {
       try {
         schemaSha256 = await this.timed(120_000, (signal) => this.checkStatic(harness, binary, version, signal, 1))
       } catch (error) {
+        if (error instanceof AggregateError) throw error
         this.assertRunning()
         if (!(error instanceof Error && (error.name === 'TimeoutError' || ('code' in error && error.code === 'CHECK_TIMEOUT')))) throw error
         attempts = 2
@@ -161,9 +169,10 @@ export class HarnessQualificationService {
       }
       checks.push({ id: 'static-compatibility', passed: true, detail: `${schemaSha256} (${attempts} attempt${attempts === 1 ? '' : 's'})` })
     } catch (error) {
-      if (error instanceof AggregateError) throw error
+      if (error instanceof AggregateError) this.blocked.add(harness)
       checks.push({ id: 'static-compatibility', passed: false, detail: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500) })
       await this.repository.save({ ...base, status: 'failed', checks, failureReason: 'The installed CLI failed static compatibility.', checkedAt: new Date().toISOString() })
+      if (error instanceof AggregateError) throw error
       return
     }
     this.assertRunning()
@@ -177,7 +186,7 @@ export class HarnessQualificationService {
     }
     try {
       this.assertRunning()
-      const saved = await this.settings.getManagedHarnessDefaults()
+      const saved = structuredClone(await this.settings.getManagedHarnessDefaults())
       this.assertRunning()
       const model = saved.revision > 0 ? saved.defaults[harness].model : null
       const result = await this.timed(240_000, (signal) => runAsQualificationCandidate(harness, sha256,
@@ -186,13 +195,29 @@ export class HarnessQualificationService {
       this.assertRunning()
       checks.push(...result.checks)
       const unchanged = (await this.registry.inspectBinary(binary)).sha256 === sha256
-      const passed = unchanged && result.checks.length > 0 && result.checks.every((check) => check.passed)
+      const sameConfiguration = async () => {
+        const current = await this.settings.getManagedHarnessDefaults()
+        return current.revision === saved.revision && isDeepStrictEqual(current.defaults[harness], saved.defaults[harness])
+      }
+      const configurationUnchanged = await sameConfiguration()
+      this.assertRunning()
+      const passed = unchanged && configurationUnchanged && result.checks.length > 0 && result.checks.every((check) => check.passed)
       await this.repository.save({ ...base, status: passed ? 'qualified' : 'failed', checks,
-        failureReason: passed ? null : 'The local qualification checks did not pass against the same binary.',
-        checkedAt: new Date().toISOString() }, result.evidence)
-      if (passed) await this.registry.trusted(harness, version, sha256)
+        failureReason: passed ? null : !configurationUnchanged ? 'The harness configuration changed during qualification.'
+          : 'The local qualification checks did not pass against the same binary.',
+        checkedAt: new Date().toISOString() }, { ...result.evidence, settingsRevision: saved.revision, model })
+      if (passed) {
+        if (!await sameConfiguration()) {
+          await this.repository.save({ ...base, status: 'failed', checks,
+            failureReason: 'The harness configuration changed during qualification.', checkedAt: new Date().toISOString() })
+          return
+        }
+        this.assertRunning()
+        await this.registry.trusted(harness, version, sha256)
+      }
     } catch (error) {
       uncertain = owned.size > 0 || error instanceof AggregateError
+      if (uncertain) this.blocked.add(harness)
       await this.repository.save({ ...base, status: 'failed', checks, failureReason: 'The local qualification suite did not pass.', checkedAt: new Date().toISOString() })
       if (owned.size) throw new QualificationCleanupError([error], 'Qualification cleanup is unconfirmed.')
       if (error instanceof AggregateError) throw error
@@ -212,8 +237,10 @@ async function checkStaticCompatibility(harness: CompatibilityHarness, binary: s
     const schemaSha256 = await probe.probe(harness, installation, signal)
     await probe.assertUnchanged(installation, signal)
     return schemaSha256
-  } finally {
-    try { await probe.close?.(); probes.delete(probe) }
-    catch (error) { throw new QualificationCleanupError([error], 'Static qualification cleanup is unconfirmed.') }
-  }
+  } finally { await closeQualificationProbe(probe, probes) }
+}
+
+async function closeQualificationProbe(probe: CompatibilityProbe, probes: Set<CompatibilityProbe>, onFailure?: () => void): Promise<void> {
+  try { await probe.close?.(); probes.delete(probe) }
+  catch (error) { onFailure?.(); throw new QualificationCleanupError([error], 'Static qualification cleanup is unconfirmed.') }
 }
