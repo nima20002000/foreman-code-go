@@ -226,5 +226,6 @@ it('Claude evidence requires an exact observed native message receipt and termin
   }
   const noReceipt = { events: [], pendingInteractions: [], correlationId, terminalTurn: history.terminalTurn }
   assert.equal(reviewTurnEvidence(claude, noReceipt, correlationId).terminal, false)
+  assert.equal(reviewTurnEvidence(claude, { ...noReceipt, nativeTurnId: message.nativeMessageId }, correlationId).terminal, false)
   assert.equal(reviewTurnEvidence(claude, { ...history, pendingInteractions: [permission()] }, correlationId).terminal, false)
 })

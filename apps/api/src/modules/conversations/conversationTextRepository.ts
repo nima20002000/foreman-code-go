@@ -7,6 +7,7 @@ import type { ActivityMutationFence } from './operatorActivityRepository.js'
 export type TextMutationResult = { status: 'committed' | 'ignored' | 'reconciliation_required'; revision: string; messageRevision?: string }
 interface Provenance {
   sessionId: string; generation?: string; turnId?: string; itemId: string; partId?: string; parentId?: string; channel: string; final: boolean
+  nativeSubmission?: ActivityMutationFence['nativeSubmission']
   source?: ActivityTextOperation['source']
 }
 interface Owner {
@@ -40,6 +41,14 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
       || fence.nativeTurnId !== undefined && fence.nativeTurnId !== row.active_native_turn_id) {
       await client.query('commit'); return undefined
     }
+    if (row.harness === 'claude') {
+      const receipt = fence.nativeSubmission
+      const admitted = receipt?.kind === 'message' && identity.turnId === undefined && fence.nativeTurnId === undefined
+        && receipt.nativeSessionId === identity.sessionId
+        && (await client.query(`select 1 from operator_conversation_turns where conversation_id=$1 and request_id=$2
+          and payload->'nativeSubmission'=$3::jsonb for update`, [conversationId, requestId, JSON.stringify(receipt)])).rowCount
+      if (!admitted) { await client.query('commit'); return undefined }
+    }
     if (identity.scope.kind === 'selected_run_chat') {
       const selected = identity.scope.selection
       const exact = await client.query(`select 1 from runs r join harness_executions e on e.run_id=r.id
@@ -55,7 +64,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     const result = (status: TextMutationResult['status']): TextMutationResult => ({ status, revision: row.revision,
       ...(prior ? { messageRevision: prior.revision } : {}) })
     if (prior && (prior.record.requestId !== requestId || prior.record.nativeParentMessageId !== undefined && prior.record.nativeParentMessageId !== identity.parentId || stored && (stored.sessionId !== identity.sessionId || stored.generation !== identity.generation
-      || stored.turnId !== identity.turnId || stored.itemId !== identity.itemId || stored.partId !== identity.partId
+      || stored.turnId !== identity.turnId || JSON.stringify(stored.nativeSubmission) !== JSON.stringify(fence.nativeSubmission) || stored.itemId !== identity.itemId || stored.partId !== identity.partId
       || stored.parentId !== identity.parentId || stored.channel !== identity.channel))) {
       await client.query('commit'); return undefined
     }
@@ -67,7 +76,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     const stale = source?.eventId !== undefined && source.eventId === previous?.eventId
       || comparableNative && BigInt(source!.nativeSequence!) <= BigInt(previous!.nativeSequence!)
       || comparableTransport && source!.sequence! <= previous!.sequence!
-    const alreadyFinal = prior && (stored?.final ?? prior.record.nativeMessageComplete !== false)
+    const alreadyFinal = prior && (stored?.final === true || prior.record.nativeMessageComplete !== false)
     if (stale || alreadyFinal && !operation.final) {
       await client.query('commit'); return result('ignored')
     }
@@ -81,8 +90,8 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
       await client.query('commit'); return result('reconciliation_required')
     }
     const content = operation.mode === 'append' ? (prior?.content ?? '') + operation.text : operation.text
-    const provenance: Provenance = { ...identity, final: operation.final, ...(source ? { source } : {}) }
-    if (prior && content === prior.content && operation.final === (stored?.final ?? prior.record.nativeMessageComplete !== false)) {
+    const provenance: Provenance = { ...identity, ...(fence.nativeSubmission ? { nativeSubmission: fence.nativeSubmission } : {}), final: operation.final, ...(source ? { source } : {}) }
+    if (prior && content === prior.content && operation.final === alreadyFinal) {
       if (source && (comparableNative || comparableTransport)) await client.query(`update operator_conversation_messages set text_provenance=$3::jsonb
         where conversation_id=$1 and native_message_id=$2`, [conversationId, nativeId, JSON.stringify(provenance)])
       await client.query('commit'); return result('ignored')

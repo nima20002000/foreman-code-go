@@ -1430,6 +1430,7 @@ export class ApprovalExecutionCoordinator {
         const { waiting } = observed
         if (waiting) return waiting
         if (observed.exactTerminal) {
+          execution = (await repeat.readExecution(execution.id)).execution
           assertSameRepeatExecution(ensured.execution, execution)
           if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
             'REPEAT_BOUNDARY_PENDING', 'The exact original native terminal has not committed.', 409)

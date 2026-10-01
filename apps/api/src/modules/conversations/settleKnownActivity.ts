@@ -1,11 +1,12 @@
 import type pg from 'pg'
 import { ActivityNativeIdentitySchema, OperatorActivitySchema, type ActivityNativeIdentity, type OperatorActivity } from '@graphql/contracts'
 import type { OperatorActivityChange } from './operatorActivity.js'
+import { nativePersistenceRedactor, type NativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { DomainError } from '../errors.js'
 
 /** A known independent child/item may settle after its parent. This never inserts work or changes the current native owner. */
 export async function settleKnownActivity(pool: pg.Pool, conversationId: string, requestId: string | undefined, change: OperatorActivityChange | Omit<OperatorActivityChange, 'requestId'>,
-  actual: ActivityNativeIdentity): Promise<{ activity: OperatorActivity; scopeRevision: string; itemRevision: string } | undefined> {
+  actual: ActivityNativeIdentity, redact: NativePersistenceRedactor = nativePersistenceRedactor([])): Promise<{ activity: OperatorActivity; scopeRevision: string; itemRevision: string } | undefined> {
   const native = ActivityNativeIdentitySchema.parse(actual)
   if (!['completed', 'failed', 'canceled'].includes(change.status) || requestId !== undefined && 'requestId' in change && change.requestId !== requestId) return undefined
   const client = await pool.connect()
@@ -36,7 +37,9 @@ export async function settleKnownActivity(pool: pg.Pool, conversationId: string,
     if (!stored.native.turnId && !stored.native.parentItemId) { await client.query('commit'); return undefined }
     const merged = { ...row.record, ...change, requestId: originalRequestId }
     const schema = OperatorActivitySchema.omit({ sequence: true, revision: true })
-    const parsed = schema.parse(merged)
+    const parsed = schema.parse({ ...merged, title: redact.text(merged.title),
+      ...(merged.input !== undefined ? { input: redact.text(merged.input) } : {}),
+      ...(merged.output !== undefined ? { output: redact.text(merged.output) } : {}) })
     if (['completed', 'failed', 'canceled'].includes(row.record.status)) {
       if (JSON.stringify(schema.parse(row.record)) !== JSON.stringify(parsed)) throw new DomainError('ACTIVITY_TERMINAL_CONFLICT', 'A settled item requires authoritative reconciliation.', 409)
       await client.query('commit'); return undefined

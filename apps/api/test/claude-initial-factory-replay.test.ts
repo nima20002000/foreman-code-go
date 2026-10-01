@@ -1,3 +1,5 @@
+import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
+import { nativeLanes } from './helpers/nativeLanes.js'
 import { describe, expect, it, vi } from 'vitest'
 import { OperatorConfigurationVersionSchema } from '@graphql/contracts'
 import { allocateClaudeNativeHarness } from '../src/modules/harnesses/claudeSdk/composition.js'
@@ -134,4 +136,44 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
     expect(forked.nativeSessionId).toBe('observed-fork'); expect(source.nativeSessionId).toBe('source-session')
     expect(f.fork).toHaveBeenCalledOnce(); await f.manager.dispose?.()
   })
+})
+
+
+it('common writer persists observed SID before message receipt and exposes the owned message lease', async () => {
+  const f = fixture()
+  const lanes = nativeLanes()
+  const writer = new SingleWriterSessionManager(f.manager, lanes, 'operator')
+  const observed = deferred<void>()
+  const commit = deferred<void>()
+  const received: string[] = []
+  const events: string[] = []
+  const work = (async () => {
+    for await (const event of writer.startInitialTurn!(start, {
+      prompt: 'accepted input', clientCorrelationId: start.correlationId,
+      onSessionObserved: async (session) => {
+        expect(writer.currentProjectionLease(session)).toMatchObject({ live: true })
+        observed.resolve()
+        await commit.promise
+      },
+      onMessageSubmitted: async (receipt) => {
+        const lease = writer.currentProjectionLease({ harness: 'claude', providerVersion: '2.1.284', nativeSessionId: receipt.nativeSessionId })
+        expect(lease?.providerId).toBe(receipt.nativeMessageId)
+        received.push(receipt.nativeMessageId)
+      },
+    })) events.push(event.type)
+  })()
+  const message = await f.next()
+  f.init()
+  await observed.promise
+  f.reply(message.uuid)
+  expect(received).toEqual([])
+  expect(events).toEqual([])
+  commit.resolve()
+  f.result(message.uuid)
+  await work
+  expect(received).toHaveLength(1)
+  expect(f.query).toHaveBeenCalledTimes(1)
+  expect((await lanes.getLane('claude', 'observed-session'))?.observedStatus).toBe('idle')
+  expect((await lanes.getLane('claude', 'observed-session'))?.currentTurnOrMessageId).toBe(received[0])
+  await writer.dispose()
 })

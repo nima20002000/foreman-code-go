@@ -1,12 +1,13 @@
 import type { NativeSessionReference } from '@graphql/contracts'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
+import type { NativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { knownNativeActivity } from './knownNativeActivity.js'
 
 /** Existing reconciler only. Idle/cold records never allocate, attach, replay a prompt or infer child success. */
 export async function reconcileKnownActivities(input: {
   kind: 'agent' | 'operator'; conversationId?: string; activity: PostgresOperatorActivityRepository; signal: AbortSignal;
-  runtimeFor(id: string): { manager: NativeHarnessSessionManager; session: NativeSessionReference } | undefined;
+  runtimeFor(id: string): { manager: NativeHarnessSessionManager; session: NativeSessionReference; redact?: NativePersistenceRedactor } | undefined;
   publish(id: string, settled: NonNullable<Awaited<ReturnType<PostgresOperatorActivityRepository['settleKnownByNative']>>>): void;
 }) {
   const { owners } = await input.activity.unfinishedOwners(input.kind, input.conversationId)
@@ -25,7 +26,7 @@ export async function reconcileKnownActivities(input: {
     for (const event of history.events) {
       const known = knownNativeActivity(event, runtime.manager.harness)
       if (!known) continue
-      const settled = await input.activity.settleKnownByNative(owner.conversationId, known.change, known.native)
+      const settled = await input.activity.settleKnownByNative(owner.conversationId, known.change, known.native, runtime.redact)
       if (settled) input.publish(owner.conversationId, settled)
     }
   }

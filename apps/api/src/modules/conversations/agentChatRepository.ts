@@ -1,10 +1,11 @@
+import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { messageAttachmentIdentity } from '@graphql/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type Message, type PendingNativeInteraction } from '@graphql/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type Message, type PendingNativeInteraction } from '@graphql/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
@@ -31,7 +32,7 @@ export interface AgentConversationRow {
   agent_configuration_version_id: string
   origin_run_id: string | null
   origin_execution_id: string | null
-  harness: 'codex' | 'opencode'
+  harness: AgentHarness
   provider_version: string | null
   native_session_id: string | null
   active_request_id: string | null
@@ -63,7 +64,7 @@ interface TurnRow {
   target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null
   input_hash: string
-  payload: { content: string; interruptRequestId?: string; requestIdentityVersion?: 1; ownerPrincipalId?: string }
+  payload: { content: string; interruptRequestId?: string; requestIdentityVersion?: 1; ownerPrincipalId?: string; nativeSubmission?: NativeMessageSubmission }
   created_at: Date
   updated_at: Date
   started_at: Date | null
@@ -104,6 +105,7 @@ function turn(row: TurnRow): AgentChatTurn {
   return AgentChatTurnSchema.parse({
     requestId: row.request_id, sequence: row.turn_sequence, intent: row.intent, delivery: row.delivery, messageId: row.message_id,
     ...(row.native_turn_id ? { nativeTurnId: row.native_turn_id } : {}),
+    ...(row.payload.nativeSubmission ? { nativeSubmission: row.payload.nativeSubmission } : {}),
     ...(row.target_native_turn_id ? { targetNativeTurnId: row.target_native_turn_id } : {}),
     ...(row.delivery_error ? { error: row.delivery_error } : {}),
     createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(),
@@ -121,7 +123,7 @@ export interface AgentChatInterruptTarget {
 export interface NewAgentConversation {
   context: AgentChatContext
   agentConfigurationVersionId: string
-  harness: 'codex' | 'opencode'
+  harness: AgentHarness
   origin: AgentChatOrigin
   workingDirectory: string
   runtimeDirectory: string
@@ -396,6 +398,34 @@ export class PostgresAgentChatRepository {
   }
 
   /** Provider acknowledged the turn. This is not evidence the model consumed it. */
+  async acceptedMessage(id: string, requestId: string, receipt: NativeMessageSubmission): Promise<boolean> {
+    if (receipt.clientCorrelationId !== agentChatCorrelation(id, requestId) || !receipt.nativeMessageId) return false
+    const result = await this.pool.query(`with owned_session as materialized (
+      select c.id,c.native_session_id,c.active_phase from operator_conversations c
+      where c.id=$1 and c.active_request_id=$2 and c.native_session_id=$4 and c.harness='claude' and c.kind='agent' and c.deleted_at is null for update
+    ), existing as (
+      select c.id from owned_session c join operator_conversation_turns t on t.conversation_id=c.id
+      where t.request_id=$2 and c.active_phase='submitted' and t.payload->'nativeSubmission'=$3::jsonb
+    ), receipt as (
+      update operator_conversation_turns t set delivery='accepted',
+        payload=t.payload || jsonb_build_object('nativeSubmission',$3::jsonb),delivery_error=null,updated_at=now()
+      from owned_session c where t.conversation_id=c.id and t.request_id=$2
+        and (t.payload->'nativeSubmission' is null or t.payload->'nativeSubmission'=$3::jsonb)
+        and t.delivery in ('submitting','unknown','accepted') and not exists (select 1 from existing)
+      returning t.conversation_id
+    ), updated as (
+      update operator_conversations c set active_phase='submitted',
+        record=c.record || jsonb_build_object('startupDelivered',true,'startupReceipt',
+        coalesce(c.record->'startupReceipt',jsonb_build_object('requestId',$2::text,'nativeSessionId',c.native_session_id))),
+      turn_state=case when c.cancel_requested then 'canceling' else 'active' end,revision=c.revision+1,updated_at=now()
+      where c.id=$1 and c.active_request_id=$2 and exists (select 1 from receipt r where r.conversation_id=c.id)
+      returning c.id
+    ) select id from updated union select id from existing`,
+      [id, requestId, JSON.stringify(receipt), receipt.nativeSessionId])
+    return result.rowCount === 1
+  }
+
+
   async accepted(id: string, requestId: string, nativeTurnId: string): Promise<boolean> {
     const client = await this.pool.connect()
     try {
@@ -579,7 +609,7 @@ export class PostgresAgentChatRepository {
   }
 
   async state(id: string, options: { recoverOverflow?: boolean } = {}): Promise<{
-    commandActivity?: Awaited<ReturnType<typeof readActivityCommands>>; publicationReceipts?: ConversationPublicationReceipt[]; row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>> & { itemProvenance?: Record<string, unknown> }
+    fileSourceRevisions?: ActivitySourceRevision[]; commandActivity?: Awaited<ReturnType<typeof readActivityCommands>>; publicationReceipts?: ConversationPublicationReceipt[]; row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>> & { itemProvenance?: Record<string, unknown> }
   } | undefined> {
     const client = await this.pool.connect()
     try {
@@ -624,7 +654,8 @@ export class PostgresAgentChatRepository {
       select coalesce((select jsonb_agg(record order by sequence) from selected),'[]'::jsonb) as messages,
         (select count(*) from candidates)>(select count(*) from selected) as has_earlier`,
       [id, AGENT_CHAT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])).rows[0]!
-      const messages = await hydrateMessageAttachments(client, id, recent.messages)
+      const fileSourceRevisions: ActivitySourceRevision[] = []
+      const messages = await hydrateMessageAttachments(client, id, recent.messages, (source) => fileSourceRevisions.push(source))
       const publicationReceipts = await readConversationPublicationReceipts(client, id, messages.filter((message) => message.role === 'user').map((message) => message.id))
       const activity = new PostgresOperatorActivityRepository(this.pool)
       const activityPage = await activity.snapshotPage(id, { limit: 100 }, client)
@@ -636,7 +667,7 @@ export class PostgresAgentChatRepository {
       const selection = row.origin_run_id && row.origin_execution_id
         ? (await client.query<{ workflowVersionId: string; attemptKey: string }>(`select r.workflow_version_id as "workflowVersionId", e.attempt::text as "attemptKey"
             from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2`, [row.origin_run_id, row.origin_execution_id])).rows[0] ?? null : null
-      const loaded = { publicationReceipts, row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
+      const loaded = { fileSourceRevisions, publicationReceipts, row, turns, messages, activityPage, unfinishedActivities: unfinished.activities, selection, activeStartedAt: ownership.started_at, latestRequestId: ownership.latest_request_id, hasEarlierMessages: recent.has_earlier,
         ...(overflow ? { hasMoreTurns: true as const } : {}),
         ...(unfinished.hasMore ? { hasMoreActivities: true as const } : {}) }
       const commandActivity = await readActivityCommands(client, id, agentActivityScope(loaded), String(row.revision))

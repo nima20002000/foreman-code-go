@@ -40,7 +40,8 @@ import { requireAuthorization, isAuthorized } from '../access/policy.js'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { NativeTurnNotActiveError } from '../harnesses/errors.js'
-import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../harnesses/port.js'
+import type { NativeHarnessSessionManager, WorkflowNativeSessionStart, NativeMessageSubmission } from '../harnesses/port.js'
+import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { legacySkillPrompt } from '../skills/instructions.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
@@ -821,6 +822,8 @@ export class AgentChatService {
           await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
           await this.repository.markStartupDelivered(row.id)
         } else {
+          // Keep the durable creation fence; this provider cannot expose SID before its first admitted input.
+          if (runtime.manager.startInitialTurn) return runtime
           runtime.session = await runtime.manager.createSession(this.startInput(row, configuration, correlationId, false), signal)
           await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
         }
@@ -873,6 +876,9 @@ export class AgentChatService {
     const observer = new AbortController()
     let submitted = false
     let creatingSession = false
+    let initialOffered = false
+    let nativeSubmission: NativeMessageSubmission | undefined
+    let initialStream: Awaited<ReturnType<typeof primeInitialNativeStream>> | undefined
     let runtime: Runtime | undefined
     let textStream: ReturnType<typeof createNativeTextStream> | undefined
     let prepared!: () => void
@@ -890,8 +896,8 @@ export class AgentChatService {
       if (!configuration) throw new DomainError('AGENT_CHAT_CONFIGURATION_MISSING', 'The pinned Agent configuration is unavailable.', 409)
       creatingSession = !row.native_session_id
       runtime = await this.runtime(row, configuration, correlationId, signal)
-      creatingSession = false
-      const session = runtime.session!
+      creatingSession = !runtime.session
+      let session = runtime.session
       const content = await this.repository.turnContent(id, turn.requestId)
       if (content === undefined) throw new Error('The accepted message content is missing.')
       const fresh = await this.repository.get(id)
@@ -900,21 +906,48 @@ export class AgentChatService {
       if (fresh.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
       signal.throwIfAborted()
       const prompt = this.prompt(fresh, configuration, content)
+      if (!session) {
+        if (!runtime.manager.startInitialTurn || fresh.record.origin.kind !== 'fresh') throw new DomainError('AGENT_INITIAL_TURN_UNAVAILABLE', 'No admitted initial native lifecycle is available.', 409)
+        initialOffered = true // A failure after offer is not a definite prompt rejection/create failure.
+        initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(this.startInput(fresh, configuration, correlationId, false), {
+          prompt: prompt.text, clientCorrelationId: correlationId,
+          onSessionObserved: async (observed) => {
+            await this.control(id, async () => {
+              const current = await this.repository.get(id)
+              if (!current || current.active_request_id !== turn.requestId || current.agent_configuration_version_id !== fresh.agent_configuration_version_id) throw new Error('Initial Agent session ownership was lost.')
+              runtime!.session = observed
+              session = observed
+              await this.repository.bindSession(id, observed.providerVersion, observed.nativeSessionId)
+            })
+          },
+          onMessageSubmitted: async (receipt) => {
+            submitted = true
+            await this.control(id, async () => {
+              if (!session || receipt.nativeSessionId !== session.nativeSessionId || receipt.clientCorrelationId !== correlationId
+                || !await this.repository.acceptedMessage(id, turn.requestId, receipt)) throw new Error('Initial Agent message ownership was lost.')
+              nativeSubmission = receipt
+            })
+          },
+        }, signal))
+        if (!session) throw new Error('Initial Agent input has no observed native session.')
+      }
+      creatingSession = false
+      const observedSession = session
       let scope: ActivityScope = { kind: 'agent_chat', conversationId: id, workspaceId: fresh.workspace_id,
         workflowId: fresh.workflow_id, nodeId: fresh.workflow_node_id, agentId: fresh.agent_id }
       if (fresh.origin_run_id) {
         const loaded = await this.repository.state(id)
-        if (!loaded || loaded.row.active_request_id !== turn.requestId || loaded.row.native_session_id !== session.nativeSessionId
+        if (!loaded || loaded.row.active_request_id !== turn.requestId || loaded.row.native_session_id !== observedSession.nativeSessionId
           || loaded.row.origin_run_id !== fresh.origin_run_id || loaded.row.origin_execution_id !== fresh.origin_execution_id) return
         scope = agentActivitySnapshot(loaded).scope
       }
       let nativeTurnId: string | null = null
       const streamSignal = AbortSignal.any([signal, observer.signal])
-      const textOwner = () => ({ scope, requestId: turn.requestId, sessionId: session.nativeSessionId,
+      const textOwner = () => ({ scope, requestId: turn.requestId, sessionId: observedSession.nativeSessionId,
         ...(nativeTurnId ? { turnId: nativeTurnId } : {}) })
       const redact = nativePersistenceRedactor([])
       const committed = committedNativeText({ id, requestId: turn.requestId, repository: this.messages,
-        harness: runtime.manager.harness, session, owner: textOwner, sanitize: (operation) => redact.value(operation),
+        harness: runtime.manager.harness, session: observedSession, owner: textOwner, sanitize: (operation) => redact.value(operation),
         reconcile: () => this.scheduleReconcile(id) })
       textStream = createNativeTextStream({
         signal: streamSignal, harness: runtime.manager.harness,
@@ -926,11 +959,19 @@ export class AgentChatService {
         },
         reconcile: () => this.events.publish(id, 'state', { requestId: turn.requestId, snapshotRequired: true }),
       })
-      const currentEvent = openCodeTurnEvents(session.nativeSessionId, () => nativeTurnId)
+      const currentEvent = openCodeTurnEvents(observedSession.nativeSessionId, () => nativeTurnId)
       finishPreparation()
       runtime.observer = { requestId: turn.requestId, controller: observer }
-      for await (const event_ of runtime.manager.startTurn(session, {
+      for await (const event_ of initialStream?.output ?? runtime.manager.startTurn(observedSession, {
         prompt: prompt.text, clientCorrelationId: correlationId,
+        onMessageSubmitted: async (receipt) => {
+          submitted = true
+          await this.control(id, async () => {
+            if (receipt.nativeSessionId !== session!.nativeSessionId || receipt.clientCorrelationId !== correlationId
+              || !await this.repository.acceptedMessage(id, turn.requestId, receipt)) throw new Error('Agent native message ownership was lost.')
+            nativeSubmission = receipt
+          })
+        },
         onSubmitted: async (id_) => {
           nativeTurnId = id_; submitted = true
           await this.repository.accepted(id, turn.requestId, id_)
@@ -944,8 +985,8 @@ export class AgentChatService {
         submitted = true
         for (const event of runtime.manager.harness === 'opencode' ? currentEvent(event_) : [event_]) {
           textStream.before(event)
-          const text = await committed.record(event, nativeTurnId)
-          const recorded = await this.record(id, turn.requestId, runtime, event, redact, nativeTurnId, false, text.handled)
+          const text = await committed.record(event, nativeTurnId, nativeSubmission)
+          const recorded = await this.record(id, turn.requestId, runtime, event, redact, nativeTurnId, false, text.handled, nativeSubmission)
           if (recorded && text.allowed) textStream.push(event)
           else textStream.rejected(event)
           if (text.final) this.events.publish(id, 'message', { requestId: turn.requestId, snapshotRequired: true,
@@ -953,7 +994,7 @@ export class AgentChatService {
           if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
             // Share the response lock so an older observation cannot overwrite its next approval.
             await this.control(id, async () => {
-              const pending = await runtime!.manager.pending(session, signal)
+              const pending = await runtime!.manager.pending(observedSession, signal)
               await this.repository.pending(id, turn.requestId, pending)
               this.events.publish(id, 'state', { requestId: turn.requestId, pending: Boolean(pending) })
             })
@@ -981,7 +1022,7 @@ export class AgentChatService {
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
         return
       }
-      if (!submitted && (unavailable || definiteRejection(error) || error instanceof DomainError)) {
+      if (!submitted && !initialOffered && (unavailable || definiteRejection(error) || error instanceof DomainError)) {
         const current = await this.repository.get(id)
         await this.settle(id, turn.requestId, current?.cancel_requested ? { outcome: 'canceled' } : failure(error))
         if (unavailable) await this.release(id)
@@ -992,22 +1033,23 @@ export class AgentChatService {
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
       }
     } finally {
+      await initialStream?.close()
       textStream?.dispose()
       finishPreparation()
       if (runtime?.observer?.controller === observer) delete runtime.observer
     }
   }
 
-  private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>, nativeTurnId: string | null, authoritativeReconciliation = false, textHandled = false) {
+  private async record(id: string, requestId: string, runtime: Runtime, event: NativeHarnessEvent, redact: ReturnType<typeof nativePersistenceRedactor>, nativeTurnId: string | null, authoritativeReconciliation = false, textHandled = false, nativeSubmission?: NativeMessageSubmission) {
     const known = knownNativeActivity(event, runtime.manager.harness)
-    const settled = known ? await this.activity.settleKnownByNative(id, known.change, known.native) : undefined
+    const settled = known ? await this.activity.settleKnownByNative(id, known.change, known.native, redact) : undefined
     if (settled) this.events.publish(id, 'activity', settled)
     const change = operatorActivity(event, runtime.manager.harness, requestId)
     if (!settled && change && change.kind !== 'thinking'
       && (!known || known.native.sessionId === runtime.session?.nativeSessionId && known.native.turnId === nativeTurnId)) {
-      if (!runtime.session || !nativeTurnId) { this.scheduleReconcile(id); return true }
+      if (!runtime.session || !nativeTurnId && !nativeSubmission) { this.scheduleReconcile(id); return true }
       const accepted = await this.activity.append(id, requestId, redact.value(change), {
-        ...nativeActivityFence(runtime.session, nativeTurnId, event, authoritativeReconciliation),
+        ...nativeActivityFence(runtime.session, nativeTurnId, event, authoritativeReconciliation, nativeSubmission),
         onReconciliationRequired: () => this.scheduleReconcile(id),
       })
       if (accepted) this.events.publish(id, 'activity', accepted)
@@ -1028,17 +1070,21 @@ export class AgentChatService {
     const row = await this.repository.get(id)
     if (!row || row.active_request_id !== requestId) return
     const history = await runtime.manager.reconcile(runtime.session!, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]))
-    if (runtime.session?.nativeSessionId !== row.native_session_id || history.correlationId !== correlationId || !history.nativeTurnId
+    const receipt = history.nativeSubmission
+    const messageIdentity = receipt?.kind === 'message' && receipt.nativeSessionId === runtime.session!.nativeSessionId && receipt.clientCorrelationId === correlationId
+    const providerId = history.nativeTurnId ?? (messageIdentity ? receipt.nativeMessageId : undefined)
+    if (runtime.session?.nativeSessionId !== row.native_session_id || history.correlationId !== correlationId || !providerId
       || row.active_native_turn_id && history.nativeTurnId !== row.active_native_turn_id
-      || history.terminalTurn && (history.terminalTurn.correlationId !== correlationId || history.terminalTurn.providerId !== history.nativeTurnId)) {
+      || history.terminalTurn && (history.terminalTurn.correlationId !== correlationId || history.terminalTurn.providerId !== providerId)) {
       await this.repository.abandon(id, requestId, 'The provider has not proven this exact message and native turn. It will not be resent automatically.')
       this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId, delivery: 'unknown' })
       return
     }
-    await this.repository.accepted(id, requestId, history.nativeTurnId)
+    if (messageIdentity) { if (!await this.repository.acceptedMessage(id, requestId, receipt!)) return }
+    else await this.repository.accepted(id, requestId, history.nativeTurnId!)
     const redact = nativePersistenceRedactor([])
-    for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.record(id, requestId, runtime, event, redact, history.nativeTurnId, true)
+    for (const event of currentOperatorHistory(history, runtime.manager.harness)) await this.record(id, requestId, runtime, event, redact, history.nativeTurnId ?? null, true, false, messageIdentity ? receipt : undefined)
     const current = await this.repository.get(id)
     if (!current || current.active_request_id !== requestId || current.native_session_id !== row.native_session_id) return
     const pending = pendingInteractionAfterHistory(current.pending_interaction, history)
@@ -1050,7 +1096,7 @@ export class AgentChatService {
       else await this.control(id, () => this.repository.pending(id, requestId, pending))
       // Acceptance can be learned without onSubmitted (lost ACK or restart after Stop's commit).
       // A cancel acknowledgement is not terminal proof and never releases the queue.
-      await this.interruptActive(id, false, { requestId, nativeTurnId: history.nativeTurnId }, controlled)
+      if (history.nativeTurnId) await this.interruptActive(id, false, { requestId, nativeTurnId: history.nativeTurnId }, controlled)
       this.scheduleReconcile(id)
       this.events.publish(id, 'state', { requestId, delivery: 'accepted' })
     }
