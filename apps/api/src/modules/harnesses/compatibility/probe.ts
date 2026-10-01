@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
 import type { CompatibilityHarness } from '@graphql/contracts'
+import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import { spawnOwnedStdioProcess } from '../process.js'
 import { CompatibilityCheckError } from './errors.js'
 
@@ -15,6 +16,10 @@ export interface CompatibilityProbe {
   probe(harness: CompatibilityHarness, installation: HarnessInstallation, signal: AbortSignal): Promise<string>
   assertUnchanged(installation: HarnessInstallation, signal: AbortSignal): Promise<void>
   close?(): Promise<void>
+}
+export interface CompatibilityProbeOwnership {
+  recovery: NativeProcessRecovery
+  beforeCommand(binary: string, signal: AbortSignal): Promise<void>
 }
 type DiagnosticProcess = ReturnType<typeof spawnOwnedStdioProcess>
 const EXPORT_LIMIT = 16 * 1024 * 1024
@@ -83,12 +88,15 @@ async function fingerprint(path: string, signal: AbortSignal): Promise<string> {
 }
 
 /** Only fixed version/schema commands call this. No shell, credentials, stdin prompts, or server. */
-async function command(binary: string, args: string[], directory: string, environment: NodeJS.ProcessEnv, signal: AbortSignal, limit: number, processes: Set<DiagnosticProcess>) {
+async function command(binary: string, args: string[], directory: string, environment: NodeJS.ProcessEnv, signal: AbortSignal, limit: number, processes: Set<DiagnosticProcess>, ownership?: CompatibilityProbeOwnership) {
+  signal.throwIfAborted()
+  await ownership?.beforeCommand(binary, signal)
   signal.throwIfAborted()
   let rejectFailure: (error: unknown) => void = () => undefined
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject })
   void failure.catch(() => undefined)
   const owned = spawnOwnedStdioProcess({ binary, args, cwd: directory, environment,
+    ...(ownership ? { recovery: ownership.recovery } : {}),
     onError: () => rejectFailure(unavailable()),
   })
   processes.add(owned)
@@ -152,7 +160,7 @@ async function readExport(path: string): Promise<string> {
     return bytes.subarray(0, bytesRead).toString('utf8')
   } finally { await handle.close() }
 }
-export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, string>, workingDirectory: string, source: NodeJS.ProcessEnv = process.env, inspectTimeoutMs = 2000): CompatibilityProbe {
+export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, string>, workingDirectory: string, source: NodeJS.ProcessEnv = process.env, inspectTimeoutMs = 2000, ownership?: CompatibilityProbeOwnership): CompatibilityProbe {
   const processes = new Set<DiagnosticProcess>()
   const directories = new Set<string>()
   return {
@@ -161,14 +169,14 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
       const identity = await fingerprint(resolved, signal)
       const version = await isolated(source, directories, async (directory, environment) => {
         const output = await command(resolved, ['--version'], directory, environment,
-          AbortSignal.any([signal, AbortSignal.timeout(attempt === 1 ? inspectTimeoutMs : 10_000)]), 4096, processes)
+          AbortSignal.any([signal, AbortSignal.timeout(attempt === 1 ? inspectTimeoutMs : 10_000)]), 4096, processes, ownership)
         return parseInstalledVersion(harness, output.stdout, output.stderr)
       })
       return { executable: resolved, identity, version }
     },
     async probe(harness, installation, signal) {
       return isolated(source, directories, async (directory, environment) => {
-        const output = await command(installation.executable, schemaExportArguments(harness, directory), directory, environment, signal, EXPORT_LIMIT, processes)
+        const output = await command(installation.executable, schemaExportArguments(harness, directory), directory, environment, signal, EXPORT_LIMIT, processes, ownership)
         const text = harness === 'codex' ? await readExport(join(directory, 'schemas', 'codex_app_server_protocol.schemas.json')) : output.stdout
         signal.throwIfAborted()
         const input = join(directory, 'diagnostic-schema.json')
@@ -178,7 +186,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
           const development = import.meta.url.endsWith('.ts')
           const worker = fileURLToPath(new URL(`./schemaWorker.${development ? 'ts' : 'js'}`, import.meta.url))
           const args = development ? ['--import', createRequire(import.meta.url).resolve('tsx'), worker] : [worker]
-          const checked = await command(process.execPath, [...args, harness, input], directory, environment, signal, 4096, processes)
+          const checked = await command(process.execPath, [...args, harness, input], directory, environment, signal, 4096, processes, ownership)
           result = JSON.parse(checked.stdout)
         } catch (error) {
           if (signal.aborted || (error instanceof CompatibilityCheckError

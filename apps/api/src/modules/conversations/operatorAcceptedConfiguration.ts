@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
 import { applyOperatorChatSettings, OperatorConfigurationVersionSchema,
   type HarnessConfiguration, type OperatorConfigurationVersion, type SendOperatorMessageRequest } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
@@ -47,6 +48,9 @@ export async function acceptOperatorConfiguration(query: Queryable, current: Ope
   }
   const base = await operatorMessageBase(query, current, input)
   const harness = suppliedHarness ?? (input.settings ? applyOperatorChatSettings(base.harness, input.settings) : base.harness)
+  if (base.harnessProfileSelection && !isDeepStrictEqual(base.harness, harness)) {
+    throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'Per-message settings cannot rewrite the configuration of an explicitly selected host profile. Save and select that configured profile first.', 409)
+  }
   const showThinking = input.settings?.showThinking ?? base.showThinking ?? false
   if (JSON.stringify(base.harness) === JSON.stringify(harness) && showThinking === (base.showThinking ?? false)) {
     validate?.(base)
@@ -57,7 +61,7 @@ export async function acceptOperatorConfiguration(query: Queryable, current: Ope
   await query.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
   const latest = await query.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [base.operatorId])
   const accepted = OperatorConfigurationVersionSchema.parse({ ...candidate, id: randomUUID(), version: Number(latest.rows[0]!.version),
-    contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
+    contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking, ...(base.harnessProfileSelection ? { harnessProfileSelection: base.harnessProfileSelection } : {}) })).digest('hex')}`, createdAt: new Date().toISOString() })
   await query.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)',
     [accepted.id, accepted.operatorId, accepted.version, JSON.stringify(accepted)])
   return accepted

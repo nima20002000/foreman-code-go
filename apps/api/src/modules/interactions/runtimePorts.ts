@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from 'node:util'
 
+import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import type { AgentConfigurationVersion, AgentHarness, DurableInteraction, NativeSessionReference } from '@graphql/contracts'
 
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
+import type { RunOwnership } from '../runs/ownership.js'
 
 export interface NativeManagerOwnershipContext {
   purpose?: 'reviewer'
@@ -17,6 +19,10 @@ export interface NativeManagerOwnershipContext {
 export interface NativeManagerResolutionContext extends NativeManagerOwnershipContext {
   /** Immutable configuration version pinned by the durable execution. */
   configuration: AgentConfigurationVersion
+  runId?: string
+  attempt?: number
+  /** Exact immutable W08 placement loaded by the existing continuation owner. */
+  acceptedPlacement?: AcceptedNodePlacement
 }
 
 export type NativeManagerLifecycle = 'allocated' | 'starting' | 'resident' | 'released' | 'failed'
@@ -36,7 +42,7 @@ export interface ResolvedNativeSessionManager {
 
 /** Manager ownership is per durable Agent execution, never per harness singleton. */
 export interface NativeSessionManagerResolver {
-  resolve(context: NativeManagerResolutionContext): ResolvedNativeSessionManager
+  resolve(context: NativeManagerResolutionContext, owner?: RunOwnership): ResolvedNativeSessionManager
   release?(context: NativeManagerResolutionContext, manager?: NativeHarnessSessionManager, state?: 'released' | 'failed'): void
 }
 
@@ -45,37 +51,55 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
   private disposal: Promise<void> | undefined
   private readonly entries = new Map<string, {
     context: NativeManagerResolutionContext
+    admission: { owner: RunOwnership | undefined }
     manager: NativeHarnessSessionManager
     lifecycle: NativeManagerLifecycle
     resolved: ResolvedNativeSessionManager
   }>()
 
-  constructor(private readonly create: (context: NativeManagerResolutionContext) => NativeHarnessSessionManager) {}
+  constructor(private readonly create: (context: NativeManagerResolutionContext,
+    getOwner: () => RunOwnership | undefined) => NativeHarnessSessionManager) {}
 
-  resolve(context: NativeManagerResolutionContext): ResolvedNativeSessionManager {
+  resolve(context: NativeManagerResolutionContext, owner?: RunOwnership): ResolvedNativeSessionManager {
     if (this.disposed) throw new Error('Native managers are shutting down.')
     const existing = this.entries.get(context.executionId)
     if (existing) {
       if (existing.context.agentId !== context.agentId || existing.context.harness !== context.harness
         || existing.context.workingDirectory !== context.workingDirectory
         || existing.context.purpose !== context.purpose
+        || existing.context.runId !== context.runId || existing.context.attempt !== context.attempt
+        || !isDeepStrictEqual(existing.context.acceptedPlacement, context.acceptedPlacement)
         || !isDeepStrictEqual(existing.context.configuration, context.configuration)) {
         throw new Error('A durable execution cannot change native manager ownership context.')
       }
       if (existing.lifecycle === 'failed') throw new Error('The failed native manager is being released.')
+      if (owner) {
+        owner.assertOwned()
+        if (existing.admission.owner && existing.admission.owner.runId !== owner.runId) {
+          throw new Error('A durable execution cannot borrow another Run owner.')
+        }
+        existing.admission.owner = owner
+      }
       return existing.resolved
     }
     // Pin plain configuration before passing it to the side-effect-free allocator.
     context = structuredClone(context)
-    const manager = this.create(context)
+    owner?.assertOwned()
+    const admission = { owner }
+    const manager = this.create(context, () => {
+      const current = this.entries.get(context.executionId)
+      return !this.disposed && current?.admission === admission && current.lifecycle !== 'failed'
+        ? admission.owner : undefined
+    })
     if (manager.harness !== context.harness) throw new Error('The native manager factory returned the wrong harness.')
     const entry: {
       context: NativeManagerResolutionContext
+      admission: { owner: RunOwnership | undefined }
       manager: NativeHarnessSessionManager
       lifecycle: NativeManagerLifecycle
       resolved: ResolvedNativeSessionManager
     } = {
-      context, manager, lifecycle: 'allocated',
+      context, admission, manager, lifecycle: 'allocated',
       resolved: {
         manager,
         get processState() { return entry.lifecycle === 'resident' ? 'resident' : 'needs_start' },
@@ -106,6 +130,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     const current = this.entries.get(context.executionId)
     if (current && current.context.agentId === context.agentId && (!manager || current.manager === manager)) {
       current.lifecycle = state
+      current.admission.owner = undefined
       this.entries.delete(context.executionId)
     }
   }
@@ -115,6 +140,7 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     this.disposal ??= Promise.resolve().then(() => Promise.allSettled([...this.entries.entries()].map(async ([executionId, entry]) => {
       const disposable = entry.manager as NativeHarnessSessionManager & { dispose?: () => Promise<void> }
       entry.lifecycle = 'failed'
+      entry.admission.owner = undefined
       if (!disposable.dispose) throw new Error('An execution native manager has no disposal contract.')
       await disposable.dispose()
       if (this.entries.get(executionId) === entry) { entry.lifecycle = 'released'; this.entries.delete(executionId) }

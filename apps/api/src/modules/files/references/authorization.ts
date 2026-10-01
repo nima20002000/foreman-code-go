@@ -1,4 +1,3 @@
-import type pg from 'pg'
 import { PermanentFileScopeSchema, type PermanentFileScope } from '@graphql/contracts/files'
 import type { ManagementAction, ManagementPrincipal } from '@graphql/contracts/management'
 
@@ -17,7 +16,7 @@ export function referenceFileActions(kind: PermanentFileScope['kind'], access: F
 }
 
 export class PostgresFileReferenceAuthorization implements FileScopeAuthorization<PermanentFileScope> {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly pool: FileQuery) {}
 
   async resolve(principal: ManagementPrincipal, target: PermanentFileScope, access: FileAccess,
     query: FileQuery = this.pool): Promise<PermanentFileScope> {

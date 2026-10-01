@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema,
   type ApprovedRootAllowlist, type WorkspaceRootSelection, type WorkspaceRootPolicy, type WorkspaceRootAttestation } from '@graphql/contracts/workspace-root-policies'
@@ -11,7 +11,7 @@ import { sourceSha256 } from './manifest.js'
 import { rootSelectionDigest, rootAttestationDigest } from './rootAttestation.js'
 import type { AuthorizedWorkspaceRoot, WorkspaceRootHostPort, WorkspaceRootPolicyPort } from './rootPolicyPorts.js'
 
-type Sql = Pick<pg.PoolClient, 'query'>
+type Sql = GraphSqlClient
 export function workspaceRootHostScope(host: ApprovedRootAllowlist['hostRef']): string { return host.kind === 'main' ? `main:${host.mainId}` : `main:${host.mainId}:device:${host.deviceId}` }
 /** One generic root authority. Source bindings merely reference its accepted
  * policies; no Workflow, Agent, provider token or source snapshot is required.

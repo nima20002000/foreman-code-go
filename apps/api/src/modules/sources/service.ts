@@ -21,19 +21,20 @@ import { sourceBindingHash } from './bindingHash.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { RegisteredSourceRootPort, SourceAdmissionPort, SourceClosureProofPort } from './admissionPorts.js'
 import type { MaterializationAttempt } from './ports.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 
 export interface SourceExecutionHostPort {
   /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
    * owner and placement before source service can prepare a native directory. */
-  authorize(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+  authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
     input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
   prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceMaterializationRecord['receipt']>
   verify(record: SourceMaterializationRecord): Promise<string>
   releaseClaim(record: SourceMaterializationRecord): Promise<void>
-  authorizeFinal(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
+  authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
 }
 type Transport = 'http' | 'mcp'
-type Sql = Pick<pg.PoolClient, 'query'>
+type Sql = GraphSqlClient
 interface ApprovalRow { approved_source_id: string; snapshot_id: string; input_hash: string; state: string;
   origin: { location: RunExecutionLocation; mainId: string; ownerId: string; reservation: SourceReservation }; request: unknown }
 

@@ -1,7 +1,11 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
 import { mkdir, open, readdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { JOB_INPUT_DIRECTORY } from '@graphql/contracts/job-inputs'
+import { JOB_INPUT_MANIFEST_CONTAINER_PATH, verifyJobInputDirectory } from './inputs.js'
+import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
+import type { QualificationNativeOwner, JobQualificationCandidate, JobQualificationAuthority } from './qualification.js'
 import type { JobExecution } from '@graphql/contracts'
 import { jobSupervisorIdentity, type JobLaunchPlan, type JobSupervisor, type QualifiedJobProfile } from './executor.js'
 
@@ -14,6 +18,7 @@ export interface PodmanIsolationInput {
   profile: Pick<QualifiedJobProfile, 'pidsLimit' | 'memoryBytes' | 'cpuLimit' | 'imageDigest'>
   spoolBytes: number
   labels: Record<string, string>
+  inputRoot: string
 }
 /** Shared by actual jobs and explicitly admitted model-free qualification. */
 export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[] {
@@ -26,6 +31,7 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     input.runtimeRoot.startsWith(`${input.sourceRoot}/`) || !Number.isSafeInteger(input.spoolBytes) || input.spoolBytes < 8) {
     throw new Error('Invalid noninteractive container plan.')
   }
+  if (input.inputRoot !== join(input.sourceRoot, JOB_INPUT_DIRECTORY)) throw new Error('Exact retained immutable input directory required.')
   return ['--remote=false', `--hooks-dir=${join(input.runtimeRoot, 'ci-empty-oci-hooks')}`, 'create', '--name', input.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',
     '--image-volume=ignore', '--http-proxy=false', '--network=none', '--stop-signal=SIGTERM',
     ...Object.entries(input.labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
@@ -35,9 +41,10 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     '--log-driver=k8s-file', '--log-opt', `max-size=${Math.floor(input.spoolBytes / 2)}`,
     '--log-opt', `path=${input.runtimeRoot}/${input.identity}.oci.log`,
     '--mount', `type=bind,src=${input.sourceRoot},dst=/workspace,rw`,
+    '--mount', `type=bind,src=${input.inputRoot},dst=/workspace/${JOB_INPUT_DIRECTORY},ro`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=67108864',
     '--workdir', `/workspace${relative}`, '--unsetenv-all', '--env', 'HOME=/tmp/job-home', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
-    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', '--entrypoint', input.argv[0]!,
+    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', '--env', `GRAPHQL_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--entrypoint', input.argv[0]!,
     input.profile.imageDigest, ...input.argv.slice(1)]
 }
 
@@ -61,6 +68,7 @@ export function podmanCreateArgv(plan: JobLaunchPlan): string[] {
   return podmanIsolationCreateArgv({ identity: plan.identity, sourceRoot: plan.privateRepositoryRoot,
     runtimeRoot: plan.execution.acceptedSpec.target.destination.managedRuntimeRoot, cwd: plan.cwd, argv: plan.argv,
     profile: plan.profile, spoolBytes: plan.execution.acceptedSpec.policy.maxWorkerSpoolBytes,
+    inputRoot: join(plan.privateRepositoryRoot, JOB_INPUT_DIRECTORY),
     labels: { 'graphql.job.identity': plan.identity, 'graphql.job.spec': plan.execution.acceptedSpec.specDigest, 'graphql.job.attempt': plan.execution.attemptId } })
 }
 
@@ -74,12 +82,12 @@ export function spawnPodmanCommand(executable: string, argv: string[], environme
 
 export interface PodmanCommandRunner {
   run(argv: string[], timeoutMs?: number): Promise<{ exitCode: number; stdout: string }>
-  attach(argv: string[]): ReturnType<typeof spawnPodmanCommand>
+  attach(argv: string[]): Promise<ChildProcess>
 }
 
 /** Bounded control replies. Job logs go through the executor's bounded streaming sink. */
 export function nodePodmanCommandRunner(executable: string, environment: Record<string, string>): PodmanCommandRunner {
-  return { attach: argv => spawnPodmanCommand(executable, argv, environment), run: (argv, timeoutMs = 30000) => new Promise((resolve, reject) => {
+  return { attach: async argv => spawnPodmanCommand(executable, argv, environment), run: (argv, timeoutMs = 30000) => new Promise((resolve, reject) => {
     const child = spawnPodmanCommand(executable, argv, environment)
     let stdout = ''; let bytes = 0
     const deadline = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Runtime control deadline exceeded.')) }, timeoutMs)
@@ -93,6 +101,30 @@ export function nodePodmanCommandRunner(executable: string, environment: Record<
     child.once('error', error => { clearTimeout(deadline); reject(error) })
     child.once('close', code => { clearTimeout(deadline); resolve({ exitCode: code ?? 1, stdout }) })
   }) }
+}
+
+/** Installed physical factory uses guarded original ownership and fresh entry checks. */
+export function guardedPodmanCommandRunner(candidate: JobQualificationCandidate, authority: JobQualificationAuthority, owner: QualificationNativeOwner): PodmanCommandRunner {
+  const prepare = async (argv: string[]) => {
+    const { assertJobRuntimeEntryContext } = await import('./qualification.js')
+    await authority.assertCurrent(candidate)
+    await assertJobRuntimeEntryContext(candidate)
+    return argv[0] === '--remote=false' ? argv : ['--remote=false', ...argv]
+  }
+  return {
+    async run(argv, timeoutMs = 30000) {
+      const { runQualificationCommand } = await import('./qualification.js')
+      return runQualificationCommand(owner, candidate.fingerprint.runtimeExecutable, await prepare(argv), candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs))
+    },
+    async attach(argv) {
+      const exact = await prepare(argv)
+      const reservation = await owner.reserveProcess(candidate.fingerprint.runtimeExecutable, exact)
+      const child = owner.spawnProcess(reservation, candidate.fingerprint.runtimeExecutable, exact,
+        { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: candidate.controllerEnvironment })
+      if (!child.stdout || !child.stderr) throw new Error('Guarded output pipes unavailable.')
+      return child
+    },
+  }
 }
 
 interface ContainerEvidence { Id: string; Config: { Labels: Record<string, string> }; State: { Running: boolean; Pid: number; ExitCode: number; Status: string; Error?: string } }
@@ -110,7 +142,8 @@ function evidence(stdout: string, execution: JobExecution): ContainerEvidence {
 
 /** Only use with a persisted, human-approved qualification record; never probes/installs/pulls. */
 export class PodmanJobSupervisor implements JobSupervisor {
-  constructor(readonly qualifiedProfile: QualifiedJobProfile | null, private readonly commands: PodmanCommandRunner) {}
+  constructor(readonly qualifiedProfile: QualifiedJobProfile | null, private readonly commands: PodmanCommandRunner,
+    private readonly ownership: (execution: JobExecution) => Promise<OCIContainerOwnership>) {}
 
   async reconcile(execution: JobExecution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; logGapPossible: true } | null> {
     const reply = await this.commands.run(['container', 'inspect', jobSupervisorIdentity(execution)])
@@ -122,31 +155,23 @@ export class PodmanJobSupervisor implements JobSupervisor {
 
   /** W08 recovery/control uses original execution scope, including after worker restart. */
   async stopExecution(execution: JobExecution, graceMs: number, expectedContainerId?: string): Promise<boolean> {
-    const recovered = await this.reconcile(execution)
-    if (!recovered || expectedContainerId && recovered.containerId !== expectedContainerId) return false
-    const containerId = recovered.containerId
-    const inspect = async () => {
-      const reply = await this.commands.run(['container', 'inspect', containerId])
-      if (reply.exitCode !== 0) throw new Error('Container inspection unavailable.')
-      const row = evidence(reply.stdout, execution)
-      if (row.Id !== containerId) throw new Error('Container ID changed.')
-      return row
-    }
-    const stopped = (row: ContainerEvidence) => !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
-    if (stopped(await inspect())) return true
-    try { await this.commands.run(['stop', '--time', String(Math.ceil(graceMs / 1000)), containerId], graceMs + 30000) } catch { /* Reinspect a lost stop reply before escalation. */ }
-    if (stopped(await inspect())) return true
-    await inspect()
-    try { await this.commands.run(['kill', '--signal', 'KILL', containerId]) } catch { /* Only inspection establishes closure. */ }
-    return stopped(await inspect())
+    const owned = new OwnedOCIContainer({ identity: jobSupervisorIdentity(execution), labels: {
+      'graphql.job.identity': jobSupervisorIdentity(execution), 'graphql.job.spec': execution.acceptedSpec.specDigest,
+      'graphql.job.attempt': execution.attemptId } }, this.commands, await this.ownership(execution))
+    if (expectedContainerId) await owned.bind(expectedContainerId)
+    return owned.close(graceMs)
   }
 
   async launch(plan: JobLaunchPlan) {
     if (!this.qualifiedProfile || plan.profile !== this.qualifiedProfile) throw new Error('Qualified isolation unavailable.')
+    await verifyJobInputDirectory(plan.execution, plan.verifiedSource, plan.inputs, AbortSignal.timeout(plan.execution.acceptedSpec.policy.preparationTimeoutMs))
+    const owned = new OwnedOCIContainer({ identity: plan.identity, labels: { 'graphql.job.identity': plan.identity,
+      'graphql.job.spec': plan.execution.acceptedSpec.specDigest, 'graphql.job.attempt': plan.execution.attemptId } }, this.commands, await this.ownership(plan.execution))
     await ensureEmptyPodmanHooks(plan.execution.acceptedSpec.target.destination.managedRuntimeRoot)
     const created = await this.commands.run(podmanCreateArgv(plan), plan.execution.acceptedSpec.policy.preparationTimeoutMs)
     const containerId = created.stdout.trim()
     if (created.exitCode !== 0 || !/^[a-f0-9]{64}$/.test(containerId)) throw new Error('Container create uncertain; reconcile original identity.')
+    await owned.bind(containerId)
     const inspect = async () => {
       const reply = await this.commands.run(['container', 'inspect', containerId])
       if (reply.exitCode !== 0) throw new Error('Container inspection unavailable.')
@@ -156,14 +181,16 @@ export class PodmanJobSupervisor implements JobSupervisor {
     }
     await inspect()
     // Attachment carries only output; controller lifetime is provided by the W07 durable worker service.
-    const attached = this.commands.attach(['start', '--attach', '--sig-proxy=false', containerId])
-    attached.once('error', error => attached.stdout.destroy(error))
+    const attached = await this.commands.attach(['start', '--attach', '--sig-proxy=false', containerId])
+    const { stdout, stderr } = attached
+    if (!stdout || !stderr) throw new Error('Guarded container output pipes unavailable.')
+    attached.once('error', error => stdout.destroy(error))
     const proveStopped = async () => {
       const row = await inspect()
       return !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
     }
     const stop = async (graceMs: number) => {
-      const stopped = await this.stopExecution(plan.execution, graceMs, containerId)
+      const stopped = await owned.close(graceMs)
       if (stopped) clearTimeout(deadline)
       return stopped
     }
@@ -179,6 +206,7 @@ export class PodmanJobSupervisor implements JobSupervisor {
       return { exitCode: row.State.ExitCode, signal: null, ...(deadlineFired ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
     })
     void exited.catch(() => {})
-    return { containerId, stdout: attached.stdout, stderr: attached.stderr, exited, proveStopped, stop }
+    try { await owned.entered() } catch (error) { await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => false); throw error }
+    return { containerId, stdout, stderr, exited, proveStopped, stop }
   }
 }

@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it } from 'vitest'
 
 import { PostgresFileCleanupRepository } from '../src/modules/files/cleanup/postgres.js'
+import { DistributedArtifactDeletionOwnership, type ArtifactPhysicalDeletionOwnership } from '../src/modules/files/distributed/cleanup.js'
 import type { FileCleanupCandidate } from '../src/modules/files/cleanup/repository.js'
 
 const original: FileCleanupCandidate = { fileId: 'file', revisionId: 'revision', storageKey: '00000000-0000-4000-8000-000000000001',
@@ -42,7 +43,7 @@ class Client extends EventEmitter {
     } else if (sql.includes('for update of f')) {
       this.reads++; this.beforeRead(this)
       const value = this.working ?? this.record
-      if (value.scope_kind === 'temporary') rows = [{ ...value }]
+      if (value.scope_kind === 'temporary' || value.scope_kind === 'job_execution') rows = [{ ...value }]
     } else if (sql.startsWith('update files')) {
       assert.ok(this.working)
       this.working.state = 'expired'; rows = [{ file_id: this.record.file_id }]
@@ -51,10 +52,10 @@ class Client extends EventEmitter {
   }
   release(destroy = false) { this.destroyed = destroy }
 }
-function fixture() {
+function fixture(ownership?: ArtifactPhysicalDeletionOwnership) {
   const client = new Client()
   const pool = { connect: async () => client, query: client.query.bind(client) }
-  return { client, repository: new PostgresFileCleanupRepository(pool as unknown as ConstructorParameters<typeof PostgresFileCleanupRepository>[0]) }
+  return { client, repository: new PostgresFileCleanupRepository(pool as unknown as ConstructorParameters<typeof PostgresFileCleanupRepository>[0], ownership) }
 }
 
 describe('FIL-04 cleanup guard and transaction fault handling', () => {
@@ -152,9 +153,79 @@ describe('FIL-04 cleanup guard and transaction fault handling', () => {
     const [found] = await repository.findDue('previous-file', 7)
     assert.deepEqual(found, original)
     assert.deepEqual(client.queries[0]!.values, ['previous-file', 7])
-    assert.match(client.queries[0]!.sql, /f\.scope_kind='temporary'/)
+    assert.match(client.queries[0]!.sql, /f\.scope_kind in \('temporary','job_execution'\)/)
     assert.match(client.queries[0]!.sql, /statement_timestamp\(\)/)
     assert.equal((await repository.findByStorageKeys([original.storageKey]))[0]!.expiresAt, original.expiresAt)
     await assert.rejects(repository.findDue(null, 0), /batches/)
+  })
+})
+
+
+describe('W09 Job expiry and physical ownership', () => {
+  it('discovers and tombstones exact Job revisions before consulting deletion ownership', async () => {
+    let seenClient: unknown, seenCandidate: unknown
+    const ownership: ArtifactPhysicalDeletionOwnership = { assertCanDelete: async (expected, query) => {
+      seenClient = query; seenCandidate = expected
+      assert.equal(client.record.state, 'expired'); assert.equal(client.commits, 1); assert.equal(client.reads, 2)
+      assert.ok(client.working); return true
+    } }
+    const { client, repository } = fixture(ownership); client.record.scope_kind = 'job_execution'
+    assert.deepEqual(await repository.findDue(null, 1), [original])
+    assert.deepEqual(await repository.findByStorageKeys([original.storageKey]), [original])
+    let unlinks = 0
+    assert.equal(await repository.remove(original, async () => { unlinks++; assert.equal(client.record.state, 'expired'); return true }), 'cleaned')
+    assert.equal(unlinks, 1); assert.equal(seenClient, client); assert.deepEqual(seenCandidate, original)
+    const guards = client.queries.filter(({ sql }) => sql.includes('for update of f') || sql.startsWith('update files'))
+    assert.equal(guards.length, 3)
+    for (const { sql } of guards) assert.match(sql, /scope_kind in \('temporary','job_execution'\)/)
+  })
+
+  for (const state of ['held', 'unknown'] as const) {
+    it(`${state} physical ownership retains the expired tombstone until a positively clear retry`, async () => {
+      let current: 'clear' | 'held' | 'unknown' = state, checks = 0
+      const ownership = new DistributedArtifactDeletionOwnership({ inspect: async () => current }, {
+        inspect: async () => { checks++; return 'clear' },
+      })
+      const { client, repository } = fixture(ownership); client.record.scope_kind = 'job_execution'
+      let unlinks = 0
+      const unlink = async () => { unlinks++; return true }
+      assert.equal(await repository.remove(original, unlink), 'busy')
+      assert.equal(unlinks, 0); assert.equal(checks, 0)
+      assert.equal(client.record.state, 'expired'); assert.equal(client.working, undefined)
+      current = 'clear'
+      assert.equal(await repository.remove(original, unlink), 'cleaned')
+      assert.equal(unlinks, 1); assert.equal(checks, 1); assert.equal(client.record.state, 'expired')
+    })
+  }
+
+  it('a materialization hold prevents deletion even after transfer ownership clears', async () => {
+    const inspected: string[] = []
+    const ownership = new DistributedArtifactDeletionOwnership({ inspect: async key => { inspected.push(key); return 'clear' } },
+      { inspect: async key => { inspected.push(key); return 'held' } })
+    const { client, repository } = fixture(ownership); client.record.scope_kind = 'job_execution'
+    assert.equal(await repository.remove(original, async () => { assert.fail('Held materialization cannot unlink') }), 'busy')
+    assert.deepEqual(inspected, [original.storageKey, original.storageKey]); assert.equal(client.record.state, 'expired')
+  })
+
+  it('does not inspect ownership or delete after an uncertain tombstone commit', async () => {
+    let inspections = 0
+    const { client, repository } = fixture({ assertCanDelete: async () => { inspections++; return true } })
+    client.record.scope_kind = 'job_execution'; client.failCommit = 1
+    await assert.rejects(repository.remove(original, async () => { assert.fail('Uncertain commit cannot unlink') }), /lost commit acknowledgment/)
+    assert.equal(inspections, 0); assert.equal(client.record.state, 'expired'); assert.equal(client.destroyed, true)
+  })
+
+  it('preserves the tombstone and denies deletion if ownership inspection fails or its SQL lease is lost', async () => {
+    for (const loseLease of [false, true]) {
+      const { client, repository } = fixture({ assertCanDelete: async () => {
+        if (loseLease) { client.emit('error', new Error('lost ownership lease')); return true }
+        throw new Error('physical ownership unavailable')
+      } })
+      client.record.scope_kind = 'job_execution'
+      await assert.rejects(repository.remove(original, async () => { assert.fail('Lost or unknown ownership cannot unlink') }),
+        loseLease ? /database ownership was lost/ : /physical ownership unavailable/)
+      assert.equal(client.record.state, 'expired'); assert.equal(client.working, undefined)
+      assert.equal(client.destroyed, loseLease)
+    }
   })
 })

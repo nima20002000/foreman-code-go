@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { ApprovedSource, ApprovedSourcePin, SourceRootRecord, SourceRootSelection, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import type { RootBinding } from '@graphql/contracts/source-materialization'
@@ -14,15 +14,15 @@ export interface AuthorizedSourceRoot {
  * Host I/O runs outside SQL; fence only rechecks persisted live authority.
  */
 export interface RegisteredSourceRootPort {
-  authorize(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+  authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
     input: { workspaceId: string; selection: SourceRootSelection; accessMode: RootBinding['accessMode'] }): Promise<AuthorizedSourceRoot>
   attest(root: AuthorizedSourceRoot): Promise<{ canonicalPath: string; filesystem: RootBinding['filesystem']; attestationId: string; attestationDigest: string }>
-  fence(sql: Pick<pg.PoolClient, 'query'>, root: AuthorizedSourceRoot): Promise<void>
+  fence(sql: GraphSqlClient, root: AuthorizedSourceRoot): Promise<void>
 }
 export interface SourceAdmissionPort {
-  resolveApprovedSource(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+  resolveApprovedSource(sql: GraphSqlClient, principal: ManagementPrincipal,
     workspaceId: string, pin: ApprovedSourcePin): Promise<ApprovedSource>
-  resolveRootBinding(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
+  resolveRootBinding(sql: GraphSqlClient, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord>
   /** The caller allocates the real execution/attempt first; no synthetic Run or Agent. */
   prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;

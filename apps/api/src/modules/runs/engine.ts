@@ -35,6 +35,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private readonly configuredParallelism: number
   private readonly maximumActiveRuns: number
   private readonly activeRuns = new Map<string, AbortController>()
+  private readonly activeOwners = new Map<string, RunOwnership>()
   private readonly activeTasks = new Map<string, Promise<void>>()
   private readonly resumeTasks = new Map<string, Promise<void>>()
   private readonly cleanupTasks = new Map<string, Promise<boolean>>()
@@ -121,6 +122,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const owner = await this.runs.acquireOwnership(runId, () => controller.abort(new DomainError(
       'RUN_OWNERSHIP_LOST', 'The database execution owner disconnected.', 409)))
     if (!owner) throw new DomainError('RUN_ALREADY_OWNED', 'This Run is owned by another engine.', 409)
+    this.activeOwners.set(runId, owner)
     let runtimeEntered = false
     try {
       owner.assertOwned(); controller.signal.throwIfAborted()
@@ -213,6 +215,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // shutdown; release still drains G1 writes without rewriting Run history.
       await this.restartClosure?.catch(() => undefined)
       // Drains in-flight G1 writes. Old captures cannot write after release.
+      if (this.activeOwners.get(runId) === owner) this.activeOwners.delete(runId)
       await owner.release()
     }
   }
@@ -320,10 +323,17 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   shutdown(): Promise<void> {
     if (this.shutdownTask) return this.shutdownTask
     this.closing = true
-    this.restartClosure = this.nativeExecutions.closeForRestart()
     const reason = new DomainError('ENGINE_RESTART', 'The engine is preserving the current checkpoint for restart.', 409)
-    for (const controller of this.activeRuns.values()) controller.abort(reason)
     this.shutdownTask = (async () => {
+      // Retain each actual Run owner until its durable stop-only cleanup intent
+      // commits. Failed persistence must not authorize a Job abort or close.
+      const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
+        if (this.activeOwners.get(runId) === owner) await this.runs.requestCleanup(runId, owner)
+      })))
+      const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
+      if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')
+      this.restartClosure = this.nativeExecutions.closeForRestart()
+      for (const controller of this.activeRuns.values()) controller.abort(reason)
       const outcomes = await Promise.allSettled([
         this.restartClosure,
         withCleanupDeadline(async () => { await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()]) }),

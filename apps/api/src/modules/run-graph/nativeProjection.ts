@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto'
-import type { GraphActivity, NativeGraphProjectionKey } from '@graphql/contracts/wave25'
+import type { GraphActivity, NativeGraphCorrelationRecord, NativeGraphProjectionKey } from '@graphql/contracts/wave25'
 import { nativeAction, nativeObject, nativeString } from '../runs/nativeAction.js'
 
 /** Internal, bounded checkpoint. It contains protocol identities, never arguments/output/prose. */
 export const NATIVE_PROJECTION_LIMITS = Object.freeze({ operations: 128, messages: 128, identityLength: 1000, evidenceBytes: 32768, checkpointBytes: 120000 })
 export interface ProjectionBinding {
   key: NativeGraphProjectionKey
-  provider: 'codex' | 'opencode'
+  provider: NativeGraphCorrelationRecord['provider']
   nativeSessionId: string
-  /** Exact submitted turn (Codex) or user message (OpenCode), supplied by the locked correlation record. */
+  /** Exact submitted turn or input message, supplied by the locked correlation record. */
   nativeTurnId: string | null
   connectionGeneration: string
   interactionId: string | null
@@ -149,9 +149,9 @@ export function projectNativeEvidence(previous: NativeProjectionState | undefine
   const before = JSON.stringify(state)
   const payload = event.payload
   const info = nativeObject(payload.info), part = nativeObject(payload.part), turn = nativeObject(payload.turn)
-  const sessions = [payload.threadId, payload.sessionID, info.sessionID, part.sessionID].filter((value) => value !== undefined)
+  const sessions = [payload.threadId, payload.sessionID, payload.nativeSessionId, info.sessionID, part.sessionID].filter((value) => value !== undefined)
   if (!sessions.length || sessions.some((value) => identity(value) !== binding.nativeSessionId)) return answer(initial, 'ignored', 'identity')
-  const nativeTurnId = identity(payload.turnId) ?? identity(turn.id)
+  const nativeTurnId = binding.provider === 'claude' ? identity(payload.nativeMessageId) : identity(payload.turnId) ?? identity(turn.id)
   if (payload.turnId !== undefined && turn.id !== undefined && identity(payload.turnId) !== identity(turn.id)) return answer(initial, 'rejected', 'identity')
   const stamp = () => { state.lastNativeSequence = maximum(state.lastNativeSequence, event.nativeSequence) }
   const acknowledge = (sourceId: string) => {

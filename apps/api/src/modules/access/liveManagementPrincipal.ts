@@ -3,6 +3,7 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { DomainError } from '../errors.js'
 import { intersectGrants } from './operatorDelegation.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 
 interface LivePrincipalRow {
   id: string

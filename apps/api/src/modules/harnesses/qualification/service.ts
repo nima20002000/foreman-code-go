@@ -33,7 +33,9 @@ export class HarnessQualificationService {
     private readonly commands: PostgresCommandCoordinator,
     private readonly settings: Pick<PostgresSettingsRepository, 'getManagedHarnessDefaults'>,
     private readonly staticCheck?: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt?: number) => Promise<string>,
-    private readonly onFinished?: (harness: CompatibilityHarness) => void) {}
+    private readonly onFinished?: (harness: CompatibilityHarness) => void,
+    private readonly probeFactory?: (harness: CompatibilityHarness, binary: string, timeoutMs: number) => CompatibilityProbe,
+    private readonly refreshInstalled?: (harness: CompatibilityHarness, signal: AbortSignal) => Promise<void>) {}
 
   async list(principal: ManagementPrincipal): Promise<{ qualifications: HarnessQualification[] }> {
     requireAuthorization(principal, 'harnesses:read')
@@ -113,7 +115,7 @@ export class HarnessQualificationService {
 
   private checkStatic(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt: number): Promise<string> {
     if (this.staticCheck) return this.staticCheck(harness, binary, version, signal, attempt)
-    return checkStaticCompatibility(harness, binary, version, signal, attempt, this.probes)
+    return checkStaticCompatibility(harness, binary, version, signal, attempt, this.probes, this.probeFactory)
   }
 
   private async removeDirectory(directory: string): Promise<void> {
@@ -123,9 +125,12 @@ export class HarnessQualificationService {
 
   private async prepare(harness: CompatibilityHarness, force: boolean): Promise<HarnessQualification> {
     const suite = this.suites[harness]
+    await this.refreshInstalled?.(harness, this.cancellation.signal)
+    this.assertRunning(harness)
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
     this.assertRunning()
-    const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
+    const probe = this.probeFactory?.(harness, binary, 5000)
+      ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
     this.probes.add(probe)
     let version: string
     try { version = (await this.timed(5000, (signal) => probe.inspect(harness, signal))).version }
@@ -175,9 +180,7 @@ export class HarnessQualificationService {
       if (error instanceof AggregateError) throw error
       return
     }
-    this.assertRunning()
-    const workDirectory = await mkdtemp(join(tmpdir(), `graphql-${harness}-qualification-`))
-    this.directories.add(workDirectory)
+    let workDirectory: string | undefined
     let uncertain = false
     const owned = new Set<() => Promise<void>>()
     const ownCleanup = (close: () => Promise<void>) => {
@@ -186,11 +189,15 @@ export class HarnessQualificationService {
     }
     try {
       this.assertRunning()
+      const directory = await mkdtemp(join(tmpdir(), `graphql-${harness}-qualification-`))
+      workDirectory = directory
+      this.directories.add(workDirectory)
+      this.assertRunning()
       const saved = structuredClone(await this.settings.getManagedHarnessDefaults())
       this.assertRunning()
       const model = saved.revision > 0 ? saved.defaults[harness].model : null
       const result = await this.timed(240_000, (signal) => runAsQualificationCandidate(harness, sha256,
-        () => suite.run({ binary, version, binarySha256: sha256, profile, model, workDirectory, signal, ownCleanup })))
+        () => suite.run({ binary, version, binarySha256: sha256, profile, model, workDirectory: directory, signal, ownCleanup })))
       if (owned.size) throw new QualificationCleanupError([], 'Qualification resources are still owned.')
       this.assertRunning()
       checks.push(...result.checks)
@@ -223,13 +230,16 @@ export class HarnessQualificationService {
       if (error instanceof AggregateError) throw error
     } finally {
       // A failed removal remains owned and is retried by join().
-      if (!uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(() => undefined)
+      if (workDirectory && !uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(() => undefined)
     }
   }
 }
 
-async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt: number, probes: Set<CompatibilityProbe>): Promise<string> {
-  const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, attempt === 1 ? 2000 : 10_000)
+async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt: number, probes: Set<CompatibilityProbe>,
+  probeFactory?: (harness: CompatibilityHarness, binary: string, timeoutMs: number) => CompatibilityProbe): Promise<string> {
+  const timeout = attempt === 1 ? 2000 : 10_000
+  const probe = probeFactory?.(harness, binary, timeout)
+    ?? nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, timeout)
   probes.add(probe)
   try {
     const installation = await probe.inspect(harness, signal)

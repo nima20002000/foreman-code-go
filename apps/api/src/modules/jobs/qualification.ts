@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { constants } from 'node:fs'
-import { mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, statfs } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
 import type { JobSql } from './repository.js'
+import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
+import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
 
@@ -54,6 +56,7 @@ export interface QualificationNativeOwner {
   registerContainer(identity: string, fingerprint: string): Promise<void>
   /** Bind ID only after validating the original reserved identity/fingerprint labels. */
   observeContainer(identity: string, containerId: string): Promise<void>
+  enterContainer(identity: string, containerId: string): Promise<void>
   /** True only after all registered controller processes AND owned container descendants stopped. */
   close(): Promise<boolean>
 }
@@ -61,6 +64,41 @@ export interface JobQualificationAuthority {
   readApproval(id: string): Promise<{ status: 'approved' | 'denied' | 'revoked'; fingerprint: string; expiresAt: string } | null>
   assertCurrent(candidate: JobQualificationCandidate): Promise<void>
   reserve(candidate: JobQualificationCandidate, signal: AbortSignal): Promise<QualificationNativeOwner>
+}
+
+/** Compose real existing guarded process ownership with exact OCI/cgroup ownership. */
+export function createQualificationNativeOwner(candidate: JobQualificationCandidate,
+  native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'>,
+  ownership: OCIContainerOwnership, authority: JobQualificationAuthority): QualificationNativeOwner {
+  let container: OwnedOCIContainer | null = null
+  const composite: QualificationNativeOwner = {
+    reserveProcess: (binary, argv) => native.reserveProcess(binary, argv),
+    spawnProcess: (reservation, binary, argv, options) => native.spawnProcess(reservation, binary, argv, options),
+    readNativeExit: (reservation, child, wrapper) => native.readNativeExit(reservation, child, wrapper),
+    stopProcess: reservation => native.stopProcess(reservation),
+    async registerContainer(identity, fingerprint) {
+      if (container || identity !== `graphql-ci-qualification-${candidate.qualificationId}` || fingerprint !== jobQualificationFingerprint(candidate)) throw new Error('Original qualification container intent changed.')
+      const commands = { run: async (argv: string[], timeoutMs = 30000) => {
+        await authority.assertCurrent(candidate); await assertJobRuntimeEntryContext(candidate)
+        return runQualificationCommand(composite, candidate.fingerprint.runtimeExecutable, ['--remote=false', ...argv], candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs))
+      } }
+      container = new OwnedOCIContainer({ identity, labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } }, commands, ownership)
+    },
+    async observeContainer(identity, id) {
+      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) throw new Error('Qualification container has no original reservation.')
+      await container.bind(id)
+    },
+    async enterContainer(identity, id) {
+      if (!container || identity !== `graphql-ci-qualification-${candidate.qualificationId}`) throw new Error('Qualification container has no original reservation.')
+      await container.bind(id); await container.entered()
+    },
+    async close() {
+      const closed = container ? await container.close(1000).catch(() => false) : true
+      const nativeClosed = await native.close()
+      return closed && nativeClosed
+    },
+  }
+  return composite
 }
 
 /** Protected existing HRT/W07 installation metadata; public profile input admits no paths or ready flag. */
@@ -338,6 +376,8 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
   let physicallyClosed = false
   const run = async (binary: string, argv: string[]) => {
     signal.throwIfAborted()
+    await authority.assertCurrent(candidate)
+    await assertJobRuntimeEntryContext(candidate)
     const reply = await runQualificationCommand(owner, binary, argv, candidate.controllerEnvironment, signal)
     if (reply.exitCode !== 0 || Buffer.byteLength(reply.stdout) > 65536) throw new Error('Qualification command failed or exceeded its output budget.')
     return reply.stdout
@@ -358,10 +398,14 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
     const volume = await measureBoundedExt4Volume(candidate, mount)
     scratch = await mkdtemp(join(candidate.sourceParent, '.ci-qualification-'))
     if ((await stat(scratch, { bigint: true })).dev.toString() !== volume.device) throw new Error('Scratch left the approved bounded filesystem.')
+    const inputRoot = join(scratch, JOB_INPUT_DIRECTORY)
+    await mkdir(inputRoot, { mode: 0o700 })
+    await writeFile(join(inputRoot, 'manifest.json'), JSON.stringify(JobBuildInputManifestSchema.parse({ version: 1,
+      inputSnapshotDigest: hash({ inputs: [], workflowInput: null }), workflowInput: null, files: [] })), { mode: 0o444 })
     await owner.registerContainer(identity, fingerprint) // Cleanup ownership before create/possible lost acknowledgement.
     const argv = podmanIsolationCreateArgv({ identity, sourceRoot: scratch, runtimeRoot: candidate.runtimeRoot, cwd: scratch,
       argv: ['node', '-e', QUALIFICATION_PROBE], profile: { ...candidate.fingerprint.limits, imageDigest: candidate.fingerprint.imageDigest },
-      spoolBytes: candidate.spoolBytes, labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } })
+      spoolBytes: candidate.spoolBytes, inputRoot, labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } })
     const id = (await podman(argv)).trim()
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Container creation identity unknown.')
     await owner.observeContainer(identity, id)
@@ -377,8 +421,9 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
     const rows = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean }; Config: { Labels: Record<string, string> }; Mounts: Array<{ Type: string; Source: string; Destination: string }> }>
     const row = rows[0]
     if (rows.length !== 1 || row?.Id !== id || row.Config.Labels['graphql.qualification.fingerprint'] !== fingerprint || !row.State.Running || row.State.Pid <= 0) throw new Error('Qualification container ownership mismatch.')
-    if (row.Mounts.filter(item => item.Type === 'bind').length !== 1 || row.Mounts.some(item =>
-      item.Type === 'bind' ? item.Source !== scratch || item.Destination !== '/workspace' : item.Type !== 'tmpfs' || item.Destination !== '/tmp')) throw new Error('Unexpected container mount rejected.')
+    await owner.enterContainer(identity, id)
+    if (row.Mounts.filter(item => item.Type === 'bind').length !== 2 || row.Mounts.some(item =>
+      item.Type === 'bind' ? !(item.Source === scratch && item.Destination === '/workspace' || item.Source === inputRoot && item.Destination === `/workspace/${JOB_INPUT_DIRECTORY}`) : item.Type !== 'tmpfs' || item.Destination !== '/tmp')) throw new Error('Unexpected container mount rejected.')
     const cgroup = (await readFile(`/proc/${row.State.Pid}/cgroup`, 'utf8')).trim()
     const relative = /^0::(\/[^\n]*)$/.exec(cgroup)?.[1]
     if (!relative || relative.split('/').includes('..') || !relative.includes(`libpod-${id}.scope`)) throw new Error('Owned cgroup identity unavailable.')
@@ -421,8 +466,8 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
 
 async function measureContext(candidate: JobQualificationCandidate) {
   if (process.platform !== 'linux' || process.getuid?.() === 0) throw new Error('Qualification requires the approved non-root Linux worker account.')
-  const paths = await Promise.all([candidate.fingerprint.runtimeExecutable, candidate.findmntBinary].map(path => fingerprintQualificationPath(path, true)))
-  for (const [index, expected] of [candidate.fingerprint.runtimeBinarySha256, candidate.findmntBinarySha256].entries()) if (paths[index]!.sha256 !== expected) throw new Error('Approved binary fingerprint changed.')
+  const paths = await Promise.all([candidate.fingerprint.runtimeExecutable, candidate.fingerprint.ociExecutable, candidate.findmntBinary].map(path => fingerprintQualificationPath(path, true)))
+  for (const [index, expected] of [candidate.fingerprint.runtimeBinarySha256, candidate.fingerprint.ociBinarySha256, candidate.findmntBinarySha256].entries()) if (paths[index]!.sha256 !== expected) throw new Error('Approved binary fingerprint changed.')
   const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim()
   if (bootId !== candidate.fingerprint.bootId) throw new Error('Worker boot context changed.')
   if (candidate.sourceParent !== candidate.fingerprint.root.binding.canonicalPath) throw new Error('Approved canonical root changed.')
@@ -439,6 +484,9 @@ async function measureContext(candidate: JobQualificationCandidate) {
     hostPidNamespace: await readlink('/proc/self/ns/pid'), hostNetworkNamespace: await readlink('/proc/self/ns/net') }
 }
 
+/** Actual entry recheck outside SQL. GET never invokes this function. */
+export async function assertJobRuntimeEntryContext(candidate: JobQualificationCandidate): Promise<void> { await measureContext(JobQualificationCandidateSchema.parse(candidate)) }
+
 export function validateIsolationMeasurement(probe: Record<string, unknown>, candidate: JobQualificationCandidate, host: { hostPidNamespace: string; hostNetworkNamespace: string }) {
   const toolchain = probe.toolchain as Record<string, unknown> | undefined
   if (!toolchain || !/^v(?:2[2-9]|[3-9]\d)\./.test(String(toolchain.node)) || toolchain.pnpm !== '11.27.0' || !/^git version \d/.test(String(toolchain.git)) ||
@@ -450,12 +498,13 @@ export function validateIsolationMeasurement(probe: Record<string, unknown>, can
     probe.memoryMax !== String(candidate.fingerprint.limits.memoryBytes) || probe.swapMax !== '0' || probe.pidsMax !== String(candidate.fingerprint.limits.pidsLimit) ||
     probe.cpuRatio !== candidate.fingerprint.limits.cpuLimit || probe.detachedChild !== true ||
     probe.capabilities !== '0000000000000000' || probe.noNewPrivileges !== '1' ||
-    JSON.stringify(probe.environment) !== '["CI","HOME","LANG","PATH"]') throw new Error('Measured isolation/toolchain/resource controls rejected.')
+    probe.inputRead !== true || probe.inputWriteError !== 'EROFS' ||
+    JSON.stringify(probe.environment) !== '["CI","GRAPHQL_JOB_INPUT_MANIFEST","HOME","LANG","PATH"]') throw new Error('Measured isolation/toolchain/resource controls rejected.')
 }
 
 const QUALIFICATION_PROBE = `const fs=require('node:fs'),cp=require('node:child_process');
 const version=(argv)=>{const p=cp.spawnSync(argv[0],argv.slice(1),{encoding:'utf8',timeout:5000});if(p.status!==0)throw Error('required tool unavailable');return p.stdout.trim()};
 fs.mkdirSync(process.env.HOME,{recursive:true});let rootfsWriteError=null;try{fs.writeFileSync('/ci-qualification-outside','x')}catch(e){rootfsWriteError=e.code}
-fs.writeFileSync('/workspace/probe','bounded qualification write');const cpu=fs.readFileSync('/sys/fs/cgroup/cpu.max','utf8').trim().split(' ');
+fs.writeFileSync('/workspace/probe','bounded qualification write');const input=JSON.parse(fs.readFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'utf8')),inputRead=input.version===1&&input.workflowInput===null&&Array.isArray(input.files)&&input.files.length===0;let inputWriteError=null;try{fs.writeFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'changed')}catch(e){inputWriteError=e.code}const cpu=fs.readFileSync('/sys/fs/cgroup/cpu.max','utf8').trim().split(' ');
 const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}),status=fs.readFileSync('/proc/self/status','utf8');
-console.log('GRAPHQL_CI_QUALIFICATION '+JSON.stringify({toolchain:{node:process.version,corepack:version(['corepack','--version']),pnpm:version(['corepack','pnpm','--version']),git:version(['git','--version']),flock:version(['flock','--version'])},rootfsWriteError,sourceWrite:true,proc:fs.existsSync('/proc/self/stat'),pidNamespace:fs.readlinkSync('/proc/self/ns/pid'),networkNamespace:fs.readlinkSync('/proc/self/ns/net'),interfaces:fs.readdirSync('/sys/class/net').sort(),memoryMax:fs.readFileSync('/sys/fs/cgroup/memory.max','utf8').trim(),swapMax:fs.readFileSync('/sys/fs/cgroup/memory.swap.max','utf8').trim(),pidsMax:fs.readFileSync('/sys/fs/cgroup/pids.max','utf8').trim(),cpuRatio:Number(cpu[0])/Number(cpu[1]),environment:Object.keys(process.env).sort(),detachedChild:!!child.pid,capabilities:status.match(/^CapEff:\\s*(.*)$/m)?.[1],noNewPrivileges:status.match(/^NoNewPrivs:\\s*(.*)$/m)?.[1]}));setInterval(()=>{},1000);`
+console.log('GRAPHQL_CI_QUALIFICATION '+JSON.stringify({toolchain:{node:process.version,corepack:version(['corepack','--version']),pnpm:version(['corepack','pnpm','--version']),git:version(['git','--version']),flock:version(['flock','--version'])},rootfsWriteError,inputRead,inputWriteError,sourceWrite:true,proc:fs.existsSync('/proc/self/stat'),pidNamespace:fs.readlinkSync('/proc/self/ns/pid'),networkNamespace:fs.readlinkSync('/proc/self/ns/net'),interfaces:fs.readdirSync('/sys/class/net').sort(),memoryMax:fs.readFileSync('/sys/fs/cgroup/memory.max','utf8').trim(),swapMax:fs.readFileSync('/sys/fs/cgroup/memory.swap.max','utf8').trim(),pidsMax:fs.readFileSync('/sys/fs/cgroup/pids.max','utf8').trim(),cpuRatio:Number(cpu[0])/Number(cpu[1]),environment:Object.keys(process.env).sort(),detachedChild:!!child.pid,capabilities:status.match(/^CapEff:\\s*(.*)$/m)?.[1],noNewPrivileges:status.match(/^NoNewPrivs:\\s*(.*)$/m)?.[1]}));setInterval(()=>{},1000);`

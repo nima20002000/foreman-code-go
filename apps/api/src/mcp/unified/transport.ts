@@ -1,3 +1,5 @@
+import { unavailableDeviceOperatorToolCall } from '../operator/tools/devices.js'
+import { unavailableOperatorControlToolCall } from '../operator/tools/operatorControls.js'
 import type { FileReferenceService } from '../../modules/files/references/service.js'
 import { MAX_REFERENCE_MCP_BODY_BYTES } from '../../modules/files/references/requests.js'
 import { unavailableFileReferenceToolCall } from '../operator/tools/fileReferences.js'
@@ -66,6 +68,8 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableFileReferenceToolCall(context, request.body)
         ?? await unavailableWorkflowScheduleToolCall(context, request.body)
         ?? await unavailableRunHistoryToolCall(context, request.body)
+        ?? await unavailableDeviceOperatorToolCall(context, request.body)
+        ?? await unavailableOperatorControlToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
     const context = { role, principal, ...(access ? { tools: access.tools } : {}),

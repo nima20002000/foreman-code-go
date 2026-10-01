@@ -15,6 +15,15 @@ export function reviewOwnsPermission(
 ): boolean {
   if (request.session.harness !== session.harness || request.session.providerVersion !== session.providerVersion
     || request.session.nativeSessionId !== session.nativeSessionId || !request.turn.nativeRequestId) return false
+  if (session.harness === 'claude') {
+    const submission = history.nativeSubmission, callback = object(request.request)
+    return submission?.kind === 'message' && submission.nativeSessionId === session.nativeSessionId
+      && submission.nativeMessageId === providerId && history.correlationId === submission.clientCorrelationId
+      && request.nativeRequestType === 'can_use_tool' && request.turn.nativeMessageId === providerId
+      && callback.nativeMessageId === providerId && typeof callback.generation === 'string' && callback.generation.length > 0
+      && typeof callback.toolUseId === 'string' && callback.toolUseId.length > 0
+      && typeof callback.attemptId === 'string' && callback.attemptId.length > 0
+  }
   const profile = harnessProfile(session.harness, session.providerVersion)
   if (profile === null) return false
   if (session.harness === 'codex') return request.turn.nativeTurnId === providerId

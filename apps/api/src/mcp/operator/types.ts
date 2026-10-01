@@ -1,3 +1,4 @@
+import type { DeviceManagementService } from '../../modules/devices/management.js'
 import type { FileReferenceService } from '../../modules/files/references/service.js'
 import type { RunGraphReadApi } from '../../modules/run-graph/readService.js'
 import type { OperatorExtensions } from './extensions.js'
@@ -21,6 +22,7 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  devices?: DeviceManagementService
   sources?: import('../../modules/sources/service.js').PostgresSourceService
   fileReferences?: FileReferenceService
   executionReadiness?: import('../../modules/harnesses/executionReadiness.js').ExecutionReadinessService

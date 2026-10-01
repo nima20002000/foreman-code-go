@@ -33,7 +33,7 @@ export async function credentialAuthority(sql: GraphSqlClient, executionId: stri
     || c.agentId !== e.agentId || c.id !== e.agentConfigurationVersionId || !c.productRole
     || r.agentConfigurationVersionIds[e.agentId] !== c.id || v.agentConfigurationVersionIds[e.agentId] !== c.id
     || canonicalGraphJson(r.approval) !== canonicalGraphJson(v.approval)
-    || !v.definition.nodes.some((node) => node.id === e.workflowNodeId && node.agentId === e.agentId)) return fail('AUTH_REVOKED')
+    || !v.definition.nodes.some((node) => node.id === e.workflowNodeId && node.kind !== 'job' && node.agentId === e.agentId)) return fail('AUTH_REVOKED')
   if (purpose === 'workflow' && (row.execution_closed || !['starting','running','waiting'].includes(e.state)
     || e.state !== 'starting' && !row.budget_active)) return fail('AUTH_REVOKED')
   const designated = v.approval.handler === 'orchestrator' && v.approval.designatedOrchestratorAgentId === e.agentId
@@ -45,6 +45,7 @@ export async function credentialAuthority(sql: GraphSqlClient, executionId: stri
       'select record from agent_configuration_versions where workspace_id=$1 and id=any($2::text[])',
       [r.workspaceId, Object.values(v.agentConfigurationVersionIds)])).rows.map((item) => AgentConfigurationVersionSchema.parse(item.record))
     canRespond = v.definition.nodes.some((node) => {
+      if (node.kind === 'job') return false
       const configuration = configurations.find((item) => item.id === v.agentConfigurationVersionIds[node.agentId])
       return configuration?.workspaceId === r.workspaceId && configuration.agentId === node.agentId
         && !usesNativeSelfReview(configuration.harness)

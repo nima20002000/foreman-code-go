@@ -1,74 +1,77 @@
+import { createHash } from 'node:crypto'
+import { constants } from 'node:fs'
+import { chmod, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import type { JobExecution } from '@graphql/contracts'
+import { JOB_INPUT_DIRECTORY, type JobInputDeliveryReceipt } from '@graphql/contracts/job-inputs'
+import { jobInputSnapshotDigest } from '@graphql/contracts/job-inputs-node'
+import { jobSpecDigests } from '@graphql/contracts/jobs-node'
+import { jobExecution } from '../../../test/helpers/jobFixture.js'
+import { identity } from '../sources/privateFilesystem.js'
 import { jobSupervisorIdentity, type JobLaunchPlan, type QualifiedJobProfile } from './executor.js'
-import { PodmanJobSupervisor, type PodmanCommandRunner } from './executorPodman.js'
+import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
+import { PodmanJobSupervisor, podmanCreateArgv, type PodmanCommandRunner } from './executorPodman.js'
 
-const hash = 'a'.repeat(64)
-const execution = { id: 'job', attemptId: 'attempt', operationId: 'operation', owner: { grantId: 'grant', epoch: '1' }, acceptedSpec: {
-  specDigest: hash, target: { destination: { managedRuntimeRoot: '/private/runtime' } },
-  policy: { maxWorkerSpoolBytes: 1024, preparationTimeoutMs: 1000, executionTimeoutMs: 10000, cancellationGraceMs: 500 },
-} } as JobExecution
-const profile = { qualificationId: 'approved' } as QualifiedJobProfile
-const runtimeRoots: string[] = []
-afterEach(async () => { await Promise.all(runtimeRoots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
+const roots: string[] = []
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture() {
-  const runtimeRoot = await mkdtemp(join(tmpdir(), 'ci-podman-runtime-')); runtimeRoots.push(runtimeRoot)
-  let stopped = false
-  let mismatch = false
-  let resolveWait: ((result: { exitCode: number; stdout: string }) => void) | undefined
-  const stop = () => { stopped = true; resolveWait?.({ exitCode: 0, stdout: '7' }) }
+  const root = await mkdtemp(join(tmpdir(), 'ci-oci-input-')); roots.push(root)
+  const sourceRoot = join(root, 'source'), runtimeRoot = join(root, 'runtime')
+  await mkdir(sourceRoot, { mode: 0o700 }); await mkdir(runtimeRoot, { mode: 0o700 }); const inputRoot = join(sourceRoot, JOB_INPUT_DIRECTORY); await mkdir(inputRoot)
+  const execution = jobExecution(); const digest = 'a'.repeat(64)
+  const sourceHandle = await open(sourceRoot, constants.O_RDONLY | constants.O_DIRECTORY), inputsHandle = await open(inputRoot, constants.O_RDONLY | constants.O_DIRECTORY)
+  const sourceIdentity = await identity(sourceHandle), inputIdentity = await identity(inputsHandle); await sourceHandle.close(); await inputsHandle.close()
+  execution.acceptedSpec.inputs = []; execution.acceptedSpec.workflowInput = null; execution.workflow = null
+  Object.assign(execution.acceptedSpec.target.destination, { canonicalProjectRoot: sourceRoot, canonicalCwd: sourceRoot, directoryIdentityHash: hash(Buffer.from(JSON.stringify(sourceIdentity))), managedRuntimeRoot: runtimeRoot })
+  Object.assign(execution.acceptedSpec, jobSpecDigests(execution.acceptedSpec, null))
+  const inputDigest = jobInputSnapshotDigest(execution)
+  const files = [{ relativePath: 'manifest.json', bytes: Buffer.from(JSON.stringify({ version: 1, inputSnapshotDigest: inputDigest, workflowInput: null, files: [] })) }, { relativePath: 'workflow-input.json', bytes: Buffer.from('null') }]
+  for (const file of files) await writeFile(join(inputRoot, file.relativePath), file.bytes, { mode: 0o444 })
+  const spec = execution.acceptedSpec
+  const receipt: JobInputDeliveryReceipt = { version: 1, recipient: { workspaceId: execution.workspaceId, executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, owner: { ...execution.owner }, bindingHash: spec.bindingHash, specDigest: spec.specDigest, materializationId: spec.source.materializationId, materializationDigest: spec.source.materializationDigest }, bindingId: digest, inputSnapshotDigest: inputDigest, manifestSha256: hash(files[0]!.bytes), manifestByteSize: files[0]!.bytes.length, directory: { relativePath: JOB_INPUT_DIRECTORY, ...inputIdentity }, files: files.map(file => ({ relativePath: file.relativePath, sha256: hash(file.bytes), byteSize: file.bytes.length })), readonlyMountRequired: true }
+  const profile: QualifiedJobProfile = { policyId: spec.policy.isolationPolicyId, policyRevision: spec.policy.isolationPolicyRevision, imageDigest: spec.policy.imageDigest, toolchainDigest: spec.policy.toolchainDigest, qualificationId: 'unit-double', runtimeVersion: 'unit-double', ociRuntimeVersion: 'unit-double', kernelVersion: 'unit-double', rootless: true, cgroupV2: true, filesystemBounded: true, descendantContainment: true, network: 'none', cpuLimit: 1, memoryBytes: 1024, pidsLimit: 64, diskBytes: 1024 * 1024 }
+  const source = { privateRepositoryRoot: sourceRoot, directoryIdentityHash: spec.target.destination.directoryIdentityHash, privateGit: true as const, diskQuotaBytes: 1024 * 1024 }
+  const plan: JobLaunchPlan = { identity: jobSupervisorIdentity(execution), execution, verifiedSource: source, inputs: receipt, privateRepositoryRoot: sourceRoot, cwd: sourceRoot, argv: ['node', 'failure.mjs'], environment: {}, stdin: 'closed', pty: false, profile }
   const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() })
+  let stopped = false; let resolveWait: ((value: { exitCode: number; stdout: string }) => void) | undefined
   const run = vi.fn(async (argv: string[]) => {
-    if (argv.includes('create')) return { exitCode: 0, stdout: hash }
+    if (argv.includes('create')) return { exitCode: 0, stdout: digest }
     if (argv[0] === 'wait') return new Promise<{ exitCode: number; stdout: string }>(resolve => { resolveWait = resolve; if (stopped) resolve({ exitCode: 0, stdout: '7' }) })
-    if (argv[0] === 'stop') { stop(); return { exitCode: 0, stdout: '' } }
-    return { exitCode: 0, stdout: JSON.stringify([{ Id: hash, Config: { Labels: {
-      'graphql.job.identity': jobSupervisorIdentity(execution), 'graphql.job.spec': mismatch ? 'bad' : hash, 'graphql.job.attempt': 'attempt',
-    } }, State: { Running: !stopped, Pid: stopped ? 0 : 100, ExitCode: 7, Status: stopped ? 'exited' : 'running' } }]) }
+    return { exitCode: 0, stdout: JSON.stringify([{ Id: digest, Config: { Labels: { 'graphql.job.identity': plan.identity, 'graphql.job.spec': spec.specDigest, 'graphql.job.attempt': execution.attemptId } }, State: { Running: !stopped, Pid: stopped ? 0 : 100, ExitCode: 7, Status: stopped ? 'exited' : 'running' } }]) }
   })
-  const commands: PodmanCommandRunner = { run, attach: vi.fn(() => child as unknown as ReturnType<PodmanCommandRunner['attach']>) }
-  const plan: JobLaunchPlan = { identity: jobSupervisorIdentity(execution), execution: { ...execution, acceptedSpec: { ...execution.acceptedSpec, target: { ...execution.acceptedSpec.target, destination: { ...execution.acceptedSpec.target.destination, managedRuntimeRoot: runtimeRoot } } } }, privateRepositoryRoot: '/private/repository', cwd: '/private/repository',
-    argv: ['node', 'failure.mjs'], environment: {}, stdin: 'closed', pty: false, profile }
-  return { commands, run, child, plan, supervisor: new PodmanJobSupervisor(profile, commands), stop, corrupt: () => { mismatch = true } }
+  const commands: PodmanCommandRunner = { run, attach: vi.fn(async () => child as unknown as Awaited<ReturnType<PodmanCommandRunner['attach']>>) }
+  const ownership = { assertCurrent: vi.fn(), bindContainer: vi.fn(), launchHelpers: vi.fn(), readCertificate: vi.fn(), publish: vi.fn() } as unknown as OCIContainerOwnership
+  // Boundary supervision doubles only. Physical PID/cgroup certificate tests are separate.
+  vi.spyOn(OwnedOCIContainer.prototype, 'entered').mockImplementation(async () => { throw new Error('unit boundary marker') })
+  vi.spyOn(OwnedOCIContainer.prototype, 'close').mockResolvedValue(false)
+  const supervisor = new PodmanJobSupervisor(profile, commands, async () => ownership)
+  return { root, inputRoot, execution, receipt, plan, supervisor, run, ownership, commands, child, stop: () => { stopped = true; resolveWait?.({ exitCode: 0, stdout: '7' }) } }
 }
-describe('production OCI supervisor with command doubles (no installed runtime claim)', () => {
-  it('attributes create/start/wait/inspect exit to the exact labeled container', async () => {
-    const f = await fixture(); const process = await f.supervisor.launch(f.plan)
-    f.stop(); f.child.emit('close', 7)
-    expect(await process.exited).toEqual({ exitCode: 7, signal: null })
-    expect(await process.proveStopped()).toBe(true)
-    expect(f.run).toHaveBeenCalledWith(['wait', '--condition=exited', hash], 40500)
-    expect(f.commands.attach).toHaveBeenCalledWith(['start', '--attach', '--sig-proxy=false', hash])
+describe('OCI immutable input consumer with command/boundary doubles, no live qualification', () => {
+  it('emits the exact retained input RO submount and fixed manifest environment', async () => {
+    const f = await fixture(); const argv = podmanCreateArgv(f.plan)
+    expect(argv).toContain(`type=bind,src=${f.inputRoot},dst=/workspace/${JOB_INPUT_DIRECTORY},ro`)
+    expect(argv).toContain('GRAPHQL_JOB_INPUT_MANIFEST=/workspace/.graphql-job-inputs/manifest.json')
+    expect(argv).toContain('--remote=false')
   })
-  it('signals only the verified immutable container ID and proves closure', async () => {
-    const f = await fixture(); const process = await f.supervisor.launch(f.plan)
-    expect(await process.stop(500)).toBe(true)
-    expect(f.run).toHaveBeenCalledWith(['stop', '--time', '1', hash], 30500)
+  it('rehashes physical bytes before any create or ownership publication', async () => {
+    const f = await fixture(); await chmod(join(f.inputRoot, 'workflow-input.json'), 0o644); await writeFile(join(f.inputRoot, 'workflow-input.json'), 'true')
+    await expect(f.supervisor.launch(f.plan)).rejects.toThrow('Accepted job inputs rejected')
+    expect(f.run).not.toHaveBeenCalled(); expect(f.ownership.bindContainer).not.toHaveBeenCalled()
   })
-  it('refuses to signal a mismatched ownership label', async () => {
-    const f = await fixture(); const process = await f.supervisor.launch(f.plan); f.corrupt()
-    await expect(process.stop(1)).rejects.toThrow('evidence mismatch')
-    expect(f.run.mock.calls.some(([argv]) => argv[0] === 'stop' || argv[0] === 'kill')).toBe(false)
+  it('rejects stale owner/input receipts before native entry', async () => {
+    const f = await fixture(); f.plan.inputs.recipient.owner.epoch = '999'
+    await expect(f.supervisor.launch(f.plan)).rejects.toThrow('original execution')
+    expect(f.run).not.toHaveBeenCalled()
   })
-  it('missing recovery identity is uncertainty and never creates another container', async () => {
-    const f = await fixture(); f.commands.run = vi.fn(async () => ({ exitCode: 1, stdout: '' }))
-    expect(await f.supervisor.reconcile(execution)).toBe(null)
-    expect(f.commands.run).toHaveBeenCalledOnce()
-    expect(f.commands.attach).not.toHaveBeenCalled()
-  })
-  it('does not project a running container default exit code as observed completion', async () => {
+  it('does not launch user work successfully when owned boundary entry is unconfirmed', async () => {
     const f = await fixture()
-    expect(await f.supervisor.reconcile(execution)).toMatchObject({ stopped: false, exitCode: null, logGapPossible: true })
-  })
-  it('recovered cancellation requires the original immutable container ID', async () => {
-    const f = await fixture()
-    expect(await f.supervisor.stopExecution(execution, 500, 'b'.repeat(64))).toBe(false)
-    expect(f.run.mock.calls.some(([argv]) => argv[0] === 'stop')).toBe(false)
-    expect(await f.supervisor.stopExecution(execution, 500, hash)).toBe(true)
+    await expect(f.supervisor.launch(f.plan)).rejects.toThrow('unit boundary marker')
+    expect(f.ownership.bindContainer).toHaveBeenCalledWith(f.plan.identity, 'a'.repeat(64))
+    f.stop()
   })
 })

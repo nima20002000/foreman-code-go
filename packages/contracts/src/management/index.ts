@@ -355,6 +355,7 @@ const AgentRenameOperationSchema = z.object({
 const AgentConfigureOperationSchema = z.object({
   type: z.literal("agent.configure"), agentId: IdSchema,
   expectedAgentRevision: ExpectedRevisionSchema, configuration: ManagementHarnessConfigurationSchema,
+  harnessProfileSelection: AgentSchema.shape.harnessProfileSelection,
   prompt: AgentSchema.shape.prompt,
   assignedSkills: AgentSchema.shape.assignedSkills,
   graphqlTools: AgentSchema.shape.graphqlTools,

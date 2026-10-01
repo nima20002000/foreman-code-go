@@ -3,6 +3,7 @@ import {
   ScopedMcpDetectionSchema,
   type AgentHarness,
   type McpDetection,
+  type McpCredentialArrangement,
   type ScopedMcpDetection,
 } from '@graphql/contracts'
 import type pg from 'pg'
@@ -15,6 +16,20 @@ export const MCP_INSPECTION_TIMEOUT_MS = 30_000
 export type NativeMcpStatus = 'connected' | 'disabled' | 'authentication_required' | 'broken' | 'status_unavailable'
 export type McpInspectionPhase = 'configuration' | 'health'
 
+/** Internal receipt metadata from the owned SDK control operation, never credential values. */
+export interface NativeMcpHttpCredentialAcknowledgement {
+  source: 'sdk_set_mcp_servers'
+  serverName: string
+  endpoint: string
+  generation: string
+  authorizationScope: string
+}
+
+export type NativeMcpCredentialArrangement =
+  | { kind: 'environment_variable'; environmentVariable: string }
+  | { kind: 'scoped_http_header'; acknowledgement: NativeMcpHttpCredentialAcknowledgement }
+  | { kind: 'unknown' }
+
 export interface NativeMcpEntryEvidence {
   /** The managed launcher routes to the owning app instance; no fixed endpoint is configured. */
   automaticEndpoint?: boolean
@@ -23,6 +38,7 @@ export interface NativeMcpEntryEvidence {
   endpoint?: string
   enabled?: boolean
   credentialEnvironmentVariable?: string
+  credentialArrangement?: NativeMcpCredentialArrangement
   status?: NativeMcpStatus
   detail?: string
   enabledTools?: readonly string[]
@@ -36,6 +52,8 @@ export interface NativeMcpInspectionEvidence {
   runnerId: string
   workingDirectory: string
   inspectedAt: string
+  generation?: string
+  authorizationScope?: string
   entry?: NativeMcpEntryEvidence
 }
 
@@ -123,7 +141,21 @@ export class McpDetectionService {
       const entry = evidence.entry
       const automatic = entry?.automaticEndpoint === true && entry.transport === 'stdio' && this.serverName === APP_MCP_SERVER_NAME
       const matches = entry ? automatic || endpointMatches(entry.endpoint, this.expectedEndpoint) : null
-      const credentialMatches = entry?.credentialEnvironmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
+      const arrangement = entry?.credentialArrangement
+      const environmentMatches = arrangement === undefined
+        ? entry?.credentialEnvironmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
+        : arrangement.kind === 'environment_variable' && arrangement.environmentVariable === APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
+      const acknowledgement = arrangement?.kind === 'scoped_http_header' ? arrangement.acknowledgement : undefined
+      const headerMatches = Boolean(acknowledgement && input.harness === 'claude'
+        && entry?.transport === 'streamable-http' && entry.status === 'connected'
+        && acknowledgement.source === 'sdk_set_mcp_servers' && acknowledgement.serverName === this.serverName
+        && endpointMatches(acknowledgement.endpoint, this.expectedEndpoint)
+        && matches && evidence.generation && acknowledgement.generation === evidence.generation
+        && evidence.authorizationScope && acknowledgement.authorizationScope === evidence.authorizationScope)
+      const credentialArrangement: McpCredentialArrangement = environmentMatches
+        ? { kind: 'environment_variable', environmentVariable: APP_MCP_TOKEN_ENVIRONMENT_VARIABLE }
+        : headerMatches ? { kind: 'scoped_http_header' } : { kind: 'unknown' }
+      const credentialMatches = environmentMatches || headerMatches
       let state: McpDetection['state']
       if (!entry) state = 'not_detected'
       else if (entry.name !== this.serverName || !matches || !credentialMatches || (entry.transport !== 'streamable-http' && !automatic)) state = 'misconfigured'
@@ -133,7 +165,8 @@ export class McpDetectionService {
       return ScopedMcpDetectionSchema.parse({
         detection: McpDetectionSchema.parse({
           harness: input.harness, serverName: this.serverName, state, endpointMatches: matches,
-          credentialEnvironmentVariable: credentialMatches ? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE : null,
+          credentialEnvironmentVariable: environmentMatches ? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE : null,
+          credentialArrangement,
           checkedAt: new Date().toISOString(), detail: details[state],
         }),
         runnerId: input.runnerId, workingDirectory: input.workingDirectory,
@@ -150,6 +183,7 @@ export class McpDetectionService {
         detection: McpDetectionSchema.parse({
           harness: input.harness, serverName: this.serverName, state: 'check_failed',
           endpointMatches: null, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString(),
+          credentialArrangement: { kind: 'unknown' },
           detail: signal.aborted ? 'Native MCP inspection was canceled or exceeded its deadline.' : details.check_failed,
         }),
         runnerId: input.runnerId, workingDirectory: input.workingDirectory, providerVersion: 'unknown', nativeFilters: {},

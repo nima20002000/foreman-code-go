@@ -7,7 +7,9 @@ import { toolFailure, toolResult } from '../../mcp/shared/results.js'
 import { hasAction } from '../access/policy.js'
 import type { PostgresDeviceAccessService } from './access.js'
 
-export function registerDeviceManagementTools(server: McpServer, service: PostgresDeviceAccessService, principal: ManagementPrincipal): void {
+export type DeviceManagementService = Pick<PostgresDeviceAccessService, 'readMainIdentity' | 'list' | 'createPairingGrant' | 'revoke'>
+
+export function registerDeviceManagementTools(server: McpServer, service: DeviceManagementService, principal: ManagementPrincipal): void {
   const invoke = async (operation: () => Promise<unknown>) => {
     try { return toolResult(await operation()) } catch (error) { return toolFailure(error, 'The device operation failed.') }
   }
@@ -34,7 +36,7 @@ export function registerDeviceManagementTools(server: McpServer, service: Postgr
   }
 }
 /** Mount on the existing loopback management API with its existing bearer/cookie authenticator. */
-export function registerDeviceManagementRoutes(app: FastifyInstance, service: PostgresDeviceAccessService,
+export function registerDeviceManagementRoutes(app: FastifyInstance, service: DeviceManagementService,
   authenticate: (request: import('fastify').FastifyRequest) => Promise<ManagementPrincipal>): void {
   app.get('/api/devices/main', async request => service.readMainIdentity(await authenticate(request)))
   app.get('/api/devices', async request => ({ devices: await service.list(await authenticate(request)) }))

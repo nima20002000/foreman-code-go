@@ -17,7 +17,7 @@ function fixture() {
   Object.assign(execution.acceptedSpec,jobSpecDigests(execution.acceptedSpec,null));materialization.finalDispatchBindingHash=execution.acceptedSpec.bindingHash
   const query=vi.fn(async(text:string)=>({rows:text.includes('source_execution_materializations')?[{record:materialization,state:'closed'}]:text.includes('job_definition_versions')?[{record:{schemaVersion:1,id:execution.acceptedSpec.definitionId,workspaceId:execution.workspaceId,versionId:execution.acceptedSpec.definitionVersionId,revision:1,name:'Original',spec,createdAt:execution.createdAt,updatedAt:execution.createdAt}}]:[],rowCount:1,command:'SELECT',oid:0,fields:[]}))
   const resolveRootBinding=vi.fn(async()=>root),runtime={choices:vi.fn(async()=>[]),revalidate:vi.fn(async()=>undefined)},prepare=vi.fn()
-  const service=new CanonicalJobPreparationSources({resolveRootBinding} as unknown as PostgresSourceService,runtime,{prepare})
+  const service=new CanonicalJobPreparationSources({resolveRootBinding} as unknown as PostgresSourceService,runtime,{prepare},{validateDeclaredJobInputs:vi.fn(async()=>undefined)},{resolve:vi.fn()})
   return {execution,materialization,root,query,resolveRootBinding,runtime,prepare,service}
 }
 describe('original accepted source revalidation',()=>{
@@ -32,6 +32,12 @@ describe('original accepted source revalidation',()=>{
     const f=fixture();f.resolveRootBinding.mockRejectedValue(new DomainError('AUTH_REVOKED','Original root authority revoked.',403))
     await expect(f.service.revalidateAccepted({query:f.query as JobSql['query']},principal,f.execution)).rejects.toMatchObject({code:'AUTH_REVOKED'})
     expect(f.runtime.revalidate).not.toHaveBeenCalled()
+  })
+  it('uses the current materialization state column rather than stale JSON readiness',async()=>{
+    const f=fixture()
+    f.query.mockResolvedValueOnce({rows:[{record:f.materialization,state:'uncertain'}],rowCount:1,command:'SELECT',oid:0,fields:[]})
+    await expect(f.service.revalidateAccepted({query:f.query as JobSql['query']},principal,f.execution)).rejects.toMatchObject({code:'SOURCE_ATTEMPT_CONFLICT'})
+    expect(f.resolveRootBinding).not.toHaveBeenCalled();expect(f.runtime.revalidate).not.toHaveBeenCalled()
   })
   it('rejects a switched original dispatch binding before current root lookup',async()=>{
     const f=fixture();f.materialization.finalDispatchBindingHash='2'.repeat(64)

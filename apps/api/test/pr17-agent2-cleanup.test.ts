@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 
-import type { NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction, ReviewCleanup, ReviewJob } from '@graphql/contracts'
+import { PendingNativeInteractionSchema, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction, type ReviewCleanup, type ReviewJob } from '@graphql/contracts'
 import { describe, it } from 'vitest'
 
 import type { NativeHistory } from '../src/modules/harnesses/port.js'
@@ -191,5 +191,58 @@ describe('PR17 #5: OpenCode permission lineage', () => {
     assert.equal(evidence.providerId, root)
     assert.equal(evidence.identityConflict, undefined)
     assert.equal(evidence.terminal, true)
+  })
+})
+
+describe('Claude review cleanup uses actual SDK message and callback ownership', () => {
+  const claude: NativeSessionReference = { harness: 'claude', providerVersion: '0.3.284', nativeSessionId: 'claude-review' }
+  const messageId = 'accepted-sdk-input-message'
+  function callback() {
+    const request = PendingNativeInteractionSchema.parse({ session: claude,
+      turn: { nativeMessageId: messageId, nativeRequestId: 'sdk-control-request' }, nativeRequestType: 'can_use_tool',
+      request: { nativeMessageId: messageId, generation: 'actual-sdk-generation', attemptId: 'review-attempt',
+        toolUseId: 'actual-tool-use', toolName: 'Read', input: {} },
+      responseOptions: [{ optionId: 'cancel', semantic: 'cancel', label: 'Cancel', persistence: 'request',
+        affectsOtherPendingRequests: false, interruptsCurrentTurn: true, mutatesPersistentPolicy: false }] })
+    const native: NativeHistory = { events: [], pendingInteractions: [request], correlationId: 'correlation',
+      nativeSubmission: { kind: 'message', nativeSessionId: claude.nativeSessionId,
+        nativeMessageId: messageId, clientCorrelationId: 'correlation' } }
+    return { request, native }
+  }
+
+  it('owns a callback only through the accepted input receipt, without inventing a native turn ID', () => {
+    const { request, native } = callback()
+    assert.equal(request.turn.nativeTurnId, undefined)
+    assert.equal(reviewOwnsPermission(claude, messageId, request, native), true)
+    assert.equal(reviewOwnsPermission(claude, 'assistant-output-id', request, native), false)
+    const missing = { ...native }; delete missing.nativeSubmission
+    assert.equal(reviewOwnsPermission(claude, messageId, request, missing), false)
+    assert.equal(reviewOwnsPermission(claude, messageId, request, { ...native, correlationId: 'another-review' }), false)
+    assert.equal(reviewOwnsPermission(claude, messageId, { ...request, nativeRequestType: 'permission.asked' }, native), false)
+    assert.equal(reviewOwnsPermission(claude, messageId, { ...request, session: { ...claude, nativeSessionId: 'foreign-session' } }, native), false)
+  })
+
+  for (const field of ['nativeMessageId', 'generation', 'attemptId', 'toolUseId'] as const) {
+    it(`refuses cleanup with missing callback ${field}`, () => {
+      const { request, native } = callback()
+      const changed = { ...request, request: { ...request.request as Record<string, string>, [field]: '' } }
+      assert.equal(reviewOwnsPermission(claude, messageId, changed, native), false)
+    })
+  }
+
+  it('journals one exact SDK message cancel and waits for terminal evidence before cleanup completion', async () => {
+    const h = harness({ ...job(), provider: 'claude', nativeSessionId: claude.nativeSessionId, providerTurnOrMessageId: messageId })
+    const { native } = callback()
+    h.input.session = claude
+    h.input.observe = async () => native
+    const interrupted = await h.run()
+    assert.deepEqual(h.calls, [`cancel:${messageId}`, 'revoke:original-principal'])
+    assert.equal(interrupted.cleanup?.nativeState, 'pending')
+    assert.equal(h.persisted[0]?.cleanup?.interruptState, 'submitted')
+    await h.run()
+    assert.equal(h.calls.filter((call) => call.startsWith('cancel:')).length, 1)
+    h.input.observe = async () => ({ ...native, pendingInteractions: [],
+      terminalTurn: { correlationId: 'correlation', providerId: messageId, result: { outcome: 'canceled' } } })
+    assert.ok((await h.run()).cleanup?.completedAt)
   })
 })

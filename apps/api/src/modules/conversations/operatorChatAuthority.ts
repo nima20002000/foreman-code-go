@@ -5,8 +5,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { operatorChatGrants } from '../access/operatorChatDelegation.js'
 import type { PostgresAccessService } from '../access/postgres.js'
-import { CodexAppServerSessionManager } from '../harnesses/codexAppServer.js'
-import { OpenCodeNativeSessionManager } from '../harnesses/opencodeServer.js'
+import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { NativeRollout } from '../harnesses/nativeRollout.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
@@ -17,10 +16,22 @@ export const OPERATOR_MCP_ENVIRONMENT_VARIABLE = APP_MCP_TOKEN
 export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   private readonly credentials = new Map<string, { environment: ChildProcessEnvironment; ownerId: string; removeRoute: () => Promise<void> }>()
   constructor(private readonly pool: pg.Pool, private readonly access: PostgresAccessService,
-    private readonly rollout: NativeRollout, private readonly directory: string, private readonly endpoint: string) {}
+    private readonly rollout: NativeRollout, private readonly directory: string, private readonly endpoint: string,
+    private readonly inspectorFor?: (manager: NativeHarnessSessionManager) => NativeMcpInspector,
+    private readonly deliverClaudeCredential?: (manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion,
+      environment: ChildProcessEnvironment, signal: AbortSignal) => Promise<void>) {}
 
   current(principalId: string) { return this.access.currentOperator(principalId) }
-  assertConfiguration(configuration: OperatorConfigurationVersion) { this.rollout.assertChat(configuration) }
+  assertConfiguration(configuration: OperatorConfigurationVersion) {
+    if (configuration.harness.harness === 'claude') {
+      if (!configuration.harnessProfileSelection || !this.deliverClaudeCredential) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
+        'Claude Operator chat requires an explicit host profile and composed native admission.', 409)
+      // Current native proof is read asynchronously by the exact role owner;
+      // OpenCode rollout flags cannot qualify or disable a Claude profile.
+      return
+    }
+    this.rollout.assertChat(configuration)
+  }
 
   async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {
     const result = { harness: manager.harness, endpoint: this.endpoint, checkedAt: new Date().toISOString() }
@@ -29,30 +40,21 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       return { ...result, status: 'setup_required',
         reason: 'The selected Operator settings disable graphql. Enable that connection in Operator advanced settings before sending a new message.' }
     }
-    if (manager instanceof CodexAppServerSessionManager) {
-      try {
-        const inspected = await manager.inspectMcpConfiguration(this.directory, signal)
-        const configured = inspected.serverName === APP_MCP_SERVER_NAME && inspected.configured.enabled
-          && (inspected.configured.automaticEndpoint === true
-            || (inspected.configured.url === this.endpoint && inspected.configured.transport === 'streamable_http'))
-          && inspected.configured.bearerTokenEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE
-        return { ...result, status: configured ? 'configured' : 'setup_required', routing: inspected.configured.automaticEndpoint ? 'automatic' : 'fixed' }
-      } catch (error) {
-        if (error && typeof error === 'object' && 'result' in error
-          && (error.result as { error?: { code?: string } })?.error?.code === 'CODEX_MCP_NOT_CONFIGURED') {
-          return { ...result, status: 'setup_required' }
-        }
-        throw error
-      }
-    }
-    if (manager instanceof OpenCodeNativeSessionManager) {
-      const inspected = await manager.inspectNativeMcp(this.directory, signal, 'configuration')
-      const configured = inspected.serverName === APP_MCP_SERVER_NAME
-        && (inspected.automaticEndpoint === true || (inspected.endpoint === this.endpoint && inspected.transport === 'streamable-http')) && !['not_detected', 'disabled'].includes(inspected.nativeStatus)
-        && inspected.credentialEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE
-      return { ...result, status: configured ? 'configured' : 'setup_required', routing: inspected.automaticEndpoint ? 'automatic' : 'fixed' }
-    }
-    this.invalidSetup()
+    if (!this.inspectorFor) this.invalidSetup()
+    const inspected = await this.inspectorFor(manager).inspect({ harness: manager.harness, runnerId: 'runner-local',
+      workingDirectory: this.directory, serverName: APP_MCP_SERVER_NAME, phase: 'configuration', signal })
+    signal.throwIfAborted()
+    if (inspected.harness !== manager.harness || inspected.runnerId !== 'runner-local'
+      || inspected.workingDirectory !== this.directory) throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH',
+      'Native MCP inspection returned another Operator launch context.', 500)
+    const entry = inspected.entry
+    if (!entry) return { ...result, status: 'setup_required' }
+    const automatic = entry.automaticEndpoint === true && entry.transport === 'stdio'
+    const configured = entry.name === APP_MCP_SERVER_NAME && entry.enabled !== false && entry.status !== 'disabled'
+      && (automatic || entry.endpoint === this.endpoint && entry.transport === 'streamable-http')
+      && (manager.harness === 'claude' ? Boolean(this.deliverClaudeCredential)
+        : entry.credentialEnvironmentVariable === OPERATOR_MCP_ENVIRONMENT_VARIABLE)
+    return { ...result, status: configured ? 'configured' : 'setup_required', routing: automatic ? 'automatic' : 'fixed' }
   }
 
   async prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
@@ -99,6 +101,11 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       const environment = { agentId: configuration.operatorId, variables: { [OPERATOR_MCP_ENVIRONMENT_VARIABLE]: issued.token } }
       removeRoute = await registerAppRoute(issued.token, this.endpoint, issued.principal.expiresAt)
       signal.throwIfAborted()
+      if (manager.harness === 'claude') {
+        if (!this.deliverClaudeCredential) this.invalidSetup()
+        await this.deliverClaudeCredential(manager, configuration, environment, signal)
+        signal.throwIfAborted()
+      }
       this.credentials.set(conversationId, { environment, ownerId: principalId, removeRoute })
       return environment
     } catch (error) {

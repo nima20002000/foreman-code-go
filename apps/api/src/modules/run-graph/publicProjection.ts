@@ -1,4 +1,5 @@
 import type { HarnessExecution } from '@graphql/contracts'
+import { JobExecutionSchema, type JobExecution } from '@graphql/contracts/jobs'
 import { GraphExecutionIdentitySchema, NodeResolutionSchema, RUN_GRAPH_LIMITS, canonicalGraphJson, type GraphFact, type RunGraphCurrentState, type RunGraphScope } from '@graphql/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
@@ -11,6 +12,8 @@ import { RunGraphError } from './errors.js'
 type PublicNode = RunGraphCurrentState['nodes'][number]
 export interface PublicProjectionOverlay extends PublicAttentionOverlay {
   executions?: readonly HarnessExecution[]
+  /** Proposed persisted Job receipt state, under the existing Job/Run owner. */
+  jobs?: readonly JobExecution[]
   /** Guard-qualified proposed candidates from BR1-002, not transport observations. */
   native?: readonly CurrentNativeActivity[]
   closed?: boolean
@@ -62,6 +65,68 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
   for (const item of stored.rows) put({ state: item.state, outcome: item.outcome, execution: {
     workflowNodeId: item.workflow_node_id, executionId: item.id, agentId: item.agent_id,
     agentConfigurationVersionId: item.configuration_id, attempt: item.attempt } })
+  // Preparation is the real reserved identity before dispatch. Select the latest
+  // slot first, so a new preparation cannot expose a previous occurrence's result.
+  const jobs = await sql.query<{ id: string; workflow_node_id: string; definition_id: string; version_id: string; definition_revision: number;
+    attempt_id: string; operation_id: string; admitted_id: string | null; phase: string | null; outcome: string | null;
+    stopped: boolean | null; publication: string | null; result_issue: string | null; finished_at: string | null }>(`
+    select p.preparation->>'executionId' as id,s.workflow_node_id,n.node->>'jobDefinitionId' as definition_id,
+      n.node->>'jobDefinitionVersionId' as version_id,(n.node->>'jobDefinitionRevision')::integer as definition_revision,
+      p.preparation->>'attemptId' as attempt_id,
+      p.preparation->>'operationId' as operation_id,x.job_execution_id as admitted_id,j.record->'process'->>'phase' as phase,
+      j.record->'process'->>'outcome' as outcome,(j.record->'process'->>'processStopped')::boolean as stopped,
+      j.record->>'publication' as publication,j.record->>'resultIssue' as result_issue,j.record->>'finishedAt' as finished_at
+    from (select distinct on (s.workflow_node_id) s.* from run_repeat_slots s
+      left join run_repeat_occurrences o on o.occurrence_id=s.occurrence_id and o.run_id=s.run_id
+      left join run_work_activations w on w.activation_id=s.work_activation_id and w.run_id=s.run_id
+      where s.run_id=$1 and s.workflow_node_id=any($2::text[])
+      order by s.workflow_node_id,w.activation_sequence desc nulls last,coalesce(o.occurrence_index,0) desc,s.slot_id desc) s
+    join workflow_job_preparations p on p.slot_id=s.slot_id and p.run_id=s.run_id
+    join workflow_versions v on v.id=$3
+    cross join lateral jsonb_array_elements(v.record->'definition'->'nodes') n(node)
+    left join workflow_job_executions x on x.run_id=s.run_id and x.node_execution_id=p.preparation->>'executionId'
+    left join job_executions j on j.id=x.job_execution_id and j.workspace_id=$4
+      and x.reference->>'workflowVersionId'=$3 and x.reference->>'workspaceId'=$4
+      and x.reference->>'workflowId'=$5 and x.reference->>'runId'=s.run_id
+      and x.reference->>'nodeId'=s.workflow_node_id and x.reference->>'nodeExecutionId'=j.id
+      and j.attempt_id=p.preparation->>'attemptId' and j.operation_id=p.preparation->>'operationId'
+      and j.definition_version_id=n.node->>'jobDefinitionVersionId'
+      and j.record->'workflow'->>'workflowId'=$5 and j.record->'workflow'->>'runId'=s.run_id
+      and j.record->'workflow'->>'nodeId'=s.workflow_node_id and j.record->'workflow'->>'nodeExecutionId'=j.id
+      and j.accepted_spec->>'definitionId'=n.node->>'jobDefinitionId'
+      and j.accepted_spec->>'definitionRevision'=n.node->>'jobDefinitionRevision'
+      and j.accepted_spec->>'definitionVersionId'=n.node->>'jobDefinitionVersionId'
+    where n.node->>'kind'='job' and n.node->>'id'=s.workflow_node_id
+      and p.preparation->>'workspaceId'=$4 and p.preparation->>'workflowId'=$5
+      and p.preparation->>'workflowVersionId'=$3 and p.preparation->>'runId'=s.run_id
+      and p.preparation->>'nodeId'=s.workflow_node_id limit 1001`,
+    [scope.runId, [...nodeIds], scope.workflowVersionId, scope.workspaceId, scope.workflowId])
+  if (jobs.rows.length > 1000) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
+  const jobPins = new Map(jobs.rows.map((item) => [item.id, item]))
+  const putJob = (item: typeof jobs.rows[number]) => {
+    if (item.admitted_id && (item.admitted_id !== item.id || !item.phase)) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+    const terminal = item.phase === 'terminal' && item.stopped === true && !!item.finished_at
+      && ['complete', 'failed', 'expired'].includes(item.publication ?? '')
+    put({ execution: { kind: 'job', workflowNodeId: item.workflow_node_id, executionId: item.id,
+      jobDefinitionId: item.definition_id, jobDefinitionVersionId: item.version_id, attempt: 1 },
+    state: terminal ? 'completed' : item.phase === 'queued' ? 'queued' : item.phase === 'running' ? 'running'
+      : item.phase === 'terminal' ? 'unknown' : 'starting',
+    outcome: terminal ? item.outcome === 'cancelled' ? 'canceled' : item.outcome === 'succeeded'
+      ? item.publication === 'complete' && !item.result_issue ? 'succeeded' : 'failed'
+      : item.outcome ? 'failed' : null : null }, executions.has(item.workflow_node_id))
+  }
+  for (const item of jobs.rows) putJob(item)
+  for (const raw of overlay.jobs ?? []) {
+    const job = JobExecutionSchema.parse(raw), pin = jobPins.get(job.id)
+    if (job.workspaceId !== scope.workspaceId || job.workflow?.workflowId !== scope.workflowId
+      || job.workflow.runId !== scope.runId || job.workflow.nodeExecutionId !== job.id) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+    if (!pin || job.workflow.nodeId !== pin.workflow_node_id || job.attemptId !== pin.attempt_id
+      || job.operationId !== pin.operation_id || job.acceptedSpec.definitionId !== pin.definition_id
+      || job.acceptedSpec.definitionRevision !== pin.definition_revision
+      || job.acceptedSpec.definitionVersionId !== pin.version_id) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+    putJob({ ...pin, phase: job.process.phase, outcome: job.process.outcome, stopped: job.process.processStopped,
+      publication: job.publication, result_issue: job.resultIssue, finished_at: job.finishedAt })
+  }
   for (const execution of overlay.executions ?? []) {
     if (execution.runId !== scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
     put({ state: execution.state, outcome: execution.result?.outcome ?? null, execution: {
@@ -96,8 +161,9 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
     }
     native = native.filter((item) => item.key.workKind === 'workflow' || active.has(item.key.workId))
   }
-  native = native.filter((item) => item.key.workKind === 'review'
-    || executions.get(item.key.execution.workflowNodeId)?.execution.executionId === item.key.execution.executionId)
+  native = native.filter((item) => executions.get(item.key.execution.workflowNodeId)?.execution.kind !== 'job'
+    && (item.key.workKind === 'review'
+      || executions.get(item.key.execution.workflowNodeId)?.execution.executionId === item.key.execution.executionId))
   const counts = attention ?? await readPublicAttentionCounts(sql, scope.runId, nodeIds, overlay)
   return nodeIds.map((id) => {
     const execution = executions.get(id), resolution = resolutions.get(id), count = counts.get(id)!
@@ -108,6 +174,8 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
       ...(count.pendingInteractionId ? { pendingInteractionId: count.pendingInteractionId } : {}), deliveryBlocked: count.deliveryBlocked })
     // An outstanding approval may not reuse old native work as continuation proof.
     const state = publicNodeState(id, execution, resolution, native, closed, count.pendingInteractionCount > 0)
+    // Job running is a durable receipt projection. It needs no Agent native ACK.
+    if (!resolution && !closed && execution?.execution.kind === 'job' && execution.state === 'running') state.lifecycle = 'running'
     return { state, activity, attention: publicNodeAttention(id, activity, count),
       ...(resolution ? { resolution } : {}),
       ...(resolution?.acceptedResultDigest ? { acceptedResultDigest: resolution.acceptedResultDigest } : {}) }

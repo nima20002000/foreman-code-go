@@ -5,7 +5,7 @@ import {
 } from '@graphql/contracts'
 import {
   WorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson,
-  type GraphExecutionIdentity, type RunGraphScope,
+  type AgentGraphExecutionIdentity, type RunGraphScope,
 } from '@graphql/contracts/wave25'
 import type pg from 'pg'
 import { PostgresRepeatReviewerBindings } from '../repeatReviewer.js'
@@ -19,7 +19,7 @@ import { RUN_CLEANUP_BOUNDARY_SQL } from './cleanupAuthority.js'
 export function fail(code: string, message = 'The approval identity, authority or owner changed.'): never {
   throw new DomainError(code, message, code === 'AUTH_REVOKED' ? 401 : code.endsWith('ACCESS_DENIED') ? 403 : 409)
 }
-export function identity(e: HarnessExecution): GraphExecutionIdentity {
+export function identity(e: HarnessExecution): AgentGraphExecutionIdentity {
   return { workflowNodeId: e.workflowNodeId, executionId: e.id, agentId: e.agentId,
     agentConfigurationVersionId: e.agentConfigurationVersionId, attempt: e.attempt }
 }
@@ -89,7 +89,7 @@ export async function readContext(sql: GraphSqlClient, interaction: DurableInter
   if (!requester || requester.runId !== r.id || requester.agentId !== interaction.requestingAgentId
     || requester.nativeSessionId !== interaction.nativeSessionId
     || requester.agentConfigurationVersionId !== v.agentConfigurationVersionIds[requester.agentId]
-    || !v.definition.nodes.some((n) => n.id === requester.workflowNodeId && n.agentId === requester.agentId)) return fail('APPROVAL_REQUESTER_MISMATCH')
+    || !v.definition.nodes.some((n) => n.id === requester.workflowNodeId && n.kind !== 'job' && n.agentId === requester.agentId)) return fail('APPROVAL_REQUESTER_MISMATCH')
   if (requireOpen && !completedReplay && (requester.state === 'completed' || requesterRow!.closed)) return fail('EXECUTION_STOPPED')
   const route = interaction.approval.handler === 'orchestrator' ? resolveImmutableApprovalRoute(v, requester.workflowNodeId, requester.agentId) : undefined
   if (interaction.approval.handler === 'orchestrator' && !route?.relationshipId) return fail('APPROVAL_DIRECT_CONNECTION_REQUIRED')

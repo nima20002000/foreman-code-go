@@ -4,6 +4,10 @@ import { CancelOperatorTurnRequestSchema, CancelOperatorTurnResponseSchema, Resp
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
+import { DomainError } from '../../../modules/errors.js'
+import { toolFailure } from '../../shared/results.js'
+
+export const OPERATOR_CONTROL_TOOLS = ['operator_chat_cancel', 'operator_chat_respond'] as const
 
 /** Actual HTTP control services and native receipt fence, including current owner/grant rechecks. */
 export function registerOperatorControlTools(server: McpServer, context: OperatorRequestContext) {
@@ -25,4 +29,19 @@ export function registerOperatorControlTools(server: McpServer, context: Operato
   }, async ({ conversationId, request }) => invokeOperatorTool(context, 'operator_chat_respond', async () => ({
     state: await chat.respond(conversationId, request, context.principal, 'mcp'),
   })))
+}
+
+const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
+  method: z.literal('tools/call'), params: z.object({ name: z.enum(OPERATOR_CONTROL_TOOLS) }).passthrough() }).passthrough()
+
+/** Preserve authenticated denial audit for direct calls to grant-hidden controls. */
+export async function unavailableOperatorControlToolCall(context: OperatorRequestContext, body: unknown) {
+  const call = ToolCall.safeParse(body)
+  if (!call.success || operatorToolAvailable(context, call.data.params.name)) return undefined
+  const name = call.data.params.name
+  const error = context.services.operatorChat
+    ? new DomainError('ACCESS_DENIED', 'Operator control requires compatible global control and read grants.', 403)
+    : new DomainError('OPERATOR_CHAT_UNAVAILABLE', 'Operator chat is not composed in this application.', 503)
+  if (error.status === 403) await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
+  return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(error) }
 }

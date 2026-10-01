@@ -8,12 +8,8 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
-import { registerProductionFileStorage } from './modules/files/production.js'
-import { defaultFileStorageRoot } from './modules/files/storage.js'
-import type { TemporaryFileService } from './modules/files/service.js'
-import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
-import { codexChatHostDirectory, localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
 import { buildProductionApp } from './production.js'
+import { readDeviceListenerConfig } from './modules/devices/productionConfig.js'
 import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
 import { opencodeQualificationSuite } from './modules/harnesses/qualification/suites/opencode.js'
 
@@ -34,21 +30,17 @@ async function main() {
   await enableFileLogging(process.env)
   lifecycle.info({ node: process.version }, 'api starting')
   const config = loadConfig(process.env)
+  const deviceListener = readDeviceListenerConfig(process.env, config.port)
   const database = createDatabase(config.database)
   const checkpoints = createCheckpointStore(
     config.database.connectionString,
     config.checkpoints.schema,
     config.database,
   )
-  let fileStorage: TemporaryFileService | undefined
-  const fileStorageRoot = config.fileStorageRoot ?? defaultFileStorageRoot()
-  const codexFiles = postgresCodexChatFiles(database.pool, () => {
-    if (!fileStorage) throw new Error('File storage is not registered.')
-    return fileStorage
-  }, () => localCodexChatHost(fileStorageRoot), codexChatHostDirectory(fileStorageRoot))
-  const { app, initialize, reconcile, drainShutdown } = buildProductionApp(config, database, checkpoints,
-    componentLogger('http'), undefined, codexFiles,
-    { codex: codexQualificationSuite, opencode: opencodeQualificationSuite })
+  const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage } = buildProductionApp(config, database, checkpoints,
+    componentLogger('http'), undefined, undefined,
+    { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
+    { mode: 'native', ...(deviceListener ? { deviceListener } : {}) })
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
@@ -83,7 +75,7 @@ async function main() {
   const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
 
   try {
-    fileStorage = registerProductionFileStorage(app, database.pool, config)
+    registerFileStorage()
     await database.ping()
     stopIfClosing()
     await database.migrate()
@@ -103,6 +95,8 @@ async function main() {
     stopIfClosing()
     // Native recovery may call the scoped MCP endpoint during attachment.
     await app.listen({ host: config.host, port: config.port })
+    stopIfClosing()
+    await startDeviceListener()
     stopIfClosing()
     await reconcile(reportReconciliationError)
     stopIfClosing()

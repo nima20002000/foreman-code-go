@@ -1,5 +1,6 @@
 import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery, ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@graphql/contracts'
 import type pg from 'pg'
+import type { NativeMessageSubmission } from '../harnesses/port.js'
 import type { NativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { settleKnownActivity } from './settleKnownActivity.js'
 import { conversationActivityKey } from './activityIdentity.js'
@@ -14,6 +15,7 @@ export interface ActivityMutationFence {
   parent?: WorkRef
   nativeSessionId?: string
   nativeTurnId?: string
+  nativeSubmission?: NativeMessageSubmission
   source?: { eventId?: string; sequence?: string; nativeSequence?: string; transportSequence?: number; system?: string; observedAt?: string; connectionId?: string }
   onReconciliationRequired?: () => void
   /** Only reconciled native history may correct terminal content. */
@@ -47,6 +49,13 @@ export class PostgresOperatorActivityRepository {
         and ($3::text is null or native_session_id=$3) and ($4::text is null or active_native_turn_id=$4) for update`,
       [conversationId, requestId, fence.nativeSessionId ?? fence.native?.sessionId ?? null, fence.nativeTurnId ?? fence.native?.turnId ?? null])
       if (!owner.rowCount || fence.native && owner.rows[0]?.harness !== fence.native.harness) { await client.query('commit'); return undefined }
+      if (owner.rows[0]?.harness === 'claude') {
+        const receipt = fence.nativeSubmission
+        const admitted = receipt?.kind === 'message' && fence.nativeTurnId === undefined && fence.native?.turnId === undefined
+          && (await client.query(`select 1 from operator_conversation_turns where conversation_id=$1 and request_id=$2
+            and payload->'nativeSubmission'=$3::jsonb for update`, [conversationId, requestId, JSON.stringify(receipt)])).rowCount
+        if (!admitted) { await client.query('commit'); return undefined }
+      }
       const prior = (await client.query<{ record: OperatorActivityChange; source_provenance: ActivityMutationFence['source'] }>(
         `select record,source_provenance from operator_conversation_activity where conversation_id=$1 and request_id=$2 and activity_id=$3 for update`,
       [conversationId, requestId, value.id])).rows[0]
@@ -58,7 +67,7 @@ export class PostgresOperatorActivityRepository {
       const nativeSequence = fence.source?.nativeSequence ?? (connectionId === undefined ? fence.source?.sequence : undefined)
       const legacyTransport = connectionId !== undefined && fence.source?.sequence !== undefined ? Number(fence.source.sequence) : undefined
       const transportSequence = fence.source?.transportSequence ?? (Number.isSafeInteger(legacyTransport) ? legacyTransport : undefined)
-      const source = { ...(fence.authoritativeReconciliation ? stored : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source,
+      const source = { ...(fence.authoritativeReconciliation ? stored : {}), ...(fence.nativeSubmission ? { nativeSubmission: fence.nativeSubmission } : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source,
         connectionId, nativeSequence, transportSequence,
         ...(native ? { native: ActivityNativeIdentitySchema.parse(native) } : {}),
         ...(fence.native ? { ownerNative: ActivityNativeIdentitySchema.parse(fence.native), ownerInputHash } : {}),

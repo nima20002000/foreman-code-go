@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import type { NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
+import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@graphql/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
 import { harnessProfile } from '../harnesses/qualification/profiles.js'
@@ -43,7 +43,9 @@ export class ReviewEvidenceTracker {
   ) {
     this.providerId = knownProviderId
     this.acknowledged = Boolean(knownProviderId)
-    const profile = harnessProfile(session.harness, session.providerVersion)
+    // Claude message identity is supplied by its admitted SDK manager and exact
+    // native receipt. This tracker does not grant release/profile qualification.
+    const profile = session.harness === 'claude' ? undefined : harnessProfile(session.harness, session.providerVersion)
     if (profile === null) this.identityConflict = true
     this.messageId = session.harness === 'opencode' && profile === 'opencode-1.18.31'
       ? `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}` : undefined
@@ -81,6 +83,24 @@ export class ReviewEvidenceTracker {
   observeEvent(event: NativeHarnessEvent): void {
     this.count += 1
     const payload = event.payload
+    if (this.session.harness === 'claude') {
+      // The admitted SDK reports consumed input messages, not provider turns.
+      // A result/session echo without that exact message cannot settle a review.
+      if (payload.nativeSessionId !== this.session.nativeSessionId
+        || payload.clientCorrelationId !== this.correlationId || typeof payload.nativeMessageId !== 'string'
+        || !payload.nativeMessageId) return
+      if (this.providerId && payload.nativeMessageId !== this.providerId) { this.identityConflict = true; return }
+      if (event.type === 'message.submitted' || event.type === 'interaction.pending'
+        && typeof payload.nativeRequestId === 'string' && payload.nativeRequestId.length > 0) {
+        this.acknowledge(payload.nativeMessageId)
+        this.busy(payload.nativeMessageId)
+      } else if (event.type === 'turn.completed' && payload.nativeMessageId === this.providerId
+        && ExecutionResultSchema.safeParse(payload.result).success) {
+        this.terminal = true
+        this.idle()
+      }
+      return
+    }
     if ((typeof payload.threadId === 'string' && payload.threadId !== this.session.nativeSessionId)
       || (typeof payload.sessionID === 'string' && payload.sessionID !== this.session.nativeSessionId)) return
     const turn = object(payload.turn)
@@ -151,7 +171,12 @@ export class ReviewEvidenceTracker {
   observeHistory(history: NativeHistory): void {
     for (const event of history.events) this.observeEvent(event)
     const terminal = history.terminalTurn
-    const providerId = history.nativeTurnId
+    const submission = history.nativeSubmission
+    const messageId = submission?.kind === 'message' && this.session.harness === 'claude'
+      && submission.nativeSessionId === this.session.nativeSessionId
+      && submission.clientCorrelationId === this.correlationId ? submission.nativeMessageId : undefined
+    if (submission?.kind === 'message' && !messageId) this.identityConflict = true
+    const providerId = this.session.harness === 'claude' ? messageId : history.nativeTurnId
     if (history.correlationId !== undefined) {
       if (history.correlationId !== this.correlationId) this.identityConflict = true
       else if (providerId) this.acknowledge(providerId)

@@ -1,8 +1,10 @@
+import { closeQualificationResources } from '../cleanup.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AgentFilePublishInputSchema, AgentFileReadInputSchema } from '@graphql/contracts/files'
-import type { QualificationSuite, QualificationSuiteInput } from '../types.js'
+import type { QualificationSuite } from '../types.js'
+import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 import { protocolFromBundle } from '../../codexProtocol.js'
 import { CodexStdioTransport, type RpcRequest } from '../../codexStdioTransport.js'
 import { codexFileDynamicTools } from '../../codexFiles/index.js'
@@ -16,12 +18,13 @@ const response = (value: unknown) => ({ success: true, contentItems: [{ type: 'i
 
 export const codexQualificationSuite: QualificationSuite = {
   harness: 'codex', revision: 'codex-live-4',
-  async run(input: QualificationSuiteInput) {
+  async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const environment = inheritedAgentEnvironment()
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
     let protocol: ReturnType<typeof protocolFromBundle> | undefined
     let transport: CodexStdioTransport | undefined
+    let releaseCleanup: (() => void) | undefined
     let threadId: string | undefined
     let turnId: string | undefined
     const stagedTools: RpcRequest[] = []
@@ -46,7 +49,9 @@ export const codexQualificationSuite: QualificationSuite = {
       mediaType: 'text/markdown' as const, byteSize: sourceBytes.length,
       sha256: createHash('sha256').update(sourceBytes).digest('hex'), origin: 'upload' as const, createdAt: now }
     const runCommandChecked = async (args: string[]) => {
-      const result = await runCommand(input.binary, args, input.workDirectory, signal, environment)
+      await input.assertInstallation?.(signal)
+      const result = await runCommand(input.binary, args, input.workDirectory, signal, environment,
+        input.processRecovery ? { recovery: input.processRecovery } : {})
       requireCondition(result.exitCode === 0, `${args.join(' ')} failed.`)
       return result.stdout || result.stderr
     }
@@ -137,7 +142,9 @@ export const codexQualificationSuite: QualificationSuite = {
       }],
       ['thread-start', async () => {
         requireCondition(protocol, 'Schema check did not produce a protocol.')
-        const listed = await runCommand(input.binary, ['mcp', 'list', '--json'], input.workDirectory, signal, environment)
+        await input.assertInstallation?.(signal)
+        const listed = await runCommand(input.binary, ['mcp', 'list', '--json'], input.workDirectory, signal, environment,
+          input.processRecovery ? { recovery: input.processRecovery } : {})
         let entries: unknown
         try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
         requireCondition(listed.exitCode === 0 && Array.isArray(entries) && entries.length <= 500
@@ -166,8 +173,11 @@ export const codexQualificationSuite: QualificationSuite = {
                 else completionFailure?.(new Error('Native turn failed.'))
               }
             }
-          }, (error) => completionFailure?.(error), 30_000, undefined, disabledAppMcpServerNames)
+          }, (error) => completionFailure?.(error), 30_000, input.processRecovery, disabledAppMcpServerNames)
+        releaseCleanup = input.ownCleanup?.(() => transport!.close())
+        await input.assertInstallation?.(signal)
         await transport.start(signal)
+        await input.assertInstallation?.(signal)
         await createThread()
         return 'Native thread started.'
       }],
@@ -199,6 +209,6 @@ export const codexQualificationSuite: QualificationSuite = {
       }],
     ]
     try { return await collectChecks({ ...input, signal }, checks, evidence) }
-    finally { await transport?.close() }
+    finally { await closeQualificationResources(transport ? [{ close: () => transport!.close(), release: releaseCleanup }] : []) }
   },
 }

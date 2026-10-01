@@ -1,3 +1,4 @@
+import type { HostHarnessOverrideService } from '../../modules/harnesses/instanceSettings/service.js'
 import type pg from 'pg'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import type { HarnessCatalogService } from '../../modules/harnesses/catalog.js'
@@ -14,10 +15,11 @@ export function createOperatorExtensions(input: {
   pool:pg.Pool;commands:PostgresCommandCoordinator;catalog:HarnessCatalogService;native:NativeConfigurationService;
   detection:McpDetectionService;locations:WorkspaceLocationService;
   provisioningRoot?:string|undefined;
+  harnessProfiles?: Pick<HostHarnessOverrideService, 'validateSelection'>;
 }) {
   return {
     native:input.native,
-    agents:new OperatorAgentMutationService(input.pool,input.commands,input.catalog),
+    agents:new OperatorAgentMutationService(input.pool,input.commands,input.catalog,input.harnessProfiles),
     history:new VersionHistoryService(input.pool),
     lifecycle:new OperatorLifecycleService(input.commands),
     workspace:new OperatorWorkspaceControls(input.pool,input.commands,input.locations,input.detection,input.provisioningRoot),

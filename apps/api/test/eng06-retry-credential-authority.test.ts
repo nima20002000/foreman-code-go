@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
+import type pg from 'pg'
 import { HarnessExecutionSchema, type NativeSessionReference } from '@graphql/contracts'
-import { makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@graphql/contracts/wave25'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
+import { makeCurrentWorkflowFixture, WorkflowRunV3Schema, type WorkflowVersionV3 } from '@graphql/contracts/wave25'
 import type { GraphSqlClient } from '../src/modules/run-graph/connection.js'
 import { credentialAuthority, assertWave25WorkerBinding } from '../src/modules/interactions/wave25/credentialAuthority.js'
+import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 
 /** Query rows only are synthetic. Use the current schemas and the actual
  * authority/binding predicates, including reviewer bootstrap validation. */
 function authorityRow(form: 'sequential' | 'repeat' | 'approval' = 'sequential', attempt = 2) {
   const f = makeCurrentWorkflowFixture('retry-credentials', form)
+  const version: WorkflowVersionV3 = f.version
   if (form === 'approval') {
     const approval = approvalFixture()
     f.configurations.forEach((configuration, index) => {
@@ -24,12 +29,19 @@ function authorityRow(form: 'sequential' | 'repeat' | 'approval' = 'sequential',
   })
   return {
     run: WorkflowRunV3Schema.parse({ ...f.run, executionState: 'running', startedAt: f.createdAt }),
-    version: f.version, execution, configuration: f.configurations[0]!, configurations: f.configurations,
+    version, execution, configuration: f.configurations[0]!, configurations: f.configurations,
     attempt, stopped: false, execution_closed: false, native_reference: null as NativeSessionReference | null,
     finalized: false, generation: null as string | null, native_owner: null as string | null, budget_active: false,
   }
 }
 type AuthorityRow = ReturnType<typeof authorityRow>
+function addJob(row: AuthorityRow) {
+  const job = JobWorkflowNodeSchema.parse({ kind: 'job', id: 'credential-job-node', name: 'Build',
+    jobDefinitionId: 'credential-job', jobDefinitionRevision: 1, jobDefinitionVersionId: 'credential-job-version' })
+  row.version.definition.nodes.unshift(job)
+  row.version.definition.executionPolicy!.maxNodeExecutions++
+  return job
+}
 function nativeRow(form: 'sequential' | 'repeat' | 'approval' = 'sequential') {
   const row = authorityRow(form)
   row.execution.state = 'running'
@@ -47,6 +59,8 @@ function bindingFor(row: AuthorityRow) {
 }
 function database(row: AuthorityRow, binding = bindingFor(row), currentReviewLease = true) {
   const query = vi.fn(async (text: string) => {
+    if (text.includes('e.workflow_node_id as node_id')) return { rows: [{ run: row.run, version: row.version,
+      execution: row.execution, node_id: row.execution.workflowNodeId }], rowCount: 1 }
     if (text.includes('from worker_credential_bindings b')) return { rows: [binding], rowCount: 1 }
     if (text.includes('from harness_executions e')) return { rows: [row], rowCount: 1 }
     if (text.includes('select record from agent_configuration_versions')) return {
@@ -61,6 +75,7 @@ function database(row: AuthorityRow, binding = bindingFor(row), currentReviewLea
 describe.each(['sequential', 'repeat'] as const)('ENG06 %s retry credential authority', (form) => {
   it.each([1, 2])('admits fresh credentials for persisted attempt %i before a session exists', async (attempt) => {
     const row = authorityRow(form, attempt), { sql, query } = database(row)
+    addJob(row)
     await expect(credentialAuthority(sql, row.execution.id, 'workflow')).resolves.toMatchObject({
       execution: { id: row.execution.id, attempt }, canRespond: false, nativeSessionId: null, generation: null,
     })
@@ -69,12 +84,20 @@ describe.each(['sequential', 'repeat'] as const)('ENG06 %s retry credential auth
 
   it.each(['running', 'waiting'] as const)('keeps attempt two eligible while %s in its exact session', async (state) => {
     const row = nativeRow(form); row.execution.state = state
+    addJob(row)
     await expect(assertWave25WorkerBinding(database(row).sql, 'fresh-retry-principal')).resolves.toBeUndefined()
   })
 
   it.each([[1, 2], [2, 1], [2, 3]])('rejects JSON attempt %i paired with indexed attempt %i', async (recordAttempt, indexedAttempt) => {
     const row = authorityRow(form, recordAttempt); row.attempt = indexedAttempt
     await expect(credentialAuthority(database(row).sql, row.execution.id, 'workflow')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+  })
+
+  it('refuses native credentials for a Job node even with a neighboring Agent and valid native grant binding', async () => {
+    const row = nativeRow(form), job = addJob(row)
+    row.execution.workflowNodeId = job.id
+    await expect(credentialAuthority(database(row).sql, row.execution.id, 'workflow')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+    await expect(assertWave25WorkerBinding(database(row).sql, 'job-native-principal')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
   })
 })
 
@@ -111,6 +134,7 @@ describe('ENG06 retry credentials retain authority and native fences', () => {
 
   it('permits only a finalized successful designated retry to act as reviewer', async () => {
     const row = nativeRow('approval')
+    addJob(row)
     row.execution.state = 'completed'; row.execution.finishedAt = row.execution.createdAt; row.execution.result = { outcome: 'succeeded' }; row.finalized = true
     await expect(credentialAuthority(database(row).sql, row.execution.id, 'reviewer')).resolves.toMatchObject({
       execution: { attempt: 2 }, canRespond: true, nativeSessionId: row.execution.nativeSessionId, generation: '7',
@@ -133,5 +157,30 @@ describe('ENG06 retry credentials retain authority and native fences', () => {
     await expect(assertWave25WorkerBinding(stale.sql, 'reviewer-principal')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     expect(stale.query).toHaveBeenCalledWith(expect.stringContaining('select 1 from review_jobs'),
       ['exact-review-job', row.execution.id, '2'])
+  })
+
+  it('discovers Agent review capability in a mixed workflow only with current live read/respond grants', async () => {
+    const row = nativeRow('approval'); addJob(row)
+    row.run.authorizationPrincipalId = 'accepted-author'
+    row.run.executionLocation = { runnerId: 'local', rootPath: '/credential-fixture', locationRevision: 1,
+      identityHash: `sha256:${'1'.repeat(64)}` }
+    row.execution.state = 'completed'; row.execution.finishedAt = row.execution.createdAt
+    row.execution.result = { outcome: 'succeeded' }; row.finalized = true
+    const binding = bindingFor(row); binding.purpose = 'reviewer'
+    const { query } = database(row, binding)
+    const service = new PostgresAppInteractionService({ query } as unknown as pg.Pool,
+      {} as ConstructorParameters<typeof PostgresAppInteractionService>[1],
+      {} as ConstructorParameters<typeof PostgresAppInteractionService>[2], { respond: vi.fn() })
+    const principal: ManagementPrincipal = { id: 'current-reviewer', name: 'Reviewer', audience: 'worker',
+      agentId: row.execution.agentId, revokedAt: null, expiresAt: '2099-01-01T00:00:00.000Z',
+      grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: [row.run.workspaceId],
+        workflowIds: [row.run.workflowId], runIds: [row.run.id] } }] }
+    expect(await service.canRespond(principal)).toBe(true)
+    query.mockClear()
+    expect(await service.canRespond({ ...principal, grants: [] })).toBe(false)
+    expect(query).not.toHaveBeenCalled()
+    binding.live = false
+    expect(await service.canRespond(principal)).toBe(false)
+    expect(query.mock.calls.some(([sql]) => sql.includes('e.workflow_node_id as node_id'))).toBe(false)
   })
 })

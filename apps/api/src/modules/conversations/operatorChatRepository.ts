@@ -1,3 +1,4 @@
+import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 import {
@@ -542,6 +543,31 @@ export class PostgresOperatorConversationRepository {
       where id=$1 and active_request_id=$2 and (native_session_id is null or native_session_id=$4)`, [id, requestId, version, nativeId])
     if (result.rowCount !== 1) throw new DomainError('NATIVE_SESSION_BINDING_UNCERTAIN', 'Native binding ownership was lost.', 409)
   }
+  async submittedMessage(id: string, requestId: string, receipt: NativeMessageSubmission): Promise<boolean> {
+    if (receipt.clientCorrelationId !== nativeCorrelation(id, requestId) || !receipt.nativeMessageId) return false
+    const result = await this.pool.query(`with owned_session as materialized (
+      select c.id,c.native_session_id,c.active_phase from operator_conversations c
+      where c.id=$1 and c.active_request_id=$2 and c.native_session_id=$4 and c.harness='claude' and c.kind='operator' and c.deleted_at is null for update
+    ), existing as (
+      select c.id from owned_session c join operator_conversation_turns t on t.conversation_id=c.id
+      where t.request_id=$2 and c.active_phase='submitted' and t.payload->'nativeSubmission'=$3::jsonb
+    ), receipt as (
+      update operator_conversation_turns t set payload=t.payload || jsonb_build_object('nativeSubmission',$3::jsonb) || case when t.payload->>'handoffContextIncluded'='true' then jsonb_build_object('handoffContextSessionId',c.native_session_id) else '{}'::jsonb end,updated_at=now()
+      from owned_session c where t.conversation_id=c.id and t.request_id=$2
+        and (t.payload->'nativeSubmission' is null or t.payload->'nativeSubmission'=$3::jsonb)
+        and not exists (select 1 from existing)
+      returning t.conversation_id
+    ), updated as (
+      update operator_conversations c set active_phase='submitted',
+        turn_state=case when c.cancel_requested then 'canceling' else 'active' end,revision=c.revision+1,updated_at=now()
+      where c.id=$1 and c.active_request_id=$2 and exists (select 1 from receipt r where r.conversation_id=c.id)
+      returning c.id
+    ) select id from updated union select id from existing`,
+      [id, requestId, JSON.stringify(receipt), receipt.nativeSessionId])
+    return result.rowCount === 1
+  }
+
+
   async submitted(id: string, requestId: string, nativeTurnId: string): Promise<boolean> {
     // ACK evidence and handoff initialization commit in one SQL statement. An
     // uncertain ACK stays fenced by the active turn and is recovered here too.

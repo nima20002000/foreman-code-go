@@ -158,7 +158,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
         || e.agentConfigurationVersionId !== v.agentConfigurationVersionIds[e.agentId]
         || [r.approval, v.approval, v.definition.approval].some((approval) =>
           approval?.handler !== 'orchestrator' || approval.designatedOrchestratorAgentId !== e.agentId)) return false
-      return v.definition.nodes.some((requester) => resolveImmutableApprovalRoute(
+      return v.definition.nodes.some((requester) => requester.kind !== 'job' && resolveImmutableApprovalRoute(
         v, requester.id, requester.agentId,
       )?.orchestratorNodeId === e.workflowNodeId)
     })

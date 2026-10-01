@@ -5,7 +5,7 @@ import type { QualificationSuiteInput } from '../src/modules/harnesses/qualifica
 vi.mock('node:fs/promises', async (original) => ({ ...await original<typeof import('node:fs/promises')>(), mkdtemp: vi.fn(async () => '/qualification-owned'), rm: vi.fn(async () => undefined) }))
 vi.mock('../src/modules/harnesses/compatibility/probe.js', async (original) => ({ ...await original<typeof import('../src/modules/harnesses/compatibility/probe.js')>(), nativeCompatibilityProbe: vi.fn(() => ({ inspect: vi.fn(async () => ({ version: '0.158.0' })), close: vi.fn(async () => undefined) })) }))
 
-import { rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
 
@@ -29,9 +29,48 @@ function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationS
   return { service, inspectBinary, save, run, audit, settings }
 }
 
-afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); vi.mocked(rm).mockResolvedValue(undefined) })
+afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); vi.mocked(rm).mockResolvedValue(undefined); vi.mocked(mkdtemp).mockResolvedValue('/qualification-owned') })
 
 describe('qualification stop/cancel/join', () => {
+  it('settles an interruption after static success before shutdown finishes', async () => {
+    const entered = gate(), staticResult = gate<string>(), finalSave = gate()
+    const f = fixture(async () => { entered.resolve(); return staticResult.promise })
+    f.save.mockResolvedValueOnce(undefined).mockImplementationOnce(() => finalSave.promise)
+    await f.service.begin('codex'); await entered.promise
+    let joined = false
+    const stopped = f.service.shutdown().then(() => { joined = true })
+    staticResult.resolve('schema')
+    await vi.waitFor(() => expect(f.save).toHaveBeenCalledTimes(2))
+    expect(f.save.mock.calls[1]?.[0]).toMatchObject({ status: 'failed', checkedAt: expect.any(String),
+      checks: [{ id: 'static-compatibility', passed: true }] })
+    expect(joined).toBe(false)
+    expect(f.run).not.toHaveBeenCalled(); expect(mkdtemp).not.toHaveBeenCalled()
+    finalSave.resolve(); await stopped
+  })
+
+  it('settles project preparation failure without granting trust', async () => {
+    const f = fixture()
+    vi.mocked(mkdtemp).mockRejectedValueOnce(new Error('project creation failed'))
+    await f.service.begin('codex'); await f.service.join()
+    expect(f.save.mock.calls.at(-1)?.[0]).toMatchObject({ status: 'failed', checkedAt: expect.any(String),
+      checks: [{ id: 'static-compatibility', passed: true }] })
+    expect(f.run).not.toHaveBeenCalled(); expect(rm).not.toHaveBeenCalled()
+    await f.service.shutdown()
+  })
+
+  it('owns and removes a project acquired while shutdown is waiting', async () => {
+    const f = fixture(), project = gate<string>()
+    vi.mocked(mkdtemp).mockReturnValueOnce(project.promise)
+    await f.service.begin('codex')
+    await vi.waitFor(() => expect(mkdtemp).toHaveBeenCalledTimes(1))
+    const stopped = f.service.shutdown()
+    project.resolve('/qualification-owned')
+    await stopped
+    expect(f.save.mock.calls.at(-1)?.[0]).toMatchObject({ status: 'failed' })
+    expect(f.run).not.toHaveBeenCalled()
+    expect(rm).toHaveBeenCalledWith('/qualification-owned', { recursive: true, force: true })
+  })
+
   it('releases operation deadline timers after successful settlement', async () => {
     vi.useFakeTimers()
     const f = fixture()

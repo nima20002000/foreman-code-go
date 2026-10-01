@@ -1,3 +1,4 @@
+import { HarnessProfileSelectionSchema } from './harnessRegistry.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 export * from './claude.js';
@@ -5,6 +6,9 @@ export * from './claudeQualification.js';
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { InteractionActivityProjectionSchema, NativeInteractionResponseAvailabilitySchema } from "./interaction-activity.js";
 import { z } from "zod";
+import { McpCredentialArrangementSchema } from './mcpDetection.js';
+export { McpCredentialArrangementSchema } from './mcpDetection.js';
+export type { McpCredentialArrangement } from './mcpDetection.js';
 import { FileWithRevisionSchema, MessageAttachmentFields, MessageAttachmentRefsSchema } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
@@ -308,6 +312,7 @@ export function validateHarnessWorkflowCompatibility(
 }
 
 export const AgentTemplateSchema = z.object({
+  harnessProfileSelection: z.lazy(() => HarnessProfileSelectionSchema).optional(),
   role: AgentProductRoleSchema,
   boardAddable: z.boolean(),
   harness: HarnessConfigurationSchema,
@@ -426,6 +431,7 @@ export const McpDetectionSchema = z.object({
   state: McpDetectionStateSchema,
   endpointMatches: z.boolean().nullable(),
   credentialEnvironmentVariable: z.string().trim().min(1).nullable(),
+  credentialArrangement: McpCredentialArrangementSchema.optional(),
   checkedAt: TimestampSchema,
   detail: z.string().optional(),
 }).strict();
@@ -688,6 +694,7 @@ export const AgentSchema = z
     effort: AgentEffortSchema.optional(),
     fastMode: z.boolean().optional(),
     harnessConfiguration: HarnessConfigurationSchema.optional(),
+    harnessProfileSelection: z.lazy(() => HarnessProfileSelectionSchema).optional(),
     configurationVersionId: IdSchema.optional(),
     prompt: AgentPromptSchema.optional(),
     assignedSkills: z.array(AssignedSkillSchema).optional(),
@@ -711,6 +718,7 @@ export type WorkflowVersion = import('./wave25/workflowSchemas.js').WorkflowVers
 /** Immutable prompt, skill, model and harness settings used to start a native session. */
 export const AgentConfigurationVersionSchema = z
   .object({
+    harnessProfileSelection: z.lazy(() => HarnessProfileSelectionSchema).optional(),
     id: IdSchema,
     workspaceId: IdSchema,
     agentId: IdSchema,
@@ -732,6 +740,7 @@ export const AgentConfigurationVersionSchema = z
 export type AgentConfigurationVersion = z.infer<typeof AgentConfigurationVersionSchema>;
 
 export const OperatorConfigurationVersionSchema = z.object({
+  harnessProfileSelection: z.lazy(() => HarnessProfileSelectionSchema).optional(),
   id: IdSchema,
   operatorId: IdSchema,
   version: z.number().int().positive(),

@@ -6,7 +6,14 @@ export interface JobCanonicalOutputVerifier {verifyRequiredOutputs(sql:JobSql,ex
 /** Inside the original main owner transaction. Native exit and output delivery remain separate facts. */
 export async function projectJobReceiptLocked(sql:JobSql,execution:JobExecution,raw:RemoteJobOperationReceipt,outputs:JobCanonicalOutputVerifier):Promise<void> {
   const receipt=RemoteJobOperationReceiptSchema.parse(raw)
-  if(receipt.intent.executionId!==execution.id||receipt.intent.attemptId!==execution.attemptId||receipt.intent.bindingHash!==execution.acceptedSpec.bindingHash) throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Observed receipt does not match accepted job facts.',409)
+  const subject=execution.workflow?{kind:'workflow-node',workspaceId:execution.workspaceId,...execution.workflow}
+    :{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId}
+  if(receipt.intent.executionId!==execution.id||receipt.intent.attemptId!==execution.attemptId||receipt.intent.operationId!==execution.operationId
+    ||receipt.intent.mainId!==execution.acceptedSpec.target.mainId||receipt.intent.bindingHash!==execution.acceptedSpec.bindingHash
+    ||receipt.intent.inputDigest!==`sha256:${execution.acceptedSpec.specDigest}`||canonical(receipt.intent.subject)!==canonical(subject)
+    ||canonical(receipt.intent.owner)!==canonical(execution.owner)||receipt.execution.id!==execution.id||receipt.execution.workspaceId!==execution.workspaceId
+    ||receipt.execution.attemptId!==execution.attemptId||receipt.execution.operationId!==execution.operationId
+    ||canonical(receipt.execution.owner)!==canonical(execution.owner)||canonical(receipt.execution.workflow)!==canonical(execution.workflow)) throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Observed receipt does not match accepted job facts.',409)
   if(canonical(receipt.execution.acceptedSpec)!==canonical(execution.acceptedSpec)) throw new DomainError('JOB_RECEIPT_SPEC_CONFLICT','Observed job specification changed after acceptance.',409)
   execution.transport='connected';execution.lastSeenAt=receipt.observedAt;execution.updatedAt=receipt.observedAt
   if(receipt.native?.startedAt) {

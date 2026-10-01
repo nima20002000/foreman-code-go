@@ -25,6 +25,9 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   const owner = { runId: f.run.id, assertOwned() {}, release: async () => { events.push('release') } }
   const runs = {
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
+    requestCleanup: async (runId: string, actual: typeof owner) => {
+      assert.equal(runId, f.run.id); assert.equal(actual, owner); events.push('cleanup-intent')
+    },
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations,
       stopRequested: false, cleanupPending: false }),
   }
@@ -59,6 +62,8 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   // Drain every microtask caused by abort, not merely its first continuation.
   await setImmediate()
   assert.equal(events.includes('abort'), true)
+  assert(events.indexOf('cleanup-intent') < events.indexOf('close-start'))
+  assert(events.indexOf('cleanup-intent') < events.indexOf('abort'))
   assert.equal(events.includes('release'), false)
   assert.equal(native.closeForRestart.mock.calls.length, 1)
   if (uncertain) closure.reject(new Error('original native detachment unconfirmed'))
@@ -81,4 +86,48 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
     assert.equal(native.finishRun.mock.calls.length, 0)
     await assert.rejects(engine.start(f.run.id), { code: 'ENGINE_CLOSING' })
   }
+})
+
+
+test('restart retains the original owner when cleanup persistence fails and retries before abort', async () => {
+  const f = makeCurrentWorkflowFixture('restart-intent-failure', 'single')
+  const entered = deferred(), events: string[] = []
+  let fail = true
+  const owner = { runId: f.run.id, assertOwned() {}, release: async () => { events.push('release') } }
+  const runs = {
+    repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
+    getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations,
+      stopRequested: false, cleanupPending: false }),
+    requestCleanup: vi.fn(async (runId: string, actual: typeof owner) => {
+      assert.equal(runId, f.run.id); assert.equal(actual, owner)
+      if (fail) throw new Error('cleanup persistence unavailable')
+      events.push('cleanup-intent')
+    }),
+  }
+  const native = { requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { events.push('close') }),
+    cancelRun: vi.fn(), finishRun: vi.fn() }
+  type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
+  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {} as Args[1],
+    native as unknown as Args[2], new MemorySaver(), '/tmp/eng04-restart-intent-failure', {} as Args[5], {} as Args[6], {} as Args[7])
+  runtime.work = async ({ signal }) => {
+    entered.resolve()
+    await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => {
+      events.push('abort'); reject(signal.reason)
+    }, { once: true }))
+  }
+  const active = engine.start(f.run.id)
+  const activeResult = assert.rejects(active)
+  await Promise.race([entered.promise, active.then(() => { throw new Error('Runtime entry was not reached') })])
+  await assert.rejects(engine.shutdown(), /cleanup intent remains unconfirmed/)
+  assert.deepEqual(events, [])
+  assert.equal(native.closeForRestart.mock.calls.length, 0)
+  assert.equal(engine.start(f.run.id), active)
+  await assert.rejects(engine.start('another-run'), { code: 'ENGINE_CLOSING' })
+  fail = false
+  await engine.shutdown()
+  await activeResult
+  assert.deepEqual(events, ['cleanup-intent', 'close', 'abort', 'release'])
+  assert.equal(runs.requestCleanup.mock.calls.length, 2)
+  assert.equal(native.cancelRun.mock.calls.length, 0)
+  assert.equal(native.finishRun.mock.calls.length, 0)
 })

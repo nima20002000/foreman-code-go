@@ -122,6 +122,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get') scope = 'global'
   if (name.startsWith('source_')) scope = 'workspace'
+  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke'].includes(name)) scope = 'global'
   if (name === 'run_start') scope = 'workflow'
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name === 'operator_get_capabilities') scope = 'caller'
@@ -177,6 +178,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
   if (name.startsWith('source_') && !service.sources) return false
+  if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke'].includes(name) && !service.devices) return false
   if (name.startsWith('run_') && !service.runs) return false
   if (name.startsWith('workflow_') && !service.workflows) return false
   if (name === 'execution_readiness_get' && !service.executionReadiness) return false

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { ExecutionResult, HarnessExecution, RunInput } from '@graphql/contracts'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import type {
-  GraphExecutionIdentity, NodeResolution, RepeatBlockV1, RepeatDecisionV1,
+  AgentGraphExecutionIdentity, GraphExecutionIdentity, NodeResolution, RepeatBlockV1, RepeatDecisionV1,
   RepeatExecutionIdentityV1, RepeatExitDataV1, RepeatOccurrenceIdentityV1,
   RepeatOccurrenceV1, WorkflowVersionV3, WorkflowRelationship,
 } from '@graphql/contracts/wave25'
@@ -68,7 +68,7 @@ export function sameRepeatValue(left: unknown, right: unknown): boolean {
   if (left === undefined || right === undefined) return left === right
   return canonicalGraphJson(left) === canonicalGraphJson(right)
 }
-export function repeatExecutionIdentity(execution: HarnessExecution): GraphExecutionIdentity {
+export function repeatExecutionIdentity(execution: HarnessExecution): AgentGraphExecutionIdentity {
   return { workflowNodeId: execution.workflowNodeId, executionId: execution.id,
     agentId: execution.agentId, agentConfigurationVersionId: execution.agentConfigurationVersionId,
     attempt: execution.attempt }
@@ -110,7 +110,7 @@ export function assertRepeatExecution(version: WorkflowVersionV3, scope: RepeatS
   ref: RepeatNodeRef, execution: HarnessExecution): void {
   assertRepeatRef(version, scope, ref)
   const node = version.definition.nodes.find((item) => item.id === ref.nodeId)!
-  if (execution.runId !== scope.runId || execution.workflowNodeId !== node.id || execution.agentId !== node.agentId
+  if (node.kind === 'job' || execution.runId !== scope.runId || execution.workflowNodeId !== node.id || execution.agentId !== node.agentId
     || execution.agentConfigurationVersionId !== version.agentConfigurationVersionIds[node.agentId]
     || !Number.isInteger(execution.attempt) || execution.attempt < 1 || execution.attempt > 2147483647) {
     repeatConflict('EXECUTION_OCCURRENCE_CONFLICT')
@@ -258,9 +258,10 @@ export function decideRepeatExit(version: WorkflowVersionV3, occurrence: RepeatO
 export function finalRepeatExport(version: WorkflowVersionV3, local: RepeatResolution,
   decision: RepeatDecisionV1): RepeatResolution {
   if (decision.reason === 'repeat' || decision.target.kind === 'next_occurrence') repeatConflict('REPEAT_EGRESS_UNRESOLVED')
+  const { occurrence: exitOccurrence, ...exitExecution } = decision.exitExecution
   if (local.value.resolution !== 'succeeded' || local.ref.nodeId !== decision.exitExecution.workflowNodeId
-    || !sameRepeatValue(local.value.execution, { workflowNodeId: decision.exitExecution.workflowNodeId, executionId: decision.exitExecution.executionId,
-      agentId: decision.exitExecution.agentId, agentConfigurationVersionId: decision.exitExecution.agentConfigurationVersionId, attempt: decision.exitExecution.attempt })
+    || !sameRepeatValue(local.value.execution, exitExecution)
+    || !sameRepeatValue(exitOccurrence, decision.occurrence.identity)
     || !sameRepeatValue(local.ref.occurrence, decision.occurrence.identity)
     || local.value.execution?.executionId !== decision.exitExecution.executionId
     || local.value.acceptedResultDigest !== decision.acceptedResultDigest) repeatConflict('REPEAT_EXPORT_CONFLICT')

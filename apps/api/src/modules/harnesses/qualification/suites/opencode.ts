@@ -1,3 +1,4 @@
+import { closeQualificationResources } from '../cleanup.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -7,13 +8,16 @@ import { registerFileToolsMcp, type FileMcpService } from '../../../files/tools/
 import type { FileToolContext } from '../../../files/tools/types.js'
 import { ManagedOpenCodeServer } from '../../opencodeTransport.js'
 import { collectChecks, modelCheck, nonempty, object, requireCondition, type Check } from './checks.js'
-import type { QualificationSuite, QualificationSuiteInput } from '../types.js'
+import type { QualificationSuite } from '../types.js'
+import type { NativeQualificationSuiteInput } from '../nativeOwnership.js'
 
 // The resident controller validates against expectedVersion at startup. The suite
 // supplies the candidate version without changing production's baseline pin.
 class CandidateOpenCodeServer extends ManagedOpenCodeServer {
-  constructor(input: QualificationSuiteInput) {
+  constructor(input: NativeQualificationSuiteInput) {
     super({ binary: input.binary, workingDirectory: input.workDirectory,
+      ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
+      ...(input.assertInstallation ? { assertInstallation: input.assertInstallation } : {}),
       ownerAgentId: 'qualification', appMcpAccess: 'none', appMcpServerName: 'graphql', startupTimeoutMs: 30_000 })
     Object.defineProperty(this, 'expectedVersion', { value: input.version })
   }
@@ -25,10 +29,12 @@ const requiredPaths = ['/session', '/session/status', '/session/{sessionID}', '/
 
 export const opencodeQualificationSuite: QualificationSuite = {
   harness: 'opencode', revision: 'opencode-live-4',
-  async run(input: QualificationSuiteInput) {
+  async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
     const server = new CandidateOpenCodeServer(input)
     const app = Fastify({ logger: false })
+    const releaseServer = input.ownCleanup?.(() => server.dispose())
+    const releaseApp = input.ownCleanup?.(() => app.close())
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
     let sessionId: string | undefined
     let mcpName: string | undefined
@@ -175,8 +181,10 @@ export const opencodeQualificationSuite: QualificationSuite = {
     try { return await collectChecks({ ...input, signal }, checks, evidence) }
     finally {
       if (mcpReady && mcpName) await request(`/mcp/${encodeURIComponent(mcpName)}/disconnect`, {}).catch(() => undefined)
-      await server.dispose()
-      await app.close()
+      await closeQualificationResources([
+        { close: () => server.dispose(), release: releaseServer },
+        { close: () => app.close(), release: releaseApp },
+      ])
     }
   },
 }

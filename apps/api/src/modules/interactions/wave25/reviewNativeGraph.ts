@@ -8,7 +8,7 @@ import type { WriterFence } from '../coordination.js'
 import { fail, identity, requireLeaseAtCommit, runFor, transact } from './context.js'
 import { appendNormalizedNativeEvent } from '../../runs/nativeEvents.js'
 import { nativeDisconnectObservation, normalizeNativeProducerEvent } from '../../run-graph/nativeProducerNormalization.js'
-import { appendNativeGraphEvent, nativeGraphSource } from '../../run-graph/nativeIngestion.js'
+import { appendNativeGraphEvent, claudeNativeGraphObservation, nativeGraphSource } from '../../run-graph/nativeIngestion.js'
 import { nativeProjectionId } from '../../run-graph/nativeProjection.js'
 import { readNativeGraphCorrelation, type NativeGraphProjectionGuard } from '../../run-graph/records.js'
 import { PostgresNativeGraphProjectionWriter } from '../../run-graph/nativeWriter.js'
@@ -27,6 +27,9 @@ function observationFor(job: ReviewJob, event: HarnessNativeEvent, scope: Native
   work: NativeGraphProjectionKey, generation: string, terminalReady: boolean): NativeGraphObservation | undefined {
   const providerId = job.providerTurnOrMessageId
   if (!providerId || !job.submittedAt) return undefined
+  if (job.provider === 'claude') return claudeNativeGraphObservation(scope, work, event, {
+    nativeSessionId: job.nativeSessionId, nativeMessageId: providerId, clientCorrelationId: job.correlationId,
+    connectionGeneration: generation, terminalReady })
   const payload = event.payload, turn = object(payload.turn), info = object(payload.info)
   const turnId = typeof payload.turnId === 'string' ? payload.turnId : typeof turn.id === 'string' ? turn.id : undefined
   const source = nativeGraphSource(event)

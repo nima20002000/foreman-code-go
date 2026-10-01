@@ -142,7 +142,7 @@ describe('PR17 F7 production shutdown composition', () => {
       vi.mocked(method).mockRejectedValue(failure)
       await expect(production.shutdown()).rejects.toThrow('runtime ownership was not released')
       await expect(production.drainShutdown()).rejects.toThrow('runtime ownership was not released')
-      expect(ExecutionScopedNativeSessionManagerResolver.prototype.dispose).toHaveBeenCalledTimes(1)
+      expect(ExecutionScopedNativeSessionManagerResolver.prototype.dispose).toHaveBeenCalledTimes(boundary === 'managers' ? 2 : 1)
       expect(OperatorRuntimeOwner.prototype.close).not.toHaveBeenCalled()
     })
   }

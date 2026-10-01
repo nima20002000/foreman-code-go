@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
+import type { HostHarnessOverrideService } from '../harnesses/instanceSettings/service.js'
 import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresFoundationSettingsRepository } from './foundation.js'
@@ -15,6 +16,7 @@ export class FoundationSettingsManagementService {
     private readonly commands: PostgresCommandCoordinator,
     private readonly harnesses?: Pick<HarnessCatalogService, 'qualifyConfiguration'>,
     private readonly operators?: PostgresOperatorRepository,
+    private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'>,
   ) {}
 
   getWorkspaceDefaults(principal: ManagementPrincipal) {
@@ -59,6 +61,12 @@ export class FoundationSettingsManagementService {
         if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {
           const configuration = value[role].harness
+          const selection = value[role].harnessProfileSelection
+          if (selection) {
+            if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
+            await this.profiles.validateSelection(principal, selection, configuration, client)
+            continue
+          }
           // Even unchanged legacy defaults must satisfy Operator chat's resumability boundary.
           // Validate before the unchanged-configuration shortcut or any persistent write.
           if (role === 'operator' && configuration.harness === 'codex') {
@@ -80,7 +88,7 @@ export class FoundationSettingsManagementService {
         const operators = this.operators
         const skills = value.operator.assignedSkills ?? []
         const skillsChanged = !isDeepStrictEqual(previous.value.operator.assignedSkills ?? [], skills)
-        const operatorChanged = skillsChanged || !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
+        const operatorChanged = !isDeepStrictEqual(previous.value.operator.harnessProfileSelection, value.operator.harnessProfileSelection) || skillsChanged || !isDeepStrictEqual(withAdvancedDefaults(previous.value.operator.harness), withAdvancedDefaults(value.operator.harness))
           || (previous.value.operator.showThinking ?? false) !== (value.operator.showThinking ?? false)
         if (operatorChanged) {
           // Republishing unchanged references still requires authority over their source workspaces.
@@ -89,11 +97,12 @@ export class FoundationSettingsManagementService {
         }
         const current = operatorChanged ? await operators?.ensureWithClient(client) : undefined
         const result = await this.settings.updateManagedAgentDefaults(client, value, input.expectedRevision)
-        if (operators && current && (!isDeepStrictEqual(current.configuration.harness, value.operator.harness)
+        if (operators && current && (!isDeepStrictEqual(current.configuration.harnessProfileSelection, value.operator.harnessProfileSelection)
+          || !isDeepStrictEqual(current.configuration.harness, value.operator.harness)
           || (current.configuration.showThinking ?? false) !== (value.operator.showThinking ?? false)
           || !isDeepStrictEqual(current.configuration.assignedSkills ?? [], skills))) {
           await operators.updateWithClient(
-            client, value.operator.harness, current.operator.currentConfigurationVersionId, value.operator.showThinking ?? false, skills,
+            client, value.operator.harness, current.operator.currentConfigurationVersionId, value.operator.showThinking ?? false, skills, value.operator.harnessProfileSelection ?? null,
           )
         }
         return result
