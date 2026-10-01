@@ -9,7 +9,7 @@ import { DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema, type HarnessExecuti
 import type { SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 import { MAX_FILE_BYTES, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { ManagementActionSchema } from '@graphql/contracts/management'
-import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { AgentReferenceService } from '../../src/modules/files/references/agentService.js'
 import { PostgresAgentReferenceAuthorization } from '../../src/modules/files/references/agentAuthorization.js'
@@ -127,7 +127,7 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   const agent = new AgentChatService(database.pool, repository, new PostgresOperatorConversationRepository(database.pool),
     new PostgresWorkflowRepository(database.pool), { // Only source execution/native I/O is synthetic; Run/execution FK rows are real.
       getForWorkspace: async (workspaceId, runId) => selectedRun && workspaceId === fixture.scope.workspaceId && runId === fixture.run.id
-        ? { ...fixture.run, executionLocation: fixture.run.executionLocation!, executionState: 'completed' as const } : undefined,
+        ? AcceptedWorkflowRunV3Schema.parse({ ...fixture.run, executionState: 'completed' }) : undefined,
       async *executionPages() { if (selectedRun) yield [runExecution] },
     },
     (id) => {
