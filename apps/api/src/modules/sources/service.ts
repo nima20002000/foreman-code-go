@@ -5,7 +5,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
   SourceApproveInputSchema, SourceGetInputSchema, SourceListInputSchema, SourceRootBindInputSchema, SourceRootGetInputSchema, SourceRootListInputSchema,
   ApprovedSourceSchema, SourceRootRecordSchema, SourceMaterializationRecordSchema,
-  type ApprovedSource, type ApprovedSourcePin, type SourceRootRecord, type SourceMaterializationRecord,
+  type VerifiedSourceWorkingTree, type ApprovedSource, type ApprovedSourcePin, type SourceRootRecord, type SourceMaterializationRecord,
 } from '@graphql/contracts/source-admission'
 import type { RootBinding, SourceManifest } from '@graphql/contracts/source-materialization'
 import { requireAuthorization } from '../access/policy.js'
@@ -17,6 +17,7 @@ import { captureGitSource } from './capture.js'
 import { SOURCE_LIMITS, sourceSha256, verifySourceManifest } from './manifest.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
 import { authorizeSource } from './authority.js'
+import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import { sourceBindingHash } from './bindingHash.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { RegisteredSourceRootPort, SourceAdmissionPort, SourceClosureProofPort } from './admissionPorts.js'
@@ -29,6 +30,7 @@ export interface SourceExecutionHostPort {
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
     input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
   prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceMaterializationRecord['receipt']>
+  verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
   verify(record: SourceMaterializationRecord): Promise<string>
   releaseClaim(record: SourceMaterializationRecord): Promise<void>
   authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
@@ -285,6 +287,11 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
   async verifyPreparation(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string> {
     return this.verifyPrepared(input, false)
+  }
+  async verifyWorkingDirectory(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord; relativeCwd: string }): Promise<VerifiedSourceWorkingTree> {
+    await this.verifyPrepared(input, false)
+    await this.transaction(sql => assertAcceptedSourceRelativeCwd(sql, input.record.receipt.executionId, input.relativeCwd))
+    return this.executions.verifyWorkingDirectory(input.record, input.relativeCwd)
   }
   async verifyExecution(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string> {
     return this.verifyPrepared(input, true)

@@ -199,7 +199,7 @@ describe('canonical source namespace and private repository', () => {
     const authority: SourceAttemptAuthority = { authorize: revalidate, authorizeFinal: revalidate,
       revalidate, revalidateMaterialization: revalidate }
     const hosts = new InstalledSourceExecutionHosts(binding.mainId, { async read() { return f.bytes } }, authority,
-      { prepare: async () => { throw new Error('Unexpected remote host') }, verify: async () => { throw new Error('Unexpected remote host') }, releaseClaim: revalidate })
+      { verifyWorkingDirectory: async () => { throw new Error('Unexpected remote host') }, prepare: async () => { throw new Error('Unexpected remote host') }, verify: async () => { throw new Error('Unexpected remote host') }, releaseClaim: revalidate, privateRepository: async () => { throw new Error('Unexpected remote host') } })
     const receipt = await new PrivateSourceMaterializer({ async read() { return f.bytes } }, revalidate).prepare({ ...f, binding, attempt })
     const record: SourceMaterializationRecord = { receipt, rootPolicyId: randomUUID(), rootPolicyRevision: '1',
       operationId: randomUUID(), reservationId: randomUUID(), sourceBindingHash: f.attempt.placementHash,

@@ -1,10 +1,11 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { intersectGrants } from './operatorDelegation.js'
 
-type Database = Pick<pg.Pool, 'query'>
+type Database = GraphSqlClient
 interface Row {
   id: string; name: string; audience: string; grants: unknown; expires_at: Date
   revoked_at: Date | null; delegated_from: string | null

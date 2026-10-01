@@ -1,4 +1,4 @@
-import { commandInputHash } from '../commands/postgres.js'
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import type { SourceRootRecord, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import type { MaterializationAttempt } from './ports.js'
 

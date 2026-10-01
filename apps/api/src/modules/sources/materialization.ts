@@ -11,8 +11,9 @@ import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPor
 const equal = isDeepStrictEqual
 export class PrivateSourceMaterializer implements SourceMaterializationPort {
   private active = 0
-  constructor(private readonly bytes: SourceByteReader, private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>) {}
+  constructor(private readonly bytes: SourceByteReader | null, private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>) {}
   async prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<MaterializationReceipt> {
+    if (!this.bytes) throw new SourceError('SOURCE_READ_ONLY_VERIFIER', 'A verification-only materializer cannot prepare source bytes.')
     const manifest = verifySourceManifest(input.manifest), binding = RootBindingSchema.parse(input.binding)
     if (binding.snapshotId !== manifest.snapshotId || binding.manifestDigest !== manifest.manifestDigest)
       throw new SourceError('SOURCE_PIN_CONFLICT', 'The root is not bound to this exact source snapshot.')

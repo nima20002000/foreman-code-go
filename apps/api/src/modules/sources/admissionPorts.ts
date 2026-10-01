@@ -1,6 +1,6 @@
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { ApprovedSource, ApprovedSourcePin, SourceRootRecord, SourceRootSelection, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { ApprovedSource, ApprovedSourcePin, SourceRootRecord, SourceRootSelection, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
 import type { RootBinding } from '@graphql/contracts/source-materialization'
 import type { MaterializationAttempt } from './ports.js'
 
@@ -27,6 +27,7 @@ export interface SourceAdmissionPort {
   /** The caller allocates the real execution/attempt first; no synthetic Run or Agent. */
   prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord>
+  verifyWorkingDirectory(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord; relativeCwd: string }): Promise<VerifiedSourceWorkingTree>
   verifyPreparation(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string>
   verifyExecution(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string>
 }

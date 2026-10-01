@@ -1,0 +1,85 @@
+import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
+import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, type SourceFilesystemOperation, type SourceOperationOwner } from '@graphql/contracts/source-operations'
+import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@graphql/contracts/source-admission'
+import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
+import type { SourceRootRecord, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { DomainError } from '../errors.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
+import type { SourceAttemptAuthority } from './executionHosts.js'
+import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
+import type { MaterializationAttempt } from './ports.js'
+
+/** Actual Main allocation/source facts; workers receive no database credentials. */
+export class PostgresSourceOperationAuthority {
+  constructor(private readonly pool: pg.Pool, private readonly attempts: SourceAttemptAuthority,
+    private readonly closure: (sql: GraphSqlClient, record: SourceMaterializationRecord) => Promise<boolean>) {}
+  private async transaction<T>(work: (sql: GraphSqlClient) => Promise<T>): Promise<T> {
+    const sql = await this.pool.connect()
+    try { await sql.query('begin'); const result = await work(sql); await sql.query('commit'); return result }
+    catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+  }
+  private async allocation(sql: GraphSqlClient, attempt: MaterializationAttempt) {
+    const rows = await sql.query<{ operation_id: string; principal_id: string }>(`select operation_id,principal_id from job_preparations where execution_id=$1 and attempt_id=$2
+      union all select p.preparation->>'operationId',r.record->>'authorizationPrincipalId' from workflow_job_preparations p
+      join runs r on r.id=p.preparation->>'runId' where p.preparation->>'executionId'=$1 and p.preparation->>'attemptId'=$2
+      union all select i.operation_id,r.record->>'authorizationPrincipalId' from execution_dispatch_intents i
+      join harness_executions e on e.id=i.execution_id and e.run_id=i.run_id and e.workflow_node_id=i.node_id
+      join runs r on r.id=i.run_id where i.execution_id=$1 and i.attempt_id=$2`, [attempt.executionId, attempt.attemptId])
+    if (rows.rows.length !== 1) throw new DomainError('SOURCE_ALLOCATION_CONFLICT', 'The original actual Main preparation is missing or ambiguous.', 409)
+    return rows.rows[0]!
+  }
+  async authorizePreparation(sql: GraphSqlClient, root: SourceRootRecord, attempt: MaterializationAttempt,
+    identity: { operationId: string; ownerPrincipalId: string; expiresAt: string }) {
+    const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
+    if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== principal.id || Date.parse(identity.expiresAt) > Date.parse(principal.expiresAt)
+      || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'The original source package allocation owner is expired or differs.', 403)
+    await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+    return principal
+  }
+  async prepareIdentity(root: SourceRootRecord, attempt: MaterializationAttempt) {
+    return this.transaction(async sql => {
+      const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
+      await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+      return { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
+    })
+  }
+  async resolve(raw: SourceFilesystemOperation, binding: Readonly<DeviceConnectionIdentity>): Promise<SourceOperationOwner> {
+    const request = SourceFilesystemOperationSchema.parse(raw)
+    return this.transaction(async sql => {
+      const receipt = request.operation === 'sources.prepare' ? null : request.record.receipt
+      const attempt = request.operation === 'sources.prepare' ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
+        attemptId: receipt!.attemptId, keyRevision: receipt!.keyRevision, authorizationRevision: receipt!.authorizationRevision }
+      const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
+      if (request.operation === 'sources.verify') await assertAcceptedSourceRelativeCwd(sql, attempt.executionId, request.relativeCwd)
+      const requestedBinding = request.operation === 'sources.prepare' ? request.root.binding : receipt!.binding
+      const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share', [requestedBinding.rootId, requestedBinding.bindingRevision])).rows[0]
+      const root = SourceRootRecordSchema.parse(row?.record)
+      if (!isDeepStrictEqual(root.binding, requestedBinding) || root.selection.hostRef.kind !== 'device' || root.binding.deviceId !== binding.deviceId
+        || root.binding.mainId !== binding.mainId || root.binding.workerInstallationId !== binding.workerInstallationId || !root.registration
+        || root.registration.keyRevision !== binding.keyRevision || root.registration.authorizationRevision !== binding.authorizationRevision)
+        throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not bound to its original current authenticated device.', 409)
+      await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+      const snapshot = (await sql.query<{ availability: string }>('select availability from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
+        [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
+      if (request.operation !== 'sources.release' && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
+      let record: SourceMaterializationRecord | null = null, physicalClosureConfirmed = false
+      if (request.operation !== 'sources.prepare') {
+        const stored = (await sql.query<{ record: unknown }>('select record from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 for share',
+          [receipt!.materializationId, attempt.executionId, attempt.attemptId, allocated.operation_id])).rows[0]
+        record = SourceMaterializationRecordSchema.parse(stored?.record)
+        if (!isDeepStrictEqual(record, request.record)) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The submitted record is not the actual immutable Main materialization.', 409)
+        if (record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal, record, record.finalDispatchBindingHash)
+        if (request.operation === 'sources.release') {
+          physicalClosureConfirmed = await this.closure(sql, record)
+          if (!physicalClosureConfirmed) throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original physical ownership closure is not positively confirmed.', 409)
+        }
+      }
+      const identity = request.operation === 'sources.prepare' ? request.identity : { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
+      if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== principal.id || Date.parse(identity.expiresAt) > Date.parse(principal.expiresAt)
+        || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'Source ownership is expired or differs from the actual Main allocation.', 403)
+      return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed })
+    })
+  }
+}
