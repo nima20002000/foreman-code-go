@@ -23,6 +23,9 @@ export interface WorkerLocalIdentity {
 export function publicKeyFingerprint(publicKey: string): string {
   const key = createPublicKey(publicKey)
   if (key.asymmetricKeyType !== 'ed25519') throw new Error('Worker identity requires an Ed25519 key.')
+  if (publicKey.trim() !== key.export({ type: 'spki', format: 'pem' }).toString().trim()) {
+    throw new Error('Publish only a canonical Ed25519 public key, never private key material.')
+  }
   return createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex')
 }
 export async function loadOrCreateWorkerIdentity(directory: string): Promise<WorkerLocalIdentity> {
