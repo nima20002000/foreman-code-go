@@ -76,6 +76,10 @@ export const OwnerControlSchema = z.object({
   schemaVersion: z.literal(1), protocolVersion: z.literal(1), commandId: IdSchema,
   operationId: IdSchema, attemptId: IdSchema, executionId: IdSchema, bindingHash: PlacementDigestSchema,
   owner: z.object({ grantId: IdSchema, epoch: Revision }).strict(),
+  nativeTarget: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('session'), sessionId: IdSchema, turnId: IdSchema.optional() }).strict(),
+    z.object({ kind: z.literal('process'), processId: z.number().int().positive(), processStartedAt: z.string().datetime() }).strict(),
+  ]).optional(),
   action: z.discriminatedUnion('kind', [z.object({ kind: z.literal('stop') }).strict(),
     z.object({ kind: z.literal('respond'), interactionId: IdSchema, interactionRevision: Revision,
       nativeInteractionId: IdSchema, response: z.json() }).strict()]),
