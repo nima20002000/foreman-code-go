@@ -9,6 +9,8 @@ import { componentLogger } from '../../../infrastructure/logger.js'
 import { bootIdentity, identityAlive, processIdentity, type LinuxProcessIdentity } from './linuxIdentity.js'
 import { cgroupBoundary, cgroupPopulated, killCgroup, retireCgroup, type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { NATIVE_GUARDIAN_SOURCE } from './nativeGuardian.js'
+import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegistryChange } from './registryObservation.js'
+export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
 import { nativeAgentEnvironment } from '../secrets.js'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 
@@ -124,6 +126,7 @@ function retiredOwner(directory: string, owner: string, id?: string): boolean {
 }
 
 function retireRegistration(directory: string, launch: LaunchRecord): void {
+  publishObservation(dirname(dirname(directory)))
   if (!closedRecord(directory, launch)) throw new Error('Unconfirmed native registrations cannot be retired.')
   const rawBirth = readRecord(join(directory, 'birth.json'))
   if (launch.boot === bootIdentity()) {
@@ -198,6 +201,11 @@ function inventory(directory: string, owner: string): string[] {
 /** Backend-owned registry. An empty registry is NOT evidence about pre-upgrade processes. */
 export class NativeProcessRegistry {
   constructor(private readonly root: string) {}
+  snapshot(): NativeRegistrySnapshot { return nativeRegistryProjection(this.root).snapshot() }
+  revision(): string { return nativeRegistryProjection(this.root).revision() }
+  changes(afterRevision: string, signal: AbortSignal): AsyncIterable<NativeRegistryChange> {
+    return nativeRegistryProjection(this.root).changes(afterRevision, signal)
+  }
   scope(owner: string): NativeProcessRecovery {
     if (!owner.trim() || owner.length > 4096) throw new Error('Invalid process owner.')
     return { root: this.root, owner }
@@ -408,6 +416,7 @@ function reserveProcess(scope: NativeProcessRecovery): LaunchRecord {
   writeRecord(join(temporary, 'intent.json'), launch, true)
   renameSync(temporary, join(ownerDirectory, id))
   syncDirectory(ownerDirectory)
+  publishObservation(scope.root)
   return launch
 }
 
@@ -454,6 +463,10 @@ export function spawnNativeProcess(binary: string, args: string[], options: {
 }
 
 const harnessLog = componentLogger('harness')
+function publishObservation(root: string): void {
+  // Telemetry never changes dispatch or closure qualification on read failure.
+  try { nativeRegistryProjection(root).snapshot() } catch { harnessLog.warn('Native observation publication unavailable') }
+}
 /** Every native harness start and end is logged: binary name, pid, exit code or signal.
  * Arguments and environment are never logged; they can carry prompts and credentials. */
 function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: string, owner: string | undefined) {
@@ -484,6 +497,7 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   owned.set(child, { scope, id })
   if (scope.launchId && !consumedLaunchScopes.has(scope)) consumedLaunchScopes.set(scope,
     { root: resolve(scope.root), owner: scope.owner, launchId: scope.launchId })
+  child.once('exit', () => publishObservation(scope.root))
   let dispatchAttempted = false
   try {
     if (!child.pid) {
@@ -493,12 +507,17 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
     const guardian = processIdentity(child.pid)
     if (!guardian) throw new Error('Native guardian exited before registration.')
     writeRecord(join(directory, 'dispatched.json'), { format: 1, id, guardian }, true)
+    publishObservation(scope.root)
     // Only the guardian owns this IPC channel; native stdio never carries receipts.
     // Match the immutable launch and guardian generation before accepting an outcome.
     child.on('message', (message: unknown) => {
       const registration = owned.get(child)!
       try {
         const row = recordObject(message)
+        if (row.operation === 'observation') {
+          if (row.id === id) publishObservation(scope.root)
+          return
+        }
         const source = recordObject(row.guardian)
         if (row.format !== 1 || row.operation !== 'native_exit' || row.id !== id
           || row.owner !== launch.owner || row.boot !== launch.boot

@@ -332,6 +332,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       const errors = outcomes.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Workflow restart closure or task draining remains unconfirmed.')
     })()
-    return this.shutdownTask
+    const attempt = this.shutdownTask
+    // Preserve the admission fence, but retry the same captured native lifetime
+    // when its close receipt or draining was unconfirmed on the previous attempt.
+    void attempt.catch(() => { if (this.shutdownTask === attempt) this.shutdownTask = undefined })
+    return attempt
   }
 }
