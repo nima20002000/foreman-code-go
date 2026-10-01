@@ -215,6 +215,10 @@
     "./execution-authority": {
       "types": "./dist/executionAuthority.d.ts",
       "import": "./dist/executionAuthority.js"
+    },
+    "./remote-workflow-physical": {
+      "types": "./dist/remoteWorkflowPhysical.d.ts",
+      "import": "./dist/remoteWorkflowPhysical.js"
     }
   },
   "scripts": {

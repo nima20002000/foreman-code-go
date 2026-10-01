@@ -2,6 +2,8 @@ import { ClaudeQualificationProofSchema } from './claudeQualification.js'
 import { z } from 'zod'
 import { HarnessConfigurationSchema, type HarnessConfiguration } from './index.js'
 import { DevicePresenceSchema } from './deviceConnection.js'
+import { DeviceSessionBindingSchema } from './deviceConnection.js'
+import { HarnessQualificationSchema } from './harnessQualification.js'
 import type { CanonicalMachineReference } from './deviceIdentity.js'
 
 export const HarnessHostReferenceSchema: z.ZodType<CanonicalMachineReference> = z.discriminatedUnion('kind', [
@@ -116,6 +118,13 @@ export const HostHarnessInstanceCheckInputSchema = z.object({
   commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().positive(), target: HostHarnessOverrideTargetSchema,
 }).strict()
 export type HostHarnessInstanceCheckInput = z.infer<typeof HostHarnessInstanceCheckInputSchema>
+export const CompletedNativeQualificationSchema = z.object({
+  purpose: z.literal('explicit-host-qualification'), checkId: z.uuid(), binding: DeviceSessionBindingSchema,
+  target: HostHarnessOverrideTargetSchema, binarySha256: z.string().regex(/^[a-f0-9]{64}$/),
+  record: HarnessQualificationSchema,
+}).strict()
+export type CompletedNativeQualification = z.infer<typeof CompletedNativeQualificationSchema>
+
 /** Native-produced exact-profile evidence; callers cannot supply it to the check command. */
 export const HostHarnessProfileEvidenceSchema = z.object({
   target: HostHarnessOverrideTargetSchema, instanceRevision: Identity, configurationFingerprint: Identity,
@@ -125,6 +134,7 @@ export const HostHarnessProfileEvidenceSchema = z.object({
   failure: z.object({ code: Identity, message: z.string().min(1).max(500) }).strict().optional(),
   /** Native-produced provider checks stored in this same exact-host profile proof. */
   claudeProof: ClaudeQualificationProofSchema.optional(),
+  completedNativeQualification: CompletedNativeQualificationSchema.optional(),
 }).strict()
 export type HostHarnessProfileEvidence = z.infer<typeof HostHarnessProfileEvidenceSchema>
 export const HostHarnessInstanceCheckResultSchema = z.object({

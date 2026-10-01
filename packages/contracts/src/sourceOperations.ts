@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { NativeSessionReferenceSchema } from './index.js'
+import { DispatchIntentSchema } from './nodePlacement.js'
 import { IdSchema } from './schemaPrimitives.js'
 import { SourceHashSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema, SourcePinSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
@@ -23,9 +25,24 @@ export const SourceOperationRequestSchema = z.union([SourceFilesystemOperationSc
   z.object({ version: z.literal(1), operation: z.literal('sources.authorize'), request: SourceFilesystemOperationSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.transfer-authorize'), transferId: z.uuid() }).strict()])
 export type SourceOperationRequest = z.infer<typeof SourceOperationRequestSchema>
+/** Trusted Main readback of an entered, currently owned native lifetime. A
+ * filesystem request never supplies this evidence or selects mutable mode. */
+export const SourceActiveNativeSessionSchema = z.object({
+  version: z.literal(1), executionId: IdSchema, runId: IdSchema, technicalAttempt: z.number().int().positive(),
+  attemptId: IdSchema, operationId: IdSchema, materializationId: z.uuid(),
+  sourceBindingHash: SourceHashSchema, finalDispatchBindingHash: SourceHashSchema,
+  nativeSession: z.lazy(() => NativeSessionReferenceSchema), generation: z.number().int().positive(),
+  cwdAttestation: SourceCwdAttestationSchema,
+  entry: z.object({ sourceId: IdSchema, sourceDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    launchDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
+  owner: DispatchIntentSchema.shape.owner,
+  lane: z.object({ id: IdSchema, revision: z.number().int().nonnegative(),
+    tokenHash: SourceHashSchema, expiresAt: z.string().datetime() }).strict(),
+}).strict()
+export type SourceActiveNativeSession = z.infer<typeof SourceActiveNativeSessionSchema>
 export const SourceOperationOwnerSchema = z.object({ identity: SourcePreparationIdentitySchema, root: SourceRootRecordSchema,
   attempt: SourceOperationAttemptSchema, source: SourcePinSchema, record: SourceMaterializationRecordSchema.nullable(),
-  physicalClosureConfirmed: z.boolean() }).strict()
+  physicalClosureConfirmed: z.boolean(), activeNativeSession: SourceActiveNativeSessionSchema.nullish() }).strict()
 export type SourceOperationOwner = z.infer<typeof SourceOperationOwnerSchema>
 export const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),
   generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict()
