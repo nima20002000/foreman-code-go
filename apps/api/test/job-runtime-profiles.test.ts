@@ -21,6 +21,7 @@ function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.statu
   const query=vi.fn(async(text:string,values?:unknown[])=>{
     let rows:unknown[]=[]
     if(text.includes('select id,name,audience,grants'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:options.revoked?new Date():null,delegated_from:null}]
+    else if(text.includes('select archived_at'))rows=[{archived_at:null}]
     else if(text.startsWith('select record from job_runtime_profiles'))rows=[{record:state.profile}]
     else if(text.startsWith('select record from job_runtime_qualification_approvals'))rows=[{record:state.approval}]
     else if(text.startsWith('select measurement,run_result'))rows=[{measurement:null,run_result:state.runResult}]

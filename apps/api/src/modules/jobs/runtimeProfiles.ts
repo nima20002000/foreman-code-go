@@ -30,7 +30,9 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
   private async authorize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,write=false) {
     requireAuthorization(principal,write?'job_definitions:write':'job_definitions:read',{workspaceId})
     const live=await readLiveManagementPrincipal(sql,principal.id)
-    requireAuthorization(live,write?'job_definitions:write':'job_definitions:read',{workspaceId});return live
+    requireAuthorization(live,write?'job_definitions:write':'job_definitions:read',{workspaceId})
+    if(write)await lockActiveWorkspace(sql,workspaceId)
+    return live
   }
   async record(sql:JobSql,workspaceId:string,id:string,lock=false) {
     const row=(await sql.query<{record:unknown}>(`select record from job_runtime_profiles where workspace_id=$1 and id=$2${lock?' for update':' for share'}`,[workspaceId,id])).rows[0]
