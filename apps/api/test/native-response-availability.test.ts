@@ -18,7 +18,7 @@ it('requires exact positive current callback identity and performs no other nati
   expect(native.attachSession).not.toHaveBeenCalled()
   expect(native.startTurn).not.toHaveBeenCalled()
   for (const mismatch of [{ nativeSessionId: 'other' }, { nativeRequestId: 'predecessor' }, { nativeTurnId: 'old-turn' },
-    { qualified: false }, { generation: undefined }, { path: null }]) {
+    { qualified: false }, { generation: '' }, { path: null }]) {
     expect((await inspectNativeResponse(manager({ ...live, ...mismatch }), session, query, { isCurrent: () => true })).state).toBe('unavailable')
   }
 })
