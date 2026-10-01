@@ -139,6 +139,22 @@
     "./jobs-node": {
       "types": "./dist/jobsNode.d.ts",
       "import": "./dist/jobsNode.js"
+    },
+    "./workspace-root-policies": {
+      "types": "./dist/workspaceRootPolicies.d.ts",
+      "import": "./dist/workspaceRootPolicies.js"
+    },
+    "./workspace-bound-location": {
+      "types": "./dist/workspaceBoundLocation.d.ts",
+      "import": "./dist/workspaceBoundLocation.js"
+    },
+    "./byte-transfer": {
+      "types": "./dist/byteTransfer.d.ts",
+      "import": "./dist/byteTransfer.js"
+    },
+    "./job-output-transfer": {
+      "types": "./dist/jobOutputTransfer.d.ts",
+      "import": "./dist/jobOutputTransfer.js"
     }
   },
   "scripts": {

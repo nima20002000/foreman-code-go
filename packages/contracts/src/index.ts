@@ -1640,3 +1640,6 @@ export * from "./remoteJobExecution.js";
 export * from "./jobArtifacts.js";
 export * from "./jobWorkflow.js";
 export * from "./sourceAdmission.js";
+export * from "./workspaceRootPolicies.js";
+export * from "./workspaceBoundLocation.js";
+export * from "./jobOutputTransfer.js";

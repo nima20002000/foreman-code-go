@@ -3,7 +3,7 @@ import { IdSchema } from './schemaPrimitives.js'
 import { SourceManifestSchema, SourceHashSchema, RootBindingSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
 
 export const SourceActionSchema = z.enum(['sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind'])
-export const SourceToolNameSchema = z.enum(['source_list', 'source_get', 'source_approve', 'source_root_bind', 'source_root_get'])
+export const SourceToolNameSchema = z.enum(['source_list', 'source_get', 'source_approve', 'source_root_bind', 'source_root_get', 'source_root_list'])
 export type SourceAction = z.infer<typeof SourceActionSchema>
 export type SourceToolName = z.infer<typeof SourceToolNameSchema>
 export const SourcePinSchema = z.object({ approvedSourceId: z.uuid(), snapshotId: z.uuid(), manifestDigest: SourceHashSchema }).strict()
@@ -39,14 +39,32 @@ export const SourceRootBindInputSchema = z.object({ workspaceId: IdSchema, comma
 export type SourceRootBindInput = z.infer<typeof SourceRootBindInputSchema>
 export const SourceRootRecordSchema = z.object({ version: z.literal(1), source: SourcePinSchema,
   selection: SourceRootSelectionSchema, binding: RootBindingSchema, ownerPrincipalId: IdSchema,
-  authorizedByPrincipalId: IdSchema, attestationId: IdSchema, attestationDigest: SourceHashSchema,
+  authorizedByPrincipalId: IdSchema, registration: z.object({ workerInstallationId: z.uuid(), keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive() }).strict().nullable(), attestationId: IdSchema, attestationDigest: SourceHashSchema,
   boundAt: z.string().datetime(),
-}).strict()
+}).strict().superRefine((record, context) => {
+  const binding = record.binding, selected = record.selection.hostRef
+  if (binding.mainId !== selected.mainId || binding.snapshotId !== record.source.snapshotId || binding.manifestDigest !== record.source.manifestDigest
+    || binding.locationRevision !== Number(record.selection.locationRevision)
+    || (selected.kind === 'main' ? binding.deviceId !== null || binding.workerInstallationId !== null || record.registration !== null
+      : binding.deviceId !== selected.deviceId || record.registration === null || binding.workerInstallationId !== record.registration.workerInstallationId))
+    context.addIssue({ code: 'custom', message: 'Source root facts must match the exact source, host and real registration.' })
+})
 export type SourceRootRecord = z.infer<typeof SourceRootRecordSchema>
 export const SourceRootBindResultSchema = z.object({ value: SourceRootRecordSchema, replayed: z.boolean() }).strict()
 export const SourceRootGetInputSchema = z.object({ workspaceId: IdSchema, rootId: z.uuid(), bindingRevision: z.number().int().positive() }).strict()
 export const SourceMaterializationRecordSchema = z.object({ receipt: MaterializationReceiptSchema,
   rootPolicyId: IdSchema, rootPolicyRevision: z.string().regex(/^[1-9][0-9]*$/), operationId: IdSchema,
-  reservationId: z.uuid(), state: z.enum(['prepared', 'running', 'uncertain', 'closed']),
+  reservationId: z.uuid(), sourceBindingHash: SourceHashSchema, finalDispatchBindingHash: SourceHashSchema.nullable(), state: z.enum(['prepared', 'running', 'uncertain', 'closed']),
 }).strict()
 export type SourceMaterializationRecord = z.infer<typeof SourceMaterializationRecordSchema>
+
+export const SourceRootListInputSchema = z.object({ workspaceId: IdSchema, limit: z.number().int().positive().max(100).default(100) }).strict()
+export const SourceRootListResultSchema = z.object({ items: z.array(SourceRootRecordSchema).max(100), readiness: z.literal('metadata-only') }).strict()
+
+export const VerifiedSourceWorkingTreeSchema = z.object({ materializationId: z.uuid(), materializationDigest: SourceHashSchema,
+  canonicalProjectRoot: z.string().startsWith('/'), canonicalCwd: z.string().startsWith('/'), directoryIdentityHash: SourceHashSchema,
+  filesystem: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
+  accessMode: z.enum(['read-only', 'exclusive-write']),
+  privateGit: z.object({ gitDirectory: z.string().startsWith('/'), generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict().nullable(),
+}).strict()
+export type VerifiedSourceWorkingTree = z.infer<typeof VerifiedSourceWorkingTreeSchema>
