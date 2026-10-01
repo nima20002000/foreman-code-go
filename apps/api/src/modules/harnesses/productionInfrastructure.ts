@@ -10,7 +10,7 @@ import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 /** Settings/probes are separate privileges from native turn execution. A replay
  * must supply these ports even when its scenario does not exercise them. */
 export interface AuxiliaryHarnessInfrastructure {
-  recovery: Pick<NativeProcessRegistry, 'scope' | 'reserveLaunch' | 'closeOwner'>
+  recovery: Pick<NativeProcessRegistry, 'scope' | 'reserveLaunch' | 'abandonReservedLaunch' | 'closeOwner'>
   compatibility: CompatibilityOptions
   plugins: CodexPluginAdapter
   mcp: { codex: NativeMcpAdapter; opencode: NativeMcpAdapter }

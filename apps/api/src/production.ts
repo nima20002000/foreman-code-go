@@ -160,6 +160,7 @@ export function buildProductionApp(
   const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
     auxiliaryRecovery: (role) => processRegistry.scope(`${role}:${infrastructure?.mode === 'replay' ? infrastructure.codex.id() : randomUUID()}`),
     admitRecovery: (recovery) => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+    abandonRecovery: async (recovery) => { await processRegistry.abandonReservedLaunch(recovery) },
     closeRecovery: async (recovery) => {
       if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
     },

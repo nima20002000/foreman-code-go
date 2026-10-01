@@ -39,6 +39,7 @@ it('replays native creation through production construction and the real manager
   let transportCloses = 0
   const codex: CodexSessionDependencies = {
     mode: 'replay', environment: () => ({}),
+    withDiagnostics: async () => { throw new Error('Unexpected diagnostic replay operation.') },
     qualify: async (binary) => ({ binary, identity: 'recorded-launcher', protocol: fixtureProtocol,
       providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema',
       stableSchemaGitBlob: 'recorded-stable', referenceSchemaManifestSha256: 'recorded-reference' }),
@@ -57,6 +58,7 @@ it('replays native creation through production construction and the real manager
     openCodeClient: () => { throw new Error('Unexpected OpenCode client.') },
     auxiliary: { recovery: { scope: (owner) => ({ root: '/unused-replay-registry', owner }),
       reserveLaunch: (owner) => ({ root: '/unused-replay-registry', owner, launchId: 'recorded-launch' }),
+      abandonReservedLaunch: async () => true,
       closeOwner: async () => true }, command: unavailable, plugins: { recoveryIdentity: '', list: unavailable, detail: unavailable, change: unavailable },
       mcp: { codex: { read: unavailable, apply: unavailable }, opencode: { read: unavailable, apply: unavailable } },
       compatibility: { probe: { inspect: unavailable, probe: unavailable, assertUnchanged: unavailable },

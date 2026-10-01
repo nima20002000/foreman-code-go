@@ -1,0 +1,117 @@
+import { expect, it, vi } from 'vitest'
+import type { CodexSessionDependencies, CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { QUALIFIED_CODEX_VERSION } from '../src/modules/harnesses/codexProtocol.js'
+import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
+import { ReplayGate } from './support/harnessReplay.js'
+
+function fixture() {
+  const source = input('/recorded-workspace')
+  if (source.request.configuration.harness.harness !== 'codex') throw new Error('Expected Codex fixture.')
+  source.request.configuration.harness.advanced!.sessionPersistence = 'ephemeral'
+  source.environment = { ...source.environment!, variables: { ...source.environment!.variables, CUSTOM_APPLICATION_BEARER: 'writer-only' } }
+  const ambient = { CUSTOM_APPLICATION_BEARER: 'ambient-bearer', GRAPHQL_MCP_TOKEN: 'ambient-main', HOST_ONLY: 'host-config' }
+  const close = vi.fn(async () => undefined)
+  const requests: string[] = []
+  const transport: CodexTransport = { start: async () => undefined, close, respond: async () => undefined, reject: async () => undefined,
+    request: async (method, params) => {
+      requests.push(method)
+      if (method === 'config/mcpServer/reload') return {}
+      if (method !== 'thread/start') throw new Error(`Unexpected transport method ${method}`)
+      const config = params!.config as Record<string, unknown>
+      return { thread: { id: 'recorded-thread', turns: [], ephemeral: true }, model: params!.model, modelProvider: 'openai',
+        cwd: params!.cwd, reasoningEffort: config.model_reasoning_effort, serviceTier: null,
+        approvalPolicy: params!.approvalPolicy, approvalsReviewer: params!.approvalsReviewer,
+        sandbox: { type: 'readOnly', networkAccess: false } }
+    } }
+  const commands: { environment: NodeJS.ProcessEnv; recovery: NativeProcessRecovery }[] = []
+  let blockDiagnostic: ((signal: AbortSignal) => Promise<void>) | undefined
+  const dependencies: CodexSessionDependencies = { mode: 'native', environment: (scope) => ({ ...ambient, ...scope?.variables }),
+    qualify: async (binary) => ({ binary, identity: 'recorded-identity', protocol: fixtureProtocol,
+      providerVersion: QUALIFIED_CODEX_VERSION, schemaManifestSha256: 'recorded-schema', stableSchemaGitBlob: 'recorded-stable',
+      referenceSchemaManifestSha256: 'recorded-reference' }),
+    assertUnchanged: async () => undefined, qualifyModel: async () => undefined,
+    id: () => 'recorded-connection', now: () => new Date('2026-10-01T00:00:00Z'), transport: () => transport,
+    runCommand: async (_binary, args, _cwd, signal, environment, options) => {
+      if (options?.recovery) {
+        if (environment && ('beforeSpawn' in environment || 'expectedAgentId' in environment)) throw new Error('Unexpected credential scope adapter.')
+        commands.push({ environment: { ...environment as NodeJS.ProcessEnv }, recovery: options.recovery })
+        await blockDiagnostic?.(signal!)
+      }
+      if (args[0] !== 'mcp' || args[1] !== 'get') throw new Error(`Unexpected command ${args.join(' ')}`)
+      return { stdout: JSON.stringify({ enabled: true, transport: { type: 'streamable_http',
+        url: 'http://127.0.0.1:3000/mcp', bearer_token_env_var: 'CUSTOM_APPLICATION_BEARER' } }),
+      stderr: '', exitCode: 0, exitSignal: null }
+    } }
+  let sequence = 0
+  const admit = vi.fn((scope: NativeProcessRecovery) => { scope.launchId = `recorded-launch-${++sequence}` })
+  const abandon = vi.fn<(scope: NativeProcessRecovery) => Promise<void>>().mockResolvedValue(undefined)
+  const closeRecovery = vi.fn<(scope: NativeProcessRecovery) => Promise<void>>().mockResolvedValue(undefined)
+  const writer = { root: '/recorded-registry', owner: 'execution:writer' }
+  const factories = new NativeHarnessFactories({ codexBinary: '/recorded-codex', openCodeBinary: 'unused',
+    auxiliaryRecovery: () => ({ root: writer.root, owner: `diagnostics:${sequence + 1}` }),
+    admitRecovery: admit, abandonRecovery: abandon, closeRecovery }, { mode: 'native', codex: dependencies })
+  const allocation = factories.allocate({ harness: 'codex', role: 'workflow', workingDirectory: source.request.workingDirectory,
+    ownerAgentId: source.request.configuration.agentId, processRecovery: writer, appMcpAccess: 'scoped' })
+  if (allocation.harness !== 'codex') throw new Error('Expected Codex manager.')
+  return { manager: allocation.manager, factories, source, writer, ambient, requests, commands, close, admit, abandon, closeRecovery,
+    block: (value: NonNullable<typeof blockDiagnostic>) => { blockDiagnostic = value } }
+}
+
+it('same-process ephemeral reload uses separately admitted diagnostics with no scoped application credentials', async () => {
+  const f = fixture()
+  try {
+    const session = await f.manager.createSession(f.source)
+    await f.manager.reloadNativeMcp(session)
+    expect(f.requests).toEqual(['thread/start', 'config/mcpServer/reload'])
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.admit).toHaveBeenCalledTimes(1)
+    const scope = f.admit.mock.calls[0]![0]
+    expect(scope.owner).not.toBe(f.writer.owner)
+    expect(f.commands).toHaveLength(1)
+    expect(f.commands[0]!.recovery).toBe(scope)
+    expect(f.commands[0]!.environment).toEqual({ HOST_ONLY: 'host-config' })
+    expect(f.source.environment!.variables.CUSTOM_APPLICATION_BEARER).toBe('writer-only')
+    expect(f.ambient.CUSTOM_APPLICATION_BEARER).toBe('ambient-bearer')
+    expect(f.abandon).toHaveBeenCalledExactlyOnceWith(scope)
+    expect(f.closeRecovery).toHaveBeenCalledExactlyOnceWith(scope)
+  } finally { await f.manager.dispose(); await f.factories.disposeAuxiliaries() }
+})
+
+it('factory shutdown aborts and joins diagnostics without closing the live writer or sending reload', async () => {
+  const f = fixture()
+  const entered = new ReplayGate<void>()
+  f.block((signal) => { entered.release(); return new Promise((_, reject) => {
+    if (signal.aborted) reject(signal.reason)
+    else signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  }) })
+  try {
+    const session = await f.manager.createSession(f.source)
+    const reloading = f.manager.reloadNativeMcp(session)
+    await entered.promise
+    f.factories.stopAuxiliaries()
+    await expect(reloading).rejects.toThrow('shutting down')
+    await f.factories.disposeAuxiliaries()
+    expect(f.requests).toEqual(['thread/start'])
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.closeRecovery).toHaveBeenCalledTimes(1)
+  } finally { await f.manager.dispose(); await f.factories.disposeAuxiliaries() }
+})
+
+it('retains uncertain diagnostic cleanup for retry and refuses reload until closure is positive', async () => {
+  const f = fixture()
+  f.closeRecovery.mockRejectedValueOnce(new Error('Diagnostic closure is unconfirmed.'))
+  try {
+    const session = await f.manager.createSession(f.source)
+    await expect(f.manager.reloadNativeMcp(session)).rejects.toThrow('unconfirmed')
+    expect(f.requests).toEqual(['thread/start'])
+    expect(f.close).not.toHaveBeenCalled()
+    const retained = f.admit.mock.calls[0]![0]
+    await expect(f.manager.reloadNativeMcp(session)).rejects.toThrow('Retry retained diagnostic cleanup')
+    expect(f.admit).toHaveBeenCalledTimes(1)
+    await f.factories.disposeAuxiliaries()
+    expect(f.closeRecovery).toHaveBeenCalledTimes(2)
+    expect(f.closeRecovery.mock.calls.every(([scope]) => scope === retained)).toBe(true)
+  } finally { await f.manager.dispose(); await f.factories.disposeAuxiliaries() }
+})
