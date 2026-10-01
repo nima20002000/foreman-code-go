@@ -21,8 +21,8 @@ export class JobPublicationAuthority {
     requireAuthorization(principal,execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
     await this.runtime.require(sql,execution,{attemptId:input.attemptId,owner:input.owner})
     if(execution.process.phase!=='terminal'||!execution.process.processStopped) throw new DomainError('JOB_OUTPUT_NOT_QUIESCENT','Artifact publication requires proven process closure.',409)
-    const {definitionId:_id,definitionRevision:_revision,definitionVersionId:_version,scriptDigest:_script,outputSpecDigest:_outputs,specDigest:_spec,bindingHash:_binding,...spec}=execution.acceptedSpec
-    const ready=await this.preparation.validate(sql,principal,execution.workspaceId,JobDefinitionSpecSchema.parse(spec))
+    const definition=await this.repository.version(sql,execution.workspaceId,execution.acceptedSpec.definitionVersionId,execution.acceptedSpec.definitionId)
+    const ready=await this.preparation.validate(sql,principal,execution.workspaceId,JobDefinitionSpecSchema.parse(definition.spec))
     if(!ready.valid) throw new DomainError('JOB_AUTHORITY_CHANGED','Accepted source or root authority is no longer valid.',409)
     return {execution,principal}
   }

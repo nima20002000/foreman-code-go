@@ -11,6 +11,13 @@ export class JobRepository {
     if (definition.id !== id || definition.workspaceId !== workspaceId) throw new DomainError('JOB_SCOPE_CONFLICT','Job definition scope conflicts with persistence.',409)
     return definition
   }
+  async version(sql:JobSql,workspaceId:string,versionId:string,definitionId:string):Promise<JobDefinition> {
+    const row=(await sql.query<{record:unknown}>('select record from job_definition_versions where workspace_id=$1 and id=$2 and definition_id=$3 for share',[workspaceId,versionId,definitionId])).rows[0]
+    if(!row)throw new DomainError('JOB_DEFINITION_VERSION_NOT_FOUND','The exact immutable job definition version is missing.',404)
+    const value=JobDefinitionSchema.parse(row.record)
+    if(value.workspaceId!==workspaceId||value.id!==definitionId||value.versionId!==versionId)throw new DomainError('JOB_VERSION_PIN_CONFLICT','The persisted job version has conflicting scope.',409)
+    return value
+  }
   async execution(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobExecution> {
     const row = (await sql.query<{ record: unknown; accepted_spec: unknown }>(`select record,accepted_spec from job_executions where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`, [workspaceId,id])).rows[0]
     if (!row) throw new DomainError('JOB_NOT_FOUND', 'The execution was not found in this workspace.', 404)

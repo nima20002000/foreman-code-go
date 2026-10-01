@@ -109,6 +109,14 @@ export class JobService {
   /** Workflow adapter calls inside its own accepted-node transaction; no Operator token enters a build. */
   async admit(sql:pg.PoolClient,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow']):Promise<JobExecution> {
     const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec)
+    const request=definition.spec
+    const {materializationId:_materialization,materializationDigest:_digest,...source}=spec.source
+    const selection=(target:JobDefinitionSpec['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
+      rootPolicyId:target.destination.rootPolicyId,rootPolicyRevision:target.destination.rootPolicyRevision,locationRevision:target.destination.locationRevision})
+    if(canonical(source)!==canonical(request.source)||canonical(selection(spec.target))!==canonical(selection(request.target))
+      ||canonical({argv:spec.argv,inputs:spec.inputs,policy:spec.policy,outputs:spec.outputs,relativeCwd:spec.relativeCwd??null})!==canonical({argv:request.argv,inputs:request.inputs,policy:request.policy,outputs:request.outputs,relativeCwd:request.relativeCwd??null})) {
+      throw new DomainError('JOB_ACCEPTANCE_PIN_CONFLICT','Preparation cannot change the saved source selection, command, policy or target authority.',409)
+    }
     const acceptedSpec=AcceptedJobSpecSchema.parse({...spec,definitionId:definition.id,definitionRevision:definition.revision,definitionVersionId:definition.versionId,
       scriptDigest:jobDigest(spec.argv),outputSpecDigest:jobDigest(spec.outputs),specDigest:jobDigest(spec),bindingHash:jobDigest({target:spec.target,source:spec.source})})
     const id=randomUUID(), now=this.clock().toISOString()

@@ -1,5 +1,5 @@
 import type { JobSql } from './repository.js'
-import type { AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinitionSpec, JobExecution, JobValidation } from '@graphql/contracts/jobs'
+import type { AcceptedJobSpec, JobArtifact, JobAuthoringChoices, JobDefinitionSpec, JobExecution, JobValidation, PreparedJobSpec } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 /** W08 adapter owns durable dispatch and owner/cancel identity. No job scheduler. */
@@ -14,7 +14,7 @@ export interface JobDispatchPort {
 export interface JobPreparationPort {
   choices(client: JobSql, principal: ManagementPrincipal, workspaceId: string): Promise<JobAuthoringChoices>
   validate(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpec): Promise<JobValidation>
-  accept(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpec): Promise<JobDefinitionSpec>
+  accept(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpec): Promise<PreparedJobSpec>
 }
 /** Canonical W09 file revisions, never a job artifact byte store. */
 export interface JobArtifactPort {
