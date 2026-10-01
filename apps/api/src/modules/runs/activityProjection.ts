@@ -8,6 +8,9 @@ export interface ActivityReadRow {
   harness_execution_id: string | null;
   execution_node_id: string | null; execution_agent_id: string | null;
   execution_attempt: number | null; work_activation_id: string | null;
+  job_execution_id?: string | null; job_attempt_id?: string | null; job_operation_id?: string | null;
+  node_execution_id?: string | null; job_definition_id?: string | null;
+  job_definition_revision?: number | null; job_definition_version_id?: string | null;
   result_outcome: string | null;
   safe_payload: Record<string, unknown>; native: Record<string, unknown> | null;
 }
@@ -41,14 +44,24 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const actorKind = new Set(['node_scheduled','node_state_changed','harness_session_started',
     'harness_output','harness_session_finished','result_recorded','work_result_accepted',
     'work_handoff_accepted','work_handoff_returned','work_handoff_denied','work_rerouted'])
-  const actor = actorKind.has(row.kind) && node && node.agentId === row.execution_agent_id
+  const jobActor = node?.kind === 'job' && row.job_execution_id && row.node_execution_id === row.job_execution_id
+    && row.job_definition_id === node.jobDefinitionId && row.job_definition_revision === node.jobDefinitionRevision
+    && row.job_definition_version_id === node.jobDefinitionVersionId
+    ? { kind: 'job' as const, nodeId: node.id, nodeName: node.name ?? node.label ?? 'Job',
+      jobDefinitionId: node.jobDefinitionId, jobDefinitionRevision: node.jobDefinitionRevision,
+      jobDefinitionVersionId: node.jobDefinitionVersionId } : undefined
+  const actor = actorKind.has(row.kind) && jobActor ? jobActor
+    : actorKind.has(row.kind) && node && node.kind !== 'job' && node.agentId === row.execution_agent_id
     ? { agentId: node.agentId, agentName: safeNodeName(node.name ?? node.label) ?? 'Agent',
       nodeId: node.id, nodeName: safeNodeName(node.label ?? node.name) ?? 'Agent' } : undefined
   const subjectId = row.kind === 'work_requester_reactivated' ? id(payload.requesterNodeId)
     : row.kind.startsWith('work_limit_notice_') || row.kind === 'work_rerouted'
       ? id(payload.destinationNodeId) : undefined
   const subjectNode = version.definition.nodes.find((item) => item.id === subjectId)
-  const subject = subjectNode ? { agentId: subjectNode.agentId,
+  const subject = subjectNode?.kind === 'job' ? { kind: 'job' as const, nodeId: subjectNode.id,
+    nodeName: subjectNode.name ?? subjectNode.label ?? 'Job', jobDefinitionId: subjectNode.jobDefinitionId,
+    jobDefinitionRevision: subjectNode.jobDefinitionRevision, jobDefinitionVersionId: subjectNode.jobDefinitionVersionId }
+    : subjectNode ? { agentId: subjectNode.agentId,
     agentName: safeNodeName(subjectNode.name ?? subjectNode.label) ?? 'Agent',
     nodeId: subjectNode.id, nodeName: safeNodeName(subjectNode.label ?? subjectNode.name) ?? 'Agent' } : undefined
   const relationship = id(payload.relationshipId)
@@ -56,7 +69,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const requesterNode = id(payload.requesterNodeId)
   const destinationNode = id(payload.destinationNodeId)
   const refs = {
-    ...(row.harness_execution_id && row.execution_node_id ? { executionId: row.harness_execution_id } : {}),
+    ...(jobActor ? { executionId: row.job_execution_id, jobExecutionId: row.job_execution_id,
+      jobAttemptId: id(row.job_attempt_id), jobOperationId: id(row.job_operation_id), nodeExecutionId: row.node_execution_id } : {}),
+    ...(!jobActor && row.harness_execution_id && row.execution_node_id ? { executionId: row.harness_execution_id } : {}),
     ...(id(row.work_activation_id ?? payload.activationId) ? { activationId: id(row.work_activation_id ?? payload.activationId) } : {}),
     ...(id(payload.requestId) ? { requestId: id(payload.requestId) } : {}),
     ...(id(payload.returnId) ? { returnId: id(payload.returnId) } : {}),
@@ -83,7 +98,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
       : row.kind.startsWith('work_limit_notice_') ? Boolean(refs.noticeId) : true
   const usage = used === undefined || !usageProven ? undefined
     : { used, limit: maximum && maximum > 0 ? maximum : null }
-  let kind: RunActivityPublic['kind'] = 'agent_work'
+  let kind: RunActivityPublic['kind'] = jobActor ? 'job_work' : 'agent_work'
   let status: RunActivityPublic['status']
   let summary: string
   let detail: string | undefined
@@ -113,9 +128,10 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
         : row.result_outcome === 'canceled' ? 'canceled' : 'completed'
         : state === 'starting' ? 'starting' : state === 'running' ? 'running'
           : state === 'waiting' ? 'pending' : 'queued'
-      summary = state === 'completed' ? 'Agent work completed'
-        : state === 'running' ? 'Agent working' : state === 'waiting' ? 'Agent waiting'
-          : 'Agent work queued'
+      const label = jobActor ? 'Job' : 'Agent'
+      summary = state === 'completed' ? `${label} work completed`
+        : state === 'running' ? `${label} working` : state === 'waiting' ? `${label} waiting`
+          : `${label} work queued`
       if (status === 'failed') detail = 'Error details are available in Run inspection.'
       break
     }

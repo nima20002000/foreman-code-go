@@ -16,6 +16,7 @@ describe('NIM-2691 native work result boundary', () => {
       } : node),
     } })
     const node = version.definition.nodes[0]!
+    if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     const result = { outcome: 'succeeded', output: { routing: { kind: 'request', outcome: 'review' },
       data: { latestDeliverable: { artifactId: 'a-1' }, remainingFindings: [] } } }
     const execution = HarnessExecutionSchema.parse({ id: 'execution-work-result', runId: fixture.run.id,
@@ -40,6 +41,7 @@ describe('NIM-2691 native work result boundary', () => {
       executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/nim2691-unknown-work',
         locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` } })
     const node = version.definition.nodes[0]!
+    if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     const execution = HarnessExecutionSchema.parse({ id: 'execution-unknown', runId: run.id,
       workflowNodeId: node.id, agentId: node.agentId,
       agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],

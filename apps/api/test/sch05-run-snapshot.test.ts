@@ -21,6 +21,7 @@ describe('SCH-05 admission Board projection', () => {
   it('captures names, Agent pins, explicit geometry and edges without mutable aliases or private fields', () => {
     const accepted = acceptedFixture(), definition = accepted.snapshot.workflow.definition
     const y = definition.nodes[1]!
+    if (y.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     y.name = 'Agent Y'; y.position = { x: -24.5, y: 812.25 }; y.width = 321; y.height = 178
     y.description = 'private description'; y.initialPrompt = 'private instructions'
     definition.edges[0]!.sourceHandle = null; definition.edges[0]!.targetHandle = 'left'
@@ -59,6 +60,7 @@ describe('SCH-05 admission Board projection', () => {
     const accepted = acceptedFixture(); accepted.run.workflowVersionId = 'forged-version'
     expect(() => projectRunBoardSnapshot(accepted)).toThrow(/admitted workflow version/)
     const other = acceptedFixture(), node = other.snapshot.workflow.definition.nodes[0]!
+    if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     other.run.agentConfigurationVersionIds[node.agentId] = 'forged-configuration'
     expect(() => projectRunBoardSnapshot(other)).toThrow(/configuration pin/)
   })

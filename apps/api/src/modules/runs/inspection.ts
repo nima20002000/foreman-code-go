@@ -1,19 +1,26 @@
 import type pg from 'pg'
 import { z } from 'zod'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { JobExecution } from '@graphql/contracts/jobs'
+import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
 import {
   RUN_INSPECTION_LIMITS, RunAcceptedInputValueSchema, RunExecutionBindingSchema,
   RunExecutionBindingsListInputSchema, RunExecutionBindingsPageSchema,
   RunExecutionDetailSchema, RunExecutionGetInputSchema, RunExecutionSummarySchema,
   RunExecutionsListInputSchema, RunExecutionsPageSchema, RunInspectionRunSchema,
   RunVersionDetailSchema, RunVersionGetInputSchema, RepeatOccurrenceIdentityV1Schema,
+  AcceptedCurrentNodeResultSchema, GraphDigestSchema, NodeResolutionSchema,
   canonicalGraphJson, RunRecordGetInputSchema, RunRecordDetailSchema, WorkflowRunV3Schema,
   type RunExecutionBindingsPage, type RunExecutionDetail, type RunExecutionSummary,
-  type RunExecutionsPage, type RunVersionDetail, type RunRecordDetail,
+  type RunExecutionsPage, type RunVersionDetail, type RunRecordDetail, type GraphExecutionIdentity,
 } from '@graphql/contracts/wave25'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
+import { JobRepository } from '../jobs/repository.js'
+import { WorkflowJobPreparationSchema } from '../jobs/workflowPreparation.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
+import { canonicalRepeatEffectReceipt } from '../run-graph/repeatPublication.js'
+import { assertRepeatCanonicalReceiptLocked } from '../run-graph/repeatReceipts.js'
 import { withCurrentRunRead } from './currentRead.js'
 import type { AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import {
@@ -44,8 +51,25 @@ function runSummary(snapshot: AcceptedRepeatRunSnapshot) {
     ...(run.finishedAt === undefined ? {} : { finishedAt: run.finishedAt }),
     ...(run.stopCause === undefined ? {} : { stopCause: run.stopCause }), cleanupPending: snapshot.cleanupPending })
 }
-function summaryOf({ execution, ref, accepted }: StoredRepeatExecution): RunExecutionSummary {
-  return RunExecutionSummarySchema.parse({ ...repeatExecutionIdentity(execution), state: execution.state,
+type StoredInspectionExecution = StoredRepeatExecution & { executorKind: 'agent' } | {
+  executorKind: 'job'; execution: JobExecution; identity: Extract<GraphExecutionIdentity, { kind: 'job' }>;
+  ref: StoredRepeatExecution['ref']; accepted: boolean; terminalProcessed: boolean;
+  slotId: string; input: StoredRepeatExecution['input']; inputDigest: string;
+}
+function executionIdentity(stored: StoredInspectionExecution) {
+  return stored.executorKind === 'job' ? stored.identity : repeatExecutionIdentity(stored.execution)
+}
+function summaryOf(stored: StoredInspectionExecution): RunExecutionSummary {
+  const { execution, ref, accepted } = stored
+  if (stored.executorKind === 'job') {
+    const job = stored.execution
+    return RunExecutionSummarySchema.parse({ ...stored.identity,
+      state: job.process.phase === 'preparing' ? 'starting' : job.process.phase === 'terminal' ? 'completed' : job.process.phase,
+      createdAt: job.createdAt, ...(job.startedAt === null ? {} : { startedAt: job.startedAt }),
+      ...(job.finishedAt === null ? {} : { finishedAt: job.finishedAt }),
+      ...(ref.occurrence ? { occurrence: ref.occurrence } : {}), acceptedResultAvailable: accepted })
+  }
+  return RunExecutionSummarySchema.parse({ ...repeatExecutionIdentity(stored.execution), state: stored.execution.state,
     createdAt: execution.createdAt, ...(execution.startedAt === undefined ? {} : { startedAt: execution.startedAt }),
     ...(execution.finishedAt === undefined ? {} : { finishedAt: execution.finishedAt }),
     ...(ref.occurrence ? { occurrence: ref.occurrence } : {}), acceptedResultAvailable: accepted })
@@ -73,23 +97,33 @@ function occurrenceOf(row: OccurrenceRow, snapshot: AcceptedRepeatRunSnapshot) {
   return identity
 }
 interface ExecutionRow extends OccurrenceRow {
-  id: string; run_id: string; workflow_node_id: string; agent_id: string; attempt: number;
+  id: string; run_id: string; workflow_node_id: string; agent_id: string | null; attempt: number;
+  job_pinned?: boolean;
+  job_definition_revision?: number | null;
   repeat_occurrence_id: string | null; accepted: boolean; summary: unknown; reported_outcome: string | null;
   page_created_at: string; identity: unknown; identity_run_id: string | null;
   identity_occurrence_id: string | null; technical_attempt: number | null;
   slot_id: string | null; slot_run_id: string | null; slot_node_id: string | null; slot_occurrence_id: string | null;
 }
-function rowSummary(row: ExecutionRow, snapshot: AcceptedRepeatRunSnapshot): RunExecutionSummary {
+export function inspectionExecutionRowSummary(row: ExecutionRow, snapshot: AcceptedRepeatRunSnapshot): RunExecutionSummary {
   const summary = RunExecutionSummarySchema.parse(row.summary)
   const occurrence = row.repeat_occurrence_id === null ? null : occurrenceOf(row, snapshot)
   const ref = { nodeId: summary.workflowNodeId, occurrence }, scope = scopeOf(snapshot)
   assertRepeatRef(snapshot.version, scope, ref)
   const node = snapshot.version.definition.nodes.find((item) => item.id === ref.nodeId)!
-  const identity = { executionId: summary.executionId, workflowNodeId: summary.workflowNodeId, agentId: summary.agentId,
-    agentConfigurationVersionId: summary.agentConfigurationVersionId, attempt: summary.attempt }
+  const identity = summary.kind === 'job'
+    ? { kind: summary.kind, executionId: summary.executionId, workflowNodeId: summary.workflowNodeId,
+      jobDefinitionId: summary.jobDefinitionId, jobDefinitionVersionId: summary.jobDefinitionVersionId, attempt: summary.attempt }
+    : { ...(summary.kind === undefined ? {} : { kind: summary.kind }), executionId: summary.executionId,
+      workflowNodeId: summary.workflowNodeId, agentId: summary.agentId,
+      agentConfigurationVersionId: summary.agentConfigurationVersionId, attempt: summary.attempt }
+  evidence(summary.kind === 'job' ? row.job_pinned === true && node.kind === 'job' && summary.jobDefinitionId === node.jobDefinitionId
+    && row.job_definition_revision === node.jobDefinitionRevision
+    && summary.jobDefinitionVersionId === node.jobDefinitionVersionId
+    : node.kind !== 'job' && row.agent_id === summary.agentId && node.agentId === summary.agentId
+      && snapshot.version.agentConfigurationVersionIds[summary.agentId] === summary.agentConfigurationVersionId)
   evidence(row.run_id === scope.runId && row.id === identity.executionId && row.workflow_node_id === identity.workflowNodeId
-    && row.agent_id === identity.agentId && row.attempt === identity.attempt && node.agentId === identity.agentId
-    && snapshot.version.agentConfigurationVersionIds[identity.agentId] === identity.agentConfigurationVersionId
+    && row.attempt === identity.attempt
     && row.identity_run_id === scope.runId && row.slot_run_id === scope.runId && row.slot_node_id === ref.nodeId
     && row.slot_id === repeatSlotId(scope.runId, ref) && row.technical_attempt === identity.attempt
     && row.slot_occurrence_id === row.repeat_occurrence_id && row.identity_occurrence_id === row.repeat_occurrence_id
@@ -163,7 +197,7 @@ export class RunInspectionService {
       // results, native events or the Run's entire execution/occurrence history.
       const query = inspectionExecutionsQuery(input, after)
       const rows = (await sql.query<ExecutionRow>(query.text, query.values)).rows
-      const summaries = rows.map((row) => rowSummary(row, snapshot))
+      const summaries = rows.map((row) => inspectionExecutionRowSummary(row, snapshot))
       const last = rows[Math.min(rows.length, input.limit) - 1]
       return bounded(RunExecutionsPageSchema.parse({ run: runSummary(snapshot), items: summaries.slice(0, input.limit),
         pageInfo: { nextCursor: rows.length > input.limit && last ? encodeExecutionPageCursor(cursorScope,
@@ -171,23 +205,100 @@ export class RunInspectionService {
     })
   }
 
-  private async execution(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, executionId: string) {
+  private async execution(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, executionId: string): Promise<StoredInspectionExecution> {
     const found = await sql.query('select id from harness_executions where id=$1 and run_id=$2', [executionId, snapshot.run.id])
-    if (found.rows.length !== 1) throw new DomainError('RUN_EXECUTION_NOT_FOUND', 'The execution was not found in this Run.', 404)
-    return readRepeatExecutionLocked(sql, snapshot, executionId)
+    if (found.rows.length === 1) return { ...await readRepeatExecutionLocked(sql, snapshot, executionId), executorKind: 'agent' }
+    const row = (await sql.query<OccurrenceRow & { reference: unknown; input_json: string; accepted: boolean;
+      terminal_processed: boolean; identity: unknown; technical_attempt: number; slot_id: string;
+      slot_input: string; input_digest: string; preparation: unknown; occurrence_key: string | null }>(`
+      select w.reference,w.input_json,w.accepted as terminal_processed,r.execution_id is not null as accepted,
+        x.identity,x.technical_attempt,x.slot_id,x.occurrence_id as occurrence_key,
+        s.input_json as slot_input,s.input_digest,p.preparation,${INSPECTION_OCCURRENCE_COLUMNS}
+      from workflow_job_executions w left join run_repeat_executions x on x.run_id=w.run_id and x.execution_id=w.node_execution_id
+      left join run_repeat_slots s on s.slot_id=x.slot_id and s.run_id=w.run_id
+      left join workflow_job_preparations p on p.slot_id=s.slot_id and p.run_id=w.run_id
+      left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=w.run_id
+      left join run_repeat_results r on r.execution_id=w.job_execution_id and r.run_id=w.run_id
+      where w.run_id=$1 and w.node_execution_id=$2`, [snapshot.run.id, executionId])).rows[0]
+    if (!row) throw new DomainError('RUN_EXECUTION_NOT_FOUND', 'The execution was not found in this Run.', 404)
+    const scope = scopeOf(snapshot), reference = JobWorkflowExecutionReferenceSchema.parse(row.reference)
+    const execution = await new JobRepository().execution(sql, scope.workspaceId, executionId)
+    const occurrence = row.occurrence_key === null ? null : occurrenceOf(row, snapshot)
+    const ref = { nodeId: reference.nodeId, occurrence }
+    assertRepeatRef(snapshot.version, scope, ref)
+    const node = snapshot.version.definition.nodes.find((node) => node.id === ref.nodeId)
+    evidence(node?.kind === 'job')
+    const identity: Extract<GraphExecutionIdentity, { kind: 'job' }> = { kind: 'job', executionId, workflowNodeId: ref.nodeId,
+      jobDefinitionId: node.jobDefinitionId, jobDefinitionVersionId: node.jobDefinitionVersionId, attempt: row.technical_attempt }
+    const preparation = WorkflowJobPreparationSchema.parse(row.preparation), input = RunAcceptedInputValueSchema.parse(JSON.parse(row.input_json))
+    evidence(reference.workspaceId === scope.workspaceId && reference.workflowId === scope.workflowId
+      && reference.workflowVersionId === scope.workflowVersionId && reference.runId === scope.runId
+      && reference.jobExecutionId === executionId && reference.nodeExecutionId === executionId
+      && reference.occurrenceId === (occurrence?.occurrenceId ?? null) && reference.occurrenceIndex === (occurrence?.occurrenceIndex ?? 0)
+      && execution.workflow?.runId === scope.runId && execution.workflow.workflowId === scope.workflowId
+      && execution.workflow.nodeId === ref.nodeId && execution.workflow.nodeExecutionId === executionId
+      && execution.acceptedSpec.definitionId === node.jobDefinitionId && execution.acceptedSpec.definitionRevision === node.jobDefinitionRevision
+      && execution.acceptedSpec.definitionVersionId === node.jobDefinitionVersionId && row.technical_attempt === 1
+      && sameRepeatValue(row.identity, occurrence ? { ...identity, occurrence } : identity)
+      && row.slot_id === repeatSlotId(scope.runId, ref) && row.slot_input === row.input_json
+      && repeatDigest(input, 4 * 1024 * 1024) === row.input_digest
+      && sameRepeatValue(input, execution.acceptedSpec.workflowInput) && sameRepeatValue(input, preparation.input)
+      && sameRepeatValue(input.occurrence?.identity ?? null, occurrence) && sameRepeatValue(input.runInput, snapshot.run.input)
+      && preparation.inputDigest === row.input_digest && preparation.executionId === executionId
+      && preparation.attemptId === execution.attemptId && preparation.operationId === execution.operationId
+      && preparation.workspaceId === scope.workspaceId && preparation.workflowId === scope.workflowId
+      && preparation.workflowVersionId === scope.workflowVersionId && preparation.runId === scope.runId && preparation.nodeId === ref.nodeId)
+    await this.jobEffect(sql, scope, 'input.bind', executionId)
+    return { executorKind: 'job', execution, identity, ref, input, inputDigest: row.input_digest,
+      slotId: row.slot_id, accepted: row.accepted, terminalProcessed: row.terminal_processed }
+  }
+
+  private async jobEffect(sql: GraphTransactionSql, scope: RepeatScope, kind: 'input.bind' | 'terminal.accept', entityId: string) {
+    const rows = (await sql.query<{ payload_digest: string }>(
+      'select payload_digest from run_repeat_effects where run_id=$1 and effect_kind=$2 and entity_id=$3', [scope.runId, kind, entityId])).rows
+    evidence(rows.length === 1 && GraphDigestSchema.safeParse(rows[0]?.payload_digest).success)
+    await assertRepeatCanonicalReceiptLocked(sql, canonicalRepeatEffectReceipt(scope, { kind, entityId, digest: rows[0]!.payload_digest }))
+  }
+
+  private async acceptedResult(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, stored: StoredInspectionExecution) {
+    if (stored.executorKind === 'agent') return readRepeatAcceptedResultLocked(sql, snapshot, stored.execution.id)
+    if (!stored.accepted) {
+      if (stored.terminalProcessed) await this.jobEffect(sql, scopeOf(snapshot), 'terminal.accept', stored.execution.id)
+      return undefined
+    }
+    const result = (await sql.query<{ result_json: string; result_digest: string; occurrence_id: string | null }>(
+      'select result_json,result_digest,occurrence_id from run_repeat_results where execution_id=$1 and run_id=$2',
+      [stored.execution.id, snapshot.run.id])).rows[0]
+    const resolutionRow = (await sql.query<{ record: { value: unknown } }>(
+      'select record from run_repeat_resolutions where run_id=$1 and occurrence_key=$2 and workflow_node_id=$3',
+      [snapshot.run.id, stored.ref.occurrence?.occurrenceId ?? '', stored.ref.nodeId])).rows[0]
+    evidence(result && resolutionRow && stored.terminalProcessed && stored.execution.process.phase === 'terminal' && stored.execution.process.processStopped)
+    const value = AcceptedCurrentNodeResultSchema.parse(JSON.parse(result.result_json))
+    const resolution = NodeResolutionSchema.parse(resolutionRow.record.value)
+    const output = z.object({ data: z.unknown().optional(), latestDeliverable: z.unknown().optional() }).passthrough().parse(value.output)
+    const data = z.object({ latestDeliverable: z.object({ jobExecutionId: z.string(), process: z.unknown() }).passthrough() }).passthrough()
+      .parse(output.data === undefined ? output : output.data)
+    evidence(value.outcome === 'succeeded' && repeatDigest(value, RUN_INSPECTION_LIMITS.resultBytes) === result.result_digest
+      && result.occurrence_id === (stored.ref.occurrence?.occurrenceId ?? null) && resolution.resolution === 'succeeded'
+      && resolution.workflowNodeId === stored.ref.nodeId && sameRepeatValue(resolution.execution, stored.identity)
+      && resolution.acceptedResultDigest === result.result_digest && data.latestDeliverable.jobExecutionId === stored.execution.id
+      && sameRepeatValue(data.latestDeliverable.process, { outcome: stored.execution.process.outcome,
+        exitCode: stored.execution.process.exitCode, signal: stored.execution.process.signal }))
+    await this.jobEffect(sql, scopeOf(snapshot), 'terminal.accept', stored.execution.id)
+    return value
   }
 
   async executionDetail(principal: ManagementPrincipal, raw: unknown): Promise<RunExecutionDetail> {
     const input = RunExecutionGetInputSchema.parse(raw)
     return this.read(principal, input, async (sql, snapshot) => {
       const stored = await this.execution(sql, snapshot, input.executionId)
-      const accepted = await readRepeatAcceptedResultLocked(sql, snapshot, input.executionId)
+      const accepted = await this.acceptedResult(sql, snapshot, stored)
       evidence(stored.accepted === (accepted !== undefined))
       return bounded(RunExecutionDetailSchema.parse({ run: runSummary(snapshot), execution: summaryOf(stored),
         acceptedInput: { digest: stored.inputDigest, value: stored.input },
         acceptedResult: accepted === undefined ? { status: 'not_accepted' }
           : { status: 'accepted', digest: repeatDigest(accepted, RUN_INSPECTION_LIMITS.resultBytes), value: accepted },
-        ...(stored.execution.result === undefined ? {} : { reportedResult: stored.execution.result }) }))
+        ...(stored.executorKind === 'agent' && stored.execution.result !== undefined ? { reportedResult: stored.execution.result } : {}) }))
     })
   }
 
@@ -205,7 +316,7 @@ export class RunInspectionService {
         ...(value.entry?.carry ? [{ kind: 'carry' as const, source: value.entry.carry }] : []),
       ]
       const expected = sources.map(({ kind, source }, ordinal) => RunExecutionBindingSchema.parse({ kind, source, ordinal,
-        bindingId: repeatId('repeat-binding', input.executionId, kind, ordinal), recipient: repeatExecutionIdentity(stored.execution),
+        bindingId: repeatId('repeat-binding', input.executionId, kind, ordinal), recipient: executionIdentity(stored),
         recipientOccurrence: stored.ref.occurrence, inputDigest: stored.inputDigest }))
       const cursorScope = [scope, input.executionId, stored.inputDigest]
       const after = decodeBindingPageCursor(cursorScope, input.cursor)
@@ -233,7 +344,7 @@ export class RunInspectionService {
           const identities = await sql.query<{ identity: unknown }>(
             'select identity from run_repeat_executions where execution_id=$1 and run_id=$2', [sourceId, scope.runId])
           evidence(identities.rows.length === 1)
-          const result = await readRepeatAcceptedResultLocked(sql, snapshot, sourceId)
+          const result = await this.acceptedResult(sql, snapshot, await this.execution(sql, snapshot, sourceId))
           evidence(result !== undefined)
           source = { identity: identities.rows[0]!.identity, result }; checked.set(sourceId, source)
         }

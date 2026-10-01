@@ -12,6 +12,7 @@ describe('NIM-2691 workflow activation routing', () => {
       executionPolicy: { maxParallelism: 2, maxNodeExecutions: 20 },
     } })
     const source = version.definition.nodes[0]!
+    if (source.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     const execution = HarnessExecutionSchema.parse({ id: 'execution-entry', runId: fixture.run.id,
       workflowNodeId: source.id, agentId: source.agentId,
       agentConfigurationVersionId: version.agentConfigurationVersionIds[source.agentId],
@@ -51,6 +52,7 @@ describe('NIM-2691 workflow activation routing', () => {
       executionPolicy: { maxParallelism: 1, maxNodeExecutions: 3 },
     } })
     const node = version.definition.nodes[0]!, edge = version.definition.edges[0]!
+    if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     const base = { runId: fixture.run.id, workflowNodeId: node.id, agentId: node.agentId,
       agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
       input: {}, createdAt: fixture.createdAt, finishedAt: fixture.createdAt,
@@ -105,6 +107,7 @@ describe('NIM-2691 workflow activation routing', () => {
           relationshipId: fixture.version.definition.edges[0]!.id } }] } } : node),
     } })
     const node = version.definition.nodes[0]!
+    if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     const execution = HarnessExecutionSchema.parse({ id: 'execution-with-findings', runId: fixture.run.id,
       workflowNodeId: node.id, agentId: node.agentId,
       agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],

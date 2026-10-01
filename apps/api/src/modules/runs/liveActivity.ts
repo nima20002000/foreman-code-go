@@ -89,7 +89,7 @@ export function projectRunLiveActivity(input: {
   const { run, definition } = input
   const events = input.events.filter((event) => event.runId === run.id && integer(event.sequence) >= 0n)
     .sort((a, b) => integer(a.sequence) < integer(b.sequence) ? -1 : integer(a.sequence) > integer(b.sequence) ? 1 : 0)
-  const nodes = new Map<string, NodeState>(definition.nodes.map((node) => [node.id, {
+  const nodes = new Map<string, NodeState>(definition.nodes.filter((node) => node.kind !== 'job').map((node) => [node.id, {
     id: node.id, agentId: node.agentId, reviews: new Map(), view: idle(), event: null,
   }]))
   const executions = new Map<string, ExecutionState>()
@@ -106,7 +106,7 @@ export function projectRunLiveActivity(input: {
     return node?.name ?? node?.label
   }
   const nameForReviewer = (id: string) => {
-    const matches = definition.nodes.filter((candidate) => candidate.agentId === id)
+    const matches = definition.nodes.filter((candidate) => candidate.kind !== 'job' && candidate.agentId === id)
     return matches.length === 1 && matches[0] ? nameForNode(matches[0].id) : undefined
   }
   const reviews = new Map<string, LiveReviewIdentity>()

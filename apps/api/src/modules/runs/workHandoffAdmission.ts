@@ -29,7 +29,8 @@ export interface WorkReturnReceipt { value: WorkReturn; replayed: boolean }
 /** Reconstruct only from the exact saved cause and accepted result receipt. */
 export async function readWorkActivationInputLocked(context: AdmissionContext, activationId: string): Promise<WorkActivationInput> {
   const { sql, scope, version } = context
-  if (!version.definition.handoffs || version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
+  if (!version.definition.handoffs || version.definition.repeat
+    || version.definition.nodes.some((node) => node.kind === 'job')) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   const row = (await sql.query<{ record: unknown; workflow_node_id: string; cause_kind: string; cause_id: string }>(
     `select record,workflow_node_id,cause_kind,cause_id from run_work_activations
       where activation_id=$1 and run_id=$2 for share`, [activationId, scope.runId])).rows[0]
@@ -162,6 +163,7 @@ export async function recordUnresolvedWorkLocked(context: AdmissionContext,
   const result = parseWorkHandoffResult(execution.result)
   const node = version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
   if (!node) return repeatConflict('WORKFLOW_NODE_NOT_FOUND')
+  if (node.kind === 'job') return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   if (reason === 'finish_with_findings') {
     if (relationshipId || result.routing.kind !== 'finish' || !result.data.remainingFindings.length) {
       return repeatConflict('WORK_UNRESOLVED_CAUSE_CONFLICT')
@@ -208,7 +210,8 @@ export async function recordUnresolvedWorkLocked(context: AdmissionContext,
 
 export async function ensureWorkEntryLocked(context: AdmissionContext): Promise<string> {
   const { sql, scope, version } = context
-  if (!version.definition.handoffs || version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
+  if (!version.definition.handoffs || version.definition.repeat
+    || version.definition.nodes.some((node) => node.kind === 'job')) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   await context.hooks.assertAuthorityLocked(sql)
   const activationId = repeatId('work-activation', scope.runId, 'entry')
   const prior = (await sql.query<{ record: unknown }>(
@@ -238,7 +241,8 @@ export async function ensureWorkEntryLocked(context: AdmissionContext): Promise<
 export async function admitWorkHandoffLocked(context: AdmissionContext, sourceExecutionId: string,
   selectedRelationshipId?: string): Promise<WorkRequestAdmission> {
   const { sql, scope, version, hooks } = context
-  if (!version.definition.handoffs || version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
+  if (!version.definition.handoffs || version.definition.repeat
+    || version.definition.nodes.some((node) => node.kind === 'job')) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   await hooks.assertAuthorityLocked(sql)
   const row = (await sql.query<{ record: unknown; accepted: boolean; work_activation_id: string | null }>(
     `select record,accepted,work_activation_id from harness_executions
@@ -317,6 +321,7 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
   context.assertActive()
   await hooks.assertSettlementLocked(sql, [sourceExecutionId])
   const destination = version.definition.nodes.find((item) => item.id === destinationNodeId)!
+  if (destination.kind === 'job') return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   const candidate = HarnessExecutionSchema.parse({ id: repeatId('work-candidate', requestId),
     runId: scope.runId, workflowNodeId: destination.id, agentId: destination.agentId,
     agentConfigurationVersionId: version.agentConfigurationVersionIds[destination.agentId],
@@ -449,7 +454,8 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
 /** The review returns to its exact request and costs no additional work slot. */
 export async function returnWorkHandoffLocked(context: AdmissionContext, sourceExecutionId: string): Promise<WorkReturnReceipt> {
   const { sql, scope, version, hooks } = context
-  if (!version.definition.handoffs || version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
+  if (!version.definition.handoffs || version.definition.repeat
+    || version.definition.nodes.some((node) => node.kind === 'job')) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   await hooks.assertAuthorityLocked(sql)
   const row = (await sql.query<{ record: unknown; accepted: boolean; work_activation_id: string | null }>(
     `select record,accepted,work_activation_id from harness_executions

@@ -13,6 +13,7 @@ type NoticeCause = WorkNotice['cause']
 function destination(version: WorkflowVersionV3, nodeId: string) {
   const node = version.definition.nodes.find((item) => item.id === nodeId)
   if (!node) return repeatConflict('WORK_NOTICE_DESTINATION_MISSING')
+  if (node.kind === 'job') return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   return { node, name: node.name ?? node.label ?? node.agentId }
 }
 
@@ -20,10 +21,12 @@ function destination(version: WorkflowVersionV3, nodeId: string) {
  * the saved edge, live authority and current capacity before any launch. */
 export async function availableWorkAlternativesLocked(context: NoticeContext,
   requesterNodeId: string, exhaustedRelationshipId: string): Promise<WorkAlternative[]> {
-  if (!context.version.definition.handoffs) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
+  if (!context.version.definition.handoffs
+    || context.version.definition.nodes.some((node) => node.kind === 'job')) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   const alternatives: WorkAlternative[] = []
   const requester = context.version.definition.nodes.find((node) => node.id === requesterNodeId)
   if (!requester) return repeatConflict('WORK_NOTICE_REQUESTER_MISSING')
+  if (requester.kind === 'job') return repeatConflict('WORK_POLICY_PIN_CONFLICT')
   for (const edge of context.version.definition.edges) {
     if (edge.kind !== 'execution' || edge.id === exhaustedRelationshipId) continue
     const targetNodeId = edge.source === requesterNodeId ? edge.target

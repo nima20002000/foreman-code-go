@@ -10,7 +10,7 @@ export function validateReviewerBootstrap(
   acceptedEntryNodeId?: string,
 ): void {
   if (approval.handler !== 'orchestrator') return
-  const nodes = definition.nodes.filter((node) => node.agentId === approval.designatedOrchestratorAgentId)
+  const nodes = definition.nodes.filter((node) => node.kind !== 'job' && node.agentId === approval.designatedOrchestratorAgentId)
   const reviewer = nodes[0]
   const entryNodeId = definition.entryNodeId
   if (acceptedEntryNodeId !== undefined && acceptedEntryNodeId !== entryNodeId) {

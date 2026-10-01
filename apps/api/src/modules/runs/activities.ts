@@ -21,9 +21,14 @@ select coalesce((select max(sequence) from recent),0)::text as high_water,
 /** SQL extracts only named identifiers and status fields. It never transfers
  * raw provider payloads, prompts, tool arguments, paths, text or error bodies. */
 export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,a.occurred_at,a.harness_execution_id,
-  e.workflow_node_id as execution_node_id,e.agent_id as execution_agent_id,
-  e.attempt as execution_attempt,e.work_activation_id,
-  e.record#>>'{result,outcome}' as result_outcome,
+  coalesce(e.workflow_node_id,j.record#>>'{workflow,nodeId}') as execution_node_id,e.agent_id as execution_agent_id,
+  coalesce(e.attempt,x.technical_attempt) as execution_attempt,e.work_activation_id,
+  j.id as job_execution_id,j.attempt_id as job_attempt_id,j.operation_id as job_operation_id,
+  w.node_execution_id,j.accepted_spec->>'definitionId' as job_definition_id,
+  (j.accepted_spec->>'definitionRevision')::integer as job_definition_revision,
+  j.accepted_spec->>'definitionVersionId' as job_definition_version_id,
+  coalesce(e.record#>>'{result,outcome}',case when j.record#>>'{process,phase}'='terminal'
+    then case j.record#>>'{process,outcome}' when 'succeeded' then 'succeeded' when 'cancelled' then 'canceled' else 'failed' end end) as result_outcome,
   jsonb_strip_nulls(jsonb_build_object(
     'executionState',a.payload->>'executionState','state',a.payload->>'state',
     'status',a.payload->>'status','deliveryState',a.payload->>'deliveryState',
@@ -72,6 +77,15 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'partStatus',left(n.record#>>'{payload,part,state,status}',48))) end as native
 from run_activity a
 left join harness_executions e on e.id=a.harness_execution_id and e.run_id=a.run_id
+left join runs r on r.id=a.run_id
+left join workflow_job_executions w on w.run_id=a.run_id and w.job_execution_id=a.payload->>'jobExecutionId'
+left join run_repeat_executions x on x.run_id=w.run_id and x.execution_id=w.node_execution_id and x.executor_kind='job'
+left join job_executions j on j.id=w.job_execution_id and j.id=w.node_execution_id and j.workspace_id=r.workspace_id
+  and j.record#>>'{workflow,runId}'=a.run_id and j.record#>>'{workflow,workflowId}'=r.workflow_id
+  and j.record#>>'{workflow,nodeExecutionId}'=w.node_execution_id and j.record#>>'{workflow,nodeId}'=x.workflow_node_id
+  and j.accepted_spec=j.record->'acceptedSpec' and j.attempt_id=j.record->>'attemptId' and j.operation_id=j.record->>'operationId'
+  and w.reference->>'workspaceId'=r.workspace_id and w.reference->>'workflowVersionId'=r.workflow_version_id
+  and w.reference->>'runId'=a.run_id and w.reference->>'workflowId'=r.workflow_id
 left join harness_native_events n on n.execution_id=a.harness_execution_id
   and n.sequence=case when a.kind='harness_output'
     and (a.payload->>'nativeEventSequence') ~ '^[0-9]{1,9}$'

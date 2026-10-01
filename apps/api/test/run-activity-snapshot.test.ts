@@ -6,7 +6,7 @@ import { projectNativeActivityFacts } from '../src/modules/runs/nativeActivitySn
 
 const scope = { workspaceId: 'ws', workflowId: 'wf', runId: 'run', workflowVersionId: 'version' }
 const version = { id: 'version', workspaceId: 'ws', workflowId: 'wf', definition: { nodes: [], edges: [] } } as unknown as WorkflowVersionV3
-function fixture(moving = false) {
+function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob = false) {
   let reads = 0
   const sql = { query: async (text: string) => {
     if (text.includes('from runs where')) { reads++; return { rows: [{ revision: moving && reads > 1 ? '4' : '3', stopped: false, outcome: 'pending', execution_state: 'running' }] } }
@@ -15,6 +15,8 @@ function fixture(moving = false) {
       { id: 'C', attempt: 2, revision: '2', native_revision: '0', state: 'waiting', outcome: null, started_at: '2026-10-01T00:00:01.000Z', native_session_id: 'native-C', harness: 'codex' },
       { id: 'B', attempt: 1, revision: '0', native_revision: '0', state: 'queued', outcome: null, started_at: null, native_session_id: null, harness: 'codex' }] }
     if (text.includes('from durable_interactions')) return { rows: [] }
+    if (text.includes('from workflow_job_executions w join job_executions')) return { rows: jobs.map((job) => ({ ...job,
+      revision: movingJob && reads > 1 ? '10' : job.revision })) }
     if (text.includes('as high_water')) return { rows: [{ high_water: '9007199254740993', retained_from: '1', observed: 1 }] }
     if (text.startsWith('select a.sequence') || text.startsWith('with normalized')) return { rows: [] }
     throw new Error(`Unexpected snapshot SQL ${text}`)
@@ -39,5 +41,21 @@ describe('Run activity snapshot', () => {
     expect(result.active[0]).toMatchObject({ outcome: null, evidence: 'unknown' }); expect(result.active[0]?.native).toBeUndefined()
     expect(projectNativeActivityFacts([{ ...row, status: 'completed', native_session_id: 'child-session' }], context).active).toEqual([])
     expect(JSON.stringify(result)).not.toContain('parent-session')
+  })
+  it('retains genuine Job refs, pending output finalization and independent Job record revisions', async () => {
+    const job = { id: 'job-real-id', attempt_id: 'actual-attempt-id', operation_id: 'actual-operation-id', revision: '9',
+      node_id: 'job-node', definition_id: 'job-definition', definition_revision: 4, definition_version_id: 'job-version', pinned: true,
+      phase: 'terminal', outcome: 'succeeded', stopped: true, publication: 'collecting', started_at: '2026-10-01T00:00:00.000Z',
+      finished_at: '2026-10-01T00:00:01.000Z', created_at: '2026-10-01T00:00:00.000000Z' }
+    const mixed = { ...version, definition: { ...version.definition, nodes: [{ kind: 'job' as const, id: 'job-node', name: 'Build',
+      jobDefinitionId: 'job-definition', jobDefinitionRevision: 4, jobDefinitionVersionId: 'job-version' }] } }
+    const value = await readRunActivitySnapshot(fixture(false, [job]), scope, mixed)
+    const projected = value.active.find((entry) => entry.ref.kind === 'execution' && entry.ref.executionId === job.id)
+    expect(projected).toMatchObject({ ref: { kind: 'execution', executionId: job.id, attemptKey: job.attempt_id }, phase: 'finalizing', outcome: 'succeeded' })
+    expect(projected).not.toHaveProperty('native')
+    expect(value.sourceRevisions).toContainEqual({ source: 'execution', id: job.id, revision: '9' })
+    await expect(readRunActivitySnapshot(fixture(false, [job], true), scope, mixed)).rejects.toMatchObject({ code: 'ACTIVITY_SNAPSHOT_CONFLICT' })
+    await expect(readRunActivitySnapshot(fixture(false, [{ ...job, pinned: false }]), scope, mixed)).rejects.toMatchObject({ code: 'ACTIVITY_OWNER_CONFLICT' })
+    await expect(readRunActivitySnapshot(fixture(false, [{ ...job, definition_version_id: 'changed' }]), scope, mixed)).rejects.toMatchObject({ code: 'ACTIVITY_OWNER_CONFLICT' })
   })
 })

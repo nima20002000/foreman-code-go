@@ -21,15 +21,26 @@ export function projectRunBoardSnapshot(accepted: AcceptedRepeatStartV1): Extrac
     kind: 'available', workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
     workflowVersionId: run.workflowVersionId, capturedAt: run.createdAt,
     nodes: board.nodes.map((node, index) => {
+      const name = node.name ?? node.label
+      if (!name) throw new DomainError('RUN_SNAPSHOT_PIN_CONFLICT', 'A saved board node has no name.', 409)
+      const presentation = { id: node.id, name,
+        position: node.position ? { x: node.position.x, y: node.position.y } : { x: 64 + index * 300, y: 120 },
+        size: { width: node.width ?? 208, height: node.height ?? 112 } }
+      if (node.kind === 'job') {
+        const pinned = version.definition.nodes.find((item) => item.id === node.id)
+        if (pinned?.kind !== 'job' || pinned.jobDefinitionId !== node.jobDefinitionId
+          || pinned.jobDefinitionRevision !== node.jobDefinitionRevision || pinned.jobDefinitionVersionId !== node.jobDefinitionVersionId) {
+          throw new DomainError('RUN_SNAPSHOT_PIN_CONFLICT', 'A board Job node must match its exact admitted definition pin.', 409)
+        }
+        return { ...presentation, kind: 'job' as const, jobDefinitionId: node.jobDefinitionId,
+          jobDefinitionRevision: node.jobDefinitionRevision, jobDefinitionVersionId: node.jobDefinitionVersionId }
+      }
       const configurationId = run.agentConfigurationVersionIds[node.agentId]
       if (!configurationId || configurationId !== version.agentConfigurationVersionIds[node.agentId]) throw new DomainError(
         'RUN_SNAPSHOT_PIN_CONFLICT', 'A board node is missing its exact admitted Agent configuration pin.', 409)
-      const name = node.name ?? node.label
-      if (!name) throw new DomainError('RUN_SNAPSHOT_PIN_CONFLICT', 'A saved board node has no name.', 409)
       return {
-        id: node.id, name, agentId: node.agentId, agentConfigurationVersionId: configurationId,
-        position: node.position ? { x: node.position.x, y: node.position.y } : { x: 64 + index * 300, y: 120 },
-        size: { width: node.width ?? 208, height: node.height ?? 112 },
+        ...presentation, ...(node.kind === undefined ? {} : { kind: node.kind }),
+        agentId: node.agentId, agentConfigurationVersionId: configurationId,
       }
     }),
     // A whitelist, not an object spread: future configuration fields must not leak.
