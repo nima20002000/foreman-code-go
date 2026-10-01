@@ -106,3 +106,21 @@ it('keeps accepted SDK prompt identity when the task observer detaches before th
     assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 1)
   } finally { await native.dispose() }
 })
+
+it('uses the selected SDK history/cursor methods for a root and selected answer on older pages', async () => {
+  const server = new FixtureServer()
+  const calls: string[] = []
+  const native = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpServerName: 'graphql', clientFactory: sdkQualificationClient(calls) })
+  try {
+    const session = await sessionFor(native)
+    const root = server.user('older-sdk-root')
+    server.assistant(String(root.info.id), 'selected older answer')
+    for (let index = 0; index < 250; index++) server.user(`unrelated-${index}`, `unrelated input ${index}`)
+    const history = await native.reconcile(session, 'older-sdk-root')
+    assert.equal(history.terminalResult?.outcome, 'succeeded')
+    assert.equal(history.terminalResult?.output?.text, 'selected older answer')
+    assert(calls.includes('message'))
+    assert(calls.filter(value => value === 'messages').length >= 2)
+    assert(server.calls.some(value => value.path.includes('before=opaque-page%3A')))
+  } finally { await native.dispose() }
+})

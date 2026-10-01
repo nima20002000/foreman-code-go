@@ -90,3 +90,36 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
   }
 }
 export type OpenCodeClientFactory = typeof createOpenCodeBoundFetch
+
+export const OPENCODE_HTTP_BODY_LIMIT = 8_000_000
+
+/** Keep generated SDK text parsing inside the same native-page byte budget. */
+export async function readOpenCodeResponseText(response: Response, ownerSignal?: AbortSignal): Promise<string> {
+  const signal = ownerSignal ? AbortSignal.any([ownerSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000)
+  if (signal.aborted) {
+    await response.body?.cancel().catch(() => undefined)
+    signal.throwIfAborted()
+  }
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let text = ''
+  const abort = () => { void reader.cancel().catch(() => undefined) }
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    while (true) {
+      signal.throwIfAborted()
+      const chunk = await reader.read()
+      signal.throwIfAborted()
+      if (chunk.done) return text + decoder.decode()
+      bytes += chunk.value.byteLength
+      if (bytes > OPENCODE_HTTP_BODY_LIMIT) throw new Error('OpenCode response exceeds the bounded native page buffer.')
+      text += decoder.decode(chunk.value, { stream: true })
+    }
+  } finally {
+    signal.removeEventListener('abort', abort)
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import { callOpenCodeSdk, createOpenCodeSdkClient } from '../src/modules/harnesses/opencodeSdkClient.js'
+import { callOpenCodeSdk, createOpenCodeSdkClient, createOpenCodeSdkTransport } from '../src/modules/harnesses/opencodeSdkClient.js'
 import type { OpenCodeHttpEvidence } from '../src/modules/harnesses/opencodeClient.js'
 import { OpenCodeNativeDeliveryError, type OpenCodeServerController } from '../src/modules/harnesses/opencodeTransport.js'
 
@@ -96,4 +96,70 @@ it('does not relabel decoded bodies when the evidence observer throws', async ()
     if (value.bodyValidity === 'valid') throw new Error('observer failure')
   } }, sdk => sdk.global.health()), /observer failure/)
   assert.deepEqual(evidence.map(value => value.bodyValidity), ['unread', 'valid'])
+})
+
+it('bounds SDK success-body bytes and retains accepted delivery uncertainty without retry', async () => {
+  const evidence: OpenCodeHttpEvidence[] = []
+  let posts = 0
+  let canceled = false
+  const server: OpenCodeServerController = {
+    generation: 1, ownerAgentId: 'owner', expectedVersion: '1.18.31', ensure: async () => {}, dispose: async () => {},
+    request: async () => {
+      posts++
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(new Uint8Array(8_000_001))
+      }, cancel() { canceled = true } }), { headers: { 'content-type': 'application/json' } })
+    },
+  }
+  await assert.rejects(callOpenCodeSdk({ server, ownerAgentId: 'owner', directory: '/work', generation: 1, onEvidence: value => evidence.push(value) },
+    client => client.session.create({ title: 'bounded' })),
+  error => error instanceof OpenCodeNativeDeliveryError && error.certainty === 'uncertain')
+  assert.equal(posts, 1)
+  assert.equal(canceled, true)
+  assert.equal(evidence.at(-1)?.bodyValidity, 'invalid')
+  assert.equal(evidence.at(-1)?.status, 200)
+})
+
+it('cancels an SDK body reader when its owner closes', async () => {
+  const owner = new AbortController()
+  let started!: () => void
+  const read = new Promise<void>(resolve => { started = resolve })
+  let canceled = false
+  const server: OpenCodeServerController = {
+    generation: 1, ownerAgentId: 'owner', expectedVersion: '1.18.31', ensure: async () => {}, dispose: async () => {},
+    request: async () => new Response(new ReadableStream<Uint8Array>({ pull() { started() }, cancel() { canceled = true } }),
+      { headers: { 'content-type': 'application/json' } }),
+  }
+  const pending = createOpenCodeSdkClient({ server, ownerAgentId: 'owner', directory: '/work', generation: 1, ownerSignal: owner.signal }).global.health()
+  const rejected = assert.rejects(pending)
+  await read
+  owner.abort()
+  await rejected
+  assert.equal(canceled, true)
+})
+
+it('fences generation replacement after a decoded SDK body without relabeling valid JSON', async () => {
+  const evidence: OpenCodeHttpEvidence[] = []
+  const server: OpenCodeServerController = {
+    generation: 1, ownerAgentId: 'owner', expectedVersion: '1.18.31', ensure: async () => {}, dispose: async () => {},
+    request: async () => new Response(JSON.stringify({ healthy: true, version: '1.18.31' }), { headers: { 'content-type': 'application/json' } }),
+  }
+  await assert.rejects(createOpenCodeSdkClient({ server, ownerAgentId: 'owner', directory: '/work', generation: 1, onEvidence: value => {
+    evidence.push(value)
+    if (value.bodyValidity === 'valid') Object.assign(server, { generation: 2 })
+  } }).global.health(), /owner changed/)
+  assert.deepEqual(evidence.map(value => value.bodyValidity), ['unread', 'valid'])
+})
+
+it('selected SDK transport cannot silently retarget a foreign URL/directory or workspace', async () => {
+  let posts = 0
+  const server: OpenCodeServerController = {
+    generation: 1, ownerAgentId: 'owner', expectedVersion: '1.18.31', ensure: async () => {}, dispose: async () => {},
+    request: async () => { posts++; return new Response('{}', { headers: { 'content-type': 'application/json' } }) },
+  }
+  const transport = createOpenCodeSdkTransport({ server, ownerAgentId: 'owner', directory: '/work', generation: 1 })
+  await assert.rejects(transport('http://foreign.invalid/session?directory=%2Fwork', { method: 'POST', body: '{}' }))
+  await assert.rejects(transport('http://opencode.invalid/session?directory=%2Fother', { method: 'POST', body: '{}' }))
+  await assert.rejects(transport('http://opencode.invalid/session?directory=%2Fwork', { method: 'POST', body: '{}', headers: { 'x-opencode-workspace': 'other' } }))
+  assert.equal(posts, 0)
 })

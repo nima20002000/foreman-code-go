@@ -1,6 +1,6 @@
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { openCodePermissionTurnId } from './opencodeInteractions.js'
-import { createOpenCodeBoundFetch, type OpenCodeClientFactory } from './opencodeClient.js'
+import { createOpenCodeBoundFetch, OPENCODE_HTTP_BODY_LIMIT, type OpenCodeClientFactory } from './opencodeClient.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -1385,7 +1385,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
   }
 
   private async message(sessionID: string, messageID: string, directory: string, signal: AbortSignal): Promise<OpenCodeMessage | undefined> {
-    const response = await this.options.server.request(withDirectory(`/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(messageID)}`, directory), { method: 'GET' }, signal)
+    const response = await this.clientRequest(withDirectory(`/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(messageID)}`, directory), { method: 'GET' }, signal, this.generation)
     if (response.status === 404) { await response.body?.cancel().catch(() => undefined); return undefined }
     if (!response.ok) throw await responseError(response, 'OPENCODE_MESSAGE_LOOKUP_FAILED', response.status >= 500 ? 'uncertain' : 'definite')
     const message = this.sanitize(object(await readJson(response)))
@@ -1395,7 +1395,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async messagePage(sessionID: string, directory: string, before: string | undefined, signal: AbortSignal): Promise<MessagePage> {
     const query = `/session/${encodeURIComponent(sessionID)}/message?limit=${OPENCODE_HISTORY_PAGE_SIZE}${before ? `&before=${encodeURIComponent(before)}` : ''}`
-    const response = await this.options.server.request(withDirectory(query, directory), { method: 'GET' }, signal)
+    const response = await this.clientRequest(withDirectory(query, directory), { method: 'GET' }, signal, this.generation)
     if (!response.ok) throw await responseError(response, 'OPENCODE_HISTORY_UNAVAILABLE', response.status >= 500 ? 'uncertain' : 'definite')
     const nextCursor = response.headers.get('x-next-cursor')
     const value = this.sanitize(await readJson(response))
@@ -1461,15 +1461,20 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
 
   private async mutate(path: string, init: RequestInit, signal: AbortSignal, requireReady = true, notFoundCode?: string): Promise<unknown> {
     if (signal.aborted) throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_NOT_DISPATCHED', 'The native mutation was canceled before dispatch.', 'definite')
+    const generation = (requireReady ? this.readyGeneration : this.generation) ?? this.generation
     let response: Response
-    try { response = await this.clientRequest(path, init, signal, (requireReady ? this.readyGeneration : this.generation) ?? this.generation) }
+    try { response = await this.clientRequest(path, init, signal, generation) }
     catch (error) {
       if (error instanceof OpenCodeNativeDeliveryError) throw error
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native mutation may have been accepted before the connection failed.', 'uncertain', { cause: error })
     }
     if (!response.ok) throw await responseError(response, response.status === 404 && notFoundCode ? notFoundCode : 'OPENCODE_NATIVE_DELIVERY_REJECTED',
       response.status >= 500 ? 'uncertain' : 'definite')
-    try { return response.status === 204 ? undefined : this.sanitize(await readJson(response)) }
+    try {
+      const result = response.status === 204 ? undefined : this.sanitize(await readJson(response, this.lifetime.signal))
+      if (generation !== this.generation || this.lifetime.signal.aborted) throw new Error('Native mutation owner changed during response read.')
+      return result
+    }
     catch (error) { throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native mutation was accepted but its response body could not be read.', 'uncertain', { cause: error }) }
   }
 
@@ -1616,7 +1621,7 @@ async function readJson(response: Response, signal?: AbortSignal): Promise<unkno
       signal?.throwIfAborted()
       if (done) break
       bytes += value.byteLength
-      if (bytes > 8_000_000) throw new Error('OpenCode response exceeds the bounded native page buffer.')
+      if (bytes > OPENCODE_HTTP_BODY_LIMIT) throw new Error('OpenCode response exceeds the bounded native page buffer.')
       text += decoder.decode(value, { stream: true })
     }
     return JSON.parse(text + decoder.decode())
