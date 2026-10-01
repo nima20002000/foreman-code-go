@@ -1,4 +1,5 @@
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
+import { InteractionActivityProjectionSchema } from "./interaction-activity.js";
 import { z } from "zod";
 import { FileWithRevisionSchema, MessageAttachmentFields } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
@@ -1526,6 +1527,7 @@ export type OperatorConversationStreamEvent = z.infer<typeof OperatorConversatio
 
 export const GetInteractionResponseSchema = z.object({
   interaction: DurableInteractionSchema,
+  activity: InteractionActivityProjectionSchema.optional(),
   review: ReviewStatusSchema.optional(),
   /** Monitoring permission, independent of the interaction's assigned handler. */
   canRespond: z.boolean().optional(),
@@ -1628,3 +1630,12 @@ export * from "./runtimeIdentity.js";
 export * from "./deviceIdentity.js";
 export * from "./activity.js";
 export * from "./activityFixtures.js";
+export * from "./activityChanges.js";
+export * from "./nodePlacement.js";
+export * from "./harnessRegistry.js";
+export * from "./sourceMaterialization.js";
+export * from "./jobs.js";
+export * from "./deviceApplication.js";
+export * from "./remoteJobExecution.js";
+export * from "./jobArtifacts.js";
+export * from "./jobWorkflow.js";

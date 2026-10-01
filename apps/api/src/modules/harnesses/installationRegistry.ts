@@ -52,6 +52,7 @@ export class HarnessInstallationRegistry {
     for (const [key, record] of next) this.installations.set(key, record)
     this.invalidate()
   }
+  list(): readonly HarnessInstallationRecord[] { return [...this.installations.values()].map((record) => structuredClone(record)) }
   invalidate(): void { this.epoch++; this.cache.clear() }
   pin(input: { instanceId: string; hostRef: CanonicalMachineReference; harnessInstallationId: string; connectionGeneration: string; environmentGeneration: string }): RegistryHarnessSelection {
     const instance = this.instances.select(input.instanceId)

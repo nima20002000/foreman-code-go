@@ -79,6 +79,58 @@
     "./interaction-activity": {
       "types": "./dist/interaction-activity.d.ts",
       "import": "./dist/interaction-activity.js"
+    },
+    "./device-connection": {
+      "types": "./dist/deviceConnection.d.ts",
+      "import": "./dist/deviceConnection.js"
+    },
+    "./node-placement": {
+      "types": "./dist/nodePlacement.d.ts",
+      "import": "./dist/nodePlacement.js"
+    },
+    "./harness-registry": {
+      "types": "./dist/harnessRegistry.d.ts",
+      "import": "./dist/harnessRegistry.js"
+    },
+    "./source-materialization": {
+      "types": "./dist/sourceMaterialization.d.ts",
+      "import": "./dist/sourceMaterialization.js"
+    },
+    "./claude": {
+      "types": "./dist/claude.d.ts",
+      "import": "./dist/claude.js"
+    },
+    "./placement-readback": {
+      "types": "./dist/placementReadback.d.ts",
+      "import": "./dist/placementReadback.js"
+    },
+    "./artifact-edges": {
+      "types": "./dist/artifactEdges.d.ts",
+      "import": "./dist/artifactEdges.js"
+    },
+    "./remote-execution": {
+      "types": "./dist/remoteExecution.d.ts",
+      "import": "./dist/remoteExecution.js"
+    },
+    "./jobs": {
+      "types": "./dist/jobs.d.ts",
+      "import": "./dist/jobs.js"
+    },
+    "./device-application": {
+      "types": "./dist/deviceApplication.d.ts",
+      "import": "./dist/deviceApplication.js"
+    },
+    "./remote-job-execution": {
+      "types": "./dist/remoteJobExecution.d.ts",
+      "import": "./dist/remoteJobExecution.js"
+    },
+    "./job-artifacts": {
+      "types": "./dist/jobArtifacts.d.ts",
+      "import": "./dist/jobArtifacts.js"
+    },
+    "./job-workflow": {
+      "types": "./dist/jobWorkflow.d.ts",
+      "import": "./dist/jobWorkflow.js"
     }
   },
   "scripts": {

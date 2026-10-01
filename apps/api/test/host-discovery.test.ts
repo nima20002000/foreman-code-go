@@ -24,6 +24,14 @@ describe('passive target-local discovery', () => {
     expect(found.fingerprint).toMatch(/^[a-f0-9]{64}$/); expect(found.diagnostics).toHaveLength(2)
     expect(spawn).not.toHaveBeenCalled()
   })
+  it('fingerprints both the launcher and explicit native payload', async () => {
+    const directory = await fixture(); const launcher = join(directory, 'launcher'); const payload = join(directory, 'payload')
+    await writeFile(launcher, '#!/bin/sh\n'); await writeFile(payload, 'native-one'); await chmod(launcher, 0o755); await chmod(payload, 0o755)
+    const first = await discoverLauncher(launcher, environment(directory), [payload])
+    expect(first.payloadFingerprints?.map((value) => value.path)).toEqual([launcher, payload])
+    await writeFile(payload, 'native-two')
+    expect((await discoverLauncher(launcher, environment(directory), [payload])).fingerprint).not.toBe(first.fingerprint)
+  })
   it('distinguishes missing, permissions, symlink and interpreter evidence', async () => {
     const directory = await fixture(); const env = environment(directory)
     expect((await discoverLauncher('missing', env)).status).toBe('missing')
@@ -49,8 +57,11 @@ describe('explicit trusted version operation', () => {
     const directory = await fixture(); const launcher = join(directory, 'version')
     await writeFile(launcher, '#!/bin/sh\nprintf "v1\\n"\n'); await chmod(launcher, 0o755)
     expect(() => probeTrustedVersion({ launcher, allowlistedLaunchers: [], environment: {}, neutralCwd: directory })).toThrow('allowlisted')
-    const input = { launcher, allowlistedLaunchers: [launcher], environment: { PATH: '/usr/bin:/bin' }, neutralCwd: directory }
+    const input = { launcher, allowlistedLaunchers: [launcher], environment: { PATH: '/usr/bin:/bin', SECRET_TOKEN: 'must-not-pass' }, neutralCwd: directory }
     expect(await probeTrustedVersion(input)).toMatchObject({ status: 'observed', stdout: 'v1\n', exitCode: 0 })
+    expect(vi.mocked(childProcess.spawn).mock.calls.at(-1)?.slice(0, 2)).toEqual([launcher, ['--version']])
+    expect(vi.mocked(childProcess.spawn).mock.calls.at(-1)?.[2]).toMatchObject({ env: { PATH: '/usr/bin:/bin' }, shell: false })
+    expect(vi.mocked(childProcess.spawn).mock.calls.at(-1)?.[2]?.env).not.toHaveProperty('SECRET_TOKEN')
     await writeFile(launcher, '#!/bin/sh\nwhile :; do printf "xxxxxxxx"; done\n')
     const bounded = await probeTrustedVersion({ ...input, maximumBytes: 16 }); expect(bounded.status).toBe('output-limit'); expect(bounded.stdout.length).toBeLessThanOrEqual(16)
     await writeFile(launcher, '#!/bin/sh\nsleep 30\n')

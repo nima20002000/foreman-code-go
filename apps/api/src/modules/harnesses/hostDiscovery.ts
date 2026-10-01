@@ -32,9 +32,13 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
   const candidates = requested.includes('/') ? [isAbsolute(requested) ? requested : resolve(environment.cwd, requested)] : directories.map((entry) => join(entry, requested))
   const evidence: LauncherEvidence = { requested, resolvedLauncher: null, fingerprint: null, status: 'missing', interpreter: null, diagnostics, environment: structuredClone(environment), checkedAt: new Date().toISOString() }
   for (const candidate of candidates) {
-    try { await lstat(candidate) } catch { continue }
+    let symbolicLink: boolean
+    try { symbolicLink = (await lstat(candidate)).isSymbolicLink() } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') evidence.status = 'unreadable'
+      continue
+    }
     let resolved: string
-    try { resolved = await realpath(candidate) } catch { evidence.status = 'broken-symlink'; continue }
+    try { resolved = await realpath(candidate) } catch { evidence.status = symbolicLink ? 'broken-symlink' : 'unreadable'; continue }
     try { await access(resolved, constants.X_OK); if (!(await stat(resolved)).isFile()) throw new Error('Not a file') }
     catch { evidence.status = 'not-executable'; continue }
     try {
@@ -90,8 +94,12 @@ export function probeTrustedVersion(input: {
   const limit = input.maximumBytes ?? 16_384
   const timeout = input.timeoutMs ?? 5_000
   if (limit < 1 || timeout < 1) throw new Error('Invalid version probe limits.')
+  const environment: NodeJS.ProcessEnv = {}
+  for (const key of ['PATH', 'LANG', 'LC_ALL', 'TMPDIR']) {
+    if (input.environment[key] !== undefined) environment[key] = input.environment[key]
+  }
   return new Promise((resolveProbe) => {
-    const child = spawn(input.launcher, ['--version'], { cwd: input.neutralCwd, env: input.environment, stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: false })
+    const child = spawn(input.launcher, ['--version'], { cwd: input.neutralCwd, env: environment, stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: false })
     let stdout = ''; let stderr = ''; let bytes = 0
     let status: VersionProbeResult['status'] = 'observed'
     const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch { child.kill('SIGKILL') } } }
