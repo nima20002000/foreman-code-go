@@ -34,12 +34,16 @@ export interface OpenCodeServerController {
   /** Changes when the resident process is replaced, including automatic recovery. */
   readonly generation?: number
   readonly nativePid?: number | undefined
+  /** Pure current-resident proof; absent after exit, disposal or unconfirmed cleanup. */
+  readonly residentGeneration?: number | undefined
   /** Provenance from unexpanded configuration, never from resolved secret values. */
   readonly mcpCredentialReferences?: Readonly<Record<string, string>>
   inspectMcpConfiguration?(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined>
   redact?<T>(value: T): T
   ensure(signal?: AbortSignal): Promise<void>
   request(path: string, init?: RequestInit, signal?: AbortSignal, expectedGeneration?: number): Promise<Response>
+  /** Authenticated bounded GET only; never starts, recovers or attaches a process. */
+  requestResident?(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined>
   dispose(): Promise<void>
   restart?(environment: ChildProcessEnvironment, signal?: AbortSignal): Promise<void>
 }
@@ -108,6 +112,10 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
 
   get ownerAgentId(): string { return this.options.ownerAgentId }
   get nativePid(): number | undefined { return this.child?.pid }
+  get residentGeneration(): number | undefined {
+    return !this.cleanupRequired && !this.disposal && this.child?.exitCode === null && this.child.signalCode === null
+      && this.baseUrl && this.password ? this.generation : undefined
+  }
   get disabledAppMcpServerName(): string | undefined {
     return this.options.appMcpAccess === 'none' ? this.options.appMcpServerName ?? APP_MCP_SERVER_NAME : undefined
   }
@@ -196,6 +204,26 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         'OpenCode was replaced; restore and verify native configuration before dispatching work.', 'definite')
     }
     return this.rawRequest(path, init, signal)
+  }
+
+  async requestResident(path: string, signal: AbortSignal, expectedGeneration: number): Promise<Response | undefined> {
+    signal.throwIfAborted()
+    const url = new URL(path, 'http://opencode.invalid')
+    if (url.origin !== 'http://opencode.invalid'
+      || !/^\/(?:permission|session\/[^/]+(?:\/message\/[^/]+)?)$/.test(url.pathname)
+      || [...url.searchParams.keys()].some(key => key !== 'directory')) return undefined
+    const child = this.child
+    const epoch = this.epoch
+    const current = () => !this.cleanupRequired && !this.disposal && this.child === child
+      && child !== undefined && child.exitCode === null && child.signalCode === null
+      && !!this.baseUrl && !!this.password && this.generation === expectedGeneration && this.epoch === epoch
+    if (!current()) return undefined
+    const response = await this.rawRequest(path, { method: 'GET' }, signal)
+    if (!current() || signal.aborted) {
+      await response.body?.cancel().catch(() => undefined)
+      return undefined
+    }
+    return response
   }
 
   dispose(): Promise<void> {

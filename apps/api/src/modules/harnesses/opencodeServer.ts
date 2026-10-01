@@ -1,3 +1,4 @@
+import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { openCodePermissionTurnId } from './opencodeInteractions.js'
 import { createOpenCodeBoundFetch, type OpenCodeClientFactory } from './opencodeClient.js'
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, chatExcludedAppMcpServerNames, isAppLauncher } from './appMcpLauncher.js'
@@ -82,6 +83,8 @@ interface OwnedTurn {
 }
 interface SessionState {
   readonly connectionId: string
+  responsesInFlight: Set<string>
+  responsesUncertain: Set<string>
   autoReplies: OpenCodeNativeAutoReplies
   directory: string
   configuration: OpenCodeHarnessConfiguration
@@ -534,6 +537,88 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     delete turn.files
   }
 
+  async inspectResponseAvailability(session: NativeSessionReference, query: NativeResponseAvailabilityQuery,
+    signal?: AbortSignal): Promise<NativeResponseAvailability> {
+    const unavailable = (reason: NativeResponseAvailability['reason'], recovery = false): NativeResponseAvailability => ({
+      ...unavailableNativeResponse(session, query, reason), ...(recovery ? { state: 'recovery_required' as const } : {}),
+    })
+    const ownerSignal = this.signal(signal)
+    const combined = AbortSignal.any([ownerSignal, AbortSignal.timeout(30_000)])
+    const state = this.sessions.get(session.nativeSessionId)
+    if (!state || combined.aborted) return unavailable('session_closed')
+    if (session.harness !== 'opencode' || session.providerVersion !== this.providerVersion) return unavailable('identity_mismatch')
+    if (query.nativeRequestType !== 'permission.asked' || usesOpenCodeNativeAuto(state.configuration)) return unavailable('unsupported')
+    const generation = this.generation
+    const resident = this.options.server.requestResident
+    if (!resident) return unavailable('unsupported')
+    const current = () => !combined.aborted && this.sessions.get(session.nativeSessionId) === state
+      && this.generation === generation && this.readyGeneration === generation
+      && this.options.server.residentGeneration === generation
+      && this.options.server.ownerAgentId === this.options.ownerAgentId
+      && this.options.server.expectedVersion === session.providerVersion
+      && harnessProfile('opencode', session.providerVersion) !== null
+      && this.options.server.credentialEnvironmentFingerprint === this.boundEnvironmentFingerprint
+    if (!current()) return unavailable('unqualified', true)
+    if (state.responsesInFlight.has(query.nativeRequestId)) return unavailable('response_in_flight')
+    if (this.responseReceipts.has(JSON.stringify([session.nativeSessionId, query.nativeRequestId]))) return unavailable('request_consumed')
+    if (state.responsesUncertain.has(query.nativeRequestId)) return unavailable('callback_lost', true)
+    const read = async (path: string): Promise<unknown> => {
+      if (!current()) throw new Error('Native response owner changed.')
+      const response = await resident.call(this.options.server, withDirectory(path, state.directory), combined, generation)
+      if (!response) throw new Error('Native resident transport is unavailable.')
+      if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new Error('Native response inspection was rejected.') }
+      const value = await readJson(response, combined)
+      if (!current()) throw new Error('Native response owner changed during its read.')
+      return value
+    }
+    try {
+      const permissions = await read('/permission')
+      if (!Array.isArray(permissions)) return unavailable('unqualified')
+      const matching = permissions.filter(value => object(value).id === query.nativeRequestId)
+      if (!matching.length) return unavailable('request_consumed')
+      if (matching.length !== 1) return unavailable('identity_mismatch')
+      const request = object(matching[0])
+      if (typeof request.sessionID !== 'string' || typeof request.permission !== 'string'
+        || !Array.isArray(request.patterns) || !Array.isArray(request.always) || !request.metadata || typeof request.metadata !== 'object') return unavailable('unqualified')
+      const visited = new Set<string>()
+      let owner: string | undefined = request.sessionID
+      while (owner && !visited.has(owner) && visited.size < 256) {
+        visited.add(owner)
+        const native = object(await read(`/session/${encodeURIComponent(owner)}`))
+        if (native.id !== owner || native.directory !== state.directory) return unavailable('identity_mismatch')
+        if (owner === session.nativeSessionId) {
+          try { this.verifyAttachedSession(native, owner, state.directory, state.configuration) }
+          catch { return unavailable('unqualified') }
+          break
+        }
+        owner = typeof native.parentID === 'string' ? native.parentID : undefined
+      }
+      if (owner !== session.nativeSessionId) return unavailable('identity_mismatch')
+      const tool = object(request.tool)
+      const rootId = state.turn?.messageID ?? (state.recoveryCorrelationId ? nativeMessageId(state.recoveryCorrelationId) : undefined)
+      const message = typeof tool.messageID === 'string'
+        ? await read(`/session/${encodeURIComponent(request.sessionID)}/message/${encodeURIComponent(tool.messageID)}`) : undefined
+      if (message && (object(object(message).info).id !== tool.messageID
+        || object(object(message).info).sessionID !== request.sessionID
+        || object(object(message).info).role !== 'assistant')) return unavailable('identity_mismatch')
+      const nativeTurnId = openCodePermissionTurnId({ id: query.nativeRequestId, sessionID: request.sessionID,
+        ...(typeof tool.messageID === 'string' ? { tool: { messageID: tool.messageID } } : {}),
+      }, rootId ? { nativeSessionId: session.nativeSessionId, nativeTurnId: rootId } : undefined, message as OpenCodeMessage | undefined)
+      if (query.expectedNativeTurnId !== undefined && nativeTurnId !== query.expectedNativeTurnId) return unavailable('identity_mismatch')
+      const latest = await read('/permission')
+      if (!Array.isArray(latest)) return unavailable('unqualified')
+      const remaining = latest.filter(value => object(value).id === query.nativeRequestId)
+      if (!remaining.length) return unavailable('request_consumed')
+      if (remaining.length !== 1 || !isDeepStrictEqual(object(remaining[0]), request)) return unavailable('identity_mismatch')
+      if (!current()) return unavailable('callback_lost', true)
+      if (this.responseReceipts.has(JSON.stringify([session.nativeSessionId, query.nativeRequestId]))) return unavailable('request_consumed')
+      if (state.responsesInFlight.has(query.nativeRequestId)) return unavailable('response_in_flight')
+      return { nativeSessionId: session.nativeSessionId, nativeRequestId: query.nativeRequestId,
+        nativeRequestType: query.nativeRequestType, nativeTurnId, generation: `${state.connectionId}:${generation}`,
+        qualified: true, state: 'available', path: 'qualified_recovery', reason: 'qualified_recovery' }
+    } catch { return unavailable(ownerSignal.aborted ? 'session_closed' : 'callback_lost', !ownerSignal.aborted) }
+  }
+
   async pending(session: NativeSessionReference, signal?: AbortSignal): Promise<PendingNativeInteraction | undefined> {
     return (await this.pendingAll(session, signal))[0]
   }
@@ -599,6 +684,8 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (usesOpenCodeNativeAuto(state.configuration)) throw new OpenCodeNativeDeliveryError(
         'OPENCODE_NATIVE_AUTO_RESPONSE_CONFLICT', 'Native automatic handling cannot also accept a routed response.', 'definite',
       )
+      if (state.responsesUncertain.has(nativeRequestId)) throw new OpenCodeNativeDeliveryError(
+        'OPENCODE_PERMISSION_DELIVERY_UNCERTAIN', 'The prior native response remains unresolved; it was not retransmitted.', 'uncertain')
       const pending = await this.pendingReady(session, combined)
       const request = pending.find((item) => item.turn.nativeRequestId === nativeRequestId)
       if (!request) throw new OpenCodeNativeDeliveryError('OPENCODE_PERMISSION_NOT_PENDING', 'That permission request is no longer pending in an owned session.', 'definite')
@@ -614,6 +701,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       const observedSignal = AbortSignal.any([combined, observer.signal, AbortSignal.timeout(5_000)])
       let events: Response | undefined
       let acknowledged = false
+      let dispatchAttempted = false
       let observing: Promise<void> = Promise.resolve()
       const acknowledge = () => {
         const receipt: NativeResponseDeliveryEvidence = {
@@ -631,6 +719,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         boundedMapSet(this.responseReceipts, JSON.stringify([session.nativeSessionId, nativeRequestId]), receipt)
         acknowledged = true
       }
+      state.responsesInFlight.add(nativeRequestId)
       try {
         try {
           events = await this.openEvents(state.directory, observedSignal, false)
@@ -648,6 +737,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         } catch { /* A successful exact HTTP reply remains usable without SSE. */ }
         combined.throwIfAborted()
         try {
+          dispatchAttempted = true
           const result = await this.mutate(withDirectory(`/permission/${encodeURIComponent(nativeRequestId)}/reply`, state.directory), {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reply }),
           }, combined)
@@ -661,7 +751,12 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         }
         // Retain acknowledgement BEFORE any secondary read or caller database commit.
         // A failed pending-list refresh is not a failed native send.
+      } catch (error) {
+        if (dispatchAttempted && !acknowledged
+          && !(error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite')) state.responsesUncertain.add(nativeRequestId)
+        throw error
       } finally {
+        state.responsesInFlight.delete(nativeRequestId)
         observer.abort()
         await observing
         await events?.body?.cancel().catch(() => undefined)
@@ -1492,7 +1587,7 @@ function turnDigest(prompt: string, instructions: AgentInstructionBundle | undef
   return digest(fileIdentity ? JSON.stringify([legacy, fileIdentity]) : legacy)
 }
 function newState(directory: string, configuration: OpenCodeHarnessConfiguration, instructions: AgentInstructionBundle | undefined): SessionState {
-  return { connectionId: randomUUID(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, instructions, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
+  return { connectionId: randomUUID(), responsesInFlight: new Set(), responsesUncertain: new Set(), autoReplies: new OpenCodeNativeAutoReplies(), directory, configuration, instructions, events: [], eventBytes: 0, eventIds: new Set(), pendingIds: new Set(), historyIds: new Set(),
     partTypes: new Map(), ownedIds: new Map(), sequence: 0, turn: undefined }
 }
 function withDirectory(path: string, directory: string): string {
@@ -1506,22 +1601,26 @@ async function responseError(response: Response, code: string, certainty: Native
   await response.body?.cancel().catch(() => undefined)
   return new OpenCodeNativeDeliveryError(code, `OpenCode returned HTTP ${response.status}.`, certainty)
 }
-async function readJson(response: Response): Promise<unknown> {
+async function readJson(response: Response, signal?: AbortSignal): Promise<unknown> {
   if (!response.body) throw new Error('OpenCode response body is missing.')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let bytes = 0
   let text = ''
+  const abort = () => { void reader.cancel().catch(() => undefined) }
+  signal?.addEventListener('abort', abort, { once: true })
   try {
     while (true) {
+      signal?.throwIfAborted()
       const { done, value } = await reader.read()
+      signal?.throwIfAborted()
       if (done) break
       bytes += value.byteLength
       if (bytes > 8_000_000) throw new Error('OpenCode response exceeds the bounded native page buffer.')
       text += decoder.decode(value, { stream: true })
     }
     return JSON.parse(text + decoder.decode())
-  } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
+  } finally { signal?.removeEventListener('abort', abort); await reader.cancel().catch(() => undefined); reader.releaseLock() }
 }
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted()
