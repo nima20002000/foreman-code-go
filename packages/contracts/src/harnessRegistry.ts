@@ -25,7 +25,7 @@ export const HarnessLauncherEvidenceSchema = z.object({
   interpreter: z.string().nullable(), diagnostics: z.array(z.string()), environment: HarnessTargetEnvironmentSchema, checkedAt: z.string().datetime(),
 }).strict()
 export const HostHarnessInstallationSchema = z.object({
-  hostRef: HarnessHostReferenceSchema, harnessInstallationId: Identity, installationFingerprint: Identity,
+  hostRef: HarnessHostReferenceSchema, harnessInstallationId: Identity, installationFingerprint: Identity.nullable(),
   driverId: Identity, driverRevision: Identity, protocolRevision: Identity,
   environmentGeneration: Identity, connectionGeneration: Identity,
   launcher: HarnessLauncherEvidenceSchema, observedVersion: z.string().nullable(), installed: z.boolean(),
@@ -37,7 +37,20 @@ export const PinnedHarnessSelectionSchema = z.object({
   harnessInstallationId: Identity, installationFingerprint: Identity,
 }).strict()
 export type PinnedHarnessSelectionDto = z.infer<typeof PinnedHarnessSelectionSchema>
+/** References to W09/W08 permitted roots, never a new root authority or filesystem proof. */
+export const HarnessWorkspaceRootReferenceSchema = z.object({
+  rootId: z.uuid(), rootPolicyId: Identity, rootPolicyRevision: z.number().int().positive(),
+  workspaceId: Identity, rootPath: z.string().min(1), accessMode: z.enum(['read-only', 'exclusive-write']),
+}).strict()
+export const HarnessHostInventoryMetadataSchema = z.object({
+  hostRef: HarnessHostReferenceSchema, applicationInstallationId: z.uuid(),
+  platform: z.object({ platform: Identity, architecture: Identity }).strict().nullable(),
+  // Null means no authorized canonical-root projection is supplied, not an empty allowlist.
+  workspaceRoots: z.array(HarnessWorkspaceRootReferenceSchema).nullable(),
+}).strict()
+export type HarnessHostInventoryMetadata = z.infer<typeof HarnessHostInventoryMetadataSchema>
 export const HarnessRegistryReadbackSchema = z.object({
+  host: HarnessHostInventoryMetadataSchema.optional(),
   instances: z.array(ConfiguredHarnessInstanceSchema), installations: z.array(HostHarnessInstallationSchema),
 }).strict()
 export type HarnessRegistryReadback = z.infer<typeof HarnessRegistryReadbackSchema>
@@ -67,3 +80,6 @@ export const HostHarnessOverrideListInputSchema = z.object({
 export type HostHarnessOverrideListInput = z.infer<typeof HostHarnessOverrideListInputSchema>
 export const HostHarnessOverrideListSchema = z.object({ overrides: z.array(HostHarnessOverrideSchema) }).strict()
 export const HostHarnessOverrideSaveResultSchema = z.object({ value: HostHarnessOverrideSchema, replayed: z.boolean() }).strict()
+
+export const HARNESS_DISCOVERY_NAMESPACE = 'harness-discovery-v1' as const
+export const HarnessDiscoveryRequestSchema = z.object({ operation: z.literal('discover'), refreshId: z.uuid() }).strict()

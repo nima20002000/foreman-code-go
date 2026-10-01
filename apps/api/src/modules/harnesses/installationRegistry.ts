@@ -6,7 +6,7 @@ export interface HarnessInstallationRecord {
   readonly hostRef: CanonicalMachineReference
   /** Provider executable installation, never the W07 application installationId. */
   readonly harnessInstallationId: string
-  readonly installationFingerprint: string
+  readonly installationFingerprint: string | null
   readonly driverId: string
   readonly driverRevision: string
   readonly protocolRevision: string
@@ -57,7 +57,7 @@ export class HarnessInstallationRegistry {
   pin(input: { instanceId: string; hostRef: CanonicalMachineReference; harnessInstallationId: string; connectionGeneration: string; environmentGeneration: string }): RegistryHarnessSelection {
     const instance = this.instances.select(input.instanceId)
     const record = this.installations.get(`${hostKey(input.hostRef)}:${input.harnessInstallationId}`)
-    if (!record || !record.installed || record.launcher.status !== 'installed' || record.launcher.fingerprint !== record.installationFingerprint
+    if (!record || !record.installationFingerprint || !record.installed || record.launcher.status !== 'installed' || record.launcher.fingerprint !== record.installationFingerprint
       || record.driverId !== instance.driverId || record.driverRevision !== instance.driverRevision
       || record.connectionGeneration !== input.connectionGeneration || record.environmentGeneration !== input.environmentGeneration) {
       throw new Error('Harness installation unavailable or stale on selected host.')
