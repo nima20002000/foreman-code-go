@@ -1,3 +1,4 @@
+import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
 import type { AgentHarness, NativeHarnessEvent, OperatorActivity } from '@graphql/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 
@@ -45,6 +46,7 @@ export function openCodeTurnEvents(sessionId: string, turnId: () => string | nul
 
 /** Classify only structured native evidence. Opaque shell scripts remain commands. */
 export function operatorActivity(event: NativeHarnessEvent, harness: AgentHarness, requestId: string): OperatorActivityChange | undefined {
+  if (harness === 'claude') return claudeConversationActivity(event, requestId)
   const payload = event.payload
   if (harness === 'codex' && ['item.started', 'item.completed', 'item.snapshot'].includes(event.type)) {
     const item = object(payload.item)
