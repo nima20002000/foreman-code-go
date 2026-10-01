@@ -15,6 +15,8 @@ export interface RemoteJobExecutionHostPorts {
   incarnationId: string
   supervisor: PodmanJobSupervisor
   source: JobExecutorPorts['source']
+  /** Mandatory W09 canonical delivery; exact tuple is verified before claim/native entry. */
+  inputs: JobExecutorPorts['inputs']
   appendLog: JobExecutorPorts['appendLog']
   /** Uses main's live, exact job grant; never an SQL connection on the worker. */
   authorize(intent: RemoteJobDispatchIntent, execution: JobExecution, action: 'start'|'read'|'control'|'publish'): Promise<void>
@@ -80,7 +82,7 @@ export class RemoteJobExecutionHost {
           await this.ports.journal.jobAcknowledgeLaunch(intent.operationId, { containerId, supervisorIdentity: name,
             processIdentityDigest: digest({ executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, containerId, supervisorIdentity: name }), startedAt: new Date().toISOString() })
         },
-      }, source: this.ports.source, supervisor: this.ports.supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* Durable spool remains pending across transport loss. */ } },
+      }, source: this.ports.source, inputs: this.ports.inputs, supervisor: this.ports.supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* Durable spool remains pending across transport loss. */ } },
       collectOutputs: async () => { outputsRequested = true },
     }, signal)
     if (result.recoveryRequired || !result.processStopped || !result.outcome) { await this.ports.journal.jobUncertain(intent.operationId, 'OCI entry or physical closure remains uncertain'); return }
@@ -90,7 +92,10 @@ export class RemoteJobExecutionHost {
     const recorded = await this.ports.journal.jobPublication(intent.operationId, 'process_recorded')
     await this.ports.observeReceipt(recorded)
     if (outputsRequested) {
-      await this.ports.authorize(intent, execution, 'publish')
+      try {
+        await this.ports.authorize(intent, execution, 'publish')
+      }
+      catch { await this.ports.observeReceipt(await this.ports.journal.jobPublication(intent.operationId, 'failed')); return }
       await this.ports.observeReceipt(await this.ports.journal.jobPublication(intent.operationId, 'collecting'))
       try { await this.ports.collectOutputs(execution) }
       catch { await this.ports.observeReceipt(await this.ports.journal.jobPublication(intent.operationId, 'failed')); return }
