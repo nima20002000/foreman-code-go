@@ -33,6 +33,7 @@ const AgentPayload = z.object({
   harnessInstallationId: IdSchema, installationFingerprint: IdSchema,
   runtimeContractVersion: z.literal(1), protocolRevision: IdSchema,
   credentialScopeRefs: z.array(IdSchema),
+  profileProofDigest: PlacementDigestSchema.optional(), qualificationDigest: PlacementDigestSchema.optional(),
 }).strict()
 const JobPayload = z.object({
   kind: z.literal('job'), jobConfigurationVersionId: IdSchema, scriptDigest: PlacementDigestSchema,

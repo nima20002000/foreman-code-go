@@ -3,10 +3,15 @@ import type { SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@gr
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { placementDigest, readPlacement } from './binding.js'
-import { sourceMaterializationDigest } from '../sources/bindingHash.js'
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
+function sourceMaterializationDigest(record: SourceMaterializationRecord): string {
+  return commandInputHash({ receipt: record.receipt, sourceBindingHash: record.sourceBindingHash,
+    rootPolicyId: record.rootPolicyId, rootPolicyRevision: record.rootPolicyRevision,
+    operationId: record.operationId, reservationId: record.reservationId }).slice('sha256:'.length)
+}
 
 export function nativePlacementDigest(input: Omit<NativeExecutionPlacement, 'bindingHash'>): string {
-  return placementDigest({ ...input, materialization: { ...input.materialization, finalDispatchBindingHash: null } })
+  return placementDigest({ ...input, materialization: { ...input.materialization, finalDispatchBindingHash: null, state: 'prepared' } })
 }
 export function bindNativeExecution(placement: AcceptedNodePlacement, intent: DispatchIntent,
   materialization: SourceMaterializationRecord, workingTree: VerifiedSourceWorkingTree): NativeExecutionPlacement {
@@ -26,6 +31,10 @@ export function readNativeExecutionBinding(parent: AcceptedNodePlacement, intent
     || receipt.executionId !== intent.executionId || receipt.attemptId !== intent.attemptId
     || receipt.binding.rootId !== source.rootId || receipt.binding.bindingRevision !== source.bindingRevision
     || receipt.binding.snapshotId !== source.snapshotId || receipt.binding.manifestDigest !== source.manifestDigest
+    || binding.materialization.rootPolicyId !== placement.destination.rootPolicyId
+    || binding.materialization.rootPolicyRevision !== placement.destination.rootPolicyRevision
+    || receipt.keyRevision !== (placement.registration?.keyRevision ?? null)
+    || receipt.authorizationRevision !== (placement.registration?.authorizationRevision ?? null)
     || receipt.binding.mainId !== placement.mainId
     || receipt.binding.deviceId !== (placement.hostRef.kind === 'device' ? placement.hostRef.deviceId : null)
     || binding.workingTree.materializationId !== receipt.materializationId

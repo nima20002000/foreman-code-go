@@ -1,4 +1,4 @@
-import { ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
+import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { DispatchIntent, AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import { DomainError } from '../errors.js'
@@ -13,5 +13,18 @@ export function workerExecutionAuthorizer(request: (namespace: string, payload: 
     const result = ExecutionAuthorityResultSchema.parse(reply.payload)
     if (!sameWorkflowValue(result, { version: 1, action, operationId: intent.operationId, attemptId: intent.attemptId,
       bindingHash: intent.bindingHash, owner: intent.owner })) denied()
+  }
+}
+
+export function workerExecutionFactsReader(request: (namespace: string, payload: unknown) => Promise<{ payload: unknown; bytes?: Uint8Array }>) {
+  return async (intent: DispatchIntent, placement: AcceptedNodePlacement) => {
+    const input = ExecutionFactsRequestSchema.parse({ method: 'read-facts', authorization: { version: 1, action: 'read', intent, placement } })
+    const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input)
+    if (reply.bytes?.byteLength) denied()
+    const result = ExecutionFactsResultSchema.parse(reply.payload)
+    if (!sameWorkflowValue(result.intent, intent) || !sameWorkflowValue(result.placement, placement)
+      || result.executionPlacement.executionId !== intent.executionId || result.executionPlacement.attemptId !== intent.attemptId
+      || result.executionPlacement.operationId !== intent.operationId || result.executionPlacement.acceptedBindingHash !== intent.bindingHash) denied()
+    return result
   }
 }

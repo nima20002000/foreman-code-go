@@ -1,5 +1,8 @@
 import { z } from 'zod'
-import { AcceptedNodePlacementSchema, DispatchIntentSchema } from './nodePlacement.js'
+import { AgentConfigurationVersionSchema } from './index.js'
+import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnessInstallationSchema } from './harnessRegistry.js'
+import { HarnessQualificationSchema } from './harnessQualification.js'
+import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema } from './nodePlacement.js'
 export const ExecutionAuthorityRequestSchema = z.object({ version: z.literal(1),
   action: z.enum(['start', 'read', 'control']), intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema,
 }).strict()
@@ -9,3 +12,10 @@ export const ExecutionAuthorityResultSchema = z.object({ version: z.literal(1),
 }).strict()
 export const EXECUTION_AUTHORITY_EXTENSION = { namespace: 'execution-authority-v1', version: 1 as const,
   role: 'duplex' as const, maxJsonBytes: 256 * 1024, maxBinaryBytes: 0 }
+
+export const ExecutionFactsRequestSchema = z.object({ method: z.literal('read-facts'), authorization: ExecutionAuthorityRequestSchema }).strict().refine(value => value.authorization.action === 'read')
+export const ExecutionFactsResultSchema = z.object({ version: z.literal(1), intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema,
+  executionPlacement: NativeExecutionPlacementSchema, configuration: z.lazy(() => AgentConfigurationVersionSchema),
+  harness: z.object({ override: HostHarnessOverrideSchema, profileProof: HostHarnessProfileEvidenceSchema,
+    installation: HostHarnessInstallationSchema, qualification: HarnessQualificationSchema }).strict(),
+}).strict()

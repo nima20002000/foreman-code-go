@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, ApprovalResponseOptionSchema } from './index.js'
-import { AcceptedNodePlacementSchema, DispatchIntentSchema } from './nodePlacement.js'
+import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema } from './remoteExecution.js'
-const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema }
+const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional() }).strict(),
   z.object({ method: z.literal('start-turn'), ...binding, prompt: z.string().min(1).max(1_000_000), correlationId: z.string().min(1) }).strict(),
