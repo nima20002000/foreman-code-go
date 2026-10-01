@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
 import { SourceManifestSchema, SourceHashSchema, RootBindingSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
+import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 
 export const SourceActionSchema = z.enum(['sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind'])
 export const SourceToolNameSchema = z.enum(['source_list', 'source_get', 'source_approve', 'source_root_bind', 'source_root_get', 'source_root_list'])
@@ -61,10 +62,18 @@ export type SourceMaterializationRecord = z.infer<typeof SourceMaterializationRe
 export const SourceRootListInputSchema = z.object({ workspaceId: IdSchema, limit: z.number().int().positive().max(100).default(100) }).strict()
 export const SourceRootListResultSchema = z.object({ items: z.array(SourceRootRecordSchema).max(100), readiness: z.literal('metadata-only') }).strict()
 
+export const SourceCwdAttestationSchema = z.object({ version: z.literal(1), materializationId: z.uuid(),
+  executionId: IdSchema, attemptId: IdSchema, operationId: IdSchema, sourceBindingHash: SourceHashSchema,
+  relativeCwd: z.string().max(1024), canonicalCwd: z.string().startsWith('/'), filesystem: RootFilesystemIdentitySchema,
+  directoryIdentityHash: SourceHashSchema, accessMode: z.enum(['read-only', 'exclusive-write']), attestationDigest: SourceHashSchema,
+}).strict()
+export type SourceCwdAttestation = z.infer<typeof SourceCwdAttestationSchema>
+
 export const VerifiedSourceWorkingTreeSchema = z.object({ materializationId: z.uuid(), materializationDigest: SourceHashSchema,
   canonicalProjectRoot: z.string().startsWith('/'), canonicalCwd: z.string().startsWith('/'), directoryIdentityHash: SourceHashSchema,
   filesystem: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
   accessMode: z.enum(['read-only', 'exclusive-write']),
+  cwdAttestation: SourceCwdAttestationSchema.optional(),
   privateGit: z.object({ gitDirectory: z.string().startsWith('/'), generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict().nullable(),
 }).strict()
 export type VerifiedSourceWorkingTree = z.infer<typeof VerifiedSourceWorkingTreeSchema>

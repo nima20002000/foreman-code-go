@@ -19,6 +19,7 @@ import { artifactEdgeMigration } from './artifactEdgeMigration.js'
 import { jobArtifactStorageMigration } from './jobArtifactStorageMigration.js'
 import { jobOutputAdmissionMigration } from './jobOutputAdmissionMigration.js'
 import { jobInputAdmissionMigration } from './jobInputAdmissionMigration.js'
+import { agentPlacementProducerMigration } from './agentPlacementProducerMigration.js'
 import { sourceMetadataMigration } from '../modules/sources/migration.js'
 import { workspaceRootPoliciesMigration } from '../modules/sources/rootPoliciesMigration.js'
 import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
@@ -796,6 +797,7 @@ export const migrations = [
   jobArtifactStorageMigration,
   jobOutputAdmissionMigration,
   jobInputAdmissionMigration,
+  agentPlacementProducerMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
