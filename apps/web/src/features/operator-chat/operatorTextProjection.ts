@@ -58,10 +58,11 @@ export function projectOperatorEnvelope(previous: OperatorTextProjection | undef
     || !['text.append', 'text.replace'].includes(change.kind)) return previous
   if (change.kind !== 'text.append' && change.kind !== 'text.replace' || change.channel === 'user') return previous
   const current = previous?.requestId === activeRequestId ? previous : undefined
-  const partId = change.partId ?? change.itemId
   if (envelope.native.itemId !== change.itemId) return previous
   const nativeKey = operatorTextPartKey({ ...envelope.native, partId: change.partId ?? envelope.native.partId }, change.channel ?? 'assistant')
-  const saved = messages.find((message) => message.requestId === activeRequestId && (message.nativeMessageId === change.itemId || message.activityNative?.partId === partId))
+  const saved = messages.find((message) => message.requestId === activeRequestId && (message.activityNative
+    ? operatorTextPartKey(message.activityNative, message.activityChannel) === nativeKey
+    : message.nativeMessageId === change.itemId))
   // A reconnect may replay buffered deltas already represented by this canonical part.
   if (change.kind === 'text.append' && saved) return previous
   const eventKey = envelope.source.eventId ? JSON.stringify([envelope.owner, envelope.native, envelope.source.eventId]) : undefined
