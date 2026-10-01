@@ -101,7 +101,7 @@ export class AgentChatCommands {
       outcome = { ...outcome, acceptedControl: control }
       const evidence = responseEvidence?.()
       const parsed = evidence ? ChatResponseAcknowledgmentSchema.safeParse(evidence) : undefined
-      if (parsed?.success && parsed.data.harness === control.native.harness && parsed.data.nativeSessionId === control.native.sessionId
+      if (parsed?.success && parsed.data.harness === control.native.harness && parsed.data.providerVersion === control.native.providerVersion && parsed.data.nativeSessionId === control.native.sessionId
         && parsed.data.nativeRequestId === control.native.requestId && parsed.data.nativeRequestType === control.native.requestType
         && parsed.data.optionId === control.choice.optionId && parsed.data.semantic === control.choice.semantic) {
         outcome.providerAcknowledgment = parsed.data

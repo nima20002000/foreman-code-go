@@ -9,7 +9,7 @@ export function acceptedResponseControl(state: AgentChatState, nativeRequestId: 
     || conversation.nativeSession?.nativeSessionId !== pending.session.nativeSessionId
     || active.nativeTurnId !== pending.turn.nativeTurnId) return undefined
   return AcceptedChatResponseControlSchema.parse({ schemaVersion: 1, kind: 'respond', conversationId: conversation.id,
-    modelRequestId: active.requestId, scope, native: { harness: pending.session.harness, sessionId: pending.session.nativeSessionId,
+    modelRequestId: active.requestId, scope, native: { harness: pending.session.harness, providerVersion: pending.session.providerVersion, sessionId: pending.session.nativeSessionId,
       turnId: pending.turn.nativeTurnId, requestId: nativeRequestId, requestType: pending.nativeRequestType },
     choice: { optionId: option.optionId, semantic: option.semantic } })
 }

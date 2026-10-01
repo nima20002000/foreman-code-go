@@ -33,7 +33,7 @@ export type NativeInteractionResponseAvailability = z.infer<typeof NativeInterac
 export const AcceptedChatResponseControlSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('respond'), conversationId: z.string().min(1), modelRequestId: z.string().min(1),
   scope: ActivityScopeSchema,
-  native: z.object({ harness: z.string().min(1), sessionId: z.string().min(1), turnId: z.string().min(1),
+  native: z.object({ harness: z.string().min(1), providerVersion: z.string().min(1).optional(), sessionId: z.string().min(1), turnId: z.string().min(1),
     requestId: z.string().min(1), requestType: z.string().min(1) }).strict(),
   choice: z.object({ optionId: z.string().min(1), semantic: z.string().min(1) }).strict(),
 }).strict().superRefine((value, context) => {
