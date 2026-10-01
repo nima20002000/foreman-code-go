@@ -111,7 +111,8 @@ export class ProductionDeviceRuntime {
     if (!this.listenerConfig) return { endpoint: null, available: false, reason: 'listener-unconfigured' }
     const endpoint = this.listenerConfig.advertisedEndpoint ?? null
     if (!endpoint) return { endpoint, available: false, reason: 'endpoint-unconfigured' }
-    return { endpoint, available: this.listenerStarted, reason: this.listenerStarted ? null : 'listener-not-started' }
+    const tlsTrust = this.listenerStarted ? this.listener?.publicTlsTrust() : undefined
+    return { endpoint, available: this.listenerStarted, reason: this.listenerStarted ? null : 'listener-not-started', ...(tlsTrust ? { tlsTrust } : {}) }
   }
   async startListener(): Promise<void> {
     this.assertOpen()
