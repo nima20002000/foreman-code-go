@@ -13,6 +13,28 @@ runtime/persistence checks as the CLI and returns the worker handle with B's
 the real domain handlers and grants. No empty dispatch handler or dynamic plugin
 loader is installed by this package. The CLI uses no extensions by default.
 
+The worker also loads `approved-roots.json` from its private state directory when
+present. This exact shared W09 allowlist is human-only configuration because it
+expands the worker's filesystem scope. Main HTTP/MCP operations may select an
+approved base and relative folder; they cannot supply an allowlist, arbitrary
+absolute path, or modify this file. No configured allowlist means no root handler.
+
+After the explicit root/install approval gate, the exported read-only
+`qualifyApprovedRootAllowlist` helper can record approved canonical base/runtime
+paths and their filesystem identities. Persist the reviewed result as an
+OS-user-owned private 0600 file, separate from versioned app code. This workstream
+does not create or approve real roots, change filesystem modes, or write that
+configuration on a laptop. Root paths must already exist and be persistent.
+
+Startup binds the file to the selected main/device/installation, verifies every
+approved inode/mount identity without refreshing mismatches, and registers the
+actual W09 `workspace-roots-v1` attestation/browse/source-namespace handler through
+W07's authenticated channel. Each request checks its current boot, connection,
+key/authorization revisions and approved base/access scope before reading the
+allowlist or target filesystem. Changed config is re-read and fenced; additions
+require an approved restart to negotiate the startup scope. Updates/rollback keep
+the file in persistent state. Doctor does not disclose these private paths.
+
 ## Build and approve an artifact
 
 Build on the source-pinned main checkout after the orchestrator integrates W07-A/B

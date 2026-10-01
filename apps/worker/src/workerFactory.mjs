@@ -4,8 +4,13 @@ import { createWorkerConnection } from '../../../apps/api/src/modules/devices/wo
 import { hostFacts, requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
 import { validateManifest } from './installation.mjs';
 import { startWorker } from './runtime.mjs';
+import { approvedRootExtensions } from './rootExtension.mjs';
 
 export { createWorkerConnection };
+export { approvedRootExtensions };
+// Read-only qualification helper for the explicit human installation gate only.
+// Startup consumes and verifies the approved facts; it never calls this helper.
+export { qualifyApprovedRootAllowlist } from '../../../apps/api/src/modules/sources/rootAttestation.ts';
 
 export async function prepareWorkerState(stateDirectory) {
   const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
@@ -23,6 +28,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [] })
   const manifest = await prepareWorkerState(stateDirectory);
   return startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, createConnection: async ({ bootId }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
-    return createWorkerConnection({ pairing, bootId, appVersion: manifest.version, extensions });
+    const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
+    return createWorkerConnection({ pairing, bootId, appVersion: manifest.version, extensions: [...extensions, ...rootExtensions] });
   } });
 }

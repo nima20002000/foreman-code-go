@@ -16,12 +16,13 @@ if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease) || !['x64', '
 // Fresh directories only: never mix files from another release or ship credentials.
 const output = resolve(outputDirectory); await mkdir(output, { mode: 0o700 }); await mkdir(join(output, 'src'));
 const built = await build({ absWorkingDir: root, entryPoints: { cli: 'apps/worker/src/cli.mjs', worker: 'apps/worker/src/workerFactory.mjs' }, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle',
-  alias: { '@graphql/contracts/device-identity-node': './packages/contracts/src/deviceIdentityNode.ts', '@graphql/contracts/device-identity': './packages/contracts/src/deviceIdentity.ts', '@graphql/contracts/device-connection': './packages/contracts/src/deviceConnection.ts', '@graphql/contracts/device-application': './packages/contracts/src/deviceApplication.ts' },
+  alias: { '@graphql/contracts/device-identity-node': './packages/contracts/src/deviceIdentityNode.ts', '@graphql/contracts/device-identity': './packages/contracts/src/deviceIdentity.ts', '@graphql/contracts/device-connection': './packages/contracts/src/deviceConnection.ts', '@graphql/contracts/device-application': './packages/contracts/src/deviceApplication.ts', '@graphql/contracts/workspace-root-policies': './packages/contracts/src/workspaceRootPolicies.ts', '@graphql/contracts/source-materialization': './packages/contracts/src/sourceMaterialization.ts' },
   define: { 'process.env.WS_NO_BUFFER_UTIL': '"1"', 'process.env.WS_NO_UTF_8_VALIDATE': '"1"' },
   banner: { js: "import { createRequire as workerCreateRequire } from 'node:module'; const require = workerCreateRequire(import.meta.url);" } });
-const allowedApiModules = new Set(['connectionSupervisor.ts', 'deviceWire.ts', 'deviceCarrier.ts', 'workerConnection.ts', 'deviceApplicationChannel.ts']);
+const allowedApiModules = new Set(['connectionSupervisor.ts', 'deviceWire.ts', 'deviceCarrier.ts', 'workerConnection.ts', 'deviceApplicationChannel.ts'].map((name) => `apps/api/src/modules/devices/${name}`));
+for (const name of ['rootAttestation.ts', 'privateFilesystem.ts', 'manifest.ts']) allowedApiModules.add(`apps/api/src/modules/sources/${name}`);
 for (const source of Object.keys(built.metafile.inputs)) {
-  if (source.startsWith('apps/api/') && !(source.startsWith('apps/api/src/modules/devices/') && allowedApiModules.has(source.split('/').at(-1)))) throw new Error(`Forbidden control-plane import: ${source}`);
+  if (source.startsWith('apps/api/') && !allowedApiModules.has(source)) throw new Error(`Forbidden control-plane import: ${source}`);
 }
 for (const entry of Object.values(built.metafile.outputs)) for (const dependency of entry.imports) {
   if (dependency.external && !isBuiltin(dependency.path)) throw new Error(`Unbundled dependency: ${dependency.path}`);
