@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DeviceSessionBindingSchema, type DeviceSessionBinding } from './deviceConnection.js'
+import type { DeviceSessionBinding } from './deviceConnection.js'
 import { DispatchIntentSchema, MachineReferenceSchema } from './nodePlacement.js'
 import { RemoteJobDispatchIntentSchema } from './remoteJobExecution.js'
 
@@ -8,12 +8,13 @@ export const RESOURCE_TELEMETRY_CAPABILITY = 'resource-telemetry/v1' as const
 export const TELEMETRY_LIMITS = { intervalMs: 2000, freshMs: 6000, lastKnownMs: 900_000,
   batchBytes: 65_536, rows: 64, devices: 32, cacheBytes: 33_554_432, outstanding: 2, queuedFrames: 2 } as const
 const Id = z.string().min(1).max(128).refine(value => new TextEncoder().encode(value).length <= 128)
-const UInt = z.string().regex(/^(0|[1-9][0-9]{0,19})$/).refine(value => BigInt(value) <= 18_446_744_073_709_551_615n)
+export const TelemetryUIntSchema = z.string().regex(/^(0|[1-9][0-9]{0,19})$/).refine(value => BigInt(value) <= 18_446_744_073_709_551_615n)
 const Bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const Time = Bytes
 export const TelemetryReasonSchema = z.enum(['not-yet-sampled', 'unsupported', 'source-failure', 'counter-invalid',
   'permission-denied', 'namespace-restricted', 'stale', 'offline', 'ended', 'closed', 'ownership-unavailable',
-  'shared-restricted', 'limit', 'evicted', 'clock-discontinuity', 'warmup'])
+  'shared-restricted', 'limit', 'evicted', 'clock-discontinuity', 'warmup', 'process-tree-partial',
+  'short-lived-unobserved', 'identity-changed', 'escaped-boundary', 'nested-boundary', 'source-missing'])
 export const TelemetryHostSchema = z.object({ hostRef: MachineReferenceSchema,
   deviceId: z.uuid(), applicationInstallationId: Id, bootId: z.uuid(), runtimeEpoch: Id,
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable(),
@@ -56,7 +57,7 @@ export const TelemetryCoverageSchema = z.object({ boundary: z.enum(['complete-bo
 export const TelemetryCpuSchema = z.object({ basis: z.enum(['host-active-ticks', 'cgroup-usage-usec', 'process-utime-stime']),
   normalization: z.literal('whole-host-capacity'), logicalCpuCount: z.number().int().min(1).max(4096),
   hostCapacityPercent: z.number().finite().min(0).max(100), oneCorePercent: z.number().finite().nonnegative().nullable(),
-  elapsedNs: UInt, cpuDeltaNs: UInt.nullable(),
+  elapsedNs: TelemetryUIntSchema, cpuDeltaNs: TelemetryUIntSchema.nullable(),
 }).strict().superRefine((value, ctx) => {
   if (BigInt(value.elapsedNs) === 0n || (value.oneCorePercent !== null && value.oneCorePercent > 100 * value.logicalCpuCount))
     ctx.addIssue({ code: 'custom', message: 'Invalid CPU window or capacity.' })
@@ -78,28 +79,36 @@ const metric = <T extends z.ZodType>(value: T) => z.discriminatedUnion('state', 
 export const TelemetryCpuMetricSchema = metric(TelemetryCpuSchema)
 export const TelemetryMemoryMetricSchema = metric(TelemetryMemorySchema)
 export const TelemetrySampleSchema = z.object({ schemaVersion: z.literal(1), selector: TelemetrySelectorSchema,
-  selectorKey: z.string().max(8192), identity: TelemetryIdentitySchema, sampleId: z.string().max(4096), sequence: UInt,
-  collectedAtUnixMs: Time, collectionDurationNs: UInt, receivedAtUnixMs: Time, serverNowUnixMs: Time,
+  selectorKey: z.string().max(8192), identity: TelemetryIdentitySchema, sampleId: z.string().max(4096), sequence: TelemetryUIntSchema,
+  collectedAtUnixMs: Time, collectionDurationNs: TelemetryUIntSchema, receivedAtUnixMs: Time, serverNowUnixMs: Time,
   ageUpperBoundMs: z.number().finite().nonnegative(), freshUntilUnixMs: Time,
   presence: z.enum(['online', 'offline']), ownershipState: z.enum(['active', 'ended', 'closure-unconfirmed', 'closed']),
   coverage: TelemetryCoverageSchema, cpu: TelemetryCpuMetricSchema, memory: TelemetryMemoryMetricSchema,
-}).strict()
+}).strict().superRefine((sample, ctx) => {
+  if (sample.selectorKey !== telemetrySelectorKey(sample.selector) || sample.identity.mainId !== sample.selector.mainId
+    || telemetryCanonical(sample.identity.host) !== telemetryCanonical(sample.selector.host))
+    ctx.addIssue({ code: 'custom', message: 'Sample belongs to a different full selector.' })
+  if ((sample.presence === 'offline' || sample.ownershipState === 'ended' || sample.ownershipState === 'closed'
+    || sample.ageUpperBoundMs >= TELEMETRY_LIMITS.freshMs) && (sample.cpu.state === 'fresh' || sample.memory.state === 'fresh'))
+    ctx.addIssue({ code: 'custom', message: 'Noncurrent sample cannot expose current values.' })
+})
 export const TelemetryReadResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('sample'), sample: TelemetrySampleSchema, lastKnown: TelemetrySampleSchema.nullable() }).strict(),
   z.object({ kind: z.literal('no-sample'), selector: TelemetrySelectorSchema, selectorKey: z.string().max(8192),
     reason: TelemetryReasonSchema, identity: TelemetryIdentitySchema.nullable() }).strict(),
   z.object({ kind: z.literal('denied'), selectorKey: z.string().max(8192) }).strict(),
 ])
+export type TelemetryReason = z.infer<typeof TelemetryReasonSchema>
 export type TelemetrySample = z.infer<typeof TelemetrySampleSchema>
 export type TelemetryReadResult = z.infer<typeof TelemetryReadResultSchema>
 export type TelemetryCpu = z.infer<typeof TelemetryCpuSchema>
 export type TelemetryMemory = z.infer<typeof TelemetryMemorySchema>
 /** Counter endpoints belong to the actual capture window, never the configured cadence. */
 export const TelemetryCpuCaptureSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('ok'), basis: TelemetryCpuSchema.shape.basis, windowStartMonoNs: UInt, windowEndMonoNs: UInt,
-    previousCounter: UInt, currentCounter: UInt, previousTotal: UInt.nullable(), currentTotal: UInt.nullable(),
+  z.object({ state: z.literal('ok'), basis: TelemetryCpuSchema.shape.basis, windowStartMonoNs: TelemetryUIntSchema, windowEndMonoNs: TelemetryUIntSchema,
+    previousCounter: TelemetryUIntSchema, currentCounter: TelemetryUIntSchema, previousTotal: TelemetryUIntSchema.nullable(), currentTotal: TelemetryUIntSchema.nullable(),
     /** proc fallback is an interval delta over validated generations, not lifetime sums. */
-    intervalDeltaNs: UInt.nullable(), baselineRef: Id }).strict(),
+    intervalDeltaNs: TelemetryUIntSchema.nullable(), baselineRef: Id }).strict(),
   z.object({ state: z.enum(['warmup', 'unavailable', 'permission-denied']), reason: TelemetryReasonSchema }).strict(),
 ])
 export const TelemetryMemoryCaptureSchema = z.discriminatedUnion('state', [
@@ -111,8 +120,8 @@ export const TelemetryCollectedRowSchema = z.object({ selector: TelemetrySelecto
 export const CollectionChallengeSchema = z.object({ schemaVersion: z.literal(1), identity: TelemetryIdentitySchema,
   challengeId: Id, issuedAtUnixMs: Time, freshUntilUnixMs: Time }).strict()
 export const TelemetryCollectedBatchSchema = z.object({ schemaVersion: z.literal(1), identity: TelemetryIdentitySchema,
-  challengeId: Id, sequence: UInt, collectedAtUnixMs: Time, challengeReceivedMonoNs: UInt,
-  captureStartMonoNs: UInt, captureEndMonoNs: UInt, logicalCpuCount: z.number().int().min(1).max(4096),
+  challengeId: Id, sequence: TelemetryUIntSchema, collectedAtUnixMs: Time, challengeReceivedMonoNs: TelemetryUIntSchema,
+  captureStartMonoNs: TelemetryUIntSchema, captureEndMonoNs: TelemetryUIntSchema, logicalCpuCount: z.number().int().min(1).max(4096),
   host: TelemetryCollectedRowSchema.nullable(), owned: z.array(TelemetryCollectedRowSchema).max(64),
   diagnostics: z.array(TelemetryReasonSchema).max(16), truncated: z.boolean(),
 }).strict().superRefine((batch, ctx) => {
