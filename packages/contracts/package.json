@@ -135,6 +135,10 @@
     "./source-admission": {
       "types": "./dist/sourceAdmission.d.ts",
       "import": "./dist/sourceAdmission.js"
+    },
+    "./jobs-node": {
+      "types": "./dist/jobsNode.d.ts",
+      "import": "./dist/jobsNode.js"
     }
   },
   "scripts": {

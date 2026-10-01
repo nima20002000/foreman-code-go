@@ -9,6 +9,7 @@ export const JobWorkflowNodeSchema = z.object({
   width:z.number().finite().positive().optional(),height:z.number().finite().positive().optional(),
   join:z.object({mode:z.literal('all')}).strict().optional(),choice:z.lazy(()=>WorkflowChoiceSchema).optional(),
 }).strict().superRefine((node,context)=>{
+  if(node.choice?.outcomes.some(item=>!['succeeded','build_failed','cancelled','timed_out','preparation_failed','spawn_failed','output_failed','logs_incomplete'].includes(item.outcome)))context.addIssue({code:'custom',path:['choice'],message:'Job choices use observed process/output outcomes.'})
   if(!node.name&&!node.label) context.addIssue({code:'custom',path:['name'],message:'a workflow node requires name or label'})
 })
 export type JobWorkflowNode=z.infer<typeof JobWorkflowNodeSchema>
