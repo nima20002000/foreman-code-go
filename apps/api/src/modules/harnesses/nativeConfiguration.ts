@@ -1,5 +1,5 @@
 import {
-  HarnessConfigurationSchema, type HarnessConfiguration,
+  HarnessConfigurationSchema, HarnessQualificationSchema, type AgentHarness, type HarnessConfiguration,
 } from '@graphql/contracts'
 import { HarnessOptionsResultSchema } from '@graphql/contracts/management'
 import { QualificationCache } from './qualificationCache.js'
@@ -9,6 +9,8 @@ import { requireHarnessQualification } from './qualification/gate.js'
 import { harnessSettingSupport } from './operatorOptions.js'
 import { runCommand } from './process.js'
 import { HarnessExecutionError } from './errors.js'
+import { DomainError } from '../errors.js'
+import { claudeSettingSupport, type ClaudeNativeConfigurationPort } from './claudeSdk/nativeConfiguration.js'
 
 export class NativeConfigurationService {
   private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>()
@@ -16,31 +18,48 @@ export class NativeConfigurationService {
   invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear() }
   async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }
   private readonly factories: NativeHarnessFactories
-  constructor(private readonly codexBinary: string, private readonly openCodeBinary: string, private readonly directory: string, factories?: NativeHarnessFactories, _claude?: unknown, private readonly command: typeof runCommand = runCommand) {
-    void _claude
+  constructor(private readonly codexBinary: string, private readonly openCodeBinary: string, private readonly directory: string, factories?: NativeHarnessFactories, private readonly claude?: ClaudeNativeConfigurationPort, private readonly command: typeof runCommand = runCommand) {
     this.factories = factories ?? new NativeHarnessFactories({ codexBinary, openCodeBinary })
   }
 
   async qualifyConfiguration(input: HarnessConfiguration) {
     const value = HarnessConfigurationSchema.parse(input)
-    try { return await this.configurationChecks.get(JSON.stringify(value), () => this.inspectConfiguration(value)) }
+    try {
+      // The selected Claude host/profile proof must be rechecked on every read.
+      if (value.harness === 'claude') return await this.inspectConfiguration(value)
+      return await this.configurationChecks.get(JSON.stringify(value), () => this.inspectConfiguration(value))
+    }
     catch (error) { throw qualificationError(error) }
   }
 
   private async inspectConfiguration(value: HarnessConfiguration) {
     const signal = AbortSignal.timeout(60_000)
+    if (value.harness === 'claude') {
+      const qualification = HarnessQualificationSchema.parse(await this.claudePort().qualify(value, this.directory, signal))
+      if (qualification.harness !== 'claude') throw new DomainError('CLAUDE_QUALIFICATION_MISMATCH', 'The selected Claude profile returned another harness.', 503)
+      return qualification
+    }
     return this.factories.qualifyConfiguration(value, this.directory, signal)
   }
 
-  async options(harness: 'codex' | 'opencode') {
-    try { return await this.catalogCache.get(harness, () => this.discoverOptions(harness)) }
+  private claudePort(): ClaudeNativeConfigurationPort {
+    if (!this.claude) throw new DomainError('CLAUDE_PROFILE_SELECTION_REQUIRED', 'Claude metadata requires an explicitly selected current host profile and discovery provider.', 409)
+    return this.claude
+  }
+
+  async options(harness: AgentHarness) {
+    try {
+      if (harness === 'claude') return await this.discoverOptions(harness)
+      return await this.catalogCache.get(harness, () => this.discoverOptions(harness))
+    }
     catch (error) { throw qualificationError(error) }
   }
 
-  async refreshOptions(harness: 'codex' | 'opencode', refresh: 'catalog' | 'upstream' = 'catalog') {
+  async refreshOptions(harness: AgentHarness, refresh: 'catalog' | 'upstream' = 'catalog') {
     try {
       try {
         if (refresh === 'upstream') {
+          if (harness === 'claude') throw new DomainError('CLAUDE_MODEL_REFRESH_UNSUPPORTED', 'Claude has no supported upstream model cache refresh operation.', 422)
           if (harness !== 'opencode') throw new HarnessExecutionError('CODEX_MODEL_REFRESH_UNSUPPORTED', 'Codex has no upstream catalog refresh command.')
           const signal = AbortSignal.timeout(60_000)
           const version = await this.command(this.openCodeBinary, ['--version'], this.directory, signal)
@@ -57,8 +76,13 @@ export class NativeConfigurationService {
     } catch (error) { throw qualificationError(error) }
   }
 
-  private async discoverOptions(harness: 'codex' | 'opencode') {
+  private async discoverOptions(harness: AgentHarness) {
     const signal = AbortSignal.timeout(60_000)
+    if (harness === 'claude') {
+      const options = await this.claudePort().discover(this.directory, signal)
+      return HarnessOptionsResultSchema.parse({ harness, ...options, settings: claudeSettingSupport(),
+        restrictions: ['Only the explicitly selected current host profile supplies discovery metadata.', 'Metadata discovery does not qualify execution or create a model turn.'], checkedAt: new Date().toISOString() })
+    }
     if (harness === 'codex') {
       const allocated = this.factories.allocate({ harness: 'codex', role: 'diagnostics',
         workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none' })

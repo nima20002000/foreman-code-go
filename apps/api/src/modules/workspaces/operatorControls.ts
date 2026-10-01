@@ -1,5 +1,6 @@
 import type pg from 'pg'
-import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { z } from 'zod'
+import type { HarnessMcpDetectionInputSchema, ManagementPrincipal } from '@graphql/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { McpDetectionService } from '../harnesses/mcpDetection.js'
@@ -22,9 +23,11 @@ export class OperatorWorkspaceControls {
     return {items:[{id:this.locations.runnerId,kind:'local' as const,available:true as const,
       supportsRemoteDispatch:false as const,supportsProvisioning:this.provisioningEnabled}]}
   }
-  async diagnostics(principal:ManagementPrincipal,input:{workspaceId:string;harness:'codex'|'opencode'}) {
+  async diagnostics(principal:ManagementPrincipal,input:z.infer<typeof HarnessMcpDetectionInputSchema>) {
     requireAuthorization(principal,'harnesses:read',{workspaceId:input.workspaceId})
     requireAuthorization(principal,'workspace_locations:read',{workspaceId:input.workspaceId})
+    if (input.harness === 'claude') throw new DomainError('CLAUDE_PROFILE_SELECTION_REQUIRED',
+      'Workspace MCP diagnostics require an exact Claude host profile selection; this diagnostics request does not carry one.',409)
     const client=await this.pool.connect()
     let snapshot
     try {
