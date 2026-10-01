@@ -1,7 +1,17 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID } from 'node:crypto'
-import { link, mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+async function requirePrivateFile(file: string): Promise<void> {
+  const info = await lstat(file)
+  if (!info.isFile() || (info.mode & 0o077) !== 0 || (process.getuid && info.uid !== process.getuid())) {
+    throw new Error('Worker identity/configuration requires a private file owned by the worker account.')
+  }
+}
+async function syncPath(path: string): Promise<void> {
+  const handle = await open(path, 'r')
+  try { await handle.sync() } finally { await handle.close() }
+}
 export interface WorkerLocalIdentity {
   formatVersion: 1
   workerInstallationId: string
@@ -19,6 +29,7 @@ export async function loadOrCreateWorkerIdentity(directory: string): Promise<Wor
   await mkdir(directory, { recursive: true, mode: 0o700 })
   const file = join(directory, 'identity.json')
   async function read(): Promise<WorkerLocalIdentity> {
+    await requirePrivateFile(file)
     const identity = JSON.parse(await readFile(file, 'utf8')) as WorkerLocalIdentity
     if (identity.formatVersion !== 1 || !/^[0-9a-f-]{36}$/.test(identity.workerInstallationId)
       || !Number.isSafeInteger(identity.keyRevision) || identity.keyRevision < 1 || publicKeyFingerprint(identity.publicKey) !== identity.publicKeyFingerprint
@@ -41,15 +52,13 @@ export async function loadOrCreateWorkerIdentity(directory: string): Promise<Wor
     publicKeyFingerprint: publicKeyFingerprint(publicKey), keyRevision: 1 }
   const temporary = join(directory, `.identity-${randomUUID()}`)
   await writeFile(temporary, JSON.stringify(identity), { mode: 0o600, flag: 'wx' })
-  const handle = await open(temporary, 'r')
-  try { await handle.sync() } finally { await handle.close() }
+  await syncPath(temporary)
   try {
     try { await link(temporary, file) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
   } finally { await unlink(temporary) }
-  const directoryHandle = await open(directory, 'r')
-  try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+  await syncPath(directory)
   return read()
 }
 
@@ -61,10 +70,12 @@ export async function persistWorkerPairing(directory: string, configuration: imp
   if (parsed.workerInstallationId !== identity.workerInstallationId || parsed.keyRevision !== identity.keyRevision) throw new Error('Pairing does not match local identity.')
   const file = join(directory, 'pairing.json'), temporary = join(directory, `.pairing-${randomUUID()}`)
   await writeFile(temporary, JSON.stringify(parsed), { mode: 0o600, flag: 'wx' })
-  try { await link(temporary, file) } finally { await unlink(temporary) }
+  await syncPath(temporary)
+  try { await link(temporary, file); await syncPath(directory) } finally { await unlink(temporary) }
 }
 export async function loadWorkerPairing(directory: string): Promise<import('./deviceIdentity.js').WorkerPairingConfiguration> {
   const { WorkerPairingConfigurationSchema } = await import('./deviceIdentity.js')
+  await requirePrivateFile(join(directory, 'pairing.json'))
   const parsed = WorkerPairingConfigurationSchema.parse(JSON.parse(await readFile(join(directory, 'pairing.json'), 'utf8')))
   const identity = await loadOrCreateWorkerIdentity(directory)
   if (parsed.workerInstallationId !== identity.workerInstallationId || parsed.keyRevision !== identity.keyRevision) throw new Error('Pairing does not match local identity.')
@@ -77,7 +88,8 @@ export async function updateWorkerEndpoint(directory: string, endpoint: string):
   const configuration = WorkerPairingConfigurationSchema.parse({ ...await loadWorkerPairing(directory), endpoint })
   const temporary = join(directory, `.pairing-${randomUUID()}`)
   await writeFile(temporary, JSON.stringify(configuration), { mode: 0o600, flag: 'wx' })
+  await syncPath(temporary)
   const { rename } = await import('node:fs/promises')
-  try { await rename(temporary, join(directory, 'pairing.json')) }
+  try { await rename(temporary, join(directory, 'pairing.json')); await syncPath(directory) }
   catch (error) { await unlink(temporary); throw error }
 }
