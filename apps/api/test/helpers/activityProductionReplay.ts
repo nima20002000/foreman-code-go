@@ -147,6 +147,13 @@ export class ActivityProductionReplay {
     if (!response) throw new Error('Native file tool returned no qualified response.')
     return { response, callId }
   }
+  commandRunning(sessionId: string, nativeTurnId: string) {
+    const thread = this.threads.get(sessionId)!, turn = thread.turns.find((entry) => entry.id === nativeTurnId)!
+    const item = { type: 'commandExecution', id: 'recorded-command', command: 'recorded readonly command',
+      cwd: thread.settings.cwd, status: 'inProgress', aggregatedOutput: '' }
+    turn.items = [...turn.items.filter((entry) => entry.id !== item.id), item]
+    this.channels.get(sessionId)!.notify('item/started', { threadId: sessionId, turnId: nativeTurnId, item })
+  }
   commandCompleted(sessionId: string, nativeTurnId: string) {
     const thread = this.threads.get(sessionId)!, turn = thread.turns.find((entry) => entry.id === nativeTurnId)!
     const item = { type: 'commandExecution', id: 'recorded-command', command: 'recorded readonly command',

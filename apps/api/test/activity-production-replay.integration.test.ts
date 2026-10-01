@@ -186,6 +186,8 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     const stream = await eventStream(`${f.origin}/api/workspaces/${workspaceId}/agent-chat/conversations/${id}/events`, f.writer.token)
     const bootstrap = await stream.next((event) => event.type === 'snapshot')
     expect((bootstrap.data as Record<string, unknown>).activitySnapshot).toMatchObject({ scope: active.activitySnapshot!.scope })
+    f.replay.commandRunning(native.sessionId, native.turnId!)
+    await eventually(read, (state) => state.activitySnapshot!.activities.some((item) => item.kind === 'tool' && item.status === 'running'))
     f.replay.append(native.sessionId, native.turnId!, 'provisional answer longer than final')
     await eventually(read, (state) => state.messages.some((entry) => entry.role === 'assistant' && entry.content.includes('provisional')))
     const emitted = await stream.next((event) => event.type === 'delta' && !!(event.data as Record<string, unknown>)?.activityChange)
@@ -213,7 +215,13 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     const finished = await eventually(read, (state) => state.activeTurn === null)
     const finalText = finished.activitySnapshot!.activities.filter((item) => item.kind === 'text' && item.owner.kind === 'chat_request' && item.owner.requestId === 'active-A')
     expect(finalText.filter((item) => item.kind === 'text' && item.text === '').length).toBe(1)
-    const revision = finished.revision
+    expect(finished.activitySnapshot!.active.some((item) => item.ref.kind === 'tool')).toBe(true)
+    f.replay.commandCompleted(native.sessionId, native.turnId!)
+    const childSettled = await eventually(read, (state) => state.activitySnapshot!.activities.some((item) => item.kind === 'tool' && item.status === 'completed'))
+    expect(childSettled.activeTurn).toBeNull()
+    expect(childSettled.activitySnapshot!.latest).toMatchObject({ requestId: 'queued-B' })
+    expect(childSettled.activitySnapshot!.activities.find((item) => item.kind === 'tool')).toMatchObject({ owner: { requestId: 'active-A' }, native: { sessionId: native.sessionId, turnId: native.turnId } })
+    const revision = childSettled.revision
     f.replay.complete(native.sessionId, native.turnId!, '')
     expect((await read()).revision).toBe(revision)
     f.replay.append(native.sessionId, native.turnId!, 'late stale delta')
