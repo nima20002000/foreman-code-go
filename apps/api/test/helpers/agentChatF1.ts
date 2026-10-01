@@ -75,6 +75,10 @@ export class F1Store {
     const result = (rows: unknown[] = [], rowCount = rows.length) => ({ rows: structuredClone(rows), rowCount })
     const id = String(values[1])
     const receipt = this.turns.get(id)
+    if (sql.startsWith('select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals')) {
+      return result(values[0] === principal.id ? [{ id: principal.id, name: principal.name, audience: principal.audience,
+        grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
+    }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
     if (sql.startsWith('select (select started_at from operator_conversation_turns')) {
       const latest = [...this.turns.values()].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)).at(-1)
