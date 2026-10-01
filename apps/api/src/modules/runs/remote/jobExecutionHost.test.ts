@@ -4,7 +4,13 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import pg from 'pg'
+import { PostgresJobDispatch } from '../../jobs/dispatch.js'
+import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
+import type { JobSql } from '../../jobs/repository.js'
+import type { JobExecution } from '@graphql/contracts/jobs'
+import type { RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
 import { jobSpecDigests } from '@graphql/contracts/jobs-node'
 import { jobInputSnapshotDigest } from '@graphql/contracts/job-inputs-node'
 import { JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
@@ -55,4 +61,66 @@ describe('actual OCI job adapter with command doubles, no installed runtime clai
   it('denies wrong subject and revoked authority before any OCI start',async()=>{const f=await fixture();await expect(f.host.deliver({...f.intent,executionId:'fake-run'},f.execution)).rejects.toThrow('subject');f.state.allowed=false;await expect(f.host.deliver(f.intent,f.execution)).rejects.toThrow('revoked');expect(f.state.creates).toBe(0)})
   it('worker journal negative fence and restart retain original job identity',async()=>{const f=await fixture();await f.journal.jobAccept(f.intent,f.execution,{kind:'main',mainId:f.intent.mainId,mainInstallationId:f.execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},randomUUID());await f.journal.jobControl({schemaVersion:1,protocolVersion:1,commandId:'stop',operationId:f.intent.operationId,attemptId:f.intent.attemptId,executionId:f.intent.executionId,bindingHash:f.intent.bindingHash,subject:f.intent.subject,owner:f.intent.owner,action:{kind:'stop'}});await f.journal.close();const recovered=await RemoteOperationJournal.open(join(f.root,'journal'));journals.push(recovered);expect((await recovered.jobReserveEntry(f.intent.operationId)).reserved).toBe(false);expect((await recovered.jobStatus(f.intent.operationId)).status).toBe('known');expect(f.state.creates).toBe(0)})
   it('spools exact log sequences in the same durable operation journal before main acknowledgment',async()=>{const f=await fixture();await f.journal.jobAccept(f.intent,f.execution,{kind:'main',mainId:f.intent.mainId,mainInstallationId:f.execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},randomUUID());const chunk={executionId:f.execution.id,attemptId:f.execution.attemptId,sequence:1,stream:'stdout' as const,text:'a',byteSize:1,createdAt:new Date().toISOString()};await f.journal.jobAppendLog(f.intent.operationId,chunk);expect(await f.journal.jobPendingLogs(f.intent.operationId)).toEqual([chunk]);await f.journal.jobAcknowledgeLog(f.intent.operationId,1);expect(await f.journal.jobPendingLogs(f.intent.operationId)).toEqual([]);await expect(f.journal.jobAppendLog(f.intent.operationId,{...chunk,text:'different',byteSize:9})).rejects.toThrow('conflict')})
+})
+
+/** Actual worker closure and main receipt writer, with SQL persistence modeled; no DB/authentication proof. */
+async function acceptedClosure(wrongInput=false) {
+  const f=await fixture(false,false,wrongInput);await f.host.deliver(f.intent,f.execution);await f.host.drain()
+  const status=await f.journal.jobStatus(f.intent.operationId)
+  if(status.status!=='known')throw new Error('Actual journal receipt required')
+  const row={record:structuredClone(f.execution),accepted_spec:structuredClone(f.execution.acceptedSpec),intent:structuredClone(f.intent),last_receipt:null as RemoteJobOperationReceipt|null,receipt_sequence:'0'}
+  const query=vi.fn(async(text:string,values?:unknown[])=>{
+    if(text.startsWith('select intent,receipt_sequence'))return {rows:[row]}
+    if(text.startsWith('update job_dispatch_intents set receipt_sequence')) {
+      row.receipt_sequence=String(values![1]);row.last_receipt=JSON.parse(String(values![2])) as RemoteJobOperationReceipt
+      return {rows:[]}
+    }
+    if(text.startsWith('update job_executions set record')) {row.record=JSON.parse(String(values![2])) as JobExecution;return {rows:[]}}
+    if(text.startsWith('select e.record,e.accepted_spec')) {
+      expect(text).toContain('for share of e,d')
+      const expected=[row.record.workspaceId,row.record.id,row.record.attemptId,row.record.operationId,row.intent.bindingHash,row.intent.owner.grantId,row.intent.owner.epoch]
+      return {rows:JSON.stringify(values)===JSON.stringify(expected)?[row]:[]}
+    }
+    throw new Error('Unexpected SQL in closure fixture')
+  })
+  const sql={query} as JobSql,pool=new pg.Pool()
+  const forbidden=vi.fn(async()=>{throw new Error('Closure getter must not contact hosts or acquire runtime authority')})
+  const dispatch=new PostgresJobDispatch(pool,{deliver:forbidden,reconcile:forbidden,control:forbidden},{revalidate:forbidden,authorizeControl:forbidden,observe:forbidden})
+  try {
+    // Isolate the existing trusted-ingress SQL writer; live owner/auth fences are separate Root DB gates.
+    const accept=Reflect.get(dispatch,'acceptReceipt') as (sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt)=>Promise<boolean>
+    expect(await accept.call(dispatch,sql,f.execution,status.receipt)).toBe(true)
+    await projectJobReceiptLocked(sql,structuredClone(f.execution),status.receipt,{verifyRequiredOutputs:async()=>{}})
+  } finally {await pool.end()}
+  const input={workspaceId:f.execution.workspaceId,executionId:f.execution.id,attemptId:f.execution.attemptId,operationId:f.execution.operationId,bindingHash:f.execution.acceptedSpec.bindingHash,owner:f.execution.owner}
+  return {dispatch,sql,row,input,receipt:status.receipt,forbidden}
+}
+describe('SQL-only current accepted job closure receipts',()=>{
+  it('reads actual host/journal closure only after the exact main receipt writer and process projection',async()=>{
+    const f=await acceptedClosure();expect(await f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).toEqual(f.receipt);expect(f.forbidden).not.toHaveBeenCalled()
+    f.row.last_receipt=null;expect(await f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).toBeNull()
+  })
+  it('accepts positive journaled pre-entry failure without interpreting missing native identity as closure',async()=>{
+    const f=await acceptedClosure(true);expect(f.receipt.entryAttempted).toBe(false);expect(f.receipt.terminal?.outcome).toBe('preparation_failed');expect(await f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).toEqual(f.receipt)
+  })
+  it.each(['workspaceId','executionId','attemptId','operationId','bindingHash'] as const)('never reads another %s tuple',async field=>{
+    const f=await acceptedClosure();expect(await f.dispatch.readAcceptedClosureReceipt(f.sql,{...f.input,[field]:'foreign'})).toBeNull()
+  })
+  it.each(['grantId','epoch'] as const)('never reads another owner %s',async field=>{
+    const f=await acceptedClosure();expect(await f.dispatch.readAcceptedClosureReceipt(f.sql,{...f.input,owner:{...f.input.owner,[field]:'foreign'}})).toBeNull()
+  })
+  it('pending or unprojected closure never counts as closed',async()=>{
+    const f=await acceptedClosure();f.row.record=structuredClone(f.receipt.execution);expect(await f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).toBeNull()
+    f.row.last_receipt={...f.receipt,phase:'running',terminal:undefined};expect(await f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).toBeNull()
+  })
+  it.each(['acceptedSpec','intent','sequence','terminal','host','native'] as const)('rejects conflicting persisted %s evidence',async field=>{
+    const f=await acceptedClosure()
+    if(field==='acceptedSpec')f.row.accepted_spec.argv=['foreign']
+    if(field==='intent')f.row.last_receipt={...f.receipt,intent:{...f.receipt.intent,inputDigest:`sha256:${'2'.repeat(64)}`}}
+    if(field==='sequence')f.row.receipt_sequence=String(f.receipt.sequence+1)
+    if(field==='terminal')f.row.record.finishedAt='2026-10-02T00:00:00.000Z'
+    if(field==='host')f.row.last_receipt={...f.receipt,connection:{kind:'main',mainId:f.receipt.intent.mainId,mainInstallationId:'foreign-main',bootId:randomUUID()}}
+    if(field==='native')f.row.last_receipt={...f.receipt,native:undefined}
+    await expect(f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).rejects.toMatchObject({code:expect.stringMatching(/^JOB_CLOSURE_/)})
+  })
 })
