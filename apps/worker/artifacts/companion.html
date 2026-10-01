@@ -53,6 +53,7 @@ footer p { margin: 0; font-size: .8125rem; }
     <h1>GraphQL Companion</h1>
     <span id="state" class="badge" data-tone="warn" role="status">Checking…</span>
   </header>
+  <p id="notice" class="msg" role="status" aria-live="polite" hidden></p>
 
   <ol>
     <li id="step1" aria-current="step">
@@ -122,8 +123,9 @@ footer p { margin: 0; font-size: .8125rem; }
   history.replaceState(null, '', location.pathname + location.search);
   const $ = (id) => document.getElementById(id);
   const state = $('state'), code = $('code'), request = $('request');
-  let busy = false, closed = false, paired = false, plan = null;
-  const errors = { service_plan_changed: 'The installed service changed since you reviewed it. Review the plan again.', pairing_required: 'Pair this computer before starting the background service.',
+  let busy = false, closed = false, paired = false, plan = null, blocked = false;
+  const errors = { preview_read_only: 'This is a read-only preview. Open the installed companion to pair or start the service.',
+    target_runtime_mismatch: 'This computer does not match the supported OS or Node version for this release. Use a supported computer.', service_plan_changed: 'The installed service changed since you reviewed it. Review the plan again.', pairing_required: 'Pair this computer before starting the background service.',
     service_confirmation_required: 'Confirm the reviewed plan to continue.', installation_invalid: 'The installation is not complete or is not in the expected location. Reinstall from the approved package.',
     private_directory_required: 'A required folder is not private to this user. Fix its permissions and retry.', companion_command_failed: 'The companion could not complete that. Retry, or reopen it from the installed launcher.',
     session_expired: 'This setup page expired. Reopen it from the installed launcher.', session_rejected: 'This setup page is no longer valid. Reopen it from the installed launcher.',
@@ -137,7 +139,7 @@ footer p { margin: 0; font-size: .8125rem; }
 
   const say = (id, text, tone) => { const el = $(id); el.textContent = text; if (tone) el.dataset.tone = tone; else delete el.dataset.tone; };
   const badge = (text, tone) => { state.textContent = text; state.dataset.tone = tone; };
-  const lock = (value) => { busy = value; for (const id of ['make', 'pair', 'copy', 'retry', 'plan', 'enable', 'retry4']) $(id).disabled = value || closed; };
+  const lock = (value) => { busy = value; for (const id of ['make', 'pair', 'copy', 'retry', 'plan', 'enable', 'retry4']) $(id).disabled = value || closed || blocked; };
 
   async function call(path, body) {
     let response;
@@ -158,7 +160,10 @@ footer p { margin: 0; font-size: .8125rem; }
   const connection = { connected: 'connected', connecting: 'connecting', backoff: 'reconnecting', blocked: 'blocked', offline: 'offline', stopped: 'stopped' };
   function showFacts(report) {
     const rows = [['Version', report.versions && report.versions.app], ['Computer ID', report.identity && report.identity.installationId],
-      ['Main ID', report.identity && report.identity.selectedMainId], ['Main fingerprint', report.identity && report.identity.selectedMainFingerprint]];
+      ['Main ID', report.identity && report.identity.selectedMainId], ['Main fingerprint', report.identity && report.identity.selectedMainFingerprint],
+      ['Mismatched', report.compatibility && Array.isArray(report.compatibility.mismatches) ? report.compatibility.mismatches.join(', ') : ''],
+      ['Required arch / libc', report.compatibility && report.compatibility.required ? `${report.compatibility.required.arch || '?'} / ${report.compatibility.required.libc || '?'}` : ''],
+      ['Actual arch / libc', report.compatibility && report.compatibility.actual ? `${report.compatibility.actual.arch || '?'} / ${report.compatibility.actual.libc || '?'}` : '']];
     const facts = $('facts'); facts.replaceChildren();
     for (const [name, value] of rows) {
       if (typeof value !== 'string' || !value) continue;
@@ -170,7 +175,16 @@ footer p { margin: 0; font-size: .8125rem; }
       const report = await call('/api/status', {});
       paired = report.pairing === 'paired';
       const link = connection[report.connection] || 'offline';
-      if (paired) badge(`Paired · ${link}`, report.connection === 'connected' ? 'ok' : 'warn');
+      const compat = report.compatibility || {};
+      const unsupported = compat.supported !== true;
+      blocked = report.readOnly === true || unsupported;
+      lock(busy); $('show').disabled = blocked; $('code').disabled = blocked;
+      const label = (value) => value ? `${value.os || '?'} ${value.osRelease || '?'}, Node ${value.node || '?'}` : '?';
+      const notes = [report.readOnly === true ? 'Read-only preview. Pairing and service actions are disabled.' : '',
+        unsupported ? `Unsupported on this computer. Required: ${label(compat.required)}. Actual: ${label(compat.actual)}.` : ''].filter(Boolean);
+      $('notice').hidden = !notes.length; $('notice').textContent = notes.join(' '); $('notice').dataset.tone = unsupported ? 'bad' : 'warn';
+      if (unsupported && !paired) badge('Unsupported', 'bad');
+      else if (paired) badge(`Paired · ${link}`, report.connection === 'connected' ? 'ok' : 'warn');
       else badge('Not paired', 'warn');
       $('step1').dataset.done = String(paired); $('step3').dataset.done = String(paired);
       $('step1').toggleAttribute('aria-current', !paired); $('step3').toggleAttribute('aria-current', false);
