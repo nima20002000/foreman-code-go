@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { describe, expect, it } from 'vitest'
 import { fixture } from './core.cases'
 import { discardMeaningfulChanges, draftOperations, hasLocalChanges, mergeAcknowledgement } from './model'
@@ -6,7 +7,7 @@ import { newNextDraft, nextDraftDirty } from './state'
 
 const moved = () => {
   const context = fixture(), graph = structuredClone(context.draft.graph)
-  graph.nodes[0]!.position = { x: 700, y: -100 }
+  nativeNode(graph.nodes[0]!).position = { x: 700, y: -100 }
   return { context, graph }
 }
 
@@ -19,32 +20,32 @@ describe('NIM-2642 typed authoring seams', () => {
   })
   it('keeps mixed prompt replacements meaningful without serializing the independent drag', () => {
     const { context, graph } = moved()
-    graph.nodes[0]!.initialPrompt = 'Exact staged prompt'
+    nativeNode(graph.nodes[0]!).initialPrompt = 'Exact staged prompt'
     const operations = draftOperations(context, graph)
-    expect(operations).toEqual([{ type: 'node.replace_v3', node: { ...graph.nodes[0]!, position: context.draft.graph.nodes[0]!.position } }])
-    expect(graph.nodes[0]!.position).toEqual({ x: 700, y: -100 })
+    expect(operations).toEqual([{ type: 'node.replace_v3', node: { ...nativeNode(graph.nodes[0]!), position: nativeNode(context.draft.graph.nodes[0]!).position } }])
+    expect(nativeNode(graph.nodes[0]!).position).toEqual({ x: 700, y: -100 })
   })
   it('uses the existing narrow choice operation when choice and layout change together', () => {
     const { context, graph } = moved()
-    graph.nodes[0]!.choice = { outcomes: [{ outcome: 'done', target: { kind: 'branch_end' } }] }
-    expect(draftOperations(context, graph)).toEqual([{ type: 'node.set_choice', nodeId: graph.nodes[0]!.id, choice: graph.nodes[0]!.choice }])
+    nativeNode(graph.nodes[0]!).choice = { outcomes: [{ outcome: 'done', target: { kind: 'branch_end' } }] }
+    expect(draftOperations(context, graph)).toEqual([{ type: 'node.set_choice', nodeId: nativeNode(graph.nodes[0]!).id, choice: nativeNode(graph.nodes[0]!).choice }])
   })
   it('discards meaning without Stop or a layout reset', () => {
     const { context, graph } = moved()
-    graph.nodes[0]!.initialPrompt = 'Discard this only'
+    nativeNode(graph.nodes[0]!).initialPrompt = 'Discard this only'
     const restored = discardMeaningfulChanges(context, graph)
-    expect(restored.nodes[0]!.initialPrompt).toBe(context.draft.graph.nodes[0]!.initialPrompt)
-    expect(restored.nodes[0]!.position).toEqual(graph.nodes[0]!.position)
+    expect(nativeNode(restored.nodes[0]!).initialPrompt).toBe(nativeNode(context.draft.graph.nodes[0]!).initialPrompt)
+    expect(nativeNode(restored.nodes[0]!).position).toEqual(nativeNode(graph.nodes[0]!).position)
     expect(hasLocalChanges(context, restored)).toBe(false)
   })
   it('preserves positions on acknowledgements with and without newer semantic typing', () => {
     const { context, graph } = moved(), saved = structuredClone(context.draft.graph)
     saved.version = 2
-    expect(mergeAcknowledgement(graph, graph, saved).nodes[0]!.position).toEqual(graph.nodes[0]!.position)
-    const newer = structuredClone(graph); newer.nodes[0]!.initialPrompt = 'Newer text'
+    expect(mergeAcknowledgement(graph, graph, saved).nodes[0]!.position).toEqual(nativeNode(graph.nodes[0]!).position)
+    const newer = structuredClone(graph); nativeNode(newer.nodes[0]!).initialPrompt = 'Newer text'
     const accepted = mergeAcknowledgement(newer, graph, saved)
-    expect(accepted.nodes[0]!.initialPrompt).toBe('Newer text')
-    expect(accepted.nodes[0]!.position).toEqual(graph.nodes[0]!.position)
+    expect(nativeNode(accepted.nodes[0]!).initialPrompt).toBe('Newer text')
+    expect(nativeNode(accepted.nodes[0]!).position).toEqual(nativeNode(graph.nodes[0]!).position)
   })
   it('retains meaningful Agent edits mixed with local layout', () => {
     const { context, graph } = moved()

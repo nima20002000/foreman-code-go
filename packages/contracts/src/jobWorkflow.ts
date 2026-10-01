@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { GraphIdSchema } from './schemaPrimitives.js'
-import { WorkflowChoiceSchema } from './wave25/workflowShape.js'
+import { WorkflowChoiceSchema } from './wave25/choice.js'
 export const JOB_WORKFLOW_OUTCOMES = ['succeeded','build_failed','cancelled','timed_out','preparation_failed','spawn_failed','output_failed','logs_incomplete'] as const
 /** A real job reference; no Agent/provider/native-session fields are admitted. */
 export const JobWorkflowNodeSchema = z.object({

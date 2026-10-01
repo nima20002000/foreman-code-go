@@ -44,7 +44,7 @@ function lifecycleOf(record: RepeatGraphCurrentV3, nodeId: string): string {
 export function runNodeView(record: RepeatGraphCurrentV3 | undefined, selected: boolean, nodeId: string, agentId: string): RunNodeView {
   if (!selected) return { state: 'idle', label: 'Idle', inRun: false }
   if (!record) return { state: 'unavailable', label: 'Unavailable', inRun: false }
-  if (!record.topology.nodes.some((node) => node.workflowNodeId === nodeId && node.agentId === agentId)) return { state: 'idle', label: 'Not in this Run', inRun: false }
+  if (!record.topology.nodes.some((node) => node.workflowNodeId === nodeId && node.kind!=='job' && node.agentId === agentId)) return { state: 'idle', label: 'Not in this Run', inRun: false }
   const [state, label] = lifecycleView(lifecycleOf(record, nodeId))
   const execution = latestNode(record, nodeId)
   const occurrence = execution?.identity.occurrence

@@ -1,0 +1,64 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { vi } from 'vitest'
+import { BoardAgentSettings } from '../workflow-board/AgentControls'
+import { fixture } from '../graph/nextDraft/core.cases'
+import { useGraphDraftStore } from '../graph/store'
+import * as client from './client'
+import { savedPlacementFixture as placement } from './fixtures'
+
+it('Board Apply changes the exact node draft while keeping saved placement and other nodes separate', async () => {
+  const context = fixture(), key = 'placement-apply-test'
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const read = vi.spyOn(client, 'readPlacementChoices').mockResolvedValue({ workspaceId: 'workspace', workflowId: 'workflow', nodeId: 'node-0', agentConfigurationVersionId: 'configuration-0',
+    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] })
+  function Board() {
+    const edit = useGraphDraftStore((state) => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  await screen.findByRole('option', { name: 'Laptop' })
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Computer' }), '0')
+  const before = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(nativeNode(before.graph.nodes[0])?.placement).toBeUndefined()
+  expect(before.agentForms?.['node-0']?.placement).toEqual(placement)
+  expect(screen.getByText(/Editing computer choice/)).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+  const applied = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(nativeNode(applied.graph.nodes[0])?.placement).toEqual(placement)
+  expect(screen.getByText(/Applied to draft — Save graph/)).toBeInTheDocument()
+  expect(nativeNode(applied.graph.nodes[1])?.placement).toBeUndefined()
+  expect(nativeNode(applied.context.draft.graph.nodes[0])?.placement).toBeUndefined()
+  expect(applied.agentForms?.['node-0']).toBeUndefined()
+  view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
+})
+
+it('keeps computer selection on the clicked node when two nodes share one Agent', async () => {
+  const context = fixture(), key = 'shared-agent-placement-test'
+  const original = nativeNode(context.draft.graph.nodes[0])!
+  const sibling = { ...original, id: 'same-agent-second-node', position: { x: 500, y: 0 } }
+  context.draft.graph = { ...context.draft.graph, nodes: [...context.draft.graph.nodes, sibling] }
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
+    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+  function Board() {
+    const edit = useGraphDraftStore(state => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId={sibling.id} close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  await screen.findByRole('option', { name: 'Laptop' })
+  expect(read.mock.calls[0]?.[0].nodeId).toBe(sibling.id)
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Computer' }), '0')
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.agentForms?.[sibling.id]?.placement).toEqual(placement)
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.agentForms?.[original.id]).toBeUndefined()
+  await userEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+  const applied = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(nativeNode(applied.graph.nodes.find(node => node.id === sibling.id))?.placement).toEqual(placement)
+  expect(nativeNode(applied.graph.nodes.find(node => node.id === original.id))?.placement).toBeUndefined()
+  expect(nativeNode(applied.context.draft.graph.nodes.find(node => node.id === sibling.id))?.placement).toBeUndefined()
+  view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
+})

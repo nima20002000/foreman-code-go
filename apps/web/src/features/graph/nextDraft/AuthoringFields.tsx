@@ -1,3 +1,4 @@
+import { JOB_WORKFLOW_OUTCOMES } from '@graphql/contracts/job-workflow'
 import { useId, useState } from 'react'
 import type { WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
 import type { DraftAgentEdits } from './agentEdits'
@@ -17,14 +18,14 @@ function changeNode(change: EditGraph, nodeId: string, update: (node: DraftNode)
 export function EntryFields({ graph, context, change, agentEdits }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; agentEdits?: DraftAgentEdits }) {
   const choices = entryChoices(graph, context, agentEdits), id = useId()
   return <section aria-labelledby={id} className="next-draft-section">
-    <h3 id={id}>Starting agent</h3>
+    <h3 id={id}>Starting node</h3>
     <Select data-save-field="entry" label="Starts the workflow" value={graph.entryNodeId ?? ''} aria-invalid={!choices.valid}
       onChange={(event) => change((value) => ({ ...value, entryNodeId: event.target.value || null }))} options={[
-        { value: '', label: 'Choose an agent' },
+        { value: '', label: 'Choose a node' },
         ...graph.nodes.map((node) => ({ value: node.id, disabled: !choices.eligible.some((item) => item.id === node.id), label: nodeTitle(graph, node.id) })),
       ]} />
-    <p className="next-draft-hint">{choices.mode === 'orchestrator' ? 'Only an orchestrator can start a workflow that has one.' : 'The first agent to run. It can’t receive a handoff.'}</p>
-    {graph.entryNodeId && !graph.nodes.some((node) => node.id === graph.entryNodeId) ? <p role="alert">The starting agent was removed. Choose another one.</p> : null}
+    <p className="next-draft-hint">{choices.mode === 'orchestrator' ? 'Only an orchestrator can start a workflow that has one.' : 'The first node to run. It can’t receive a dependency.'}</p>
+    {graph.entryNodeId && !graph.nodes.some((node) => node.id === graph.entryNodeId) ? <p role="alert">The starting node was removed. Choose another one.</p> : null}
   </section>
 }
 
@@ -39,17 +40,17 @@ export function ApprovalFields({ graph, context, change, report, agentEdits }: {
     {graph.approval?.handler === 'orchestrator' ? <Select data-save-field="orchestrator" label="Reviewing orchestrator" value={graph.approval.designatedOrchestratorAgentId ?? ''}
       onChange={(event) => change((value) => ({ ...value, approval: { handler: 'orchestrator', ...(event.target.value ? { designatedOrchestratorAgentId: event.target.value } : {}) } }))} options={[
         { value: '', label: 'Choose an orchestrator' },
-        ...graph.nodes.filter((node) => roleEvidence(context, node.agentId, agentEdits).role === 'orchestrator').map((node) => ({ value: node.agentId, label: nodeTitle(graph, node.id) })),
+        ...graph.nodes.filter((node) => node.kind!=='job').filter((node) => roleEvidence(context, node.agentId, agentEdits).role === 'orchestrator').map((node) => ({ value: node.agentId, label: nodeTitle(graph, node.id) })),
       ]} /> : null}
     <p className="next-draft-hint">{graph.approval?.handler === 'orchestrator'
       ? 'The starting orchestrator reviews requests from agents it has an approval connection to.' : 'Agents ask you before sensitive actions. Requests appear in the approval inbox.'}</p>
   </section>
 }
 
-export function AttachAgentField({ graph, context, change, report }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void }) {
+export function AttachAgentField({ context, change, report }: { graph: WorkflowDefinitionV3; context: NextDraftContext; change: EditGraph; report: (error: unknown) => void }) {
   const [agentId, setAgentId] = useState('')
   const available = context.agents.filter((record) => !record.archivedAt && record.agent.configurationVersionId
-    && record.agent.productRole && !graph.nodes.some((node) => node.agentId === record.agent.id))
+    && record.agent.productRole)
   if (!available.length) return null
   return <form className="next-draft-section" onSubmit={(event) => {
     event.preventDefault()
@@ -60,7 +61,7 @@ export function AttachAgentField({ graph, context, change, report }: { graph: Wo
     <h3>Existing agent</h3>
     <div className="next-draft-inline">
       <Select label="Existing agent" value={agentId} onChange={(event) => setAgentId(event.target.value)} options={[
-        { value: '', label: 'Choose an agent' },
+        { value: '', label: 'Choose a node' },
         ...available.map(({ agent }) => ({ value: agent.id, label: `${agent.name} · ${agent.productRole === 'orchestrator' ? 'Orchestrator' : 'Worker'}` })),
       ]} />
       <Button type="submit" disabled={!available.some((item) => item.agent.id === agentId)}>Add to workflow</Button>
@@ -77,7 +78,7 @@ export function NodeWorkflowFields({ graph, node, context, change, agentEdits }:
   return <section className="next-draft-section" aria-label="In this workflow">
     <h3>In this workflow</h3>
     <Switch label="Starts the workflow" checked={starts} disabled={!eligible && !starts}
-      hint={!eligible && !starts ? choices.mode === 'orchestrator' ? 'Only an orchestrator can start this workflow.' : 'This agent can’t start the workflow.' : undefined}
+      hint={!eligible && !starts ? choices.mode === 'orchestrator' ? 'Only an orchestrator can start this workflow.' : 'This node can’t start the workflow.' : undefined}
       onChange={(event) => { const checked = event.currentTarget.checked; change((value) => ({ ...value, entryNodeId: checked ? node.id : value.entryNodeId === node.id ? null : value.entryNodeId })) }} />
     <ChoiceFields graph={graph} node={node} change={change} />
   </section>
@@ -87,20 +88,20 @@ export function ChoiceFields({ graph, node, change }: { graph: WorkflowDefinitio
   const outgoing = graph.edges.filter((edge) => edge.kind === 'execution' && edge.source === node.id)
   const outcomes = node.choice?.outcomes ?? []
   const setOutcomes = (update: (items: typeof outcomes) => typeof outcomes) => changeNode(change, node.id, (value) => ({ ...value, choice: { outcomes: update(value.choice?.outcomes ?? []) } }))
-  return <fieldset className="next-draft-choice"><legend>When this agent finishes</legend>
+  return <fieldset className="next-draft-choice"><legend>When this {node.kind==='job'?'job':'agent'} finishes</legend>
     <Select label="Routing mode" value={node.choice ? 'choice' : 'fanout'} onChange={(event) => changeNode(change, node.id, (value) => {
       if (event.target.value === 'choice') return { ...value, choice: { outcomes: [] } }
       const next = { ...value }; delete next.choice; return next
-    })} options={[{ value: 'fanout', label: 'Hand off to every connected agent' }, { value: 'choice', label: 'Choose one handoff by outcome' }]} />
+    })} options={[{ value: 'fanout', label: 'Continue to every connected node' }, { value: 'choice', label: 'Choose one handoff by outcome' }]} />
     {node.choice ? <>
-      <p className="next-draft-hint">The agent ends with an outcome name, and only the matching handoff runs.</p>
-      <details className="next-draft-details"><summary>Result format</summary>
+      <p className="next-draft-hint">{node.kind==='job'?'The observed process and output result select the matching dependency.':'The agent ends with an outcome name, and only the matching handoff runs.'}</p>
+      {node.kind!=='job'?<details className="next-draft-details"><summary>Result format</summary>
         <p>Return exactly this JSON, with no other text:</p>
         <pre>{'{"routing":{"outcome":"approved"},"data":{}}'}</pre>
-      </details>
+      </details>:null}
       {outcomes.map((item, index) => <div className="next-draft-outcome" key={index}>
-        <TextField label={`Outcome ${index + 1}`} value={item.outcome} maxLength={48} pattern="[a-z][a-z0-9_]{0,47}" placeholder="approved"
-          onChange={(event) => setOutcomes((items) => items.map((value, i) => i === index ? { ...value, outcome: event.target.value } : value))} />
+        {node.kind==='job'?<Select label={`Outcome ${index+1}`} value={item.outcome} options={[{value:'',label:'Choose observed outcome'},...JOB_WORKFLOW_OUTCOMES.map(outcome=>({value:outcome,label:outcome.replaceAll('_',' ')}))]} onChange={event=>setOutcomes(items=>items.map((value,i)=>i===index?{...value,outcome:event.target.value}:value))}/>:<TextField label={`Outcome ${index + 1}`} value={item.outcome} maxLength={48} pattern="[a-z][a-z0-9_]{0,47}" placeholder="approved"
+          onChange={(event) => setOutcomes((items) => items.map((value, i) => i === index ? { ...value, outcome: event.target.value } : value))} />}
         <Select label={`Target for outcome ${index + 1}`} value={item.target.kind === 'branch_end' ? 'end' : `edge:${item.target.relationshipId}`}
           onChange={(event) => setOutcomes((items) => items.map((value, i) => i !== index ? value : { ...value, target: event.target.value === 'end'
             ? { kind: 'branch_end' } : { kind: 'edge', relationshipId: event.target.value.slice(5) } }))} options={[
@@ -129,7 +130,7 @@ export function RelationshipFields({ graph, relationship, change, report }: { gr
     <TextField label="Label" hint="Optional. Shown on the connection." value={relationship.label ?? ''} onChange={(event) => put({ label: event.target.value })} />
     {!approval && graph.handoffs ? <WorkConnectionLimitEditor value={relationship.maxWorkHandoffsPerRun}
       onApply={(limit) => { try { change((value) => setWorkConnectionLimit(value, relationship.id, limit)) } catch (error) { report(error) } }} /> : null}
-    {!approval && !graph.handoffs ? <p className="next-draft-hint">This older workflow keeps its original execution behavior. Work handoff limits are available on new workflows; no limit is inferred for this saved version.</p> : null}
+    {!approval && !graph.handoffs ? <p className="next-draft-hint">One-pass dependencies activate each selected node once. Configure an explicit finite repeat block when work must repeat.</p> : null}
     <Button variant="danger" size="sm" onClick={() => change((value) => removeRelationship(value, relationship.id))}>Remove connection</Button>
   </section>
 }
@@ -158,7 +159,7 @@ export function NodeConnections({ graph, nodeId, change, report }: { graph: Work
         options={[{ value: 'execution', label: 'Handoff' }, { value: 'approval', label: 'Approval' }]} />
       <div className="next-draft-inline">
         <Select label={kind === 'approval' ? 'Reviews' : 'Hand off to'} value={target} onChange={(event) => setTarget(event.target.value)}
-          options={[{ value: '', label: 'Choose an agent' }, ...nodeOptions(graph, nodeId)]} />
+          options={[{ value: '', label: 'Choose a node' }, ...nodeOptions(graph, nodeId)]} />
         <Button type="submit" disabled={!target}>Connect</Button>
       </div>
     </form> : null}

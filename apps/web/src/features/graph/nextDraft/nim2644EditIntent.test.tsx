@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { journalIntent, savedJournal } from './nim2644Journal.fixture'
 import { boardStartClient } from '../../workflow-board/startClient'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
@@ -44,7 +45,7 @@ vi.mock('../../workflow-board/startPreflight', async (original) => ({
     workspace: { locationRevision: 1, locationValidation: { status: 'ready' } },
     capabilities: { runtimeAdmission: true, persistedReadback: true },
     version: { id: draft.baseWorkflowVersionId, definition: draft.graph,
-      agentConfigurationVersionIds: Object.fromEntries(draft.graph.nodes.map(({ agentId }) => [agentId, `configuration-${agentId}`])) },
+      agentConfigurationVersionIds: Object.fromEntries(draft.graph.nodes.map(nativeNode).map(({ agentId }) => [agentId, `configuration-${agentId}`])) },
   } }),
 }))
 vi.mock('./DraftCanvas', () => ({ DraftCanvas: ({ open, panels }: { open?: { nodeId: string; panel: 'chat' | 'settings' | 'info' }; panels?: (nodeId: string) => Record<string, unknown> }) => <div>Canvas fixture{open && panels
@@ -151,12 +152,12 @@ function waiting(value: GraphEditReadResultV3): GraphEditReadResultV3 {
   return { ...value, intent: { ...value.intent!, state: 'waiting' } }
 }
 async function createWorker(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: 'Add agent to graph' }))
+  await user.click(screen.getByRole('button', { name: 'Add agent or job to graph' }))
   await user.click(screen.getByRole('button', { name: 'Worker' }))
-  const node = edit().graph.nodes.find((item) => item.agentId !== 'agent-0')!
-  expect(edit().agentEdits?.[node.agentId]?.configurationVersionId).toBeUndefined()
-  expect(edit().agentEdits?.[node.agentId]?.prompt).toBeUndefined()
-  expect(edit().agentEdits?.[node.agentId]?.assignedSkills).toBeUndefined()
+  const node = edit().graph.nodes.map(nativeNode).find((item) => nativeNode(item).agentId !== 'agent-0')!
+  expect(edit().agentEdits?.[nativeNode(node).agentId]?.configurationVersionId).toBeUndefined()
+  expect(edit().agentEdits?.[nativeNode(node).agentId]?.prompt).toBeUndefined()
+  expect(edit().agentEdits?.[nativeNode(node).agentId]?.assignedSkills).toBeUndefined()
   return node
 }
 beforeEach(() => {
@@ -166,7 +167,7 @@ beforeEach(() => {
   vi.spyOn(nextDraftApi, 'context').mockResolvedValue(repairFixture(1))
   vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(empty)
   vi.spyOn(nextDraftApi, 'pins').mockImplementation(async (_workspaceId, graph, _stagedAgents, agents) => ({
-    expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.flatMap(({ agentId }) => {
+    expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map(nativeNode).flatMap(({ agentId }) => {
       const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId
       return pin ? [[agentId, pin]] : []
     })), expectedLocationRevision: 1, agents: agents ?? [],
@@ -187,11 +188,11 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     await waitFor(() => expect(screen.getByText(/The workflow changed/)).toBeInTheDocument())
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(advance).not.toHaveBeenCalled()
-    expect(readEditOutbox(key)).toBeUndefined(); expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
-    expect(readEditSnapshot(key)?.graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
+    expect(readEditOutbox(key)).toBeUndefined(); expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe('submitted instruction')
+    expect(nativeNode(readEditSnapshot(key)?.graph.nodes[0])?.initialPrompt).toBe('submitted instruction')
     expectNoSavedStart()
     await confirmDiscard(user)
-    expect(edit().graph.nodes[0]?.initialPrompt).toBeUndefined()
+    expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBeUndefined()
     expect(stage).toHaveBeenCalledOnce(); expect(advance).not.toHaveBeenCalled(); expect(boardStartClient.start).not.toHaveBeenCalled()
     await waitFor(() => expect(savedStartButton()).toBeEnabled())
   })
@@ -206,7 +207,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(advance).not.toHaveBeenCalled()
     reopen(first)
     await screen.findByRole('region', { name: 'Workflow authoring' })
-    expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
+    expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe('submitted instruction')
     const fresh = repairFixture(1); fresh.draft.revision = 8; fresh.draft.publishedRevision = 8
     vi.mocked(nextDraftApi.context).mockResolvedValue(fresh); vi.spyOn(window, 'confirm').mockReturnValue(true)
     await user.click(screen.getByRole('button', { name: 'Workflow settings' }))
@@ -252,7 +253,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())
     await retainedSaveReady()
     expect(readEditOutbox(key)?.request.commandId).toBe(persisted.intent?.stageCommandId)
-    expect(startButton()).toBeDisabled(); expect(edit().graph.nodes[0]?.initialPrompt).toBe('submitted instruction')
+    expect(startButton()).toBeDisabled(); expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe('submitted instruction')
   })
   it('FE-002/004 creates a Worker, replaces the sole entry, selects it explicitly, and acknowledges normalized Stop/save publication', async () => {
     let persisted = empty
@@ -260,7 +261,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => (persisted = stageValue(input)))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => (persisted = published(persisted)))
     const user = userEvent.setup(), first = mount(), node = await createWorker(user)
-    const rawWorker = structuredClone(edit().agentEdits![node.agentId]!)
+    const rawWorker = structuredClone(edit().agentEdits![nativeNode(node).agentId]!)
     await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
     await user.click(screen.getByRole('button', { name: /from workflow$/ }))
     expect(edit().graph.entryNodeId).toBeNull()
@@ -275,7 +276,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(request.graph.entryNodeId).toBe(node.id)
     expect(request.graph.nodes.map((item) => item.id)).toEqual([node.id])
     // Stage carries the exact local Agent. Defaults appear only in saved readback.
-    expect(rawWorker).toMatchObject({ id: node.agentId, productRole: 'coder' })
+    expect(rawWorker).toMatchObject({ id: nativeNode(node).agentId, productRole: 'coder' })
     expect(rawWorker.prompt).toBeUndefined(); expect(rawWorker.assignedSkills).toBeUndefined()
     expect(request.stagedAgents).toEqual([{ baseRevision: null, agent: rawWorker }])
     expect(persisted.intent!.stagedDraft.stagedAgents).toEqual(request.stagedAgents)
@@ -283,9 +284,9 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(request.expectedAgentConfigurationVersionIds).toEqual({})
     expect(request.expectedLocationRevision).toBe(1)
     expect(advance.mock.calls[0]![0]).toMatchObject({ action: 'stop_and_save', commandId: persisted.intent!.advanceCommandId })
-    expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[node.agentId]).toBeUndefined()
-    expect(editorAgents(edit()).find((agent) => agent.id === node.agentId)).toMatchObject({
-      configurationVersionId: `saved-${node.agentId}`, prompt: {}, assignedSkills: [],
+    expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[nativeNode(node).agentId]).toBeUndefined()
+    expect(editorAgents(edit()).find((agent) => agent.id === nativeNode(node).agentId)).toMatchObject({
+      configurationVersionId: `saved-${nativeNode(node).agentId}`, prompt: {}, assignedSkills: [],
     })
     expect(readEditOutbox(key)).toBeUndefined(); expect(boardStartClient.start).not.toHaveBeenCalled()
     reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
@@ -300,13 +301,13 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const user = userEvent.setup(), first = mount(), node = await createWorker(user)
     await saveWithStop(user); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
     await retainedSaveReady()
-    expect(readEditOutbox(key)?.agentTarget?.[node.agentId]?.prompt).toBeUndefined()
+    expect(readEditOutbox(key)?.agentTarget?.[nativeNode(node).agentId]?.prompt).toBeUndefined()
     expect(readEditOutbox(key)).toBeDefined()
     visible = persisted; reopen(first); await screen.findByRole('region', { name: 'Workflow authoring' })
     await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
     await waitFor(() => expect(savedStartButton()).toBeEnabled())
-    expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[node.agentId]).toBeUndefined()
-    expect(edit().context.agents.find((item) => item.agent.id === node.agentId)?.metadataRevision).toBe(1)
+    expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[nativeNode(node).agentId]).toBeUndefined()
+    expect(edit().context.agents.find((item) => item.agent.id === nativeNode(node).agentId)?.metadataRevision).toBe(1)
     // Initial Stage plus confirmation replay; readback adds no new Stage.
     const request = stage.mock.calls[0]![0]
     expect(stage.mock.calls.map(([input]) => input)).toEqual([request, request])
@@ -321,12 +322,12 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     await saveWithStop(user); await waitFor(() => expect(advance).toHaveBeenCalledOnce())
     // Simulate an independently newer retained form, not typing into a locked fieldset.
     act(() => useGraphDraftStore.getState().updateNextDraft(key, (state) => changeDraftAgent(state,
-      { ...state.agentEdits![node.agentId]!, name: 'Independently newer Worker' }, state.graph)))
+      { ...state.agentEdits![nativeNode(node).agentId]!, name: 'Independently newer Worker' }, state.graph)))
     await act(async () => { persisted = published(persisted); release(persisted) })
     await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
-    expect(edit().agentEdits?.[node.agentId]).toMatchObject({ name: 'Independently newer Worker',
-      configurationVersionId: `saved-${node.agentId}`, createdAt: now, updatedAt: now })
-    expect(edit().context.agents.find((item) => item.agent.id === node.agentId)?.agent.name).toBe('Worker 2')
+    expect(edit().agentEdits?.[nativeNode(node).agentId]).toMatchObject({ name: 'Independently newer Worker',
+      configurationVersionId: `saved-${nativeNode(node).agentId}`, createdAt: now, updatedAt: now })
+    expect(edit().context.agents.find((item) => item.agent.id === nativeNode(node).agentId)?.agent.name).toBe('Worker 2')
     expect(nextDraftDirty(edit())).toBe(true); expectNoSavedStart(); expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it.each([[true, false], [true, true], [false, false], [false, true]])('FE-003 topology Discard: dropped reply=%s, newer edits=%s', async (dropped, newer) => {
@@ -368,8 +369,8 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
     expect(edit().graph.nodes.map((node) => node.id)).toEqual(newer ? ['node-0', 'node-1'] : ['node-0', 'node-1', 'node-2'])
     expect(edit().graph.edges.map((edge) => edge.id)).toEqual(newer ? ['edge-1'] : ['edge-1', 'edge-2'])
-    expect(edit().graph.nodes[0]?.position).toEqual({ x: 934, y: -28 })
-    expect(edit().graph.nodes[0]?.initialPrompt).toBe(newer ? 'independently newer' : undefined)
+    expect(nativeNode(edit().graph.nodes[0])?.position).toEqual({ x: 934, y: -28 })
+    expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe(newer ? 'independently newer' : undefined)
     expect(sameExecutableWorkflow(edit().graph, context.draft.graph)).toBe(!newer)
     expect(readEditSnapshot(key)?.graph).toEqual(edit().graph)
     // Stage, confirmation replay, Discard reconciliation; reopen is read-only.
@@ -455,7 +456,7 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     await waitFor(() => expect(persisted.intent?.state).toBe('saved'))
     await retainedSaveReady()
     const raw = structuredClone(edit())
-    expect(raw.agentEdits?.[node.agentId]?.prompt).toBeUndefined()
+    expect(raw.agentEdits?.[nativeNode(node).agentId]?.prompt).toBeUndefined()
     const sibling = siblingConsumes(persisted)
     expect(nextDraftDirty(sibling.getState().edit)).toBe(false)
     expect(readEditOutbox(key)).toBeUndefined()
@@ -471,7 +472,7 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     expect(requests).toEqual([requests[0], requests[0]])
     expect(nextDraftApi.editAdvance).toHaveBeenCalledOnce()
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits).toEqual({})
-    expect(editorAgents(edit()).find((agent) => agent.id === node.agentId)?.configurationVersionId).toBe(`saved-${node.agentId}`)
+    expect(editorAgents(edit()).find((agent) => agent.id === nativeNode(node).agentId)?.configurationVersionId).toBe(`saved-${nativeNode(node).agentId}`)
     expect(boardStartClient.start).not.toHaveBeenCalled()
   })
   it.each([false, true])('FE-003 another store consumes lost Discard first; refresh restores topology with newer typing=%s', async (newer) => {
@@ -500,8 +501,8 @@ describe('NIM-2644 follow-up mounted stale-tab readback', () => {
     visible = persisted; reopen(first)
     await waitFor(() => expect(edit().graph.nodes.map((node) => node.id)).toEqual(['node-0', 'node-1', 'node-2']))
     expect(edit().graph.edges).toEqual(context.draft.graph.edges)
-    expect(edit().graph.nodes[0]?.position).toEqual({ x: 934, y: -28 })
-    expect(edit().graph.nodes[0]?.initialPrompt).toBe(newer ? 'independent newer instruction' : undefined)
+    expect(nativeNode(edit().graph.nodes[0])?.position).toEqual({ x: 934, y: -28 })
+    expect(nativeNode(edit().graph.nodes[0])?.initialPrompt).toBe(newer ? 'independent newer instruction' : undefined)
     expect(nextDraftDirty(edit())).toBe(newer)
     expect(advance).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce()
     const request = stage.mock.calls[0]![0]

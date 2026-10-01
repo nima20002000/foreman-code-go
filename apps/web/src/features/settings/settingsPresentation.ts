@@ -24,6 +24,9 @@ export function sectionForHarnessIssue(path: readonly (string | number)[]): Harn
   return 'model'
 }
 export function harnessSummary(value: HarnessConfiguration): { label: string; value: string }[] {
+  if (value.harness === 'claude') return [{ label: 'Harness', value: 'Claude' }, { label: 'Model', value: value.model },
+    { label: 'Profile', value: value.configDirectory }, { label: 'Authentication', value: value.authMode },
+    { label: 'Access', value: value.sandbox === 'read-only' ? 'Read only' : 'Workspace write' }]
   return value.harness === 'codex'
     ? [{ label: 'Harness', value: 'Codex' }, { label: 'Model', value: value.model },
       { label: 'Effort', value: value.reasoningEffort },
@@ -33,3 +36,5 @@ export function harnessSummary(value: HarnessConfiguration): { label: string; va
       { label: 'Variant', value: value.variant || 'Native default' }, { label: 'Native Agent', value: value.nativeAgent },
       { label: 'Thinking', value: value.thinking ? 'Shown' : 'Hidden' }]
 }
+
+export const harnessNames: Record<HarnessConfiguration['harness'], string> = { codex: 'Codex', opencode: 'OpenCode', claude: 'Claude' }

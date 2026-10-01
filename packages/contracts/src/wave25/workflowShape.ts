@@ -3,6 +3,9 @@ import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js
 import { JobWorkflowNodeSchema } from '../jobWorkflow.js'
 import { SavedNodePlacementSchema } from '../nodePlacement.js'
 import { GraphqlToolOverrideSchema } from '../graphqlMcpTools.js'
+import { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
+export { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
+export type { WorkflowChoice } from './choice.js'
 
 /** Leaf schemas: do not import the root, management or saved DTO entrypoints.
  * Both public management DTOs and the execution validators use these same
@@ -70,22 +73,6 @@ export const WorkflowExecutionPolicySchema = z
   })
   .strict();
 export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
-
-export const ChoiceOutcomeSchema = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
-export const ChoiceTargetSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('edge'), relationshipId: IdSchema }).strict(),
-  z.object({ kind: z.literal('branch_end') }).strict(),
-])
-export const WorkflowChoiceSchema = z.object({
-  outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict()).min(1).max(16),
-}).strict().superRefine((value, context) => {
-  const outcomes = new Set<string>()
-  for (const [index, declaration] of value.outcomes.entries()) {
-    if (outcomes.has(declaration.outcome)) context.addIssue({ code: 'custom', path: ['outcomes', index], message: 'outcomes must be unique' })
-    outcomes.add(declaration.outcome)
-  }
-})
-export type WorkflowChoice = z.infer<typeof WorkflowChoiceSchema>
 
 const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
 export const CurrentAgentWorkflowNodeFields = {

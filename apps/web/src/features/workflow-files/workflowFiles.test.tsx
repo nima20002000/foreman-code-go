@@ -62,7 +62,7 @@ function seed(scope: PermanentFileScope, id: string, filename = `${id}.md`, stat
   return row
 }
 function matching(scope: PermanentFileScope) {
-  return [...rows.values()].filter(({ file }) => file.scope.kind !== 'temporary'
+  return [...rows.values()].filter(({ file }) => file.scope.kind !== 'temporary' && file.scope.kind!=='job_execution'
     && referenceScopeKey(file.scope) === referenceScopeKey(scope))
 }
 interface AllocationBody { requestId: string; filename: string; mediaType: FileMediaType; byteSize: number; sha256: string }

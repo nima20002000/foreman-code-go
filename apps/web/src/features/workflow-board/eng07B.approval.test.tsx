@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -35,7 +36,7 @@ describe('ENG07-B S3-04 human approval on the mounted ordinary Board', () => {
       state: { ...terminalCurrent.state, run: { ...terminalCurrent.state.run, executionState: 'waiting', outcome: 'pending', pendingInteractionCount: 1 } } }))
     let interaction = DurableInteractionSchema.parse({ ...NATIVE_INTERACTION_FIXTURES.codex,
       id: `interaction-${f.run.id}`, workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
-      runId: f.run.id, executionId: requester.executionId, requestingAgentId: requester.agentId,
+      runId: f.run.id, executionId: requester.executionId, requestingAgentId: nativeNode(requester).agentId,
       revision: 0, approval: { handler: 'user' } })
     const option = interaction.responseOptions.find((item) => item.semantic === 'approve_once')!
     const writes: Array<ReturnType<typeof RespondToInteractionRequestSchema.parse>> = []

@@ -1,7 +1,8 @@
+import { nativeNode, nativeDefinition } from '../../shared/mocks/nativeFixtureTypes'
 import { AgentConfigurationVersionSchema, AgentSchema, type ExecutionResult } from '@graphql/contracts'
 import {
   ExecutableWorkflowV3Schema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture,
-  type WorkflowDefinitionV3, WorkflowRunV3Schema, CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema,
+  WorkflowRunV3Schema, CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema,
   RunExecutionDetailSchema, RunExecutionBindingSchema, repeatGraphTopologyV3,
   type RunExecutionDetail, type RepeatOccurrenceV1,
 } from '@graphql/contracts/wave25'
@@ -27,7 +28,7 @@ export function scenarioFixture(id: ScenarioId, suffix: string) {
     source.configurations.push(AgentConfigurationVersionSchema.parse({ ...source.configurations[0],
       id: `cfg-${suffix}-${index}`, agentId: `agent-${suffix}-${index}` }))
   }
-  const nodes: WorkflowDefinitionV3['nodes'] = source.configurations.map((configuration, index) => ({
+  const nodes: ReturnType<typeof nativeDefinition>['nodes'] = source.configurations.map((configuration, index) => ({
     id: `node-${suffix}-${index}`, agentId: configuration.agentId, name: `${id} Worker ${index}`,
   }))
   const pairs = id === 'S3-02' ? [[0, 1], [0, 2], [1, 3], [2, 3]]
@@ -49,15 +50,16 @@ export function scenarioFixture(id: ScenarioId, suffix: string) {
     { outcome: 'issues', target: { kind: 'branch_end' } },
     { outcome: 'pass', target: { kind: 'branch_end' } },
   ] }
-  source.version = WorkflowVersionV3Schema.parse({ ...source.version,
+  const parsedVersion = WorkflowVersionV3Schema.parse({ ...source.version,
     agentConfigurationVersionIds: Object.fromEntries(source.configurations.map((configuration) => [configuration.agentId, configuration.id])),
     definition: { ...source.version.definition, name: id, nodes, edges,
       executionPolicy: { maxParallelism: id === 'S3-02' || id === 'S3-03' ? 2 : 1,
         maxNodeExecutions: repeat ? 6 : count } },
   })
+  source.version={...parsedVersion,definition:nativeDefinition(parsedVersion.definition)}
   source.run.agentConfigurationVersionIds = { ...source.version.agentConfigurationVersionIds }
   source.identities = nodes.map((node, index) => ({ workflowNodeId: node.id, executionId: `exec-${suffix}-${index}`,
-    agentId: node.agentId, agentConfigurationVersionId: source.version.agentConfigurationVersionIds[node.agentId]!, attempt: 1 }))
+    agentId: nativeNode(node).agentId, agentConfigurationVersionId: source.version.agentConfigurationVersionIds[nativeNode(node).agentId]!, attempt: 1 }))
   ExecutableWorkflowV3Schema.parse({ version: source.version, configurations: source.configurations })
   const occurrences = repeat ? id === 'S3-05-early' ? 2 : 3 : 1
   const executedIndexes = Array.from({ length: count }, (_, index) => index).filter((index) => id !== 'S3-03' || index !== 4)
@@ -98,13 +100,13 @@ export async function eng07BoardFixture(id: ScenarioId, suffix: string) {
     result: scenario.result(scenario.executedIndexes.at(-1)!, scenario.occurrences) })
   const record = CurrentRunDetailsSchema.parse({ run, executions: [], activity: [], cleanupPending: false })
   const scope = inspectionScopeForRun(record), rows: RunInspectionFixture[] = []
-  const at = (index: number, round: number) => rows.find((row) => row.detail.execution.workflowNodeId === scenario.nodes[index]!.id
+  const at = (index: number, round: number) => rows.find((row) => row.detail.execution.workflowNodeId === nativeNode(scenario.nodes[index]!).id
     && (row.detail.execution.occurrence?.occurrenceIndex ?? 1) === round)!
   for (let round = 1; round <= scenario.occurrences; round++) {
     const previous = scenario.repeat && round > 1 ? at(1, round - 1).detail : undefined
     const carry = previous ? { decisionId: `decision-${run.id}-${round - 1}`,
       execution: { workflowNodeId: previous.execution.workflowNodeId, executionId: previous.execution.executionId,
-        agentId: previous.execution.agentId, agentConfigurationVersionId: previous.execution.agentConfigurationVersionId,
+        agentId: nativeNode(previous.execution).agentId, agentConfigurationVersionId: nativeNode(previous.execution).agentConfigurationVersionId,
         attempt: 1, occurrence: previous.execution.occurrence! },
       acceptedResult: scenario.result(1, round - 1), acceptedResultDigest: await digestCurrentValue(scenario.result(1, round - 1)) } : null
     const entry = { runInput: run.input, external: [], carry }
@@ -114,17 +116,17 @@ export async function eng07BoardFixture(id: ScenarioId, suffix: string) {
         previous: previous ? { occurrenceId: previous.execution.occurrence!.occurrenceId, occurrenceIndex: round - 1,
           decisionId: carry!.decisionId, acceptedResultDigest: carry!.acceptedResultDigest } : null } } : null
     for (const index of scenario.executedIndexes) {
-      const node = scenario.nodes[index]!, executionId = `exec-${run.id}-${index}-${round}`
-      const identity = { executionId, workflowNodeId: node.id, agentId: node.agentId,
-        agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!, attempt: 1 }
+      const node = nativeNode(scenario.nodes[index]!), executionId = `exec-${run.id}-${index}-${round}`
+      const identity = { executionId, workflowNodeId: node.id, agentId: nativeNode(node).agentId,
+        agentConfigurationVersionId: version.agentConfigurationVersionIds[nativeNode(node).agentId]!, attempt: 1 }
       const predecessors: RunExecutionDetail['acceptedInput']['value']['predecessors'] = []
       for (const edge of scenario.edges.filter((edge) => edge.target === node.id).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
         const from = scenario.nodes.findIndex((candidate) => candidate.id === edge.source)
         if (!scenario.executedIndexes.includes(from)) continue
         const sender = at(from, round).detail.execution, result = scenario.result(from, round)
         predecessors.push({ relationshipId: edge.id, execution: { executionId: sender.executionId,
-          workflowNodeId: sender.workflowNodeId, agentId: sender.agentId,
-          agentConfigurationVersionId: sender.agentConfigurationVersionId, attempt: 1 },
+          workflowNodeId: sender.workflowNodeId, agentId: nativeNode(sender).agentId,
+          agentConfigurationVersionId: nativeNode(sender).agentConfigurationVersionId, attempt: 1 },
           occurrence: occurrence?.identity ?? null, acceptedResult: result, acceptedResultDigest: await digestCurrentValue(result) })
       }
       const value: RunExecutionDetail['acceptedInput']['value'] = { executionSemanticsVersion: 3,

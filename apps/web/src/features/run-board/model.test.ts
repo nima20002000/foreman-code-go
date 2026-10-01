@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { describe, expect, it } from 'vitest'
 import { Position } from '@xyflow/react'
 import { projectRunBoard, READ_ONLY_FLOW_PROPS } from './model'
@@ -9,7 +10,7 @@ describe('saved board projection', () => {
     const result = projectRunBoard(runA)
     expect(result.nodes.map((node) => node.id)).toEqual(runA.nodes.map((node) => node.id))
     for (const [index, node] of result.nodes.entries()) {
-      const saved = runA.nodes[index]!
+      const saved = nativeNode(runA.nodes[index]!)
       expect(node.data.snapshot).toBe(saved)
       expect(node.position).toEqual(saved.position)
       expect(node.position).not.toBe(saved.position)
@@ -24,13 +25,13 @@ describe('saved board projection', () => {
   it('never installs mutable canvas geometry into the frozen snapshot', () => {
     const before = JSON.stringify(runA)
     const result = projectRunBoard(runA)
-    result.nodes[0]!.position.x = 999
-    result.nodes[0]!.style!.width = 999
+    nativeNode(result.nodes[0]!).position.x = 999
+    nativeNode(result.nodes[0]!).style!.width = 999
     result.nodes.splice(1, 1)
     result.edges.pop()
     expect(JSON.stringify(runA)).toBe(before)
     expect(Object.isFrozen(runA)).toBe(true)
-    expect(Object.isFrozen(runA.nodes[0]!.position)).toBe(true)
+    expect(Object.isFrozen(nativeNode(runA.nodes[0]!).position)).toBe(true)
   })
   it('keeps approval and execution edges distinct, including handles, labels and policy', () => {
     const { edges } = projectRunBoard(runA)

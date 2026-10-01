@@ -15,7 +15,7 @@ function ExecutionReport({ scope, row }: { scope: RepeatGraphScopeV3; row: RunEx
     {open ? <div>
       {row.occurrence ? <p>Configured business occurrence <code>{row.occurrence.occurrenceId}</code>, index {row.occurrence.occurrenceIndex}.
         {' '}This is separate from technical attempt {row.attempt}.</p> : <p>No business-repeat occurrence is attached to this execution.</p>}
-      <p>Configuration <code>{row.agentConfigurationVersionId}</code> · saved version <code>{scope.workflowVersionId}</code>.</p>
+      <p>Configuration <code>{row.kind==='job'?row.jobDefinitionVersionId:row.agentConfigurationVersionId}</code> · saved version <code>{scope.workflowVersionId}</code>.</p>
       {detail.isPending ? <p role="status">Reading the exact execution report…</p> : null}
       {detail.isError ? <p role="alert">Exact report is unavailable: {detail.error.message}</p> : null}
       <button type="button" disabled={detail.isFetching} onClick={() => void detail.refetch()}>Refresh exact report</button>

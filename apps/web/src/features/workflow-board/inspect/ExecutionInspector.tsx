@@ -6,6 +6,7 @@ import {
 } from '@graphql/contracts/wave25'
 import { Alert, Button, Select } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../auth/useProtectedAccessError'
+import { JobRunResult } from '../../jobs/JobRunResult'
 import { useWorkflowBoard } from '../context'
 import { assertExecutionVersion } from '../runDetailsClient'
 import { useBindingPages, useExecutionPages, useExecutionQuery, executionPagesKey, bindingsPagesKey, refreshFirstInspectionPage } from './queries'
@@ -60,7 +61,7 @@ export function ExecutionInspector({ scope, version }: { scope: RepeatGraphScope
       {relationship ? <p>Relationship <code>{relationship.id}</code>: inspecting recipient <code>{relationship.target}</code>.</p> : null}
       {node ? <JsonDisclosure disclosureKey={JSON.stringify([scope, node.id, 'saved-node'])}
         summary="Saved node configuration (this Run)" label={`Saved Run node ${node.id}`}
-        value={{ node, agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId] }} /> : null}
+        value={node.kind==='job'?{node,jobDefinitionVersionId:node.jobDefinitionVersionId}:{node,agentConfigurationVersionId:version.agentConfigurationVersionIds[node.agentId]}} /> : null}
       {version.definition.repeat ? <div className="run-occurrence-picker">
         <Select label="Business repetition" value={selection.occurrenceId ?? ''} onChange={(event) => select(event.target.value ? { occurrenceId: event.target.value } : {})} options={[
           { value: '', label: 'All recorded repetitions' },
@@ -126,10 +127,16 @@ function ExactExecution({ scope, version, executionId, nodeId, occurrenceId, rel
     <h4>{execution.workflowNodeId} · technical attempt {execution.attempt}</h4>
     {query.isPaused ? <p role="status">Refresh is paused. These are previously verified recorded execution facts.</p> : null}
     <dl><dt>Execution identity</dt><dd><code>{execution.executionId}</code></dd>
-      <dt>Immutable configuration</dt><dd><code>{execution.agentConfigurationVersionId}</code></dd>
+      <dt>Immutable configuration</dt><dd><code>{execution.kind==='job'?execution.jobDefinitionVersionId:execution.agentConfigurationVersionId}</code></dd>
       <dt>Business occurrence</dt><dd>{occurrence
         ? <>{occurrence.blockId} · {occurrence.occurrenceIndex} · <code>{occurrence.occurrenceId}</code></> : 'None — ordinary execution outside a configured repeat block'}</dd>
       <dt>Recorded state</dt><dd>{execution.state}</dd></dl>
+    {execution.kind === 'job' ? <section aria-label={`Job result for execution ${executionId}`}>
+      <JobRunResult key={executionId} definitionVersionId={execution.jobDefinitionVersionId} reference={{ kind: 'job',
+        workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId, workflowVersionId: scope.workflowVersionId,
+        nodeId: execution.workflowNodeId, nodeExecutionId: execution.executionId,
+        occurrenceId: occurrence?.occurrenceId ?? null, occurrenceIndex: occurrence?.occurrenceIndex ?? 0 }} />
+    </section> : null}
     <p>Accepted input digest <code>{checked.acceptedInput.digest}</code></p>
     <JsonValue label={`Input ${executionId}`} value={checked.acceptedInput.value} />
     {checked.acceptedResult.status === 'accepted' ? <>

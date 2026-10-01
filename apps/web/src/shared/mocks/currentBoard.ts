@@ -1,3 +1,4 @@
+import { nativeNode } from './nativeFixtureTypes'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
 import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@graphql/contracts'
@@ -78,9 +79,9 @@ export function createCurrentBoardMock(options: {
     const id = staged.workflowId, revision = (revisions.get(id) ?? 0) + 1
     const number = [...versions.values()].filter((v) => v.workflowId === id).length + 1
     const graph = { ...staged.graph, version: number }
-    const pins = Object.fromEntries(graph.nodes.map((node) => { const config = configurations.find((c) => c.agentId === node.agentId
-      && c.id === catalog.find((item) => item.agent.id === node.agentId)?.agent.configurationVersionId)
-      if (!config) throw new Error('Missing exact configuration'); return [node.agentId, config.id] }))
+    const pins = Object.fromEntries(graph.nodes.filter(node=>node.kind!=='job').map((node) => { const config = configurations.find((c) => c.agentId === nativeNode(node).agentId
+      && c.id === catalog.find((item) => item.agent.id === nativeNode(node).agentId)?.agent.configurationVersionId)
+      if (!config) throw new Error('Missing exact configuration'); return [nativeNode(node).agentId, config.id] }))
     const { version } = ExecutableWorkflowV3Schema.parse({ version: { id: `version-${id}-${number}`, workspaceId, workflowId: id,
       version: number, definition: graph, entryNodeId: graph.entryNodeId, executionSemanticsVersion: 3, approval: graph.approval,
       agentConfigurationVersionIds: pins, contentHash: hash, createdAt: at }, configurations: configurations.filter((c) => pins[c.agentId] === c.id) })
@@ -149,7 +150,7 @@ export function createCurrentBoardMock(options: {
       if (method === 'GET' && agentMatch) {
         const item = catalog.find((item) => item.agent.id === agentMatch[1])
         return item ? HttpResponse.json({ ...item, workflowIds: [...workflows.values()].filter((graph) => !archivedWorkflows.has(graph.id)
-          && graph.nodes.some((node) => node.agentId === item.agent.id)).map((graph) => graph.id) })
+          && graph.nodes.some((node) => nativeNode(node).agentId === item.agent.id)).map((graph) => graph.id) })
           : failure('NOT_FOUND', 'Agent not found', 404)
       }
       if (method === 'PATCH' && agentMatch) {
@@ -262,7 +263,7 @@ export function createCurrentBoardMock(options: {
           const input = (method === 'PUT' ? CurrentWorkflowSaveInputSchema : CurrentWorkflowValidateInputSchema).parse({ ...(body as object), workspaceId, workflowId: id })
           const check = () => {
             if (input.expectedRevision !== revisions.get(id) || input.expectedWorkflowVersionId !== draft.baseWorkflowVersionId || input.expectedLocationRevision !== controls.locationRevision) throw new Error('REVISION_CONFLICT')
-            for (const node of input.graph.nodes) if (catalog.find((a) => a.agent.id === node.agentId)?.agent.configurationVersionId !== input.expectedAgentConfigurationVersionIds[node.agentId]) throw new Error('CONFIGURATION_CONFLICT')
+            for (const node of input.graph.nodes.filter(node=>node.kind!=='job')) if (catalog.find((a) => a.agent.id === nativeNode(node).agentId)?.agent.configurationVersionId !== input.expectedAgentConfigurationVersionIds[nativeNode(node).agentId]) throw new Error('CONFIGURATION_CONFLICT')
           }
           if (method === 'POST') { check(); return HttpResponse.json({ valid: true, executionSemanticsVersion: 3, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, expectedLocationRevision: input.expectedLocationRevision, runtimeAdmission: controls.start, stopAvailable: controls.start }) }
           const save = CurrentWorkflowSaveInputSchema.parse(input)
@@ -304,7 +305,7 @@ export function createCurrentBoardMock(options: {
                 const intentId = `intent-${input.commandId}`
                 const intent = { kind: 'current', id: intentId, ownerPrincipalId: 'principal-current-mock', workspaceId, workflowId: id, draftId: input.draftId,
                   stageCommandId: input.commandId, stageInputHash: hash, expectedRevision: input.expectedRevision,
-                  expectedWorkflowVersionId: input.expectedWorkflowVersionId, savedWorkflowRevision: revisions.get(id)!, stagedDraft, agentPins: input.graph.nodes.map((node) => ({ agentId: node.agentId, metadataRevision: catalog.find((a) => a.agent.id === node.agentId)!.metadataRevision, configurationVersionId: input.expectedAgentConfigurationVersionIds[node.agentId] })), affected,
+                  expectedWorkflowVersionId: input.expectedWorkflowVersionId, savedWorkflowRevision: revisions.get(id)!, stagedDraft, agentPins: input.graph.nodes.filter(node=>node.kind!=='job').map((node) => ({ agentId: nativeNode(node).agentId, metadataRevision: catalog.find((a) => a.agent.id === nativeNode(node).agentId)!.metadataRevision, configurationVersionId: input.expectedAgentConfigurationVersionIds[nativeNode(node).agentId] })), affected,
                   advanceCommandId: `advance-${input.commandId}`, advanceInputHash: hash, discardCommandId: `discard-${input.commandId}`, discardInputHash: hash,
                   stops: affected.map((pin) => ({ input: { workspaceId, runId: pin.runId, commandId: `stop-${intentId}-${pin.runId}` }, inputHash: hash })),
                   saveInput: { workspaceId, workflowId: id, commandId: `save-${input.commandId}`, executionSemanticsVersion: 3 as const, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, expectedLocationRevision: input.expectedLocationRevision, graph: input.graph },

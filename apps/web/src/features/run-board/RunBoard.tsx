@@ -1,5 +1,8 @@
+import { useState } from 'react'
+import type { RunBoardNodeSnapshot } from '@graphql/contracts/run-snapshots'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/query'
+import { SelectedNodePlacement } from '../node-placement/SelectedNodePlacement'
 import { RunBoardCanvas } from './RunBoardCanvas'
 import './runBoard.css'
 
@@ -30,6 +33,17 @@ export function RunBoard({ selection }: RunBoardProps) {
       : snapshot?.kind === 'available' ? <>
         <span className="run-board-label">Read only</span>
         {snapshot.nodes.length ? <RunBoardCanvas key={selection.generation.id} snapshot={snapshot} /> : <p role="status">No nodes</p>}
+        <SelectedRunComputers key={`placement:${selection.generation.id}`} selection={selection} nodes={snapshot.nodes} />
       </> : null}
   </section>
+}
+
+function SelectedRunComputers({ selection, nodes }: { selection: SelectedRunState; nodes: readonly RunBoardNodeSnapshot[] }) {
+  const [open, setOpen] = useState(false)
+  return <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary>Computers accepted for this Run</summary>
+    {open ? nodes.map((node) => <section key={node.id} aria-label={`Computer evidence for ${node.name}`}>
+      <h3>{node.name}</h3><SelectedNodePlacement selection={selection} nodeId={node.id} />
+    </section>) : null}
+  </details>
 }

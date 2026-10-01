@@ -6,13 +6,14 @@ const hash = 'sha256:' + '1'.repeat(64), now = '2026-09-24T00:00:00Z'
 export function journalRequest(edit: NextDraftEdit, commandId: string): GraphEditStageInputV3 {
   const { draft, agents } = edit.context
   if (draft.publishedRevision == null) throw new Error('The journal fixture requires an exact saved revision.')
-  const stagedAgents = Object.values(edit.agentEdits ?? {}).filter((agent) => edit.graph.nodes.some((node) => node.agentId === agent.id))
+  const stagedAgents = Object.values(edit.agentEdits ?? {}).filter((agent) => edit.graph.nodes.some((node) => node.kind!=='job' && node.agentId === agent.id))
     .map((agent) => ({ agent: { ...agent, prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [] },
       baseRevision: agents.find((item) => item.agent.id === agent.id)?.metadataRevision ?? null }))
   return { action: 'stage_edits', workspaceId: draft.workspaceId, workflowId: draft.workflowId, draftId: draft.id,
     commandId, expectedRevision: draft.publishedRevision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
     executionSemanticsVersion: 3, graph: edit.graph, expectedLocationRevision: 1,
     expectedAgentConfigurationVersionIds: Object.fromEntries(edit.graph.nodes.flatMap((node) => {
+      if(node.kind==='job')return []
       const agent = edit.agentEdits?.[node.agentId] ?? agents.find((item) => item.agent.id === node.agentId)?.agent
       return agent?.configurationVersionId ? [[node.agentId, agent.configurationVersionId]] : []
     })), ...(stagedAgents.length ? { stagedAgents } : {}) }
@@ -41,7 +42,7 @@ export function journalIntent(request: GraphEditStageInputV3, context: NextDraft
       locationRevision: request.expectedLocationRevision, locationDigest: hash,
       runLocationPins: affected.map(({ runId }) => ({ runId, digest: hash })) },
     saveInput: { ...save, commandId: saveCommandId, resultantAgentConfigurationVersionIds: resultant }, saveInputHash: hash,
-    agentPins: request.graph.nodes.map(({ agentId }) => ({ agentId,
+    agentPins: request.graph.nodes.filter(node=>node.kind!=='job').map(({ agentId }) => ({ agentId,
       metadataRevision: context.agents.find((item) => item.agent.id === agentId)?.metadataRevision ?? null,
       configurationVersionId: request.expectedAgentConfigurationVersionIds[agentId] ?? null })),
     affected, stops: affected.map(({ runId }) => ({ input: { workspaceId: request.workspaceId, runId,

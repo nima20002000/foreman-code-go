@@ -11,10 +11,10 @@ import { useGraphNodeRuntime } from './useGraphNodeRuntime'
 import { presentGraphNodeRuntime } from './nodePresentation'
 import { agentNodeFacts, agentSettingRows, edgeBend, floatingCurve, useFloatingCurve } from './signalEdge'
 import { SignalEdgeShape } from './SignalEdgeShape'
-import type { GraphNode, GraphEdge } from './types'
+import type { AgentGraphNode, GraphNode, GraphEdge } from './types'
 import './graphRendering.css'
 
-export const AgentNode = memo(function AgentNode({ data: staticData, isConnectable }: NodeProps<GraphNode>) {
+export const AgentNode = memo(function AgentNode({ data: staticData, isConnectable }: NodeProps<AgentGraphNode>) {
   const presentation = useGraphPresentationStore()
   const geometry = useContext(GraphGeometryContext)
   const selected = useGraphPresentation((state) => state.selectedNodeIds.has(staticData.workflowNodeId))
@@ -126,7 +126,7 @@ export const HandoffEdge = memo(function HandoffEdge({
   const receiver = useInternalNode<GraphNode>(target)
   const floating = useFloatingCurve(source, target, edgeBend(0, true))
   const curve = floating ?? floatingCurve({ x: sourceX, y: sourceY }, { x: targetX, y: targetY }, edgeBend(0, true), 0)
-  const receiverRuntime = useGraphNodeRuntime(receiver?.data.workflowNodeId ?? target, receiver?.data.agentId ?? '')
+  const receiverRuntime = useGraphNodeRuntime(receiver?.data.workflowNodeId ?? target, receiver?.data && 'agentId' in receiver.data?receiver.data.agentId:undefined)
   const receiverView = presentGraphNodeRuntime(receiverRuntime.activity, receiverRuntime.unavailable || !receiver)
   // Light only follows scoped runtime truth: a handoff is shown while its receiver is working.
   const signal = receiverView.state === 'working' || receiverView.state === 'waiting' ? 'task' as const : undefined

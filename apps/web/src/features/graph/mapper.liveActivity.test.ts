@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { type Agent, type RunNodeLiveActivity } from '@graphql/contracts'
@@ -15,20 +16,20 @@ const activity: RunNodeLiveActivity = { workflowNodeId: 'first', agentId: 'same-
 describe('exact-node live graph mapping', () => {
   it('does not copy an Agent’s activity to another occurrence', () => {
     const graph = workflowToGraph({ workflow, agents }, { runActive: true, liveActivitiesByNodeId: new Map([['first', activity]]) })
-    assert.deepEqual(graph.nodes[0]!.data.liveActivity, activity)
-    assert.equal(graph.nodes[1]!.data.liveActivity, undefined)
+    assert.deepEqual(nativeNode(graph.nodes[0]!).data.liveActivity, activity)
+    assert.equal(nativeNode(graph.nodes[1]!).data.liveActivity, undefined)
   })
   it('never maps historical run activity into the live graph', () => {
     const graph = workflowToGraph({ workflow, agents }, { runActive: false, liveActivitiesByNodeId: new Map([['first', activity]]) })
-    assert.ok(graph.nodes.every((node) => node.data.liveActivity === undefined))
+    assert.ok(graph.nodes.every((node) => nativeNode(node).data.liveActivity === undefined))
   })
   it('ignores a snapshot for a replaced Agent on the same node ID', () => {
     const graph = workflowToGraph({ workflow, agents }, { runActive: true,
       liveActivitiesByNodeId: new Map([['first', { ...activity, agentId: 'previous-agent' }]]) })
-    assert.equal(graph.nodes[0]!.data.liveActivity, undefined)
+    assert.equal(nativeNode(graph.nodes[0]!).data.liveActivity, undefined)
   })
   it('does not fabricate live evidence from a global Agent status or a completed step', () => {
     const graph = workflowToGraph({ workflow, agents }, { runActive: true, runStatesByNodeId: new Map([['first', 'completed']]) })
-    assert.ok(graph.nodes.every((node) => node.data.liveActivity === undefined))
+    assert.ok(graph.nodes.every((node) => nativeNode(node).data.liveActivity === undefined))
   })
 })

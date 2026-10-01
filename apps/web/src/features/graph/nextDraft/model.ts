@@ -1,6 +1,7 @@
 import { WorkflowRelationshipSchema, executableNodeContent, preserveNodeGeometry, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { z } from 'zod'
 import { addAgentOperations, configureAgentOperations, type DraftAgentEdits } from './agentEdits'
+import type { JobDefinition } from '@graphql/contracts/jobs'
 import type { Agent, WorkflowApprovalConfiguration } from '@graphql/contracts'
 import type { ManagedAgentSchema } from '@graphql/contracts/management'
 import type { GraphDraftOperationV3, GraphDraftV3, WorkflowDefinitionV3, WorkflowRelationship } from '@graphql/contracts/wave25'
@@ -30,7 +31,7 @@ export function roleEvidence(context: NextDraftContext, agentId: string, agentEd
   const agent = context.agents.find((item) => item.agent.id === agentId)?.agent
   const expected = context.draft.sourceAgentPins?.find((pin) => pin.agentId === agentId)
   const local = agentEdits[agentId]
-  if (!agent && !expected && !context.draft.graph.nodes.some((node) => node.agentId === agentId)
+  if (!agent && !expected && !context.draft.graph.nodes.some((node) => node.kind!=='job' && node.agentId === agentId)
     && local?.id === agentId && !local.configurationVersionId
     && (local.productRole === 'coder' || local.productRole === 'orchestrator')) {
     return { role: local.productRole, source: 'local' }
@@ -43,11 +44,11 @@ export function roleEvidence(context: NextDraftContext, agentId: string, agentEd
 }
 
 export function entryChoices(graph: WorkflowDefinitionV3, context: NextDraftContext, agentEdits: DraftAgentEdits = {}) {
-  const roles = new Map(graph.nodes.map((node) => [node.id, roleEvidence(context, node.agentId, agentEdits)]))
-  const unresolved = graph.nodes.filter((node) => !roles.get(node.id)?.role)
+  const roles = new Map(graph.nodes.filter(node=>node.kind!=='job').map((node) => [node.id, roleEvidence(context, node.agentId, agentEdits)]))
+  const unresolved = graph.nodes.filter((node) => node.kind!=='job' && !roles.get(node.id)?.role)
   const orchestrators = graph.nodes.filter((node) => roles.get(node.id)?.role === 'orchestrator')
   // An unresolved node might be an Orchestrator. Do not enable a permissive Worker fallback.
-  const eligible = unresolved.length ? [] : orchestrators.length ? orchestrators : graph.nodes.filter((node) => roles.get(node.id)?.role === 'coder')
+  const eligible = unresolved.length ? [] : orchestrators.length ? orchestrators : graph.nodes.filter((node) => node.kind==='job' || roles.get(node.id)?.role === 'coder')
   return { roles, unresolved, eligible,
     valid: graph.entryNodeId !== null && eligible.some((node) => node.id === graph.entryNodeId),
     mode: graph.nodes.length === 1 ? 'sole' : orchestrators.length ? 'orchestrator' : 'worker',
@@ -99,7 +100,7 @@ export function authoringHints(graph: WorkflowDefinitionV3, context: NextDraftCo
   if (!graph.approval) issues.push({ code: 'APPROVAL_MODE_REQUIRED', message: 'Choose who handles approvals in workflow settings.' })
   if (graph.approval?.handler !== 'orchestrator' && approvals.length) issues.push({ code: 'APPROVAL_MODE_CONFLICT', message: 'Approval connections only work when an agent reviews approvals. Remove them or change who handles approvals.' })
   if (graph.approval?.handler === 'orchestrator') {
-    const reviewer = graph.nodes.find((node) => node.agentId === graph.approval?.designatedOrchestratorAgentId)
+    const reviewer = graph.nodes.find((node) => node.id===graph.entryNodeId && node.kind!=='job' && node.agentId === graph.approval?.designatedOrchestratorAgentId)
     if (!reviewer || reviewer.id !== graph.entryNodeId || entry.roles.get(reviewer.id)?.role !== 'orchestrator') issues.push({
       code: 'REVIEWER_BOOTSTRAP_UNSUPPORTED', message: 'The reviewer must be the orchestrator that starts the workflow.',
     })
@@ -148,7 +149,7 @@ export function changeApprovalHandler(graph: WorkflowDefinitionV3, handler: Work
 
 export function attachAgent(graph: WorkflowDefinitionV3, record: CatalogAgent, nodeId: string): WorkflowDefinitionV3 {
   if (record.archivedAt || !record.agent.configurationVersionId || !['coder', 'orchestrator'].includes(record.agent.productRole ?? '')) throw new Error('A board Agent with an available product-role configuration pin is required.')
-  if (graph.nodes.some((node) => node.agentId === record.agent.id || node.id === nodeId)) throw new Error('An Agent can occur only once in this workflow definition.')
+  if (graph.nodes.some((node) => node.id === nodeId)) throw new Error('A node identity can occur only once in this workflow definition.')
   const node: DraftNode = { id: nodeId, agentId: record.agent.id, name: record.agent.name,
     position: { x: 80 + (graph.nodes.length % 4) * 280, y: 80 + Math.floor(graph.nodes.length / 4) * 180 } }
   return { ...graph, nodes: [...graph.nodes, node], entryNodeId: graph.nodes.length === 0 ? nodeId : graph.entryNodeId }
@@ -177,7 +178,11 @@ export function draftOperations(context: NextDraftContext, graph: WorkflowDefini
   for (const node of base.nodes) if (!nodes.has(node.id)) operations.push({ type: 'node.remove', nodeId: node.id })
   for (const node of graph.nodes) {
     const old = oldNodes.get(node.id)
-    if (old && old.agentId !== node.agentId) throw new Error('Node identity cannot be rebound to another Agent.')
+    if(old && ((old.kind==='job')!==(node.kind==='job') || (old.kind==='job' && node.kind==='job' ? old.jobDefinitionId!==node.jobDefinitionId : old.kind!=='job' && node.kind!=='job' && old.agentId!==node.agentId)))throw new Error('Node identity cannot be rebound to another executable identity.')
+    if(node.kind==='job') {
+      if(!old || !sameValue(executableNodeContent(old),executableNodeContent(node)))operations.push({type:'node.replace_v3',node})
+      continue
+    }
     if (!old) {
       const source = context.agents.find((item) => item.agent.id === node.agentId)
       const local = agentEdits[node.agentId]
@@ -290,4 +295,11 @@ export function hasLocalChanges(context: NextDraftContext, graph: WorkflowDefini
 /** Discard affects staged meaning only. It never dispatches a Run command. */
 export function discardMeaningfulChanges(context: NextDraftContext, graph: WorkflowDefinitionV3): WorkflowDefinitionV3 {
   return preserveWorkflowGeometry((context.savedDraft ?? context.draft).graph, graph)
+}
+
+export function attachJob(graph:WorkflowDefinitionV3,definition:JobDefinition,nodeId:string):WorkflowDefinitionV3 {
+  if(definition.workspaceId!==graph.workspaceId||graph.nodes.some(node=>node.id===nodeId))throw new Error('Choose a saved job in this workspace and a new node identity.')
+  if(graph.handoffs)throw new Error('Job nodes require a DAG or finite repeat workflow.')
+  const node:DraftNode={kind:'job',id:nodeId,jobDefinitionId:definition.id,jobDefinitionRevision:definition.revision,jobDefinitionVersionId:definition.versionId,name:definition.name,position:{x:80+(graph.nodes.length%4)*280,y:80+Math.floor(graph.nodes.length/4)*180}}
+  return {...graph,nodes:[...graph.nodes,node],entryNodeId:graph.nodes.length===0?nodeId:graph.entryNodeId}
 }

@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { describe, expect, it, vi } from 'vitest'
 import { createGraphTopologyProjector } from './topology'
 import { workflowToGraph } from './mapper'
@@ -15,7 +16,7 @@ describe('stable graph topology (reference assertions, not a renderer benchmark)
     } : agent)
     expect(reconcile(source.workflow, updated)).toBe(before)
     expect(project).toHaveBeenCalledTimes(1)
-    expect(before.nodes[12].data.agent.executionState).toBeUndefined()
+    expect(nativeNode(before.nodes[12]).data.agent.executionState).toBeUndefined()
   })
 
   it('retains every unaffected node, position and edge after one authored node change', () => {
@@ -25,9 +26,9 @@ describe('stable graph topology (reference assertions, not a renderer benchmark)
     const changed = { ...workflow, nodes: workflow.nodes.map((node, index) => index === 10
       ? { ...node, name: 'Renamed Worker' } : node) }
     const after = reconcile(changed, agents)
-    expect(after.nodes[10]).not.toBe(before.nodes[10])
-    expect(after.nodes[10].position).toBe(before.nodes[10].position)
-    after.nodes.forEach((node, index) => { if (index !== 10) expect(node).toBe(before.nodes[index]) })
+    expect(nativeNode(after.nodes[10])).not.toBe(nativeNode(before.nodes[10]))
+    expect(nativeNode(after.nodes[10]).position).toBe(nativeNode(before.nodes[10]).position)
+    after.nodes.forEach((node, index) => { if (index !== 10) expect(node).toBe(nativeNode(before.nodes[index])) })
     expect(after.edges).toBe(before.edges)
   })
 
@@ -38,20 +39,20 @@ describe('stable graph topology (reference assertions, not a renderer benchmark)
     const before = reconcile(workflow, agents)
     const after = reconcile(workflow, [{ ...agents[0], harnessSummary: { status: 'running', label: 'Local harness' } }, agents[1]])
     expect(after).toBe(before)
-    expect(after.nodes[0].data.harnessLabel).toBe('Local harness')
-    expect(after.nodes[0].data.agent.harnessSummary).toBeUndefined()
+    expect(nativeNode(after.nodes[0]).data.harnessLabel).toBe('Local harness')
+    expect(nativeNode(after.nodes[0]).data.agent.harnessSummary).toBeUndefined()
   })
 
   it('explicitly drops wider legacy runtime/selection/cue options', () => {
     const { workflow, agents } = makeScaleGraph(2)
     const project = vi.fn(workflowToGraph)
     const reconcile = createGraphTopologyProjector(project)
-    const actions = { onRemoveEdge: vi.fn(), runActive: true, selectedNodeIds: new Set([workflow.nodes[0].id]),
-      enteringNodeIds: new Set([workflow.nodes[0].id]) }
+    const actions = { onRemoveEdge: vi.fn(), runActive: true, selectedNodeIds: new Set([nativeNode(workflow.nodes[0]).id]),
+      enteringNodeIds: new Set([nativeNode(workflow.nodes[0]).id]) }
     const before = reconcile(workflow, agents, actions)
-    expect(before.nodes[0].selected).toBe(false)
-    expect(before.nodes[0].data.entering).toBeUndefined()
-    expect(before.nodes[0].data.runActive).toBeUndefined()
+    expect(nativeNode(before.nodes[0]).selected).toBe(false)
+    expect(nativeNode(before.nodes[0]).data.entering).toBeUndefined()
+    expect(nativeNode(before.nodes[0]).data.runActive).toBeUndefined()
     expect(reconcile(workflow, agents, { ...actions, runActive: false } as typeof actions)).toBe(before)
     expect(project).toHaveBeenCalledTimes(1)
   })
@@ -75,6 +76,6 @@ describe('stable graph topology (reference assertions, not a renderer benchmark)
       ? { ...node, position: { x: 300, y: 500 } } : node) }, agents)
     expect(after.edges[0].sourceHandle).toBe('top')
     expect(after.edges[1]).toBe(before.edges[1])
-    expect(after.nodes[1]).toBe(before.nodes[1])
+    expect(nativeNode(after.nodes[1])).toBe(nativeNode(before.nodes[1]))
   })
 })

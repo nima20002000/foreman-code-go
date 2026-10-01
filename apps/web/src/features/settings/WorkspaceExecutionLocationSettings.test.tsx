@@ -1,189 +1,82 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { setMockScenario } from '../../shared/mocks/scenarios'
-import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
-import { useWorkspaceLocationDraftStore } from './workspaceLocationDraftStore'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
+import type { WorkspaceBoundLocationReadback } from '@graphql/contracts/workspace-bound-location'
 import { server } from '../../mocks/server'
-
+import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
+import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
+import { mainRoot, workerRoot, rootDeviceId, rootAttestation, boundRootReadback } from './workspaceBoundLocation.fixtures'
 const clients: QueryClient[] = []
-function mount() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  clients.push(client)
-  return render(<QueryClientProvider client={client}><WorkspaceExecutionLocationSettings workspaceId="workspace-1" /></QueryClientProvider>)
+let saved: WorkspaceBoundLocationReadback
+function mount() { const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
+  return render(<QueryClientProvider client={client}><WorkspaceExecutionLocationSettings workspaceId="workspace-1" /></QueryClientProvider>) }
+async function choose(user: ReturnType<typeof userEvent.setup>, remote = true) {
+  await user.click(await screen.findByRole('button', { name: 'Project folder' }))
+  const select = await screen.findByRole('combobox', { name: 'Computer and approved base folder' })
+  const options = select.querySelectorAll('option')
+  await user.selectOptions(select, options[remote ? 2 : 1]!.value)
 }
 beforeEach(() => {
-  useWorkspaceLocationDraftStore.getState().reset()
-  setMockScenario('normal')
-  server.use(
-    http.post('/api/management/harnesses/directories', async ({ request }) => {
-      const body = await request.json() as { parentPath: string; name?: string }
-      return HttpResponse.json({ value: { name: body.name ?? 'New folder', path: body.parentPath + '/' + (body.name ?? 'New folder') }, replayed: false })
-    }),
-    http.post('/api/management/harnesses/directories/rename', async ({ request }) => {
-      const body = await request.json() as { name: string }
-      return HttpResponse.json({ value: { name: body.name, path: '/projects/' + body.name }, replayed: false })
-    }),
-  )
-  server.use(http.get('/api/management/harnesses/directories', ({ request }) => {
-    const path = new URL(request.url).searchParams.get('path') ?? '/projects'
-    return HttpResponse.json({
-      roots: [{ id: '0', label: 'projects', path: '/projects' }], rootId: '0', path,
-      parent: path === '/projects' ? null : '/projects', nextCursor: null,
-      directories: path === '/projects' ? [{ name: 'My project', path: '/projects/My project' }] : [],
-    })
-  }))
+  useBoundLocationDraftStore.getState().reset()
+  saved = { evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } }
+  server.use(http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json(saved)),
+    http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot, workerRoot] })),
+    http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => { const input = await request.json() as WorkspaceRootSelection
+      return HttpResponse.json({ workspaceId: input.workspaceId, selection: input, browse: { relativePath: input.relativePath, directories: [{ name: 'src', relativePath: 'src' }], truncated: false } }) }),
+    http.post('/api/management/workspaces/workspace-1/root-location/validate', async ({ request }) => { const input = await request.json() as WorkspaceRootSelection
+      return HttpResponse.json({ workspaceId: input.workspaceId, selection: input, attestation: rootAttestation(input, input.hostRef.kind === 'main' ? mainRoot : workerRoot), checkedAt: '2026-10-01T00:00:00.000Z' }) }))
 })
-afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
-
-describe('workspace execution folder picker', () => {
-  it('opens from the field and saves inside the modal without an extra page button', async () => {
-    const user = userEvent.setup()
-    mount()
-    const field = await screen.findByRole('button', { name: 'Project folder' })
-    expect(screen.queryByRole('button', { name: 'Choose folder' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Save location' })).not.toBeInTheDocument()
-    await user.click(field)
-    await user.click(await screen.findByRole('button', { name: 'My project' }))
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveValue('/projects/My project'))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
-    expect(screen.queryByText('No subfolders.')).not.toBeInTheDocument()
-    expect(screen.queryByText('My project', { selector: 'strong' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Select location' }))
-    expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(field.parentElement).toHaveTextContent('/projects/My project')
-    expect(field).toHaveFocus()
-    expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-1']?.dirty).toBe(false)
-  })
-
-  it('goes Back to the previous folder without selecting or saving it', async () => {
-    const user = userEvent.setup()
-    mount()
-    await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    const back = await screen.findByRole('button', { name: 'Back' })
-    expect(back).toBeDisabled()
-    expect(back.closest('header')).toContainElement(screen.getByRole('heading', { name: 'Choose folder' }))
-    await user.click(screen.getByRole('button', { name: 'My project' }))
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveValue('/projects/My project'))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: 'Back' }))
-    expect(await screen.findByRole('button', { name: 'My project' })).toBeVisible()
-    expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveFocus()
-    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
-    expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-1']?.rootPath).toBe('')
-  })
-
-  it('keeps focus and Back available when a folder cannot be opened', async () => {
-    server.use(http.get('/api/management/harnesses/directories', ({ request }) => {
-      if (new URL(request.url).searchParams.get('path') === '/projects/Unavailable') return HttpResponse.json({
-        error: { code: 'DIRECTORY_UNAVAILABLE', message: 'Folder unavailable.' },
-      }, { status: 404 })
-      return HttpResponse.json({ roots: [{ id: '0', label: 'projects', path: '/projects' }],
-        rootId: '0', path: '/projects', parent: null, nextCursor: null,
-        directories: [{ name: 'Unavailable', path: '/projects/Unavailable' }] })
+afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()) })
+describe('authenticated target-local execution folder', () => {
+  it('browses and validates on the selected worker, then saves exact binding without a browser runner ID', async () => {
+    const writes: WorkspaceRootSelection[] = []
+    server.use(http.put('/api/management/workspaces/workspace-1/root-location', async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection; writes.push(input)
+      expect(input.hostRef).toEqual(workerRoot.hostRef); expect(input.allowedBaseId).toBe(workerRoot.bases[0]!.baseId)
+      expect(input).not.toHaveProperty('runnerId')
+      saved = boundRootReadback(input, workerRoot); return HttpResponse.json({ value: saved, replayed: false })
     }))
-    const user = userEvent.setup()
-    mount()
-    await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: 'Unavailable' }))
-    expect(await screen.findByText('Folder unavailable.')).toBeVisible()
-    expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveFocus()
-    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Select location' })).toBeDisabled()
+    mount(); const user = userEvent.setup(); await choose(user)
+    await user.click(screen.getByRole('button', { name: 'Browse this computer' })); await user.click(await screen.findByRole('button', { name: 'src' }))
+    await user.click(screen.getByRole('button', { name: 'Validate candidate folder' }))
+    expect(await screen.findByText(/Candidate verified on Worker/)).toHaveTextContent('/projects/shared/src. Not saved yet.')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Execution folder' })).not.toBeInTheDocument())
+    expect(screen.getByText('Saved execution computer').nextElementSibling).toHaveTextContent(rootDeviceId)
+    expect(writes[0]).toMatchObject({ relativePath: 'src', expectedLocationRevision: 0, expectedRootPolicyRevision: 0 })
   })
-
-  it('creates and saves a folder in one confirmation', async () => {
-    const requests: unknown[] = []
-    server.use(http.post('/api/management/harnesses/directories', async ({ request }) => {
-      const input = await request.json() as { name: string; parentPath: string }
-      requests.push(input)
-      return HttpResponse.json({ value: { name: 'New folder', path: input.parentPath + '/New folder' }, replayed: false })
+  it('reconciles the original command and locks computer/path changes after a lost acknowledgement', async () => {
+    const writes: unknown[] = []
+    server.use(http.put('/api/management/workspaces/workspace-1/root-location', async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection; writes.push(input)
+      if (writes.length === 1) return HttpResponse.json({ error: { code: 'INTERNAL', message: 'Acknowledgement lost.' } }, { status: 503 })
+      expect(writes[1]).toEqual(writes[0]); saved = boundRootReadback(input, workerRoot)
+      return HttpResponse.json({ value: saved, replayed: true })
     }))
-    const user = userEvent.setup()
-    mount()
-    await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: 'New folder' }))
-    expect(await screen.findByRole('textbox', { name: 'Folder name' })).toHaveFocus()
-    await user.clear(await screen.findByRole('textbox', { name: 'Folder name' }))
-    await user.type(await screen.findByRole('textbox', { name: 'Folder name' }), 'New project')
-    await user.click(screen.getByRole('button', { name: 'Select location' }))
-    expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
-    expect(requests).toEqual([expect.objectContaining({ parentPath: '/projects', commandId: expect.any(String) })])
-    expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-1']?.rootPath).toBe('/projects/New project')
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
+    mount(); const user = userEvent.setup(); await choose(user); await user.click(screen.getByRole('button', { name: 'Select location' }))
+    expect(await screen.findByText(/The save outcome is unknown/)).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Computer and approved base folder' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Relative folder on this computer' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Reconcile original selection' }))
+    await waitFor(() => expect(writes).toHaveLength(2))
   })
-
-  it('keeps a failed save in the modal for retry', async () => {
-    server.use(http.put('/api/management/workspaces/:id/location', () => HttpResponse.json({
-      error: { code: 'LOCATION_UNAVAILABLE', message: 'Folder no longer exists.' },
-    }, { status: 422 })))
-    const user = userEvent.setup()
-    mount()
-    await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: 'Select location' }))
-    expect(await screen.findByRole('dialog')).toBeVisible()
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Folder no longer exists.'))
-    expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled()
+  it('keeps paths distinct when two computers have identical approved base paths', async () => {
+    mount(); const user = userEvent.setup(); await choose(user, false)
+    await user.type(screen.getByRole('textbox', { name: 'Relative folder on this computer' }), 'pc-only')
+    const select = screen.getByRole('combobox', { name: 'Computer and approved base folder' }); const options = select.querySelectorAll('option')
+    await user.selectOptions(select, options[2]!.value)
+    expect(screen.getByRole('textbox', { name: 'Relative folder on this computer' })).toHaveValue('')
+    await user.type(screen.getByRole('textbox', { name: 'Relative folder on this computer' }), 'worker-only')
+    await user.selectOptions(select, options[1]!.value)
+    expect(screen.getByRole('textbox', { name: 'Relative folder on this computer' })).toHaveValue('pc-only')
   })
-
-  it('retries saving the newly created folder without creating it again', async () => {
-    let creates = 0
-    let saves = 0
-    server.use(
-      http.post('/api/management/harnesses/directories', () => {
-        creates++
-        return HttpResponse.json({ value: { name: 'Project', path: '/projects/Project' }, replayed: false })
-      }),
-      http.put('/api/management/workspaces/:id/location', () => {
-        saves++
-        if (saves === 1) return HttpResponse.json({ error: { code: 'TEMPORARY', message: 'Try saving again.' } }, { status: 422 })
-        const location = { runnerId: 'runner-local', rootPath: '/projects/Project' }
-        return HttpResponse.json({ value: { workspaceId: 'workspace-1', executionLocation: location, locationRevision: 1,
-          validation: { workspaceId: 'workspace-1', location, accessMode: 'read-only', checkedAt: new Date().toISOString() } }, replayed: false })
-      }),
-    )
-    const user = userEvent.setup()
+  it('shows denied root metadata and does not expose the local folder browser as a fallback', async () => {
+    server.use(http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Root access denied.' } }, { status: 403 })))
     mount()
-    await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: 'New folder' }))
-    await user.clear(await screen.findByRole('textbox', { name: 'Folder name' }))
-    await user.type(await screen.findByRole('textbox', { name: 'Folder name' }), 'Project')
-    await user.click(screen.getByRole('button', { name: 'Select location' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Try saving again.')
-    await user.click(screen.getByRole('button', { name: 'Select location' }))
-    expect(await screen.findByText('Execution location saved. Future runs use this folder.')).toBeVisible()
-    expect(creates).toBe(1)
-    expect(saves).toBe(2)
-  })
-
-  it('keeps duplicate folder errors next to the name and preserves it', async () => {
-    server.use(http.post('/api/management/harnesses/directories/rename', () => HttpResponse.json({
-      error: { code: 'DIRECTORY_EXISTS', message: 'A folder with this name already exists.' },
-    }, { status: 409 })))
-    const user = userEvent.setup()
-    mount()
-    await user.click(await screen.findByRole('button', { name: 'Project folder' }))
-    await user.click(await screen.findByRole('button', { name: 'New folder' }))
-    await user.clear(await screen.findByRole('textbox', { name: 'Folder name' }))
-    await user.type(await screen.findByRole('textbox', { name: 'Folder name' }), 'Existing')
-    await user.click(screen.getByRole('button', { name: 'Select location' }))
-    expect(await screen.findByText('A folder with this name already exists.')).toBeVisible()
-    expect(await screen.findByRole('textbox', { name: 'Folder name' })).toHaveValue('Existing')
-    expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled()
-  })
-
-  it('cancels browsing without changing the saved location', async () => {
-    const user = userEvent.setup()
-    mount()
-    const field = await screen.findByRole('button', { name: 'Project folder' })
-    await user.click(field)
-    await user.click(await screen.findByRole('button', { name: 'My project' }))
-    await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(field.parentElement).toHaveTextContent('Choose a workspace folder')
-    expect(field).toHaveFocus()
+    expect(await screen.findByText('Authenticated execution location or computer roots could not be read.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Project folder' })).not.toBeInTheDocument()
   })
 })

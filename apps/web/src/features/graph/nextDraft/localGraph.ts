@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { WorkflowDefinitionV3Schema, WorkflowNodeV3Schema, RepeatBlockV1Schema } from '@graphql/contracts/wave25'
+import { JobWorkflowNodeSchema } from '@graphql/contracts/job-workflow'
+import { WorkflowDefinitionV3Schema, CurrentAgentWorkflowNodeSchema, RepeatBlockV1Schema } from '@graphql/contracts/wave25'
 
 // Form snapshots are not executable definitions. They may contain an unfinished
 // selection, partial outcome text or an invalid numeric field. Strict shared V3
@@ -11,9 +12,10 @@ const FormTarget = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('branch_end') }).strict(),
   z.object({ kind: z.literal('edge'), relationshipId: z.string() }).strict(),
 ])
-const FormNode = WorkflowNodeV3Schema.safeExtend({ choice: z.object({ outcomes: z.array(z.object({
+const FormChoice = z.object({ outcomes: z.array(z.object({
   outcome: z.string(), target: FormTarget,
-}).strict()).max(16) }).strict().optional() })
+}).strict()).max(16) }).strict().optional()
+const FormNode = z.union([CurrentAgentWorkflowNodeSchema.safeExtend({choice:FormChoice}), z.object({...JobWorkflowNodeSchema.shape,choice:FormChoice}).strict()])
 const FormBlock = z.object({ ...RepeatBlockV1Schema.shape,
   id: z.string(), nodeIds: z.array(z.string()), entryNodeId: z.string(), exitNodeId: z.string(),
   maxOccurrences: FormNumber, repeatOutcome: z.string(), earlyExitOutcome: z.string(), limitExit: FormTarget,

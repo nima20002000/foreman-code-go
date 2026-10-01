@@ -2,11 +2,12 @@ import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-q
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults } from '@graphql/contracts'
 import { queryKeys } from '../../shared/api/query'
 import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { nativeOptionsFixture } from './settingsExperience.fixtures'
+import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 import { ToastProvider } from '../../shared/ui/nocturne'
 type SaveDefaults = ReturnType<typeof import('../../shared/api/query').useUpdateManagedHarnessDefaultsMutation>['mutateAsync']
 type SaveInput = Parameters<SaveDefaults>[0]
@@ -18,7 +19,7 @@ vi.mock('../../shared/api/query', async () => {
 })
 
 vi.mock('../../shared/api/harnessSettings', () => ({
-  useNativeHarnessOptions: (harness: 'codex' | 'opencode') => nativeOptionsFixture(harness),
+  useNativeHarnessOptions: (harness: 'codex' | 'opencode' | 'claude') => nativeOptionsFixture(harness === 'claude' ? 'opencode' : harness),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: true, result: { isFetching: false, isSuccess: true, isError: false } }),
   useHarnessSessionEpoch: () => 0,
@@ -26,10 +27,10 @@ vi.mock('../../shared/api/harnessSettings', () => ({
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 
 const clients: QueryClient[]=[]
-function renderSettings(defaults=DEFAULT_HARNESS_DEFAULTS) {
+function renderSettings(defaults: HarnessDefaults=DEFAULT_HARNESS_DEFAULTS, selectedHarness?: 'codex' | 'opencode' | 'claude') {
   const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity}}})
-  client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','opencode'] as const).map((harness)=>({harness,defaults:defaults[harness],defaultsRevision:0,capability:null,discoveryError:null})));clients.push(client)
-  render(<QueryClientProvider client={client}><ToastProvider><HarnessDefaultsSettings /></ToastProvider></QueryClientProvider>);return client
+  client.setQueryData(queryKeys.managedHarnessCatalog,(['codex','opencode','claude'] as const).filter((harness)=>defaults[harness]).map((harness)=>({harness,defaults:defaults[harness],defaultsRevision:0,capability:null,discoveryError:null})));clients.push(client)
+  render(<QueryClientProvider client={client}><ToastProvider><HarnessDefaultsSettings selectedHarness={selectedHarness} onSelectHarness={selectedHarness ? () => {} : undefined} /></ToastProvider></QueryClientProvider>);return client
 }
 beforeEach(()=>{saveDefaults.mockReset();saveDefaults.mockImplementation(async(input)=>({value:{defaults:input.defaults,revision:1},replayed:false}))})
 afterEach(()=>{cleanup();clearRevisionedFormPersistence();for(const client of clients.splice(0))client.clear()})
@@ -67,4 +68,60 @@ describe('Harness overview and draft regressions',()=>{
     await user.selectOptions(field,'graphql_routed');await user.click(screen.getByRole('button',{name:'Save OpenCode preset'}));await waitFor(()=>expect(saveDefaults).toHaveBeenCalledOnce())
     expect(saveDefaults.mock.calls[0]![0].defaults.opencode.autoApprove).toBe(false)
   })
+})
+
+describe('Claude provider settings', () => {
+  it('opens an accepted Claude settings link with the actual profile controls', async () => {
+    renderSettings({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }, 'claude')
+    expect(await screen.findByRole('heading', { name: 'Claude settings' })).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveValue(savedClaudeConfiguration.configDirectory)
+    expect(screen.getByRole('combobox', { name: 'Authentication' })).toHaveValue('subscription')
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('read-only')
+    expect(screen.queryByRole('combobox', { name: 'Provider variant' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Native Agent' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'Fast mode' })).not.toBeInTheDocument()
+  })
+  it.each(['Codex', 'OpenCode'] as const)('preserves the exact optional Claude preset when saving %s', async (name) => {
+    renderSettings({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: `Edit ${name} defaults` }))
+    await user.click(screen.getByRole('button', { name: 'Access & approvals' }))
+    if (name === 'Codex') await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'workspace-write')
+    else await user.click(screen.getByRole('button', { name: 'Session' }))
+    if (name === 'OpenCode') await user.click(screen.getByRole('checkbox', { name: 'Automatic compaction' }))
+    await user.click(screen.getByRole('button', { name: `Save ${name} preset` }))
+    await waitFor(() => expect(saveDefaults).toHaveBeenCalledOnce())
+    expect(saveDefaults.mock.calls[0]![0].defaults.claude).toEqual(savedClaudeConfiguration)
+    expect(saveDefaults.mock.calls[0]![0].expectedRevision).toBe(0)
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+  })
+  it('shows explicit empty setup and saves only supplied Claude inputs', async () => {
+    renderSettings(DEFAULT_HARNESS_DEFAULTS, 'claude')
+    const user = userEvent.setup()
+    expect(await screen.findByText('Claude has no saved preset.')).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveValue('')
+    expect(screen.getByRole('textbox', { name: 'Model' })).toHaveValue('')
+    expect(screen.getByRole('combobox', { name: 'Authentication' })).toHaveValue('')
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('')
+    await user.type(screen.getByRole('textbox', { name: 'Model' }), 'claude-explicit-model')
+    await user.type(screen.getByRole('textbox', { name: 'Local Claude profile directory' }), '/chosen/profile')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Authentication' }), 'subscription')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'read-only')
+    await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+    await waitFor(() => expect(saveDefaults).toHaveBeenCalledOnce())
+    expect(saveDefaults.mock.calls[0]![0].defaults.claude).toEqual({ harness: 'claude', model: 'claude-explicit-model',
+      configDirectory: '/chosen/profile', authMode: 'subscription', sandbox: 'read-only', permissionMode: 'default',
+      tools: [], permissionRules: [], instructions: '', mcpServers: {} })
+  })
+})
+
+it('requires explicit authentication, sandbox and profile for an empty Claude preset', async () => {
+  renderSettings(DEFAULT_HARNESS_DEFAULTS, 'claude')
+  const user = userEvent.setup()
+  await user.type(await screen.findByRole('textbox', { name: 'Model' }), 'chosen-model')
+  await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+  expect(saveDefaults).not.toHaveBeenCalled()
+  expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveAttribute('aria-invalid', 'true')
+  expect(screen.getByRole('combobox', { name: 'Authentication' })).toHaveAttribute('aria-invalid', 'true')
+  expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveAttribute('aria-invalid', 'true')
 })

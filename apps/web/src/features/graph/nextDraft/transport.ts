@@ -84,6 +84,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
       client.request(`/api/management/workspaces/${part(workspaceId)}`, ManagedWorkspaceSchema)])
     const configurations: Record<string, string> = {}
     for (const node of graph.nodes) {
+      if(node.kind==='job')continue
       const staged = stagedAgents.find((item) => item.agent.id === node.agentId)
       if (staged?.baseRevision === null) continue
       const agent = staged?.agent ?? (displayedAgents ?? agents.items).find((item) => item.agent.id === node.agentId)?.agent

@@ -88,7 +88,7 @@ function ResolveSelectedChat({ selection, node, executionId, isCurrent, onExecut
       const result = await selectedRunChatApi.read(request, { signal })
       if (!current() || signal.aborted) throw new DOMException('Selection changed', 'AbortError')
       if (result.kind !== 'selected') return result
-      if (result.state.context.agentId !== node.agentId) throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Agent identity changed.' })
+      if (result.state.context.agentId !== (node.kind!=='job'?node.agentId:undefined)) throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Agent identity changed.' })
       return { kind: result.kind, selection: result.selection, key: result.key, context: result.state.context }
     },
   })

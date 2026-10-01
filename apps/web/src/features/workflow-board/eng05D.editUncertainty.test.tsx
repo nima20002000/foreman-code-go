@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -71,7 +72,7 @@ describe('ENG05-D meaningful edit versus layout and uncertain Stop-and-save', ()
     expect(fixture.mock.runs.get(scope.runId)?.cleanupPending).toBe(true)
     expect(readEditOutbox(key)!.request).toEqual(journal)
     expect(advances).toHaveLength(1)
-    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!.initialPrompt).toBe('ENG05-D retained meaningful instructions')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!).initialPrompt).toBe('ENG05-D retained meaningful instructions')
 
     fixture.mock.settle(scope.runId)
     await act(async () => { await cache.invalidateQueries({ queryKey: editQueryKey, exact: true }) })
@@ -81,8 +82,8 @@ describe('ENG05-D meaningful edit versus layout and uncertain Stop-and-save', ()
     expect(advances[1]).toEqual(advances[0])
     expect(fixture.mock.controls.stopCalls).toBe(1)
     expect(fixture.mock.runs.size).toBe(runCount)
-    expect(fixture.mock.versions.get(initialVersion!)!.definition.nodes[0]).not.toHaveProperty('initialPrompt')
-    expect([...fixture.mock.versions.values()].at(-1)!.definition.nodes[0]!.initialPrompt).toBe('ENG05-D retained meaningful instructions')
+    expect(nativeNode(fixture.mock.versions.get(initialVersion!)!.definition.nodes[0])).not.toHaveProperty('initialPrompt')
+    expect(nativeNode([...fixture.mock.versions.values()].at(-1)!.definition.nodes[0]!).initialPrompt).toBe('ENG05-D retained meaningful instructions')
     expect(wire.matching((sample) => sample.method === 'POST' && sample.path.endsWith('/runs'))).toHaveLength(0)
     wire.report('lost-stop-and-save-reply-settlement')
   }, 20000)

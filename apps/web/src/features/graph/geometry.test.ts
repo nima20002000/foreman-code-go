@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { describe, expect, it } from 'vitest'
 import { applyGraphGeometry, createGraphGeometryAdapter } from './geometry'
 import { createGraphTopologyProjector } from './topology'
@@ -15,8 +16,8 @@ describe('gesture-local geometry', () => {
     for (let x = 1; x <= 50; x++) {
       expect(adapter.update([{ type: 'position', id: 'synthetic-node-0', position: { x, y: 37 }, dragging: true }]).finished).toBe(false)
     }
-    expect(workflow.nodes[0].position).toEqual({ x: 0, y: 0 })
-    expect(adapter.getNodes()[1]).toBe(graph.nodes[1])
+    expect(nativeNode(workflow.nodes[0]).position).toEqual({ x: 0, y: 0 })
+    expect(adapter.getNodes()[1]).toBe(nativeNode(graph.nodes[1]))
     expect(adapter.update([{ type: 'position', id: 'synthetic-node-0', dragging: false }]).finished).toBe(true)
     expect(adapter.flush()).toEqual([{ id: 'synthetic-node-0', position: { x: 50, y: 37 } }])
     expect(adapter.flush()).toEqual([])
@@ -61,11 +62,11 @@ describe('gesture-local geometry', () => {
   it('overlays transient geometry without overwriting remote metadata or resurrecting removed nodes', () => {
     const { workflow, graph, adapter } = setup()
     adapter.update([{ type: 'position', id: 'synthetic-node-0', position: { x: 98, y: 76 }, dragging: true }])
-    const renamed = { ...graph.nodes[0], data: { ...graph.nodes[0].data, label: 'Changed elsewhere' } }
+    const renamed = { ...nativeNode(graph.nodes[0]), data: { ...nativeNode(graph.nodes[0]).data, label: 'Changed elsewhere' } }
     const rendered = adapter.reconcile([renamed, ...graph.nodes.slice(1)], new Set(['synthetic-node-0']))
     expect(rendered[0].position).toEqual({ x: 98, y: 76 })
     expect(rendered[0].data.label).toBe('Changed elsewhere')
-    expect(rendered[1]).toBe(graph.nodes[1])
+    expect(rendered[1]).toBe(nativeNode(graph.nodes[1]))
     const changes = adapter.flush()
     const newer = { ...workflow, name: 'Remote name', nodes: workflow.nodes.slice(1) }
     expect(applyGraphGeometry(newer, changes)).toBe(newer)
@@ -77,17 +78,17 @@ describe('gesture-local geometry', () => {
     adapter.update([{ type: 'position', id: 'synthetic-node-0', position: { x: 1, y: 1 }, dragging: true }])
     const selected = adapter.reconcile(graph.nodes.slice(1), new Set(['synthetic-node-1']))
     expect(selected[0].selected).toBe(true)
-    expect(selected[1]).toBe(graph.nodes[2])
+    expect(selected[1]).toBe(nativeNode(graph.nodes[2]))
     expect(adapter.flush()).toEqual([])
   })
 
   it('preserves metadata, connections and unchanged workflow-node references on a committed move', () => {
     const { workflow } = setup()
-    const next = applyGraphGeometry(workflow, [{ id: workflow.nodes[0].id, position: { x: 1, y: 2 } }])
+    const next = applyGraphGeometry(workflow, [{ id: nativeNode(workflow.nodes[0]).id, position: { x: 1, y: 2 } }])
     expect(next.edges).toBe(workflow.edges)
-    expect(next.nodes[1]).toBe(workflow.nodes[1])
-    expect(next.nodes[0].agentId).toBe(workflow.nodes[0].agentId)
-    expect(applyGraphGeometry(next, [{ id: next.nodes[0].id, position: { x: 1, y: 2 } }])).toBe(next)
+    expect(nativeNode(next.nodes[1])).toBe(nativeNode(workflow.nodes[1]))
+    expect(nativeNode(next.nodes[0]).agentId).toBe(nativeNode(workflow.nodes[0]).agentId)
+    expect(applyGraphGeometry(next, [{ id: nativeNode(next.nodes[0]).id, position: { x: 1, y: 2 } }])).toBe(next)
   })
 
   it('keeps graph selection through a canceled gesture', () => {
@@ -95,9 +96,9 @@ describe('gesture-local geometry', () => {
     adapter.reconcile(graph.nodes, new Set(['synthetic-node-0']))
     adapter.update([{ type: 'position', id: 'synthetic-node-0', position: { x: 90, y: 80 }, dragging: true }])
     const canceled = adapter.cancel()
-    expect(canceled[0].position).toEqual(graph.nodes[0].position)
+    expect(canceled[0].position).toEqual(nativeNode(graph.nodes[0]).position)
     expect(canceled[0].selected).toBe(true)
-    expect(canceled[1]).toBe(graph.nodes[1])
+    expect(canceled[1]).toBe(nativeNode(graph.nodes[1]))
   })
 
 })

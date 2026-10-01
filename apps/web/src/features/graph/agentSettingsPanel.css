@@ -197,3 +197,9 @@
   color: var(--color-text-muted);
   font-size: var(--text-xs, .75rem);
 }
+
+.node-placement-field { min-width: 0; }
+.node-placement-field dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 4px 12px; font-size: 12px; }
+.node-placement-field dt { color: var(--text-muted); }
+.node-placement-field dd { margin: 0; overflow-wrap: anywhere; }
+.node-placement-field p { font-size: 12px; color: var(--text-muted); }

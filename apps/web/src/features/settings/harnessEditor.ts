@@ -23,7 +23,7 @@ export function createHarnessEditor(value: HarnessConfiguration): HarnessEditor 
     configuration,
     shellEnvironmentText: configuration.harness === 'codex' ? JSON.stringify(configuration.advanced!.shellEnvironment, null, 2) : '',
     mcpText: JSON.stringify(configuration.harness === 'codex'
-      ? configuration.advanced!.mcpServers : configuration.advanced!.mcp.serverEnabled, null, 2),
+      ? configuration.advanced!.mcpServers : configuration.harness === 'opencode' ? configuration.advanced!.mcp.serverEnabled : configuration.mcpServers, null, 2),
   }
 }
 
@@ -50,6 +50,7 @@ function json(text: string, field: string, path: string[]): unknown {
 
 export function prepareHarnessEditor(editor: HarnessEditor): HarnessConfiguration {
   const value = withAdvancedDefaults(editor.configuration)
+  if (value.harness === 'claude') return HarnessConfigurationSchema.parse(value)
   return HarnessConfigurationSchema.parse(value.harness === 'codex' ? {
     ...value,
     advanced: {

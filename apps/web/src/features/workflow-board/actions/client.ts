@@ -62,7 +62,7 @@ export function createRunActionsClient(client: ApiClient = apiClient) {
     assertActionScope(value.run, scope)
     const row = value.execution
     if (row.executionId !== executionId || summary && (row.workflowNodeId !== summary.workflowNodeId
-      || row.agentId !== summary.agentId || row.agentConfigurationVersionId !== summary.agentConfigurationVersionId
+      || (row.kind==='job'?summary.kind!=='job'||row.jobDefinitionId!==summary.jobDefinitionId||row.jobDefinitionVersionId!==summary.jobDefinitionVersionId:summary.kind==='job'||row.agentId!==summary.agentId||row.agentConfigurationVersionId!==summary.agentConfigurationVersionId)
       || row.attempt !== summary.attempt || !sameWorkflowValue(row.occurrence ?? null, summary.occurrence ?? null))) {
       throw invalid('Execution detail did not match its exact node, attempt, occurrence and configuration identity.')
     }
@@ -94,7 +94,7 @@ export function createRunActionsClient(client: ApiClient = apiClient) {
     // Interactions have no WorkflowVersion field. Resolve their exact execution
     // through authenticated inspection instead of borrowing the current draft.
     const detail = await execution(scope, value.interaction.executionId, options)
-    if (detail.execution.agentId !== value.interaction.requestingAgentId) throw invalid('Approval requester does not match the pinned execution.')
+    if (detail.execution.kind==='job'||detail.execution.agentId !== value.interaction.requestingAgentId) throw invalid('Approval requester does not match the pinned execution.')
     return { ...value, execution: detail.execution }
   }
   const respond = async (scope: RepeatGraphScopeV3, expected: DurableInteraction,

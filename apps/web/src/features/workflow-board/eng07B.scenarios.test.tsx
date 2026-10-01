@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -48,7 +49,7 @@ describe('ENG07-B S3 scenarios on the one mounted Board', () => {
     if (id === 'S3-02' || id === 'S3-03') {
       expect(selected.detail.acceptedInput.value.predecessors).toHaveLength(2)
       if (id === 'S3-03') expect(selected.detail.acceptedInput.value.predecessors.map((source) => source.execution.workflowNodeId))
-        .toEqual([f.scenario.nodes[1]!.id, f.scenario.nodes[3]!.id])
+        .toEqual([nativeNode(f.scenario.nodes[1]!).id, nativeNode(f.scenario.nodes[3]!).id])
     }
     expect(wire.samples.some((sample) => sample.path.endsWith('/bindings'))).toBe(false)
     fireEvent.click(within(article).getByText('Exact predecessor/result bindings'))
@@ -105,7 +106,7 @@ describe('ENG07-B S3 scenarios on the one mounted Board', () => {
       expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(authoring)
       expect(useGraphDraftStore.getState().nextDrafts[key]!.instanceId).toBe(instanceId)
     }
-    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!.initialPrompt).toBe('Unpublished ENG07 input is not historical fact')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]!).initialPrompt).toBe('Unpublished ENG07 input is not historical fact')
     expect(wire.writes()).toEqual([])
   }, 20000)
 })

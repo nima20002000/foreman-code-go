@@ -117,7 +117,7 @@ export function AgentsDirectoryContent({
               reorderProps={reorder.getCardProps(agent.id)}
               workspaceId={workspaceId}
               blockers={workspaceWorkflows.filter((workflow) => (
-                workflow.nodes.some((node) => node.agentId === agent.id)
+                workflow.nodes.some((node) => (node.kind!=='job'?node.agentId:undefined) === agent.id)
               ))}
             />
           ))}

@@ -1,3 +1,6 @@
+import type { PinnedPanelNode } from './DraftCanvas'
+import { JobNodePanel, JobNodePicker } from '../../jobs'
+import { attachJob } from './model'
 import { BoardNotice } from './BoardNotice'
 import { useDraftLayout } from './useDraftLayout'
 import { useBrowserAccessQuery } from '../../../shared/api/settingsExperience'
@@ -146,7 +149,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const linkedSelection = !!board?.selectDraftAgent
   useLayoutEffect(() => {
     if (!linkedSelection) return
-    const node = linkedAgent ? useGraphDraftStore.getState().nextDrafts[draftKey]?.graph.nodes.find((item) => item.agentId === linkedAgent) : undefined
+    const node = linkedAgent ? useGraphDraftStore.getState().nextDrafts[draftKey]?.graph.nodes.find((item) => item.kind!=='job' && item.agentId === linkedAgent) : undefined
     presentation.getState().setFocusedNodeId(node?.id)
     presentation.getState().setSelectedNodeIds(new Set(node ? [node.id] : []))
     if (node) presentation.getState().setFocusedEdgeId(undefined)
@@ -177,7 +180,8 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       if (!alive.current) return
       canvas.current?.flush(); setPanel(null); action()
       const id = presentation.getState().focusedNodeId
-      const agentId = useGraphDraftStore.getState().nextDrafts[draftKey]?.graph.nodes.find((node) => node.id === id)?.agentId
+      const selectedNode = useGraphDraftStore.getState().nextDrafts[draftKey]?.graph.nodes.find((node) => node.id === id)
+      const agentId = selectedNode?.kind!=='job'?selectedNode?.agentId:undefined
       if (latestBoard.current?.selectedAgentId !== agentId) latestBoard.current?.selectDraftAgent?.(agentId)
     })()
   }, [guard, presentation, draftKey])
@@ -377,9 +381,13 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     presentation.getState().setFocusedNodeId(nodeId); presentation.getState().setFocusedEdgeId(undefined)
     setOpenNode({ nodeId, panel: next })
   })
-  const panels = (nodeId: string, pinned?: { agentId: string; name: string }): AgentPanels => {
-    const node = pinned ? { id: nodeId, agentId: pinned.agentId } : graph.nodes.find((item) => item.id === nodeId)
+  const panels = (nodeId: string, pinned?: PinnedPanelNode): AgentPanels => {
+    const node = pinned ? {...pinned,id:nodeId} : graph.nodes.find((item) => item.id === nodeId)
     if (!node) return { chat: null, settings: null, info: null }
+    if('jobDefinitionId' in node) {
+      const details=<JobNodePanel workspaceId={graph.workspaceId} definitionId={node.jobDefinitionId} definitionRevision={node.jobDefinitionRevision} definitionVersionId={node.jobDefinitionVersionId} workflowExecution={pinned?.kind==='job'?pinned.workflowExecution:undefined}/>
+      return {chat:details,info:details,settings:pinned?details:<fieldset disabled={edit.busy||reloading||editIntent.locked}><p>Saved job revision {node.jobDefinitionRevision}</p><Button onClick={()=>{setOpenNode(undefined);change(value=>removeNode(value,node.id))}}>Remove job node</Button><NodeWorkflowFields graph={graph} node={node} context={context} agentEdits={edit.agentEdits} change={change}/></fieldset>}
+    }
     const agent = agents.find((item) => item.id === node.agentId)
     const run = runNodeView(runRecord, Boolean(board?.run), node.id, node.agentId)
     const chat = <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}
@@ -389,7 +397,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         // Navigation only. Never replace/resume a missing native session under the old key.
         if (board?.run) {
           board.selectRun()
-          if (graph.nodes.some((item) => item.id === node.id && item.agentId === node.agentId)) setOpenNode({ nodeId: node.id, panel: 'chat' })
+          if (graph.nodes.some((item) => item.id === node.id && item.kind!=='job' && item.agentId === node.agentId)) setOpenNode({ nodeId: node.id, panel: 'chat' })
           else { setOpenNode(undefined); setPanel('agents') }
         } else { setOpenNode(undefined); setPanel('agents') }
       }} />
@@ -427,7 +435,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const rawErrorText = edit.error ? edit.error.message : startOutbox.error ?? localError
   // The save alert already shows the edit-intent failure; do not repeat it.
   const errorText = rawErrorText && rawErrorText === editIntent.mutation.error?.message ? undefined : rawErrorText
-  const panelTitle = panel === 'workflow' ? 'Workflow settings' : panel === 'agents' ? 'Add agent' : panel === 'readiness' ? 'Before you run' : ''
+  const panelTitle = panel === 'workflow' ? 'Workflow settings' : panel === 'agents' ? 'Add node' : panel === 'readiness' ? 'Before you run' : ''
   return <section className="workflow-graph board-typed-editor" aria-label="Workflow authoring">
     <div className="workflow-graph-canvas">
       <DraftCanvas ref={canvas} draftKey={draftKey} graph={graph} agents={agents} kind="execution"
@@ -438,7 +446,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         open={openNode} setOpen={setOpenNode} panels={panels} />
       {!graph.nodes.length ? <div className="board-empty"><EmptyState icon="bot" title="Add your first agent"
         description="Start with an orchestrator that plans the work, or a worker that does it."
-        action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={() => openPanel('agents')}>Add agent</Button>} /></div> : null}
+        action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={() => openPanel('agents')}>Add node</Button>} /></div> : null}
       <header className="board-topbar">
         <div className="board-title">
           <WorkflowName name={graph.name} disabled={saveBusy || starting || editIntent.locked}
@@ -459,7 +467,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
               : <IconButton label="Save changes" disabled={saveBusy || starting || !!editIntent.storageError} onClick={requestSave}><Save aria-hidden="true" size={16} /></IconButton>}
           </Toolbar> : null}
         <Toolbar label="Workflow controls">
-          <IconButton label="Add agent to graph" onClick={() => openPanel('agents')}><Icon name="plus" size={16} /></IconButton>
+          <IconButton label="Add agent or job to graph" onClick={() => openPanel('agents')}><Icon name="plus" size={16} /></IconButton>
           <IconButton label="Workflow settings" onClick={() => openPanel('workflow')}><Icon name="settings" size={16} /></IconButton>
           <Button variant="secondary" className="n-icon-button workflow-approval-inbox" aria-label={`Open human approval inbox${pendingApprovals ? `, ${pendingApprovals} pending` : ''}`}
             title="Approval inbox" onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId: graph.workspaceId, workflowId: graph.id })}><Inbox aria-hidden="true" size={16} />
@@ -496,6 +504,8 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         <RepeatEditor graph={graph} change={change} disabled={edit.busy || reloading || editIntent.locked || !!edit.pending || !!pendingStart} />
       </aside>
       {panel === 'agents' ? <AgentPickerPanel close={() => openPanel(null)}>
+        {graph.handoffs?<section><h3>Saved jobs</h3><p>This workflow uses work handoffs, which job nodes can’t join. Switch to one-pass dependencies to add a job; the change is saved as a new version with the usual Stop-and-save checks.</p><Button disabled={edit.busy || reloading || editIntent.locked || starting} onClick={()=>change(value=>{const next={...value};delete next.handoffs;return next})}>Use one-pass dependencies</Button></section>:null}
+        {!graph.handoffs?<JobNodePicker workspaceId={graph.workspaceId} onChoose={definition=>{change(value=>attachJob(value,definition,`node-${crypto.randomUUID()}`));openPanel(null)}}/>:null}
         <fieldset disabled={edit.busy || reloading || editIntent.locked || starting}>
           <NewBoardAgent draftKey={draftKey} edit={edit} report={report} />
           <AttachAgentField graph={graph} context={context} change={change} report={report} />
@@ -514,7 +524,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
                 <TextField data-save-field="executions" label="Maximum node executions" hint="Agent turns per run" type="number" min={1} max={10000} value={Number.isFinite(graph.executionPolicy.maxNodeExecutions) ? graph.executionPolicy.maxNodeExecutions : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxNodeExecutions: value } })) }} />
               </div> : <Button data-save-field="limits" size="sm" onClick={() => change((item) => ({ ...item, executionPolicy: { maxParallelism: Number.NaN, maxNodeExecutions: Number.NaN } }))}>Set limits</Button>}
               {graph.requiredAgentCount !== undefined ? <div className="next-draft-inline">
-                <TextField label="Required Agent count" type="number" min={1} max={10000} value={Number.isFinite(graph.requiredAgentCount) ? graph.requiredAgentCount : ''} onChange={(event) => { const requiredAgentCount = event.target.valueAsNumber; change((item) => ({ ...item, requiredAgentCount })) }} />
+                <TextField label="Required Agent count" type="number" min={0} max={10000} value={Number.isFinite(graph.requiredAgentCount) ? graph.requiredAgentCount : ''} onChange={(event) => { const requiredAgentCount = event.target.valueAsNumber; change((item) => ({ ...item, requiredAgentCount })) }} />
                 <Button size="sm" variant="ghost" onClick={() => change((item) => { const next = { ...item }; delete next.requiredAgentCount; return next })}>Remove fixed Agent count</Button>
               </div> : null}
             </section>

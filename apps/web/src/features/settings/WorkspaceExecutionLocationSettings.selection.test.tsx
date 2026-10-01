@@ -4,152 +4,167 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ManagedWorkspace } from '@graphql/contracts/management'
+import type { WorkspaceBoundLocationReadback } from '@graphql/contracts/workspace-bound-location'
+import type { WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
 
 import { server } from '../../mocks/server'
 import { queryKeys } from '../../shared/api/query'
+import { boundLocationKeys } from '../../shared/api/workspaceBoundLocation'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
-import { useWorkspaceLocationDraftStore } from './workspaceLocationDraftStore'
+import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
+import { boundRootReadback, mainRoot, workerRoot, rootBinding } from './workspaceBoundLocation.fixtures'
 
 const checkedAt = '2026-09-19T00:00:00Z'
-const saved: ManagedWorkspace = {
-  workspace: { id: 'workspace-select', name: 'Selection test' }, revision: 1, archivedAt: null,
+const workspaceId = 'workspace-select'
+const base = mainRoot.bases[0]!
+const managed: ManagedWorkspace = {
+  workspace: { id: workspaceId, name: 'Selection test' }, revision: 1, archivedAt: null,
   executionLocation: { runnerId: 'runner-local', rootPath: '/projects' }, locationRevision: 1,
   locationValidation: { status: 'ready', checkedAt },
 }
+// Historical runner-local settings: a real path and revision, but no computer binding.
+const legacy: WorkspaceBoundLocationReadback = { evidence: 'legacy_missing', workspaceId, locationRevision: 1, executionLocation: { runnerId: 'runner-local', rootPath: '/projects' } }
+const mainSelection = (input: Partial<WorkspaceRootSelection> = {}): WorkspaceRootSelection => ({ workspaceId, hostRef: mainRoot.hostRef, allowedBaseId: base.baseId,
+  configurationRevision: mainRoot.configurationRevision, relativePath: '', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0, ...input })
+let readback: WorkspaceBoundLocationReadback
+let policies: unknown[]
 const clients: QueryClient[] = []
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
   clients.push(client)
-  client.setQueryData(queryKeys.managedWorkspace('workspace-select'), saved)
-  render(<QueryClientProvider client={client}><WorkspaceExecutionLocationSettings workspaceId="workspace-select" /></QueryClientProvider>)
+  client.setQueryData(queryKeys.managedWorkspace(workspaceId), managed)
+  render(<QueryClientProvider client={client}><WorkspaceExecutionLocationSettings workspaceId={workspaceId} /></QueryClientProvider>)
   return client
-}
-function response(rootPath: string) {
-  const location = { runnerId: 'runner-local', rootPath }
-  return { value: { workspaceId: 'workspace-select', executionLocation: location, locationRevision: 2,
-    validation: { workspaceId: 'workspace-select', location, accessMode: 'read-only', checkedAt } }, replayed: false }
 }
 async function chooseChild() {
   const user = userEvent.setup()
   const field = await screen.findByRole('button', { name: 'Project folder' })
   await user.click(field)
-  await user.click(await screen.findByRole('button', { name: 'Child' }))
+  const select = await screen.findByRole('combobox', { name: 'Computer and approved base folder' })
+  await user.selectOptions(select, select.querySelectorAll('option')[1]!.value)
+  await user.type(screen.getByRole('textbox', { name: 'Relative folder on this computer' }), 'Child')
   await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
   return { user, field }
 }
 beforeEach(() => {
-  useWorkspaceLocationDraftStore.getState().reset()
+  useBoundLocationDraftStore.getState().reset()
+  readback = legacy; policies = []
   server.use(
-    http.get('/api/management/workspaces/workspace-select', () => HttpResponse.json(saved)),
-    http.get('/api/management/harnesses/directories', ({ request }) => HttpResponse.json({
-      roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: new URL(request.url).searchParams.get('path') ?? '/projects',
-      parent: new URL(request.url).searchParams.get('path') === '/projects/Child' ? '/projects' : null, nextCursor: null, directories: [{ name: 'Child', path: '/projects/Child' }],
-    })),
+    http.get(`/api/management/workspaces/${workspaceId}`, () => HttpResponse.json(managed)),
+    http.get(`/api/management/workspaces/${workspaceId}/root-location`, () => HttpResponse.json(readback)),
+    http.get(`/api/management/workspaces/${workspaceId}/root-policies`, () => HttpResponse.json({ workspaceId, readiness: 'metadata-only', policies, allowlists: [mainRoot, workerRoot] })),
   )
 })
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
 
 describe('destination confirmation owns persistence', () => {
-  it('copies the accepted destination without opening the picker', async () => {
+  it('shows and copies the historical folder without opening the picker', async () => {
     const user = userEvent.setup()
     mount()
-    await screen.findByRole('button', { name: 'Project folder' })
-    expect(screen.queryByText('Change folder')).not.toBeInTheDocument()
+    const field = await screen.findByRole('button', { name: 'Project folder' })
+    expect(field.parentElement).toHaveTextContent('/projects')
+    expect(screen.getByText(/no computer binding/)).toBeVisible()
     await user.click(await screen.findByRole('button', { name: 'Copy folder path' }))
     expect(await navigator.clipboard.readText()).toBe('/projects')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('keeps highlighting local and Cancel preserves the page value without any write', async () => {
+  it('keeps a chosen destination as a draft and Cancel preserves the page value without any write', async () => {
     const writes: unknown[] = []
-    server.use(http.put('/api/management/workspaces/workspace-select/location', async ({ request }) => {
-      writes.push(await request.json()); return HttpResponse.json(response('/projects/Child'))
+    server.use(http.put(`/api/management/workspaces/${workspaceId}/root-location`, async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection; writes.push(input); return HttpResponse.json({ value: boundRootReadback(input, mainRoot), replayed: false })
     }))
-    mount()
+    const client = mount()
     const { user, field } = await chooseChild()
     expect(field.parentElement).toHaveTextContent('/projects')
-    expect(field.parentElement).not.toHaveTextContent('/projects/Child')
-    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled()
+    expect(field.parentElement).not.toHaveTextContent('/projects/shared/Child')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(field.parentElement).toHaveTextContent('/projects')
     expect(field).toHaveFocus()
     expect(writes).toEqual([])
-    expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-select']?.dirty).toBe(false)
+    expect(client.getQueryData<{ locationRevision: number }>(boundLocationKeys.read(workspaceId))?.locationRevision).toBe(1)
   })
 
   it('waits for acknowledgement, then shows the destination in the original field', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
     const writes: Record<string, unknown>[] = []
-    server.use(http.put('/api/management/workspaces/workspace-select/location', async ({ request }) => {
-      writes.push(await request.json() as Record<string, unknown>); await gate
-      return HttpResponse.json(response('/projects/Child'))
+    server.use(http.put(`/api/management/workspaces/${workspaceId}/root-location`, async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection
+      writes.push(input as unknown as Record<string, unknown>); await gate
+      return HttpResponse.json({ value: boundRootReadback(input, mainRoot), replayed: false })
     }))
     const client = mount()
-    client.setQueryData(queryKeys.managedWorkspaces, { items: [saved], pageInfo: { nextCursor: null } })
+    client.setQueryData(queryKeys.managedWorkspaces, { items: [managed], pageInfo: { nextCursor: null } })
     const { user, field } = await chooseChild()
     try {
       await user.click(screen.getByRole('button', { name: 'Select location' }))
       await waitFor(() => expect(writes).toHaveLength(1))
-      expect(field.parentElement).not.toHaveTextContent('/projects/Child')
+      expect(field.parentElement).not.toHaveTextContent('/projects/shared/Child')
       const dialog = screen.getByRole('dialog')
       expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled()
       expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
     } finally { await act(async () => { release(); await gate }) }
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(field.parentElement).toHaveTextContent('/projects/Child')
+    expect(field.parentElement).toHaveTextContent('/projects/shared/Child')
     expect(field).toHaveFocus()
     expect(client.getQueryState(queryKeys.managedWorkspaces)?.isInvalidated).toBe(true)
-    expect(writes[0]).toMatchObject({ rootPath: '/projects/Child', expectedLocationRevision: 1, commandId: expect.any(String) })
+    expect(writes[0]).toEqual({ ...mainSelection({ relativePath: 'Child' }), commandId: expect.any(String) })
+    expect(writes[0]).not.toHaveProperty('runnerId')
   })
 
   it('keeps the saved field intact after rejection and allows Cancel', async () => {
-    server.use(http.put('/api/management/workspaces/workspace-select/location', () => HttpResponse.json({
+    server.use(http.put(`/api/management/workspaces/${workspaceId}/root-location`, () => HttpResponse.json({
       error: { code: 'LOCATION_UNAVAILABLE', message: 'Destination unavailable.' },
     }, { status: 422 })))
     mount()
     const { user, field } = await chooseChild()
     await user.click(screen.getByRole('button', { name: 'Select location' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Destination unavailable.')
-    expect(field.parentElement).not.toHaveTextContent('/projects/Child')
+    await waitFor(() => expect(screen.getAllByText('Destination unavailable.').length).toBeGreaterThan(0))
+    expect(field.parentElement).not.toHaveTextContent('/projects/shared/Child')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(field.parentElement).toHaveTextContent('/projects')
-    expect(useWorkspaceLocationDraftStore.getState().drafts['workspace-select']?.dirty).toBe(false)
   })
 
-  it('retries an uncertain save with the same destination, revision and command identity', async () => {
+  it('retries an uncertain save with the same selection, revisions and command identity', async () => {
     const writes: Record<string, unknown>[] = []
-    server.use(http.put('/api/management/workspaces/workspace-select/location', async ({ request }) => {
-      writes.push(await request.json() as Record<string, unknown>)
+    server.use(http.put(`/api/management/workspaces/${workspaceId}/root-location`, async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection
+      writes.push(input as unknown as Record<string, unknown>)
       return writes.length === 1
         ? HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Save not confirmed.' } }, { status: 503 })
-        : HttpResponse.json(response('/projects/Child'))
+        : HttpResponse.json({ value: boundRootReadback(input, mainRoot), replayed: true })
     }))
     mount()
     const { user, field } = await chooseChild()
     await user.click(screen.getByRole('button', { name: 'Select location' }))
-    await screen.findByText('Saving could not be confirmed. Retry Select location to resolve the same request.')
+    expect(await screen.findByText(/The save outcome is unknown/)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Close dialog' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'New folder' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
-    expect(field.parentElement).not.toHaveTextContent('/projects/Child')
-    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    expect(screen.getByRole('combobox', { name: 'Computer and approved base folder' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Relative folder on this computer' })).toBeDisabled()
+    expect(field.parentElement).not.toHaveTextContent('/projects/shared/Child')
+    await user.click(screen.getByRole('button', { name: 'Reconcile original selection' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(writes).toHaveLength(2)
     expect(writes[1]).toEqual(writes[0])
-    expect(field.parentElement).toHaveTextContent('/projects/Child')
+    expect(writes[0]).toEqual({ ...mainSelection({ relativePath: 'Child' }), commandId: expect.any(String) })
+    expect(field.parentElement).toHaveTextContent('/projects/shared/Child')
   })
 
   it('accepts the already-saved ready folder without a redundant write', async () => {
+    readback = boundRootReadback(mainSelection(), mainRoot)
+    policies = [rootBinding(mainSelection(), mainRoot)]
     let writes = 0
-    server.use(http.put('/api/management/workspaces/workspace-select/location', () => {
-      writes++; return HttpResponse.json(response('/projects'))
+    server.use(http.put(`/api/management/workspaces/${workspaceId}/root-location`, () => {
+      writes++; return HttpResponse.json({ value: readback, replayed: false })
     }))
     mount()
     const user = userEvent.setup()
     const field = await screen.findByRole('button', { name: 'Project folder' })
     await user.click(field)
+    const select = await screen.findByRole('combobox', { name: 'Computer and approved base folder' })
+    await user.selectOptions(select, select.querySelectorAll('option')[1]!.value)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Select location' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())

@@ -1,3 +1,4 @@
+import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { act, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -29,7 +30,7 @@ beforeEach(() => { observed.frames.length = 0 })
 async function largeBoard() {
   const fixture = await inspectionBoardFixture(`eng05d-scale-${++serial}`)
   const scope = fixture.runs.before.scope
-  const first = fixture.before.definition.nodes[0]!
+  const first = nativeNode(fixture.before.definition.nodes[0]!)
   // A schema-validated ordinary 400-node sequential workflow with unique
   // node/Agent/configuration pins, not manufactured business repetitions.
   const nodes = Array.from({ length: 400 }, (_, index) => ({ ...first,

@@ -1,3 +1,4 @@
+import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { journalRequest, journalIntent, savedJournal } from './nim2644Journal.fixture'
 import assert from 'node:assert/strict'
 import { createStore } from 'zustand/vanilla'
@@ -153,16 +154,16 @@ export const nim2644FollowupCases: { name: string; run: () => void }[] = [
     late.reopen(); late.readback(discarded)
     assert.deepEqual(late.get().graph.nodes.map((node) => node.id), ['node-0', 'node-1', 'node-2'])
     assert.deepEqual(late.get().graph.edges, edit.context.draft.graph.edges)
-    assert.deepEqual(late.get().graph.nodes[0]?.position, { x: 913, y: -34 })
-    assert.equal(late.get().graph.nodes[0]?.width, 288); assert.equal(late.get().graph.nodes[0]?.height, 181)
-    assert.equal(late.get().graph.nodes[0]?.initialPrompt, 'newer unsent meaning')
+    assert.deepEqual(nativeNode(late.get().graph.nodes[0])?.position, { x: 913, y: -34 })
+    assert.equal(nativeNode(late.get().graph.nodes[0])?.width, 288); assert.equal(nativeNode(late.get().graph.nodes[0])?.height, 181)
+    assert.equal(nativeNode(late.get().graph.nodes[0])?.initialPrompt, 'newer unsent meaning')
     assert.equal(nextDraftDirty(late.get()), true)
   } })),
   { name: 'FE-003 lost-reply A becomes meaning-clean with its geometry after B consumes and A refreshes', run() {
     const edit = removedLeaf(), a = tab('A', move(edit)), b = tab('B', edit), outbox = submission(edit), discarded = terminal(edit, outbox, 'discarded')
     reserve(a, outbox); b.readback(discarded); a.reopen(); a.readback(discarded)
     assert(sameExecutableWorkflow(a.get().graph, edit.context.draft.graph)); assert.equal(nextDraftDirty(a.get()), false)
-    assert.deepEqual(a.get().graph.nodes[0]?.position, { x: 913, y: -34 })
+    assert.deepEqual(nativeNode(a.get().graph.nodes[0])?.position, { x: 913, y: -34 })
   } },
   { name: 'FE-003 late tab keeps a newer node deletion and does not restore its incident edges', run() {
     const edit = removedLeaf(), a = tab('A', edit), b = tab('B', edit), outbox = submission(edit), discarded = terminal(edit, outbox, 'discarded')

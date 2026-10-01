@@ -9,8 +9,12 @@ import { RunsSelectorSearchSchema } from '../features/runs-selector'
 import { RootShell } from './RootShell'
 import { BrowserAuthSearchSchema } from '@graphql/contracts/management'
 import { SignInRoute, OwnerSetupRoute } from '../features/auth/AuthRoutes'
-import { AgentSettingsSearchSchema, HarnessSettingsSearchSchema, SkillSettingsSearchSchema } from '@graphql/contracts/management'
+import { AgentSettingsSearchSchema, SkillSettingsSearchSchema } from '@graphql/contracts/management'
 import { AccountRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
+
+import { HarnessComputerSearchSchema } from '../features/settings/harnessComputerSearch'
+import { ComputersSettingsRouteEntry, ComputerDetailsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
+import { JobsRouteEntry, JobExecutionRouteEntry } from '../routes/JobsRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
 import {
@@ -69,6 +73,27 @@ const workflowsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/workflows',
   component: WorkflowsRouteEntry,
+})
+
+const jobsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/jobs',
+  component: JobsRouteEntry,
+})
+const jobExecutionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workspaces/$workspaceId/jobs/$jobExecutionId',
+  component: JobExecutionRouteEntry,
+})
+const computersSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/computers',
+  component: ComputersSettingsRouteEntry,
+})
+const computerDetailsSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/computers/$deviceId',
+  component: ComputerDetailsSettingsRouteEntry,
 })
 
 const agentsRoute = createRoute({
@@ -131,7 +156,7 @@ const accountRoute = createRoute({
 const harnessSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/harnesses',
-  validateSearch: HarnessSettingsSearchSchema,
+  validateSearch: HarnessComputerSearchSchema,
   component: HarnessSettingsRouteEntry,
 })
 const agentSettingsRoute = createRoute({
@@ -205,6 +230,8 @@ export const routeTree = rootRoute.addChildren([
   workspacesRoute,
   workspaceRoute.addChildren([nextDraftRoute, runGraphRoute]),
   workflowsRoute,
+  jobsRoute,
+  jobExecutionRoute,
   agentsRoute,
   browsersRoute,
   tasksRoute,
@@ -217,6 +244,8 @@ export const routeTree = rootRoute.addChildren([
   globalSettingsRoute,
   accountRoute,
   harnessSettingsRoute,
+  computersSettingsRoute,
+  computerDetailsSettingsRoute,
   agentSettingsRoute,
   skillsSettingsRoute,
   newSkillRoute,
