@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rm, readFile, rename, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, readFile, rename, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { SourceRootRecord, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
-import type { SourceFilesystemOperation, SourceOperationOwner } from '@graphql/contracts/source-operations'
+import type { SourceActiveNativeSession, SourceFilesystemOperation, SourceOperationOwner } from '@graphql/contracts/source-operations'
+import type { SourceInstalledNativeOwner } from './executionHosts.js'
 import type { VerifiedTransferReceipt, TransferContext } from '@graphql/contracts/byte-transfer'
 import { sourcePackageHeader } from './operationPackage.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
@@ -49,11 +50,94 @@ async function fixture() {
   const request: SourceFilesystemOperation = { version: 1, operation: 'sources.prepare', identity: owner.identity, root, attempt, package: { transferId, receiptId, sha256: receipt.sha256, byteSize: data.length } }
   const readRoots = vi.fn(async () => roots), open = vi.fn(async () => Readable.from([data]))
   const currentOwner = vi.fn(async () => structuredClone(owner))
+  const nativeOwnerFor = vi.fn(async (): Promise<SourceInstalledNativeOwner | null> => null)
   const service = new SourceOperationWorkerService({ authenticate: async () => {}, approvedRoots: readRoots, currentOwner,
-    transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext })
+    transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext, nativeOwnerFor })
   const context = { binding, signal: new AbortController().signal }
-  return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner, readRoots, open }
+  return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner, readRoots, open, nativeOwnerFor }
 }
+
+async function continuationFixture() {
+  const f = await fixture(), prepared = await f.service.handle(f.request, f.context)
+  if (prepared.operation !== 'sources.prepare') throw new Error('wrong fixture operation')
+  const record: SourceMaterializationRecord = { receipt: prepared.receipt, operationId: f.owner.identity.operationId, reservationId: randomUUID(), rootPolicyId: f.root.selection.rootPolicyId,
+    rootPolicyRevision: '1', sourceBindingHash: f.owner.attempt.placementHash, finalDispatchBindingHash: 'c'.repeat(64), state: 'prepared' }
+  f.owner.record = record
+  const cwd = await f.service.handle({ version: 1, operation: 'sources.verify', record, relativeCwd: 'src' }, f.context)
+  if (cwd.operation !== 'sources.verify') throw new Error('wrong fixture operation')
+  const proof: SourceActiveNativeSession = { version: 1, executionId: record.receipt.executionId, runId: randomUUID(), technicalAttempt: 3,
+    attemptId: record.receipt.attemptId, operationId: record.operationId, materializationId: record.receipt.materializationId,
+    sourceBindingHash: record.sourceBindingHash, finalDispatchBindingHash: record.finalDispatchBindingHash!,
+    nativeSession: { harness: 'codex', nativeSessionId: randomUUID(), providerVersion: 'test-current-version' }, generation: 2,
+    cwdAttestation: cwd.cwdAttestation,
+    entry: { sourceId: randomUUID(), sourceDigest: `sha256:${'d'.repeat(64)}`, launchDigest: `sha256:${'e'.repeat(64)}` },
+    owner: { grantId: randomUUID(), epoch: '1' }, lane: { id: randomUUID(), revision: 3, tokenHash: 'f'.repeat(64), expiresAt: f.owner.identity.expiresAt } }
+  const lifetime = new AbortController(), assertCurrent = vi.fn(async () => {})
+  const installed: SourceInstalledNativeOwner = { executionId: proof.executionId, runId: proof.runId, technicalAttempt: proof.technicalAttempt,
+    attemptId: proof.attemptId, operationId: proof.operationId, materializationId: proof.materializationId, sourceBindingHash: proof.sourceBindingHash,
+    finalDispatchBindingHash: proof.finalDispatchBindingHash, session: structuredClone(proof.nativeSession), owner: structuredClone(proof.owner), signal: lifetime.signal, assertCurrent }
+  f.nativeOwnerFor.mockResolvedValue(installed)
+  const tree = join(f.namespace, record.receipt.materializationId, 'tree')
+  return { ...f, record, proof, installed, lifetime, assertCurrent, tree }
+}
+it('preserves strict pre-entry bytes and permits edits only on the same current entered installed native owner', async () => {
+  const f = await continuationFixture()
+  const request = { version: 1, operation: 'sources.verify', record: f.record, relativeCwd: 'src' }
+  await f.service.handle(request, f.context)
+  const edited = Buffer.from('export const editedByActualOwner = true\n')
+  await writeFile(join(f.tree, 'src/source.ts'), edited)
+  await writeFile(join(f.tree, 'src/new-output.ts'), 'actual owner output\n')
+  await expect(f.service.handle(request, f.context)).rejects.toThrow()
+  expect(f.nativeOwnerFor).not.toHaveBeenCalled()
+  f.owner.activeNativeSession = f.proof
+  const result = await f.service.handle(request, f.context)
+  expect(result.operation).toBe('sources.verify')
+  expect(await readFile(join(f.tree, 'src/source.ts'))).toEqual(edited)
+  expect(f.assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(4)
+  expect(f.open).toHaveBeenCalledTimes(1)
+})
+it.each(['attempt', 'technical-attempt', 'session', 'owner', 'expiry', 'missing-installed', 'aborted'] as const)('denies mutable continuation with %s evidence', async defect => {
+  const f = await continuationFixture(); f.owner.activeNativeSession = f.proof
+  await writeFile(join(f.tree, 'src/source.ts'), 'edited\n')
+  if (defect === 'attempt') f.installed.attemptId = randomUUID()
+  if (defect === 'technical-attempt') f.installed.technicalAttempt++
+  if (defect === 'session') f.installed.session.nativeSessionId = randomUUID()
+  if (defect === 'owner') f.installed.owner.epoch = '2'
+  if (defect === 'expiry') f.proof.lane.expiresAt = new Date(Date.now() - 1).toISOString()
+  if (defect === 'missing-installed') f.nativeOwnerFor.mockResolvedValue(null)
+  if (defect === 'aborted') f.lifetime.abort(new Error('original owner closed'))
+  await expect(f.service.handle({ version: 1, operation: 'sources.verify', record: f.record }, f.context)).rejects.toThrow()
+})
+it('rejects current proof revocation during FD verification and symlink/root/tree replacement', async () => {
+  const f = await continuationFixture(); f.owner.activeNativeSession = f.proof
+  f.assertCurrent.mockImplementation(async () => { if (f.assertCurrent.mock.calls.length === 4) f.lifetime.abort(new Error('revoked during FD verification')) })
+  await expect(f.service.handle({ version: 1, operation: 'sources.verify', record: f.record }, f.context)).rejects.toThrow('revoked during')
+  const child = await continuationFixture(); child.owner.activeNativeSession = child.proof
+  await rename(join(child.tree, 'src'), join(child.tree, 'original-src')); await symlink('original-src', join(child.tree, 'src'))
+  await expect(child.service.handle({ version: 1, operation: 'sources.verify', record: child.record, relativeCwd: 'src' }, child.context)).rejects.toThrow()
+  const tree = await continuationFixture(); tree.owner.activeNativeSession = tree.proof
+  await rename(tree.tree, `${tree.tree}-original`); await mkdir(tree.tree, { mode: 0o700 })
+  await expect(tree.service.handle({ version: 1, operation: 'sources.verify', record: tree.record }, tree.context)).rejects.toThrow('identity changed')
+  const root = await continuationFixture(); root.owner.activeNativeSession = root.proof
+  await rename(root.namespace, `${root.namespace}-original`); await mkdir(root.namespace, { mode: 0o700 })
+  await expect(root.service.handle({ version: 1, operation: 'sources.verify', record: root.record }, root.context)).rejects.toThrow('root changed')
+})
+it('retains opened CWD identity and rejects replacement while reauthorizing the original native owner', async () => {
+  const f = await continuationFixture(); f.owner.activeNativeSession = f.proof
+  f.assertCurrent.mockImplementation(async () => {
+    if (f.assertCurrent.mock.calls.length === 4) {
+      await rename(join(f.tree, 'src'), join(f.tree, 'original-src'))
+      await mkdir(join(f.tree, 'src'), { mode: 0o700 })
+    }
+  })
+  await expect(f.service.handle({ version: 1, operation: 'sources.verify', record: f.record, relativeCwd: 'src' }, f.context)).rejects.toThrow('Working directory changed during')
+})
+it('rejects a replaced child CWD between continuation requests using its original native entry attestation', async () => {
+  const f = await continuationFixture(); f.owner.activeNativeSession = f.proof
+  await rename(join(f.tree, 'src'), join(f.tree, 'original-src'))
+  await mkdir(join(f.tree, 'src'), { mode: 0o700 })
+  await expect(f.service.handle({ version: 1, operation: 'sources.verify', record: f.record, relativeCwd: 'src' }, f.context)).rejects.toThrow('original entered native directory')
+})
 it('prepares actual accepted bytes, rechecks owner before activation, and recovers lost ACK without new transfer', async () => {
   const f = await fixture(), response = await f.service.handle(f.request, f.context)
   expect(response.operation).toBe('sources.prepare'); if (response.operation !== 'sources.prepare') throw new Error('wrong fixture operation')

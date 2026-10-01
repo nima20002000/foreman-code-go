@@ -7,7 +7,7 @@ import type { SourceRootRecord, SourceMaterializationRecord } from '@graphql/con
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { SourceAttemptAuthority } from './executionHosts.js'
+import type { SourceAttemptAuthority, SourceActiveNativeSessionReader } from './executionHosts.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import type { MaterializationAttempt } from './ports.js'
@@ -15,7 +15,8 @@ import type { MaterializationAttempt } from './ports.js'
 /** Actual Main allocation/source facts; workers receive no database credentials. */
 export class PostgresSourceOperationAuthority {
   constructor(private readonly pool: pg.Pool, private readonly attempts: SourceAttemptAuthority,
-    private readonly closure: (sql: GraphSqlClient, record: SourceMaterializationRecord) => Promise<boolean>) {}
+    private readonly closure: (sql: GraphSqlClient, record: SourceMaterializationRecord) => Promise<boolean>,
+    private readonly activeNativeSession?: SourceActiveNativeSessionReader) {}
   private async transaction<T>(work: (sql: GraphSqlClient) => Promise<T>): Promise<T> {
     const sql = await this.pool.connect()
     try { await sql.query('begin'); const result = await work(sql); await sql.query('commit'); return result }
@@ -67,10 +68,12 @@ export class PostgresSourceOperationAuthority {
       if (request.operation !== 'sources.release' && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
       let record: SourceMaterializationRecord | null = null, physicalClosureConfirmed = false
       if (request.operation !== 'sources.prepare') {
-        const stored = (await sql.query<{ record: unknown }>('select record from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 for share',
+        const stored = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 for share',
           [receipt!.materializationId, attempt.executionId, attempt.attemptId, allocated.operation_id])).rows[0]
         record = SourceMaterializationRecordSchema.parse(stored?.record)
         if (!isDeepStrictEqual(record, request.record)) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The submitted record is not the actual immutable Main materialization.', 409)
+        if (request.operation !== 'sources.release' && !['prepared', 'running'].includes(stored!.state))
+          throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original source materialization is no longer owned for execution.', 409)
         if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal, record, record.finalDispatchBindingHash)
         if (request.operation === 'sources.release') {
           await authorizeClosedSourceRelease(sql, root, record, this.closure)
@@ -80,7 +83,9 @@ export class PostgresSourceOperationAuthority {
       const identity = request.operation === 'sources.prepare' ? request.identity : { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
       if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== principal.id || Date.parse(identity.expiresAt) > Date.parse(principal.expiresAt)
         || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'Source ownership is expired or differs from the actual Main allocation.', 403)
-      return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed })
+      const activeNativeSession = request.operation === 'sources.verify' && record?.receipt.binding.accessMode === 'exclusive-write'
+        ? await this.activeNativeSession?.(sql, record) ?? null : null
+      return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession })
     })
   }
 }

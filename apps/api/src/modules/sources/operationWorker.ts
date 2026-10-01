@@ -17,7 +17,8 @@ import { verifyApprovedRootAllowlist } from './rootAttestation.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
 import { createPrivateSourceRepository } from './repository.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
-import { verifyMaterializedWorkingDirectory } from './workingDirectory.js'
+import { assertSourceNativeSession, verifyMaterializedWorkingDirectory } from './workingDirectory.js'
+import type { SourceNativeSessionCapture, SourceInstalledNativeOwnerReader } from './executionHosts.js'
 import { VerifiedSourcePackageReader } from './operationPackage.js'
 
 export interface SourceOperationWorkerContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; bytes?: Uint8Array }
@@ -33,6 +34,8 @@ export interface SourceOperationWorkerOptions {
   currentOwner(request: SourceFilesystemOperation, context: SourceOperationWorkerContext): Promise<SourceOperationOwner>
   transfers: VerifiedSourceTransfers
   transferContext(context: SourceOperationWorkerContext): Promise<TransferContext>
+  /** Actual original installed native manager/session; no caller-supplied flag. */
+  nativeOwnerFor?: SourceInstalledNativeOwnerReader
 }
 function attemptOf(record: NonNullable<SourceOperationOwner['record']>) {
   const r = record.receipt
@@ -131,7 +134,23 @@ export class SourceOperationWorkerService {
       const record = request.record
       const materializer = new PrivateSourceMaterializer(reader, reauthorize)
       if (request.operation === 'sources.verify') {
-        const verified = await verifyMaterializedWorkingDirectory(record, request.relativeCwd, reauthorize)
+        let capture: SourceNativeSessionCapture | undefined
+        if (owner.activeNativeSession) {
+          const installed = await this.options.nativeOwnerFor?.(record), proof = owner.activeNativeSession
+          if (!installed) throw new SourceError('SOURCE_NATIVE_SESSION_CONFLICT', 'The original installed native lifetime is unavailable.')
+          const assertCurrent = async () => {
+            installed.signal.throwIfAborted(); context.signal.throwIfAborted()
+            if (installed.executionId !== proof.executionId || installed.runId !== proof.runId || installed.technicalAttempt !== proof.technicalAttempt || installed.attemptId !== proof.attemptId
+              || installed.operationId !== proof.operationId || installed.materializationId !== proof.materializationId
+              || installed.sourceBindingHash !== proof.sourceBindingHash || installed.finalDispatchBindingHash !== proof.finalDispatchBindingHash
+              || !isDeepStrictEqual(installed.session, proof.nativeSession) || !isDeepStrictEqual(installed.owner, proof.owner))
+              throw new SourceError('SOURCE_NATIVE_SESSION_CONFLICT', 'Main continuation evidence differs from the actual original installed native lifetime.')
+            await installed.assertCurrent(); installed.signal.throwIfAborted(); context.signal.throwIfAborted()
+          }
+          capture = { proof, signal: AbortSignal.any([context.signal, installed.signal]), assertCurrent }
+          await assertSourceNativeSession(record, capture)
+        }
+        const verified = await verifyMaterializedWorkingDirectory(record, request.relativeCwd, reauthorize, capture)
         return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, workTree: verified.canonicalProjectRoot,
           canonicalCwd: verified.canonicalCwd, directoryIdentityHash: verified.directoryIdentityHash,
           filesystem: verified.cwdAttestation!.filesystem, accessMode: verified.accessMode, cwdAttestation: verified.cwdAttestation })

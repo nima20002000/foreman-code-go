@@ -8,6 +8,25 @@ import { verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import { createPrivateSourceRepository } from './repository.js'
 import type { MaterializationAttempt, SourceByteReader } from './ports.js'
 import type { SourceExecutionHostPort } from './service.js'
+import type { SourceActiveNativeSession } from '@graphql/contracts/source-operations'
+
+/** Installed lifetime capture only: never accepted from filesystem requests. */
+export interface SourceNativeSessionCapture {
+  proof: SourceActiveNativeSession
+  signal: AbortSignal
+  assertCurrent(): Promise<void> | void
+}
+export type SourceNativeSessionCaptureReader = (record: SourceMaterializationRecord) => Promise<SourceNativeSessionCapture | null>
+export type SourceActiveNativeSessionReader = (sql: GraphSqlClient, record: SourceMaterializationRecord) => Promise<SourceActiveNativeSession | null>
+/** Worker independently observes these original installed-host facts. Main owns
+ * the entered SQL row and current session lane, so the worker never invents them. */
+export interface SourceInstalledNativeOwner {
+  executionId: string; runId: string; technicalAttempt: number; attemptId: string; operationId: string
+  materializationId: string; sourceBindingHash: string; finalDispatchBindingHash: string
+  session: SourceActiveNativeSession['nativeSession']; owner: SourceActiveNativeSession['owner']
+  signal: AbortSignal; assertCurrent(): Promise<void> | void
+}
+export type SourceInstalledNativeOwnerReader = (record: SourceMaterializationRecord) => Promise<SourceInstalledNativeOwner | null>
 
 export interface SourceAttemptAuthority {
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
@@ -28,7 +47,8 @@ export interface RemoteSourceMaterializationHost {
  * operation through W07/B verified source bytes, never a second scheduler. */
 export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
   constructor(private readonly mainId: string, private readonly bytes: SourceByteReader,
-    private readonly authority: SourceAttemptAuthority, private readonly remote: RemoteSourceMaterializationHost) {}
+    private readonly authority: SourceAttemptAuthority, private readonly remote: RemoteSourceMaterializationHost,
+    private readonly captureNativeSession?: SourceNativeSessionCaptureReader) {}
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }) {
     return this.authority.authorize(sql, principal, input)
   }
@@ -51,7 +71,8 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
   async verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree> {
     if (record.receipt.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source copy belongs to another main.', 403)
     if (record.receipt.binding.deviceId !== null) return this.remote.verifyWorkingDirectory(record, relativeCwd)
-    return verifyMaterializedWorkingDirectory(record, relativeCwd, () => this.authority.revalidateMaterialization(record))
+    const capture = await this.captureNativeSession?.(record)
+    return verifyMaterializedWorkingDirectory(record, relativeCwd, () => this.authority.revalidateMaterialization(record), capture ?? undefined)
   }
   /** Main service calls only after exact original physical closure proof. */
   async releaseClaim(record: SourceMaterializationRecord): Promise<void> {

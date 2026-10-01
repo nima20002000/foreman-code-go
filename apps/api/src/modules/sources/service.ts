@@ -289,9 +289,17 @@ export class PostgresSourceService implements SourceAdmissionPort {
     return this.verifyPrepared(input, false)
   }
   async verifyWorkingDirectory(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord; relativeCwd: string }): Promise<VerifiedSourceWorkingTree> {
-    await this.verifyPrepared(input, false)
-    await this.transaction(sql => assertAcceptedSourceRelativeCwd(sql, input.record.receipt.executionId, input.relativeCwd))
-    return this.executions.verifyWorkingDirectory(input.record, input.relativeCwd)
+    const record = SourceMaterializationRecordSchema.parse(input.record)
+    await this.transaction(async sql => {
+      const stored = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where materialization_id=$1 for share', [record.receipt.materializationId])).rows[0]
+      if (!stored || !isDeepStrictEqual(stored.record, record) || !['prepared', 'running'].includes(stored.state))
+        throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Only the exact retained original source attempt may verify its working directory.', 409)
+      const root = await this.rootGetInTransaction(sql, input.principal, record)
+      await this.executions.authorize(sql, input.principal, { workspaceId: root.binding.workspaceId, root, attempt: record.receipt, operationId: record.operationId })
+      if (record.finalDispatchBindingHash) await this.executions.authorizeFinal(sql, input.principal, record, record.finalDispatchBindingHash)
+      await assertAcceptedSourceRelativeCwd(sql, record.receipt.executionId, input.relativeCwd)
+    })
+    return this.executions.verifyWorkingDirectory(record, input.relativeCwd)
   }
   async verifyExecution(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string> {
     return this.verifyPrepared(input, true)
