@@ -54,6 +54,8 @@ it('replays native creation through production construction and the real manager
   }
   const unavailable = async (): Promise<never> => { throw new Error('Unexpected auxiliary replay operation.') }
   const infrastructure: ProductionHarnessInfrastructure = { mode: 'replay', codex,
+    inventoryDiscovery: { launcher: async () => { throw new Error('Unexpected replay inventory discovery.') },
+      payloads: async () => { throw new Error('Unexpected replay payload discovery.') } },
     openCodeServer: () => { throw new Error('Unexpected OpenCode allocation.') },
     openCodeClient: () => { throw new Error('Unexpected OpenCode client.') },
     auxiliary: { recovery: { scope: (owner) => ({ root: '/unused-replay-registry', owner }),

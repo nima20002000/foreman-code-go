@@ -1,0 +1,25 @@
+import { isAbsolute } from 'node:path'
+
+export interface DeviceListenerConfig {
+  host: string
+  port: number
+  certificateFile: string
+  privateKeyFile: string
+}
+
+/** Source configuration alone grants no pairing, task or provider credentials. */
+export function readDeviceListenerConfig(environment: NodeJS.ProcessEnv, apiPort: number): DeviceListenerConfig | undefined {
+  const enabled = environment.GRAPHQL_DEVICE_LISTENER_ENABLED
+  if (enabled !== undefined && enabled !== '0' && enabled !== '1') throw new Error('Device listener enablement must be 0 or 1.')
+  if (enabled !== '1') return undefined
+  const host = environment.DEVICE_LISTENER_HOST?.trim()
+  const port = Number(environment.DEVICE_LISTENER_PORT)
+  const certificateFile = environment.DEVICE_LISTENER_TLS_CERT_FILE?.trim()
+  const privateKeyFile = environment.DEVICE_LISTENER_TLS_KEY_FILE?.trim()
+  if (!host || /[\s/\\]/.test(host)) throw new Error('The enabled device listener requires an explicit bind host.')
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || port === apiPort) throw new Error('The enabled device listener requires its own explicit valid port.')
+  if (!certificateFile || !privateKeyFile || !isAbsolute(certificateFile) || !isAbsolute(privateKeyFile)) {
+    throw new Error('The enabled device listener requires absolute TLS certificate and private key files.')
+  }
+  return { host, port, certificateFile, privateKeyFile }
+}

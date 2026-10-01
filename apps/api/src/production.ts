@@ -96,6 +96,15 @@ import { RunGraphReadService } from './modules/run-graph/readService.js'
 import type { CurrentRunProductionFactory, CurrentRunProductionBinding, CurrentStopContext } from './modules/runs/currentProduction.js'
 import type { FastifyBaseLogger } from 'fastify'
 import { componentLogger } from './infrastructure/logger.js'
+import { ProductionDeviceRuntime } from './modules/devices/productionRuntime.js'
+import { ProductionHarnessRegistry } from './modules/harnesses/productionRegistry.js'
+import { ProductionHostHarnessProfileQualifier } from './modules/harnesses/productionProfileQualifier.js'
+import { HarnessInstanceSettingsRepository } from './modules/harnesses/instanceSettings/repository.js'
+import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instanceSettings/profileRepository.js'
+import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
+import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
+import { commandInputHash } from './modules/commands/postgres.js'
+import { authorizeDeviceHost } from './modules/devices/hostAuthorization.js'
 
 /** The startup composition is shared with regression tests; infrastructure owns its lifecycle. */
 export function buildProductionApp(
@@ -113,7 +122,7 @@ export function buildProductionApp(
   if (infrastructure?.mode === 'replay' && (!infrastructure.auxiliary
     || !infrastructure.auxiliary.compatibility || !infrastructure.auxiliary.plugins
     || !infrastructure.auxiliary.mcp?.codex || !infrastructure.auxiliary.mcp.opencode
-    || !infrastructure.auxiliary.command || !infrastructure.auxiliary.recovery || qualificationSuites)) {
+    || !infrastructure.auxiliary.command || !infrastructure.auxiliary.recovery || !infrastructure.inventoryDiscovery || qualificationSuites)) {
     throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay must inject settings and probes and cannot run installed CLI qualification.', 500)
   }
   let fileStorage: TemporaryFileService | undefined
@@ -126,6 +135,22 @@ export function buildProductionApp(
   const processRegistry = infrastructure?.auxiliary?.recovery
     ?? new NativeProcessRegistry(resolve(config.harnesses.workspaceRoot, 'native-process-registry'))
   const access = new PostgresAccessService(database.pool)
+  const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
+    extensions: [
+      { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      ...(infrastructure?.deviceDomains?.extensions ?? []),
+    ],
+    async reconcile(binding, signal, endpoint) {
+      if (endpoint.capabilities(binding.deviceId).some((item) => item.namespace === 'harness-discovery-v1' && item.mainCanRequest)) {
+        const result = await endpoint.request(binding.deviceId, 'harness-discovery-v1',
+          { operation: 'discover', refreshId: randomUUID() }, { signal })
+        signal.throwIfAborted()
+        harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
+      }
+      if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
+    },
+  })
   const commands = new PostgresCommandCoordinator(database.pool)
   // Producer/consumer halves are installed during construction. Neither HTTP,
   // MCP nor a caller-supplied JSON observation can manufacture these captures.
@@ -142,11 +167,18 @@ export function buildProductionApp(
     { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime })
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
+  const hostProfileEvidence = new HostHarnessProfileEvidenceRepository(database.pool)
+  const harnessRegistry = new ProductionHarnessRegistry(database.pool, config.harnesses,
+    (client) => settings.getManagedHarnessDefaults(client), hostProfileEvidence,
+    (deviceId) => { const view = deviceRuntime.presenceFor(deviceId); return view?.phase === 'ready' ? view.binding : null },
+    process.env, infrastructure?.inventoryDiscovery, (deviceId) => deviceRuntime.currentBinding(deviceId))
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
   const operators = new PostgresOperatorRepository(database.pool)
   const rollout = new NativeRollout(process.env)
   const qualificationRepository = new HarnessQualificationRepository(database.pool)
-  const identity = infrastructure?.qualificationIdentity
+  const identity = infrastructure?.qualificationIdentity ?? {
+    registry: harnessRegistry.installations, pin: (harness: CompatibilityHarness) => harnessRegistry.pinDefault(harness),
+  }
   const selectedSuites = qualificationSuites && identity ? {
     codex: withQualificationIdentity(qualificationSuites.codex, identity.registry, (input) => identity.pin('codex', input)),
     opencode: withQualificationIdentity(qualificationSuites.opencode, identity.registry, (input) => identity.pin('opencode', input)),
@@ -169,6 +201,11 @@ export function buildProductionApp(
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ ...config.harnesses, appMcpEndpoint, responseJournal,
+    instances: harnessRegistry.instances, installations: harnessRegistry.installations,
+    selectConfiguration: (configuration) => harnessRegistry.pinAccepted({
+      id: `configuration-check:${commandInputHash(configuration)}`, agentId: 'configuration-qualification', harness: configuration,
+    }),
+    ...(infrastructure?.inventoryDiscovery ? { installationDiscovery: infrastructure.inventoryDiscovery.launcher } : {}),
     auxiliaryRecovery: (role) => processRegistry.scope(`${role}:${infrastructure?.mode === 'replay' ? infrastructure.codex.id() : randomUUID()}`),
     admitRecovery: (recovery) => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
     abandonRecovery: async (recovery) => { await processRegistry.abandonReservedLaunch(recovery) },
@@ -176,6 +213,22 @@ export function buildProductionApp(
       if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
     },
   }, infrastructure)
+  const hostSettings = new HarnessInstanceSettingsRepository(database.pool)
+  const hostAuthority: HostHarnessOverrideAuthority = { async authorize(principal, action, hostRef, applicationInstallationId, client) {
+    if (client) { await authorizeDeviceHost(client, principal, action, hostRef, applicationInstallationId); return }
+    const connection = await database.pool.connect()
+    try {
+      await connection.query('begin')
+      await authorizeDeviceHost(connection, principal, action, hostRef, applicationInstallationId)
+      await connection.query('commit')
+    } catch (error) { await connection.query('rollback'); throw error } finally { connection.release() }
+  } }
+  const hostProfileChecks = new HostHarnessInstanceProfileChecks(hostSettings, hostProfileEvidence, commands, hostAuthority,
+    new ProductionHostHarnessProfileQualifier(harnessRegistry, nativeFactories, () => deviceRuntime.endpointForDomains(), config.harnesses.workspaceRoot))
+  const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
+    const proof = await harnessRegistry.profileEvidence(value, client)
+    return proof ? { target: proof.target, configurationFingerprint: proof.configurationFingerprint, qualified: proof.qualified } : null
+  }, hostProfileChecks)
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary, nativeFactories)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
   const nativeConfigurations = new NativeConfigurationService(
@@ -203,9 +256,11 @@ export function buildProductionApp(
     // Object allocation remains native/registry IO-free. The coordinator reserves
     // this SAME scope immediately before its lifetime/entered commits.
     const recovery = processRegistry.scope(`execution:${context.executionId}`)
+    const selection = harnessRegistry.initialized ? harnessRegistry.pinAccepted(context.configuration) : undefined
     const { manager } = nativeFactories.allocate({
+      ...(selection ? { selection } : {}),
       role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
-      configured: { instanceId: context.agentId, instanceRevision: context.configuration.id, driverId: configuration.harness,
+      configured: { instanceId: selection?.instance.instanceId ?? context.agentId, instanceRevision: context.configuration.id, driverId: configuration.harness,
         enabled: true, configuration },
       processRecovery: recovery, appMcpAccess: 'scoped',
       ...(configuration.harness === 'codex' ? { harness: 'codex' as const }
@@ -280,6 +335,8 @@ export function buildProductionApp(
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
     endpointHost, appMcpEndpoint, processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
+    selectInstallation: (configuration) => harnessRegistry.initialized
+      ? harnessRegistry.pinAccepted({ ...configuration, agentId: configuration.operatorId }) : undefined,
   })
   const chatAuthority = new PostgresOperatorChatAuthority(
     database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
@@ -295,9 +352,11 @@ export function buildProductionApp(
     // Chat processes have their own owner scope; they never share a workflow execution's manager.
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
+    const selection = harnessRegistry.initialized ? harnessRegistry.pinAccepted(configuration) : undefined
     const { manager } = nativeFactories.allocate({
+      ...(selection ? { selection } : {}),
       role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId,
-      configured: { instanceId: configuration.agentId, instanceRevision: configuration.id, driverId: harness.harness,
+      configured: { instanceId: selection?.instance.instanceId ?? configuration.agentId, instanceRevision: configuration.id, driverId: harness.harness,
         enabled: true, configuration: harness },
       processRecovery: recovery, appMcpAccess: 'none',
       ...(harness.harness === 'codex' ? { harness: 'codex' as const,
@@ -349,6 +408,8 @@ export function buildProductionApp(
   })
 
   const operatorServices = {
+    devices: deviceRuntime.management,
+    harnessInstances, harnessRegistry,
     fileRetention: new FileRetentionService(database.pool, commands),
     executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
     operatorChat: chat,
@@ -415,6 +476,8 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'device admission and channels', run: async () => { deviceRuntime.stop() } },
+      { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
@@ -428,6 +491,7 @@ export function buildProductionApp(
       { name: 'workflow engine', run: () => engine.shutdown() },
     ],
     drain: [
+      { name: 'device listener and admitted work', run: () => deviceRuntime.drain() },
       { name: 'live harness qualification', run: () => harnessQualifications?.join() },
       // Initialization errors belong to initialize()'s caller, not to cleanup.
       // Wait for its last DB/filesystem operation even if startup was canceled.
@@ -498,6 +562,11 @@ export function buildProductionApp(
       assertOpen()
       await harnessSettings.plugins.recover()
       assertOpen()
+      const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
+        fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
+      assertOpen()
+      await harnessRegistry.initialize(machine.installationId)
+      assertOpen()
       // Optional discovery warmups used to block startup on native auth/network.
       // Qualification still runs at every existing on-demand configuration/execution gate.
       // The bounded compatibility diagnostic creates no native session or model turn.
@@ -564,5 +633,5 @@ export function buildProductionApp(
     registerFileStorage: () => {
       fileStorage ??= registerProductionFileStorage(app, database.pool, config)
       return fileStorage
-    } }
+    }, startDeviceListener: () => deviceRuntime.startListener() }
 }

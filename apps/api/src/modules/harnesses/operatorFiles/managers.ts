@@ -10,6 +10,8 @@ import { NativeHarnessFactories } from '../runtimeFactory.js'
 import { productionOpenCodeChatFiles } from '../opencodeFiles/production.js'
 import type { NativeHarnessSessionManager } from '../port.js'
 import type { NativeProcessRegistry } from '../recovery/processRegistry.js'
+import type { RegistryHarnessSelection } from '../installationRegistry.js'
+import type { OperatorConfigurationVersion } from '@graphql/contracts'
 import type { NativeResponseJournal } from '../recovery/responseJournal.js'
 import { operatorCodexFileAdmissions } from './codex.js'
 import { adoptOperatorFilePublications, operatorTurnHasFileInputs, recordOperatorFileSubmission,
@@ -28,6 +30,7 @@ export function productionOperatorManagers(input: {
   responseJournal: NativeResponseJournal
   managers: Map<string, NativeHarnessSessionManager>
   nativeFactories?: NativeHarnessFactories
+  selectInstallation?: (configuration: OperatorConfigurationVersion) => RegistryHarnessSelection | undefined
 }): NativeManagerResolver {
   const factories = input.nativeFactories ?? new NativeHarnessFactories({ ...input.config.harnesses,
     appMcpEndpoint: input.appMcpEndpoint, responseJournal: input.responseJournal })
@@ -40,9 +43,11 @@ export function productionOperatorManagers(input: {
       return existing
     }
     const recovery = input.processRegistry.scope(`conversation:${conversationId}`)
+    const selection = input.selectInstallation?.(configuration)
     const { manager } = factories.allocate({
+      ...(selection ? { selection } : {}),
       role: 'operator', workingDirectory: input.workingDirectory, ownerAgentId: configuration.operatorId,
-      configured: { instanceId: configuration.operatorId, instanceRevision: configuration.id, driverId: configuration.harness.harness,
+      configured: { instanceId: selection?.instance.instanceId ?? configuration.operatorId, instanceRevision: configuration.id, driverId: configuration.harness.harness,
         enabled: true, configuration: configuration.harness },
       processRecovery: recovery, appMcpAccess: fileInputs ? 'none' : 'scoped',
       ...(configuration.harness.harness === 'codex'

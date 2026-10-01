@@ -6,6 +6,10 @@ import type { NativeFactoryInfrastructure } from './runtimeFactory.js'
 import type { HarnessInstallationRegistry, RegistryHarnessSelection } from './installationRegistry.js'
 import type { QualificationSuiteInput } from './qualification/types.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
+import type { DeviceListenerConfig } from '../devices/productionConfig.js'
+import type { DeviceDomainComposition } from '../devices/productionRuntime.js'
+import type { discoverLauncher } from './hostDiscovery.js'
+import type { passiveDriverPayloads } from './payloadDiscovery.js'
 
 /** Settings/probes are separate privileges from native turn execution. A replay
  * must supply these ports even when its scenario does not exercise them. */
@@ -17,6 +21,9 @@ export interface AuxiliaryHarnessInfrastructure {
   command: typeof runCommand
 }
 export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
+  deviceListener?: DeviceListenerConfig
+  deviceDomains?: DeviceDomainComposition
+  inventoryDiscovery?: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads }
   qualificationIdentity?: {
     registry: HarnessInstallationRegistry
     pin: (harness: 'codex' | 'opencode', input: QualificationSuiteInput) => RegistryHarnessSelection

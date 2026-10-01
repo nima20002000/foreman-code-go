@@ -1,6 +1,9 @@
 import type { HarnessConfiguration, OpenCodeAdvancedConfiguration } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
 import { HarnessInstanceRegistry, localHarnessDrivers, type ConfiguredHarnessInstance } from './instanceRegistry.js'
+import type { HarnessInstallationRegistry, RegistryHarnessSelection } from './installationRegistry.js'
+import { commandInputHash } from '../commands/postgres.js'
+import { discoverLauncher } from './hostDiscovery.js'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexDiagnosticPin, type CodexDiagnosticOperations } from './codexAppServer.js'
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
@@ -21,6 +24,7 @@ export type HarnessRuntimeRole = 'workflow' | 'operator' | 'agent-chat' | 'diagn
 interface AllocationContext {
   role: HarnessRuntimeRole
   configured?: ConfiguredHarnessInstance
+  selection?: RegistryHarnessSelection
   workingDirectory: string
   ownerAgentId: string
   processRecovery?: NativeProcessRecovery
@@ -55,7 +59,7 @@ export type NativeFactoryInfrastructure =
 /** Shares construction code only. Every allocation constructs a new real adapter
  * and retains the caller's initially unreserved recovery scope. */
 export class NativeHarnessFactories {
-  readonly instances = new HarnessInstanceRegistry(localHarnessDrivers)
+  readonly instances: HarnessInstanceRegistry
   private readonly configurations = new Map<string, ConfiguredHarnessInstance>()
   private auxiliaryClosing = false
   private readonly auxiliaries = new Map<NativeHarnessSessionManager, { recovery: NativeProcessRecovery | undefined; admitted: boolean; admissionError?: unknown; disposal?: Promise<void> }>()
@@ -67,11 +71,16 @@ export class NativeHarnessFactories {
     openCodeBinary: string
     appMcpEndpoint?: string
     responseJournal?: NativeResponseJournal
+    instances?: HarnessInstanceRegistry
+    installations?: HarnessInstallationRegistry
+    installationDiscovery?: typeof discoverLauncher
+    selectConfiguration?: (configuration: HarnessConfiguration) => RegistryHarnessSelection
     auxiliaryRecovery?: (role: 'diagnostics' | 'qualification') => NativeProcessRecovery
     admitRecovery?: (recovery: NativeProcessRecovery) => void
     abandonRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
     closeRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
   }, private readonly infrastructure: NativeFactoryInfrastructure = { mode: 'native' }) {
+    this.instances = config.instances ?? new HarnessInstanceRegistry(localHarnessDrivers)
     if (infrastructure.mode === 'native' && infrastructure.codex?.mode === 'replay') {
       throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Replay dependencies require the complete replay environment.', 500)
     }
@@ -82,7 +91,19 @@ export class NativeHarnessFactories {
   }
 
   allocate(input: NativeHarnessAllocation): NativeHarnessAllocationResult {
-    if (input.configured) {
+    if (input.selection) {
+      if (!this.config.installations) throw new DomainError('HARNESS_SELECTION_UNAVAILABLE', 'Canonical installation selection is not composed.', 503)
+      this.config.installations.assertCurrent(input.selection)
+      const selected = input.selection.instance
+      if (selected.driverId !== input.harness || (input.configured
+        && (input.configured.instanceId !== selected.instanceId || input.configured.instanceRevision !== selected.instanceRevision
+          || commandInputHash(input.configured.configuration) !== commandInputHash(selected.configuration)))) {
+        throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The accepted configuration differs from its canonical installation selection.', 409)
+      }
+      if (!input.selection.installation.launcher.resolvedLauncher || !input.selection.installation.installationFingerprint) {
+        throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'Exact launcher and payload evidence is required before allocation.', 409)
+      }
+    } else if (input.configured) {
       if (input.configured.driverId !== input.harness) throw new DomainError(
         'HARNESS_CONFIGURATION_MISMATCH', 'The configured driver differs from the selected harness.', 409)
       const prior = this.configurations.get(input.configured.instanceId)
@@ -108,18 +129,37 @@ export class NativeHarnessFactories {
     if (input.harness === 'codex') {
       const dependencies: CodexSessionDependencies | undefined = this.infrastructure.mode === 'native'
         ? { ...this.infrastructure.codex, mode: 'native',
-          withDiagnostics: (pin, run) => this.withCodexDiagnostics(pin, run, recovery) }
+          qualify: async (binary, version, cwd, environment, authenticated, signal) => {
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
+            const qualified = await (this.infrastructure.codex?.qualify
+              ?? ((selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal) =>
+                qualifyCodex(selectedBinary, selectedVersion, selectedCwd, selectedEnvironment, requireAuthentication, selectedSignal, recovery)))(
+              binary, version, cwd, environment, authenticated, signal)
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, signal)
+            return qualified
+          },
+          assertUnchanged: async (qualified) => {
+            await (this.infrastructure.codex?.assertUnchanged ?? assertCodexUnchanged)(qualified)
+            if (input.selection) await this.assertInstallationUnchanged(input.selection)
+          },
+          withDiagnostics: (pin, run) => this.withCodexDiagnostics(pin, async (io) => {
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, pin.signal)
+            const result = await run(io)
+            if (input.selection) await this.assertInstallationUnchanged(input.selection, pin.signal)
+            return result
+          }, recovery) }
         : this.infrastructure.codex
-      const manager = new CodexAppServerSessionManager(this.config.codexBinary, undefined, undefined,
+      const manager = new CodexAppServerSessionManager(input.selection?.installation.launcher.resolvedLauncher ?? this.config.codexBinary, undefined, undefined,
         recovery, input.appMcpAccess, input.chatFiles, dependencies)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
     } else if (input.harness === 'opencode') {
       const options: ManagedOpenCodeServerOptions = {
-        binary: this.config.openCodeBinary, workingDirectory: input.workingDirectory,
+        binary: input.selection?.installation.launcher.resolvedLauncher ?? this.config.openCodeBinary, workingDirectory: input.workingDirectory,
         ownerAgentId: input.ownerAgentId, appMcpAccess: input.appMcpAccess,
         ...(recovery ? { processRecovery: recovery } : {}),
         ...(input.credentialEnvironmentVariable ? { credentialEnvironmentVariable: input.credentialEnvironmentVariable } : {}),
         ...(input.advancedConfiguration ? { advancedConfiguration: input.advancedConfiguration } : {}),
+        ...(input.selection ? { assertInstallation: (signal?: AbortSignal) => this.assertInstallationUnchanged(input.selection!, signal) } : {}),
       }
       const server = this.infrastructure.openCodeServer
         ? this.infrastructure.openCodeServer(options) : new ManagedOpenCodeServer(options)
@@ -144,9 +184,25 @@ export class NativeHarnessFactories {
     return result
   }
 
+  async assertInstallationUnchanged(binding: RegistryHarnessSelection, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    this.config.installations?.assertCurrent(binding)
+    const prior = binding.installation.launcher
+    const launcher = prior.resolvedLauncher
+    if (!launcher || !binding.installation.installationFingerprint) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The selected payload evidence is unavailable.', 409)
+    if (this.infrastructure.mode === 'replay' && !this.config.installationDiscovery) throw new DomainError(
+      'HARNESS_REPLAY_INCOMPLETE', 'Replay installation inspection requires its explicit filesystem port.', 500)
+    const current = await (this.config.installationDiscovery ?? discoverLauncher)(launcher, prior.environment,
+      (prior.payloadFingerprints ?? []).filter((item) => item.path !== launcher).map((item) => item.path), signal)
+    signal?.throwIfAborted()
+    if (current.fingerprint !== binding.installation.installationFingerprint) throw new DomainError(
+      'HARNESS_INSTALLATION_CHANGED', 'The selected launcher or native payload changed after admission.', 409)
+  }
+
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
+    const selection = this.config.selectConfiguration?.(configuration)
     const allocation = this.allocate({ harness: configuration.harness, role: 'qualification',
-      workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
+      ...(selection ? { selection, configured: selection.instance } : {}), workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
       ...(configuration.harness === 'opencode' && configuration.advanced
         ? { advancedConfiguration: configuration.advanced } : {}),
     })
