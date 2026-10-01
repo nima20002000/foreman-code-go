@@ -71,7 +71,11 @@ export function normalizeNativeTextOperations(event: NativeHarnessEvent, input: 
       const source = payload.source && typeof payload.source === 'object' ? payload.source as Record<string, unknown> : {}
       const eventId = typeof source.eventId === 'string' ? source.eventId : undefined
       const nativeSequence = typeof source.sequence === 'string' ? source.sequence : undefined
-      return { observedAt: event.occurredAt, identity: { ...input.owner(), ...(typeof payload.nativeGeneration === 'string' ? { generation: payload.nativeGeneration } : {}), itemId: nativeItemId, partId: delta.partId,
+      const index = payload.summaryIndex ?? payload.contentIndex
+      const partId = typeof payload.partID === 'string' ? payload.partID : typeof part.id === 'string' ? part.id
+        : typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? String(index) : undefined
+      return { observedAt: event.occurredAt, identity: { ...input.owner(), ...(typeof payload.nativeSessionId === 'string' ? { sessionId: payload.nativeSessionId } : {}),
+        ...(typeof payload.nativeTurnId === 'string' ? { turnId: payload.nativeTurnId } : {}), ...(typeof payload.nativeGeneration === 'string' ? { generation: payload.nativeGeneration } : {}), itemId: nativeItemId, ...(partId ? { partId } : {}),
         ...(parentId ? { parentId } : {}), channel: delta.partId.startsWith('thinking:') ? 'reasoning' : 'assistant' },
       mode: delta.mode, text: delta.text, final: !!completed && completed.complete !== false,
       ...(event.connectionId || eventId || nativeSequence ? { source: {

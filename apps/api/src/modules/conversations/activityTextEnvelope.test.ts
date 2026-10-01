@@ -20,3 +20,17 @@ it('never substitutes an arrival counter for missing native sequence or manufact
   expect(envelope.source.sequence).toBeUndefined(); expect(envelope.native?.turnId).toBeUndefined()
   expect(envelope.owner).toEqual({ kind: 'chat_request', conversationId: 'chat', requestId: 'request' })
 })
+it('keeps proven block indices and generation while never fabricating missing provider part identity', () => {
+  const owner = () => ({ scope: { kind: 'operator_chat' as const, conversationId: 'chat' }, requestId: 'request', sessionId: 'session', generation: 'lease-4' })
+  const base = { sequence: 4, occurredAt: '2026-10-01T00:00:00Z', type: 'native.notification', payload: { nativeMethod: 'item/reasoning/summaryTextDelta', itemId: 'item', delta: 'summary', summaryIndex: 2, nativeGeneration: 'lease-3' } }
+  const op = normalizeNativeTextOperations(base, { owner, harness: 'codex', ...state() })[0]!
+  expect(op.identity.partId).toBe('2'); expect(op.identity.generation).toBe('lease-3')
+  const envelope = activityTextEnvelope(op, 'codex')
+  expect(envelope.native).toMatchObject({ itemId: 'item', partId: '2', generation: 'lease-3' })
+})
+it('preserves an explicit source turn instead of attributing an old callback to the current admitted turn', () => {
+  const op = normalizeNativeTextOperations({ sequence: 1, occurredAt: '2026-10-01T00:00:00Z', type: 'assistant.delta',
+    payload: { itemId: 'item', text: 'old callback', nativeSessionId: 'source-session', nativeTurnId: 'source-turn' } },
+  { harness: 'codex', owner: () => ({ scope: { kind: 'operator_chat', conversationId: 'chat' }, requestId: 'current-request', sessionId: 'current-session', turnId: 'current-turn' }), ...state() })[0]!
+  expect(op.identity.sessionId).toBe('source-session'); expect(op.identity.turnId).toBe('source-turn')
+})

@@ -21,8 +21,10 @@ export function createTextCoalescer(publish: (operation: ActivityTextOperation) 
   const push = (operation: ActivityTextOperation) => {
     if (disposed) return
     const key = keyOf(operation), previous = states.get(key)
+    if (Buffer.byteLength(key) > limits.bytes) { flush(); if (!disposed) reconcile(); return }
     if (previous?.final) return
     const eventKey = operation.source?.eventId ? JSON.stringify([key, operation.source.eventId]) : undefined
+    if (eventKey && Buffer.byteLength(eventKey) > limits.bytes) { flush(); if (!disposed) reconcile(); return }
     if (eventKey && seen.has(eventKey)) return
     if (eventKey && seen.size >= limits.items && operation.mode === 'append') { flush(); if (!disposed) reconcile(); return }
     if (eventKey && seen.size < limits.items) seen.add(eventKey)
@@ -34,14 +36,14 @@ export function createTextCoalescer(publish: (operation: ActivityTextOperation) 
       flush(); if (!disposed) reconcile(); return
     }
     states.set(key, { final: operation.final, connectionId: operation.source?.connectionId, sequence: operation.source?.sequence })
-    const bytes = Buffer.byteLength(operation.text)
+    const bytes = Buffer.byteLength(JSON.stringify(operation))
     if (operation.mode === 'replace' || operation.final || !operation.source?.connectionId || operation.source.sequence === undefined || bytes > limits.bytes) {
       flush(); if (!disposed) publish(operation); return
     }
     const compatible = pending && keyOf(pending) === key && pending.mode === 'append'
       && pending.source?.connectionId === operation.source.connectionId
       && pending.source.sequence !== undefined && pending.source.sequence + 1 === operation.source.sequence
-      && Buffer.byteLength(pending.text) + bytes <= limits.bytes
+      && Buffer.byteLength(JSON.stringify({ ...operation, text: pending.text + operation.text })) <= limits.bytes
     if (!compatible) flush()
     if (disposed) return
     pending = compatible ? { ...operation, text: pending!.text + operation.text } : operation
@@ -50,6 +52,7 @@ export function createTextCoalescer(publish: (operation: ActivityTextOperation) 
   return { push, flush, seal(operation: ActivityTextOperation) {
     if (disposed) return
     const key = keyOf(operation), previous = states.get(key)
+    if (Buffer.byteLength(key) > limits.bytes) { reconcile(); return }
     if (previous || states.size < limits.items) states.set(key, { final: true, connectionId: previous?.connectionId, sequence: previous?.sequence })
     else reconcile()
   }, dispose() { disposed = true; clearTimeout(timer); timer = undefined; pending = undefined; states.clear(); seen.clear() } }

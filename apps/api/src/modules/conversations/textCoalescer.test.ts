@@ -36,7 +36,7 @@ describe('ordered request-owned text coalescing', () => {
   })
   it('bounds bytes, identity count and flush latency; callbacks after dispose cannot publish', () => {
     vi.useFakeTimers()
-    const publish = vi.fn(), reconcile = vi.fn(), stream = createTextCoalescer(publish, reconcile, { bytes: 4, items: 1, latencyMs: 10 })
+    const publish = vi.fn(), reconcile = vi.fn(), stream = createTextCoalescer(publish, reconcile, { bytes: Buffer.byteLength(JSON.stringify(operation(1, ''))) + 4, items: 1, latencyMs: 10 })
     stream.push(operation(1, 'ab')); stream.push(operation(2, 'cde'))
     expect(publish.mock.calls.map(([op]) => op.text)).toEqual(['ab'])
     vi.advanceTimersByTime(10); expect(publish.mock.calls.map(([op]) => op.text)).toEqual(['ab', 'cde'])
@@ -63,7 +63,7 @@ describe('ordered request-owned text coalescing', () => {
 
 describe('bounded source IDs', () => {
   it('deduplicates native event IDs within exact item identity without manufacturing source order', () => {
-    const publish = vi.fn(), reconcile = vi.fn(), stream = createTextCoalescer(publish, reconcile, { bytes: 8, items: 2, latencyMs: 5 })
+    const publish = vi.fn(), reconcile = vi.fn(), stream = createTextCoalescer(publish, reconcile, { bytes: 1024, items: 2, latencyMs: 5 })
     stream.push(operation(0, 'a', { source: { eventId: 'one' } }))
     stream.push(operation(0, 'b', { source: { eventId: 'two' } }))
     stream.push(operation(0, 'a', { source: { eventId: 'one' } }))
@@ -85,4 +85,10 @@ it('disposal from a flushed callback prevents the next replacement or timer from
   vi.runAllTimers()
   expect(publish.mock.calls.map(([op]) => op.text)).toEqual(['pending'])
   expect(vi.getTimerCount()).toBe(0)
+})
+it('bounds identity and deduplication metadata bytes without truncating canonical identity fields', () => {
+  const publish = vi.fn(), reconcile = vi.fn(), stream = createTextCoalescer(publish, reconcile, { bytes: 1024, items: 4, latencyMs: 10 })
+  stream.push(operation(1, 'text', { source: { eventId: 'uuid'.repeat(1024) } }))
+  expect(publish).not.toHaveBeenCalled(); expect(reconcile).toHaveBeenCalledOnce()
+  stream.dispose()
 })

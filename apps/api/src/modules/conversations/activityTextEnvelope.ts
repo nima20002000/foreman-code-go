@@ -14,7 +14,7 @@ export function activityTextEnvelope(operation: ActivityTextOperation, harness: 
   const scope = { ...identity.scope }
   if ('requestId' in scope) delete scope.requestId
   return ActivityChangeEnvelopeV1Schema.parse({ schemaVersion: 1, owner, scope,
-    native: { harness, sessionId: identity.sessionId, itemId: identity.itemId, ...(identity.generation ? { generation: identity.generation } : {}), ...(identity.turnId ? { turnId: identity.turnId } : {}) },
+    native: { harness, sessionId: identity.sessionId, itemId: identity.itemId, ...(identity.partId ? { partId: identity.partId } : {}), ...(identity.parentId ? { parentItemId: identity.parentId } : {}), ...(identity.generation ? { generation: identity.generation } : {}), ...(identity.turnId ? { turnId: identity.turnId } : {}) },
     source: { schemaVersion: 1, system: harness, observedAt: operation.observedAt,
       ...(source?.eventId ? { eventId: source.eventId } : {}), ...(source?.nativeSequence ? { sequence: source.nativeSequence } : {}) },
     change: { kind: operation.mode === 'append' ? 'text.append' : 'text.replace', itemId: identity.itemId,
