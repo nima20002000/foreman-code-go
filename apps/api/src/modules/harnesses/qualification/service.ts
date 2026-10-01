@@ -125,7 +125,7 @@ export class HarnessQualificationService {
     const suite = this.suites[harness]
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
     this.assertRunning()
-    const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd())
+    const probe = nativeCompatibilityProbe({ codex: binary, opencode: binary }, process.cwd(), process.env, 5000)
     this.probes.add(probe)
     let version: string
     try { version = (await this.timed(5000, (signal) => probe.inspect(harness, signal))).version }
