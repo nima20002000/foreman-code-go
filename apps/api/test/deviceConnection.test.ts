@@ -1,4 +1,4 @@
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { DevicePresenceSchema, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { deviceNegotiationHash, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
 import { mainIdentityProofMessage } from '@graphql/contracts/device-identity-node'
@@ -54,7 +54,7 @@ describe('device-only carrier and lifecycle', () => {
     socket.frame({ type: 'ping', connectionEpoch: socket.sent[0]!.connectionEpoch }); await flush()
     expect(socket.sent[1]!.type).toBe('pong'); expect(auth.revalidateDevice).toHaveBeenCalledTimes(3)
     endpoint.revoke(identity.deviceId, 2); await task
-    expect(presence.mock.calls.map(([view]) => view.phase)).toEqual(['ready', 'offline'])
+    expect(presence.mock.calls.map(([view]) => view.phase).filter((phase, index, phases) => index === 0 || phase !== phases[index - 1])).toEqual(['ready', 'offline'])
   })
   it.each([undefined, 0, 2])('blocks absent/old/new wire protocol %s', async (version) => {
     const { endpoint, presence } = makeEndpoint(); const socket = new Socket()
@@ -79,7 +79,9 @@ describe('device-only carrier and lifecycle', () => {
   it('main shutdown cancels pending authentication without late presence', async () => {
     const { endpoint, auth, presence } = makeEndpoint(); let resolve!: (value: AuthenticatedDevice) => void
     auth.authenticateDevice.mockReturnValueOnce(new Promise((done) => { resolve = done }))
-    const socket = new Socket(); const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket)); endpoint.close(); await task; resolve(principal); await flush()
+    const socket = new Socket(); const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket)); endpoint.close(); await task
+    let joined = false; const drain = endpoint.join().then(() => { joined = true }); await flush(); expect(joined).toBe(false)
+    resolve(principal); await drain; expect(joined).toBe(true); await flush()
     expect(presence).not.toHaveBeenCalled(); expect(socket.closed).toBe(true)
   })
   it('revocation fences an authentication result that completes after revoke committed', async () => {
@@ -93,6 +95,33 @@ describe('device-only carrier and lifecycle', () => {
     const raw = new Socket(), adapted = adaptDeviceSocket(raw)
     raw.frame({ type: 'blocked', code: 'incompatible-protocol' }); raw.close()
     await expect(adapted.messages[Symbol.asyncIterator]().next()).rejects.toThrow('incompatible-protocol')
+  })
+  it('joins a physical reconciliation callback even after its handshake wrapper is cancelled', async () => {
+    let finish!: () => void; let entered = false
+    const { endpoint, presence } = makeEndpoint(undefined, 100, async () => { entered = true; await new Promise<void>((resolve) => { finish = resolve }) })
+    const raw = new Socket(), task = endpoint.accept({ authorization: 'Bearer device' }, adaptDeviceSocket(raw))
+    raw.frame(hello); await flush(); raw.frame({ type: 'ready', connectionEpoch: raw.sent[0]!.connectionEpoch }); await flush(); expect(entered).toBe(true)
+    expect(endpoint.currentBinding(identity.deviceId)).toMatchObject(identity); expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toBeUndefined()
+    endpoint.close(); await task
+    let joined = false; const drain = endpoint.join().then(() => { joined = true }); await flush(); expect(joined).toBe(false)
+    finish(); await drain; expect(joined).toBe(true); expect(endpoint.currentBinding(identity.deviceId)).toBeUndefined()
+    expect(presence.mock.calls.some(([view]) => view.phase === 'ready')).toBe(false)
+  })
+  it('publishes actual worker versions and frame times without advancing lastSeenAt on database auth reads', async () => {
+    vi.useFakeTimers(); const firstTime = new Date('2026-10-01T06:00:00.000Z'); vi.setSystemTime(firstTime)
+    const registration: DeviceExtensionRegistration = { namespace: 'probe-v1', version: 1, role: 'client', maxJsonBytes: 1024, maxBinaryBytes: 0 }
+    const { endpoint, presence, auth } = makeEndpoint([registration])
+    const raw = new Socket(), task = endpoint.accept({ authorization: 'Bearer device' }, adaptDeviceSocket(raw))
+    raw.frame({ ...hello, appVersion: 'worker-observed-42', extensions: [{ ...registration, role: 'server' }] }); await flush()
+    const epoch = raw.sent[0]!.connectionEpoch; raw.frame({ type: 'ready', connectionEpoch: epoch }); await flush()
+    const original = DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0])
+    expect(original).toMatchObject({ appVersion: 'worker-observed-42', protocolVersion: 1, lastSeenAt: firstTime.toISOString() })
+    const secondTime = new Date(firstTime.getTime() + 50); vi.setSystemTime(secondTime)
+    const abort = new AbortController(), pending = endpoint.request(identity.deviceId, 'probe-v1', {}, { signal: abort.signal }); void pending.catch(() => {})
+    await flush(); expect(auth.revalidateDevice.mock.calls.length).toBeGreaterThan(2); expect(presence.mock.calls.at(-1)![0].lastSeenAt).toBe(original.lastSeenAt)
+    abort.abort(); await expect(pending).rejects.toThrow(); raw.frame({ type: 'ping', connectionEpoch: epoch }); await flush()
+    expect(DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0]).lastSeenAt).toBe(secondTime.toISOString())
+    endpoint.close(); await task; await endpoint.join(); expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'offline', lastSeenAt: secondTime.toISOString() })
   })
   it('half-open heartbeat expires within declared deadline', async () => {
     vi.useFakeTimers(); const { endpoint, presence } = makeEndpoint(); const socket = new Socket()
@@ -183,6 +212,8 @@ describe('pinned ws adapter on disposable loopback transport', () => {
     const mainExtension: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 2048, maxBinaryBytes: 0, handle: mainHandler }
     let synchronizedReply: unknown
     const { endpoint, presence } = makeEndpoint([mainExtension], 2000, async (_binding, signal) => {
+      expect(endpoint.currentBinding(identity.deviceId)).toMatchObject(identity)
+      expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toBeUndefined(); expect(endpoint.captureRequest(identity.deviceId, 'execution-v1')).toBeUndefined()
       synchronizedReply = (await endpoint.request(identity.deviceId, 'execution-v1', { grant: 'exact-operation' }, { signal })).payload
       expect(presence.mock.calls.some(([view]) => view.phase === 'ready')).toBe(false)
     })
@@ -200,13 +231,15 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       await vi.waitFor(() => expect(endpoint.capabilities(identity.deviceId)).toHaveLength(1))
       expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'ready', dispatch: true, transfer: false }); expect(synchronizedReply).toMatchObject({ receipt: 'actual-handler' })
       await expect(endpoint.request(identity.deviceId, 'execution-v1', { grant: 'heartbeat-only' })).rejects.toThrow('forbidden')
-      const response = await endpoint.request(identity.deviceId, 'execution-v1', { grant: 'exact-operation' })
+      const captured = endpoint.captureRequest(identity.deviceId, 'execution-v1')!
+      expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toEqual(captured.binding); expect(endpoint.currentBinding(identity.deviceId, 'unknown-v1')).toBeUndefined()
+      const response = await captured.request({ grant: 'exact-operation' })
       expect(response.payload).toMatchObject({ receipt: 'actual-handler' })
       const context = workerHandler.mock.calls.at(-1)![1]
       expect(context.binding).toMatchObject(identity); expect((response.payload as { epoch: string }).epoch).toBe(context.binding.connectionEpoch)
       expect(await worker.request('execution-v1', { report: 'accepted-job-only' })).toEqual({ payload: { mainReceipt: { report: 'accepted-job-only' } } })
       expect(mainHandler).toHaveBeenCalledOnce()
-    } finally { await worker.stop(); endpoint.close(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve())) }
+    } finally { await worker.stop(); endpoint.close(); await endpoint.join(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
   it('maps pre-upgrade rejection into blocked auth without a retry storm', async () => {
     const { endpoint, auth } = makeEndpoint(); auth.authenticateDevice.mockRejectedValue({ code: 'revoked' })
