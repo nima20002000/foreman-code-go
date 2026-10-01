@@ -38,7 +38,7 @@ export function createWorkflowJobComposition(input:{jobs:JobService;dispatch:Pos
         const {run,principal,definition}=await authorize(sql,ref.nodeId)
         beforeGraphCommit(sql,async()=>{await authorize(sql,ref.nodeId)})
         const execution=await input.jobs.admitPrepared(sql,principal,definition,{workflowId:run.workflowId,runId:run.id,nodeId:ref.nodeId,nodeExecutionId:preparation.executionId},preparation.input,spec,preparation)
-        await sql.query('insert into workflow_job_executions(run_id,node_execution_id,job_execution_id,reference,input_json) values($1,$2,$3,$4::jsonb,$5)',[run.id,execution.id,execution.id,JSON.stringify({workspaceId:run.workspaceId,workflowId:run.workflowId,workflowVersionId:version.id,runId:run.id,nodeId:ref.nodeId,nodeExecutionId:execution.id,jobExecutionId:execution.id,occurrenceId:ref.occurrence?.occurrenceId??null,occurrenceIndex:ref.occurrence?.occurrenceIndex??0}),canonicalGraphJson(preparation.input,4*1024*1024)])
+        await sql.query('insert into workflow_job_executions(run_id,node_execution_id,job_execution_id,reference,input_json) values($1,$2,$3,$4::jsonb,$5)',[run.id,execution.id,execution.id,JSON.stringify({kind:'job',workspaceId:run.workspaceId,workflowId:run.workflowId,workflowVersionId:version.id,runId:run.id,nodeId:ref.nodeId,nodeExecutionId:execution.id,jobExecutionId:execution.id,occurrenceId:ref.occurrence?.occurrenceId??null,occurrenceIndex:ref.occurrence?.occurrenceIndex??0}),canonicalGraphJson(preparation.input,4*1024*1024)])
         return execution
       },
       read:async(sql,id)=>{

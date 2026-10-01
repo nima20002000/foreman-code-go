@@ -1,3 +1,5 @@
+import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
+import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
 import { jobSpecDigests } from '@graphql/contracts/jobs-node'
 import type { RunInput } from '@graphql/contracts'
 import { createHash, randomUUID } from 'node:crypto'
@@ -82,6 +84,19 @@ export class JobService {
   getDefinitionVersion(principal:ManagementPrincipal,workspaceId:string,definitionId:string,versionId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.version(sql,workspaceId,versionId,definitionId),source)
   }
+  getWorkflowExecutionReference(principal:ManagementPrincipal,workspaceId:string,runId:string,nodeExecutionId:string,source:'http'|'mcp'='http') {
+    return this.read(principal,workspaceId,'jobs:read',async sql=>{
+      const row=(await sql.query<{reference:unknown;job_execution_id:string}>('select reference,job_execution_id from workflow_job_executions where run_id=$1 and node_execution_id=$2 for share',[runId,nodeExecutionId])).rows[0]
+      if(!row)throw new DomainError('JOB_WORKFLOW_REFERENCE_NOT_FOUND','The exact persisted Run job relationship is missing.',404)
+      const reference=JobWorkflowExecutionReferenceSchema.parse(row.reference)
+      const runRow=(await sql.query<{record:unknown}>('select record from runs where id=$1 and workspace_id=$2 for share',[runId,workspaceId])).rows[0]
+      const run=AcceptedWorkflowRunV3Schema.parse(runRow?.record)
+      const execution=await this.repository.execution(sql,workspaceId,row.job_execution_id)
+      if(reference.workspaceId!==workspaceId||reference.runId!==runId||reference.nodeExecutionId!==nodeExecutionId||reference.jobExecutionId!==execution.id||reference.workflowId!==run.workflowId||reference.workflowVersionId!==run.workflowVersionId
+        ||execution.workflow?.runId!==runId||execution.workflow.nodeId!==reference.nodeId||execution.workflow.nodeExecutionId!==nodeExecutionId||execution.workflow.workflowId!==reference.workflowId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The persisted job relationship differs from its actual Run and execution.',409)
+      return reference
+    },source)
+  }
   async saveDefinition(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobDefinitionSave) {
     const input = parse(JobDefinitionSaveSchema,raw)
     return this.command(principal,source,workspaceId,'job_definitions:write',input.commandId,'job.definition.save',input,async(sql,live)=>{
@@ -111,9 +126,10 @@ export class JobService {
     try {requireAuthorization(principal,'jobs:start',{workspaceId})} catch(error) {
       await this.commands.recordDenied(principal.id,source,'job.start',workspaceId);throw error
     }
+    let admission:{kind:'existing';execution:JobExecution}|{kind:'prepared';definition:JobDefinition;spec:PreparedJobSpec;identity:{executionId:string;attemptId:string;operationId:string}}|undefined
     const result=await this.commands.execute({principal,source,commandId:input.commandId,operation:'job.start',targetKey:workspaceId,payload:input,dedicatedConnection:true,
       authorize:sql=>this.authorize(sql,principal,workspaceId,'jobs:start').then(()=>undefined),
-      perform:async()=>{
+      prepare:async()=>{
         const reserved=await this.transaction(async sql=>{
           const live=await this.authorize(sql,principal,workspaceId,'jobs:start');await lockActiveWorkspace(sql,workspaceId)
           const existing=(await sql.query<{execution_id:string;attempt_id:string;operation_id:string;definition:unknown}>('select execution_id,attempt_id,operation_id,definition from job_preparations where principal_id=$1 and command_id=$2 for update',[live.id,input.commandId])).rows[0]
@@ -133,19 +149,23 @@ export class JobService {
           const row=(await sql.query<{record:unknown}>('select record from job_executions where id=$1',[reserved.identity.executionId])).rows[0]
           return row?JobExecutionSchema.parse(row.record):null
         })
-        if(existing)return existing
+        if(existing){admission={kind:'existing',execution:existing};return}
         // Only immutable source/byte preparation crosses this gap; no SQL row locks or launch right.
         const spec=await this.prepareDefinition(this.pool,reserved.principal,reserved.definition,reserved.identity)
-        return this.transaction(async sql=>{
+        admission={kind:'prepared',definition:reserved.definition,identity:reserved.identity,spec}
+      },
+      perform:async sql=>{
+          if(!admission)throw new DomainError('JOB_PREPARATION_MISSING','The actual job admission preparation is missing.',409)
+          if(admission.kind==='existing')return admission.execution
+          const {definition,identity,spec}=admission
           const live=await this.authorize(sql,principal,workspaceId,'jobs:start');await lockActiveWorkspace(sql,workspaceId)
-          await sql.query('select 1 from job_preparations where execution_id=$1 and principal_id=$2 for update',[reserved.identity.executionId,live.id])
+          await sql.query('select 1 from job_preparations where execution_id=$1 and principal_id=$2 for update',[identity.executionId,live.id])
           const current=await this.repository.definition(sql,workspaceId,input.definitionId,true)
-          if(current.versionId!==reserved.definition.versionId)throw new DomainError('REVISION_CONFLICT','The job definition changed during preparation.',409)
-          const ready=await this.ports.preparation.validate(sql,live,workspaceId,reserved.definition.spec)
+          if(current.versionId!==definition.versionId)throw new DomainError('REVISION_CONFLICT','The job definition changed during preparation.',409)
+          const ready=await this.ports.preparation.validate(sql,live,workspaceId,definition.spec)
           if(!ready.valid)throw new DomainError('JOB_NOT_READY','Job authority changed during preparation.',409,{reasons:ready.reasons})
-          const execution=await this.admitPrepared(sql,live,reserved.definition,null,null,spec,reserved.identity)
+          const execution=await this.admitPrepared(sql,live,definition,null,null,spec,identity)
           await this.authorize(sql,principal,workspaceId,'jobs:start');return execution
-        })
       }})
     const execution=JobExecutionSchema.parse(result.value)
     await this.ports.dispatch.wake(execution.id).catch(()=>undefined)

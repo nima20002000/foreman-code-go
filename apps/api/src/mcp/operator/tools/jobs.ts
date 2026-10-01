@@ -1,3 +1,4 @@
+import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { JobArtifactSchema, JobAuthoringChoicesSchema, JobDefinitionSaveSchema, JobDefinitionSchema, JobDefinitionSpecSchema, JobExecutionSchema, JobLogPageSchema, JobStartSchema, JobValidationSchema } from '@graphql/contracts/jobs'
@@ -7,10 +8,10 @@ import { DomainError } from '../../../modules/errors.js'
 import type { JobService } from '../../../modules/jobs/service.js'
 import type { PostgresCommandCoordinator } from '../../../modules/commands/postgres.js'
 import { toolFailure, toolResult } from '../../shared/results.js'
-export const JOB_TOOLS = ['job_choices_get','job_definition_list','job_definition_get','job_definition_version_get','job_definition_save','job_validate','job_start','job_get','job_list','job_cancel','job_logs_read','job_artifacts_list','job_artifact_read'] as const
+export const JOB_TOOLS = ['job_choices_get','job_workflow_execution_get','job_definition_list','job_definition_get','job_definition_version_get','job_definition_save','job_validate','job_start','job_get','job_list','job_cancel','job_logs_read','job_artifacts_list','job_artifact_read'] as const
 export type JobToolName = typeof JOB_TOOLS[number]
 const actions:Record<JobToolName,ManagementAction> = {
-  job_choices_get:'job_definitions:read',job_definition_list:'job_definitions:read',job_definition_get:'job_definitions:read',job_definition_version_get:'job_definitions:read',job_definition_save:'job_definitions:write',job_validate:'job_definitions:read',
+  job_choices_get:'job_definitions:read',job_workflow_execution_get:'jobs:read',job_definition_list:'job_definitions:read',job_definition_get:'job_definitions:read',job_definition_version_get:'job_definitions:read',job_definition_save:'job_definitions:write',job_validate:'job_definitions:read',
   job_start:'jobs:start',job_get:'jobs:read',job_list:'jobs:read',job_cancel:'jobs:cancel',job_logs_read:'job_logs:read',job_artifacts_list:'job_artifacts:read',job_artifact_read:'job_artifacts:read',
 }
 export interface JobMcpContext {principal:ManagementPrincipal;services:{jobs?:JobService;commands:PostgresCommandCoordinator}}
@@ -34,6 +35,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   const read={readOnlyHint:true,idempotentHint:true,openWorldHint:false}
   const write={readOnlyHint:false,idempotentHint:true,openWorldHint:false}
   if(jobToolAvailable(context,'job_choices_get')) server.registerTool('job_choices_get',{description:'Read authorized CI source, computer/root and qualified isolation choices without installation or provider login.',inputSchema:scope,outputSchema:JobAuthoringChoicesSchema,annotations:read},input=>invoke(context,'job_choices_get',()=>service.choices(context.principal,input.workspaceId,'mcp')))
+  if(jobToolAvailable(context,'job_workflow_execution_get')) server.registerTool('job_workflow_execution_get',{description:'Read the authoritative persisted relationship from an exact Run node execution to its JobExecution. IDs are never inferred or borrowed from another Run.',inputSchema:scope.extend({runId:z.string().min(1),nodeExecutionId:z.string().min(1)}),outputSchema:z.object({reference:JobWorkflowExecutionReferenceSchema}),annotations:read},input=>invoke(context,'job_workflow_execution_get',async()=>({reference:await service.getWorkflowExecutionReference(context.principal,input.workspaceId,input.runId,input.nodeExecutionId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_list')) server.registerTool('job_definition_list',{description:'List workspace job definitions.',inputSchema:scope,outputSchema:z.object({definitions:z.array(JobDefinitionSchema)}),annotations:read},input=>invoke(context,'job_definition_list',async()=>({definitions:await service.listDefinitions(context.principal,input.workspaceId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_get')) server.registerTool('job_definition_get',{description:'Read an exact workspace job definition and revision.',inputSchema:scope.extend({definitionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:read},input=>invoke(context,'job_definition_get',async()=>({definition:await service.getDefinition(context.principal,input.workspaceId,input.definitionId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_version_get')) server.registerTool('job_definition_version_get',{description:'Read one exact immutable saved job version. Current definition edits never substitute its source, target, command or policy.',inputSchema:scope.extend({definitionId:z.string().min(1),versionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionSchema}),annotations:read},input=>invoke(context,'job_definition_version_get',async()=>({definition:await service.getDefinitionVersion(context.principal,input.workspaceId,input.definitionId,input.versionId,'mcp')})))
