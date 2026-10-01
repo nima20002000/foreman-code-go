@@ -363,6 +363,7 @@ export function buildProductionApp(
   })
   const chatAuthority = new PostgresOperatorChatAuthority(
     database.pool, access, rollout, operatorWorkingDirectory, appMcpEndpoint,
+    (manager) => nativeFactories.inspector(manager),
   )
   const chat = new OperatorChatService(
     new PostgresOperatorConversationRepository(database.pool), operators,

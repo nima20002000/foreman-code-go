@@ -1,3 +1,6 @@
+import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
+import { openCodeMcpInspectorAdapter } from '../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
+import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type OperatorConfigurationVersion } from '@graphql/contracts'
 import { PostgresOperatorChatAuthority } from '../src/modules/conversations/operatorChatAuthority.js'
@@ -6,34 +9,37 @@ import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeS
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 
 const endpoint = 'http://127.0.0.1:3000/mcp'
-const authority = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint)
+const inspectorFor = (manager: NativeHarnessSessionManager) => manager.harness === 'codex'
+  ? codexMcpInspectorAdapter(manager as CodexAppServerSessionManager)
+  : openCodeMcpInspectorAdapter(manager as OpenCodeNativeSessionManager)
+const authority = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint, inspectorFor)
 const signal = new AbortController().signal
 afterEach(() => vi.restoreAllMocks())
 
 describe('Operator chat installation evidence', () => {
   it.each(['codex', 'opencode'] as const)('accepts a proven %s automatic launcher at any app port, while respecting disable', async (harness) => {
     for (const port of [3012, 4567]) {
-      const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', `http://127.0.0.1:${port}/mcp`)
+      const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', `http://127.0.0.1:${port}/mcp`, inspectorFor)
       const manager = harness === 'codex' ? new CodexAppServerSessionManager('unused')
         : Object.assign(Object.create(OpenCodeNativeSessionManager.prototype), { harness }) as OpenCodeNativeSessionManager
       if (manager instanceof CodexAppServerSessionManager) {
-        const inspect = vi.spyOn(manager, 'inspectMcpConfiguration').mockResolvedValue({ serverName: 'graphql', configured: {
+        const inspect = vi.spyOn(manager, 'inspectMcpConfiguration').mockResolvedValue({ cwd: '/operator', providerVersion: '0.154.0', serverName: 'graphql', configured: {
           enabled: true, automaticEndpoint: true, transport: 'stdio', url: null, bearerTokenEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
         } } as never)
         expect(await owner.setup(manager, signal)).toMatchObject({ status: 'configured' })
-        inspect.mockResolvedValue({ serverName: 'graphql', configured: { enabled: false, automaticEndpoint: true } } as never)
+        inspect.mockResolvedValue({ cwd: '/operator', providerVersion: '0.154.0', serverName: 'graphql', configured: { enabled: false, automaticEndpoint: true } } as never)
       } else {
-        const inspect = vi.spyOn(manager, 'inspectNativeMcp').mockResolvedValue({ serverName: 'graphql', automaticEndpoint: true,
+        const inspect = vi.spyOn(manager, 'inspectNativeMcp').mockResolvedValue({ cwd: '/operator', providerVersion: '1.18.31', baseConfigurationFilters: [], serverName: 'graphql', automaticEndpoint: true,
           transport: 'stdio', endpoint: null, nativeStatus: 'status_unavailable', credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' } as never)
         expect(await owner.setup(manager, signal)).toMatchObject({ status: 'configured' })
-        inspect.mockResolvedValue({ serverName: 'graphql', automaticEndpoint: true, nativeStatus: 'disabled' } as never)
+        inspect.mockResolvedValue({ cwd: '/operator', providerVersion: '1.18.31', baseConfigurationFilters: [], serverName: 'graphql', automaticEndpoint: true, nativeStatus: 'disabled' } as never)
       }
       expect(await owner.setup(manager, signal)).toMatchObject({ status: 'setup_required' })
     }
   })
   it('blocks an accepted OpenCode Operator disable switch but permits disabling another server', async () => {
     const manager = Object.assign(Object.create(OpenCodeNativeSessionManager.prototype), { harness: 'opencode' }) as OpenCodeNativeSessionManager
-    const inspect = vi.spyOn(manager, 'inspectNativeMcp').mockResolvedValue({ serverName: 'graphql', endpoint,
+    const inspect = vi.spyOn(manager, 'inspectNativeMcp').mockResolvedValue({ cwd: '/operator', providerVersion: '1.18.31', baseConfigurationFilters: [], serverName: 'graphql', endpoint,
       transport: 'streamable-http', nativeStatus: 'status_unavailable', credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' } as never)
     const base = DEFAULT_HARNESS_DEFAULTS.opencode
     const version = { id: 'configuration', operatorId: 'operator', version: 1, contentHash: `sha256:${'a'.repeat(64)}`,
@@ -71,4 +77,18 @@ describe('Operator chat installation evidence', () => {
     inspect.mockRejectedValue(new Error('Inspection failed'))
     await expect(authority.setup(manager, signal)).rejects.toThrow('Inspection failed')
   })
+})
+
+it('uses the registered typed inspector for Claude without concrete manager-class routing', async () => {
+  const manager = { harness: 'claude' } as NativeHarnessSessionManager
+  const inspect = vi.fn(async () => ({ harness: 'claude' as const, providerVersion: '2.1.284', runnerId: 'runner-local',
+    workingDirectory: '/operator', inspectedAt: '2026-10-01T00:00:00.000Z', entry: {
+      name: 'graphql', transport: 'streamable-http' as const, endpoint, enabled: true,
+      credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', status: 'authentication_required' as const,
+    } }))
+  const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint, () => ({ inspect }))
+  expect(await owner.setup(manager, signal)).toMatchObject({ harness: 'claude', status: 'configured', routing: 'fixed' })
+  expect(inspect).toHaveBeenCalledWith(expect.objectContaining({ harness: 'claude', phase: 'configuration', signal }))
+  inspect.mockResolvedValueOnce({ ...(await inspect()), workingDirectory: '/another-actor' })
+  await expect(owner.setup(manager, signal)).rejects.toMatchObject({ code: 'MCP_INSPECTION_CONTEXT_MISMATCH' })
 })
