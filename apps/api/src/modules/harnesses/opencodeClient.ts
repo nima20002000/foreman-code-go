@@ -26,12 +26,15 @@ export interface OpenCodeBoundFetchOptions {
   readonly directory: string
   readonly generation: number
   readonly signal?: AbortSignal
+  /** Owner closure is distinct from a canceled observer; accepted HTTP facts survive detachment. */
+  readonly ownerSignal?: AbortSignal
   readonly onEvidence?: (evidence: OpenCodeHttpEvidence) => void
 }
 
 /** The only SDK fetch boundary. No URLs, credentials or process ownership come from the SDK. */
 export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): typeof fetch {
   const { server, ownerAgentId, directory, generation, signal, onEvidence } = options
+  const ownerSignal = options.ownerSignal ?? signal
   const current = () => (server.generation ?? 0) === generation
     && (server.ownerAgentId === undefined || server.ownerAgentId === ownerAgentId)
   return async (input, init) => {
@@ -51,7 +54,7 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
     if (!url.searchParams.has('directory') && directory) url.searchParams.set('directory', directory)
     request.headers.delete('x-opencode-directory')
     request.headers.delete('authorization')
-    const combined = signal ? AbortSignal.any([signal, request.signal]) : request.signal
+    const combined = AbortSignal.any([request.signal, ...(signal ? [signal] : []), ...(ownerSignal ? [ownerSignal] : [])])
     if (combined.aborted) {
       refused()
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_NOT_DISPATCHED', 'The native mutation was canceled before dispatch.', 'definite')
@@ -79,7 +82,7 @@ export function createOpenCodeBoundFetch(options: OpenCodeBoundFetchOptions): ty
       if (value !== null) headers[name] = value
     }
     onEvidence?.(Object.freeze({ ...base, dispatch: 'dispatched', status: response.status, headers: Object.freeze(headers) }))
-    if (!current() || combined.aborted) {
+    if (!current() || ownerSignal?.aborted) {
       await response.body?.cancel().catch(() => undefined)
       throw new OpenCodeNativeDeliveryError('OPENCODE_NATIVE_DELIVERY_UNCERTAIN', 'The native generation or owner lifetime changed after dispatch.', 'uncertain')
     }

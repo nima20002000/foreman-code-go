@@ -95,3 +95,16 @@ it('fences an aborted owner lifetime even when an injected controller returns a 
   resolve(new Response('{}'))
   await assert.rejects(pending, /owner lifetime changed/)
 })
+
+it('retains an accepted response after observer detachment while the owner remains current', async () => {
+  const observer = new AbortController()
+  const owner = new AbortController()
+  let finish!: (response: Response) => void
+  const server = controller(() => new Promise<Response>(resolve => { finish = resolve }))
+  const fetch = createOpenCodeBoundFetch({ server, directory: '/work', ownerAgentId: 'alice', generation: 7,
+    signal: observer.signal, ownerSignal: owner.signal })
+  const pending = fetch('http://opencode.invalid/session/root/prompt_async?directory=%2Fwork', { method: 'POST' })
+  observer.abort()
+  finish(new Response(null, { status: 204 }))
+  assert.equal((await pending).status, 204)
+})

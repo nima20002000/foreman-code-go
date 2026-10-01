@@ -1448,7 +1448,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     const url = new URL(path, 'http://opencode.invalid')
     const directory = url.searchParams.get('directory') ?? ''
     const client = (this.options.clientFactory ?? createOpenCodeBoundFetch)({
-      server: this.options.server, ownerAgentId: this.options.ownerAgentId, directory, generation, signal,
+      server: this.options.server, ownerAgentId: this.options.ownerAgentId, directory, generation, signal, ownerSignal: this.lifetime.signal,
     })
     return client(url, init)
   }
