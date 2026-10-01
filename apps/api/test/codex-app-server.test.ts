@@ -619,6 +619,20 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'usable' }))
   })
 
+  it('cancellation during an established turn interrupts the exact native turn', async () => {
+    const session = await manager.createSession(source)
+    const controller = new AbortController()
+    const stream = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'ordinary-cancel' }, controller.signal))
+    await until(async () => (await manager.history(session)).events.some((event) => event.type === 'turn.started'))
+    controller.abort(new Error('ordinary cancellation'))
+    await stream.catch(() => undefined)
+    const requests = await until(async () => {
+      const requests = await wire('turn/interrupt')
+      return requests.length === 1 ? requests : false
+    })
+    assert.equal((requests[0]!.params as JsonObject).turnId, 'turn-1')
+  })
+
   it('detaches engine restart without interrupt and attaches the same thread without resending its prompt', async () => {
     const session = await manager.createSession(source)
     const controller = new AbortController()

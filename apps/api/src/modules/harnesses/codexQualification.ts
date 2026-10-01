@@ -3,6 +3,7 @@ import type { CodexHarnessConfiguration } from '@graphql/contracts'
 import { HarnessExecutionError } from './errors.js'
 import { isObject, object, type JsonObject } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
+import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 
 /** Model-free inspection shared by app-server admission and configuration checks. */
 export async function qualifyNativeCodexModel(
@@ -11,8 +12,9 @@ export async function qualifyNativeCodexModel(
   workingDirectory: string,
   environment: NodeJS.ProcessEnv,
   signal?: AbortSignal,
+  recovery?: NativeProcessRecovery,
 ): Promise<void> {
-  const result = await runCommand(binary, ['debug', 'models'], workingDirectory, signal, environment)
+  const result = await runCommand(binary, ['debug', 'models'], workingDirectory, signal, environment, recovery ? { recovery } : {})
   if (result.exitCode !== 0) throw new HarnessExecutionError('CODEX_MODEL_CATALOG_UNAVAILABLE', 'Codex model qualification failed.')
   let catalog: JsonObject
   try { catalog = object(JSON.parse(result.stdout)) }
