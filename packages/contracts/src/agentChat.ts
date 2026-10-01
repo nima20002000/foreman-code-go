@@ -1,3 +1,4 @@
+import { NativeInteractionResponseAvailabilitySchema } from './interaction-activity.js';
 import { NativeMessageSubmissionSchema } from './claude.js';
 import { z } from "zod";
 import { ActivitySnapshotV1Schema } from "./activity.js";
@@ -158,7 +159,8 @@ export const AgentChatTurnSchema = z.object({
 export type AgentChatTurn = z.infer<typeof AgentChatTurnSchema>;
 
 export const AgentChatStateSchema = z.object({
-  context: AgentChatContextSchema,
+  responseAvailability: NativeInteractionResponseAvailabilitySchema.optional(),
+  qualificationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),  context: AgentChatContextSchema,
   conversation: AgentConversationSchema.nullable(),
   sessionState: AgentChatSessionStateSchema,
   availability: z.object({
