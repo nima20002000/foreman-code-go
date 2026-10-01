@@ -8,7 +8,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { describe, expect, it, vi } from 'vitest'
-import { inspectInstalledCodex, readInstalledCodexQualification } from '../src/modules/harnesses/installedCodexInspection.js'
+import { inspectInstalledCodex, readInstalledCodexQualification, retainInstalledCodexInventory } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import type { HarnessQualification } from '@graphql/contracts/harness-qualification'
 
@@ -121,7 +121,7 @@ describe('passive installed worker Codex evidence producer', () => {
       () => connected ? binding : null, {})
     try {
       const report = (await inspectInstalledCodex(f.input)).inventory
-      registry.acceptRemoteSnapshot(binding, report)
+      await retainInstalledCodexInventory({ registry, qualifications: { list: async () => [] }, binding, inventory: report, suiteRevision: 'actual-suite-v1' })
       const host = { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId }
       const readback = await registry.get(principal, host)
       expect(readback.installations).toEqual(report.installations)
@@ -132,6 +132,27 @@ describe('passive installed worker Codex evidence producer', () => {
       connected = false
       expect(() => registry.acceptRemoteSnapshot(binding, report)).toThrow('unavailable connection generation')
     } finally { registry.stop(); await rm(f.root, { recursive: true, force: true }) }
+  })
+
+  it('Main supplies observed version only from its unique exact persisted proof and clears worker trust claims', async () => {
+    const f = await fixture()
+    try {
+      const inspection = await inspectInstalledCodex(f.input), target = inspection.currentTarget!
+      inspection.inventory.installations[0]!.qualified = true
+      inspection.inventory.installations[0]!.observedVersion = '0.154.0'
+      inspection.inventory.installations[0]!.authenticated = true
+      const acceptRemoteSnapshot = vi.fn()
+      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { list: async () => [] },
+        binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
+      expect(acceptRemoteSnapshot.mock.calls[0]?.[1].installations[0]).toMatchObject({ observedVersion: null, qualified: false, authenticated: null })
+      const actual = proof(target)
+      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { list: async () => [actual] },
+        binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
+      expect(acceptRemoteSnapshot.mock.calls[1]?.[1].installations[0]).toMatchObject({ observedVersion: '0.132.0', qualified: true, authenticated: null })
+      await retainInstalledCodexInventory({ registry: { acceptRemoteSnapshot }, qualifications: { list: async () => [actual, { ...actual, version: 'ambiguous-version' }] },
+        binding: f.input.binding, inventory: inspection.inventory, suiteRevision: 'actual-suite-v1' })
+      expect(acceptRemoteSnapshot.mock.calls[2]?.[1].installations[0]).toMatchObject({ observedVersion: null, qualified: false })
+    } finally { await rm(f.root, { recursive: true, force: true }) }
   })
 
 })

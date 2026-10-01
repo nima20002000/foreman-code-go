@@ -96,3 +96,30 @@ export async function readInstalledCodexQualification(repository: Pick<HarnessQu
     || !proof.checkedAt || !proof.checks.length || proof.checks.some(check => !check.passed)) return null
   return proof
 }
+
+/** Main retains the existing authenticated inventory projection. Only its real
+ * persisted suite record may supply an observed version/qualification; worker
+ * flags and installer expectedVersion never supply either fact. */
+export async function retainInstalledCodexInventory(input: {
+  registry: Pick<import('./productionRegistry.js').ProductionHarnessRegistry, 'acceptRemoteSnapshot'>
+  qualifications: Pick<HarnessQualificationRepository, 'list'>
+  binding: DeviceSessionBinding
+  inventory: unknown
+  suiteRevision: string
+}): Promise<void> {
+  const inventory = HarnessRegistryReadbackSchema.parse(input.inventory)
+  const records = (await input.qualifications.list()).map(record => HarnessQualificationSchema.parse(record))
+  for (const installation of inventory.installations) {
+    if (installation.driverId !== 'codex') continue
+    installation.observedVersion = null; installation.qualified = false
+    installation.authenticated = null; installation.compatible = null
+    const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === installation.launcher.resolvedLauncher)?.fingerprint
+    const matching = records.filter(proof => installation.installed && installation.installationFingerprint
+      && installation.launcher.fingerprint === installation.installationFingerprint && proof.harness === 'codex'
+      && proof.binarySha256 === sha256 && proof.suiteRevision === input.suiteRevision && proof.status === 'qualified'
+      && proof.profile === QUALIFICATION_TARGET_PROFILE.codex && proof.checkedAt && proof.checks.length
+      && proof.checks.every(check => check.passed))
+    if (matching.length === 1) { installation.observedVersion = matching[0]!.version; installation.qualified = true }
+  }
+  input.registry.acceptRemoteSnapshot(input.binding, inventory)
+}

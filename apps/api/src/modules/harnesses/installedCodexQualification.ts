@@ -1,0 +1,100 @@
+import { withAdvancedDefaults } from '@graphql/contracts'
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { DispatchIntent, AcceptedNodePlacement } from '@graphql/contracts/node-placement'
+import { ExecutionFactsResultSchema } from '@graphql/contracts/execution-authority'
+import type { HarnessQualificationRepository } from './qualification/repository.js'
+import { QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
+import { DomainError } from '../errors.js'
+import type { InstalledCodexInspection } from './installedCodexInspection.js'
+
+const unavailable = (): never => { throw new DomainError('HARNESS_UNQUALIFIED', 'Current authenticated Main proof and exact installed Codex identity are required.', 409) }
+const same = (left: unknown, right: unknown) => commandInputHash(left) === commandInputHash(right)
+
+/** This capability is constructed by the installed host from actual W07 read
+ * callbacks. It accepts no stored proof/config JSON and has no durable ledger. */
+export function createInstalledCodexQualificationReader(input: {
+  intent: DispatchIntent
+  placement: AcceptedNodePlacement
+  trustedCurrentBinding(): Readonly<DeviceSessionBinding> | null
+  inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledCodexInspection>
+  readFacts(): Promise<unknown>
+  suiteRevision: string
+  signal: AbortSignal
+}) {
+  const initial = input.trustedCurrentBinding()
+  const originalBinding = initial ? DeviceSessionBindingSchema.parse(initial) : null
+  const originalIntent = structuredClone(input.intent), originalPlacement = structuredClone(input.placement)
+  const capture = async () => {
+    input.signal.throwIfAborted()
+    const live = input.trustedCurrentBinding()
+    if (!live || !originalBinding || !same(live, originalBinding)) return unavailable()
+    const binding = DeviceSessionBindingSchema.parse(live)
+    const inspection = await input.inspect(binding, input.signal)
+    const current = inspection.currentTarget
+    if (!current || !same(current.binding, binding)) return unavailable()
+    const facts = ExecutionFactsResultSchema.parse(await input.readFacts())
+    input.signal.throwIfAborted()
+    const afterBinding = input.trustedCurrentBinding()
+    if (!afterBinding || !same(afterBinding, binding) || !same(facts.intent, originalIntent) || !same(facts.placement, originalPlacement)) return unavailable()
+    const after = (await input.inspect(binding, input.signal)).currentTarget
+    input.signal.throwIfAborted()
+    const finalBinding = input.trustedCurrentBinding()
+    if (!finalBinding || !same(finalBinding, binding) || !after || !same(after.binding, binding)
+      || !same(after.target, current.target) || after.binarySha256 !== current.binarySha256
+      || after.expectedVersion !== current.expectedVersion || after.installation.environmentGeneration !== current.installation.environmentGeneration
+      || after.installation.connectionGeneration !== current.installation.connectionGeneration
+      || !same(after.installation.launcher.payloadFingerprints, current.installation.launcher.payloadFingerprints)) return unavailable()
+    const { installation, override, profileProof, qualification } = facts.harness
+    const placement = facts.placement
+    if (placement.hostRef.kind !== 'device' || !placement.registration || placement.payload.kind !== 'agent'
+      || binding.mainId !== placement.mainId || binding.deviceId !== placement.hostRef.deviceId
+      || binding.workerInstallationId !== placement.registration.workerInstallationId
+      || binding.keyRevision !== placement.registration.keyRevision || binding.authorizationRevision !== placement.registration.authorizationRevision
+      || !same(installation.hostRef, current.target.hostRef) || !same(override.target, current.target)
+      || installation.harnessInstallationId !== current.target.harnessInstallationId
+      || installation.installationFingerprint !== current.target.installationFingerprint
+      || installation.driverId !== 'codex' || !installation.installed || installation.launcher.status !== 'installed'
+      || installation.driverRevision !== current.installation.driverRevision || installation.protocolRevision !== current.installation.protocolRevision
+      || installation.environmentGeneration !== current.installation.environmentGeneration
+      || installation.connectionGeneration !== current.installation.connectionGeneration
+      || installation.launcher.resolvedLauncher !== current.installation.launcher.resolvedLauncher
+      || installation.launcher.fingerprint !== current.target.installationFingerprint
+      || !same(installation.launcher.payloadFingerprints, current.installation.launcher.payloadFingerprints)
+      || !override.enabled || override.driverId !== 'codex' || override.configuration.harness !== 'codex'
+      || override.instanceId !== placement.payload.instanceId || override.instanceRevision !== placement.payload.instanceRevision
+      || placement.payload.harnessInstallationId !== current.target.harnessInstallationId
+      || placement.payload.installationFingerprint !== current.target.installationFingerprint
+      || placement.payload.driverId !== installation.driverId || placement.payload.driverRevision !== installation.driverRevision
+      || placement.payload.protocolRevision !== installation.protocolRevision
+      || !same(profileProof.target, current.target) || profileProof.instanceRevision !== override.instanceRevision
+      || profileProof.configurationFingerprint !== override.configurationFingerprint
+      || override.configurationFingerprint !== commandInputHash(withAdvancedDefaults(override.configuration))
+      || facts.configuration.harness.harness !== 'codex' || !same(withAdvancedDefaults(facts.configuration.harness), withAdvancedDefaults(override.configuration))
+      || profileProof.driverId !== 'codex' || profileProof.driverRevision !== installation.driverRevision
+      || profileProof.protocolRevision !== installation.protocolRevision || profileProof.suiteRevision !== 'codex-profile-check-v1'
+      || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== installation.connectionGeneration
+      || profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified
+      || qualification.harness !== 'codex' || qualification.version !== current.expectedVersion || installation.observedVersion !== qualification.version
+      || qualification.binarySha256 !== current.binarySha256 || qualification.suiteRevision !== input.suiteRevision
+      || qualification.status !== 'qualified' || qualification.profile !== QUALIFICATION_TARGET_PROFILE.codex
+      || !qualification.checkedAt || !qualification.checks.length || qualification.checks.some(check => !check.passed)) return unavailable()
+    // Correlated facts come from the existing W08 RPC reader; preserve the exact
+    // accepted operation/attempt rather than turning this into a free-standing permit.
+    if (facts.intent.mainId !== binding.mainId || facts.intent.bindingHash !== placement.bindingHash
+      || facts.executionPlacement.acceptedBindingHash !== placement.bindingHash
+      || facts.executionPlacement.executionId !== facts.intent.executionId || facts.executionPlacement.attemptId !== facts.intent.attemptId
+      || facts.executionPlacement.operationId !== facts.intent.operationId
+      || facts.configuration.id !== placement.payload.agentConfigurationVersionId || facts.configuration.agentId !== placement.payload.agentId) return unavailable()
+    return Object.freeze({ binding: Object.freeze(binding), inspection, facts, qualification })
+  }
+  const repository: Pick<HarnessQualificationRepository, 'find' | 'list'> = {
+    async list() { return [structuredClone((await capture()).qualification)] },
+    async find(harness, version, binarySha256, suiteRevision) {
+      const proof = (await capture()).qualification
+      return proof.harness === harness && proof.version === version && proof.binarySha256 === binarySha256 && proof.suiteRevision === suiteRevision
+        ? structuredClone(proof) : null
+    },
+  }
+  return Object.freeze({ capture, repository: Object.freeze(repository) })
+}
