@@ -19,7 +19,8 @@ import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import { nativeCorrelation, PostgresOperatorConversationRepository, type ConversationRow } from './operatorChatRepository.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from './operatorActivity.js'
-import { completedNativeAssistantMessage, nativeAssistantText } from './operatorText.js'
+import { completedNativeAssistantMessage } from './operatorText.js'
+import { createNativeTextStream } from './nativeTextStream.js'
 
 export { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 
@@ -410,6 +411,7 @@ export class OperatorChatService {
     let creating = false
     let submitting = false
     let submitted = false
+    let textStream: ReturnType<typeof createNativeTextStream> | undefined
     try {
       let row = await this.repository.active(id)
       if (!row || row.active_request_id !== input.requestId) return
@@ -447,8 +449,16 @@ export class OperatorChatService {
       const correlationId = nativeCorrelation(id, input.requestId)
       const hint = input.context && Object.values(input.context).some(Boolean)
         ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
-      const partKinds = new Map<string, string>()
       let submittedTurnId = row.active_native_turn_id
+      textStream = createNativeTextStream({
+        signal, harness: runtime.manager.harness,
+        owner: () => ({ scope: { kind: 'operator_chat', conversationId: id, requestId: input.requestId },
+          requestId: input.requestId, sessionId: runtime.session!.nativeSessionId,
+          ...(submittedTurnId ? { turnId: submittedTurnId } : {}) }),
+        publish: (operation) => this.events.publish(id, 'delta', { partId: operation.identity.partId,
+          text: operation.text, mode: operation.mode, requestId: input.requestId }),
+        reconcile: () => this.events.publish(id, 'state', { requestId: input.requestId, snapshotRequired: true }),
+      })
       const currentEvent = openCodeTurnEvents(runtime.session.nativeSessionId, () => submittedTurnId)
       for await (const event of runtime.manager.startTurn(runtime.session, {
         prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${input.content}${hint}`, clientCorrelationId: correlationId,
@@ -461,6 +471,7 @@ export class OperatorChatService {
             if (!await this.repository.submitted(id, input.requestId, nativeTurnId)) throw new Error('Native turn ownership was lost.')
             if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, input.requestId, nativeTurnId)
             const current = await this.repository.active(id)
+            textStream?.flush()
             this.events.publish(id, 'state', { requestId: input.requestId, activeRequestId: input.requestId,
               revision: Number(current?.revision), turnState: current?.cancel_requested ? 'canceling' : 'active' })
             return Boolean(current && current.active_request_id === input.requestId && current.cancel_requested)
@@ -493,9 +504,10 @@ export class OperatorChatService {
         // After native output, errors from pending/history reads are not prompt rejections.
         submitted = true
         if (runtime.manager.harness === 'opencode' && !currentEvent(event)) continue
+        textStream.before(event)
         await this.recordActivity(id, input.requestId, runtime, event)
         await this.recordAssistantMessage(id, input.requestId, runtime, event)
-        for (const delta of nativeAssistantText(event, partKinds)) this.events.publish(id, 'delta', { ...delta, requestId: input.requestId })
+        textStream.push(event)
         if (event.type === 'interaction.pending' || event.type === 'permission.asked') {
           const pending = await runtime.manager.pending(runtime.session, signal)
           if (pending) {
@@ -505,9 +517,11 @@ export class OperatorChatService {
           }
         }
       }
+      textStream.flush()
       submitted = true
       await this.control(id, () => this.observe(id, input.requestId, runtime))
     } catch (error) {
+      if (signal.aborted) textStream?.dispose(); else textStream?.flush()
       if (submitted || (submitting && !definitePromptRejection(error)) || (creating && !definiteCreationFailure(error))) {
         await this.repository.uncertain(id, input.requestId, error instanceof Error ? error.message : 'Native delivery is uncertain.')
       } else {
@@ -519,7 +533,7 @@ export class OperatorChatService {
         })
       }
       this.events.publish(id, 'error', { requestId: input.requestId, message: error instanceof Error ? error.message : 'Operator turn failed.' })
-    }
+    } finally { textStream?.dispose() }
   }
 
   private async complete(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, retryable = false) {

@@ -14,12 +14,13 @@ export function subscribeAgentChat(workspaceId: string, conversationId: string, 
   if (sessionIsSwitching()) return () => {}
   if (typeof EventSource === 'undefined') { listeners.connection('unavailable'); return () => {} }
   const generation = sessionGeneration(), signal = sessionSignal()
+  let releaseSource: (() => void) | undefined
   let source: EventSource | undefined, timer: ReturnType<typeof setTimeout> | undefined, closed = false, failures = 0
   const offline = () => typeof navigator !== 'undefined' && !navigator.onLine
   const valid = () => {
     try { assertSession(generation); return !closed && !signal.aborted } catch { return false }
   }
-  const disconnect = () => { source?.close(); source = undefined; clearTimeout(timer); timer = undefined }
+  const disconnect = () => { releaseSource?.(); releaseSource = undefined; source?.close(); source = undefined; clearTimeout(timer); timer = undefined }
   const retry = () => {
     if (!valid()) return
     disconnect()
@@ -66,10 +67,16 @@ export function subscribeAgentChat(workspaceId: string, conversationId: string, 
         listeners.event(event)
       }
     }
-    current.addEventListener('open', () => {
+    const opened = () => {
       if (valid() && source === current) listeners.refetch()
-    })
-    for (const type of ['snapshot', 'delta', 'message', 'activity', 'turn', 'state', 'error']) current.addEventListener(type, receive)
+    }
+    const types = ['snapshot', 'delta', 'message', 'activity', 'turn', 'state', 'error']
+    current.addEventListener('open', opened)
+    for (const type of types) current.addEventListener(type, receive)
+    releaseSource = () => {
+      current.removeEventListener('open', opened)
+      for (const type of types) current.removeEventListener(type, receive)
+    }
   }
   const onOffline = () => { if (valid()) { disconnect(); listeners.connection('offline') } }
   const onOnline = () => { if (valid()) { disconnect(); listeners.refetch(); connect() } }

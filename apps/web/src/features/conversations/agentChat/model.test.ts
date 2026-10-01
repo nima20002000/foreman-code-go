@@ -65,3 +65,17 @@ describe('Agent chat identity and state projection', () => {
     delete state.pendingInteraction!.turn.nativeRequestId; expect(approvalReplyAvailable(state)).toBe(false)
   })
 })
+
+describe('equal-revision canonical readback', () => {
+  it('cannot erase active A, queued B or elevate capabilities from a cached receipt at the same revision', () => {
+    const current = agentChatFixtures.activeWithQueue
+    const cached = { ...agentChatFixtures.idleAfterCompletion, revision: current.revision,
+      capabilities: { ...current.capabilities, queueNextTurn: true } }
+    expect(acceptAgentChatState(current, cached)).toBe(current)
+  })
+  it('cannot replace a completed message with a legacy partial field omitted', () => {
+    const complete = agentChatFixtures.idleAfterCompletion.messages[1]!
+    const partial = { ...complete, nativeMessageComplete: undefined, content: 'partial' }
+    expect(mergeChatMessages([complete], [partial])).toEqual([complete])
+  })
+})

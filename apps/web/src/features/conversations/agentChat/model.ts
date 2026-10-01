@@ -26,7 +26,8 @@ export function mergeChatMessages(...sources: readonly (readonly Message[])[]): 
   for (const source of sources) {
     for (const message of source) {
       const previous = messages.get(message.id)
-      if (previous?.nativeMessageComplete === true && message.nativeMessageComplete === false) continue
+      if (previous?.conversationId !== undefined && previous.conversationId !== message.conversationId) continue
+      if (previous?.nativeMessageComplete === true && message.nativeMessageComplete !== true) continue
       messages.set(message.id, message)
     }
     // Each source is an ordered server window. Anchor an unseen prefix before its overlap,
@@ -44,7 +45,7 @@ export function acceptAgentChatState(previous: AgentChatState | undefined, incom
   if (previous && sameAgentChatContext(previous.context, incoming.context)) {
     // A GET started before the first POST may still return `none` after its receipt arrived.
     if (previous.conversation && !incoming.conversation && incoming.revision <= previous.revision) return previous
-    if (previous.conversation?.id === incoming.conversation?.id && incoming.revision < previous.revision) return previous
+    if (previous.conversation?.id === incoming.conversation?.id && incoming.revision <= previous.revision) return previous
   }
   const previousMessages = previous?.conversation?.id === incoming.conversation?.id ? previous?.messages : undefined
   const complete = new Map(previousMessages?.filter((message) => message.nativeMessageComplete === true).map((message) => [message.id, message]))

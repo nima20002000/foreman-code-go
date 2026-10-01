@@ -1,0 +1,50 @@
+import type { ActivityTextOperation } from '@graphql/contracts/activity-text'
+
+export const TEXT_STREAM_LIMITS = { bytes: 64 * 1024, items: 1024, latencyMs: 50 } as const
+const canonical = (value: unknown): unknown => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value
+const keyOf = (operation: ActivityTextOperation) => JSON.stringify(canonical(operation.identity))
+
+/** Request-owned presentation buffer. Persistence must precede push(final) and every barrier.
+ * Unknown source order is delivered separately; it is never assigned a synthetic sequence. */
+export function createTextCoalescer(publish: (operation: ActivityTextOperation) => void,
+  reconcile: () => void, limits: { bytes: number; items: number; latencyMs: number } = TEXT_STREAM_LIMITS) {
+  if (limits.bytes < 1 || limits.items < 1 || limits.latencyMs < 1) throw new Error('Text stream limits must be positive.')
+  const states = new Map<string, { final: boolean; connectionId?: string; sequence?: number }>()
+  const seen = new Set<string>()
+  let pending: ActivityTextOperation | undefined, timer: ReturnType<typeof setTimeout> | undefined, disposed = false
+  const flush = () => {
+    clearTimeout(timer); timer = undefined
+    const operation = pending; pending = undefined
+    if (!disposed && operation) publish(operation)
+  }
+  const push = (operation: ActivityTextOperation) => {
+    if (disposed) return
+    const key = keyOf(operation), previous = states.get(key)
+    if (previous?.final) return
+    const eventKey = operation.source?.eventId ? JSON.stringify([key, operation.source.eventId]) : undefined
+    if (eventKey && seen.has(eventKey)) return
+    if (eventKey && seen.size >= limits.items && operation.mode === 'append') { flush(); reconcile(); return }
+    if (eventKey && seen.size < limits.items) seen.add(eventKey)
+    if (!previous && states.size >= limits.items) { flush(); reconcile(); return }
+    if (operation.source?.connectionId && operation.source.sequence !== undefined && previous?.connectionId === operation.source.connectionId
+      && previous.sequence !== undefined && operation.source.sequence <= previous.sequence) return
+    // Across a connection change, final snapshots remain authoritative; provisional deltas need readback.
+    if (previous?.connectionId && operation.source && previous.connectionId !== operation.source.connectionId && operation.mode === 'append') {
+      flush(); reconcile(); return
+    }
+    states.set(key, { final: operation.final, connectionId: operation.source?.connectionId, sequence: operation.source?.sequence })
+    const bytes = Buffer.byteLength(operation.text)
+    if (operation.mode === 'replace' || operation.final || !operation.source?.connectionId || operation.source.sequence === undefined || bytes > limits.bytes) {
+      flush(); publish(operation); return
+    }
+    const compatible = pending && keyOf(pending) === key && pending.mode === 'append'
+      && pending.source?.connectionId === operation.source.connectionId
+      && pending.source.sequence !== undefined && pending.source.sequence + 1 === operation.source.sequence
+      && Buffer.byteLength(pending.text) + bytes <= limits.bytes
+    if (!compatible) flush()
+    pending = compatible ? { ...operation, text: pending!.text + operation.text } : operation
+    timer ??= setTimeout(flush, limits.latencyMs)
+  }
+  return { push, flush, dispose() { disposed = true; clearTimeout(timer); timer = undefined; pending = undefined; states.clear(); seen.clear() } }
+}

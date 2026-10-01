@@ -1,6 +1,8 @@
 import type { z } from 'zod'
 import type { AgentChatHistoryPageSchema } from '@graphql/contracts/agent-chat'
 
+export const CHAT_HISTORY_BATCH_PAGES = 8
+
 type HistoryPage = z.infer<typeof AgentChatHistoryPageSchema>
 
 /** A logical "earlier" operation may cross several real pages overlapping the state window.
@@ -17,7 +19,7 @@ export async function readEarlierChatHistory(readPage: (before: string | undefin
     if (page.nextCursor !== null && before !== undefined && BigInt(page.nextCursor) >= BigInt(before)) {
       throw new Error('Earlier history did not advance its cursor. Refresh before trying again.')
     }
-    if (hasEarlier || page.nextCursor === null) return { pages, nextCursor: page.nextCursor }
+    if (hasEarlier || page.nextCursor === null || pages.length >= CHAT_HISTORY_BATCH_PAGES) return { pages, nextCursor: page.nextCursor }
     crossedOldest ||= oldestIndex === 0
     before = page.nextCursor
   }

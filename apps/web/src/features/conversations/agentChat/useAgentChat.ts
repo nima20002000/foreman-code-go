@@ -105,6 +105,8 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
       if (result && result.kind !== 'selected') throw new ApiError({ code: 'SELECTED_CHAT_UNAVAILABLE',
         message: result.kind === 'unavailable' && result.reason === 'legacy_run' ? 'Snapshot unavailable' : 'Session unavailable' }, 409)
       const state = result?.kind === 'selected' ? result.state : await agentChatApi.read(context, { signal })
+      signal.throwIfAborted()
+      assertSession(generation)
       if (!matches(state)) throw new ApiError({ code: 'AGENT_CHAT_CONTEXT_STALE', message: 'Chat returned a different selection. Refresh before sending.' }, 409)
       return state
     },
