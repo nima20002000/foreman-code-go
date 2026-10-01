@@ -1,9 +1,11 @@
+import { MainIdentityProofRequestSchema, type MainIdentityProofRequest, type MainSignedIdentityProof } from '@graphql/contracts/device-identity'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { DEVICE_FRAME_BYTES, DEVICE_PROTOCOL_VERSION } from '@graphql/contracts/device-connection'
 
 /** Separate device-only HTTP listener: never delegates to browser, MCP or full API. */
 export function deviceHttpHandler(options: {
   mainId: string; mainPublicKeyFingerprint: string; appVersion: string
+  signMainIdentityProof(request: MainIdentityProofRequest): Promise<MainSignedIdentityProof>
   pair(input: { grant: string; requestId: string; mainId: string; workerInstallationId: string; publicKey: string; signature: string }): Promise<unknown>
 }) {
   return (request: IncomingMessage, response: ServerResponse) => {
@@ -12,7 +14,7 @@ export function deviceHttpHandler(options: {
     if (request.method === 'GET' && request.url === '/device/identity') {
       reply(200, { mainId: options.mainId, mainPublicKeyFingerprint: options.mainPublicKeyFingerprint, protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: options.appVersion, capabilities: { heartbeat: true, dispatch: false, transfer: false } }); return
     }
-    if (request.method !== 'POST' || request.url !== '/device/pair') { reply(404, { error: 'not-found' }); return }
+    if (request.method !== 'POST' || !['/device/pair', '/device/challenge'].includes(request.url ?? '')) { reply(404, { error: 'not-found' }); return }
     let bytes = 0
     const chunks: Buffer[] = []
     const timer = setTimeout(() => { reply(408, { error: 'pairing-timeout' }); request.destroy() }, 10_000)
@@ -25,6 +27,14 @@ export function deviceHttpHandler(options: {
     }
     const end = () => {
       cleanup()
+      if (request.url === '/device/challenge') {
+        try {
+          const proofRequest = MainIdentityProofRequestSchema.parse(JSON.parse(Buffer.concat(chunks).toString()))
+          if (proofRequest.mainId !== options.mainId) { reply(409, { error: 'wrong-main' }); return }
+          void options.signMainIdentityProof(proofRequest).then((proof) => reply(200, proof)).catch(() => reply(503, { error: 'main-identity-unavailable' }))
+        } catch { reply(400, { error: 'invalid-challenge-request' }) }
+        return
+      }
       let input: { grant: string; requestId: string; mainId: string; workerInstallationId: string; publicKey: string; signature: string }
       try {
         input = JSON.parse(Buffer.concat(chunks).toString()) as typeof input

@@ -1,3 +1,4 @@
+import type { MainIdentityProofRequest, MainSignedIdentityProof } from '@graphql/contracts/device-identity'
 import { randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, type DeviceSessionBinding, type DeviceWelcome } from '@graphql/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
@@ -34,6 +35,7 @@ export class DeviceEndpoint {
   private readonly pending = new Set<AbortController>()
   constructor(private readonly options: {
     mainId: string; appVersion: string; auth: DeviceAuthenticator
+    signMainIdentityProof(request: MainIdentityProofRequest): Promise<MainSignedIdentityProof>
     reconcile(binding: DeviceSessionBinding, signal: AbortSignal): Promise<void>
     presence(view: DevicePresence): void
     handshakeMs?: number; heartbeatMs?: number
@@ -76,14 +78,17 @@ export class DeviceEndpoint {
       if (first.done || !current()) throw new DeviceConnectionError('transport')
       const hello = readFrame(first.value)
       if (hello.protocolVersion !== DEVICE_PROTOCOL_VERSION) throw new DeviceConnectionError('incompatible-protocol')
-      if (hello.type !== 'hello' || typeof hello.bootId !== 'string' || !hello.bootId || typeof hello.connectionEpoch !== 'string' || !hello.connectionEpoch || typeof hello.appVersion !== 'string') throw new DeviceConnectionError('malformed-frame')
+      if (hello.type !== 'hello' || typeof hello.bootId !== 'string' || !hello.bootId || typeof hello.connectionEpoch !== 'string' || !hello.connectionEpoch || typeof hello.appVersion !== 'string' || typeof hello.nonce !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(hello.nonce) || !Number.isSafeInteger(hello.connectionGeneration) || Number(hello.connectionGeneration) < 1) throw new DeviceConnectionError('malformed-frame')
       for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) if (hello[key] !== principal[key]) throw new DeviceConnectionError('authentication')
       binding = { mainId: principal.mainId, deviceId: principal.deviceId, workerInstallationId: principal.workerInstallationId, keyRevision: principal.keyRevision, authorizationRevision: principal.authorizationRevision, bootId: hello.bootId, connectionEpoch: epoch }
       await withDeviceDeadline(this.options.reconcile(binding, abort.signal), abort.signal, this.options.handshakeMs ?? 10_000)
       if (!current()) throw new DeviceConnectionError('transport')
       try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
       if (!current()) throw new DeviceConnectionError('transport')
-      const welcome: DeviceWelcome = { ...binding, type: 'welcome', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, capabilities: { heartbeat: true, dispatch: false, transfer: false } }
+      const proofRequest: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...binding, nonce: hello.nonce as string, connectionGeneration: Number(hello.connectionGeneration), connectionEpoch: hello.connectionEpoch as string, mainConnectionEpoch: epoch, protocolVersion: DEVICE_PROTOCOL_VERSION, workerApplicationVersion: hello.appVersion as string }
+      const mainIdentityProof = await withDeviceDeadline(this.options.signMainIdentityProof(proofRequest), abort.signal, this.options.handshakeMs ?? 10_000)
+      if (!current()) throw new DeviceConnectionError('transport')
+      const welcome: DeviceWelcome = { ...binding, type: 'welcome', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, mainIdentityProof, capabilities: { heartbeat: true, dispatch: false, transfer: false } }
       sendFrame(socket, welcome)
       this.options.presence({ binding, phase: 'ready', dispatch: false, transfer: false })
       while (current()) {

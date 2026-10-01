@@ -47,7 +47,11 @@ export function deviceConnector(options: {
         cleanup(); adapted.close(); reject(new DeviceConnectionError(status === 401 ? 'authentication' : status === 403 ? 'permission' : status === 409 ? 'wrong-main' : 'transport'))
       }
       const open = () => { cleanup(); resolve(adapted) }
-      const fail = () => { cleanup(); adapted.close(); reject(new DeviceConnectionError('transport')) }
+      const fail = (error?: unknown) => {
+        const code = (error as { code?: string })?.code
+        const certificateFailure = code?.startsWith('ERR_TLS_') || ['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT'].includes(code ?? '')
+        cleanup(); adapted.close(); reject(new DeviceConnectionError(certificateFailure ? 'wrong-main' : 'transport'))
+      }
       raw.on('open', open); raw.on('error', fail); raw.on('close', fail); raw.on('unexpected-response', rejected); signal.addEventListener('abort', fail, { once: true })
     })
   }

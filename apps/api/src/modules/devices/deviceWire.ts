@@ -38,9 +38,9 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
   let failure: Error | undefined
   let wake: (() => void) | undefined
   const cleanup = () => { raw.off('message', message); raw.off('error', error); raw.off('close', close) }
-  const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; queuedBytes = 0; cleanup(); wake?.() }
-  const close = () => finish()
-  const error = () => finish(new DeviceConnectionError('transport'))
+  const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; queuedBytes = 0; wake?.() }
+  const close = () => { finish(); cleanup() }
+  const error = () => { finish(new DeviceConnectionError('transport')); raw.close() }
   const message = (data: unknown, binary: unknown) => {
     if (ended) return
     if (binary === true || (!Buffer.isBuffer(data) && typeof data !== 'string')) { finish(new DeviceConnectionError('malformed-frame')); raw.close(); return }

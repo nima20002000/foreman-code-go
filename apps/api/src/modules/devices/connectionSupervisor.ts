@@ -1,4 +1,6 @@
-import { randomUUID } from 'node:crypto'
+import { verifyMainIdentityProof } from '@graphql/contracts/device-identity-node'
+import type { MainIdentityProofRequest } from '@graphql/contracts/device-identity'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, type DeviceConnectionView, type DeviceHello, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 
@@ -9,7 +11,7 @@ export class DeviceConnectionSupervisor {
   private abort: AbortController | undefined
   private socket: DeviceSocket | undefined
   constructor(private readonly options: {
-    identity: Omit<DeviceSessionBinding, 'connectionEpoch'>; appVersion: string
+    identity: Omit<DeviceSessionBinding, 'connectionEpoch'>; appVersion: string; mainPublicKeyFingerprint: string
     connect(signal: AbortSignal): Promise<DeviceSocket>
     reconcile(binding: DeviceSessionBinding, signal: AbortSignal): Promise<void>
     onState?(view: DeviceConnectionView): void
@@ -47,7 +49,7 @@ export class DeviceConnectionSupervisor {
         } finally { if (timer) clearTimeout(timer) }
         this.socket = socket
         this.update('authenticating')
-        const hello: DeviceHello = { ...this.options.identity, connectionEpoch: randomUUID(), type: 'hello', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion }
+        const hello: DeviceHello = { ...this.options.identity, connectionEpoch: randomUUID(), type: 'hello', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, nonce: randomBytes(32).toString('base64url'), connectionGeneration: this.state.generation }
         sendFrame(socket, hello); this.update('negotiating')
         const iterator = socket.messages[Symbol.asyncIterator]()
         const next = await nextFrame(iterator, attempt.signal, this.options.handshakeMs ?? 10_000)
@@ -59,6 +61,10 @@ export class DeviceConnectionSupervisor {
         for (const key of ['deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const) if (frame[key] !== hello[key]) throw new DeviceConnectionError('authentication')
         const capabilities = frame.capabilities as Record<string, unknown> | undefined
         if (frame.type !== 'welcome' || typeof frame.connectionEpoch !== 'string' || !frame.connectionEpoch || !capabilities || capabilities.heartbeat !== true || capabilities.dispatch !== false || capabilities.transfer !== false) throw new DeviceConnectionError('malformed-frame')
+        const expectedProof: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...this.options.identity, nonce: hello.nonce, connectionGeneration: hello.connectionGeneration, connectionEpoch: hello.connectionEpoch, mainConnectionEpoch: frame.connectionEpoch, protocolVersion: DEVICE_PROTOCOL_VERSION, workerApplicationVersion: hello.appVersion }
+        if (!await withDeviceDeadline(verifyMainIdentityProof(frame.mainIdentityProof, expectedProof, this.options.mainPublicKeyFingerprint), attempt.signal, this.options.handshakeMs ?? 10_000)) throw new DeviceConnectionError('wrong-main')
+        if ((frame.mainIdentityProof as { mainApplicationVersion: string }).mainApplicationVersion !== frame.appVersion) throw new DeviceConnectionError('wrong-main')
+        if (attempt.signal.aborted) break
         const binding = { ...this.options.identity, connectionEpoch: frame.connectionEpoch }
         this.update('synchronizing'); await withDeviceDeadline(this.options.reconcile(binding, attempt.signal), attempt.signal, this.options.handshakeMs ?? 10_000)
         if (attempt.signal.aborted) break
