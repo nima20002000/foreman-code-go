@@ -452,8 +452,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
             if (!id || !(await this.ownedSession(session.nativeSessionId, id, state, signal))) continue
             if (responseGeneration !== this.generation || state.turn !== turn) throw new OpenCodeNativeDeliveryError('OPENCODE_OBSERVER_STALE', 'Native observer ownership changed during ancestry lookup.', 'uncertain')
             if (id === session.nativeSessionId && native.type === 'session.error') turn.scopedError = object(object(native.properties).error)
-            if (id === session.nativeSessionId && (native.type === 'session.status' && object(native.properties?.status).type === 'busy'
-              || native.type === 'message.updated' && object(native.properties?.info).id === turn.messageID)) turn.activityObserved = true
+            if (id === session.nativeSessionId && native.type === 'message.updated'
+              && object(native.properties?.info).id === turn.messageID
+              && object(native.properties?.info).role === 'user') turn.activityObserved = true
             // A stream may already contain the previous session-global idle when subscribed.
             if (id === session.nativeSessionId && native.type === 'session.idle' && turn.activityObserved) turn.idleObserved = true
             if (native.type === 'permission.asked' && usesOpenCodeNativeAuto(state.configuration)) {

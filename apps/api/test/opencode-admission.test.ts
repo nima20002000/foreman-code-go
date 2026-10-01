@@ -7,8 +7,10 @@ it('ignores pre-submission idle with ACK and persisted root before later complet
   const native = manager(server)
   const session = await sessionFor(native)
   server.onConnection = count => {
-    if (count === 1) server.emit('session.idle', { sessionID: session.nativeSessionId })
-    else server.complete('admission', 'later completion')
+    if (count === 1) {
+      server.emit('session.status', { sessionID: session.nativeSessionId, status: { type: 'busy' } })
+      server.emit('session.idle', { sessionID: session.nativeSessionId })
+    } else server.complete('admission', 'later completion')
   }
   server.onPrompt = () => { server.statuses.delete(session.nativeSessionId) }
   try {
