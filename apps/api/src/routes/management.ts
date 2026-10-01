@@ -1,3 +1,4 @@
+import { registerSourceRoutes } from '../modules/sources/routes.js'
 import { CurrentWorkflowCreateInputSchema, RunActivitiesInputSchema,
   RunHandoffsReadInputSchema } from '@graphql/contracts/wave25'
 import { AgentCreateInputSchema, AgentUpdateInputSchema } from '@graphql/contracts/management'
@@ -67,6 +68,7 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
+  if (services.sources) registerSourceRoutes(app, services.sources)
   registerCurrentWorkflowRoutes(app, services.workflows, services.runs)
   registerCurrentVersionReadRoutes(app, services)
   registerRunInspectionRoutes(app, services)

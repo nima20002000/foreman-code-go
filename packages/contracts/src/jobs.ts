@@ -91,6 +91,7 @@ export const JobLogPageSchema = z.object({
 }).strict()
 export const JobArtifactSchema = JobInputRevisionSchema.extend({
   executionId: IdSchema, publicationId: IdSchema, path: RelativePath, mediaType: z.string(), state: z.enum(['available', 'expired', 'tombstoned']),
+  expiresAt: TimestampSchema,
 }).strict()
 export const JobValidationSchema = z.object({ valid: z.boolean(), reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()
 export type JobDefinition = z.infer<typeof JobDefinitionSchema>

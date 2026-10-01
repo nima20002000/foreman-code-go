@@ -1,11 +1,15 @@
 import type { FileHandle } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { createInflateRaw } from 'node:zlib'
+import type { z } from 'zod'
+import type { JobArtifactFileRevisionSchema } from '@graphql/contracts/job-artifacts'
 import type { FileRevision } from '@graphql/contracts/files'
 
 import { DomainError } from '../errors.js'
 
-export type ExpectedFileBytes = Pick<FileRevision, 'filename' | 'mediaType' | 'byteSize' | 'sha256'>
+export type DocumentExpectedFileBytes = Pick<FileRevision, 'filename' | 'mediaType' | 'byteSize' | 'sha256'>
+export type CiExpectedFileBytes = Pick<z.infer<typeof JobArtifactFileRevisionSchema>, 'byteClass' | 'filename' | 'mediaType' | 'byteSize' | 'sha256'>
+export type ExpectedFileBytes = DocumentExpectedFileBytes | CiExpectedFileBytes
 /** Archive processing never extracts to disk and bounds both compressed and expanded work. */
 export const FILE_ARCHIVE_LIMITS = Object.freeze({ entries: 1000, expansionRatio: 100, xmlBytes: 1024 * 1024 })
 const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
@@ -130,7 +134,7 @@ function extraFields(bytes: Buffer): void {
   }
   if (offset !== bytes.length) invalid()
 }
-async function archive(handle: FileHandle, expected: ExpectedFileBytes, maxBytes: number): Promise<void> {
+async function archive(handle: FileHandle, expected: DocumentExpectedFileBytes, maxBytes: number): Promise<void> {
   const size = expected.byteSize
   if (size < 22) invalid()
   const tail = await at(handle, Math.max(0, size - 65557), Math.min(size, 65557))
@@ -236,7 +240,7 @@ async function archive(handle: FileHandle, expected: ExpectedFileBytes, maxBytes
 }
 
 /** Type/structure validation, not malware scanning, PDF sanitization, or full image/Office decoding. */
-export async function verifyFileType(handle: FileHandle, expected: ExpectedFileBytes, maxBytes: number): Promise<void> {
+export async function verifyFileType(handle: FileHandle, expected: DocumentExpectedFileBytes, maxBytes: number): Promise<void> {
   if (expected.mediaType === 'text/markdown') {
     const decoder = new TextDecoder('utf-8', { fatal: true })
     try {

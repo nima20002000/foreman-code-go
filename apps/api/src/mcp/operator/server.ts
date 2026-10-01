@@ -1,3 +1,4 @@
+import { registerSourceTools } from '../../modules/sources/mcp.js'
 import { registerFileReferenceTools } from './tools/fileReferences.js'
 import { McpServer } from '@modelcontextprotocol/server'
 
@@ -26,6 +27,7 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
 }
 
 export function registerOperatorTools(server: McpServer, context: OperatorRequestContext): void {
+  registerSourceTools(server, context)
   registerFileReferenceTools(server, context)
   registerContextTools(server, context)
   registerHarnessTools(server, context)

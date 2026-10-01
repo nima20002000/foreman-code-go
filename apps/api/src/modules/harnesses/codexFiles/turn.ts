@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream'
-import type { FileWithRevision, MessageAttachmentRef } from '@graphql/contracts/files'
+import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@graphql/contracts/files'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { assertRegisteredCodexCopy, collectCodexFileBytes, fail, sha256 } from './bytes.js'
 import { warnCodexFileError } from './runtime.js'
@@ -87,11 +87,12 @@ export class CodexFileTurn {
         if (data.length !== opened.value.revision.byteSize || sha256(data) !== opened.value.revision.sha256) fail('CODEX_FILE_BYTES_CHANGED')
         // All turn inputs are read-only detached copies, even in project Write mode.
         // The agent explicitly obtains an editable registered copy through FIL-05.
-        const copy = await turn.materialize(opened.value.revision.filename, opened.value.revision.mediaType, data, false)
+        const document = FileRevisionSchema.parse(opened.value.revision)
+        const copy = await turn.materialize(document.filename, document.mediaType, data, false)
         const delivery: Delivery = { ref: { ...ref }, revision: structuredClone(opened.value.revision), filename: opened.value.revision.filename, copy, firstFrameOnly: false }
-        if (opened.value.revision.mediaType.startsWith('image/')) {
+        if (document.mediaType.startsWith('image/')) {
           if (!dependencies.prepareImage) fail('CODEX_IMAGE_CAPABILITY_REQUIRED')
-          const image = await dependencies.prepareImage!(Buffer.from(data), opened.value.revision.mediaType)
+          const image = await dependencies.prepareImage!(Buffer.from(data), document.mediaType)
           if (!['image/png', 'image/jpeg', 'image/webp'].includes(image.mediaType)) fail('CODEX_IMAGE_PREPARATION_INVALID')
           const imageBytes = Buffer.from(image.bytes)
           delivery.image = image.mediaType === opened.value.revision.mediaType && sha256(imageBytes) === sha256(data)
@@ -141,7 +142,7 @@ export class CodexFileTurn {
       || !/^[a-f0-9]{64}$/.test(value.revision.sha256)) fail('CODEX_FILE_BYTES_CHANGED')
   }
 
-  private async materialize(filename: string, mediaType: FileWithRevision['revision']['mediaType'], data: Buffer,
+  private async materialize(filename: string, mediaType: FileRevision['mediaType'], data: Buffer,
     writable: boolean): Promise<RegisteredCodexCopy> {
     if (this.#closing) fail('CODEX_FILE_TURN_CLOSED')
     if (data.length > this.#dependencies.limits.fileBytes) fail('CODEX_FILE_SIZE_LIMIT')
@@ -288,7 +289,7 @@ export class CodexFileTurn {
     working.completed = true
   }
 
-  private async readPinned(token: string, ref: MessageAttachmentRef): Promise<{ bytes: Buffer; mediaType: FileWithRevision['revision']['mediaType'] }> {
+  private async readPinned(token: string, ref: MessageAttachmentRef): Promise<{ bytes: Buffer; mediaType: FileRevision['mediaType'] }> {
     const { files, limits, parseRead } = this.#dependencies
     const chunks: Buffer[] = []
     let offset = 0, revision: FileWithRevision['revision'] | undefined
@@ -298,7 +299,7 @@ export class CodexFileTurn {
       if (result.status !== 'ready') fail('CODEX_FILE_UNAVAILABLE')
       const ready = result as Extract<typeof result, { status: 'ready' }>
       if (revision && !sameScope(revision, ready.revision)) fail('CODEX_FILE_BYTES_CHANGED')
-      revision = ready.revision
+      revision = FileRevisionSchema.parse(ready.revision)
       const data = Buffer.from(ready.contentBase64, 'base64')
       if (data.length !== ready.byteLength || ready.offset !== offset || pins(ref) !== pins(ready.revision)
         || data.length > limits.readBytes || (!data.length && !ready.eof)) fail('CODEX_FILE_RANGE_INVALID')
