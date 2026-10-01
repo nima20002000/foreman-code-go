@@ -17,3 +17,28 @@ describe('actual Agent admission contracts and private upstream authorizer',()=>
   it('uses only the authenticated namespace with exact echoed identities',async()=>{const authorize=workerExecutionAuthorizer(async(namespace,input)=>{expect(namespace).toBe('execution-authority-v1');expect(ExecutionAuthorityRequestSchema.parse(input).intent).toEqual(intent);return{payload:{version:1,action:'read',operationId:intent.operationId,attemptId:intent.attemptId,bindingHash:intent.bindingHash,owner:intent.owner}}});await authorize(intent,pin,'read')})
   it('rejects mismatched owner and binary authority responses',async()=>{const response={version:1,action:'start',operationId:intent.operationId,attemptId:intent.attemptId,bindingHash:intent.bindingHash,owner:intent.owner};await expect(workerExecutionAuthorizer(async()=>({payload:{...response,owner:{grantId:'forged',epoch:'1'}}}))(intent,pin,'start')).rejects.toThrow();await expect(workerExecutionAuthorizer(async()=>({payload:response,bytes:new Uint8Array([1])}))(intent,pin,'start')).rejects.toThrow()})
 })
+
+import type pg from 'pg'
+import { makeCurrentWorkflowFixture, canonicalGraphJson, RunStartV3InputSchema } from '@graphql/contracts/wave25'
+import { createHash } from 'node:crypto'
+import { AgentPlacementProducer } from './agentProducer.js'
+import type { SourceAdmissionPort } from '../sources/admissionPorts.js'
+import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
+import { HarnessInstallationRegistry } from '../harnesses/installationRegistry.js'
+import { HarnessInstanceRegistry } from '../harnesses/instanceRegistry.js'
+function producerFixture(placed: boolean) {
+  const fixture=makeCurrentWorkflowFixture('placement-producer','single')
+  const version=structuredClone(fixture.version)
+  const node=version.definition.nodes[0]!
+  if (placed) node.placement={schemaVersion:1,hostRef:{kind:'main',mainId},rootPolicyId:'policy',rootPolicyRevision:'1',locationRevision:'1',projectRoot:'/project',cwdPolicy:'project-root',relativeCwd:'',instanceId:'instance',instanceRevision:'1',harnessInstallationId:'harness'}
+  version.contentHash=`sha256:${createHash('sha256').update(canonicalGraphJson({definition:version.definition,configurations:version.agentConfigurationVersionIds,entryNodeId:version.entryNodeId})).digest('hex')}`
+  const client={query:async(text:string)=>({rows:text.includes('from workflow_versions')?[{id:version.id,workspace_id:version.workspaceId,workflow_id:version.workflowId,version:version.version,entry_node_id:version.entryNodeId,execution_semantics_version:3,record:version}]:[],rowCount:text.includes('from workflow_versions')?1:0}),on:()=>undefined,removeListener:()=>undefined,release:()=>undefined}
+  const pool={connect:async()=>client} as unknown as pg.Pool
+  const sources={resolveRootBinding:async()=>{throw new Error('No source may be invented')}} as unknown as SourceAdmissionPort
+  const roots={} as WorkspaceRootPolicyPort
+  const registry=new HarnessInstallationRegistry(new HarnessInstanceRegistry([]))
+  const producer=new AgentPlacementProducer(pool,mainId,sources,roots,registry,{codex:'codex-live-4',opencode:'opencode-live-4'})
+  return {producer,input:RunStartV3InputSchema.parse({workspaceId:version.workspaceId,workflowId:version.workflowId,workflowVersionId:version.id,expectedAgentConfigurationVersionIds:version.agentConfigurationVersionIds,commandId:'command-one',executionSemanticsVersion:3,expectedWorkflowRevision:1,expectedLocationRevision:1,input:{}}),principal:{id:'principal',name:'test',audience:'operator' as const,grants:[],expiresAt:'2099-01-01T00:00:00Z',revokedAt:null}}
+}
+it('real producer preserves unplaced local admission without source/resource allocation',async()=>{const f=producerFixture(false);expect(await f.producer.prepare(f.input,f.principal)).toBeUndefined()})
+it('real producer rejects a placed node without explicit retained source/root pins',async()=>{const f=producerFixture(true);await expect(f.producer.prepare(f.input,f.principal)).rejects.toMatchObject({code:'PLACEMENT_ADMISSION_CONFLICT'})})
