@@ -31,8 +31,9 @@ export function hasSupportedApprovalTopology(version: WorkflowVersionV3): boolea
   if (version.executionSemanticsVersion !== 3 || graph.executionSemanticsVersion !== 3
     || !graph.entryNodeId || graph.entryNodeId !== version.entryNodeId) return false
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
+  const agents = graph.nodes.filter((node) => node.kind !== 'job')
   if (nodes.size !== graph.nodes.length
-    || new Set(graph.nodes.map((node) => node.agentId)).size !== graph.nodes.length
+    || new Set(agents.map((node) => node.agentId)).size !== agents.length
     || new Set(graph.edges.map((edge) => edge.id)).size !== graph.edges.length) return false
   const entry = nodes.get(version.entryNodeId)
   if (!entry) return false
@@ -44,11 +45,12 @@ export function hasSupportedApprovalTopology(version: WorkflowVersionV3): boolea
       continue
     }
     if (edge.kind !== 'approval' || version.approval.handler !== 'orchestrator'
+      || nodes.get(edge.source)!.kind === 'job' || nodes.get(edge.target)!.kind === 'job'
       || edge.source !== entry.id || edge.target === entry.id || assigned.has(edge.target)) return false
     assigned.add(edge.target)
   }
   return version.approval.handler !== 'orchestrator'
-    || entry.agentId === version.approval.designatedOrchestratorAgentId
+    || (entry.kind !== 'job' && entry.agentId === version.approval.designatedOrchestratorAgentId)
 }
 
 function ownPin(pins: Readonly<Record<string, string>>, id: string): string | undefined {
@@ -79,11 +81,12 @@ export function resolveImmutableApprovalRoute(
   const reviewerId = accepted.designatedOrchestratorAgentId
   if (!reviewerId || reviewerId === requestingAgentId) return undefined
   const requesters = graph.nodes.filter((node) => node.id === requestingNodeId)
-  const reviewers = graph.nodes.filter((node) => node.agentId === reviewerId)
+  const reviewers = graph.nodes.filter((node) => node.kind !== 'job' && node.agentId === reviewerId)
   if (requesters.length !== 1 || reviewers.length !== 1) return undefined
   const requester = requesters[0]!
   const reviewer = reviewers[0]!
-  if (requester.agentId !== requestingAgentId || requester.id === reviewer.id) return undefined
+  if (requester.kind === 'job' || reviewer.kind === 'job'
+    || requester.agentId !== requestingAgentId || requester.id === reviewer.id) return undefined
   const requestingPin = ownPin(version.agentConfigurationVersionIds, requester.agentId)
   const reviewerPin = ownPin(version.agentConfigurationVersionIds, reviewer.agentId)
   if (!requestingPin || !reviewerPin) return undefined

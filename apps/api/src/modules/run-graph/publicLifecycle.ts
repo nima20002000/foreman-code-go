@@ -34,8 +34,9 @@ export function publicNodeLifecycle(state: string | undefined, outcome?: string 
   return 'unknown'
 }
 
-function sameExecution(left: GraphExecutionIdentity, right: GraphExecutionIdentity): boolean {
-  return left.executionId === right.executionId && left.workflowNodeId === right.workflowNodeId
+function sameNativeExecution(left: GraphExecutionIdentity, right: GraphExecutionIdentity): boolean {
+  return left.kind !== 'job' && right.kind !== 'job'
+    && left.executionId === right.executionId && left.workflowNodeId === right.workflowNodeId
     && left.agentId === right.agentId && left.agentConfigurationVersionId === right.agentConfigurationVersionId
     && left.attempt === right.attempt
 }
@@ -47,9 +48,9 @@ export function publicNodeState(workflowNodeId: string, current: PublicExecution
   resolution: NodeResolution | undefined, native: readonly CurrentNativeActivity[] = [], closed = false, continuationBlocked = false): NodeState {
   const execution = resolution?.execution ?? current?.execution
   const matching = current ? native.filter((item) => item.key.workKind === 'workflow'
-    && item.key.workId === current.execution.executionId && sameExecution(item.key.execution, current.execution)
+    && item.key.workId === current.execution.executionId && sameNativeExecution(item.key.execution, current.execution)
     && item.activity.workflowNodeId === workflowNodeId
-    && item.activity.execution && sameExecution(item.activity.execution, current.execution)) : []
+    && item.activity.execution && sameNativeExecution(item.activity.execution, current.execution)) : []
   const activity = matching.length === 1 ? matching[0]!.activity : matching.length > 1
     ? { workflowNodeId, status: 'unknown' as const } : undefined
   return { workflowNodeId, lifecycle: publicNodeLifecycle(current?.state, current?.outcome, resolution?.resolution,

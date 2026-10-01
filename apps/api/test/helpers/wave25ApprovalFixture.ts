@@ -42,11 +42,14 @@ export function approvalFixture() {
     agentConfigurationVersionIds: { ...version.agentConfigurationVersionIds }, approval: { ...approval },
     executionCondition: { kind: 'manual' }, executionState: 'waiting', outcome: 'pending', input: {}, createdAt,
   }
-  const executions: HarnessExecution[] = version.definition.nodes.map((node) => ({
-    id: `execution-${node.agentId}`, runId: run.id, workflowNodeId: node.id, agentId: node.agentId,
-    agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!, attempt: 1,
-    nativeSessionId: `session-${node.agentId}`, input: {}, state: 'waiting', createdAt,
-  }))
+  const executions: HarnessExecution[] = version.definition.nodes.map((node) => {
+    if (node.kind === 'job') throw new Error('Approval fixture executions require Agent nodes')
+    return {
+      id: `execution-${node.agentId}`, runId: run.id, workflowNodeId: node.id, agentId: node.agentId,
+      agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!, attempt: 1,
+      nativeSessionId: `session-${node.agentId}`, input: {}, state: 'waiting', createdAt,
+    }
+  })
   return { version, configurations, run, executions, createdAt }
 }
 
