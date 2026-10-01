@@ -1,3 +1,4 @@
+import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { APP_MCP_SERVER_NAME, isAppLauncher } from './appMcpLauncher.js'
 import { randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -36,6 +37,7 @@ function withoutAuthorization(entry: JsonObject): JsonObject {
  */
 export async function inspectOpenCodeMcpConfiguration(input: {
   binary: string
+  processRecovery?: NativeProcessRecovery
   workingDirectory: string
   serverName: string
   signal?: AbortSignal
@@ -44,14 +46,16 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   onVersion?: (version: string) => void
 }): Promise<NativeMcpEntryEvidence | undefined> {
   const credentialVariable = input.credentialEnvironmentVariable ?? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
-  const version = await runCommand(input.binary, ['--version'], input.workingDirectory, input.signal)
+  const version = await runCommand(input.binary, ['--version'], input.workingDirectory, input.signal, undefined,
+    input.processRecovery ? { recovery: input.processRecovery } : {})
   const providerVersion = (version.stdout || version.stderr).trim()
   if (version.exitCode !== 0 || harnessProfile('opencode', providerVersion) === null) {
     throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode MCP inspection requires a qualified binary.')
   }
   input.onVersion?.(providerVersion)
   const args = ['debug', 'config', ...(input.pure ? ['--pure'] : [])]
-  const baseline = await runCommand(input.binary, args, input.workingDirectory, input.signal)
+  const baseline = await runCommand(input.binary, args, input.workingDirectory, input.signal, undefined,
+    input.processRecovery ? { recovery: input.processRecovery } : {})
   const parseEntry = (result: typeof baseline): JsonObject | undefined => {
     if (result.exitCode !== 0) {
       throw new HarnessExecutionError('OPENCODE_MCP_INSPECTION_FAILED', 'OpenCode could not inspect its effective MCP configuration.')
@@ -89,7 +93,7 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   const checked = await runCommand(input.binary, args, input.workingDirectory, input.signal, {
     expectedAgentId: owner,
     beforeSpawn: async () => ({ agentId: owner, variables: { [credentialVariable]: marker } }),
-  })
+  }, input.processRecovery ? { recovery: input.processRecovery } : {})
   const second = parseEntry(checked)
   if (launcher && second && isAppLauncher('opencode', second)
     && (second.environment as JsonObject)[credentialVariable] === '[REDACTED]'

@@ -151,6 +151,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   async inspectMcpConfiguration(directory: string, serverName: string, signal?: AbortSignal): Promise<NativeMcpEntryEvidence | undefined> {
     const evidence = await inspectOpenCodeMcpConfiguration({
       binary: this.options.binary, workingDirectory: directory, serverName,
+      ...(this.options.processRecovery ? { processRecovery: this.options.processRecovery } : {}),
       credentialEnvironmentVariable: this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV,
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
@@ -281,7 +282,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     const timer = setTimeout(() => abort.abort(new HarnessExecutionError('OPENCODE_SERVER_START_TIMEOUT',
       'OpenCode did not finish version probing and startup within the startup budget.')), this.options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS)
     try {
-      const version = await runCommand(this.options.binary, ['--version'], this.options.workingDirectory, abort.signal)
+      const version = await runCommand(this.options.binary, ['--version'], this.options.workingDirectory, abort.signal, undefined,
+        this.options.processRecovery ? { recovery: this.options.processRecovery } : {})
       abort.signal.throwIfAborted()
       const installed = (version.stdout || version.stderr).trim()
       if (version.exitCode === 0) {
