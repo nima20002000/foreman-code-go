@@ -31,8 +31,8 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     await sql.query('insert into job_dispatch_intents(execution_id,workspace_id,intent) values($1,$2,$3::jsonb)',[input.executionId,input.workspaceId,JSON.stringify(intent)])
     return {operationId:intent.operationId,attemptId:intent.attemptId,owner:intent.owner}
   }
-  async cancel(sql:JobSql,execution:JobExecution,commandId:string,principal:ManagementPrincipal):Promise<void> {
-    await sql.query('update job_dispatch_intents set cancel_command_id=coalesce(cancel_command_id,$2),cancel_principal_id=coalesce(cancel_principal_id,$3) where execution_id=$1',[execution.id,commandId,principal.id])
+  async cancel(sql:JobSql,execution:JobExecution,commandId:string,principal:ManagementPrincipal,action:'jobs:cancel'|'runs:stop'='jobs:cancel'):Promise<void> {
+    await sql.query('update job_dispatch_intents set cancel_command_id=coalesce(cancel_command_id,$2),cancel_principal_id=coalesce(cancel_principal_id,$3),cancel_action=coalesce(cancel_action,$4) where execution_id=$1',[execution.id,commandId,principal.id,action])
   }
   async require(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
     const row=(await sql.query<{intent:unknown;owner_id:string|null;owner_fence:string|null}>('select intent,owner_id,owner_fence from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
@@ -41,9 +41,9 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(intent.attemptId!==fence.attemptId||intent.owner.grantId!==fence.owner.grantId||intent.owner.epoch!==fence.owner.epoch||intent.bindingHash!==execution.acceptedSpec.bindingHash||!row.owner_id||!row.owner_fence)throw new DomainError('JOB_OWNER_FENCE_INVALID','The accepted job owner/attempt binding is not live.',409)
     const live=(await sql.query(`select 1 from pg_stat_activity a where a.pid::text=$1 and (extract(epoch from a.backend_start)*1000000)::bigint::text=$2 and exists(select 1 from pg_locks l where l.pid=a.pid and l.locktype='advisory' and l.classid=810038::oid and l.objid=(hashtext($3)::bigint & 4294967295)::oid and l.objsubid=2 and l.mode='ExclusiveLock' and l.granted)`,[row.owner_id,row.owner_fence,execution.id])).rows.length
     if(!live)throw new DomainError('JOB_OWNERSHIP_LOST','The original main job owner session is no longer live.',409)
-    const accepted=(await sql.query<{accepted_by:string;cancel_principal_id:string|null}>(`select e.accepted_by,d.cancel_principal_id from job_executions e join job_dispatch_intents d on d.execution_id=e.id where e.id=$1`,[execution.id])).rows[0]!
+    const accepted=(await sql.query<{accepted_by:string;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>(`select e.accepted_by,d.cancel_principal_id,d.cancel_action from job_executions e join job_dispatch_intents d on d.execution_id=e.id where e.id=$1`,[execution.id])).rows[0]!
     const principal=await readLiveManagementPrincipal(sql,accepted.cancel_principal_id??accepted.accepted_by)
-    requireAuthorization(principal,accepted.cancel_principal_id?'jobs:cancel':execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
+    requireAuthorization(principal,accepted.cancel_principal_id?accepted.cancel_action!:execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
     if(accepted.cancel_principal_id)await this.host.authorizeControl(sql,execution,principal)
     else await this.host.revalidate(sql,execution,principal)
   }
@@ -60,10 +60,10 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         const scope=(await sql.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
         if(!scope)throw new DomainError('JOB_NOT_FOUND','The accepted job is missing.',404)
         const execution=await this.repository.execution(sql,scope.workspace_id,executionId,true)
-        const row=(await sql.query<{intent:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null}>('select intent,delivery_attempted,cancel_command_id,cancel_principal_id from job_dispatch_intents where execution_id=$1 for update',[executionId])).rows[0]!
+        const row=(await sql.query<{intent:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select intent,delivery_attempted,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for update',[executionId])).rows[0]!
         const accepted=(await sql.query<{accepted_by:string}>('select accepted_by from job_executions where id=$1',[executionId])).rows[0]!
         const principal=await readLiveManagementPrincipal(sql,row.cancel_command_id?row.cancel_principal_id!:accepted.accepted_by)
-        requireAuthorization(principal,row.cancel_command_id?'jobs:cancel':execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
+        requireAuthorization(principal,row.cancel_command_id?row.cancel_action!:execution.workflow?'runs:start':'jobs:start',{workspaceId:execution.workspaceId,...(execution.workflow?{workflowId:execution.workflow.workflowId,runId:execution.workflow.runId}:{})})
         if(row.cancel_command_id)await this.host.authorizeControl(sql,execution,principal)
         else await this.host.revalidate(sql,execution,principal)
         const fence=await owner.readFence(sql)
