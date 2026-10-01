@@ -16,8 +16,11 @@ context authenticated by W07. The hook cannot be a permissive no-op. Main must
 persist its authorized immutable intent before handing it to this receiver.
 
 Caps are shared in `BYTE_TRANSFER_POLICY`: <=1MiB negotiated chunks, <=128MiB source
-objects, existing 25MiB artifacts, 2 active/device, 4 globally, <=512MiB staging,
-4096 records, <=1h lifetime, 5min unfinished idle deadline. Verified bytes still
+objects, existing 25MiB artifacts, 2 active/device, 4 globally, <=512MiB global / 256MiB per-device staging,
+4096 records, <=1h lifetime, 5min unfinished idle deadline, 8 interrupted-carrier retries.
+The sender uses A/C's bounded immutable-snapshot reader and W07's authenticated
+connection provider; it resumes from status after lost ACKs and never retries
+authorization/integrity/quota failures. Verified bytes still
 reserve staging until main publication/adoption acknowledgment is reconciled.
 Do not cancel the only producer copy before canonical commit. Source manifests
 and archive expansion use A's independent entry/expansion budgets; staging is not

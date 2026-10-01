@@ -8,7 +8,7 @@ export const BYTE_TRANSFER_POLICY = Object.freeze({
   maxArtifactBytes: MAX_FILE_BYTES, maxActivePerDevice: 2, maxActiveGlobal: 4,
   maxStagingBytes: 512 * 1024 * 1024, maxStagingPerDeviceBytes: 256 * 1024 * 1024, maxRecords: 4096,
   maxLifetimeMs: 60 * 60 * 1000, maxIdleMs: 5 * 60 * 1000,
-  maxQueuedBytes: 4 * 1024 * 1024,
+  maxQueuedBytes: 4 * 1024 * 1024, maxRetries: 8,
 })
 const Hash = z.string().regex(/^[a-f0-9]{64}$/)
 export const TransferContextSchema = z.object({

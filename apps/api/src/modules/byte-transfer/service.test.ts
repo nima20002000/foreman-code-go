@@ -101,6 +101,16 @@ describe('bounded authenticated transfer staging', () => {
     await expect(f.service.start({ ...f.intent, transferId: randomUUID() }, f.context)).rejects.toThrow('quota')
     await expect(f.service.start({ ...f.intent, chunkBytes: BYTE_TRANSFER_POLICY.maxChunkBytes + 1 }, f.context)).rejects.toThrow()
   })
+  it('rejects competing receiver writers rather than stealing a lock', async () => {
+    const f = await fixture(); await f.service.start(f.intent, f.context)
+    const other = f.create(); await other.start(f.intent, f.context)
+    const results = await Promise.allSettled([
+      f.service.append(f.intent.transferId, f.context, f.chunk(0)),
+      other.append(f.intent.transferId, f.context, f.chunk(0)),
+    ])
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect((await f.service.status(f.intent.transferId, f.context)).durableOffset).toBe(4)
+  })
   it('reconciles a lost final ACK after directory fsync failure without another receipt', async () => {
     const f = await fixture(Buffer.alloc(0)); await f.service.start(f.intent, f.context)
     f.fail('directory-sync'); await expect(f.service.finish(f.intent.transferId, f.context)).rejects.toThrow('Injected')

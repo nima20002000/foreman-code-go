@@ -51,7 +51,9 @@ export class ResumableByteTransferService implements ByteTransferPort {
       if ((stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) throw new Error('Transfer root must be private and owned')
       this.directory = await open(this.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
       const pinned = await this.directory.stat()
-      if (pinned.dev !== stat.dev || pinned.ino !== stat.ino) throw new Error('Transfer root changed')
+      if (pinned.dev !== stat.dev || pinned.ino !== stat.ino) {
+        await this.directory.close(); this.directory = undefined; throw new Error('Transfer root changed')
+      }
     })()
     await this.initializing
   }
@@ -112,8 +114,8 @@ export class ResumableByteTransferService implements ByteTransferPort {
       await mkdir(this.path(id, 'lock'), { mode: 0o700 }); acquired = true
       return await action()
     } finally {
-      if (acquired) await rm(this.path(id, 'lock'), { recursive: true })
-      this.busy.delete(id)
+      try { if (acquired) await rm(this.path(id, 'lock'), { recursive: true }) }
+      finally { this.busy.delete(id) }
     }
   }
   private async hash(handle: FileHandle, size: number) {
@@ -157,6 +159,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
           await this.authorize(existing, context, 'start')
           const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR)
           try { await this.reconcile(existing, data) } finally { await data.close() }
+          await this.authorize(existing, context, 'start')
           return existing.progress
         }
         const names = await readdir(`/proc/self/fd/${this.directory!.fd}`)
@@ -186,6 +189,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
       const j = await this.load(id); await this.authorize(j, context, 'status')
       const handle = await this.regular(this.path(id, 'part'), constants.O_RDWR)
       try { await this.reconcile(j, handle) } finally { await handle.close() }
+      await this.authorize(j, context, 'status')
       return j.progress
     })
   }
@@ -206,6 +210,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
           const previous = Buffer.alloc(bytes.length)
           const { bytesRead } = await handle.read(previous, 0, previous.length, chunk.offset)
           if (bytesRead !== bytes.length || !previous.equals(bytes)) throw new Error('Conflicting duplicate chunk')
+          await this.authorize(j, context, 'append')
           return j.progress
         }
         if (chunk.offset !== j.progress.durableOffset || j.progress.state === 'verified') throw new Error('Chunk offset conflict')
@@ -258,6 +263,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
       const handle = await this.regular(this.path(receipt.transferId, 'part'), constants.O_RDONLY)
       try {
         if ((await handle.stat()).size !== receipt.byteSize || await this.hash(handle, receipt.byteSize) !== receipt.sha256) throw new Error('Verified staging corrupted')
+        await this.authorize(j, context, 'read')
         const load = () => this.load(receipt.transferId)
         const authorize = (current: Journal) => this.authorize(current, context, 'read')
         const stream = Readable.from((async function* () {
