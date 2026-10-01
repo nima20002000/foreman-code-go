@@ -810,7 +810,8 @@ export class ApprovalExecutionCoordinator {
     this.closing = true
     if (this.restartClosure) return this.restartClosure
     const sessions = [...this.ownedSessions.values()]
-    for (const owned of sessions) owned.controller.abort()
+    const reason = new DomainError('ENGINE_RESTART', 'The native lifetime is detaching for application restart.', 409)
+    for (const owned of sessions) owned.controller.abort(reason)
     const task = (async () => {
       const results = await Promise.all(sessions.map(async (owned) => {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
