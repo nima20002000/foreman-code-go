@@ -1,3 +1,4 @@
+import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { JobDefinitionSchema, type JobDefinitionSpec } from '@graphql/contracts/jobs'
@@ -46,6 +47,7 @@ export class JobSourceAttemptAuthority implements SourceAttemptAuthority {
     const version=readImmutableWorkflowVersion(versionRow,{id:prep.workflowVersionId,workspaceId:prep.workspaceId,workflowId:prep.workflowId}),node=version.definition.nodes.find(node=>node.id===prep.nodeId)
     if(node?.kind!=='job')throw new DomainError('JOB_PREPARATION_PIN_CONFLICT','The accepted workflow node is not this job.',409)
     const definition=await new JobRepository().version(sql,run.workspaceId,node.jobDefinitionVersionId,node.jobDefinitionId)
+    if(!(await sql.query('select 1 from job_executions where id=$1',[executionId])).rows.length)await requireJobPreparationDeadline(sql,'workflow',executionId,definition.spec.policy.preparationTimeoutMs)
     if(definition.revision!==node.jobDefinitionRevision)throw new DomainError('JOB_VERSION_PIN_CONFLICT','The saved job version differs from the accepted workflow.',409)
     return {principal:actor,workspaceId:run.workspaceId,spec:definition.spec}
   }

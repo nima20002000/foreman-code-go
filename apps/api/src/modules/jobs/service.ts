@@ -1,3 +1,4 @@
+import { requireJobPreparationDeadline } from './preparationDeadline.js'
 import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
 import { AcceptedWorkflowRunV3Schema } from '@graphql/contracts/wave25'
 import { jobSpecDigests } from '@graphql/contracts/jobs-node'
@@ -159,7 +160,7 @@ export class JobService {
           if(admission.kind==='existing')return admission.execution
           const {definition,identity,spec}=admission
           const live=await this.authorize(sql,principal,workspaceId,'jobs:start');await lockActiveWorkspace(sql,workspaceId)
-          await sql.query('select 1 from job_preparations where execution_id=$1 and principal_id=$2 for update',[identity.executionId,live.id])
+          await requireJobPreparationDeadline(sql,'manual',identity.executionId,definition.spec.policy.preparationTimeoutMs,this.clock().getTime())
           const current=await this.repository.definition(sql,workspaceId,input.definitionId,true)
           if(current.versionId!==definition.versionId)throw new DomainError('REVISION_CONFLICT','The job definition changed during preparation.',409)
           const ready=await this.ports.preparation.validate(sql,live,workspaceId,definition.spec)
