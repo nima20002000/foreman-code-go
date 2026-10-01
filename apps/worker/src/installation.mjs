@@ -45,6 +45,16 @@ async function verifyRelease(directory, approvedHash) {
   return manifest;
 }
 
+export async function readInstalledRelease({ root, facts, expected }) {
+  await requirePrivateDirectory(root);
+  const current = await readlink(join(root, 'current'));
+  if (!/^versions\/\d+\.\d+\.\d+-[a-f0-9]{64}$/.test(current)) throw new WorkerError('installation_invalid');
+  const manifestSha256 = current.slice(-64);
+  const manifest = await verifyRelease(join(root, current), manifestSha256);
+  validateManifest(manifest, facts, expected);
+  return { manifest, manifestSha256, directory: join(root, current) };
+}
+
 async function withInstallLock(root, fn) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   await requirePrivateDirectory(root);

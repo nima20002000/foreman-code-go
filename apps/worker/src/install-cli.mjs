@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { hostFacts, WorkerError } from './diagnostics.mjs';
 import { installVersion, rollbackVersion } from './installation.mjs';
 import { acquireWorkerLock } from './runtime.mjs';
@@ -10,6 +11,7 @@ const [command, ...args] = process.argv.slice(2);
 const options = {};
 const help = `Usage:
   node /approved/artifact/src/install-cli.mjs setup --manifest-sha256 APPROVED_SHA256
+  node /approved/artifact/src/install-cli.mjs setup --manifest-sha256 APPROVED_SHA256 --pair yes
   node /approved/artifact/src/install-cli.mjs install --root /private/app --state /private/state --artifact /approved/artifact --manifest-sha256 APPROVED_SHA256
   node /approved/artifact/src/install-cli.mjs rollback --root /private/app --state /private/state --approve-stopped-update yes
   node /approved/artifact/src/install-cli.mjs service --root /private/app --state /private/state --node /absolute/node --home /approved/home --path /usr/bin:/bin
@@ -51,6 +53,10 @@ async function main() {
       const result = await setupCompanion({ home, node: process.execPath, artifact: options['--artifact'] ?? dirname(dirname(fileURLToPath(import.meta.url))), approvedManifestSha256: options['--manifest-sha256'], facts, updatePolicy: approveStop,
         serviceTemplate: await readFile(new URL('../artifacts/graphql-worker.service.in', import.meta.url), 'utf8') });
       console.log(`GraphQL Companion installed. Open GraphQL Companion from Applications, or run ${result.launcher}.\nIdentity and configuration: ${result.state}\nThis installer did not start or enable the background service. After reviewing ${result.proposedService}, opt in with:\n  install -D -m 0600 ${result.proposedService} ${home}/.config/systemd/user/graphql-worker.service\n  systemctl --user daemon-reload\n  systemctl --user enable --now graphql-worker.service\nUpdates need the approved drain/stop policy; rerun setup with --approve-stopped-update yes.\nRollback: ${process.execPath} ${result.root}/current/src/install-cli.mjs rollback --root ${result.root} --state ${result.state} --approve-stopped-update yes`);
+      if (options['--pair'] === 'yes') {
+        const child = spawnSync(result.launcher, ['onboard'], { stdio: 'inherit' });
+        process.exitCode = child.status ?? 1;
+      }
     } else if (command === 'install') {
       const result = await installVersion({ root, artifact: options['--artifact'], approvedManifestSha256: options['--manifest-sha256'], facts, expected, updatePolicy: approveStop });
       console.log(JSON.stringify(result));

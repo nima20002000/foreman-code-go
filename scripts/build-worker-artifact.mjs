@@ -41,13 +41,15 @@ for (const source of Object.keys(built.metafile.inputs)) {
 for (const entry of Object.values(built.metafile.outputs)) for (const dependency of entry.imports) {
   if (dependency.external && !isBuiltin(dependency.path)) throw new Error(`Unbundled dependency: ${dependency.path}`);
 }
-for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs', 'setup.mjs', 'companion.mjs']) {
+for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs', 'setup.mjs', 'companion.mjs', 'setupInput.mjs', 'companionServer.mjs', 'companionService.mjs']) {
   await requirePinnedSource(`apps/worker/src/${name}`);
   await copyFile(join(root, 'apps/worker/src', name), join(output, 'src', name));
 }
 await mkdir(join(output, 'artifacts'));
 await requirePinnedSource('apps/worker/artifacts/graphql-worker.service.in');
 await copyFile(join(root, 'apps/worker/artifacts/graphql-worker.service.in'), join(output, 'artifacts/graphql-worker.service.in'));
+await requirePinnedSource('apps/worker/artifacts/companion.html');
+await copyFile(join(root, 'apps/worker/artifacts/companion.html'), join(output, 'artifacts/companion.html'));
 if (runtime) await copyFile(runtimeFile, join(output, 'artifacts/node-runtime.json'));
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const files = [];

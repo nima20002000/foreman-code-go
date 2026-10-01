@@ -36,7 +36,8 @@ test('setup installs private repeatable launcher files and retains existing iden
   const run = spawnSync(result.launcher, ['doctor'], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout), ['--state', state, 'doctor']);
-  assert.match(await readFile(result.desktop, 'utf8'), /Terminal=true/);
+  assert.match(await readFile(result.desktop, 'utf8'), /Terminal=false/);
+  assert.match(await readFile(result.desktop, 'utf8'), / --desktop\n/);
 });
 
 test('setup rejects checksum and nonprivate identity storage before publishing a launcher', async (t) => {
