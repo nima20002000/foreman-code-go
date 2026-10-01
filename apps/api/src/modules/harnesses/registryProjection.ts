@@ -1,5 +1,5 @@
 import { HarnessConfigurationSchema } from '@graphql/contracts'
-import type { ConfiguredHarnessInstanceDto, HarnessRegistryReadback, HostHarnessInstallationDto } from '@graphql/contracts/harness-registry'
+import { HarnessRegistryReadbackSchema, type ConfiguredHarnessInstanceDto, type HarnessRegistryReadback, type HarnessHostInventoryMetadata } from '@graphql/contracts/harness-registry'
 import type { HarnessInstanceProjection } from './instanceRegistry.js'
 import type { HarnessInstallationRecord } from './installationRegistry.js'
 
@@ -11,6 +11,7 @@ export function projectHarnessInstance(instance: HarnessInstanceProjection): Con
     configuration: configuration.success ? configuration.data : null,
     ...(instance.driverRevision ? { driverRevision: instance.driverRevision } : {}) }
 }
-export function projectHarnessRegistry(instances: readonly HarnessInstanceProjection[], installations: readonly HarnessInstallationRecord[]): HarnessRegistryReadback {
-  return { instances: instances.map(projectHarnessInstance), installations: structuredClone(installations) as HostHarnessInstallationDto[] }
+export function projectHarnessRegistry(instances: readonly HarnessInstanceProjection[], installations: readonly HarnessInstallationRecord[], hostMetadata?: HarnessHostInventoryMetadata): HarnessRegistryReadback {
+  return HarnessRegistryReadbackSchema.parse({ instances: instances.map(projectHarnessInstance), installations: structuredClone(installations),
+    ...(hostMetadata ? { hostMetadata: structuredClone(hostMetadata) } : {}) })
 }

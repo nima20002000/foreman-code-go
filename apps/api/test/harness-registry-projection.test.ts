@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { projectHarnessInstance } from '../src/modules/harnesses/registryProjection.js'
+import { HarnessRegistryReadbackSchema } from '@graphql/contracts/harness-registry'
+import { projectHarnessInstance, projectHarnessRegistry } from '../src/modules/harnesses/registryProjection.js'
 
 describe('public registry projection', () => {
   it('does not expose unsupported or invalid raw configuration', () => {
@@ -15,4 +16,31 @@ describe('public registry projection', () => {
     expect(result.configuration).not.toBe(configuration)
     expect(result.instanceRevision).toBe('3')
   })
+})
+
+const mainId = '00000000-0000-4000-8000-000000000001', deviceId = '00000000-0000-4000-8000-000000000002', workerInstallationId = '00000000-0000-4000-8000-000000000003'
+const observed = { binding: { mainId, deviceId, workerInstallationId, bootId: '00000000-0000-4000-8000-000000000004', connectionEpoch: '00000000-0000-4000-8000-000000000005', keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4 },
+  phase: 'offline' as const, dispatch: false, transfer: false, appVersion: 'observed-worker-build', protocolVersion: 1 as const, lastSeenAt: '2026-10-01T10:00:00.000Z' }
+
+it('projects an independent exact canonical observed connection with no fabricated readiness or authentication', () => {
+  const metadata = { hostRef: { kind: 'device' as const, mainId, deviceId }, applicationInstallationId: workerInstallationId,
+    connection: observed, platform: null, workspaceRoots: null }
+  const result = projectHarnessRegistry([], [], metadata)
+  expect(result.hostMetadata?.connection).toEqual(observed)
+  expect(result.hostMetadata?.connection).not.toBe(observed)
+  expect(result.installations).toEqual([])
+  expect(result.hostMetadata).not.toHaveProperty('authenticated')
+  metadata.connection.binding.connectionGeneration = 99
+  expect(result.hostMetadata?.connection?.binding.connectionGeneration).toBe(4)
+})
+
+it('keeps main absence explicit and rejects mismatched or incomplete device observations', () => {
+  const main = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId, connection: null, platform: null, workspaceRoots: null }
+  expect(projectHarnessRegistry([], [], main).hostMetadata?.connection).toBeNull()
+  expect(() => projectHarnessRegistry([], [], { ...main, connection: observed })).toThrow('exact canonical device')
+  const device = { ...main, hostRef: { kind: 'device' as const, mainId, deviceId }, applicationInstallationId: workerInstallationId }
+  expect(() => projectHarnessRegistry([], [], { ...device, connection: { ...observed, binding: { ...observed.binding, workerInstallationId: mainId } } })).toThrow('exact canonical device')
+  const incomplete: Record<string, unknown> = { ...observed }
+  delete incomplete.appVersion
+  expect(HarnessRegistryReadbackSchema.safeParse({ instances: [], installations: [], hostMetadata: { ...device, connection: incomplete } }).success).toBe(false)
 })

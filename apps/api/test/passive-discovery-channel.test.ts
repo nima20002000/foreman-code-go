@@ -34,7 +34,7 @@ describe('negotiated passive discovery worker handler', () => {
     expect(result.installations).toHaveLength(2)
     expect(result.installations[0]).toMatchObject({ installed: true, authenticated: null, compatible: null, qualified: null, observedVersion: null, connectionGeneration: harnessConnectionGeneration(binding) })
     expect(result.installations[1]).toMatchObject({ installed: false, installationFingerprint: null, launcher: { status: 'missing' } })
-    expect(result.hostMetadata).toMatchObject({ hostRef: { kind: 'device', mainId, deviceId }, applicationInstallationId: workerInstallationId, workspaceRoots: null })
+    expect(result.hostMetadata).toMatchObject({ hostRef: { kind: 'device', mainId, deviceId }, applicationInstallationId: workerInstallationId, connection: null, workspaceRoots: null })
     expect(childProcess.spawn).not.toHaveBeenCalled()
   })
   it('rejects caller commands/paths and wrong canonical identities, with no local fallback', async () => {

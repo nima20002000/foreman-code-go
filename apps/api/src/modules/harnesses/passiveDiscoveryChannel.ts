@@ -41,7 +41,7 @@ export function createPassiveHarnessDiscoveryExtension(options: {
       signal.throwIfAborted()
       return { payload: HarnessRegistryReadbackSchema.parse({ instances: [], installations,
         hostMetadata: { hostRef: target.hostRef, applicationInstallationId: target.applicationInstallationId,
-          platform: target.platform, workspaceRoots: null } }) }
+          connection: null, platform: target.platform, workspaceRoots: null } }) }
     },
   }
 }
