@@ -44,7 +44,18 @@ interface CodexSessionOperations {
   now: () => Date
   schedule: typeof setTimeout
   cancelTimer: typeof clearTimeout
+  withDiagnostics<T>(pin: CodexDiagnosticPin, run: (io: CodexDiagnosticOperations) => Promise<T>): Promise<T>
 }
+export interface CodexDiagnosticPin {
+  binary: string
+  expectedVersion?: string
+  cwd: string
+  configurationIdentity: string
+  scopedCredentialVariables: readonly string[]
+  signal?: AbortSignal
+}
+export type CodexDiagnosticOperations = Pick<CodexSessionOperations,
+  'qualify' | 'assertUnchanged' | 'runCommand' | 'qualifyModel' | 'environment'>
 /** Replay must supply every IO boundary; partial replay cannot launch native IO. */
 export type CodexSessionDependencies =
   | ({ mode: 'native' } & Partial<CodexSessionOperations>)
@@ -107,6 +118,7 @@ interface Runtime extends TurnSnapshot {
   workingDirectory: string
   configuration: CodexHarnessConfiguration
   scopedCredentialVariable: string | undefined
+  qualified: QualifiedCodex
   transport: CodexTransport
   session: NativeSessionReference
   generation: number
@@ -340,6 +352,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       qualifyModel: (configuration, binary, cwd, environment, signal) =>
         qualifyNativeCodexModel(configuration, binary, cwd, environment, signal, this.processRecovery),
       id: randomUUID, now: () => new Date(), schedule: setTimeout, cancelTimer: clearTimeout,
+      withDiagnostics: async (pin, run) => {
+        if (this.processRecovery) throw new HarnessExecutionError('CODEX_DIAGNOSTIC_OWNER_REQUIRED',
+          'Idle native inspection requires a separately owned diagnostic lifetime.')
+        return run({ ...this.dependencies, environment: (_input, names = []) =>
+          this.dependencies.environment(undefined, [...pin.scopedCredentialVariables, ...names]) })
+      },
     }
     if (dependencies.mode === 'replay') {
       for (const key of Object.keys(defaults) as Array<keyof CodexSessionOperations>) {
@@ -980,7 +998,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const runtime = this.requireRuntime(session)
       this.assertIdle(runtime)
       // Revalidate policy/credentials before allowing a newly enabled MCP entry.
-      const prepared = await this.prepareInput(runtime.input, signal)
+      const prepared = await this.prepareIdleInput(runtime, runtime.input, signal)
       if (prepared.scopedCredentialVariable !== runtime.scopedCredentialVariable) {
         throw new HarnessExecutionError('CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED', 'MCP credential requirements changed; refresh the process environment first.')
       }
@@ -998,8 +1016,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (runtime.ownerId !== environment.agentId) throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The replacement environment belongs to another Agent.')
       this.assertIdle(runtime)
       const nextInput = { ...structuredClone(runtime.input), environment: structuredClone(environment) }
-      // This also checks newly required MCP variables before stopping a usable process.
-      const prepared = await this.prepareInput(nextInput, signal)
+      // Validate through separately owned diagnostics while the idle process remains usable.
+      const prepared = await this.prepareIdleInput(runtime, nextInput, signal)
       if (advanced(runtime.configuration).sessionPersistence === 'ephemeral') {
         throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Refreshing an ephemeral process would discard its native session.')
       }
@@ -1124,7 +1142,28 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     try { return await operation() } finally { this.locks.delete(key) }
   }
 
-  private async prepareInput(source: NativeSessionStart, signal?: AbortSignal): Promise<Prepared> {
+  private async prepareIdleInput(runtime: Runtime, source: NativeSessionStart, signal?: AbortSignal): Promise<Prepared> {
+    signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    signal.throwIfAborted()
+    this.assertBinding(runtime, source)
+    return this.dependencies.withDiagnostics({
+      binary: runtime.qualified.binary, ...(this.expectedVersion ? { expectedVersion: this.expectedVersion } : {}), cwd: runtime.workingDirectory,
+      configurationIdentity: runtime.configurationIdentity, signal,
+      scopedCredentialVariables: [...new Set([APP_MCP_TOKEN, ...Object.keys(source.environment?.variables ?? {}),
+        ...(runtime.scopedCredentialVariable ? [runtime.scopedCredentialVariable] : [])])],
+    }, async (io) => {
+      await io.assertUnchanged(runtime.qualified)
+      const prepared = await this.prepareInput(source, signal, io, runtime.qualified.binary)
+      const pin = (value: QualifiedCodex) => canonical([value.binary, value.identity, value.providerVersion,
+        value.schemaManifestSha256, value.stableSchemaGitBlob, value.referenceSchemaManifestSha256])
+      if (pin(prepared.qualified) !== pin(runtime.qualified)) throw new HarnessExecutionError(
+        'CODEX_SESSION_QUALIFICATION_MISMATCH', 'Idle inspection must retain the exact native executable and schema qualification.')
+      await io.assertUnchanged(runtime.qualified)
+      return prepared
+    })
+  }
+
+  private async prepareInput(source: NativeSessionStart, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies, binary = this.binary): Promise<Prepared> {
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const input = structuredClone(source)
@@ -1134,14 +1173,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     const harnessConfiguration = configuration(input)
     const workingDirectory = input.kind === 'operator' ? input.workingDirectory : input.request.workingDirectory
-    const environment = this.dependencies.environment(input.environment)
-    const qualified = await this.dependencies.qualify(this.binary, this.expectedVersion, workingDirectory, environment, true, signal)
-    await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal)
+    const environment = io.environment(input.environment)
+    const qualified = await io.qualify(binary, this.expectedVersion, workingDirectory, environment, true, signal)
+    await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal, io)
     let scopedCredentialVariable: string | undefined
     let excludedCredentialVariable: string | undefined
     let disabledAppMcpServerNames: readonly string[] = []
     if (this.appMcpAccess === 'none') {
-      const listed = await this.dependencies.runCommand(qualified.binary, ['mcp', 'list', '--json'], workingDirectory, signal, environment)
+      const listed = await io.runCommand(qualified.binary, ['mcp', 'list', '--json'], workingDirectory, signal, environment)
       let entries: unknown
       try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
       if (listed.exitCode !== 0 || !Array.isArray(entries) || entries.length > 500
@@ -1152,7 +1191,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       disabledAppMcpServerNames = chatExcludedAppMcpServerNames(this.appMcpServerName).filter((name) => configuredNames.has(name))
     }
     try {
-      const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal)
+      const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal, io)
       excludedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
       if (this.appMcpAccess !== 'none' && mcp.configured.enabled) scopedCredentialVariable = excludedCredentialVariable
     } catch (error) {
@@ -1161,17 +1200,18 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     validateEnvironmentOwner(input, scopedCredentialVariable)
     const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
-    await this.dependencies.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory, scopedEnvironment, signal)
+    await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
+      io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal)
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified,
       disabledAppMcpServerNames,
     }
   }
 
   private async mcpConfiguration(binary: string, cwd: string, environment: NodeJS.ProcessEnv,
-    providerVersion: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
-    const result = await this.dependencies.runCommand(binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal, environment)
+    providerVersion: string, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies): Promise<CodexMcpConfigurationInspection> {
+    const result = await io.runCommand(binary, ['mcp', 'get', this.appMcpServerName, '--json'], cwd, signal, environment)
     if (result.exitCode !== 0) {
-      const listed = await this.dependencies.runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
+      const listed = await io.runCommand(binary, ['mcp', 'list', '--json'], cwd, signal, environment)
       let entries: unknown
       try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
       if (listed.exitCode === 0 && Array.isArray(entries)
@@ -1203,9 +1243,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private async validateMcpPolicies(
     value: CodexHarnessConfiguration, binary: string, cwd: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal,
+    io: CodexDiagnosticOperations = this.dependencies,
   ): Promise<void> {
     for (const [serverName, expected] of Object.entries(advanced(value).mcpServers)) {
-      const result = await this.dependencies.runCommand(binary, ['mcp', 'get', serverName, '--json'], cwd, signal, environment)
+      const result = await io.runCommand(binary, ['mcp', 'get', serverName, '--json'], cwd, signal, environment)
       if (result.exitCode !== 0) throw new HarnessExecutionError(expected.required ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH', 'An accepted MCP server is not configured.')
       let actual: JsonObject
       try { actual = object(JSON.parse(result.stdout)) } catch { throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', 'Codex returned invalid MCP policy data.') }
@@ -1269,6 +1310,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonical(accepted(prepared.input)),
       input: prepared.input, workingDirectory: prepared.workingDirectory, configuration: prepared.harnessConfiguration,
       scopedCredentialVariable: prepared.scopedCredentialVariable, transport, session, generation: 0,
+      qualified: { ...prepared.qualified },
       phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
       files: undefined, fileCleanup: undefined, fileRequests: new Map(),
       activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
@@ -1379,6 +1421,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       runtime.generation = generation
       runtime.input = prepared.input
       runtime.scopedCredentialVariable = prepared.scopedCredentialVariable
+      runtime.qualified = { ...prepared.qualified }
       runtime.closed = false
       for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
       await candidate.activate(runtime)
@@ -1818,4 +1861,3 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 }
-

@@ -8,7 +8,7 @@ import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 function replay() {
   const calls: string[] = []
   let cleanupFailures = 0
-  const dependencies: CodexSessionDependencies = {
+  const dependencies: Extract<CodexSessionDependencies, { mode: 'replay' }> = {
     mode: 'replay',
     environment: () => ({}),
     qualify: async (binary) => {
@@ -24,6 +24,7 @@ function replay() {
     qualifyModel: async () => { calls.push('qualifyModel') },
     id: () => 'recorded-connection', now: () => new Date('2026-10-01T00:00:00Z'),
     schedule: setTimeout, cancelTimer: clearTimeout,
+    withDiagnostics: async (_pin, run) => run(dependencies),
     transport: (binary, cwd) => {
       calls.push(`transport:${binary}:${cwd}`)
       const transport: CodexTransport = {

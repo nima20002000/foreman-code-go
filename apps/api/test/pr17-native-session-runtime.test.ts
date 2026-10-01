@@ -8,6 +8,7 @@ import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTranspor
 import { normalizedHistory } from '../src/modules/harnesses/opencodeProtocol.js'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { bounded, openCodeFixture, session as openCodeSession, start } from './fixtures/pr17-native-runtime.js'
+import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
 
 function nativeCode(code: string) {
   return (error: unknown) => error instanceof HarnessExecutionError && error.result.error?.code === code
@@ -32,6 +33,8 @@ function codexFixture() {
     input: {} as NativeSessionStart, workingDirectory: '/workspace',
     configuration: { serviceTier: 'standard' } as CodexHarnessConfiguration,
     scopedCredentialVariable: undefined, transport, session: codexSession, generation: 0,
+    qualified: { binary: 'fixture-only', identity: 'fixture-identity', providerVersion: codexSession.providerVersion,
+      protocol: fixtureProtocol, schemaManifestSha256: 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference' },
     phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
     files: undefined, fileCleanup: undefined, fileRequests: new Map(),
     activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined,
