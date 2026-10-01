@@ -29,7 +29,7 @@ export const reasonLabels: Record<TelemetryReason, string> = {
   evicted: 'Evicted from server cache', 'clock-discontinuity': 'Clock discontinuity', warmup: 'Warming up (needs two samples)',
   'process-tree-partial': 'Process tree partially observed', 'short-lived-unobserved': 'Short-lived processes not observed',
   'identity-changed': 'Process identity changed', 'escaped-boundary': 'Processes escaped the boundary',
-  'nested-boundary': 'Nested boundary excluded', 'source-missing': 'Reading source missing',
+  'nested-boundary': 'Nested boundary excluded', 'source-missing': 'Reading source missing', 'wall-clock-skew': 'Computer clocks disagree',
 }
 
 export const cpuSourceLabels = { 'host-active-ticks': 'Host active ticks', 'cgroup-usage-usec': 'cgroup CPU usage', 'process-utime-stime': 'Process user+system time' } as const

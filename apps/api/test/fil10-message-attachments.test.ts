@@ -97,14 +97,16 @@ describe('FIL-10 message metadata and lifecycle adapter', () => {
     expect(message()).toEqual(legacy)
     await validateMessageAttachments(db, 'chat', [])
     expect(await hydrateMessageAttachments(db, 'chat', [legacy])).toEqual([{ ...legacy, originalInput: null }])
-    // User receipts remain eligible for upload-free output recovery, even without input pins.
-    expect(query).toHaveBeenCalledTimes(2)
+    // Unreceipted text reads exact original admission without depending on file publication relations.
+    expect(query).toHaveBeenCalledTimes(1)
     expect(query.mock.calls.some(([sql]) => sql.includes('jsonb_to_recordset'))).toBe(false)
     expect(query.mock.calls.every(([sql]) => sql.includes('operator_conversation_turns'))).toBe(true)
   })
   it('discovers upload-free receipt messages for finalized Codex ledger recovery', async () => {
     const stored = { ...message(), requestId: 'send' }
-    const query = vi.fn(async (sql: string) => ({ rows: sql.includes('operator_conversation_turns') ? [{
+    const query = vi.fn(async (sql: string) => ({ rows: sql.includes('select m.id,t.request_id')
+      ? [{ id: stored.id, request_id: stored.requestId, content: stored.content, input_pins: [] }]
+      : sql.includes('operator_conversation_turns') ? [{
       message_id: stored.id, native_turn_id: 'turn', owner_principal_id: 'owner', native_session_id: 'thread',
       kind: 'agent', operator_id: null, workspace_id: 'workspace', workflow_id: 'workflow', agent_id: 'agent',
       origin_run_id: null, origin_execution_id: null,
@@ -116,16 +118,17 @@ describe('FIL-10 message metadata and lifecycle adapter', () => {
     }] : [{ ...row(), chat_kind: 'agent', operator_id: null, agent_id: 'agent', workspace_id: 'workspace', workflow_id: 'workflow' }] }))
     const loaded = await hydrateMessageAttachments({ query } as unknown as Pick<pg.PoolClient, 'query'>, 'chat', [stored])
     expect(loaded[0]!.attachments![0]!.revision).toMatchObject(first)
+    expect(loaded[0]!.originalInput).toEqual({ requestId: stored.requestId, content: stored.content, attachments: [] })
     expect(query.mock.calls[0]![0]).toContain('operator_conversation_turns')
-    expect(query).toHaveBeenCalledTimes(3)
+    expect(query).toHaveBeenCalledTimes(4)
   })
   it('does not query file relations for a receipt without an eligible persisted Codex turn', async () => {
     const { db, query } = queryable()
     const stored = { ...message(), requestId: 'send' }
-    expect(await hydrateMessageAttachments(db, 'chat', [stored])).toEqual([stored])
-    expect(query).toHaveBeenCalledTimes(1)
-    expect(query.mock.calls[0]![0]).toContain("to_regclass('file_tool_publications')")
-    expect(query.mock.calls[0]![0]).not.toContain('from file_tool_publications')
+    expect(await hydrateMessageAttachments(db, 'chat', [stored])).toEqual([{ ...stored, originalInput: null }])
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(query.mock.calls[1]![0]).toContain("to_regclass('file_tool_publications')")
+    expect(query.mock.calls.every(([sql]) => !sql.includes('from file_tool_publications'))).toBe(true)
   })
   it('stores pins only, then returns metadata for the pinned revision, never the newer head', async () => {
     const { db, query } = queryable()

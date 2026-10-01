@@ -15,7 +15,13 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 const now = new Date('2026-09-27T00:00:00Z')
 const context: AgentChatContext = { workspaceId: 'workspace', workflowId: 'workflow', workflowNodeId: 'node', agentId: 'agent' }
 const session: NativeSessionReference = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'native-session' }
-const pool = { query: async () => ({ rows: [], rowCount: 0 }) } as unknown as pg.Pool
+const principal: ManagementPrincipal = { id: 'g1-reader', name: 'G1 reader', audience: 'operator', revokedAt: null,
+  expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  grants: [{ actions: ['agent_chat:read'], scope: { workspaceIds: [context.workspaceId], workflowIds: [context.workflowId] } }] }
+const pool = { query: async (sql: string, values: unknown[] = []) => ({ rows:
+  sql.includes('from management_principals') && values[0] === principal.id
+    ? [{ id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
+      expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [], rowCount: 0 }) } as unknown as pg.Pool
 const terminalDeliveries = new Set(['completed', 'failed', 'canceled'])
 function receipt(requestId: string, delivery: AgentChatTurn['delivery'] = 'unknown', sequence = '1'): AgentChatTurn {
   return { requestId, sequence, intent: 'next_turn', delivery, messageId: `message-${requestId}`, createdAt: now.toISOString(), updatedAt: now.toISOString() }
@@ -403,7 +409,7 @@ describe('G1 cancellation and reconciliation', () => {
     f.internal.reconciliationTimers.clear() // Isolate the lost-steer path from the active-turn timer.
     const input: SendAgentChatMessageRequest = { requestId: 'steer', intent: 'steer', content: 'clarify',
       context: { workflowId: 'workflow', workflowNodeId: 'node', agentId: 'agent' }, expectedConversationId: 'conversation', expectedNativeTurnId: 'native-first' }
-    const result = await f.internal.steer({} as ManagementPrincipal, context, agentChatKey(context), input,
+    const result = await f.internal.steer(principal, context, agentChatKey(context), input,
       { context, row: await f.repository.get(), configuration: f.configuration })
     assert.equal(result.turn.delivery, 'unknown')
     assert.equal(f.internal.reconciliationTimers.has('conversation'), true)

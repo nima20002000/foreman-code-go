@@ -8,9 +8,18 @@ import { fixture } from './helpers/agentChatF1.js'
 describe('Agent chat production text stream', () => {
   it('orders provisional text before its committed empty final and drops delayed deltas', async () => {
     const f = fixture(), timeline: string[] = []
+    let finalized = false
     const manager: NativeHarnessSessionManager = f.manager
     const start = manager.startTurn.bind(manager)
-    f.service['messages'].appendAssistantMessage = async () => { timeline.push('commit'); return true }
+    f.service['messages'].appendAssistantTextOperation = async (_id, _request, operation) => {
+      if (finalized) {
+        timeline.push(`ignored:${operation.text}`)
+        return { status: 'ignored', revision: String(f.store.row.revision) }
+      }
+      timeline.push(`commit:${operation.text}`)
+      finalized = operation.final
+      return { status: 'committed', revision: String(f.store.row.revision), messageRevision: String(f.store.row.revision) }
+    }
     manager.startTurn = async function* (session, input, signal) {
       yield* start(session, input, signal)
       const event = (sequence: number, text: string): NativeHarnessEvent => ({ connectionId: 'connection-a', sequence,
@@ -19,10 +28,12 @@ describe('Agent chat production text stream', () => {
       yield { ...event(3, ''), type: 'item.completed', payload: { item: { id: 'item-a', type: 'agentMessage', text: '' } } }
       yield event(4, 'late')
     }
-    const unsubscribe = f.service.events.subscribe(f.store.row.id, (event) => { if (event.type === 'delta') timeline.push(String(event.data.text)) })
+    const unsubscribe = f.service.events.subscribe(f.store.row.id, (event) => {
+      if (event.type === 'delta') timeline.push(String((event.data.activityChange as { change: { text: string } }).change.text))
+    })
     try {
       await f.send('text'); await f.idle()
-      expect(timeline).toEqual(['ab', 'commit', ''])
+      expect(timeline).toEqual(['commit:a', 'commit:b', 'ab', 'commit:', '', 'ignored:late'])
       expect(f.manager.starts).toEqual(['text'])
     } finally { unsubscribe(); await f.service.shutdown() }
   })
@@ -30,7 +41,7 @@ describe('Agent chat production text stream', () => {
     const f = fixture(), deltas: unknown[] = []
     const manager: NativeHarnessSessionManager = f.manager
     const start = manager.startTurn.bind(manager)
-    f.service['messages'].appendAssistantMessage = async () => false
+    f.service['messages'].appendAssistantTextOperation = async () => ({ status: 'ignored', revision: String(f.store.row.revision) })
     manager.startTurn = async function* (session, input, signal) {
       yield* start(session, input, signal)
       yield { sequence: 1, occurredAt: new Date().toISOString(), type: 'item.completed',

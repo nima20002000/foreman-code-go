@@ -5,7 +5,7 @@ import type { JobArtifact } from '@graphql/contracts/jobs'
 import { server } from '../../mocks/server'
 import { downloadJobArtifact } from './client'
 import { execution } from './fixtures'
-const artifact: JobArtifact = { executionId: execution.id, fileId: 'file-a', revisionId: 'revision-a', publicationId: 'publication-a', sha256: 'a'.repeat(64), byteSize: 3, path: 'output.html', mediaType: 'text/html', state: 'available' }
+const artifact: JobArtifact = { executionId: execution.id, fileId: 'file-a', revisionId: 'revision-a', publicationId: 'publication-a', sha256: 'a'.repeat(64), byteSize: 3, path: 'output.html', mediaType: 'text/html', state: 'available', expiresAt: '2026-10-01T01:00:00Z' }
 const route = '*/api/management/workspaces/:workspaceId/jobs/executions/:id/artifacts/:fileId/revisions/:revisionId/content'
 it('rejects corrupt bytes even if the immutable read returns HTTP200', async () => {
   vi.stubGlobal('crypto', webcrypto)

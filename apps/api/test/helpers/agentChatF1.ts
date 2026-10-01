@@ -81,11 +81,20 @@ export class F1Store {
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
     if (sql.startsWith('with open as ( select principal_id,operation,command_id')) return result() // No accepted controls in this fixture.
-    // Codex-only publication recovery cannot select this OpenCode fixture row.
-    // Other publication queries remain unsupported rather than assuming no pins.
+    if (sql.startsWith('select m.id,t.request_id,t.payload')) {
+      if (values[0] !== this.row.id) return result()
+      return result([...this.turns.values()].flatMap(turn => {
+        const message = this.messages.get(turn.message_id)
+        return message?.role === 'user' && message.requestId === turn.request_id && (values[1] as string[]).includes(message.id)
+          ? [{ id: message.id, request_id: turn.request_id, content: turn.payload.content, input_pins: [] }] : []
+      }))
+    }
+    // This text/control fixture has no file publication relations. The exact
+    // relation guard returns no candidates; other publication SQL stays unsupported.
     if (sql.startsWith('select t.message_id,t.native_turn_id,')
       && sql.includes("where c.id=$1 and c.kind in ('agent','operator') and c.harness='codex'")
-      && values[0] === this.row.id && this.row.harness === 'opencode') return result()
+      && sql.includes("to_regclass('file_tool_publications') is not null")
+      && sql.includes("to_regclass('file_allocations') is not null") && values[0] === this.row.id) return result()
     if (sql.startsWith('select (select started_at from operator_conversation_turns')) {
       const latest = [...this.turns.values()].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)).at(-1)
       return result([{ started_at: receipt?.started_at ?? null, latest_request_id: latest?.request_id ?? null }])

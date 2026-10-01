@@ -53,7 +53,7 @@ async function fixture() {
       &&repository.allocations.get(JSON.stringify([link.ownerPrincipalId,link.requestId]))?.state==='finalized')
       .map(link=>({link,value:repository.values.get(link.ref.fileId)!.value}))},
   }
-  const runtime={require:vi.fn(async()=>{})},preparation={validate:vi.fn(async()=>({valid:true,reasons:[],sideEffects:false as const}))}
+  const runtime={require:vi.fn(async()=>{})},preparation={revalidateAccepted:vi.fn(async()=>{})}
   const authority=new JobPublicationAuthority(runtime,preparation as never)
   const files=new FileStorageService(repository,bytes as unknown as FileByteStorage,new PostgresJobArtifactScopeAuthorization(pool),undefined,()=>now)
   const reader={open:vi.fn(async()=>Readable.from([Buffer.from('<html>result</html>')]))}
@@ -105,7 +105,7 @@ describe('canonical job artifact publication and read port',()=>{
     f.execution.process.processStopped=true
     await expect(f.port.publishAccepted({...f.input,attemptId:'old'})).rejects.toMatchObject({code:'JOB_STALE_ATTEMPT'})
     await expect(f.port.publishAccepted({...f.input,path:'other.html'})).rejects.toMatchObject({code:'JOB_OUTPUT_SPEC_MISMATCH'})
-    f.preparation.validate.mockResolvedValue({valid:false,reasons:[],sideEffects:false})
+    f.preparation.revalidateAccepted.mockRejectedValue(new DomainError('JOB_AUTHORITY_CHANGED','Accepted source or root authority is no longer valid.',409))
     await expect(f.port.publishAccepted(f.input)).rejects.toMatchObject({code:'JOB_AUTHORITY_CHANGED'})
     f.revoke();await expect(f.port.publishAccepted(f.input)).rejects.toMatchObject({code:'AUTH_REVOKED'})
     expect(f.reader.open).not.toHaveBeenCalled();expect(f.repository.allocations.size).toBe(0)
