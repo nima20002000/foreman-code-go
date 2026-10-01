@@ -118,6 +118,7 @@ interface Runtime extends TurnSnapshot {
   workingDirectory: string
   configuration: CodexHarnessConfiguration
   scopedCredentialVariable: string | undefined
+  strippedCredentialVariable: string | undefined
   qualified: QualifiedCodex
   transport: CodexTransport
   session: NativeSessionReference
@@ -145,6 +146,7 @@ interface Prepared {
   harnessConfiguration: CodexHarnessConfiguration
   workingDirectory: string
   scopedCredentialVariable: string | undefined
+  strippedCredentialVariable: string | undefined
   environment: NodeJS.ProcessEnv
   qualified: QualifiedCodex
   disabledAppMcpServerNames: readonly string[]
@@ -997,8 +999,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.exclusive(session.nativeSessionId, async () => {
       const runtime = this.requireRuntime(session)
       this.assertIdle(runtime)
+      if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reload requires a live native process.')
+      const before = { generation: runtime.generation, transport: runtime.transport, closed: runtime.closed }
       // Revalidate policy/credentials before allowing a newly enabled MCP entry.
       const prepared = await this.prepareIdleInput(runtime, runtime.input, signal)
+      this.assertIdleAfterDiagnostics(runtime, before, signal)
       if (prepared.scopedCredentialVariable !== runtime.scopedCredentialVariable) {
         throw new HarnessExecutionError('CODEX_SESSION_ENVIRONMENT_REFRESH_REQUIRED', 'MCP credential requirements changed; refresh the process environment first.')
       }
@@ -1015,9 +1020,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const runtime = this.requireRuntime(session)
       if (runtime.ownerId !== environment.agentId) throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The replacement environment belongs to another Agent.')
       this.assertIdle(runtime)
+      const before = { generation: runtime.generation, transport: runtime.transport, closed: runtime.closed }
       const nextInput = { ...structuredClone(runtime.input), environment: structuredClone(environment) }
       // Validate through separately owned diagnostics while the idle process remains usable.
       const prepared = await this.prepareIdleInput(runtime, nextInput, signal)
+      this.assertIdleAfterDiagnostics(runtime, before, signal)
       if (advanced(runtime.configuration).sessionPersistence === 'ephemeral') {
         throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Refreshing an ephemeral process would discard its native session.')
       }
@@ -1150,7 +1157,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       binary: runtime.qualified.binary, ...(this.expectedVersion ? { expectedVersion: this.expectedVersion } : {}), cwd: runtime.workingDirectory,
       configurationIdentity: runtime.configurationIdentity, signal,
       scopedCredentialVariables: [...new Set([APP_MCP_TOKEN, ...Object.keys(source.environment?.variables ?? {}),
-        ...(runtime.scopedCredentialVariable ? [runtime.scopedCredentialVariable] : [])])],
+        ...(runtime.scopedCredentialVariable ? [runtime.scopedCredentialVariable] : []),
+        ...(runtime.strippedCredentialVariable ? [runtime.strippedCredentialVariable] : [])])],
     }, async (io) => {
       await io.assertUnchanged(runtime.qualified)
       const prepared = await this.prepareInput(source, signal, io, runtime.qualified.binary)
@@ -1161,6 +1169,18 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       await io.assertUnchanged(runtime.qualified)
       return prepared
     })
+  }
+
+  private assertIdleAfterDiagnostics(runtime: Runtime, before: Pick<Runtime, 'generation' | 'transport' | 'closed'>, signal?: AbortSignal): void {
+    signal?.throwIfAborted()
+    this.shutdownController.signal.throwIfAborted()
+    if (this.requireRuntime(runtime.session) !== runtime || runtime.generation !== before.generation
+      || runtime.transport !== before.transport || runtime.closed !== before.closed) {
+      throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The inspected native process changed before control dispatch.')
+    }
+    // A previously closed refresh can retry retained cleanup; a new disconnect
+    // during inspection must never turn that inspection into a replacement.
+    this.assertIdle(runtime)
   }
 
   private async prepareInput(source: NativeSessionStart, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies, binary = this.binary): Promise<Prepared> {
@@ -1202,7 +1222,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal)
-    return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, environment: scopedEnvironment, qualified,
+    return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, strippedCredentialVariable, environment: scopedEnvironment, qualified,
       disabledAppMcpServerNames,
     }
   }
@@ -1310,6 +1330,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonical(accepted(prepared.input)),
       input: prepared.input, workingDirectory: prepared.workingDirectory, configuration: prepared.harnessConfiguration,
       scopedCredentialVariable: prepared.scopedCredentialVariable, transport, session, generation: 0,
+      strippedCredentialVariable: prepared.strippedCredentialVariable,
       qualified: { ...prepared.qualified },
       phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
       files: undefined, fileCleanup: undefined, fileRequests: new Map(),
@@ -1421,6 +1442,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       runtime.generation = generation
       runtime.input = prepared.input
       runtime.scopedCredentialVariable = prepared.scopedCredentialVariable
+      runtime.strippedCredentialVariable = prepared.strippedCredentialVariable
       runtime.qualified = { ...prepared.qualified }
       runtime.closed = false
       for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
