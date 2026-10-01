@@ -43,3 +43,10 @@ export const AcceptedChatResponseControlSchema = z.object({
   }
 })
 export type AcceptedChatResponseControl = z.infer<typeof AcceptedChatResponseControlSchema>
+
+export const ChatResponseAcknowledgmentSchema = z.object({
+  source: z.enum(['provider_acknowledgement', 'provider_history']), harness: z.string().min(1), providerVersion: z.string().min(1),
+  nativeSessionId: z.string().min(1), nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1),
+  optionId: z.string().min(1), semantic: z.string().min(1),
+}).strict()
+export type ChatResponseAcknowledgment = z.infer<typeof ChatResponseAcknowledgmentSchema>

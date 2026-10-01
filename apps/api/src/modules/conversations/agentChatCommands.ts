@@ -1,4 +1,4 @@
-import { AcceptedChatResponseControlSchema, type AcceptedChatResponseControl } from '@graphql/contracts/interaction-activity'
+import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema, type ChatResponseAcknowledgment, type AcceptedChatResponseControl } from '@graphql/contracts/interaction-activity'
 import type pg from 'pg'
 import { AgentChatStateSchema, type AgentChatState } from '@graphql/contracts/agent-chat'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -6,7 +6,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 
-type Outcome = { acceptedControl?: AcceptedChatResponseControl } & (
+type Outcome = { acceptedControl?: AcceptedChatResponseControl; providerAcknowledgment?: ChatResponseAcknowledgment } & (
   | { status: 'pending' | 'uncertain' }
   | { status: 'completed'; state: AgentChatState }
   | { status: 'rejected'; error: { code: string; message: string; status: number; details?: Record<string, unknown> } }
@@ -36,9 +36,10 @@ export class AgentChatCommands {
   execute(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
     payload: unknown, perform: () => Promise<AgentChatState>,
     readCurrent?: () => Promise<AgentChatState>,
-    acceptedControl?: AcceptedChatResponseControl): Promise<AgentChatState> {
+    acceptedControl?: AcceptedChatResponseControl,
+    responseEvidence?: () => ChatResponseAcknowledgment | undefined): Promise<AgentChatState> {
     if (this.closing) return Promise.reject(new DomainError('AGENT_CHAT_CLOSING', 'Agent chat is shutting down.', 503))
-    const task = this.reserve(principal, source, conversationId, requestId, payload, perform, readCurrent, acceptedControl)
+    const task = this.reserve(principal, source, conversationId, requestId, payload, perform, readCurrent, acceptedControl, responseEvidence)
     this.pending.add(task)
     void task.finally(() => { this.pending.delete(task) }).catch(() => undefined)
     return task
@@ -52,7 +53,8 @@ export class AgentChatCommands {
   private async reserve(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
     payload: unknown, perform: () => Promise<AgentChatState>,
     readCurrent?: () => Promise<AgentChatState>,
-    acceptedControl?: AcceptedChatResponseControl): Promise<AgentChatState> {
+    acceptedControl?: AcceptedChatResponseControl,
+    responseEvidence?: () => ChatResponseAcknowledgment | undefined): Promise<AgentChatState> {
     // Current scope/authority is checked even for conflicts, rejections and receipt replay.
     if (readCurrent) await readCurrent()
     const control = acceptedControl ? AcceptedChatResponseControlSchema.parse(acceptedControl) : undefined
@@ -95,7 +97,16 @@ export class AgentChatCommands {
         ...(error.details ? { details: error.details } : {}),
       } } : { status: 'uncertain' }
     }
-    if (control) outcome = { ...outcome, acceptedControl: control }
+    if (control) {
+      outcome = { ...outcome, acceptedControl: control }
+      const evidence = responseEvidence?.()
+      const parsed = evidence ? ChatResponseAcknowledgmentSchema.safeParse(evidence) : undefined
+      if (parsed?.success && parsed.data.harness === control.native.harness && parsed.data.nativeSessionId === control.native.sessionId
+        && parsed.data.nativeRequestId === control.native.requestId && parsed.data.nativeRequestType === control.native.requestType
+        && parsed.data.optionId === control.choice.optionId && parsed.data.semantic === control.choice.semantic) {
+        outcome.providerAcknowledgment = parsed.data
+      }
+    }
     try {
       const saved = await this.pool.query(`with settled as (
         update management_command_receipts set result=$4::jsonb
