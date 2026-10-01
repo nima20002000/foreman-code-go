@@ -113,11 +113,11 @@ const extensions: Partial<Record<OperatorToolName,{scope:ScopeKind;extension:key
   },
 }
 
-export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:read', 'runs:read', 'jobs:read', 'agent_chat:read', 'operator_chat:read']
+export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:metrics:read', 'runs:read', 'jobs:read', 'agent_chat:read', 'operator_chat:read']
 
 export function operatorToolRequirements(name: OperatorToolName, resource?: AuthorizedResource): Requirement[] {
   void resource
-  if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') return TELEMETRY_READ_ACTIONS.map(action => ({ action, scope: action === 'devices:read' ? 'global' : 'resource' }))
+  if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') return TELEMETRY_READ_ACTIONS.map(action => ({ action, scope: action === 'devices:metrics:read' ? 'global' : 'resource' }))
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
@@ -188,7 +188,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   const service = context.services
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') {
     if (!service.resourceTelemetry) return false
-    return TELEMETRY_READ_ACTIONS.some(action => action === 'devices:read'
+    return TELEMETRY_READ_ACTIONS.some(action => action === 'devices:metrics:read'
       ? isAuthorized(context.principal, action, {})
       : resource && Object.keys(resource).length ? isAuthorized(context.principal, action, resource) : hasAction(context.principal, action))
   }
