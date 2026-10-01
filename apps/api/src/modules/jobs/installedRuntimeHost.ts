@@ -3,9 +3,10 @@ import { constants } from 'node:fs'
 import { open, readFile, realpath } from 'node:fs/promises'
 import { z } from 'zod'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import { JobRuntimeFingerprintSchema, type JobRuntimeFingerprint } from '@graphql/contracts/job-runtime'
+import { JobRuntimeFingerprintSchema, InstalledJobRuntimeDescriptorSchema, type JobRuntimeFingerprint, type JobRuntimeNativeAdmission, type JobRuntimeProfile, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
+import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { DomainError } from '../errors.js'
 import { captureJobRuntimeConfiguration, createQualificationNativeOwner, fingerprintQualificationPath, qualificationMountId,
   type InstalledJobRuntimeDescriptor, type JobQualificationAuthority, type QualificationNativeOwner } from './qualification.js'
@@ -37,6 +38,8 @@ export interface InstalledRuntimeHostDependencies {
   /** Existing application-installation/device authority, no provider inventory. */
   identity: JobSql
   configuration: InstalledRuntimeConfigurationLocation | null
+  /** Current authenticated carrier state only; G1 must not perform network IO. */
+  currentConnection?(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]): Promise<DeviceSessionBinding | null>
   /** Existing admitted original operation supplies process/OCI ownership, not config principal IDs. */
   reserve(input: Parameters<InstalledJobRuntimeHost['reserveQualification']>[0]): Promise<{
     native: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess' | 'close'>
@@ -115,10 +118,10 @@ async function installedIdentity(sql: JobSql, configuration: InstalledJobRuntime
   if (hash(pinned) !== hash(selected.registration)) unavailable('registration_changed')
 }
 
-export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHostDependencies): InstalledJobRuntimeHost {
-  async function current(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]) {
-    const configuration = await readInstalledRuntimeConfiguration(dependencies.configuration)
-    await installedIdentity(sql, configuration)
+type InstalledRuntimeProfileContext = Pick<JobRuntimeProfile, 'id' | 'revision' | 'specDigest' | 'root' | 'limits'> & {
+  policy: Pick<JobRuntimeProfile['policy'], 'imageDigest' | 'toolchainDigest'>
+}
+async function inspectConfiguration(configuration: InstalledJobRuntimeConfiguration, profile: InstalledRuntimeProfileContext) {
     if (hash(configuration.root) !== hash(profile.root) || hash(configuration.target.hostRef) !== hash(profile.root.selection.hostRef) ||
       hash(configuration.target.registration) !== hash(profile.root.registration)) unavailable('root_context_changed')
     if (configuration.pins.imageDigest !== profile.policy.imageDigest || configuration.pins.toolchainDigest !== profile.policy.toolchainDigest || configuration.pins.diskBytes !== profile.limits.diskBytes) unavailable('pin_unavailable')
@@ -131,9 +134,9 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
       const mountId = qualificationMountId(source.path, await readFile('/proc/self/mountinfo', 'utf8'))
       if (runtime.sha256 !== configuration.pins.runtimeBinarySha256 || oci.sha256 !== configuration.pins.ociBinarySha256 || findmnt.sha256 !== configuration.pins.findmntBinarySha256 || bootId !== configuration.pins.bootId ||
         source.device !== profile.root.binding.filesystem.device || source.inode !== profile.root.binding.filesystem.inode || mountId !== profile.root.binding.filesystem.mountId) unavailable('passive_identity_changed')
-      const descriptor: InstalledJobRuntimeDescriptor = { target: configuration.target, runtimeExecutable: configuration.runtimeExecutable,
-        ociExecutable: configuration.ociExecutable, findmntExecutable: configuration.findmntExecutable, runtimeRoot: configuration.runtimeRoot,
-        backingFile: configuration.backingFile, controllerEnvironment: configuration.controllerEnvironment }
+      const descriptor = InstalledJobRuntimeDescriptorSchema.parse({ target: configuration.target, runtimeExecutable: configuration.runtimeExecutable,
+        ociExecutable: configuration.ociExecutable, findmntExecutable: configuration.findmntExecutable, findmntBinarySha256: configuration.pins.findmntBinarySha256, runtimeRoot: configuration.runtimeRoot,
+        backingFile: configuration.backingFile, controllerEnvironment: configuration.controllerEnvironment })
       const configurationDigest = hash(await captureJobRuntimeConfiguration(configuration.runtimeRoot, configuration.controllerEnvironment, {
         findmntBinary: configuration.findmntExecutable, findmntBinarySha256: configuration.pins.findmntBinarySha256,
         backingFile: configuration.backingFile, backingBytes: configuration.pins.diskBytes,
@@ -143,17 +146,90 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
         ...configuration.target, root: profile.root, bootId, runtimeExecutable: runtime.path, runtimeBinarySha256: runtime.sha256,
         ociExecutable: oci.path, ociBinarySha256: oci.sha256, configurationDigest, imageDigest: configuration.pins.imageDigest,
         toolchainDigest: configuration.pins.toolchainDigest, limits: profile.limits })
-      return { configuration, descriptor, fingerprint }
+      const snapshot = { configuration, descriptor, fingerprint }
+      return snapshot
     } catch (error) { if (error instanceof DomainError) throw error; return unavailable('passive_evidence_unavailable') }
   }
+
+/** Worker-local protected capture. Pairing and current authenticated connection
+ * are supplied by the existing installed worker authority; no SQL facade. */
+export type InstalledRuntimeObservedHost = Pick<JobRuntimeNativeAdmission, 'hostRef' | 'registration' | 'mainInstallationId' | 'bootId' | 'connection'>
+function assertInstalledHost(configuration: InstalledJobRuntimeConfiguration, host: InstalledRuntimeObservedHost) {
+  const target = configuration.target
+  if (hash(target.hostRef) !== hash(host.hostRef) || hash(target.registration) !== hash(host.registration) ||
+    target.mainInstallationId !== host.mainInstallationId || configuration.pins.bootId !== host.bootId) unavailable('installation_changed')
+  if (target.hostRef.kind === 'device') {
+    const binding = DeviceSessionBindingSchema.parse(host.connection)
+    if (binding.mainId !== target.mainInstallationId || binding.deviceId !== target.hostRef.deviceId ||
+      binding.workerInstallationId !== target.registration?.workerInstallationId || binding.keyRevision !== target.registration?.keyRevision ||
+      binding.authorizationRevision !== target.registration?.authorizationRevision || binding.bootId !== host.bootId) unavailable('current_connection_changed')
+  } else if (host.connection !== null || target.registration !== null) unavailable('installation_changed')
+}
+export async function inspectInstalledJobRuntime(input: {
+  configuration: InstalledRuntimeConfigurationLocation | null
+  profile: JobRuntimeProfile
+  host: InstalledRuntimeObservedHost
+}): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: JobRuntimeFingerprint }> {
+  const configuration = await readInstalledRuntimeConfiguration(input.configuration)
+  assertInstalledHost(configuration, input.host)
+  const { descriptor, fingerprint } = await inspectConfiguration(configuration, input.profile)
+  return { descriptor, fingerprint }
+}
+
+/** Recheck the genuine admitted candidate on its own physical host. The
+ * projection contains existing fingerprint facts, never a synthetic profile. */
+export async function inspectInstalledJobRuntimeCandidate(input: {
+  configuration: InstalledRuntimeConfigurationLocation | null; candidate: JobQualificationCandidate; host: InstalledRuntimeObservedHost
+}): Promise<void> {
+  const configuration = await readInstalledRuntimeConfiguration(input.configuration)
+  assertInstalledHost(configuration, input.host)
+  const candidate = input.candidate, original = candidate.fingerprint
+  const { descriptor, fingerprint } = await inspectConfiguration(configuration, { id: original.profileId, revision: original.profileRevision,
+    specDigest: original.specDigest, root: original.root, limits: original.limits, policy: { imageDigest: original.imageDigest, toolchainDigest: original.toolchainDigest } })
+  if (hash(fingerprint) !== hash(original) || candidate.findmntBinary !== descriptor.findmntExecutable ||
+    candidate.findmntBinarySha256 !== descriptor.findmntBinarySha256 || candidate.backingFile !== descriptor.backingFile ||
+    candidate.runtimeRoot !== descriptor.runtimeRoot || candidate.backingBytes !== original.limits.diskBytes ||
+    hash(candidate.controllerEnvironment) !== hash(descriptor.controllerEnvironment)) unavailable('original_approval_context_changed')
+}
+
+export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHostDependencies): InstalledJobRuntimeHost & {
+  inspect(profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: JobRuntimeFingerprint }>
+} {
+  const snapshots = new Map<string, { configuration: InstalledJobRuntimeConfiguration; descriptor: InstalledJobRuntimeDescriptor; fingerprint: JobRuntimeFingerprint }>()
+  async function current(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]) {
+    const configuration = await readInstalledRuntimeConfiguration(dependencies.configuration)
+    await installedIdentity(sql, configuration)
+    const snapshot = await inspectConfiguration(configuration, profile)
+    snapshots.set(profile.id, snapshot)
+    return snapshot
+  }
   return {
+    async inspect(profile) { const { descriptor, fingerprint } = await current(dependencies.identity, profile); return { descriptor, fingerprint } },
     async descriptor(profile) { return (await current(dependencies.identity, profile)).descriptor },
+    async currentConnection(sql, profile) {
+      if (profile.root.selection.hostRef.kind === 'main') return null
+      const snapshot = snapshots.get(profile.id)
+      if (!snapshot || !dependencies.currentConnection) unavailable('current_connection_unavailable')
+      const binding = DeviceSessionBindingSchema.parse(await dependencies.currentConnection(sql, profile))
+      const selected = snapshot.configuration.target
+      if (selected.hostRef.kind !== 'device' || binding.mainId !== selected.mainInstallationId || binding.deviceId !== selected.hostRef.deviceId ||
+        binding.workerInstallationId !== selected.registration?.workerInstallationId || binding.keyRevision !== selected.registration?.keyRevision ||
+        binding.authorizationRevision !== selected.registration?.authorizationRevision || binding.bootId !== snapshot.fingerprint.bootId) unavailable('current_connection_changed')
+      return binding
+    },
     async currentMetadata(sql, profile): Promise<JobRuntimeFingerprint | null> {
-      try { return (await current(sql, profile)).fingerprint }
+      // G1/GET readback consumes captured installed metadata only. Native entry
+      // captures pins again; an uncaptured/restarted host never invents readiness.
+      const snapshot = snapshots.get(profile.id)
+      if (!snapshot || snapshot.fingerprint.profileRevision !== profile.revision || snapshot.fingerprint.specDigest !== profile.specDigest ||
+        hash(snapshot.configuration.root) !== hash(profile.root) || snapshot.fingerprint.imageDigest !== profile.policy.imageDigest ||
+        snapshot.fingerprint.toolchainDigest !== profile.policy.toolchainDigest || hash(snapshot.fingerprint.limits) !== hash(profile.limits)) return null
+      try { await installedIdentity(sql, snapshot.configuration); return JobRuntimeFingerprintSchema.parse(snapshot.fingerprint) }
       catch (error) { if (error instanceof DomainError && error.status < 500) return null; throw error }
     },
     async reserveQualification(input) {
       input.signal.throwIfAborted()
+      await input.assertAdmission()
       const { fingerprint } = await current(dependencies.identity, input.profile)
       if (input.operationId !== input.approval.qualificationId || input.candidate.operationId !== input.operationId || input.candidate.approvalId !== input.approval.id ||
         hash(fingerprint) !== input.approval.fingerprintDigest || hash(input.candidate.fingerprint) !== hash(fingerprint)) unavailable('original_approval_context_changed')
@@ -161,7 +237,8 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
       if (admitted.ownership.scope.subject.kind !== 'qualification' || admitted.ownership.scope.subject.qualificationId !== input.approval.qualificationId ||
         admitted.ownership.scope.subject.profileId !== input.profile.id || admitted.ownership.scope.subject.profileRevision !== input.profile.revision ||
         admitted.ownership.scope.subject.operationId !== input.operationId || admitted.ownership.scope.subject.fingerprint !== input.approval.fingerprintDigest ||
-        admitted.ownership.scope.bootId !== fingerprint.bootId) unavailable('original_native_owner_changed')
+        admitted.ownership.scope.bootId !== fingerprint.bootId || !('admission' in admitted.ownership.scope) ||
+        hash(admitted.ownership.scope.admission) !== hash(input.nativeAdmission)) unavailable('original_native_owner_changed')
       return createQualificationNativeOwner(input.candidate, admitted.native, admitted.ownership, admitted.authority)
     },
   }

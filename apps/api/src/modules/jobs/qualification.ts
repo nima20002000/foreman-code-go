@@ -4,9 +4,8 @@ import { constants } from 'node:fs'
 import { mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
-import { z } from 'zod'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import { JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+import { JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, JobQualificationCandidateSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
 import type { JobSql } from './repository.js'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
@@ -14,23 +13,8 @@ import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPod
 import type { QualifiedJobProfile } from './executor.js'
 
 export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-volume-v1' as const
-const Digest = z.string().regex(/^[a-f0-9]{64}$/)
-const Absolute = z.string().startsWith('/').refine(path => !path.includes('\0') && !path.includes('\n') && !path.includes(','))
-export const JobQualificationCandidateSchema = z.object({
-  qualificationId: z.uuid(), operationId: z.uuid(), approvalId: z.uuid(),
-  fingerprint: JobRuntimeFingerprintSchema,
-  findmntBinary: Absolute, findmntBinarySha256: Digest,
-  backingFile: Absolute, backingBytes: z.number().int().positive(),
-  controllerEnvironment: z.object({ PATH: z.string().min(1), XDG_RUNTIME_DIR: Absolute, LANG: z.literal('C.UTF-8') }).strict(),
-  sourceParent: Absolute, runtimeRoot: Absolute,
-  spoolBytes: z.number().int().min(131072).max(67108864),
-  ttlSeconds: z.number().int().positive().max(86400),
-}).strict().superRefine((value, context) => {
-  if (value.fingerprint.root.binding.accessMode !== 'exclusive-write' || value.sourceParent !== value.fingerprint.root.binding.canonicalPath) {
-    context.addIssue({ code: 'custom', message: 'Qualification requires the exact existing exclusive-write root binding.' })
-  }
-})
-export type JobQualificationCandidate = z.infer<typeof JobQualificationCandidateSchema>
+export { JobQualificationCandidateSchema } from '@graphql/contracts/job-runtime'
+export type { JobQualificationCandidate, InstalledJobRuntimeDescriptor } from '@graphql/contracts/job-runtime'
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 export function jobQualificationFingerprint(candidate: JobQualificationCandidate): string { return hash(candidate.fingerprint) }
 export interface JobQualificationRecord {
@@ -78,6 +62,7 @@ export function createQualificationNativeOwner(candidate: JobQualificationCandid
     stopProcess: reservation => native.stopProcess(reservation),
     async registerContainer(identity, fingerprint) {
       if (container || identity !== `graphql-ci-qualification-${candidate.qualificationId}` || fingerprint !== jobQualificationFingerprint(candidate)) throw new Error('Original qualification container intent changed.')
+      await ownership.reserveContainerIntent(identity, fingerprint)
       const commands = { run: async (argv: string[], timeoutMs = 30000) => {
         await authority.assertCurrent(candidate); await assertJobRuntimeEntryContext(candidate)
         return runQualificationCommand(composite, candidate.fingerprint.runtimeExecutable, ['--remote=false', ...argv], candidate.controllerEnvironment, AbortSignal.timeout(timeoutMs))
@@ -101,16 +86,6 @@ export function createQualificationNativeOwner(candidate: JobQualificationCandid
   return composite
 }
 
-/** Protected existing HRT/W07 installation metadata; public profile input admits no paths or ready flag. */
-export interface InstalledJobRuntimeDescriptor {
-  target: Pick<JobRuntimeFingerprint, 'hostRef' | 'registration' | 'mainInstallationId'>
-  runtimeExecutable: string
-  ociExecutable: string
-  findmntExecutable: string
-  runtimeRoot: string
-  backingFile: string
-  controllerEnvironment: JobQualificationCandidate['controllerEnvironment']
-}
 export interface PhysicalJobRuntimeProducerDependencies {
   descriptor(profile: JobRuntimeProfile): Promise<InstalledJobRuntimeDescriptor>
   immutableProfile(approval: JobRuntimeApproval): Promise<JobRuntimeProfile>
@@ -140,9 +115,13 @@ async function installedCandidate(profile: JobRuntimeProfile, descriptor: Instal
 /** Actual B-compatible catalog producer. Only explicit approved run enters native IO. */
 export function createPhysicalJobRuntimeProducer(dependencies: PhysicalJobRuntimeProducerDependencies) {
   return {
-    capture: async (profile: JobRuntimeProfile) => (await installedCandidate(profile, await dependencies.descriptor(profile))).fingerprint,
+    capture: async (profile: JobRuntimeProfile) => {
+      if (profile.root.selection.hostRef.kind === 'device') throw new Error('Use the actual installed device qualification carrier.')
+      return (await installedCandidate(profile, await dependencies.descriptor(profile))).fingerprint
+    },
     run: async (approval: JobRuntimeApproval, signal: AbortSignal) => {
       const profile = await dependencies.immutableProfile(approval)
+      if (profile.root.selection.hostRef.kind === 'device') throw new Error('Use the actual installed device qualification carrier.')
       const descriptor = await dependencies.descriptor(profile)
       const { fingerprint, diagnostics } = await installedCandidate(profile, descriptor)
       if (profile.id !== approval.profileId || profile.revision !== approval.profileRevision || profile.specDigest !== approval.fingerprint.specDigest ||

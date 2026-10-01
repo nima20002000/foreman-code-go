@@ -2,17 +2,22 @@ import { constants } from 'node:fs'
 import { open, readFile, realpath, statfs } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { JobRuntimeNativeAdmission } from '@graphql/contracts/job-runtime'
 import type { PodmanCommandRunner } from './executorPodman.js'
 
 export interface OCIProcessIdentity { pid: number; startTicks: string; bootId: string }
 export interface OCICgroupBoundary { kind: 'cgroup-v2'; path: string; device: string; inode: string }
-export interface OCIOwnerScope {
-  subject: { kind: 'job'; executionId: string; attemptId: string; operationId: string; bindingHash: string } |
-    { kind: 'qualification'; qualificationId: string; profileId: string; profileRevision: number; operationId: string; fingerprint: string }
+export type OCIOwnerScope = {
+  subject: { kind: 'job'; executionId: string; attemptId: string; operationId: string; bindingHash: string }
   leaseId: string
   owner: { grantId: string; epoch: string }
   observedDeviceId: string
   observedInstallationId: string
+  bootId: string
+} | {
+  subject: { kind: 'qualification'; qualificationId: string; profileId: string; profileRevision: number; operationId: string; fingerprint: string }
+  /** Actual persisted diagnostic admission; qualification never borrows a Job grant. */
+  admission: JobRuntimeNativeAdmission
   bootId: string
 }
 export interface OCIHostCertificate {
@@ -26,6 +31,8 @@ export interface OCIHostCertificate {
 export interface OCIContainerOwnership {
   scope: OCIOwnerScope
   assertCurrent(): Promise<void>
+  /** Persist the original container intent before create can enter native IO. */
+  reserveContainerIntent(identity: string, fingerprint: string): Promise<void>
   /** Existing HRT/W08 journal receives exact ID before start; no second ledger. */
   bindContainer(identity: string, containerId: string): Promise<void>
   /** Existing guarded native launch owners supply their passive disjoint helpers. */
@@ -142,7 +149,9 @@ export class OwnedOCIContainer {
       row = await this.inspect(row.Id)
       if (row?.State.Running) { await this.commands.run(['kill', '--signal', 'KILL', row.Id]); row = await this.inspect(row.Id) }
     }
-    const closed = !!row && !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited' && !!this.certificate && await proveOCIBoundaryEmpty(this.certificate.boundary)
+    const closed = !!row && !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited' && !!this.certificate &&
+      await proveOCIBoundaryEmpty(this.certificate.boundary) && (await Promise.all(this.certificate.helpers.map(helper =>
+        helper.boundary ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)
     if (this.certificate) await this.ownership.publish({ ...this.certificate, lifecycle: closed ? 'closed' : 'closure-unconfirmed' })
     return closed
   }

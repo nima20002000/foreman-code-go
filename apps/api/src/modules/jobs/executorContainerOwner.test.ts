@@ -24,4 +24,18 @@ describe('original OCI owner identity checks, no container or PID signals', () =
     expect(await owner.close(1)).toBe(false)
     expect(commands.run).toHaveBeenCalledWith(['container', 'inspect', 'original'])
   })
+  it('an unbounded original conmon helper prevents closure even after the container exited', async () => {
+    const containerId = 'a'.repeat(64)
+    const scope = { subject: { kind: 'job' as const, executionId: 'job', attemptId: 'attempt', operationId: 'operation', bindingHash: 'b'.repeat(64) },
+      leaseId: 'lease', owner: { grantId: 'grant', epoch: '1' }, observedDeviceId: 'device', observedInstallationId: 'installed', bootId: boot }
+    const certificate = { scope, containerId, process: { pid: 42, startTicks: '123', bootId: boot },
+      boundary: { kind: 'cgroup-v2' as const, path: '/sys/fs/cgroup/graphql-ci-test-absent-original-boundary', device: '1', inode: '2' },
+      helpers: [{ kind: 'conmon' as const, process: { pid: 43, startTicks: '124', bootId: boot }, boundary: null }], lifecycle: 'active' as const }
+    const ownership = { scope, assertCurrent: vi.fn(), bindContainer: vi.fn(), readCertificate: vi.fn(async () => certificate), publish: vi.fn() } as unknown as OCIContainerOwnership
+    const commands = { run: vi.fn(async () => ({ exitCode: 0, stdout: JSON.stringify([{ Id: containerId, Config: { Labels: { owner: 'original' } },
+      State: { Running: false, Pid: 0, Status: 'exited' } }]) })) }
+    const owner = new OwnedOCIContainer({ identity: 'original', labels: { owner: 'original' } }, commands, ownership)
+    expect(await owner.close(1)).toBe(false)
+    expect(ownership.publish).toHaveBeenCalledWith({ ...certificate, lifecycle: 'closure-unconfirmed' })
+  })
 })

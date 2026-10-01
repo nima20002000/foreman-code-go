@@ -14,7 +14,10 @@ import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalE
 import { RemoteJobOperationReceiptSchema, RemoteJobDispatchIntentSchema, RemoteJobOwnerControlSchema, RemoteJobNativeIdentitySchema, RemoteJobTerminalEvidenceSchema,
   type RemoteJobConnectionIdentity, type RemoteJobOperationReceipt, type RemoteJobDispatchIntent, type RemoteJobOwnerControl, type RemoteJobNativeIdentity, type RemoteJobTerminalEvidence, type RemoteJobOperationStatus } from '@graphql/contracts/remote-job-execution'
 
-const JournalSchema = z.object({ schemaVersion: z.literal(1), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
+import { JobRuntimeNativeAdmissionSchema, JobQualificationCandidateSchema, JobRuntimeQualificationResultSchema, type JobRuntimeNativeAdmission, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
+import { QualificationReceiptSchema, QualificationOCICertificateSchema, type QualificationReceipt } from '../../jobs/qualificationJournal.js'
+
+const JournalSchema = z.object({ schemaVersion: z.literal(1), qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
 
@@ -43,9 +46,9 @@ export class RemoteOperationJournal {
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
         if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-        data = { schemaVersion: 1, receipts: [], reconciliations: [], jobOutputs: [], jobLogs: [] }
+        data = { schemaVersion: 1, receipts: [], qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [] }
       }
-      if (data.receipts.length > capacity) throw new Error('Journal exceeds capacity')
+      if (data.receipts.length + data.qualificationReceipts.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, lock)
       await journal.persist(data)
       return journal
@@ -104,7 +107,8 @@ export class RemoteOperationJournal {
         return existing
       }
       if (data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
-      if (data.receipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
+      if (data.qualificationReceipts.some(value => value.admission.operationId === intent.operationId)) throw new Error('Operation already bound to a qualification')
+      if (data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
       const receipt = RemoteOperationReceiptSchema.parse({ schemaVersion: 1, intent, connection, workerIncarnationId,
         sequence: 1, phase: 'received', entryAttempted: false, turnEntryAttempted: false, stopFence: false, controls: [] })
@@ -237,6 +241,113 @@ export class RemoteOperationJournal {
       data.reconciliations.push(structuredClone(transition)); receipt.intent.owner = transition.nextOwner; receipt.sequence++; return receipt
     })
   }
+  private qualificationReceipt(data: z.infer<typeof JournalSchema>, operationId: string) {
+    const receipt = data.qualificationReceipts.find(value => value.admission.operationId === operationId)
+    if (!receipt) throw new Error('Unknown qualification: original-owner reconciliation required')
+    return receipt
+  }
+  async qualificationStatus(operationId: string): Promise<QualificationReceipt | null> {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    return structuredClone(this.data.qualificationReceipts.find(value => value.admission.operationId === operationId) ?? null)
+  }
+  qualificationAccept(raw: JobRuntimeNativeAdmission, rawCandidate: JobQualificationCandidate) {
+    return this.change(data => {
+      const admission = JobRuntimeNativeAdmissionSchema.parse(raw)
+      const candidate = JobQualificationCandidateSchema.parse(rawCandidate)
+      if (candidate.operationId !== admission.operationId || candidate.approvalId !== admission.approvalId || candidate.qualificationId !== admission.qualificationId) throw new Error('Qualification candidate subject changed')
+      const existing = data.qualificationReceipts.find(value => value.admission.operationId === admission.operationId)
+      if (existing) { if (!same(existing.admission, admission) || !same(existing.candidate, candidate)) throw new Error('Qualification admission conflict'); return existing }
+      if (data.receipts.some(value => value.intent.operationId === admission.operationId) || data.qualificationReceipts.some(value =>
+        value.admission.approvalId === admission.approvalId || value.admission.leaseId === admission.leaseId)) throw new Error('Original qualification identity already bound')
+      if (data.qualificationReceipts.length >= 1000 || data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
+      if (Date.parse(admission.expiresAt) <= Date.now()) throw new Error('Qualification admission expired')
+      const receipt = QualificationReceiptSchema.parse({ admission, candidate, result: null, sequence: 1, phase: 'received', launches: [], container: null })
+      data.qualificationReceipts.push(receipt); return receipt
+    })
+  }
+  qualificationReserveEntry(operationId: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      if (receipt.phase !== 'received' || Date.parse(receipt.admission.expiresAt) <= Date.now()) return { reserved: false, receipt }
+      receipt.phase = 'native_entry_attempted'; receipt.sequence++; return { reserved: true, receipt }
+    })
+  }
+  qualificationReserveProcess(operationId: string, input: { launchId: string; binary: string; argv: string[] }) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      if (receipt.phase !== 'native_entry_attempted' || receipt.launches.some(value => value.launchId === input.launchId) ||
+        receipt.launches.some(value => !value.closed) || receipt.launches.length >= 512) throw new Error('Original qualification process reservation unavailable')
+      receipt.launches.push({ ...input, exit: null, closed: false }); receipt.sequence++; return receipt
+    })
+  }
+  qualificationProcessExit(operationId: string, launchId: string, exit: { exitCode: number | null; signal: string | null }) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId), launch = receipt.launches.find(value => value.launchId === launchId)
+      if (!launch || launch.closed) throw new Error('Original qualification launch missing')
+      if (launch.exit && !same(launch.exit, exit)) throw new Error('Original qualification exit changed')
+      launch.exit = exit; receipt.sequence++; return receipt
+    })
+  }
+  qualificationProcessClosed(operationId: string, launchId: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId), launch = receipt.launches.find(value => value.launchId === launchId)
+      if (!launch) throw new Error('Original qualification launch missing')
+      launch.closed = true; receipt.sequence++; return receipt
+    })
+  }
+  qualificationContainerIntent(operationId: string, identity: string, fingerprint: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      if (identity !== `graphql-ci-qualification-${receipt.admission.qualificationId}` || fingerprint !== receipt.admission.fingerprintDigest ||
+        receipt.phase !== 'native_entry_attempted') throw new Error('Original qualification container intent changed')
+      if (receipt.container) { if (receipt.container.identity !== identity || receipt.container.fingerprint !== fingerprint) throw new Error('Original qualification container intent changed'); return receipt }
+      receipt.container = { identity, fingerprint, containerId: null, certificate: null }; receipt.sequence++; return receipt
+    })
+  }
+  qualificationBindContainer(operationId: string, identity: string, containerId: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId), container = receipt.container
+      if (!container || container.identity !== identity || container.containerId && container.containerId !== containerId) throw new Error('Original qualification container identity changed')
+      container.containerId = containerId; receipt.sequence++; return receipt
+    })
+  }
+  qualificationCertificate(operationId: string, raw: unknown) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId), certificate = QualificationOCICertificateSchema.parse(raw), container = receipt.container
+      const subject = certificate.scope.subject, admission = receipt.admission
+      if (!container || container.containerId !== certificate.containerId || !same(certificate.scope.admission, admission) ||
+        subject.operationId !== operationId || subject.qualificationId !== admission.qualificationId || subject.profileId !== admission.profileId ||
+        subject.profileRevision !== admission.profileRevision || subject.fingerprint !== admission.fingerprintDigest || certificate.scope.bootId !== admission.bootId ||
+        certificate.process.bootId !== admission.bootId || certificate.helpers.some(value => value.process.bootId !== admission.bootId)) throw new Error('Original qualification certificate scope changed')
+      if (container.certificate && (!same({ ...container.certificate, lifecycle: certificate.lifecycle }, certificate) ||
+        container.certificate.lifecycle === 'closed' && certificate.lifecycle !== 'closed')) throw new Error('Original qualification certificate identity changed')
+      container.certificate = certificate; receipt.sequence++; return receipt
+    })
+  }
+  qualificationClose(operationId: string) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId)
+      if (receipt.phase !== 'closed') {
+        if (receipt.launches.some(value => !value.closed) || receipt.container && receipt.container.certificate?.lifecycle !== 'closed') throw new Error('Original physical qualification closure unconfirmed')
+        receipt.phase = 'closed'; receipt.sequence++
+      }
+      return receipt
+    })
+  }
+  qualificationResult(operationId: string, raw: unknown) {
+    return this.change(data => {
+      const receipt = this.qualificationReceipt(data, operationId), result = JobRuntimeQualificationResultSchema.parse(raw)
+      if (receipt.result) { if (!same(receipt.result, result)) throw new Error('Original qualification result changed'); return receipt }
+      if (result.outcome === 'qualified' && (receipt.phase !== 'closed' || receipt.container?.certificate?.lifecycle !== 'closed' ||
+        result.measurement.approvalId !== receipt.admission.approvalId || result.measurement.qualificationId !== receipt.admission.qualificationId ||
+        result.measurement.fingerprintDigest !== receipt.admission.fingerprintDigest || !same(result.measurement.fingerprint, receipt.candidate.fingerprint))) throw new Error('Original measured qualification closure/context missing')
+      if (result.outcome === 'denied' && result.closure === 'confirmed' && receipt.phase !== 'closed') throw new Error('Original physical qualification closure unconfirmed')
+      if (result.outcome === 'denied' && result.closure === 'unconfirmed') receipt.phase = 'uncertain'
+      receipt.result = result; receipt.sequence++; return receipt
+    })
+  }
+
   private jobReceipt(data: z.infer<typeof JournalSchema>, operationId: string) {
     const receipt = data.receipts.find((value): value is RemoteJobOperationReceipt => 'kind' in value && value.intent.operationId === operationId)
     if (!receipt) throw new Error('Unknown job operation: recovery required')
@@ -257,7 +368,8 @@ export class RemoteOperationJournal {
         return existing
       }
       if (data.receipts.some(value => value.intent.executionId === intent.executionId || value.intent.attemptId === intent.attemptId)) throw new Error('Execution attempt already bound to another operation')
-      if (data.receipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
+      if (data.qualificationReceipts.some(value => value.admission.operationId === intent.operationId)) throw new Error('Operation already bound to a qualification')
+      if (data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
       if (connection.mainId !== intent.mainId) throw new Error('Wrong main identity')
       const receipt = RemoteJobOperationReceiptSchema.parse({ schemaVersion: 1, kind: 'job', intent, execution, connection, workerIncarnationId,
         sequence: 1, observedAt: new Date().toISOString(), phase: 'received', entryAttempted: false, stopFence: false, controls: [], publication: 'pending' })

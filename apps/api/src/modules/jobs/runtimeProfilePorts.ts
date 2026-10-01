@@ -1,5 +1,5 @@
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import type { JobRuntimeApproval, JobRuntimeFingerprint, JobRuntimeMeasurement, JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+import type { JobRuntimeApproval, JobRuntimeFingerprint, JobRuntimeProfile } from '@graphql/contracts/job-runtime'
 import type { JobSql } from './repository.js'
 /** CI-A's concrete installed-host producer. Candidate reads metadata; only approved run may probe. */
 export interface JobRuntimeQualificationProducer {
@@ -13,4 +13,4 @@ export interface JobRuntimeHumanAuthority {
   require(sql:JobSql,principal:ManagementPrincipal,approval:JobRuntimeApproval):Promise<void>
 }
 
-export type JobRuntimeQualificationResult = {outcome:'qualified';measurement:JobRuntimeMeasurement} | {outcome:'denied';closure:'not_started'|'confirmed'|'unconfirmed';reasons:string[]}
+export type JobRuntimeQualificationResult = import('zod').infer<typeof import('@graphql/contracts/job-runtime').JobRuntimeQualificationResultSchema>
