@@ -5,7 +5,8 @@ import { PostgresCommandCoordinator,commandInputHash } from '../src/modules/comm
 const principal:ManagementPrincipal={id:'actual-job-command-actor',name:'Job actor',audience:'operator',grants:[],expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null}
 afterEach(()=>vi.restoreAllMocks())
 function fixture(options:{receipt?:unknown;failReceipt?:boolean}={}) {
-  let inTransaction=false,writes:string[]=[],committed:string[]=[]
+  let inTransaction=false,writes:string[]=[]
+  const committed:string[]=[]
   const query=vi.fn(async(text:string)=>{
     if(text==='begin'){inTransaction=true;writes=[]}
     if(text==='commit'){committed.push(...writes);inTransaction=false;writes=[]}
