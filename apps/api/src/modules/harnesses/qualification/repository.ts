@@ -18,8 +18,8 @@ export class HarnessQualificationRepository {
     return result.rows[0] ? this.parse(result.rows[0] as Record<string, unknown>) : null
   }
 
-  async save(record: HarnessQualification, evidence: Record<string, unknown> = {}): Promise<void> {
-    await this.pool.query(`insert into harness_qualifications
+  async save(record: HarnessQualification, evidence: Record<string, unknown> = {}, client?: pg.ClientBase): Promise<void> {
+    await (client ?? this.pool).query(`insert into harness_qualifications
       (harness, version, binary_sha256, suite_revision, profile, status, checks, evidence, failure_reason, started_at, checked_at)
       values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11)
       on conflict (harness, version, binary_sha256, suite_revision) do update set

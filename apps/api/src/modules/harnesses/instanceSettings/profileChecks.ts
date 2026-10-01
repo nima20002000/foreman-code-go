@@ -6,6 +6,7 @@ import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'
 import type { HostHarnessOverrideAuthority } from './service.js'
 import { harnessHostKey, type HarnessInstanceSettingsRepository } from './repository.js'
+import type { NativeQualificationRetention } from '../installedCodexQualificationRetention.js'
 import type { HostHarnessProfileEvidenceRepository } from './profileRepository.js'
 
 export interface HostHarnessProfileQualifier {
@@ -26,7 +27,7 @@ export class HostHarnessInstanceProfileChecks {
   private readonly flights = new Set<Promise<unknown>>()
   constructor(private readonly settings: HarnessInstanceSettingsRepository, private readonly proofs: HostHarnessProfileEvidenceRepository,
     private readonly commands: PostgresCommandCoordinator, private readonly authority: HostHarnessOverrideAuthority,
-    private readonly qualifier: HostHarnessProfileQualifier) {}
+    private readonly qualifier: HostHarnessProfileQualifier, private readonly nativeRetention?: NativeQualificationRetention) {}
   check(principal: ManagementPrincipal, source: 'http' | 'mcp', input: HostHarnessInstanceCheckInput) {
     if (this.stopping.signal.aborted) return Promise.reject(new DomainError('HARNESS_CHECK_SHUTTING_DOWN', 'Host profile checks are stopping.', 503))
     if (this.flights.size >= 16) return Promise.reject(new DomainError('HARNESS_PROFILE_CHECK_BUSY', 'Host profile checks are busy; retry the same command.', 429))
@@ -86,7 +87,11 @@ export class HostHarnessInstanceProfileChecks {
           await this.settings.readAuthorized(async client => {
             await selected(client, true)
             signal.throwIfAborted()
+            if (proof.completedNativeQualification && !this.nativeRetention) throw new DomainError(
+              'HARNESS_NATIVE_RETENTION_UNAVAILABLE', 'Completed native qualification requires the Main transaction retention service.', 503)
+            const finalFence = proof.completedNativeQualification ? await this.nativeRetention!.retain(client, value, proof, checkId, signal) : undefined
             await this.proofs.append(client, checkId, value, proof)
+            await finalFence?.()
           })
           return { override: value, proof }
         } finally { await client.query('select pg_advisory_unlock(hashtext($1))', [profileLock]).catch(() => undefined) }
