@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ActivitySnapshotV1, InteractionSummary, Message } from '@graphql/contracts'
-import { agentChatFixtures, type AgentChatState } from '@graphql/contracts/agent-chat'
+import { agentChatFixtures, type AgentChatState, type SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 import { AgentChatTranscript } from './AgentChatTranscript'
 import { mountChat } from './testSupport'
 import { fixture as fileFixture } from '../../file-cards/testFixtures'
@@ -90,5 +91,38 @@ describe('canonical original send input', () => {
     expect(screen.queryByRole('button', { name: 'Send again as new message' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Read original send inputs' }))
     expect(onRefresh).toHaveBeenCalledOnce(); expect(onSendAgain).not.toHaveBeenCalled()
+  })
+  it.each([0, 10])('previews and confirms only the %s original file pins, while cancel sends nothing', async (count) => {
+    const value = state(), message = value.messages[0]!, turn = value.turns[0]!
+    const pins = Array.from({ length: count }, (_, index) => ({ fileId: `input-${index}`, revisionId: `pinned-${index}` }))
+    const content = 'exact admitted  text\n  with original spacing'
+    value.messages = [{ ...message, requestId: turn.requestId, content: 'displayed text', attachments: [
+      ...files(count + 12), ...(count ? [fileFixture({ ...pins[0]!, filename: 'original-input.md' })] : []),
+    ], originalInput: { requestId: turn.requestId, content, attachments: pins } }]
+    value.turns = [{ ...turn, delivery: 'unknown', messageId: message.id }]
+    const mounted = mountChat(value); await mounted.ready()
+    const sends = () => mounted.mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/messages'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Keep my independent draft' } })
+    await userEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+    const preview = screen.getByRole('alertdialog')
+    expect(within(preview).getByLabelText('Original message text').textContent).toBe(content)
+    expect(within(preview).queryByText('displayed text')).not.toBeInTheDocument()
+    expect(within(preview).queryByText('output-0.md')).not.toBeInTheDocument()
+    expect(within(preview).getByText(/Displayed output files are excluded/)).toBeInTheDocument()
+    if (count) {
+      expect(JSON.parse(within(preview).getByLabelText('Original file pins').textContent!)).toEqual(pins)
+      expect(within(preview).getByText('original-input.md')).toBeInTheDocument()
+    } else expect(within(preview).getByText(/This new message will contain text only/)).toBeInTheDocument()
+    expect(sends()).toHaveLength(0)
+    await userEvent.click(within(preview).getByRole('button', { name: 'Keep it' }))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(sends()).toHaveLength(0)
+    await userEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Send as new message' }))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    const sent = sends()[0]!.body as SendAgentChatMessageRequest
+    expect(sent).toMatchObject({ intent: 'next_turn', content, attachments: pins })
+    expect(sent.requestId).not.toBe(turn.requestId)
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep my independent draft')
   })
 })

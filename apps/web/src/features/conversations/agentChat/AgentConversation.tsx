@@ -1,9 +1,10 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@graphql/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
 import { ChatAttachmentBoundary } from '../ChatAttachmentBoundary'
 import { prepareChatAttachments } from '../chatAttachmentAttempt'
-import { Alert, Button, ConfirmDialog, LoadingState } from '../../../shared/ui/nocturne'
+import { Alert, Button, CodeBlock, Dialog, LoadingState } from '../../../shared/ui/nocturne'
+import { createFileCardHttpClient, MessageFileCards } from '../../file-cards'
 import { ApiError } from '../../../shared/api/client'
 import { ConversationComposer } from '../ConversationComposer'
 import { ConversationViewport } from '../ConversationViewport'
@@ -33,6 +34,10 @@ export function AgentConversation(props: AgentConversationProps) {
 function AgentConversationContent({ context, name, runActivity, onNewConversation, selected }: AgentConversationProps) {
   const chat = useAgentChat(context, selected), state = chat.state
   const conversation = state?.conversation
+  const conversationId = conversation?.id
+  const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
+    download: `/api/workspaces/${encodeURIComponent(context.workspaceId)}/agent-chat/conversations/${encodeURIComponent(conversationId)}/files/{fileId}/revisions/{revisionId}/content`,
+  }) : undefined, [context.workspaceId, conversationId])
   const attachments = useConversationAttachments(conversation ? { kind: 'temporary', chat: {
     kind: 'agent', conversationId: conversation.id, agentId: conversation.agentId,
     workspaceId: conversation.workspaceId, workflowId: conversation.workflowId,
@@ -102,6 +107,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const canStop = !!state && (busy || hasQueue) && state.availability.reason !== 'run_active' && !sessionMissing
     && (state.capabilities.interruptAndSend || !!state.capabilities.unavailable.interruptAndSend)
   const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.activityChannel !== 'reasoning' && message.nativeMessageComplete !== false).at(-1)
+  const resendFiles = sendAgain && state ? [...state.messages, ...(chat.history.data?.pages.flatMap((batch) => batch.pages.flatMap((page) => page.messages)) ?? [])]
+    .flatMap((message) => message.attachments ?? []) : []
   const legacyNotices = <div className="agent-chat-notices">
     {runActivity}
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
@@ -184,10 +191,22 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       </div> : null}
     </div> : null}
     <div className="n-sr-only" aria-live="polite" aria-atomic="true">{latestReply ? `New reply from ${name}: ${latestReply.content}` : ''}</div>
-    <ConfirmDialog open={sendAgain !== undefined} onOpenChange={(open) => { if (!open) setSendAgain(undefined) }}
+    <Dialog open={sendAgain !== undefined} onOpenChange={(open) => { if (!open) setSendAgain(undefined) }}
       title="Send again as a new message?" description="The original message may already have been accepted. This creates a new message and can repeat work. It is not a retry or a resume."
-      confirmLabel="Send as new message" error={nextReason} pending={chat.pending} onConfirm={() => {
-        if (sendAgain !== undefined && chat.send(sendAgain.content, 'next_turn', false, true, { attachments: sendAgain.attachments ?? [] })) { setSendAgain(undefined); focus() }
-      }} />
+      dismissible={!chat.pending} busy={chat.pending} role="alertdialog" size="sm">
+      {sendAgain ? <div className="n-stack">
+        <CodeBlock label="Original message text" code={sendAgain.content} />
+        <p>Only the original file pins below will be sent. Displayed output files are excluded.</p>
+        {sendAgain.attachments?.length ? <>
+          <CodeBlock label="Original file pins" language="json" code={JSON.stringify(sendAgain.attachments, null, 2)} />
+          {resendFileClient ? <MessageFileCards attachments={sendAgain.attachments} files={resendFiles} client={resendFileClient} /> : null}
+        </> : <p>No original files. This new message will contain text only.</p>}
+        {nextReason ? <p className="n-field-error" role="alert">{nextReason}</p> : null}
+        <div className="n-actions"><Button disabled={chat.pending} onClick={() => setSendAgain(undefined)}>Keep it</Button>
+          <Button variant="danger" loading={chat.pending} disabled={!!nextReason} onClick={() => {
+            if (chat.send(sendAgain.content, 'next_turn', false, true, { attachments: sendAgain.attachments ?? [] })) { setSendAgain(undefined); focus() }
+          }}>Send as new message</Button></div>
+      </div> : null}
+    </Dialog>
   </div>
 }
