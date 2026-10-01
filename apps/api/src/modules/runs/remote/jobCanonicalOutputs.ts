@@ -41,7 +41,9 @@ export function createWorkerJobOutputCollector(channel: WorkerJobOutputChannel, 
 }
 
 export interface JobOutputApplicationPort {
-  /** Main mints and persists the output intent under genuine job publication authority. */
+  /** Main mints and persists the output intent under genuine job publication authority.
+   * An expired original intent is returned only for a finalized retained canonical
+   * allocation; publication replay rechecks that authority without worker bytes. */
   admit(input: JobOutputPublicationInput): Promise<TransferIntent>
   publish(input: JobOutputPublicationInput): Promise<JobArtifact>
 }
@@ -60,7 +62,10 @@ export function createRemoteJobOutputCollector(receiver: ByteTransferPort, conne
       if (intent.executionId !== execution.id || intent.attemptId !== execution.attemptId || intent.direction !== 'to-main' || intent.byteClass !== 'artifact'
         || intent.placementHash !== execution.acceptedSpec.bindingHash || intent.manifestDigest !== execution.acceptedSpec.outputSpecDigest
         || intent.sha256 !== sha256 || intent.byteSize !== bytes.length || intent.mainId !== execution.acceptedSpec.target.mainId) throw new Error('Main output admission does not bind these exact bytes')
-      await new ResumableByteTransferSender(receiver, { read: async (accepted, offset, length) => {
+      // Main admits an expired original intent only for an already finalized,
+      // retained canonical allocation. Reconcile through its freshly authorized
+      // publication readback; never reopen an expired byte attempt.
+      if (Date.parse(intent.expiresAt) > Date.now()) await new ResumableByteTransferSender(receiver, { read: async (accepted, offset, length) => {
         if (accepted.transferId !== intent.transferId || accepted.sha256 !== sha256 || offset < 0 || offset + length > bytes.length) throw new Error('Sealed output transfer binding changed')
         return bytes.subarray(offset, offset + length)
       } }, connection).send(intent)
