@@ -210,6 +210,30 @@ export class NativeProcessRegistry {
     if (process.platform !== 'linux') return scope
     return { ...scope, launchId: reserveProcess(scope).id }
   }
+  /** The original live parent may abandon an exact, never-dispatched reservation
+   * only after its caller revokes future IO and joins admitted tasks. Publication
+   * is synchronous up to the ordinary closure path, so no launch can interleave. */
+  async abandonReservedLaunch(scope: NativeProcessRecovery): Promise<boolean> {
+    if (process.platform !== 'linux' || resolve(scope.root) !== resolve(this.root)
+      || !scope.launchId || !/^[0-9a-f-]{36}$/.test(scope.launchId)) throw new Error('Invalid native launch abandonment scope.')
+    const directory = join(privateDirectory(scope.root), key(scope.owner), scope.launchId)
+    const launch = launchRecord(readRecord(join(directory, 'intent.json')))
+    const parent = processIdentity(process.pid)
+    if (launch.id !== scope.launchId || launch.owner !== scope.owner || launch.boot !== bootIdentity()
+      || !parent || launch.parent.pid !== parent.pid || launch.parent.startTicks !== parent.startTicks) {
+      throw new Error('Only the exact original parent can abandon this native launch reservation.')
+    }
+    for (const name of ['claimed.json', 'dispatched.json', 'birth.json', 'containment.json', 'closed.json']) {
+      if (readRecord(join(directory, name)) !== undefined) return false
+    }
+    const previous = readRecord(join(directory, 'not-started.json'))
+    if (previous !== undefined) {
+      const row = recordObject(previous)
+      if (row.id !== launch.id || row.owner !== launch.owner) throw new Error('Conflicting native startup evidence.')
+    } else writeRecord(join(directory, 'not-started.json'), { id: launch.id, owner: launch.owner }, true)
+    await this.closeRegistration(scope, launch.id)
+    return true
+  }
   async closeOwner(owner: string, signal?: AbortSignal): Promise<boolean> {
     if (process.platform !== 'linux') return false
     const root = privateDirectory(this.root)
