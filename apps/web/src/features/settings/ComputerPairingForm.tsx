@@ -2,7 +2,9 @@ import { useEffect, useRef } from 'react'
 import { create } from 'zustand'
 import { DevicePairingGrantInputSchema } from '@graphql/contracts/device-identity'
 import { useCreateComputerPairingGrant } from '../../shared/api/computerSettings'
+import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
+import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { TextField, Textarea, Button } from '../../shared/ui/nocturne'
 
 type Fields = { workerInstallationId: string; publicKey: string; expectedFingerprint: string }
@@ -33,6 +35,7 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
   }, [grant.data, reset, expire])
   const valid = DevicePairingGrantInputSchema.safeParse({ ...fields, scopes: ['connect', 'heartbeat'], commandId: 'validation-only' }).success
   const submit = async () => {
+    const hadUnknownOutcome = attempt.unresolved
     const input: Input = { ...fields, scopes: ['connect', 'heartbeat'] }
     try {
       const request = attempt.input(original.current ?? input)
@@ -40,9 +43,14 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
       original.current ??= input
       await grant.mutateAsync(request)
       attempt.succeeded(); original.current = undefined
-    } catch (error) { attempt.failed(error); if (!attempt.unresolved) original.current = undefined }
+    } catch (error) {
+      if (!(hadUnknownOutcome && error instanceof ApiError && (error.status === 401 || error.status === 403))) attempt.failed(error)
+      if (!attempt.unresolved) original.current = undefined
+    }
   }
   return <section aria-label="Pair Ubuntu worker">
+    <UnsavedEditorGuard editor={{ label: 'computer pairing command', dirty: attempt.unresolved, busy: grant.isPending, uncertain: attempt.unresolved,
+      save: submit, discard: () => { if (!attempt.unresolved) reset() }, error: grant.error?.message }} />
     <h2>Pair Ubuntu worker</h2>
     <p>Install and sign-in approvals must be completed on the worker. Copy its public installation identity and independently verify its fingerprint before creating a one-use grant for main {mainId}.</p>
     <p>SSH connectivity does not prove application pairing. A pending registration becomes paired only after server-confirmed worker enrollment.</p>
