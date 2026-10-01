@@ -83,7 +83,7 @@ export function createRemoteNativeSourceChannel(): {
  * separately mandatory and remains branded; no local native capture cast. */
 export async function assertRemoteNativeSourceLocked(sql: GraphTransactionSql, owner: RunOwnership,
   execution: HarnessExecution, source: WorkflowOriginalNativeSource, evidence: RemoteNativeSourceEvidence,
-  verification: RemoteNativeSourceVerification, physical: RemoteNativePhysicalVerification): Promise<void> {
+  verification: RemoteNativeSourceVerification, physical: RemoteNativePhysicalVerification, registerCommitFence = true): Promise<void> {
   const original = verification.read(evidence), receipt = original.verified.receipt
   if (owner.runId !== execution.runId || receipt.intent.runId !== owner.runId || receipt.intent.executionId !== execution.id
     || receipt.intent.nodeId !== execution.workflowNodeId || !sameWorkflowValue(original.source, source)
@@ -95,5 +95,5 @@ export async function assertRemoteNativeSourceLocked(sql: GraphTransactionSql, o
       || !sameWorkflowValue(await readReconciledDispatchIntent(sql, receipt.intent.operationId, true), receipt.intent)) return conflict()
     await physical.assertOriginal(sql, owner, original)
   }
-  await verify(); beforeGraphCommit(sql, verify)
+  await verify(); if (registerCommitFence) beforeGraphCommit(sql, verify)
 }
