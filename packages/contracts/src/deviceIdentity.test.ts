@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { authorizeDevice, revokeDevice, type DevicePrincipal, type DeviceRegistration } from './deviceIdentity.js'
-import { loadOrCreateWorkerIdentity, loadWorkerPairing, persistWorkerPairing, updateWorkerEndpoint } from './deviceIdentityNode.js'
+import { loadOrCreateWorkerIdentity, publicKeyFingerprint, loadWorkerPairing, persistWorkerPairing, updateWorkerEndpoint } from './deviceIdentityNode.js'
 
 describe('device authority and durable local identity', () => {
   it('fences revoked, wrong-main, expired and stale authorization revisions', () => {
@@ -25,6 +25,7 @@ describe('device authority and durable local identity', () => {
     try {
       const identities = await Promise.all(Array.from({ length: 12 }, () => loadOrCreateWorkerIdentity(directory)))
       expect(new Set(identities.map(identity => identity.workerInstallationId)).size).toBe(1)
+      expect(() => publicKeyFingerprint(identities[0]!.privateKey)).toThrow('never private key material')
       expect((await loadOrCreateWorkerIdentity(directory)).workerInstallationId).toBe(identities[0]!.workerInstallationId)
       const stored = await readFile(join(directory, 'identity.json'), 'utf8')
       await writeFile(join(directory, 'identity.json'), '')
