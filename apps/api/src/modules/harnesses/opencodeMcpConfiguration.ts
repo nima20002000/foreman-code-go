@@ -38,6 +38,7 @@ function withoutAuthorization(entry: JsonObject): JsonObject {
 export async function inspectOpenCodeMcpConfiguration(input: {
   binary: string
   processRecovery?: NativeProcessRecovery
+  assertInstallation?: (signal?: AbortSignal) => Promise<void>
   workingDirectory: string
   serverName: string
   signal?: AbortSignal
@@ -46,16 +47,24 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   onVersion?: (version: string) => void
 }): Promise<NativeMcpEntryEvidence | undefined> {
   const credentialVariable = input.credentialEnvironmentVariable ?? APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
-  const version = await runCommand(input.binary, ['--version'], input.workingDirectory, input.signal, undefined,
-    input.processRecovery ? { recovery: input.processRecovery } : {})
+  const run = async (args: string[], environment?: Parameters<typeof runCommand>[4]) => {
+    input.signal?.throwIfAborted()
+    await input.assertInstallation?.(input.signal)
+    input.signal?.throwIfAborted()
+    const result = await runCommand(input.binary, args, input.workingDirectory, input.signal, environment,
+      input.processRecovery ? { recovery: input.processRecovery } : {})
+    await input.assertInstallation?.(input.signal)
+    input.signal?.throwIfAborted()
+    return result
+  }
+  const version = await run(['--version'])
   const providerVersion = (version.stdout || version.stderr).trim()
   if (version.exitCode !== 0 || harnessProfile('opencode', providerVersion) === null) {
     throw new HarnessExecutionError('OPENCODE_SERVER_VERSION_UNQUALIFIED', 'OpenCode MCP inspection requires a qualified binary.')
   }
   input.onVersion?.(providerVersion)
   const args = ['debug', 'config', ...(input.pure ? ['--pure'] : [])]
-  const baseline = await runCommand(input.binary, args, input.workingDirectory, input.signal, undefined,
-    input.processRecovery ? { recovery: input.processRecovery } : {})
+  const baseline = await run(args)
   const parseEntry = (result: typeof baseline): JsonObject | undefined => {
     if (result.exitCode !== 0) {
       throw new HarnessExecutionError('OPENCODE_MCP_INSPECTION_FAILED', 'OpenCode could not inspect its effective MCP configuration.')
@@ -90,10 +99,10 @@ export async function inspectOpenCodeMcpConfiguration(input: {
 
   const owner = 'graphql-mcp-configuration-probe'
   const marker = `graphql_probe_${randomBytes(32).toString('hex')}`
-  const checked = await runCommand(input.binary, args, input.workingDirectory, input.signal, {
+  const checked = await run(args, {
     expectedAgentId: owner,
     beforeSpawn: async () => ({ agentId: owner, variables: { [credentialVariable]: marker } }),
-  }, input.processRecovery ? { recovery: input.processRecovery } : {})
+  })
   const second = parseEntry(checked)
   if (launcher && second && isAppLauncher('opencode', second)
     && (second.environment as JsonObject)[credentialVariable] === '[REDACTED]'

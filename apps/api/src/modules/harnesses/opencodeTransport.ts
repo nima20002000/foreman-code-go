@@ -50,6 +50,8 @@ export interface OpenCodeServerController {
 
 export interface ManagedOpenCodeServerOptions {
   processRecovery?: NativeProcessRecovery
+  /** Validate the pinned host/launcher/payload selection around native startup/diagnostics. */
+  assertInstallation?: (signal?: AbortSignal) => Promise<void>
   binary: string
   workingDirectory: string
   ownerAgentId: string
@@ -160,6 +162,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     const evidence = await inspectOpenCodeMcpConfiguration({
       binary: this.options.binary, workingDirectory: directory, serverName,
       ...(this.options.processRecovery ? { processRecovery: this.options.processRecovery } : {}),
+      ...(this.options.assertInstallation ? { assertInstallation: this.options.assertInstallation } : {}),
       credentialEnvironmentVariable: this.options.credentialEnvironmentVariable ?? APP_CREDENTIAL_ENV,
       pure: this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true,
       ...(signal ? { signal } : {}),
@@ -310,8 +313,12 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
     const timer = setTimeout(() => abort.abort(new HarnessExecutionError('OPENCODE_SERVER_START_TIMEOUT',
       'OpenCode did not finish version probing and startup within the startup budget.')), this.options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS)
     try {
+      await this.options.assertInstallation?.(abort.signal)
+      abort.signal.throwIfAborted()
       const version = await runCommand(this.options.binary, ['--version'], this.options.workingDirectory, abort.signal, undefined,
         this.options.processRecovery ? { recovery: this.options.processRecovery } : {})
+      abort.signal.throwIfAborted()
+      await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
       const installed = (version.stdout || version.stderr).trim()
       if (version.exitCode === 0) {
@@ -337,6 +344,8 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
       }
       const pure = this.advancedConfiguration?.plugins.mode === 'pure' || this.options.pure === true
       this.stderr = ''
+      await this.options.assertInstallation?.(abort.signal)
+      abort.signal.throwIfAborted()
       const child = spawnNativeProcess(this.options.binary, ['serve', '--hostname', '127.0.0.1', '--port', '0', ...(pure ? ['--pure'] : [])], {
         cwd: this.options.workingDirectory, env: environment,
         ...(this.options.processRecovery ? { recovery: this.options.processRecovery } : {}),
@@ -371,6 +380,7 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
         }
         assertOpenCodeChatMcpDisabled(await read('/config'), await read('/mcp'), this.disabledAppMcpServerName)
       }
+      await this.options.assertInstallation?.(abort.signal)
       abort.signal.throwIfAborted()
       this.generation += 1
     } catch (error) {

@@ -229,3 +229,39 @@ it('[F19] an SSE body does not receive the ordinary whole-request deadline', asy
     assert.deepEqual(deadlines, [30_000])
   } finally { globalThis.fetch = originalFetch; AbortSignal.timeout = originalTimeout }
 })
+
+it('checks the pinned installation before version/spawn and after readiness, closing the same child on changed payload', async () => {
+  const f = await fixture()
+  let checks = 0
+  let changed = true
+  const server = new ManagedOpenCodeServer({ binary: f.binary, workingDirectory: f.directory, ownerAgentId: 'agent-1',
+    assertInstallation: async signal => {
+      signal?.throwIfAborted()
+      checks++
+      if (changed && checks === 4) throw new Error('selected installation changed after readiness')
+    },
+  })
+  try {
+    await assert.rejects(server.ensure(), /installation changed/)
+    assert.equal(checks, 4)
+    assert.equal(server.generation, 0)
+    assert.equal(server.nativePid, undefined)
+    assert.equal(server.residentGeneration, undefined)
+    changed = false
+    await server.ensure()
+    assert.equal(server.generation, 1)
+    assert.equal(checks, 8)
+  } finally { await server.dispose(); await rm(f.directory, { recursive: true, force: true }) }
+})
+
+it('rejects a stale installation before any version or serve subprocess is launched', async () => {
+  const f = await fixture()
+  const server = new ManagedOpenCodeServer({ binary: f.binary, workingDirectory: f.directory, ownerAgentId: 'agent-1',
+    assertInstallation: async () => { throw new Error('installation epoch changed before launch') },
+  })
+  try {
+    await assert.rejects(server.ensure(), /epoch changed/)
+    await assert.rejects(readFile(join(f.directory, 'version.pid')))
+    await assert.rejects(readFile(join(f.directory, 'server.pid')))
+  } finally { await server.dispose(); await rm(f.directory, { recursive: true, force: true }) }
+})
