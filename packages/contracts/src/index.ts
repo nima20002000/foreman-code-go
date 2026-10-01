@@ -1652,3 +1652,5 @@ export * from "./workspaceRootPolicies.js";
 export * from "./workspaceBoundLocation.js";
 export * from "./jobOutputTransfer.js";
 export * from "./jobRuntime.js";
+
+export * from "./resourceTelemetry.js";

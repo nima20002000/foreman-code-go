@@ -167,6 +167,14 @@
     "./claude-qualification": {
       "types": "./dist/claudeQualification.d.ts",
       "import": "./dist/claudeQualification.js"
+    },
+    "./resource-telemetry": {
+      "types": "./dist/resourceTelemetry.d.ts",
+      "import": "./dist/resourceTelemetry.js"
+    },
+    "./resource-telemetry-fixtures": {
+      "types": "./dist/resourceTelemetryFixtures.d.ts",
+      "import": "./dist/resourceTelemetryFixtures.js"
     }
   },
   "scripts": {
