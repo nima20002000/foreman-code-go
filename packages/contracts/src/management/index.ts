@@ -635,6 +635,7 @@ export const REPEAT_OPERATOR_TOOL_NAMES = [
 export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
 
 export const OperatorToolNameSchema = z.enum([
+  "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   ...REPEAT_OPERATOR_TOOL_NAMES,
   "operator_mcp_setup_get",
   "operator_chat_create", "operator_chat_get", "operator_chat_send", "operator_handoff_history_get",

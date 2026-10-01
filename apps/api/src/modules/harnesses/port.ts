@@ -14,6 +14,7 @@ import type {
 } from '@graphql/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
+import type { ResponseAvailabilityInspector } from './responseAvailability.js'
 
 export interface NativeEventInput {
   type: string
@@ -120,7 +121,7 @@ export interface NativeHistory {
 }
 
 /** Rich provider-neutral lifecycle. Concrete Codex/OpenCode transports are HAP-02/03. */
-export interface NativeHarnessSessionManager {
+export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
   inspectMcp(signal?: AbortSignal): Promise<McpDetection>

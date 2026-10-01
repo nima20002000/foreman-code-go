@@ -131,6 +131,10 @@
     "./job-workflow": {
       "types": "./dist/jobWorkflow.d.ts",
       "import": "./dist/jobWorkflow.js"
+    },
+    "./source-admission": {
+      "types": "./dist/sourceAdmission.d.ts",
+      "import": "./dist/sourceAdmission.js"
     }
   },
   "scripts": {
