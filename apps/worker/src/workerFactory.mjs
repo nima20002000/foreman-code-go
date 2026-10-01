@@ -34,13 +34,19 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
   await prepareWorkerState(stateDirectory);
   const unlock = await acquireWorkerLock(stateDirectory);
   try {
-    const path = join(stateDirectory, 'workflow-operations.json');
-    const existing = await lstat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-    if (existing) throw new WorkerError('native_runtime_already_initialized');
-    const originalRegistry = await lstat(join(stateDirectory, 'workflow-native-processes')).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-    if (originalRegistry) throw new WorkerError('native_runtime_recovery_required');
-    const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true });
-    await journal.close();
+    const journals = ['workflow-operations.json', 'job-runtime-operations.json'];
+    for (const name of journals) {
+      const existing = await lstat(join(stateDirectory, name)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      if (existing) throw new WorkerError('native_runtime_already_initialized');
+    }
+    for (const name of ['workflow-native-processes', 'job-runtime-native-processes']) {
+      const originalRegistry = await lstat(join(stateDirectory, name)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      if (originalRegistry) throw new WorkerError('native_runtime_recovery_required');
+    }
+    for (const name of journals) {
+      const journal = await RemoteOperationJournal.open(join(stateDirectory, name), { initializeNewInstallation: true });
+      await journal.close();
+    }
   } finally { await unlock(); }
 }
 
