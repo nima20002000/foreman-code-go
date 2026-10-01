@@ -11,7 +11,7 @@ The artifact also includes `src/worker.mjs`, a pure worker factory module. Its
 runtime/persistence checks as the CLI and returns the worker handle with B's
 `request` and `capabilities` methods on `handle.connection`. Root/HRT-C supplies
 the real domain handlers and grants. No empty dispatch handler or dynamic plugin
-loader is installed by this package. The CLI uses no extensions by default.
+loader is installed by this package. The CLI accepts no caller-provided extensions.
 
 The worker also loads `approved-roots.json` from its private state directory when
 present. This exact shared W09 allowlist is human-only configuration because it
