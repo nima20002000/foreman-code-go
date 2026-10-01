@@ -66,8 +66,21 @@ pair/negotiate/heartbeat.
 `/absolute/node /private/app/current/src/cli.mjs identity --state /private/state`
 initializes the durable local identity after runtime/persistence checks and emits
 only its installation ID, public key/fingerprint and key revision for enrollment.
-It never emits the private key. Use the main's authenticated pairing/proof flow
-and W07-A's write-once pairing API; entering a new endpoint is not re-pairing.
+It never emits the private key. Create a main-authorized grant for that installation
+and save a private 0600 enrollment input containing `mainId`, the human-approved
+`mainPublicKeyFingerprint`, WSS `/device/connect` endpoint, grant and stable UUID
+`requestId`. Keep the same request ID when retrying a lost response.
+
+```
+/absolute/node /private/app/current/src/cli.mjs pair --state /private/state --enrollment-file /private/enrollment.json
+```
+
+Pair first verifies a fresh nonce-bound proof from the pinned application main
+key over normal verified HTTPS, then sends the signed enrollment grant. It
+validates registration against the local identity and uses A's write-once
+persistence API. Output contains public IDs/revision only. It cannot overwrite
+an existing pairing or silently select a new main; an endpoint edit is not
+re-pairing. Remove the grant input through the human's approved cleanup policy.
 
 ## Update, rollback and diagnostics
 

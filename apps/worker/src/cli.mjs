@@ -7,14 +7,15 @@ import { createWorkerConnection } from '../../../apps/api/src/modules/devices/wo
 import { doctorReport, executableAvailability, hostFacts, WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
 import { startWorker, readWorkerStatus } from './runtime.mjs';
 import { validateManifest } from './installation.mjs';
+import { enrollWorker } from './enrollment.mjs';
 
 const execute = promisify(execFile);
 const args = process.argv.slice(2);
 const command = args[0];
-const stateDirectory = args.length === 3 && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
+const stateDirectory = [3, 5].includes(args.length) && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
 let runtime;
 async function main() {
-  if (!stateDirectory || !['run', 'doctor', 'identity'].includes(command)) throw new WorkerError('usage: graphql-worker run|doctor|identity --state /absolute/private/directory');
+  if (!stateDirectory || !['run', 'doctor', 'identity', 'pair'].includes(command) || (command !== 'pair' && args.length !== 3) || (command === 'pair' && (args.length !== 5 || args[3] !== '--enrollment-file' || !isAbsolute(args[4])))) throw new WorkerError('usage: graphql-worker run|doctor|identity|pair --state /absolute/private/directory [--enrollment-file /private/file]');
   const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
   if (command === 'doctor') {
     let identity; const errors = [];
@@ -45,6 +46,15 @@ async function main() {
   const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
   validateManifest(manifest, facts, { protocolVersion: 1, identityFormat: 1 });
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+  if (command === 'pair') {
+    await requirePrivateDirectory(stateDirectory);
+    // One selected main: never call enrollment to overwrite an existing pairing.
+    try { await readFile(`${stateDirectory}/pairing.json`); throw new WorkerError('already_paired'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const identity = await loadOrCreateWorkerIdentity(stateDirectory);
+    console.log(JSON.stringify(await enrollWorker({ stateDirectory, identity, enrollmentFile: args[4], appVersion: manifest.version })));
+    return;
+  }
   if (command === 'identity') {
     await requirePrivateDirectory(stateDirectory);
     const identity = await loadOrCreateWorkerIdentity(stateDirectory);
