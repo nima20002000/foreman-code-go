@@ -58,6 +58,7 @@ export const MainIdentityProofRequestSchema = z.object({
   deviceId: z.uuid().optional(), bootId: z.uuid().optional(), connectionGeneration: z.number().int().positive().optional(),
   keyRevision: z.number().int().positive().optional(), authorizationRevision: z.number().int().positive().optional(),
   connectionEpoch: z.uuid().optional(), mainConnectionEpoch: z.uuid().optional(),
+  negotiationHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   protocolVersion: z.number().int().positive(), workerApplicationVersion: z.string().min(1).max(128),
 }).strict()
 export type MainIdentityProofRequest = z.infer<typeof MainIdentityProofRequestSchema>

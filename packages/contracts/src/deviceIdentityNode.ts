@@ -107,7 +107,7 @@ export function mainIdentityProofMessage(request: import('./deviceIdentity.js').
   return JSON.stringify([request.audience, request.mainId, request.nonce, request.workerInstallationId,
     request.deviceId ?? null, request.bootId ?? null, request.connectionGeneration ?? null,
     request.keyRevision ?? null, request.authorizationRevision ?? null, request.connectionEpoch ?? null, request.mainConnectionEpoch ?? null,
-    request.protocolVersion, request.workerApplicationVersion, mainApplicationVersion])
+    request.protocolVersion, request.workerApplicationVersion, mainApplicationVersion, request.negotiationHash ?? null])
 }
 /** Fresh caller nonce and all claimed identity/version fields must match before accepting authority. */
 export async function verifyMainIdentityProof(proof: unknown, expected: import('./deviceIdentity.js').MainIdentityProofRequest,

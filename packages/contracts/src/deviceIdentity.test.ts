@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto'
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { authorizeDevice, revokeDevice, type DevicePrincipal, type DeviceRegistration } from './deviceIdentity.js'
-import { loadOrCreateWorkerIdentity, publicKeyFingerprint, loadWorkerPairing, persistWorkerPairing, updateWorkerEndpoint } from './deviceIdentityNode.js'
+import { loadOrCreateWorkerIdentity, mainIdentityProofMessage, verifyMainIdentityProof, publicKeyFingerprint, loadWorkerPairing, persistWorkerPairing, updateWorkerEndpoint } from './deviceIdentityNode.js'
 
 describe('device authority and durable local identity', () => {
   it('fences revoked, wrong-main, expired and stale authorization revisions', () => {
@@ -53,6 +53,23 @@ describe('device authority and durable local identity', () => {
       await rm(join(directory, 'identity.json'))
       await expect(loadOrCreateWorkerIdentity(directory)).rejects.toThrow('explicit recovery')
     } finally { await rm(directory, { recursive: true, force: true }) }
+  })
+
+  it('binds negotiated channel descriptors into the selected main proof', async () => {
+    const keys = generateKeyPairSync('ed25519'), mainPublicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
+    const request = { audience: 'graphql-worker-main-v1' as const, mainId: randomUUID(), nonce: randomBytes(32).toString('base64url'),
+      workerInstallationId: randomUUID(), protocolVersion: 1, workerApplicationVersion: 'worker', negotiationHash: 'a'.repeat(64) }
+    const mainPublicKeyFingerprint = publicKeyFingerprint(mainPublicKey)
+    const proof = { request, mainApplicationVersion: 'main', mainPublicKey, mainPublicKeyFingerprint,
+      signature: sign(null, Buffer.from(mainIdentityProofMessage(request, 'main')), keys.privateKey).toString('base64url') }
+    expect(await verifyMainIdentityProof(proof, request, mainPublicKeyFingerprint)).toBe(true)
+    expect(await verifyMainIdentityProof(proof, { ...request, negotiationHash: 'b'.repeat(64) }, mainPublicKeyFingerprint)).toBe(false)
+    const withoutNegotiation = { audience: request.audience, mainId: request.mainId, nonce: request.nonce,
+      workerInstallationId: request.workerInstallationId, protocolVersion: request.protocolVersion, workerApplicationVersion: request.workerApplicationVersion }
+    expect(await verifyMainIdentityProof(proof, withoutNegotiation, mainPublicKeyFingerprint)).toBe(false)
+    const legacyProof = { ...proof, request: withoutNegotiation,
+      signature: sign(null, Buffer.from(mainIdentityProofMessage(withoutNegotiation, 'main')), keys.privateKey).toString('base64url') }
+    expect(await verifyMainIdentityProof(legacyProof, withoutNegotiation, mainPublicKeyFingerprint)).toBe(true)
   })
 
 })
