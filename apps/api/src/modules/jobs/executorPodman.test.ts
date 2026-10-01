@@ -44,7 +44,7 @@ async function fixture() {
     return { exitCode: 0, stdout: JSON.stringify([{ Id: digest, Config: { Labels: { 'graphql.job.identity': plan.identity, 'graphql.job.spec': spec.specDigest, 'graphql.job.attempt': execution.attemptId } }, State: { Running: !stopped, Pid: stopped ? 0 : 100, ExitCode: 7, Status: stopped ? 'exited' : 'running' } }]) }
   })
   const commands: PodmanCommandRunner = { run, attach: vi.fn(async () => child as unknown as Awaited<ReturnType<PodmanCommandRunner['attach']>>) }
-  const ownership = { assertCurrent: vi.fn(), bindContainer: vi.fn(), launchHelpers: vi.fn(), readCertificate: vi.fn(), publish: vi.fn() } as unknown as OCIContainerOwnership
+  const ownership = { reserveContainerIntent: vi.fn(), assertCurrent: vi.fn(), bindContainer: vi.fn(), launchHelpers: vi.fn(), readCertificate: vi.fn(), publish: vi.fn() } as unknown as OCIContainerOwnership
   // Boundary supervision doubles only. Physical PID/cgroup certificate tests are separate.
   vi.spyOn(OwnedOCIContainer.prototype, 'entered').mockImplementation(async () => { throw new Error('unit boundary marker') })
   vi.spyOn(OwnedOCIContainer.prototype, 'close').mockResolvedValue(false)
@@ -74,4 +74,18 @@ describe('OCI immutable input consumer with command/boundary doubles, no live qu
     expect(f.ownership.bindContainer).toHaveBeenCalledWith(f.plan.identity, 'a'.repeat(64))
     f.stop()
   })
+  it('rearms the persisted deadline on recovery and stops locally without a launch', async () => {
+    const f = await fixture(), markTimeout = vi.fn(), deadlineMs = vi.fn(async () => Date.now() + 5)
+    const recovered = new PodmanJobSupervisor(f.plan.profile, f.commands, async () => f.ownership, { deadlineMs, markTimeout, isTimedOut: async () => false })
+    const stop = vi.spyOn(recovered, 'stopExecution').mockResolvedValue(true)
+    vi.useFakeTimers()
+    try {
+      expect(await recovered.reconcile(f.execution)).toMatchObject({ stopped: false, exitCode: null })
+      await vi.advanceTimersByTimeAsync(10)
+      expect(markTimeout).toHaveBeenCalledOnce()
+      expect(stop).toHaveBeenCalledWith(f.execution, f.execution.acceptedSpec.policy.cancellationGraceMs, 'a'.repeat(64))
+      expect(f.run.mock.calls.some(([argv]) => argv.includes('create') || argv.includes('start'))).toBe(false)
+    } finally { vi.useRealTimers() }
+  })
+
 })

@@ -168,10 +168,20 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
   const exited = process.exited.then(exit => { exitObserved = true; return exit })
   void exited.catch(() => {}) // Result handling below retains transport uncertainty.
   let stopPromise: Promise<boolean> | undefined
+  let resolveStopped!: (exit: JobExitEvidence) => void
+  let rejectStopped!: (error: Error) => void
+  const stoppedWithoutExit = new Promise<JobExitEvidence>((resolve, reject) => { resolveStopped = resolve; rejectStopped = reject })
+  void stoppedWithoutExit.catch(() => {})
   const stop = (why: NonNullable<typeof reason>) => {
     if (exitObserved && why !== 'log_limit') return
     reason ??= why
-    stopPromise ??= process.stop(spec.policy.cancellationGraceMs).catch(() => false)
+    if (!stopPromise) {
+      stopPromise = process.stop(spec.policy.cancellationGraceMs).catch(() => false)
+      void stopPromise.then(confirmed => {
+        if (confirmed) resolveStopped({ exitCode: null, signal: null })
+        else rejectStopped(new Error('Original Job physical stop unconfirmed.'))
+      })
+    }
   }
   const onCancel = () => stop('cancelled')
   cancellation.addEventListener('abort', onCancel, { once: true })
@@ -217,13 +227,17 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
   const drains = Promise.all([drain('stdout', process.stdout), drain('stderr', process.stderr)])
   try {
     try { await ports.authority.launched(execution, identity, process.containerId) } catch { result.recoveryRequired = true }
-    const exit = await exited
+    const exit = await Promise.race([exited, stoppedWithoutExit])
     result.exitCode = exit.exitCode
     result.signal = exit.signal
     result.processStopped = stopPromise ? await stopPromise : await process.proveStopped().catch(() => false)
     if (!result.processStopped) result.processStopped = await process.stop(spec.policy.cancellationGraceMs).catch(() => false)
-    await drains
+    let drainDeadline: ReturnType<typeof setTimeout> | undefined
+    try { await Promise.race([drains, new Promise<never>((_resolve, reject) => {
+      drainDeadline = setTimeout(() => reject(new Error('Closed Job output pipes failed to drain.')), spec.policy.cancellationGraceMs + 30000)
+    })]) } finally { if (drainDeadline) clearTimeout(drainDeadline) }
     if (!result.processStopped) return { ...result, recoveryRequired: true }
+    if (!exitObserved && reason === 'log_limit') return { ...result, recoveryRequired: true }
     result.outcome = reason === 'cancelled' ? 'cancelled' : reason === 'timed_out' || exit.timedOut ? 'timed_out' :
       exit.execError ? 'spawn_failed' : exit.exitCode === 0 ? 'succeeded' : 'build_failed'
     try { await ports.collectOutputs(execution) } catch { result.outputCollectionError = true }

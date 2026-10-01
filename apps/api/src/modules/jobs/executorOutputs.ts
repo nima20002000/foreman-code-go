@@ -2,9 +2,11 @@ import { constants } from 'node:fs'
 import { open, type FileHandle } from 'node:fs/promises'
 import type { AcceptedJobSpec } from '@graphql/contracts'
 
+export class JobOutputCollectionError extends Error {}
+
 /** Called by W09 only after container/descendant quiescence is positively proven. */
 export async function readDeclaredJobOutputs(root: string, spec: AcceptedJobSpec): Promise<Array<{ path: string; bytes: Buffer }>> {
-  const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(error => { throw new JobOutputCollectionError('Declared Job output root unavailable.', { cause: error }) })
   const outputs: Array<{ path: string; bytes: Buffer }> = []
   let total = 0
   try {
@@ -43,5 +45,5 @@ export async function readDeclaredJobOutputs(root: string, spec: AcceptedJobSpec
       }
     }
     return outputs
-  } finally { await rootHandle.close() }
+  } catch (error) { throw new JobOutputCollectionError(error instanceof Error && !('code' in error) ? error.message : 'Declared Job output collection failed.', { cause: error }) } finally { await rootHandle.close() }
 }

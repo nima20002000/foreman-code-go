@@ -4,6 +4,7 @@ import { JobExecutionSchema, type JobExecution } from '@graphql/contracts/jobs'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { RemoteJobExecutionRpcRequestSchema, type RemoteJobDispatchIntent, type RemoteJobConnectionIdentity,
   type RemoteJobOwnerControl, type RemoteJobOperationReceipt, type RemoteJobTerminalEvidence } from '@graphql/contracts/remote-job-execution'
+import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 import { executeJob, jobSupervisorIdentity, type JobExecutorPorts, type JobExecutorResult } from '../../jobs/executor.js'
 import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
@@ -13,7 +14,7 @@ export interface RemoteJobExecutionHostPorts {
   journal: RemoteOperationJournal
   connection: RemoteJobConnectionIdentity
   incarnationId: string
-  supervisor: PodmanJobSupervisor
+  supervisor: PodmanJobSupervisor | ((execution: JobExecution) => Promise<PodmanJobSupervisor>)
   source: JobExecutorPorts['source']
   /** Mandatory W09 canonical delivery; exact tuple is verified before claim/native entry. */
   inputs: JobExecutorPorts['inputs']
@@ -40,10 +41,37 @@ export class RemoteJobExecutionHost {
         || connection.keyRevision !== target.registration.keyRevision || connection.authorizationRevision !== target.registration.authorizationRevision) throw new Error('Job worker registration mismatch')
     } else if (!('kind' in connection) || connection.kind !== 'main' || connection.mainInstallationId !== target.mainInstallationId) throw new Error('Job main installation mismatch')
   }
+  /** Worker startup rearms only the original local watchdogs, without Main IO or relaunch. */
+  async recover(): Promise<void> {
+    for (const receipt of await this.ports.journal.jobOperations()) {
+      if (!receipt.entryAttempted || receipt.terminal) continue
+      this.validate(receipt.intent, receipt.execution)
+      const observed = await (await this.supervisor(receipt.execution)).reconcile(receipt.execution)
+      if (!observed) await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent during worker recovery')
+    }
+  }
   async shutdown(): Promise<void> {
-    const active = [...this.tasks.values()]
-    for (const owned of active) owned.controller.abort(new Error('Worker job host is shutting down.'))
-    await Promise.all(active.map(owned => owned.task))
+    const active = [...this.tasks.entries()]
+    for (const [, owned] of active) owned.controller.abort(new Error('Worker job host is shutting down.'))
+    await Promise.all(active.map(([, owned]) => owned.task))
+    for (const receipt of await this.ports.journal.jobOperations()) {
+      if (!receipt.entryAttempted || receipt.terminal) continue
+      const supervisor = await this.supervisor(receipt.execution)
+      let observed = await supervisor.reconcile(receipt.execution)
+      const interrupted = observed && !observed.stopped
+      if (interrupted) {
+        if (!await supervisor.stopExecution(receipt.execution, receipt.execution.acceptedSpec.policy.cancellationGraceMs, observed!.containerId)) throw new Error('Original Job shutdown closure remains unconfirmed')
+        observed = await supervisor.reconcile(receipt.execution)
+      }
+      if (!observed?.stopped || observed.exitCode === null) throw new Error('Original Job shutdown closure remains unconfirmed')
+      if (!receipt.native) await this.ports.journal.jobAcknowledgeLaunch(receipt.intent.operationId, { containerId: observed.containerId,
+        supervisorIdentity: jobSupervisorIdentity(receipt.execution), processIdentityDigest: digest({ executionId: receipt.execution.id,
+          attemptId: receipt.execution.attemptId, operationId: receipt.execution.operationId, containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution) }) })
+      await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({ outcome: interrupted || receipt.stopFence ? 'cancelled' :
+        observed.timedOut ? 'timed_out' : observed.execError ? 'spawn_failed' : observed.exitCode === 0 ? 'succeeded' : 'build_failed', exitCode: observed.exitCode,
+        signal: null, processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId: observed.containerId,
+        recoveryRequired: false, logError: true, logsTruncated: false, outputCollectionError: false }, true))
+    }
   }
   async handle(raw: unknown) {
     const frame = RemoteJobExecutionRpcRequestSchema.parse(raw)
@@ -53,7 +81,12 @@ export class RemoteJobExecutionHost {
     if (!isDeepStrictEqual(status.receipt.intent, frame.intent)) throw new Error('Stale job RPC owner')
     this.validate(frame.intent, status.receipt.execution)
     await this.ports.authorize(frame.intent, status.receipt.execution, frame.method === 'job-control' ? 'control' : 'read')
-    if (frame.method === 'job-control') return this.control(frame.command)
+    if (frame.method === 'job-control') {
+      if (frame.command.operationId !== frame.intent.operationId || frame.command.executionId !== frame.intent.executionId ||
+        frame.command.attemptId !== frame.intent.attemptId || frame.command.bindingHash !== frame.intent.bindingHash ||
+        !isDeepStrictEqual(frame.command.subject, frame.intent.subject) || !isDeepStrictEqual(frame.command.owner, frame.intent.owner)) throw new Error('Job control envelope ownership mismatch')
+      return this.control(frame.command)
+    }
     return this.reconcile(status.receipt)
   }
   async deliver(intent: RemoteJobDispatchIntent, raw: JobExecution) {
@@ -63,16 +96,18 @@ export class RemoteJobExecutionHost {
     await this.ports.journal.jobAccept(intent, execution, this.ports.connection, this.ports.incarnationId)
     const status = await this.ports.journal.jobStatus(intent.operationId)
     if (status.status !== 'known') return status
-    if (this.tasks.has(intent.operationId) || status.receipt.phase !== 'received') return status
+    if (this.tasks.has(intent.operationId)) return status
+    if (status.receipt.phase !== 'received') return this.reconcile(status.receipt)
     const controller = new AbortController()
     const task = this.execute(intent, execution, controller.signal).catch(async () => {
       try { await this.ports.journal.jobUncertain(intent.operationId, 'Original OCI execution requires reconciliation') } catch { /* Faulted journal already blocks new entry. */ }
     })
     this.tasks.set(intent.operationId, { controller, task })
+    void task.finally(() => { if (this.tasks.get(intent.operationId)?.task === task) this.tasks.delete(intent.operationId) }).catch(() => {})
     return this.ports.journal.jobStatus(intent.operationId)
   }
   private async execute(intent: RemoteJobDispatchIntent, execution: JobExecution, signal: AbortSignal) {
-    let outputsRequested = false
+    const supervisor = await this.supervisor(execution)
     const result = await executeJob(execution, {
       authority: {
         recheck: async () => { await this.ports.authorize(intent, execution, 'start') },
@@ -87,25 +122,38 @@ export class RemoteJobExecutionHost {
           await this.ports.journal.jobAcknowledgeLaunch(intent.operationId, { containerId, supervisorIdentity: name,
             processIdentityDigest: digest({ executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, containerId, supervisorIdentity: name }), startedAt: new Date().toISOString() })
         },
-      }, source: this.ports.source, inputs: this.ports.inputs, supervisor: this.ports.supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* Durable spool remains pending across transport loss. */ } },
-      collectOutputs: async () => { outputsRequested = true },
+      }, source: this.ports.source, inputs: this.ports.inputs, supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* Durable spool remains pending across transport loss. */ } },
+      collectOutputs: async () => {},
     }, signal)
     if (result.recoveryRequired || !result.processStopped || !result.outcome) { await this.ports.journal.jobUncertain(intent.operationId, 'OCI entry or physical closure remains uncertain'); return }
     const receipt = await this.ports.journal.jobTerminal(intent.operationId, this.terminalEvidence(result, false))
-    // A lost main acceptance ACK leaves physical evidence durable and publication pending.
+    await this.publish(receipt)
+  }
+  private supervisor(execution: JobExecution) {
+    return typeof this.ports.supervisor === 'function' ? this.ports.supervisor(execution) : Promise.resolve(this.ports.supervisor)
+  }
+  /** Each transition is fsynced before transport IO. Lost ACKs resume the same output commands. */
+  private async publish(original: RemoteJobOperationReceipt) {
+    let receipt = original
     await this.ports.observeReceipt(receipt)
-    const recorded = await this.ports.journal.jobPublication(intent.operationId, 'process_recorded')
-    await this.ports.observeReceipt(recorded)
-    if (outputsRequested) {
-      try {
-        await this.ports.authorize(intent, execution, 'publish')
-      }
-      catch { await this.ports.observeReceipt(await this.ports.journal.jobPublication(intent.operationId, 'failed')); return }
-      await this.ports.observeReceipt(await this.ports.journal.jobPublication(intent.operationId, 'collecting'))
-      try { await this.ports.collectOutputs(execution) }
-      catch { await this.ports.observeReceipt(await this.ports.journal.jobPublication(intent.operationId, 'failed')); return }
+    if (receipt.publication === 'complete' || receipt.publication === 'failed') return
+    if (receipt.publication === 'pending') {
+      receipt = await this.ports.journal.jobPublication(receipt.intent.operationId, 'process_recorded')
+      await this.ports.observeReceipt(receipt)
     }
-    await this.ports.observeReceipt(await this.ports.journal.jobPublication(intent.operationId, 'complete'))
+    if (receipt.entryAttempted && receipt.native) {
+      try { await this.ports.authorize(receipt.intent, receipt.execution, 'publish') }
+      catch { await this.ports.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'failed')); return }
+      if (receipt.publication !== 'collecting') receipt = await this.ports.journal.jobPublication(receipt.intent.operationId, 'collecting')
+      await this.ports.observeReceipt(receipt)
+      // A collector may have published before losing its ACK. Keep collecting; W09's
+      // retained command IDs reconcile publication instead of allocating another revision.
+      try { await this.ports.collectOutputs(receipt.execution) } catch (error) {
+        if (!(error instanceof JobOutputCollectionError)) throw error
+        await this.ports.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'failed')); return
+      }
+    }
+    await this.ports.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'complete'))
   }
   private async flushLogs(operationId: string) {
     for (const chunk of await this.ports.journal.jobPendingLogs(operationId)) {
@@ -121,23 +169,31 @@ export class RemoteJobExecutionHost {
   }
   private async reconcile(receipt: RemoteJobOperationReceipt) {
     try { await this.flushLogs(receipt.intent.operationId) } catch { /* Explicit durable pending log cursor remains. */ }
-    if (receipt.terminal || this.tasks.has(receipt.intent.operationId) || !receipt.entryAttempted) return this.ports.journal.jobStatus(receipt.intent.operationId)
+    if (this.tasks.has(receipt.intent.operationId)) return this.ports.journal.jobStatus(receipt.intent.operationId)
+    if (receipt.terminal) { await this.publish(receipt); return this.ports.journal.jobStatus(receipt.intent.operationId) }
+    if (!receipt.entryAttempted) {
+      if (receipt.stopFence) await this.publish(await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({
+        outcome: 'cancelled', exitCode: null, signal: null, processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution),
+        containerId: null, recoveryRequired: false, logError: false, logsTruncated: false, outputCollectionError: false }, false)))
+      return this.ports.journal.jobStatus(receipt.intent.operationId)
+    }
     await this.ports.authorize(receipt.intent, receipt.execution, 'read')
-    const observed = await this.ports.supervisor.reconcile(receipt.execution)
+    const supervisor = await this.supervisor(receipt.execution)
+    const observed = await supervisor.reconcile(receipt.execution)
     if (!observed) { await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent: nonexecution not proven'); return this.ports.journal.jobStatus(receipt.intent.operationId) }
     if (receipt.native && receipt.native.containerId !== observed.containerId) throw new Error('Recovered OCI container identity changed')
     if (!receipt.native) await this.ports.journal.jobAcknowledgeLaunch(receipt.intent.operationId, { containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution), processIdentityDigest: digest({ executionId: receipt.execution.id, attemptId: receipt.execution.attemptId, operationId: receipt.execution.operationId, containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution) }) })
     // Recovered absence of logs is explicit; stopped without exact exit outcome remains uncertain.
     if (!observed.stopped || observed.exitCode === null) return this.ports.journal.jobStatus(receipt.intent.operationId)
-    const evidence = this.terminalEvidence({ outcome: observed.exitCode === 0 ? 'succeeded' : 'build_failed', exitCode: observed.exitCode, signal: null, processStopped: true,
+    const evidence = this.terminalEvidence({ outcome: receipt.stopFence ? 'cancelled' : observed.timedOut ? 'timed_out' : observed.execError ? 'spawn_failed' : observed.exitCode === 0 ? 'succeeded' : 'build_failed', exitCode: observed.exitCode, signal: null, processStopped: true,
       supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId: observed.containerId, recoveryRequired: false, logError: true, logsTruncated: false, outputCollectionError: false }, true)
-    await this.ports.observeReceipt(await this.ports.journal.jobTerminal(receipt.intent.operationId, evidence))
+    await this.publish(await this.ports.journal.jobTerminal(receipt.intent.operationId, evidence))
     return this.ports.journal.jobStatus(receipt.intent.operationId)
   }
   private async control(command: RemoteJobOwnerControl) {
     const recorded = await this.ports.journal.jobControl(command)
     this.tasks.get(command.operationId)?.controller.abort()
-    if (recorded.dispatch) await this.ports.supervisor.stopExecution(recorded.receipt.execution,
+    if (recorded.dispatch) await (await this.supervisor(recorded.receipt.execution)).stopExecution(recorded.receipt.execution,
       recorded.receipt.execution.acceptedSpec.policy.cancellationGraceMs, recorded.receipt.native?.containerId)
     return this.reconcile(recorded.receipt)
   }
