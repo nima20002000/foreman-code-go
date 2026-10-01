@@ -64,8 +64,11 @@ export class HarnessInstallationRegistry {
     // Return independent serializable snapshots; no process/session/token state is shared.
     return { inventoryRevision: this.epoch, instance, installation: structuredClone(record), selection: Object.freeze({ driverId: instance.driverId, instanceId: instance.instanceId, instanceRevision: instance.instanceRevision, hostRef: Object.freeze({ ...input.hostRef }), harnessInstallationId: record.harnessInstallationId, installationFingerprint: record.installationFingerprint }) }
   }
+  assertCurrent(binding: RegistryHarnessSelection): void {
+    if (binding.inventoryRevision !== this.epoch || this.instances.select(binding.instance.instanceId).instanceRevision !== binding.instance.instanceRevision) throw new Error('Harness metadata binding is stale.')
+  }
   async metadata<T>(binding: RegistryHarnessSelection, suiteRevision: string, load: () => Promise<T>): Promise<T> {
-    if (binding.inventoryRevision !== this.epoch) throw new Error('Harness metadata binding is stale.')
+    this.assertCurrent(binding)
     const { instance, installation } = binding
     const key = JSON.stringify([hostKey(installation.hostRef), installation.harnessInstallationId, installation.installationFingerprint,
       instance.instanceId, instance.instanceRevision, instance.driverRevision, installation.protocolRevision, suiteRevision, installation.environmentGeneration, installation.connectionGeneration])
@@ -78,7 +81,8 @@ export class HarnessInstallationRegistry {
       void entry.value.catch(() => { if (this.cache.get(key) === selected) this.cache.delete(key) })
     }
     const value = await entry.value
-    if (entry.epoch !== this.epoch || this.instances.select(instance.instanceId).instanceRevision !== instance.instanceRevision) throw new Error('Harness metadata result is stale.')
+    if (entry.epoch !== this.epoch) throw new Error('Harness metadata result is stale.')
+    this.assertCurrent(binding)
     return structuredClone(value) as T
   }
 }
