@@ -11,7 +11,7 @@ const { build } = require('esbuild');
 const { parse } = require('yaml');
 const { Unpackr } = require('msgpackr');
 const unpacker = new Unpackr({ useRecords: true, moreTypes: true });
-import { copySharpPackages, artifactFiles } from './worker-artifact-files.mjs';
+import { copySharpPackages, artifactFiles, assertWorkerDependency } from './worker-artifact-files.mjs';
 import { DatabaseSync } from 'node:sqlite';
 const [targetFile, outputDirectory, runtimeFile] = process.argv.slice(2);
 if (!targetFile || !outputDirectory) throw new Error('Usage: build-worker-artifact.mjs /approved-target.json /new-output-directory [/reviewed-runtime.json]');
@@ -53,6 +53,7 @@ const built = await build({ absWorkingDir: root, entryPoints: { cli: 'apps/worke
     `./packages/contracts/${(typeof value === 'string' ? value : value.import).replace('./dist/', './src/').replace(/\.js$/, '.ts')}`,
   ])),
   plugins: [{ name: 'committed-source-snapshot', setup(builder) {
+    builder.onResolve({ filter: /.*/ }, input => { assertWorkerDependency(input.path); });
     builder.onLoad({ filter: /\.(?:[cm]?[jt]s|json)$/ }, (input) => {
       const path = relative(root, input.path);
       if (path.startsWith('node_modules/') || path.includes('/node_modules/')) return;
