@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { IdSchema } from './schemaPrimitives.js'
 
 export const SourceHashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 export const SourceEntrySchema = z.object({
@@ -23,8 +24,8 @@ export type SourceEntry = z.infer<typeof SourceEntrySchema>
 export type SourceManifest = z.infer<typeof SourceManifestSchema>
 
 export const RootBindingSchema = z.object({
-  version: z.literal(1), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
-  workspaceId: z.uuid(), rootId: z.uuid(), bindingRevision: z.number().int().positive(),
+  version: z.literal(1), mainId: z.uuid(), deviceId: z.uuid().nullable(), workerInstallationId: z.uuid().nullable(),
+  workspaceId: IdSchema, rootId: z.uuid(), bindingRevision: z.number().int().positive(),
   locationRevision: z.number().int().positive(), canonicalPath: z.string().min(1),
   filesystem: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
   accessMode: z.enum(['read-only', 'exclusive-write']), snapshotId: z.uuid(), manifestDigest: SourceHashSchema,
@@ -32,8 +33,8 @@ export const RootBindingSchema = z.object({
 export type RootBinding = z.infer<typeof RootBindingSchema>
 export const MaterializationReceiptSchema = z.object({
   version: z.literal(1), materializationId: z.uuid(), binding: RootBindingSchema,
-  placementHash: SourceHashSchema, executionId: z.uuid(), attemptId: z.uuid(),
-  keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
+  placementHash: SourceHashSchema, executionId: IdSchema, attemptId: IdSchema,
+  keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable(),
   verifiedManifestDigest: SourceHashSchema, verifiedEntries: z.number().int().nonnegative(),
   verifiedBytes: z.number().int().nonnegative(), verifiedAt: z.string().datetime(),
   localTreeIdentity: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
