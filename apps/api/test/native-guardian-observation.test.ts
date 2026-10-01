@@ -66,7 +66,8 @@ describe('guardian actual child observation receipts', () => {
     expect(f.records.has('/private/provider-exit.json')).toBe(false)
     f.native.emit('exit', 0, null)
     expect(JSON.parse(f.records.get('/private/provider-exit.json')!)).toMatchObject({ provider: { pid: 902, startTicks: '200' }, code: 0, signal: null })
-    expect(f.ipc).toHaveLength(2)
+    expect(f.ipc).toHaveLength(3)
+    expect(f.ipc[2]).toMatchObject({ operation: 'native_exit', owner: 'same-lease', nativePid: 902, exitCode: 0, exitSignal: null })
   })
   it('keeps a disappeared-before-capture child uncertain and never substitutes the guardian PID', () => {
     const f = guardianFixture(false)
