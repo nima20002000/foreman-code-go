@@ -84,3 +84,23 @@ export const HostHarnessOverrideSaveResultSchema = z.object({ value: HostHarness
 
 export const HARNESS_DISCOVERY_NAMESPACE = 'harness-discovery-v1' as const
 export const HarnessDiscoveryRequestSchema = z.object({ operation: z.literal('discover'), refreshId: z.uuid() }).strict()
+
+export const HostHarnessInstanceCheckInputSchema = z.object({
+  commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().positive(), target: HostHarnessOverrideTargetSchema,
+}).strict()
+export type HostHarnessInstanceCheckInput = z.infer<typeof HostHarnessInstanceCheckInputSchema>
+/** Native-produced exact-profile evidence; callers cannot supply it to the check command. */
+export const HostHarnessProfileEvidenceSchema = z.object({
+  target: HostHarnessOverrideTargetSchema, instanceRevision: Identity, configurationFingerprint: Identity,
+  driverId: Identity, driverRevision: Identity, protocolRevision: Identity, suiteRevision: Identity,
+  environmentGeneration: Identity, connectionGeneration: Identity,
+  authenticated: z.boolean(), compatible: z.boolean(), qualified: z.boolean(), checkedAt: z.string().datetime(),
+}).strict()
+export type HostHarnessProfileEvidence = z.infer<typeof HostHarnessProfileEvidenceSchema>
+export const HostHarnessInstanceCheckResultSchema = z.object({
+  value: HostHarnessOverrideSchema, proof: HostHarnessProfileEvidenceSchema, replayed: z.boolean(),
+}).strict()
+export const HARNESS_PROFILE_CHECK_NAMESPACE = 'host-harness-check-v1' as const
+export const HostHarnessProfileCheckRequestSchema = z.object({
+  checkId: z.uuid(), override: HostHarnessOverrideSchema,
+}).strict()
