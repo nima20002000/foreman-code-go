@@ -12,6 +12,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
+import type { HostHarnessOverrideService } from '../harnesses/instanceSettings/service.js'
+import type { HarnessProfileSelection } from '@graphql/contracts/harness-registry'
 import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { lockActiveWorkspace } from './admission.js'
@@ -49,7 +51,7 @@ export async function readAgentForReuse(client: pg.ClientBase, principal: Manage
   }
   const agent = agentWithConfiguration(AgentSchema.parse({...AgentSchema.parse(row.record), productRole: configuration.productRole,
     configurationVersionId: configuration.id, prompt: configuration.prompt, assignedSkills: configuration.assignedSkills,
-    graphqlTools: configuration.graphqlTools}), configuration.harness)
+    graphqlTools: configuration.graphqlTools, harnessProfileSelection: configuration.harnessProfileSelection}), configuration.harness)
   return {agent, baseRevision: Number(row.metadata_revision), workflowIds: references.rows.map((item) => item.id)}
 }
 
@@ -72,7 +74,15 @@ export async function assertAgentIdle(client: pg.ClientBase, workspaceId: string
 
 export class OperatorAgentMutationService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly harnesses: Pick<HarnessCatalogService,'qualifyConfiguration'>) {}
+    private readonly harnesses: Pick<HarnessCatalogService,'qualifyConfiguration'>,
+    private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'>) {}
+
+  private validateProfile(principal: ManagementPrincipal) {
+    return async (selection: HarnessProfileSelection, configuration: HarnessConfiguration, client: pg.PoolClient) => {
+      if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
+      await this.profiles.validateSelection(principal, selection, configuration, client)
+    }
+  }
 
   private async authorizeWrite(client: pg.PoolClient, principal: ManagementPrincipal, workspaceId: string, agentId: string) {
     requireAuthorization(principal,'agents:update',{workspaceId})
@@ -100,13 +110,14 @@ export class OperatorAgentMutationService {
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The Agent ID already exists.',409)
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)
         const configuration = input.configuration ?? defaults.value[input.productRole].harness
+        const harnessProfileSelection = input.harnessProfileSelection ?? (input.configuration ? undefined : defaults.value[input.productRole].harnessProfileSelection)
         authorizeAgentConfiguration(principal,input.workspaceId,configuration,input.assignedSkills)
-        await this.harnesses.qualifyConfiguration(configuration)
+        if (!harnessProfileSelection) await this.harnesses.qualifyConfiguration(configuration)
         const agent = await saveAgentConfiguration(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({
           id:input.agentId,name:input.name,productRole:input.productRole,description:input.description,role:input.role,
-          prompt:input.prompt ?? {},assignedSkills:input.assignedSkills ?? [],
+          prompt:input.prompt ?? {},assignedSkills:input.assignedSkills ?? [], harnessProfileSelection,
           ...(input.graphqlTools ? {graphqlTools:input.graphqlTools} : {}),
-        }),configuration))
+        }),configuration), false, this.validateProfile(principal))
         const revision = await client.query<{metadata_revision:string}>('select metadata_revision from agents where id=$1',[agent.id])
         return {agent,metadataRevision:Number(revision.rows[0]!.metadata_revision)}
       },
@@ -123,10 +134,11 @@ export class OperatorAgentMutationService {
         this.assertRevision(current,input.expectedRevision,input.expectedConfigurationVersionId)
         const configuration = input.configuration ?? current.agent.harnessConfiguration!
         authorizeAgentConfiguration(principal,input.workspaceId,configuration,input.assignedSkills ?? current.agent.assignedSkills)
-        if (!isDeepStrictEqual(withAdvancedDefaults(configuration),withAdvancedDefaults(current.agent.harnessConfiguration!))) {
+        const harnessProfileSelection = input.harnessProfileSelection ?? current.agent.harnessProfileSelection
+        if (!harnessProfileSelection && !isDeepStrictEqual(withAdvancedDefaults(configuration),withAdvancedDefaults(current.agent.harnessConfiguration!))) {
           await this.harnesses.qualifyConfiguration(configuration)
         }
-        const edited = agentWithConfiguration(AgentSchema.parse({...current.agent,
+        const edited = agentWithConfiguration(AgentSchema.parse({...current.agent, harnessProfileSelection,
           ...(input.name !== undefined ? {name:input.name} : {}),
           ...(input.description !== undefined ? {description:input.description ?? undefined} : {}),
           ...(input.role !== undefined ? {role:input.role ?? undefined} : {}),
@@ -134,7 +146,7 @@ export class OperatorAgentMutationService {
           ...(input.assignedSkills !== undefined ? {assignedSkills:input.assignedSkills} : {}),
           ...(input.graphqlTools !== undefined ? {graphqlTools:input.graphqlTools} : {}),
         }),configuration)
-        return this.persist(client,input.workspaceId,edited)
+        return this.persist(client,input.workspaceId,edited,principal)
       },
     })
   }
@@ -153,12 +165,12 @@ export class OperatorAgentMutationService {
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The clone Agent ID already exists.',409)
         const source = current.agent
         authorizeAgentConfiguration(principal,input.workspaceId,source.harnessConfiguration!,source.assignedSkills)
-        await this.harnesses.qualifyConfiguration(source.harnessConfiguration!)
+        if (!source.harnessProfileSelection) await this.harnesses.qualifyConfiguration(source.harnessConfiguration!)
         const agent = await saveAgentConfiguration(client,input.workspaceId,AgentSchema.parse({
           id:input.agentId,name:input.name,description:source.description,role:source.role,productRole:source.productRole,
-          harnessConfiguration:source.harnessConfiguration,prompt:source.prompt,assignedSkills:source.assignedSkills,
+          harnessConfiguration:source.harnessConfiguration,harnessProfileSelection:source.harnessProfileSelection,prompt:source.prompt,assignedSkills:source.assignedSkills,
           graphqlTools:source.graphqlTools,
-        }))
+        }),false,this.validateProfile(principal))
         const revision = await client.query<{metadata_revision:string}>('select metadata_revision from agents where id=$1',[agent.id])
         return {agent,metadataRevision:Number(revision.rows[0]!.metadata_revision)}
       },
@@ -179,9 +191,9 @@ export class OperatorAgentMutationService {
         // silently redesign those assignments across shared workflows.
         if (version.productRole !== current.agent.productRole) throw new DomainError('AGENT_ROLE_RESTORE_UNSUPPORTED','Restore role-changing history through an explicitly validated graph change.',409)
         authorizeAgentConfiguration(principal,input.workspaceId,version.harness,version.assignedSkills)
-        await this.harnesses.qualifyConfiguration(version.harness)
+        if (!version.harnessProfileSelection) await this.harnesses.qualifyConfiguration(version.harness)
         return this.persist(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({...current.agent,
-          prompt:version.prompt,assignedSkills:version.assignedSkills,graphqlTools:version.graphqlTools}),version.harness))
+          prompt:version.prompt,assignedSkills:version.assignedSkills,graphqlTools:version.graphqlTools,harnessProfileSelection:version.harnessProfileSelection}),version.harness),principal)
       },
     })
   }
@@ -190,8 +202,8 @@ export class OperatorAgentMutationService {
     if (current.baseRevision !== expectedRevision) throw new DomainError('AGENT_REVISION_CONFLICT','The Agent metadata changed.',409)
     if (current.agent.configurationVersionId !== expectedConfigurationVersionId) throw new DomainError('AGENT_CONFIGURATION_CONFLICT','The Agent configuration changed.',409)
   }
-  private async persist(client:pg.PoolClient,workspaceId:string,edited:Agent) {
-    const agent = await saveAgentConfiguration(client,workspaceId,edited,true)
+  private async persist(client:pg.PoolClient,workspaceId:string,edited:Agent,principal:ManagementPrincipal) {
+    const agent = await saveAgentConfiguration(client,workspaceId,edited,true,this.validateProfile(principal))
     const rows = await client.query<{metadata_revision:string}>(
       'update agents set metadata_revision=metadata_revision+1 where workspace_id=$1 and id=$2 returning metadata_revision',[workspaceId,agent.id],
     )

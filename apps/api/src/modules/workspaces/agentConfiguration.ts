@@ -9,6 +9,8 @@ import {
   graphqlToolsOutsideRole,
 } from '@graphql/contracts'
 import type pg from 'pg'
+import type { HarnessProfileSelection } from '@graphql/contracts/harness-registry'
+import type { HarnessConfiguration } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
 import { resolveAssignedSkills } from '../skills/catalog.js'
@@ -28,10 +30,19 @@ export function configurationInput(
   const assignedSkills = agent.assignedSkills ?? current?.assignedSkills ?? []
   const productRole = agent.productRole ?? current?.productRole
   const graphqlTools = agent.graphqlTools ?? current?.graphqlTools
+  const harnessProfileSelection = Object.hasOwn(agent, 'harnessProfileSelection') ? agent.harnessProfileSelection : current?.harnessProfileSelection
+  const profile = harnessProfileSelection ? { harnessProfileSelection } : {}
   const outside = graphqlToolsOutsideRole(productRole ?? 'coder', graphqlTools ?? [])
   if (outside.length) {
     throw new DomainError('GRAPHQL_TOOL_NOT_ALLOWED_FOR_ROLE',
       `The ${productRole === 'orchestrator' ? 'Orchestrator' : 'Coder'} role cannot use ${outside.join(', ')}.`, 400, { tools: outside })
+  }
+  if (harness === 'claude') {
+    const configuration = agent.harnessConfiguration?.harness === 'claude' ? agent.harnessConfiguration
+      : current?.harness.harness === 'claude' ? current.harness : undefined
+    if (!configuration) throw new DomainError('AGENT_CONFIGURATION_REQUIRED', 'Claude requires an explicit accepted configuration.', 400)
+    return { workspaceId, agentId: agent.id, productRole, prompt, assignedSkills, ...profile,
+      ...(graphqlTools ? { graphqlTools } : {}), harness: configuration } as const
   }
   if (harness === 'opencode') {
     const suppliedHarness = agent.harnessConfiguration?.harness === 'opencode'
@@ -42,6 +53,7 @@ export function configurationInput(
     const variant = suppliedHarness?.variant ?? agent.effort ?? currentHarness?.variant ?? 'max'
     return {
       workspaceId,
+      ...profile,
       agentId: agent.id,
       productRole,
       prompt,
@@ -66,6 +78,7 @@ export function configurationInput(
     ?? (current?.harness.harness === 'codex' ? current.harness : undefined)
   return {
     workspaceId,
+    ...profile,
     agentId: agent.id,
     productRole,
     prompt,
@@ -108,6 +121,7 @@ export async function saveAgentConfiguration(
   workspaceId: string,
   input: Agent,
   mustExist = false,
+  validateProfileSelection?: (selection: HarnessProfileSelection, configuration: HarnessConfiguration, client: pg.PoolClient) => Promise<void>,
 ): Promise<Agent> {
   const parsed = AgentSchema.parse(input)
   await lockAgentConfigurations(client, [parsed.id])
@@ -143,6 +157,10 @@ export async function saveAgentConfiguration(
     throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', 'This agent has no persisted configuration to edit.', 409)
   }
   const nextConfiguration = configurationInput(workspaceId, parsed, current)
+  if (nextConfiguration.harnessProfileSelection) {
+    if (!validateProfileSelection) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
+    await validateProfileSelection(nextConfiguration.harnessProfileSelection, nextConfiguration.harness, client)
+  }
   const nextInput = await pinnedConfigurationContent(client, workspaceId, nextConfiguration, current)
   const nextHash = `sha256:${createHash('sha256').update(JSON.stringify(nextInput)).digest('hex')}`
   const now = new Date().toISOString()
@@ -192,6 +210,7 @@ export async function saveAgentConfiguration(
     effort: projectHarnessEffort(harness),
     fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
     harnessConfiguration: harness,
+    harnessProfileSelection: configuration.harnessProfileSelection,
     configurationVersionId: configuration.id,
     prompt: configuration.prompt,
     assignedSkills: configuration.assignedSkills,

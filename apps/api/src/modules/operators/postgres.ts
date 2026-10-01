@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
 
 import {
@@ -10,6 +11,7 @@ import {
   type WorkspaceSkillReference,
 } from '@graphql/contracts'
 import type pg from 'pg'
+import type { HarnessProfileSelection } from '@graphql/contracts/harness-registry'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
@@ -29,7 +31,7 @@ function canonical(value: unknown): unknown {
   }
   return value
 }
-function hash(value: HarnessConfiguration) { return `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}` }
+function hash(value: unknown) { return `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}` }
 
 /** Pins exact skill snapshots for the Operator. Previously pinned references stay valid if archived later. */
 export async function operatorSkillContent(client: pg.ClientBase, references: readonly WorkspaceSkillReference[] | undefined,
@@ -63,7 +65,9 @@ export class PostgresOperatorRepository {
     }
     const defaults = snapshot.value.operator
     return OperatorConfigurationVersionSchema.parse({ id: `${OPERATOR_ID}-inspection`, operatorId: OPERATOR_ID, version: 1,
-      harness: defaults.harness, showThinking: defaults.showThinking ?? false, contentHash: hash(defaults.harness),
+      harness: defaults.harness, showThinking: defaults.showThinking ?? false,
+      ...(defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}),
+      contentHash: defaults.harnessProfileSelection ? hash({ harness: defaults.harness, harnessProfileSelection: defaults.harnessProfileSelection }) : hash(defaults.harness),
       createdAt: new Date().toISOString() })
   }
 
@@ -83,12 +87,13 @@ export class PostgresOperatorRepository {
     const createdAt = new Date().toISOString()
     const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator
     const harness = defaults.harness
+    const profile = defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}
     // Saved defaults were authorized and resolved when saved; keep those exact references.
     const skills = await operatorSkillContent(client, defaults.assignedSkills, defaults.assignedSkills)
     const configuration = OperatorConfigurationVersionSchema.parse({
       id: `${OPERATOR_ID}-config-v1-${randomUUID()}`, operatorId: OPERATOR_ID, version: 1,
-      harness, showThinking: defaults.showThinking ?? false, ...skills,
-      contentHash: 'assignedSkills' in skills ? `sha256:${createHash('sha256').update(JSON.stringify({ harness: canonical(harness), ...skills })).digest('hex')}` : hash(harness), createdAt,
+      harness, showThinking: defaults.showThinking ?? false, ...skills, ...profile,
+      contentHash: 'assignedSkills' in skills || defaults.harnessProfileSelection ? `sha256:${createHash('sha256').update(JSON.stringify({ harness: canonical(harness), ...skills, ...profile })).digest('hex')}` : hash(harness), createdAt,
     })
     const operator = OperatorAgentSchema.parse({
       id: OPERATOR_ID, role: 'operator', name: 'Operator', currentConfigurationVersionId: configuration.id,
@@ -112,7 +117,7 @@ export class PostgresOperatorRepository {
   }
 
   async updateWithClient(client: pg.ClientBase, harness: HarnessConfiguration, expectedConfigurationVersionId: string, showThinking = false,
-    assignedSkills?: readonly WorkspaceSkillReference[]) {
+    assignedSkills?: readonly WorkspaceSkillReference[], harnessProfileSelection?: HarnessProfileSelection | null) {
       await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
       const row = await client.query<{ record: unknown; current_configuration_version_id: string }>(
         'select record, current_configuration_version_id from application_operators where id = $1 for update', [OPERATOR_ID],
@@ -122,14 +127,19 @@ export class PostgresOperatorRepository {
         throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'Operator settings changed since they were read.', 409)
       }
       const previous = (await client.query<{ record: unknown }>('select record from operator_configuration_versions where id = $1', [expectedConfigurationVersionId])).rows[0]
-      const skills = await operatorSkillContent(client, assignedSkills,
-        previous ? OperatorConfigurationVersionSchema.parse(previous.record).assignedSkills : [])
+      const previousConfiguration = previous ? OperatorConfigurationVersionSchema.parse(previous.record) : undefined
+      const selection = harnessProfileSelection === null ? undefined : harnessProfileSelection ?? previousConfiguration?.harnessProfileSelection
+      if (selection && harnessProfileSelection === undefined && !isDeepStrictEqual(previousConfiguration?.harness, harness)) {
+        throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'Changing the selected profile configuration requires an explicitly validated profile selection.', 409)
+      }
+      const skills = await operatorSkillContent(client, assignedSkills, previousConfiguration?.assignedSkills ?? [])
       const versionRow = await client.query<{ version: number }>('select coalesce(max(version), 0) + 1 as version from operator_configuration_versions where operator_id = $1', [OPERATOR_ID])
       const version = Number(versionRow.rows[0]?.version ?? 1)
       const createdAt = new Date().toISOString()
+      const profile = selection ? { harnessProfileSelection: selection } : {}
       const configuration = OperatorConfigurationVersionSchema.parse({
         id: `${OPERATOR_ID}-config-v${version}-${randomUUID()}`, operatorId: OPERATOR_ID, version,
-        harness, showThinking, ...skills, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness: canonical(harness), showThinking, ...skills })).digest('hex')}`, createdAt,
+        harness, showThinking, ...skills, ...profile, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness: canonical(harness), showThinking, ...skills, ...profile })).digest('hex')}`, createdAt,
       })
       await client.query('insert into operator_configuration_versions (id, operator_id, version, record) values ($1,$2,$3,$4::jsonb)', [configuration.id, OPERATOR_ID, version, JSON.stringify(configuration)])
       const next = OperatorAgentSchema.parse({ ...operator, currentConfigurationVersionId: configuration.id, updatedAt: createdAt })

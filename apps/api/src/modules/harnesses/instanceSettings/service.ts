@@ -1,4 +1,7 @@
 import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
+import type { HarnessConfiguration } from '@graphql/contracts'
+import { HarnessProfileSelectionSchema, type HarnessProfileSelection } from '@graphql/contracts/harness-registry'
 import { withAdvancedDefaults } from '@graphql/contracts'
 import { HostHarnessOverrideListInputSchema, HostHarnessOverrideSaveSchema, type HostHarnessOverride, type HostHarnessOverrideListInput, type HostHarnessOverrideSave, type HostHarnessInstanceCheckInput } from '@graphql/contracts/harness-registry'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -64,6 +67,21 @@ export class HostHarnessOverrideService {
       const overrides = await this.repository.list(input.hostRef, input.applicationInstallationId, client)
       return { overrides: await Promise.all(overrides.map(value => this.describe(value, client))) }
     })
+  }
+  /** Called inside the existing management command transaction before publishing a selected profile. */
+  async validateSelection(principal: ManagementPrincipal, raw: HarnessProfileSelection, configuration: HarnessConfiguration, client: pg.PoolClient): Promise<void> {
+    requireAuthorization(principal, 'harnesses:read')
+    const selection = HarnessProfileSelectionSchema.parse(raw)
+    await this.authority.authorize(principal, 'harnesses:read', selection.target.hostRef, selection.target.applicationInstallationId, client)
+    await this.repository.lockRevision(client, selection.instanceId)
+    const value = await this.repository.latest(client, selection.instanceId)
+    const canonicalConfiguration = withAdvancedDefaults(configuration)
+    if (!value || !value.enabled || value.instanceRevision !== selection.instanceRevision
+      || !isDeepStrictEqual(value.target, selection.target) || value.driverId !== configuration.harness
+      || value.configurationFingerprint !== commandInputHash(canonicalConfiguration)
+      || !isDeepStrictEqual(withAdvancedDefaults(value.configuration), canonicalConfiguration)) {
+      throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'The selected configured profile or its canonical configuration changed. Read the exact host profile again before saving.', 409)
+    }
   }
   async save(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HostHarnessOverrideSave) {
     try { return await this.saveAuthorized(principal, source, raw) } catch (error) {
