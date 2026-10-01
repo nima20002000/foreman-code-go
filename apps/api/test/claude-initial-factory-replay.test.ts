@@ -124,7 +124,8 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
     const f = fixture({ inspectCallbackAvailability: inspect }); let session!: NativeSessionReference
     const events = f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: start.correlationId, onSessionObserved: async (observed) => { session = observed } })[Symbol.asyncIterator]()
     const first = events.next(), input = await f.next(); f.init(); f.reply(input.uuid); await first
-    expect((await f.manager.inspectResponseAvailability(session, { nativeRequestId: 'actual-control-envelope', nativeRequestType: 'canUseTool' })).state).toBe('available')
+    expect(f.manager.inspectResponseAvailability).toBeTypeOf('function')
+    expect((await f.manager.inspectResponseAvailability!(session, { nativeRequestId: 'actual-control-envelope', nativeRequestType: 'canUseTool' })).state).toBe('available')
     expect(inspect).toHaveBeenCalledOnce(); await events.return?.(); await f.manager.dispose?.()
   })
   it('fork uses the actual helper-returned native ID and preserves the source', async () => {
