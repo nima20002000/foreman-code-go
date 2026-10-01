@@ -28,7 +28,7 @@ function codexFixture() {
     close: async () => undefined,
   } as unknown as CodexStdioTransport
   const runtime: Runtime = {
-    connectionId: randomUUID(), attached: false, binding: '', ownerId: 'agent', configurationIdentity: '',
+    connectionId: randomUUID(), schemaIdentity: 'fixture-schema', arrivalOrdinal: 0, attached: false, binding: '', ownerId: 'agent', configurationIdentity: '',
     input: {} as NativeSessionStart, workingDirectory: '/workspace',
     configuration: { serviceTier: 'standard' } as CodexHarnessConfiguration,
     scopedCredentialVariable: undefined, transport, session: codexSession, generation: 0,

@@ -56,6 +56,18 @@ void (async () => {
     assert.deepEqual(observed, [])
   }, 15_000)
 
+  it('rejects oversized outbound requests and responses before native submission', async () => {
+    const value = await transport()
+    const controller = new AbortController()
+    const oversized = { text: 'x'.repeat(4 * 1024 * 1024) }
+    for (const result of [value.request('test/echo', oversized, controller.signal), value.respond(999, 'test/response', oversized)]) {
+      await assert.rejects(result, (error: unknown) => error instanceof Error
+        && error.message.includes('nothing was submitted'))
+    }
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+    assert.deepEqual(await value.request('test/echo', { alive: true }), { alive: true })
+  })
+
   it('F13: successful and failed RPCs remove every abort listener', async () => {
     const value = await transport()
     const controller = new AbortController()

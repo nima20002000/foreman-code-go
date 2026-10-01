@@ -11,6 +11,20 @@ import { requireHarnessQualification } from './qualification/gate.js'
 import { harnessProfile } from './qualification/profiles.js'
 import { isObject, object, type CodexProtocol, type JsonObject, type RpcRequest } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
+import type { CodexMethodMap } from './codexMethodTypes.js'
+
+export type CodexClientMethod = keyof CodexMethodMap
+/** Typed baseline methods retain the transport's qualified runtime-schema gate. */
+export async function codexRequest<M extends CodexClientMethod>(
+  transport: { request(method: string, params?: JsonObject, signal?: AbortSignal,
+    late?: (value: unknown, error?: Error) => void): Promise<unknown> },
+  method: M, params: CodexMethodMap[M]['params'], signal?: AbortSignal,
+  late?: (value: CodexMethodMap[M]['result'], error?: Error) => void,
+): Promise<CodexMethodMap[M]['result']> {
+  const result = await transport.request(method, params, signal,
+    late ? (value, error) => late(value as CodexMethodMap[M]['result'], error) : undefined)
+  return result as CodexMethodMap[M]['result']
+}
 
 export const QUALIFIED_CODEX_VERSION = 'codex-cli 0.154.0'
 /** Historical review reference only; never presented as an installation measurement. */
@@ -77,7 +91,7 @@ export async function assertCodexUnchanged(qualified: QualifiedCodex): Promise<v
   }
 }
 
-const responseTypes: Record<string, string> = {
+const responseTypes: Record<Exclude<CodexClientMethod, 'config/mcpServer/reload'>, string> = {
   initialize: 'InitializeResponse',
   'thread/start': 'ThreadStartResponse', 'thread/resume': 'ThreadResumeResponse', 'thread/read': 'ThreadReadResponse',
   'thread/turns/list': 'ThreadTurnsListResponse', 'thread/items/list': 'ThreadItemsListResponse',
@@ -188,7 +202,7 @@ export function protocolFromBundle(bundle: JsonObject): CodexProtocol {
         if (!isObject(value) || Object.keys(value).length !== 0) throw new Error('Invalid reload response.')
         return
       }
-      const type = responseTypes[method]
+      const type = Object.hasOwn(responseTypes, method) ? responseTypes[method as keyof typeof responseTypes] : undefined
       if (!type) throw new Error('Unqualified response method.')
       check(type, definition(type), value)
     },
