@@ -7,7 +7,7 @@ import { claudeNativeEvent } from './nativeEvents.js'
 import { createClaudeNativeSessionManager, type ClaudeNativeSessionManager } from './sessionManager.js'
 
 type ManagerOptions = Parameters<typeof createClaudeNativeSessionManager>[0]
-export interface ClaudeNativeAllocation extends Omit<ManagerOptions, 'decode' | 'decodeFactory'> {
+export interface ClaudeNativeAllocation extends Omit<ManagerOptions, 'decode' | 'decodeFactory' | 'appMcpAccess'> {
   harness: 'claude'
   role: 'workflow' | 'operator' | 'agent-chat' | 'diagnostics' | 'qualification'
   workingDirectory: string
@@ -38,7 +38,12 @@ export function allocateClaudeNativeHarness(input: ClaudeNativeAllocation): Clau
   const now = input.now ?? (() => new Date().toISOString())
   const manager = createClaudeNativeSessionManager({
     runner: input.runner, scope: { ...input.scope }, sdkOptions: { ...input.sdkOptions },
-    qualification: { ...input.qualification }, now,
+    qualification: { ...input.qualification }, now, appMcpAccess: input.appMcpAccess === 'scoped' ? 'management' : 'none',
+    ...(input.inspectionStart ? { inspectionStart: input.inspectionStart } : {}),
+    ...(input.expectedMcp ? { expectedMcp: input.expectedMcp } : {}),
+    ...(input.credentialEnvironmentVariables ? { credentialEnvironmentVariables: input.credentialEnvironmentVariables } : {}),
+    ...(input.supportedInteractionKinds ? { supportedInteractionKinds: input.supportedInteractionKinds } : {}),
+    ...(input.pendingInteractions ? { pendingInteractions: input.pendingInteractions } : {}),
     ...(input.interactionPort ? { interactionPort: input.interactionPort } : {}),
     ...(input.liveCallbacks ? { liveCallbacks: input.liveCallbacks } : {}),
     ...(input.cancelPendingRequests ? { cancelPendingRequests: input.cancelPendingRequests } : {}),
