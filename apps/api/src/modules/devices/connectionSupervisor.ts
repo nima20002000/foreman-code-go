@@ -11,7 +11,7 @@ export class DeviceConnectionSupervisor {
   private abort: AbortController | undefined
   private socket: DeviceSocket | undefined
   constructor(private readonly options: {
-    identity: Omit<DeviceSessionBinding, 'connectionEpoch'>; appVersion: string; mainPublicKeyFingerprint: string
+    identity: Omit<DeviceSessionBinding, 'connectionEpoch' | 'connectionGeneration'>; appVersion: string; mainPublicKeyFingerprint: string
     connect(signal: AbortSignal): Promise<DeviceSocket>
     reconcile(binding: DeviceSessionBinding, signal: AbortSignal): Promise<void>
     onState?(view: DeviceConnectionView): void
@@ -61,13 +61,15 @@ export class DeviceConnectionSupervisor {
         for (const key of ['deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const) if (frame[key] !== hello[key]) throw new DeviceConnectionError('authentication')
         const capabilities = frame.capabilities as Record<string, unknown> | undefined
         if (frame.type !== 'welcome' || typeof frame.connectionEpoch !== 'string' || !frame.connectionEpoch || !capabilities || capabilities.heartbeat !== true || capabilities.dispatch !== false || capabilities.transfer !== false) throw new DeviceConnectionError('malformed-frame')
+        if (frame.connectionGeneration !== hello.connectionGeneration) throw new DeviceConnectionError('wrong-main')
         const expectedProof: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...this.options.identity, nonce: hello.nonce, connectionGeneration: hello.connectionGeneration, connectionEpoch: hello.connectionEpoch, mainConnectionEpoch: frame.connectionEpoch, protocolVersion: DEVICE_PROTOCOL_VERSION, workerApplicationVersion: hello.appVersion }
         if (!await withDeviceDeadline(verifyMainIdentityProof(frame.mainIdentityProof, expectedProof, this.options.mainPublicKeyFingerprint), attempt.signal, this.options.handshakeMs ?? 10_000)) throw new DeviceConnectionError('wrong-main')
         if ((frame.mainIdentityProof as { mainApplicationVersion: string }).mainApplicationVersion !== frame.appVersion) throw new DeviceConnectionError('wrong-main')
         if (attempt.signal.aborted) break
-        const binding = { ...this.options.identity, connectionEpoch: frame.connectionEpoch }
+        const binding = { ...this.options.identity, connectionEpoch: frame.connectionEpoch, connectionGeneration: hello.connectionGeneration }
         this.update('synchronizing'); await withDeviceDeadline(this.options.reconcile(binding, attempt.signal), attempt.signal, this.options.handshakeMs ?? 10_000)
         if (attempt.signal.aborted) break
+        sendFrame(socket, { type: 'ready', connectionEpoch: binding.connectionEpoch })
         this.update('ready'); failures = 0
         while (!attempt.signal.aborted) {
           sendFrame(socket, { type: 'ping', connectionEpoch: binding.connectionEpoch })

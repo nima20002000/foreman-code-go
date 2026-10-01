@@ -1,17 +1,10 @@
-import type { MainIdentityProofRequest, MainSignedIdentityProof } from '@graphql/contracts/device-identity'
+import type { DevicePrincipal, MainIdentityProofRequest, MainSignedIdentityProof } from '@graphql/contracts/device-identity'
 import { randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, type DeviceSessionBinding, type DeviceWelcome } from '@graphql/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 
-export interface AuthenticatedDevice {
-  audience: 'graphql-worker'
-  mainId: string
-  deviceId: string
-  workerInstallationId: string
-  keyRevision: number
-  authorizationRevision: number
-  expiresAt: string
-}
+export type AuthenticatedDevice = DevicePrincipal
+
 export interface DeviceAuthenticator {
   authenticateDevice(token: string, scope: 'connect'): Promise<AuthenticatedDevice>
   revalidateDevice(principal: AuthenticatedDevice, scope: 'heartbeat'): Promise<void>
@@ -80,7 +73,7 @@ export class DeviceEndpoint {
       if (hello.protocolVersion !== DEVICE_PROTOCOL_VERSION) throw new DeviceConnectionError('incompatible-protocol')
       if (hello.type !== 'hello' || typeof hello.bootId !== 'string' || !hello.bootId || typeof hello.connectionEpoch !== 'string' || !hello.connectionEpoch || typeof hello.appVersion !== 'string' || typeof hello.nonce !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(hello.nonce) || !Number.isSafeInteger(hello.connectionGeneration) || Number(hello.connectionGeneration) < 1) throw new DeviceConnectionError('malformed-frame')
       for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) if (hello[key] !== principal[key]) throw new DeviceConnectionError('authentication')
-      binding = { mainId: principal.mainId, deviceId: principal.deviceId, workerInstallationId: principal.workerInstallationId, keyRevision: principal.keyRevision, authorizationRevision: principal.authorizationRevision, bootId: hello.bootId, connectionEpoch: epoch }
+      binding = { mainId: principal.mainId, deviceId: principal.deviceId, workerInstallationId: principal.workerInstallationId, keyRevision: principal.keyRevision, authorizationRevision: principal.authorizationRevision, bootId: hello.bootId, connectionEpoch: epoch, connectionGeneration: Number(hello.connectionGeneration) }
       await withDeviceDeadline(this.options.reconcile(binding, abort.signal), abort.signal, this.options.handshakeMs ?? 10_000)
       if (!current()) throw new DeviceConnectionError('transport')
       try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
@@ -90,6 +83,12 @@ export class DeviceEndpoint {
       if (!current()) throw new DeviceConnectionError('transport')
       const welcome: DeviceWelcome = { ...binding, type: 'welcome', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, mainIdentityProof, capabilities: { heartbeat: true, dispatch: false, transfer: false } }
       sendFrame(socket, welcome)
+      const acknowledged = await nextFrame(iterator, abort.signal, this.options.handshakeMs ?? 10_000)
+      if (acknowledged.done || !current()) throw new DeviceConnectionError('transport')
+      const ready = readFrame(acknowledged.value)
+      if (ready.type !== 'ready' || ready.connectionEpoch !== epoch) throw new DeviceConnectionError('malformed-frame')
+      try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
+      if (!current()) throw new DeviceConnectionError('transport')
       this.options.presence({ binding, phase: 'ready', dispatch: false, transfer: false })
       while (current()) {
         const next = await nextFrame(iterator, abort.signal, this.options.heartbeatMs ?? 30_000)

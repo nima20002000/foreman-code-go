@@ -28,7 +28,7 @@ const proof = async (request: MainIdentityProofRequest) => ({ request, mainAppli
 const principal: AuthenticatedDevice = { ...identity, audience: 'graphql-worker', expiresAt: '2099-01-01T00:00:00Z' }
 const hello = { ...identity, connectionEpoch: '55555555-5555-4555-8555-555555555555', type: 'hello', protocolVersion: 1, appVersion: 'build', nonce: Buffer.alloc(32).toString('base64url'), connectionGeneration: 1 }
 const welcome = { ...hello, type: 'welcome', connectionEpoch: '66666666-6666-4666-8666-666666666666', capabilities: { heartbeat: true, dispatch: false, transfer: false } }
-const signedWelcome = async (sent: Record<string, unknown>, epoch = welcome.connectionEpoch) => ({ ...welcome, connectionEpoch: epoch, mainIdentityProof: await proof({ audience: 'graphql-worker-main-v1', ...identity, nonce: sent.nonce as string, connectionGeneration: sent.connectionGeneration as number, connectionEpoch: sent.connectionEpoch as string, mainConnectionEpoch: epoch, protocolVersion: 1, workerApplicationVersion: 'build' }) })
+const signedWelcome = async (sent: Record<string, unknown>, epoch = welcome.connectionEpoch) => ({ ...welcome, connectionEpoch: epoch, connectionGeneration: sent.connectionGeneration, mainIdentityProof: await proof({ audience: 'graphql-worker-main-v1', ...identity, nonce: sent.nonce as string, connectionGeneration: sent.connectionGeneration as number, connectionEpoch: sent.connectionEpoch as string, mainConnectionEpoch: epoch, protocolVersion: 1, workerApplicationVersion: 'build' }) })
 const flush = async () => { for (let i = 0; i < 80; i++) await Promise.resolve() }
 const makeEndpoint = () => {
   const presence = vi.fn()
@@ -47,8 +47,9 @@ describe('device-only carrier and lifecycle', () => {
     const task = endpoint.accept({ authorization: 'Bearer device-secret' }, adaptDeviceSocket(socket))
     socket.frame(hello); await flush()
     expect(socket.sent[0]).toMatchObject({ type: 'welcome', capabilities: { dispatch: false, transfer: false } })
+    socket.frame({ type: 'ready', connectionEpoch: socket.sent[0]!.connectionEpoch }); await flush()
     socket.frame({ type: 'ping', connectionEpoch: socket.sent[0]!.connectionEpoch }); await flush()
-    expect(socket.sent[1]!.type).toBe('pong'); expect(auth.revalidateDevice).toHaveBeenCalledTimes(2)
+    expect(socket.sent[1]!.type).toBe('pong'); expect(auth.revalidateDevice).toHaveBeenCalledTimes(3)
     endpoint.revoke(identity.deviceId); await task
     expect(presence.mock.calls.map(([view]) => view.phase)).toEqual(['ready', 'offline'])
   })
@@ -66,8 +67,8 @@ describe('device-only carrier and lifecycle', () => {
   })
   it('replacement fences old presence and handlers', async () => {
     const { endpoint, presence } = makeEndpoint(); const a = new Socket(); const b = new Socket()
-    const old = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(a)); a.frame(hello); await flush()
-    const fresh = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(b)); b.frame({ ...hello, bootId: '77777777-7777-4777-8777-777777777777' }); await flush(); await old
+    const old = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(a)); a.frame(hello); await flush(); a.frame({ type: 'ready', connectionEpoch: a.sent[0]!.connectionEpoch }); await flush()
+    const fresh = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(b)); b.frame({ ...hello, bootId: '77777777-7777-4777-8777-777777777777' }); await flush(); b.frame({ type: 'ready', connectionEpoch: b.sent[0]!.connectionEpoch }); await flush(); await old
     expect(presence.mock.calls.map(([view]) => view.phase)).toEqual(['ready', 'ready'])
     expect(b.sent[0]!.connectionEpoch).not.toBe(a.sent[0]!.connectionEpoch)
     endpoint.close(); await fresh; expect(presence.mock.calls.at(-1)![0].phase).toBe('offline')
@@ -80,7 +81,7 @@ describe('device-only carrier and lifecycle', () => {
   })
   it('half-open heartbeat expires within declared deadline', async () => {
     vi.useFakeTimers(); const { endpoint, presence } = makeEndpoint(); const socket = new Socket()
-    const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket)); socket.frame(hello); await flush(); await vi.advanceTimersByTimeAsync(101); await task
+    const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket)); socket.frame(hello); await flush(); socket.frame({ type: 'ready', connectionEpoch: socket.sent[0]!.connectionEpoch }); await flush(); await vi.advanceTimersByTimeAsync(101); await task
     expect(socket.closed).toBe(true); expect(presence.mock.calls.at(-1)![0].phase).toBe('offline')
   })
   it('rejects malformed/oversize messages and bounded slow-reader queue', async () => {
@@ -151,6 +152,7 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       const [received] = await welcomeMessage; const negotiated = JSON.parse(String(received))
       expect(negotiated).toMatchObject({ type: 'welcome', capabilities: { dispatch: false, transfer: false } })
       expect(client.extensions).toBe('')
+      client.send(JSON.stringify({ type: 'ready', connectionEpoch: negotiated.connectionEpoch }))
       const pong = once(client, 'message'); client.send(JSON.stringify({ type: 'ping', connectionEpoch: negotiated.connectionEpoch }))
       expect(JSON.parse(String((await pong)[0]))).toEqual({ type: 'pong', connectionEpoch: negotiated.connectionEpoch })
       const closed = once(client, 'close'); endpoint.revoke(identity.deviceId); await closed
@@ -183,13 +185,13 @@ describe('device-only HTTP bootstrap', () => {
       const descriptor = await fetch(`${base}/device/identity`)
       expect(await descriptor.json()).toMatchObject({ mainId: identity.mainId, mainPublicKeyFingerprint: fingerprint, capabilities: { dispatch: false } })
       expect((await fetch(`${base}/device/identity`, { headers: { Cookie: 'owner=secret' } })).status).toBe(401)
-      const input = { grant: 'grant', requestId: 'request', mainId: identity.mainId, workerInstallationId: identity.workerInstallationId, publicKey: 'public', signature: 'signature' }
+      const input = { grant: Buffer.alloc(32).toString('base64url'), requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', mainId: identity.mainId, workerInstallationId: identity.workerInstallationId, publicKey: 'public', signature: 'A'.repeat(86) }
       const challengeRequest: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', mainId: identity.mainId, workerInstallationId: identity.workerInstallationId, nonce: hello.nonce, protocolVersion: 1, workerApplicationVersion: 'build' }
       const challenge = await fetch(`${base}/device/challenge`, { method: 'POST', body: JSON.stringify(challengeRequest) })
       expect(challenge.status).toBe(200); expect(await challenge.json()).toMatchObject({ request: challengeRequest, mainPublicKeyFingerprint: fingerprint })
       const paired = await fetch(`${base}/device/pair`, { method: 'POST', body: JSON.stringify(input) })
       expect(paired.status).toBe(200); expect(pair).toHaveBeenCalledWith(input)
-      expect((await fetch(`${base}/device/pair`, { method: 'POST', body: JSON.stringify({ ...input, mainId: 'wrong' }) })).status).toBe(409)
+      expect((await fetch(`${base}/device/pair`, { method: 'POST', body: JSON.stringify({ ...input, mainId: '99999999-9999-4999-8999-999999999999' }) })).status).toBe(409)
       expect((await fetch(`${base}/device/pair`, { method: 'POST', body: '{' })).status).toBe(400)
       expect((await fetch(`${base}/management`, { method: 'POST' })).status).toBe(404)
       expect(pair).toHaveBeenCalledTimes(1)

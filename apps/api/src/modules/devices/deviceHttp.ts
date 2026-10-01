@@ -1,4 +1,4 @@
-import { MainIdentityProofRequestSchema, type MainIdentityProofRequest, type MainSignedIdentityProof } from '@graphql/contracts/device-identity'
+import { DevicePairingRequestSchema, MainIdentityProofRequestSchema, type DevicePairingRequest, type MainIdentityProofRequest, type MainSignedIdentityProof } from '@graphql/contracts/device-identity'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { DEVICE_FRAME_BYTES, DEVICE_PROTOCOL_VERSION } from '@graphql/contracts/device-connection'
 
@@ -6,7 +6,7 @@ import { DEVICE_FRAME_BYTES, DEVICE_PROTOCOL_VERSION } from '@graphql/contracts/
 export function deviceHttpHandler(options: {
   mainId: string; mainPublicKeyFingerprint: string; appVersion: string
   signMainIdentityProof(request: MainIdentityProofRequest): Promise<MainSignedIdentityProof>
-  pair(input: { grant: string; requestId: string; mainId: string; workerInstallationId: string; publicKey: string; signature: string }): Promise<unknown>
+  pair(input: DevicePairingRequest): Promise<unknown>
 }) {
   return (request: IncomingMessage, response: ServerResponse) => {
     const reply = (status: number, body: unknown) => { if (!response.destroyed) { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)) } }
@@ -35,11 +35,9 @@ export function deviceHttpHandler(options: {
         } catch { reply(400, { error: 'invalid-challenge-request' }) }
         return
       }
-      let input: { grant: string; requestId: string; mainId: string; workerInstallationId: string; publicKey: string; signature: string }
+      let input: DevicePairingRequest
       try {
-        input = JSON.parse(Buffer.concat(chunks).toString()) as typeof input
-        const keys = ['grant', 'requestId', 'mainId', 'workerInstallationId', 'publicKey', 'signature'] as const
-        if (!input || keys.some((key) => typeof input[key] !== 'string' || !input[key]) || Object.keys(input).some((key) => !(keys as readonly string[]).includes(key))) throw new Error()
+        input = DevicePairingRequestSchema.parse(JSON.parse(Buffer.concat(chunks).toString()))
       } catch { reply(400, { error: 'invalid-pairing-request' }); return }
       if (input.mainId !== options.mainId) { reply(409, { error: 'wrong-main' }); return }
       void options.pair(input).then((result) => reply(200, result)).catch(() => reply(401, { error: 'pairing-denied' }))

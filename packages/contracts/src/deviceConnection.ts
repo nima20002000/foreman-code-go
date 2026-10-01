@@ -14,13 +14,13 @@ export interface DeviceSessionBinding {
   authorizationRevision: number
   bootId: string
   connectionEpoch: string
+  connectionGeneration: number
 }
 export interface DeviceHello extends DeviceSessionBinding {
   type: 'hello'
   protocolVersion: number
   appVersion: string
   nonce: string
-  connectionGeneration: number
 }
 export interface DeviceWelcome extends DeviceSessionBinding {
   type: 'welcome'
@@ -29,7 +29,7 @@ export interface DeviceWelcome extends DeviceSessionBinding {
   mainIdentityProof: MainSignedIdentityProof
   capabilities: { heartbeat: true; dispatch: false; transfer: false }
 }
-export type DeviceFrame = DeviceHello | DeviceWelcome | { type: 'ping' | 'pong'; connectionEpoch: string } | { type: 'blocked'; code: DeviceFailureCode }
+export type DeviceFrame = DeviceHello | DeviceWelcome | { type: 'ping' | 'pong' | 'ready'; connectionEpoch: string } | { type: 'blocked'; code: DeviceFailureCode }
 export interface DeviceConnectionView {
   desired: boolean
   phase: DeviceConnectionPhase
