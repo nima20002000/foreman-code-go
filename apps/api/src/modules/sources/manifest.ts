@@ -30,6 +30,7 @@ export function manifestDigest(manifest: Omit<SourceManifest, 'manifestDigest'>)
 }
 export function verifySourceManifest(input: unknown): SourceManifest {
   const manifest = SourceManifestSchema.parse(input)
+  if (Buffer.byteLength(JSON.stringify(manifest)) > 2 * 1024 * 1024) throw new SourceError('SOURCE_CAPACITY', 'Source manifest metadata exceeds its separate 2 MiB budget.')
   const paths = new Set<string>()
   let previous = '', bytes = 0
   for (const entry of manifest.entries) {

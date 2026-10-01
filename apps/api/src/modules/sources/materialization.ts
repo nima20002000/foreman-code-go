@@ -28,6 +28,8 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       || (binding.deviceId === null) !== (attempt.keyRevision === null && attempt.authorizationRevision === null))
       throw new SourceError('SOURCE_HOST_IDENTITY_INVALID', 'Original-main roots have no worker registration; device roots require actual worker authorization pins.')
     await this.authorize(binding, attempt)
+    const recovered = await this.recover(binding, attempt)
+    if (recovered) return recovered
     if (this.active >= SOURCE_LIMITS.concurrent) throw new SourceError('SOURCE_CAPACITY', 'Materialization concurrency is exhausted.')
     this.active++
     const signal = AbortSignal.any([AbortSignal.timeout(SOURCE_LIMITS.preparationMs), ...(input.signal ? [input.signal] : [])])
@@ -81,6 +83,42 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       // Retain the binding lock even on failure/uncertain activation. Only
       // W08/W01 reconciliation may release it or reclaim its private directory.
     }
+  }
+  /** Exact lost-activation-ack recovery. Incomplete claims remain uncertain;
+   * no new directory/attempt is allocated and no old claim is discarded. */
+  async recover(binding: RootBinding, attempt: MaterializationAttempt): Promise<MaterializationReceipt | null> {
+    RootBindingSchema.parse(binding); await this.authorize(binding, attempt)
+    const root = await openPrivateRoot(binding.canonicalPath)
+    try {
+      if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
+      const lock = await open(anchored(root, `binding-${binding.rootId}.lock`), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
+        throw error
+      })
+      if (!lock) return null
+      let claim: { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
+      try {
+        const stat = await lock.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid source ownership claim.')
+        claim = JSON.parse(await lock.readFile('utf8')) as typeof claim
+      } finally { await lock.close() }
+      MaterializationReceiptSchema.shape.materializationId.parse(claim.materializationId)
+      if (!equal(claim.binding, binding) || !equal(claim.attempt, attempt)) throw new SourceError('SOURCE_ROOT_OWNED', 'The root belongs to another accepted execution/attempt.')
+      const directory = await openChildDirectory(root, claim.materializationId)
+      let receipt: MaterializationReceipt
+      try {
+        const file = await open(anchored(directory, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+        try {
+          const stat = await file.stat()
+          if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid source receipt record.')
+          receipt = MaterializationReceiptSchema.parse((JSON.parse(await file.readFile('utf8')) as { receipt: unknown }).receipt)
+        } finally { await file.close() }
+      } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') throw new SourceError('SOURCE_MATERIALIZATION_UNCERTAIN', 'The original activation is incomplete; reconcile this exact attempt before retry.')
+        throw error
+      } finally { await directory.close() }
+      await this.verify(receipt, { binding, attempt }); return receipt
+    } finally { await root.close() }
   }
   private async verifyTree(tree: FileHandle, manifest: SourceManifest): Promise<void> {
     const expected = new Set(manifest.entries.map((entry) => entry.path))

@@ -82,8 +82,9 @@ describe('private materialization', () => {
   })
   it('keeps one exclusive owner across restarts and denies a second writer', async () => {
     const f = await fixture(), reader = { async read() { return f.bytes } }
-    await new PrivateSourceMaterializer(reader, async () => {}).prepare(f)
-    await expect(new PrivateSourceMaterializer(reader, async () => {}).prepare(f)).rejects.toThrow()
+    const first = await new PrivateSourceMaterializer(reader, async () => {}).prepare(f)
+    expect(await new PrivateSourceMaterializer(reader, async () => {}).prepare(f)).toEqual(first)
+    await expect(new PrivateSourceMaterializer(reader, async () => {}).prepare({ ...f, attempt: { ...f.attempt, attemptId: randomUUID() } })).rejects.toThrow()
   })
   it('rechecks authorization and exact attempt before execution', async () => {
     const f = await fixture(); let authorized = true

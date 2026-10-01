@@ -21,10 +21,10 @@ export async function qualifiedGit(root: string, args: string[], maxBuffer = 2 *
 }
 /** Exact Git objects, never archive/export filters or working-tree bytes. */
 export async function captureGitSource(input: { root: string; approvedSourceId: string; commit: string;
-  approvedPaths: readonly string[]; executablePolicy: SourceManifest['executablePolicy']; sink: SourceSnapshotSink }): Promise<SourceManifest> {
+  approvedPaths: readonly string[]; snapshotId?: string; executablePolicy: SourceManifest['executablePolicy']; sink: SourceSnapshotSink }): Promise<SourceManifest> {
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.commit)) throw new SourceError('SOURCE_GIT_REF_INVALID', 'An exact Git commit object is required; branch names are not source pins.')
   if (await realpath(input.root) !== input.root || input.root === process.env.HOME || input.root === '/') throw new SourceError('SOURCE_ROOT_INVALID', 'An explicitly approved canonical project root is required.')
-  const snapshotId = randomUUID(), entries: SourceEntry[] = [], signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
+  const snapshotId = input.snapshotId ?? randomUUID(), entries: SourceEntry[] = [], signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
   const git = (args: string[], limit = 2 * 1024 * 1024) => qualifiedGit(input.root, args, limit, signal)
   try {
     if ((await git(['rev-parse', '--show-toplevel'])).toString().trim() !== input.root) throw new SourceError('SOURCE_ROOT_INVALID', 'The approved source root must be the exact repository root.')

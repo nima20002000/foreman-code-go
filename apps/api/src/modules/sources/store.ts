@@ -1,8 +1,8 @@
 import { constants } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { mkdir, open, rename, type FileHandle } from 'node:fs/promises'
-import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '@graphql/contracts/source-materialization'
-import { anchored, entryParent, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@graphql/contracts/source-materialization'
+import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import type { SourceSnapshotSink } from './capture.js'
 import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
@@ -81,6 +81,23 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
         const bytes = await file.readFile(); verifySourceBytes(entry, bytes); return bytes
       } finally { await file.close() }
     } finally { await parent.close() }
+  }
+  async manifest(snapshotId: string): Promise<SourceManifest> {
+    const { root, snapshot } = await this.directory(snapshotId, false)
+    try {
+      const file = await open(anchored(snapshot, 'manifest.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+      try {
+        const stat = await file.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_MANIFEST_INVALID', 'Invalid canonical manifest record.')
+        const manifest = verifySourceManifest(JSON.parse(await file.readFile('utf8')))
+        if (manifest.snapshotId !== snapshotId) throw new SourceError('SOURCE_PIN_CONFLICT', 'Canonical source snapshot identity changed.')
+        return manifest
+      } finally { await file.close() }
+    } finally { await snapshot.close(); await root.close() }
+  }
+  async storageIdentity(): Promise<RootBinding['filesystem']> {
+    const root = await openPrivateRoot(this.canonicalRoot)
+    try { return await identity(root) } finally { await root.close() }
   }
   async read(pin: SourceSnapshotPin, entry: SourceEntry, signal: AbortSignal): Promise<Uint8Array> {
     signal.throwIfAborted()

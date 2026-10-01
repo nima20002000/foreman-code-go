@@ -85,7 +85,7 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     if (allowlist.configurationRevision !== selection.configurationRevision || !allowlist.bases.some(base => base.baseId === selection.allowedBaseId && base.accessModes.includes(selection.accessMode)))
       throw new DomainError('ROOT_ACCESS_DENIED', 'Select an allowed base/access mode from the current human-approved host configuration.', 403)
     const row = (await sql.query<{ root_policy_revision: string }>('select root_policy_revision from workspace_root_policy_heads where workspace_id=$1 and host_scope=$2 for share', [selection.workspaceId, workspaceRootHostScope(selection.hostRef)])).rows[0]
-    if (Number(row?.root_policy_revision ?? 0) !== selection.expectedRootPolicyRevision) throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The selected host root policy changed.', 409)
+    if (Number(row?.root_policy_revision ?? 0) !== selection.expectedRootPolicyRevision) throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The selected host root policy changed.', 409, { currentRootPolicyRevision: Number(row?.root_policy_revision ?? 0) })
     return { selection, allowlist, ownerPrincipalId: live.ownerId, registration }
   }
   async attest(root: AuthorizedWorkspaceRoot): Promise<WorkspaceRootAttestation> {
@@ -124,7 +124,7 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     const scope = workspaceRootHostScope(root.selection.hostRef)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-root:${root.selection.workspaceId}:${scope}`])
     const head = (await sql.query<{ root_policy_id: string; root_policy_revision: string }>('select root_policy_id,root_policy_revision from workspace_root_policy_heads where workspace_id=$1 and host_scope=$2 for update', [root.selection.workspaceId, scope])).rows[0]
-    if (Number(head?.root_policy_revision ?? 0) !== root.selection.expectedRootPolicyRevision) throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The root policy changed during location CAS.', 409)
+    if (Number(head?.root_policy_revision ?? 0) !== root.selection.expectedRootPolicyRevision) throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The root policy changed during location CAS.', 409, { currentRootPolicyRevision: Number(head?.root_policy_revision ?? 0) })
     const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId: head?.root_policy_id ?? randomUUID(), rootPolicyRevision: String(root.selection.expectedRootPolicyRevision + 1),
       workspaceId: root.selection.workspaceId, hostRef: root.selection.hostRef, applicationInstallationId: root.allowlist.applicationInstallationId,
       registration, locationRevision: String(nextLocationRevision), ownerPrincipalId: live.ownerId, allowedBaseId: root.selection.allowedBaseId,
