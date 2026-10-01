@@ -1,7 +1,7 @@
 import { createPublicKey, generateKeyPairSync, sign } from 'node:crypto'
 import type pg from 'pg'
-import { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema, MainEnrollmentProofRequestSchema, MainSignedEnrollmentProofSchema, type MainIdentityProofRequest, type MainSignedIdentityProof, type MainEnrollmentProofRequest, type MainSignedEnrollmentProof } from '@graphql/contracts/device-identity'
-import { mainIdentityProofMessage, mainEnrollmentProofMessage, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
+import { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema, type MainIdentityProofRequest, type MainSignedIdentityProof } from '@graphql/contracts/device-identity'
+import { mainIdentityProofMessage, publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { DeviceAccessError } from './access.js'
 
 export const mainDeviceIdentityMigration = { version: 282102, sql: 'create table device_main_identity (main_id uuid primary key, record jsonb not null);' } as const
@@ -37,11 +37,4 @@ export function signMainIdentityProof(identity: MainDeviceIdentity, input: MainI
   return MainSignedIdentityProofSchema.parse({ request, mainApplicationVersion, mainPublicKey: identity.publicKey,
     mainPublicKeyFingerprint: identity.publicKeyFingerprint,
     signature: sign(null, Buffer.from(mainIdentityProofMessage(request, mainApplicationVersion)), identity.privateKey).toString('base64url') })
-}
-export function signMainEnrollmentProof(identity: MainDeviceIdentity, input: MainEnrollmentProofRequest, mainApplicationVersion: string): MainSignedEnrollmentProof {
-  const request = MainEnrollmentProofRequestSchema.parse(input)
-  if (request.mainId !== identity.mainId) throw new DeviceAccessError('wrong_main')
-  return MainSignedEnrollmentProofSchema.parse({ request, mainApplicationVersion, mainPublicKey: identity.publicKey,
-    mainPublicKeyFingerprint: identity.publicKeyFingerprint,
-    signature: sign(null, Buffer.from(mainEnrollmentProofMessage(request, mainApplicationVersion)), identity.privateKey).toString('base64url') })
 }

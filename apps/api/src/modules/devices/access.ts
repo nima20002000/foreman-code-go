@@ -16,7 +16,7 @@ export type PairDeviceInput = DevicePairingRequest
 export { pairingProof } from '@graphql/contracts/device-identity-node'
 interface DeviceRow { record: DeviceRegistration; public_key: string; credential_expires_at: Date }
 export class PostgresDeviceAccessService {
-  constructor(private readonly pool: pg.Pool, readonly mainId: string, private readonly onRevoked?: (deviceId: string, authorizationRevision: number) => void) {}
+  constructor(private readonly pool: pg.Pool, readonly mainId: string, private readonly onRevoked?: (deviceId: string) => void) {}
   private pairingAttempts = { window: 0, count: 0 }
   private async transaction<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect()
@@ -108,7 +108,7 @@ export class PostgresDeviceAccessService {
       await client.query('update device_registrations set record=$2,credential_hash=null where id=$1', [deviceId, revoked])
       return revoked
     } })
-    this.onRevoked?.(deviceId, result.value.authorizationRevision)
+    this.onRevoked?.(deviceId)
     return result.value
   }
   async authenticateDevice(token: string, scope: DeviceScope): Promise<DevicePrincipal> {
