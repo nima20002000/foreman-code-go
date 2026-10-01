@@ -47,7 +47,7 @@ describe('ordered request-owned text coalescing', () => {
   })
   it('never invents sequence and reconciles provisional output across source restart', () => {
     const publish = vi.fn(), reconcile = vi.fn(), stream = createTextCoalescer(publish, reconcile)
-    stream.push(operation(1, 'a', { source: undefined })); stream.push(operation(2, 'b', { source: undefined }))
+    stream.push(operation(1, 'a', { source: {} })); stream.push(operation(2, 'b', { source: {} }))
     expect(publish).toHaveBeenCalledTimes(2)
     stream.push(operation(3, 'c')); stream.push(operation(1, 'd', { source: { connectionId: 'connection-b', sequence: 1 } }))
     expect(reconcile).toHaveBeenCalledOnce()

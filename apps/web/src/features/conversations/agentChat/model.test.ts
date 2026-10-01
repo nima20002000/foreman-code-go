@@ -77,5 +77,21 @@ describe('equal-revision canonical readback', () => {
     const complete = agentChatFixtures.idleAfterCompletion.messages[1]!
     const partial = { ...complete, nativeMessageComplete: undefined, content: 'partial' }
     expect(mergeChatMessages([complete], [partial])).toEqual([complete])
+    const previous = agentChatFixtures.idleAfterCompletion
+    const incoming = { ...previous, revision: previous.revision + 1, messages: [partial] }
+    expect(acceptAgentChatState(previous, incoming).messages).toEqual([complete])
+  })
+})
+
+
+describe('independently qualified read facts', () => {
+  it('refreshes same-revision Run availability from authorized reads while retaining lifecycle and ignoring receipt replay', () => {
+    const current = agentChatFixtures.activeWithQueue
+    const read = { ...agentChatFixtures.runActive, context: current.context, conversation: current.conversation, revision: current.revision }
+    const merged = acceptAgentChatState(current, read, 'read')
+    expect(merged.availability).toEqual(read.availability)
+    expect(merged.activeTurn).toEqual(current.activeTurn)
+    expect(merged.turns).toEqual(current.turns)
+    expect(acceptAgentChatState(merged, current, 'receipt')).toBe(merged)
   })
 })

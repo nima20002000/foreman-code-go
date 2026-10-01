@@ -36,3 +36,21 @@ describe('scope and entity revision reconciliation', () => {
     expect(reconcileActivitySnapshot(current, snapshot('4', [text('live', '2', 'different', true)]), scope)!.activities).toEqual(current.activities)
   })
 })
+
+describe('live tool and large revision history', () => {
+  it('keeps live tool updates when older history pages arrive and compares decimal revisions exactly', () => {
+    const base = text('live', '9007199254740993', '')
+    const tool: ActivityItem = { id: base.id, revision: base.revision, order: base.order, owner: base.owner, source: base.source, evidence: base.evidence, kind: 'tool', title: 'Read file', status: 'running' }
+    const current = snapshot('9007199254740993', [tool])
+    const older: ActivityItem = { ...tool, revision: '9007199254740992', status: 'pending' }
+    const merged = reconcileActivitySnapshot(current, snapshot('9007199254740992', [older, text('old', '1', 'past')]), scope)!
+    expect(merged.revision).toBe(current.revision)
+    expect(merged.activities.find((item) => item.id === 'live')).toEqual(tool)
+  })
+  it('treats the same structural scope as one revision-vector entry regardless of property insertion order', () => {
+    const current = snapshot('4')
+    const incoming = { ...snapshot('5'), scope: { conversationId: scope.conversationId, kind: scope.kind } }
+    const merged = reconcileActivityScopes(new Map([[activityScopeKey(scope), current]]), incoming)
+    expect(merged.size).toBe(1); expect(merged.get(activityScopeKey(scope))!.revision).toBe('5')
+  })
+})

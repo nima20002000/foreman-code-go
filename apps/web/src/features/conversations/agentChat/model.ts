@@ -41,16 +41,23 @@ export function mergeChatMessages(...sources: readonly (readonly Message[])[]): 
   }
   return order.map((id) => messages.get(id)!)
 }
-export function acceptAgentChatState(previous: AgentChatState | undefined, incoming: AgentChatState): AgentChatState {
+export function acceptAgentChatState(previous: AgentChatState | undefined, incoming: AgentChatState, source: 'read' | 'receipt' = 'receipt'): AgentChatState {
   if (previous && sameAgentChatContext(previous.context, incoming.context)) {
     // A GET started before the first POST may still return `none` after its receipt arrived.
     if (previous.conversation && !incoming.conversation && incoming.revision <= previous.revision) return previous
-    if (previous.conversation?.id === incoming.conversation?.id && incoming.revision <= previous.revision) return previous
+    if (previous.conversation?.id === incoming.conversation?.id) {
+      if (incoming.revision < previous.revision) return previous
+      if (incoming.revision === previous.revision) {
+        // Conversation revisions cover persisted lifecycle, not current Run/setup qualification.
+        // Only an authorized read can refresh those separately qualified facts; receipt replay cannot.
+        return source === 'read' ? { ...previous, capabilities: incoming.capabilities, availability: incoming.availability } : previous
+      }
+    }
   }
   const previousMessages = previous?.conversation?.id === incoming.conversation?.id ? previous?.messages : undefined
   const complete = new Map(previousMessages?.filter((message) => message.nativeMessageComplete === true).map((message) => [message.id, message]))
   return { ...incoming, messages: mergeChatMessages(incoming.messages.map((message) =>
-    message.nativeMessageComplete === false && complete.has(message.id) ? complete.get(message.id)! : message)),
+    message.nativeMessageComplete !== true && complete.has(message.id) ? complete.get(message.id)! : message)),
     turns: [...new Map(incoming.turns.map((turn) => [turn.requestId, turn])).values()]
       .sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0) }
 }

@@ -10,7 +10,7 @@ const keyOf = (operation: ActivityTextOperation) => JSON.stringify(canonical(ope
 export function createTextCoalescer(publish: (operation: ActivityTextOperation) => void,
   reconcile: () => void, limits: { bytes: number; items: number; latencyMs: number } = TEXT_STREAM_LIMITS) {
   if (limits.bytes < 1 || limits.items < 1 || limits.latencyMs < 1) throw new Error('Text stream limits must be positive.')
-  const states = new Map<string, { final: boolean; connectionId?: string; sequence?: number }>()
+  const states = new Map<string, { final: boolean; connectionId: string | undefined; sequence: number | undefined }>()
   const seen = new Set<string>()
   let pending: ActivityTextOperation | undefined, timer: ReturnType<typeof setTimeout> | undefined, disposed = false
   const flush = () => {

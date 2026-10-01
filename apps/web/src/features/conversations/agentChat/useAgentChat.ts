@@ -111,7 +111,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
       return state
     },
     structuralSharing: (previous, incoming) => {
-      const accepted = acceptAgentChatState(previous as AgentChatState | undefined, incoming as AgentChatState)
+      const accepted = acceptAgentChatState(previous as AgentChatState | undefined, incoming as AgentChatState, 'read')
       if (generation === sessionGeneration() && !sessionIsSwitching() && isCurrent()) {
         rememberAgentChatReadback(client, key, accepted)
         if (selected) rememberAgentChatReadback(client, ['agent-chat', generation, creationDraftKey], accepted)
@@ -159,7 +159,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
     if (selected && !selected.key && state?.conversation) selected.onConversation(state)
   }, [state, commands, draftKey, generation, selected, isCurrent])
   useEffect(() => { retireAgentChatAcknowledgements(client) }, [client, state])
-  const accept = useCallback((incoming: AgentChatState) => {
+  const accept = useCallback((incoming: AgentChatState, source: 'read' | 'receipt' = 'receipt') => {
     assertSession(generation)
     if (sessionIsSwitching() || !isCurrent() || !matches(incoming)) return
     const historyRead = client.getQueryState(selected
@@ -167,7 +167,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
       : ['agent-chat', generation, incoming.context, incoming.conversation?.id, 'history'])
     // A late SSE/command snapshot cannot undo a known denial; require a fresh state GET.
     if (historyRead && isAuthAccessError(historyRead.error) && historyRead.errorUpdatedAt >= (client.getQueryState(key)?.dataUpdatedAt ?? 0)) return
-    client.setQueryData<AgentChatState>(key, (previous) => acceptAgentChatState(previous, incoming))
+    client.setQueryData<AgentChatState>(key, (previous) => acceptAgentChatState(previous, incoming, source))
   }, [client, generation, key, draftKey, selected, isCurrent, matches])
   const refresh = useCallback(() => {
     if (!isCurrent()) return
@@ -200,7 +200,7 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
     const close = subscribeAgentChat(context.workspaceId, conversationId, {
       snapshot: (incoming) => {
         if (disposed || selected && !current()) return
-        if (matches(incoming)) accept(incoming)
+        if (matches(incoming)) accept(incoming, 'read')
         else if (!selected) refetch()
       },
       event: refetch, refetch, connection: (next) => { if (!disposed && (!selected || current())) setConnection(next) },

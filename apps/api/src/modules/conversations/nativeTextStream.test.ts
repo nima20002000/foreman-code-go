@@ -32,6 +32,8 @@ describe('shared admitted-owner native text path', () => {
     const publish = vi.fn(), reconcile = vi.fn(), stream = createNativeTextStream({ owner, harness: 'codex', publish, reconcile })
     stream.push({ ...delta(1, 'x'), payload: { text: 'x' } })
     expect(reconcile).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
+    stream.push({ ...delta(2, 'unknown-kind'), type: 'message.part.delta', payload: { partID: 'unknown-part', field: 'text', delta: 'unknown-kind' } })
+    expect(reconcile).toHaveBeenCalledTimes(2)
     stream.push(delta(2, 'buffered')); stream.dispose(); stream.push(delta(3, 'late')); vi.runAllTimers()
     expect(publish).not.toHaveBeenCalled()
   })

@@ -24,6 +24,7 @@ export function createNativeTextStream(input: {
   input.signal?.addEventListener('abort', dispose, { once: true })
   if (input.signal?.aborted) dispose()
   const normalize = (event: NativeHarnessEvent) => {
+    if (event.type === 'message.part.delta' && typeof event.payload.partID === 'string' && !kinds.has(event.payload.partID)) return [undefined]
     const deltas = nativeAssistantText(event, kinds)
     const completed = completedNativeAssistantMessage(event, input.harness)
     return deltas.map((delta): ActivityTextOperation | undefined => {
