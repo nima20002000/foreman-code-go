@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { it } from 'vitest'
 
 import { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeServer.js'
+import { classifyOpenCodeDelivery, createOpenCodeBoundFetch, type OpenCodeHttpEvidence } from '../src/modules/harnesses/opencodeClient.js'
 import { environment, errorCode } from './opencode-fixtures.js'
 
 async function fixture() {
@@ -24,6 +25,7 @@ if(args.includes('--version')) {
  const auth='Basic '+Buffer.from(username+':'+process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
  const server=http.createServer((request,response)=>{
   if(request.headers.authorization!==auth){response.statusCode=401;response.end('{}');return;}
+  if(request.method==='POST') fs.appendFileSync(dir+'/mutations',request.url+'\\n');
   response.setHeader('content-type','application/json');
   if(request.url==='/global/health') {
    if(fs.existsSync(dir+'/fail-health-once')) {fs.unlinkSync(dir+'/fail-health-once');response.statusCode=503;response.end('{}');return;}
@@ -66,6 +68,24 @@ async function expectStopped(pid: number) {
   }
   assert.fail(`Fixture process ${pid} remained running`)
 }
+
+it.skipIf(process.platform === 'win32')('bound SDK fetch retains non-dispatch proof when controller health recovery replaces its process', async () => {
+  const { directory, binary } = await fixture()
+  const server = new ManagedOpenCodeServer({ binary, workingDirectory: directory, ownerAgentId: 'agent-1' })
+  const evidence: OpenCodeHttpEvidence[] = []
+  try {
+    await server.ensure()
+    const generation = server.generation
+    const fetch = createOpenCodeBoundFetch({ server, ownerAgentId: 'agent-1', directory, generation, onEvidence: value => evidence.push(value) })
+    await writeFile(join(directory, 'fail-health-once'), '')
+    await assert.rejects(fetch(`http://opencode.invalid/session?directory=${encodeURIComponent(directory)}`, { method: 'POST' }), errorCode('OPENCODE_SERVER_GENERATION_CHANGED'))
+    assert(server.generation > generation)
+    assert.equal(evidence[0]?.dispatch, 'not_dispatched')
+    assert.equal(evidence[0]?.bodyValidity, 'unread')
+    assert.equal(classifyOpenCodeDelivery(evidence[0]!), 'definite rejection')
+    await assert.rejects(readFile(join(directory, 'mutations')), error => (error as NodeJS.ErrnoException).code === 'ENOENT')
+  } finally { await server.dispose(); await rm(directory, { recursive: true, force: true }) }
+})
 
 it.skipIf(process.platform === 'win32')('[F10,F24] strips inherited App tokens and pins the managed username', async () => {
   const previousToken = process.env.GRAPHQL_MCP_TOKEN

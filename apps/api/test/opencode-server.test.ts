@@ -503,6 +503,30 @@ it('[F23] qualifies out questions in the ordered native policy and explicitly re
   assert(server.calls.some((call) => call.path.startsWith('/session/ses_question_child/abort')))
 })
 
+it('[F23] keeps an unsupported-question turn fenced until its owned busy child is quiescent', async () => {
+  const server = new FixtureServer()
+  const native = manager(server)
+  const session = await sessionFor(native)
+  server.onPrompt = id => {
+    server.addSession('ses_question_child', id)
+    server.statuses.set('ses_question_child', { type: 'busy' })
+    server.questions = [{ id: 'que_one', sessionID: 'ses_question_child' }]
+    throw new Error('lost ACK after persisting the root')
+  }
+  server.beforeRequest = path => path.startsWith('/session/ses_question_child/abort') ? json(false) : undefined
+  try {
+    await assert.rejects(collect(native.startTurn(session, { prompt: 'hello', clientCorrelationId: 'question-incomplete' })))
+    const history = await native.reconcile(session, 'question-incomplete')
+    assert.equal(history.terminalResult, undefined)
+    assert.equal(server.questions.length, 0)
+    assert.deepEqual(server.statuses.get('ses_question_child'), { type: 'busy' })
+    await assert.rejects(collect(native.startTurn(session, { prompt: 'next', clientCorrelationId: 'next-turn' })), errorCode('OPENCODE_SESSION_BUSY'))
+    assert.equal(server.calls.filter(call => call.path.includes('/prompt_async')).length, 1)
+    server.statuses.delete('ses_question_child')
+    assert.equal((await native.reconcile(session, 'question-incomplete')).terminalResult?.error?.code, 'OPENCODE_QUESTION_UNSUPPORTED')
+  } finally { await native.dispose() }
+})
+
 it('[F26] requires evidence for every named variant and represents no selection with an empty string', async () => {
   const server = new FixtureServer()
   server.providers = { all: [{ id: 'opencode-go', models: { 'deepseek-v4.1-flash': { variants: {} } } }] }

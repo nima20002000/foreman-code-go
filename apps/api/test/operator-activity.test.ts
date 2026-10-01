@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { NativeHarnessEvent } from '@graphql/contracts'
 import { currentOperatorHistory, openCodeTurnEvents, operatorActivity } from '../src/modules/conversations/operatorActivity.js'
+import { nativeAssistantText } from '../src/modules/conversations/operatorText.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 
 const event = (type: string, payload: Record<string, unknown>): NativeHarnessEvent => ({ type, payload, sequence: 1, occurredAt: '2026-09-19T00:00:00.000Z' })
@@ -13,12 +14,57 @@ describe('Operator native activity projection', () => {
       { id: 'child', role: 'assistant', sessionID: 'child-session', parentID: 'current' },
       { id: 'answer', role: 'assistant', sessionID: 'root', parentID: 'current' },
     ]) accepts(event('message.updated', { info }))
-    expect(accepts(event('message.part.updated', { part: { messageID: 'old' } }))).toBe(false)
-    expect(accepts(event('message.part.updated', { part: { messageID: 'child' } }))).toBe(false)
-    expect(accepts(event('message.part.updated', { part: { messageID: 'answer' } }))).toBe(true)
-    expect(accepts(event('message.part.delta', { messageID: 'answer', delta: 'new' }))).toBe(true)
-    expect(accepts(event('message.part.delta', { messageID: 'unknown', delta: 'unproven' }))).toBe(false)
-    expect(accepts(event('permission.asked', { id: 'approval' }))).toBe(true)
+    expect(accepts(event('message.part.updated', { part: { sessionID: 'root', messageID: 'old', id: 'part' } }))).toEqual([])
+    expect(accepts(event('message.part.updated', { part: { sessionID: 'child-session', messageID: 'child', id: 'part' } }))).toEqual([])
+    expect(accepts(event('message.part.updated', { part: { sessionID: 'root', messageID: 'answer', id: 'part' } }))).toHaveLength(1)
+    expect(accepts(event('message.part.delta', { sessionID: 'root', messageID: 'answer', partID: 'part', delta: 'new' }))).toHaveLength(1)
+    expect(accepts(event('message.part.delta', { sessionID: 'root', messageID: 'unknown', partID: 'part', delta: 'unproven' }))).toEqual([])
+    expect(accepts(event('permission.asked', { id: 'approval' }))).toHaveLength(1)
+  })
+  it('flushes early text, deltas and tool snapshots through the projection in arrival order after exact metadata', () => {
+    const accepts = openCodeTurnEvents('root', () => 'current')
+    const prefix = event('message.part.updated', { part: { sessionID: 'root', messageID: 'answer', id: 'text', type: 'text', text: 'prefix ' } })
+    const tool = event('message.part.updated', { part: { sessionID: 'root', messageID: 'answer', id: 'tool', type: 'tool', tool: 'read', state: { status: 'running', input: { file: 'note' } } } })
+    const suffix = event('message.part.delta', { sessionID: 'root', messageID: 'answer', partID: 'text', field: 'text', delta: 'suffix' })
+    const kinds = new Map<string, string>()
+    const text = [], activity = [], order = []
+    for (const native of [prefix, tool, suffix, event('message.updated', { info: { id: 'answer', sessionID: 'root', parentID: 'current', role: 'assistant' } })]) {
+      for (const admitted of accepts(native)) {
+        order.push(admitted)
+        text.push(...nativeAssistantText(admitted, kinds))
+        const change = operatorActivity(admitted, 'opencode', 'request')
+        if (change) activity.push(change)
+      }
+    }
+    expect(order).toEqual([prefix, tool, suffix])
+    expect(text).toEqual([{ partId: 'text', text: 'prefix ', mode: 'replace' }, { partId: 'text', text: 'suffix', mode: 'append' }])
+    expect(activity).toMatchObject([{ id: 'tool', kind: 'file_read', status: 'running' }])
+  })
+  it('keeps foreign ancestry, summary messages, incomplete identities and a new turn closed', () => {
+    let turn = 'current'
+    const accepts = openCodeTurnEvents('root', () => turn)
+    const part = (sessionID: string, messageID: string) => event('message.part.updated', { part: { sessionID, messageID, id: 'same-part', type: 'text', text: 'foreign' } })
+    expect(accepts(part('child', 'same-message'))).toEqual([])
+    expect(accepts(part('root', 'same-message'))).toEqual([])
+    expect(accepts(event('message.updated', { info: { id: 'same-message', sessionID: 'root', parentID: 'old', role: 'assistant' } }))).toEqual([])
+    expect(accepts(part('root', 'same-message'))).toEqual([])
+    expect(accepts(part('root', 'summary'))).toEqual([])
+    expect(accepts(event('message.updated', { info: { id: 'summary', sessionID: 'root', parentID: turn, role: 'assistant', summary: true } }))).toEqual([])
+    expect(accepts(event('message.part.delta', { messageID: 'summary', partID: 'same-part', delta: 'unscoped' }))).toEqual([])
+    expect(accepts(part('root', 'waiting'))).toEqual([])
+    turn = 'next'
+    expect(accepts(event('message.updated', { info: { id: 'waiting', sessionID: 'root', parentID: turn, role: 'assistant' } }))).toEqual([])
+  })
+  it('bounds pending count and bytes while flushing retained complete identities', () => {
+    const accepts = openCodeTurnEvents('root', () => 'current')
+    for (let index = 0; index < 300; index++) accepts(event('message.part.updated', {
+      part: { sessionID: 'root', messageID: 'answer', id: String(index), type: 'text', text: 'prefix' },
+    }))
+    const flushed = accepts(event('message.updated', { info: { id: 'answer', sessionID: 'root', parentID: 'current', role: 'assistant' } }))
+    expect(flushed).toHaveLength(256)
+    expect(flushed[0]?.payload.part).toMatchObject({ id: '44' })
+    expect(accepts(event('message.part.updated', { part: { sessionID: 'root', messageID: 'large', id: 'large', type: 'text', text: 'x'.repeat(256 * 1024) } }))).toEqual([])
+    expect(accepts(event('message.updated', { info: { id: 'large', sessionID: 'root', parentID: 'current', role: 'assistant' } }))).toEqual([])
   })
   it.each([
     ['tool', { type: 'commandExecution', command: 'printf hello', cwd: '/project', commandActions: [{ type: 'unknown', command: 'printf hello' }], aggregatedOutput: 'hello' }],

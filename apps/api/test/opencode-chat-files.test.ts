@@ -5,7 +5,7 @@ import type { FileMcpService } from '../src/modules/files/tools/mcp.js'
 import type { OpenCodeChatFileBinding, OpenCodeChatFiles } from '../src/modules/harnesses/opencodeFiles/chat.js'
 import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import { nativeMessageId, object } from '../src/modules/harnesses/opencodeProtocol.js'
-import { FixtureServer, configuration, json, request } from './opencode-fixtures.js'
+import { FixtureServer, configuration, errorCode, json, request } from './opencode-fixtures.js'
 import { createChatFileBackend, fileContext, fileScope, hasFileCode } from './support/opencodeChatFileFixture.js'
 
 async function fixture(mode: 'read' | 'write' = 'write', editTools = false) {
@@ -251,6 +251,30 @@ describe('FIL-09a production OpenCodeNativeSessionManager with existing fake ser
       assert.equal(await f.manager.cancel(f.session, undefined, nativeMessageId(f.correlationId)), true)
       assert(f.backend.audit.indexOf('revoke') < f.backend.audit.indexOf('abort'))
       assert.equal(f.backend.revocations, 1); assert.equal(f.backend.hostFiles.size, 0)
+      assert.equal(f.unmounts, 1)
+      await iterator.return?.()
+    } finally { await f.close() }
+  })
+
+  it('unsupported question with incomplete child abort retains file cleanup and the next-prompt fence', async () => {
+    const f = await fixture()
+    try {
+      const iterator = f.start(); await iterator.next()
+      f.server.addSession('ses_file_child', f.session.nativeSessionId)
+      f.server.statuses.set('ses_file_child', { type: 'busy' })
+      f.server.questions = [{ id: 'que_file', sessionID: 'ses_file_child' }]
+      const before = f.server.beforeRequest
+      f.server.beforeRequest = (path, init) => path.startsWith('/session/ses_file_child/abort') ? json(false) : before?.(path, init)
+      assert.equal((await f.manager.reconcile(f.session, f.correlationId)).terminalResult, undefined)
+      assert.equal(f.backend.revocations, 1)
+      assert(f.backend.hostFiles.size > 0)
+      assert.equal(f.unmounts, 0)
+      await iterator.return?.()
+      await assert.rejects(f.manager.startTurn(f.session, { prompt: 'next', clientCorrelationId: 'next-file-turn' })[Symbol.asyncIterator]().next(), errorCode('OPENCODE_SESSION_BUSY'))
+      assert.equal(f.prompts.length, 1)
+      f.server.statuses.delete('ses_file_child')
+      assert.equal((await f.manager.reconcile(f.session, f.correlationId)).terminalResult?.error?.code, 'OPENCODE_QUESTION_UNSUPPORTED')
+      assert.equal(f.backend.hostFiles.size, 0)
       assert.equal(f.unmounts, 1)
       await iterator.return?.()
     } finally { await f.close() }

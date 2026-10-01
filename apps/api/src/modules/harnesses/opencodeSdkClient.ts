@@ -7,7 +7,32 @@ export function createOpenCodeSdkClient(options: OpenCodeBoundFetchOptions) {
   return createOpencodeClient({
     baseUrl: 'http://opencode.invalid',
     directory: options.directory,
-    fetch: createOpenCodeBoundFetch(options),
+    fetch: async (input, init) => {
+      let evidence: OpenCodeHttpEvidence | undefined
+      const response = await createOpenCodeBoundFetch({ ...options, onEvidence: value => {
+        evidence = value; options.onEvidence?.(value)
+      } })(input, init)
+      const raw = evidence
+      const validity = (bodyValidity: OpenCodeHttpEvidence['bodyValidity']) => {
+        if (raw) options.onEvidence?.(Object.freeze({ ...raw, bodyValidity }))
+      }
+      // SDK 1.18.31 reads both JSON success and rejection bodies via text().
+      // Observe that actual read rather than inferring validity from operation success.
+      const read = response.text.bind(response)
+      response.text = async () => {
+        let text: string
+        try { text = await read() }
+        catch (error) { validity('invalid'); throw error }
+        const contentType = response.headers.get('content-type')?.split(';')[0]?.trim()
+        const json = !contentType || contentType === 'application/json' || contentType.endsWith('+json')
+        if (json || !response.ok) {
+          try { if (text || !response.ok) JSON.parse(text); validity('valid') }
+          catch { validity(json ? 'invalid' : 'valid') }
+        } else validity('valid')
+        return text
+      }
+      return response
+    },
     responseStyle: 'fields',
     throwOnError: true,
   })
@@ -22,12 +47,9 @@ export async function callOpenCodeSdk<T>(options: OpenCodeBoundFetchOptions,
     options.onEvidence?.(value)
   } })
   try {
-    const result = await operation(client)
-    if (evidence) options.onEvidence?.(Object.freeze({ ...evidence, bodyValidity: 'valid' }))
-    return result
+    return await operation(client)
   }
   catch (error) {
-    if (evidence) options.onEvidence?.(Object.freeze({ ...evidence, bodyValidity: 'invalid' }))
     if (evidence && !['GET', 'HEAD'].includes(evidence.operation.method)
       && error instanceof Error && !(error instanceof OpenCodeNativeDeliveryError)) {
       if (classifyOpenCodeDelivery(evidence) === 'definite rejection') {

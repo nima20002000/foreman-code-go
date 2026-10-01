@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
 import { classifyOpenCodeDelivery, createOpenCodeBoundFetch, type OpenCodeHttpEvidence } from '../src/modules/harnesses/opencodeClient.js'
-import type { OpenCodeServerController } from '../src/modules/harnesses/opencodeTransport.js'
+import { OpenCodeNativeDeliveryError, type OpenCodeServerController } from '../src/modules/harnesses/opencodeTransport.js'
 
 function controller(request: OpenCodeServerController['request']): OpenCodeServerController {
   return { generation: 7, ownerAgentId: 'alice', expectedVersion: '1.18.31', request, ensure: async () => {}, dispose: async () => {} }
@@ -27,14 +27,44 @@ it('captures raw HTTP evidence before any accepted-body parsing without secret h
 })
 it('rejects stale generation, foreign owner and directory before dispatch', async () => {
   let posts = 0
+  const evidence: OpenCodeHttpEvidence[] = []
   const server = controller(async () => { posts++; return new Response('{}') })
-  const fetch = createOpenCodeBoundFetch({ server, directory: '/work', ownerAgentId: 'alice', generation: 7 })
+  const fetch = createOpenCodeBoundFetch({ server, directory: '/work', ownerAgentId: 'alice', generation: 7, onEvidence: value => evidence.push(value) })
   Object.assign(server, { generation: 8 }) // test controllers intentionally simulate replacement
   await assert.rejects(fetch('http://opencode.invalid/session/root?directory=%2Fwork'), /no longer owned/)
   Object.assign(server, { generation: 7 })
   await assert.rejects(fetch('http://opencode.invalid/session/root?directory=%2Fother'), /no longer owned/)
   await assert.rejects(fetch('http://foreign.invalid/session/root?directory=%2Fwork'), /no longer owned/)
   assert.equal(posts, 0)
+  assert.equal(evidence.length, 3)
+  assert(evidence.every(value => value.dispatch === 'not_dispatched' && value.bodyValidity === 'unread'))
+})
+it('preserves controller recovery refusal after the wrapper generation preflight passes', async () => {
+  const evidence: OpenCodeHttpEvidence[] = []
+  let rawPosts = 0
+  const server = controller(async (_path, _init, _signal, generation) => {
+    assert.equal(generation, server.generation)
+    Object.assign(server, { generation: 8 }) // ensure replaced a dead process before rawRequest
+    if (generation !== server.generation) {
+      throw new OpenCodeNativeDeliveryError('OPENCODE_SERVER_GENERATION_CHANGED', 'Replaced before dispatch', 'definite')
+    }
+    rawPosts++; return new Response('{}')
+  })
+  const fetch = createOpenCodeBoundFetch({ server, directory: '/work', ownerAgentId: 'alice', generation: 7, onEvidence: value => evidence.push(value) })
+  await assert.rejects(fetch('http://opencode.invalid/session?directory=%2Fwork', { method: 'POST' }),
+    error => error instanceof OpenCodeNativeDeliveryError && error.certainty === 'definite')
+  assert.equal(rawPosts, 0)
+  assert.equal(evidence[0]?.dispatch, 'not_dispatched')
+  assert.equal(classifyOpenCodeDelivery(evidence[0]!), 'definite rejection')
+})
+it('keeps unknown controller connection failures dispatched and unread', async () => {
+  const evidence: OpenCodeHttpEvidence[] = []
+  const server = controller(async () => { throw new Error('connection lost') })
+  const fetch = createOpenCodeBoundFetch({ server, directory: '/work', ownerAgentId: 'alice', generation: 7, onEvidence: value => evidence.push(value) })
+  await assert.rejects(fetch('http://opencode.invalid/session?directory=%2Fwork', { method: 'POST' }), /connection lost/)
+  assert.equal(evidence[0]?.dispatch, 'dispatched')
+  assert.equal(evidence[0]?.bodyValidity, 'unread')
+  assert.equal(classifyOpenCodeDelivery(evidence[0]!), 'uncertain')
 })
 it('fences a generation replacement while a mutation is awaiting its ACK', async () => {
   let resolve!: (response: Response) => void

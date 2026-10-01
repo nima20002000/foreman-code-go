@@ -72,6 +72,7 @@ interface OwnedTurn {
   activityObserved?: boolean
   observerAbort?: AbortController
   scopedError: JsonObject | undefined
+  questionFailure?: NonNullable<NativeHistory['terminalResult']>
   terminalResult: NativeHistory['terminalResult']
   nativeMessageId?: string
   reconciliationEvents?: readonly NativeHarnessEvent[]
@@ -833,10 +834,14 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     let turn = state.turn?.correlationId === correlationId ? state.turn : undefined
     const rejectedQuestion = await this.rejectQuestions(session, signal)
     assertCurrent()
-    if (rejectedQuestion) {
-      await this.cancelReady(session, signal)
+    const questionFailure = rejectedQuestion
+      ? failure('OPENCODE_QUESTION_UNSUPPORTED', 'An owned native question was rejected because this transport supports approvals, not interactive questions.')
+      : undefined
+    if (questionFailure) {
+      if (turn) turn.questionFailure = questionFailure
+      const canceled = await this.cancelReady(session, signal)
       assertCurrent()
-      if (turn) turn.terminalResult = failure('OPENCODE_QUESTION_UNSUPPORTED', 'An owned native question was rejected because this transport supports approvals, not interactive questions.')
+      if (turn && canceled) turn.terminalResult = questionFailure
     }
     const messageID = nativeMessageId(correlationId)
     const statusBefore = await this.ownedStatus(session, state, signal)
@@ -859,6 +864,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       }
       state.turn = turn
     }
+    if (turn && questionFailure) turn.questionFailure = questionFailure
     const result: NativeHistory = { correlationId, nativeTurnId: messageID, responseDeliveries: this.receipts(session),
       events: normalizedHistory(page.messages, state.configuration.thinking), pendingInteractions,
       ...(pendingInteractions[0] ? { pendingInteraction: pendingInteractions[0] } : {}),
@@ -907,6 +913,11 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
     if (turn?.terminalResult) {
       await this.finishFiles(turn, 'terminal')
       return historyWithOwnedTerminal(result, turn, this.generation)
+    }
+    if (turn?.questionFailure) {
+      terminalResult = turn.questionFailure
+      terminalMessage = undefined
+      delete result.nativeMessageId
     }
     if (!terminalResult && turn?.scopedError && (root || turn.idleObserved)) {
       const error = turn.scopedError
