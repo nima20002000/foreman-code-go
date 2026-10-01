@@ -16,6 +16,11 @@ erase an observed exit. A terminal execution cannot be launched again.
 
 The sole implemented isolation profile is qualified offline rootless Podman.
 There is no installed or qualified profile implied by this source change.
+Physical qualification is now produced by `modules/jobs/qualification.ts`
+through the actual reserved HRT spawn/exit/cleanup primitives. The Ubuntu/ext4
+storage profile and exact H2 review manifest are in
+[ci-ext4-runtime-profile.md](ci-ext4-runtime-profile.md). Ordinary unbounded
+ext4 and the earlier XFS proposal cannot qualify this active profile.
 The controller supplies an absolute verified runtime path, allowlisted
 controller environment and a persisted, human-approved qualification record
 with exact Podman/OCI/kernel/toolchain/image versions and tested cgroup v2,

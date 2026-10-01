@@ -26,7 +26,7 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     input.runtimeRoot.startsWith(`${input.sourceRoot}/`) || !Number.isSafeInteger(input.spoolBytes) || input.spoolBytes < 8) {
     throw new Error('Invalid noninteractive container plan.')
   }
-  return [`--hooks-dir=${join(input.runtimeRoot, 'ci-empty-oci-hooks')}`, 'create', '--name', input.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',
+  return ['--remote=false', `--hooks-dir=${join(input.runtimeRoot, 'ci-empty-oci-hooks')}`, 'create', '--name', input.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',
     '--image-volume=ignore', '--http-proxy=false', '--network=none', '--stop-signal=SIGTERM',
     ...Object.entries(input.labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
     '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pid=private', '--ipc=private', '--cgroupns=private', '--userns=keep-id',
@@ -69,7 +69,7 @@ export function spawnPodmanCommand(executable: string, argv: string[], environme
   if (!executable.startsWith('/') || Object.keys(environment).some(key => !['PATH', 'XDG_RUNTIME_DIR', 'LANG'].includes(key))) {
     throw new Error('Runtime command environment must be explicitly allowlisted.')
   }
-  return spawn(executable, argv, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: environment })
+  return spawn(executable, argv[0] === '--remote=false' ? argv : ['--remote=false', ...argv], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: environment })
 }
 
 export interface PodmanCommandRunner {
