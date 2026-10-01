@@ -3,6 +3,7 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { telemetryComputerFixture, telemetryOwnedFixture } from '@graphql/contracts/resource-telemetry-fixtures'
 import { TELEMETRY_LIMITS, TelemetryCollectedBatchSchema, TelemetryReadResultSchema, TelemetryReasonSchema, telemetrySelectorKey, type TelemetryCollectedBatch, type CollectionChallenge, type TrustedTelemetryContext } from '@graphql/contracts/resource-telemetry'
 import { ResourceTelemetryService } from './service.js'
+import { readTelemetry } from '../readback/adapters.js'
 import type { TelemetryOwnershipView } from './ports.js'
 import { createResourceCollector } from '../collector/lifecycle.js'
 import type { OwnershipView } from '../collector/ownership.js'
@@ -284,6 +285,45 @@ describe('authenticated telemetry ingestion and scoped readback', () => {
     await s.service.ingest(s.context, JSON.stringify(b), signal())
     const missing = await s.service.read(principal, telemetryOwnedFixture, signal())
     expect(missing.kind === 'sample' && missing.sample.memory.state).toBe('unavailable')
+  })
+  it('keeps all current accepted rows when a full batch replaces one omitted owner', async () => {
+    const s = await ready(), c = (await s.service.challenge(s.context, signal()))!, first = batch(c)
+    const ownedRow = (index: number) => ({ ...structuredClone(first.owned[0]!), selector: {
+      ...structuredClone(telemetryOwnedFixture), owner: { kind: 'operator-conversation' as const,
+        conversationId: `conversation-${index}`, leaseId: `lease-${index}` } } })
+    first.owned = Array.from({ length: TELEMETRY_LIMITS.rows - 1 }, (_, index) => ownedRow(index))
+    const retired = first.owned[0]!.selector
+    let retiredEnded = false
+    s.service.ports.ownership.resolve = async selector => ({ selector,
+      state: retiredEnded && telemetrySelectorKey(selector) === telemetrySelectorKey(retired) ? 'ended' : 'active', sharedOwners: [] })
+    const firstJson = JSON.stringify(first)
+    expect(Buffer.byteLength(firstJson)).toBeLessThanOrEqual(TELEMETRY_LIMITS.batchBytes)
+    await s.service.ingest(s.context, firstJson, signal())
+    s.advance(2000); retiredEnded = true
+    const nextChallenge = (await s.service.challenge(s.context, signal()))!, second = batch(nextChallenge, '2', '2001000000')
+    const replacement = ownedRow(TELEMETRY_LIMITS.rows)
+    second.owned = [...first.owned.slice(1), replacement]
+    second.host!.memory = { state: 'ok', value: { kind: 'host-used-estimate', bytes: 1024,
+      totalBytes: 8192, availableBytes: 7168, sharedPagesMayDoubleCount: false } }
+    replacement.memory = { state: 'ok', value: { kind: 'rss-sum', bytes: 8192,
+      totalBytes: null, availableBytes: null, sharedPagesMayDoubleCount: true } }
+    const secondJson = JSON.stringify(second)
+    expect(Buffer.byteLength(secondJson)).toBeLessThanOrEqual(TELEMETRY_LIMITS.batchBytes)
+    await s.service.ingest(s.context, secondJson, signal())
+    const audit = { record: async () => {} }
+    for (const row of [second.host!, ...second.owned]) {
+      const read = await readTelemetry(s.service, principal, row.selector, signal(), 'http', audit)
+      expect(read.kind).toBe('sample')
+      if (read.kind !== 'sample') throw new Error('sample')
+      expect(read.sample.sequence).toBe('2')
+      expect(read.sample.memory.state).toBe('fresh')
+      expect(read.sample.memory.value).toEqual(row.memory.state === 'ok' ? row.memory.value : null)
+      expect(read.lastKnown!.sequence).toBe('2')
+    }
+    const omitted = await readTelemetry(s.service, principal, retired, signal(), 'http', audit)
+    expect(omitted.kind).toBe('no-sample')
+    expect(omitted.kind === 'no-sample' && omitted.reason).toBe('ended')
+    await s.service.close()
   })
   it('rejects oversized raw JSON before parsing and uint64/negative/nonfinite payloads', async () => {
     const s = await ready(); await expect(s.service.ingest(s.context, ' '.repeat(65537), signal())).rejects.toThrow('batch-limit')

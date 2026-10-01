@@ -177,15 +177,14 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
         logicalCpuCount: batch.logicalCpuCount, contextKey: state.key, capture: row,
         captureStart: BigInt(batch.captureStartMonoNs), captureEnd: BigInt(batch.captureEndMonoNs) })
     }
-    // Missing rows never remain fresh from an earlier complete batch.
-    for (const [key, cached] of state.rows) if (!replacements.has(key)) {
+    // Current accepted rows take capacity first; retained missing rows never remain fresh.
+    for (const [key, cached] of state.rows) if (!replacements.has(key) && replacements.size < TELEMETRY_LIMITS.rows) {
       if ('reason' in cached) { replacements.set(key, cached); continue }
       replacements.set(key, { ...cached, latest: { ...cached.latest,
         coverage: { ...cached.latest.coverage, boundary: 'partial', reasons: ['source-failure'] },
         cpu: { state: 'unavailable', value: null, reason: 'source-failure', sampledAtUnixMs: null, freshUntilUnixMs: null },
         memory: { state: 'unavailable', value: null, reason: 'source-failure', sampledAtUnixMs: null, freshUntilUnixMs: null } } })
     }
-    while (replacements.size > TELEMETRY_LIMITS.rows) replacements.delete(replacements.keys().next().value!)
     state.rows = replacements
     state.sequence = seq; state.digest = hash; state.receipt = receipt
     state.challenges.delete(batch.challengeId)
