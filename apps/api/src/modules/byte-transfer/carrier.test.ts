@@ -1,0 +1,101 @@
+import { EventEmitter } from 'node:events'
+import { isDeepStrictEqual } from 'node:util'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, expect, it } from 'vitest'
+import { negotiateDeviceExtensions } from '@graphql/contracts/device-application'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { TransferContextSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
+import { adaptDeviceSocket } from '../devices/deviceWire.js'
+import { authenticatedTransferAuthority, BYTE_TRANSFER_NAMESPACE, createAuthenticatedTransferReceiver,
+  createChannelTransferClient, transferContextForBinding } from './carrier.js'
+
+class Socket extends EventEmitter {
+  bufferedAmount = 0
+  peer?: Socket
+  closed = false
+  frames: string[] = []
+  send(text: string) { this.frames.push(text); queueMicrotask(() => { if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false) }) }
+  close() { if (this.closed) return; this.closed = true; this.emit('close'); this.peer?.close() }
+}
+const hash = (value: Uint8Array) => createHash('sha256').update(value).digest('hex')
+const roots: string[] = []
+afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }) })
+function binding(): DeviceSessionBinding {
+  return { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
+    authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 77 }
+}
+function intentFor(bound: DeviceSessionBinding, bytes: Uint8Array): TransferIntent {
+  return { ...transferContextForBinding(bound), version: 1, transferId: randomUUID(), operationId: randomUUID(),
+    executionId: randomUUID(), attemptId: randomUUID(), placementHash: hash(bytes), rootId: randomUUID(), rootBindingRevision: 1,
+    direction: 'to-main', byteClass: 'source', sha256: hash(bytes), byteSize: bytes.byteLength,
+    manifestDigest: hash(bytes), chunkBytes: 8192, expiresAt: new Date(Date.now() + 60_000).toISOString() }
+}
+function pair(bound: DeviceSessionBinding, server: DeviceExtensionRegistration) {
+  const rawMain = new Socket(), rawWorker = new Socket(); rawMain.peer = rawWorker; rawWorker.peer = rawMain
+  const mainSocket = adaptDeviceSocket(rawMain), workerSocket = adaptDeviceSocket(rawWorker), stop = new AbortController()
+  const client: DeviceExtensionRegistration = { ...server, role: 'client' }; delete client.handle
+  const extensions = negotiateDeviceExtensions(extensionDescriptors([server]), extensionDescriptors([client]))
+  const main = new DeviceApplicationChannel({ side: 'main', binding: bound, socket: mainSocket, signal: stop.signal, extensions, registrations: [server], revalidate: async () => {} })
+  const worker = new DeviceApplicationChannel({ side: 'worker', binding: bound, socket: workerSocket, signal: stop.signal, extensions, registrations: [client] })
+  const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000), worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
+  for (const task of tasks) void task.catch(() => {})
+  return { worker, rawWorker, async close() { stop.abort(); main.close(); worker.close(); await Promise.allSettled(tasks); await Promise.all([main.join(), worker.join()]) } }
+}
+it('retains the actual UUID epoch and rejects numeric generation substitution', () => {
+  const actual = binding(), context = transferContextForBinding(actual)
+  expect(context.connectionEpoch).toBe(actual.connectionEpoch)
+  expect(context.bootId).toBe(actual.bootId)
+  expect(context).not.toHaveProperty('connectionGeneration')
+  expect(TransferContextSchema.safeParse({ ...context, connectionEpoch: actual.connectionGeneration }).success).toBe(false)
+})
+it('fences a replaced UUID session even when numeric generation is unchanged', async () => {
+  let actual = binding(); const original = actual, intent = intentFor(actual, Buffer.from('data'))
+  const authority = authenticatedTransferAuthority(() => actual, { authorize: async () => { actual = { ...actual, connectionEpoch: randomUUID() } } })
+  await expect(authority.authorize(intent, transferContextForBinding(original), 'append')).rejects.toThrow('changed during authorization')
+  expect(actual.connectionGeneration).toBe(original.connectionGeneration)
+  await expect(authority.authorize(intent, transferContextForBinding(original), 'status')).rejects.toThrow('differs')
+})
+it('moves immutable source-package bytes over the existing binary carrier and verifies server-derived receipt', async () => {
+  const bytes = Buffer.alloc(20_000, 7), original = binding(), intent = intentFor(original, bytes)
+  let current = original, granted = true
+  const root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => current, accepted: {
+    intent: async id => { if (id !== intent.transferId) throw new Error('Unknown accepted intent'); return intent },
+    authorize: async accepted => { if (!granted || !isDeepStrictEqual(accepted, intent)) throw new Error('Denied original operation grant') },
+  } })
+  const channels = pair(original, receiver.extension), client = createChannelTransferClient(channels.worker)
+  try {
+    const receipt = await client.sender({ read: async (_, offset, length) => bytes.subarray(offset, offset + length) }).send(intent)
+    const context = transferContextForBinding(original)
+    expect(await receiver.receiver.resolveVerifiedReceipt(intent.transferId, context)).toEqual(receipt)
+    const stream = await receiver.receiver.openVerified(receipt, context), received: Buffer[] = []
+    for await (const chunk of stream) received.push(chunk)
+    expect(Buffer.concat(received)).toEqual(bytes)
+    expect(channels.rawWorker.frames.every(frame => Buffer.byteLength(frame) <= 16384)).toBe(true)
+    await expect(receiver.receiver.openVerified({ ...receipt, receiptId: randomUUID() }, context)).rejects.toThrow('Unrecognized')
+    await expect(channels.worker.request(BYTE_TRANSFER_NAMESPACE, { method: 'status', transferId: intent.transferId, context })).rejects.toThrow()
+    granted = false
+    await expect(client.receiver.status(intent.transferId, context)).rejects.toThrow()
+    granted = true; current = { ...original, connectionEpoch: randomUUID(), bootId: randomUUID() }
+    await expect(client.receiver.status(intent.transferId, context)).rejects.toThrow()
+    expect((await receiver.receiver.status(intent.transferId, transferContextForBinding(current))).durableOffset).toBe(bytes.length)
+    const saved = JSON.parse(await readFile(join(root, `${intent.transferId}.json`), 'utf8'))
+    expect(saved.payload.intent.connectionEpoch).toBe(original.connectionEpoch)
+    expect(saved.payload.receipt.intent.connectionEpoch).toBe(original.connectionEpoch)
+  } finally { await channels.close(); await receiver.receiver.close() }
+})
+it('rejects an old captured sender context before dispatching through a replacement channel', async () => {
+  const original = binding(), root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const bytes = Buffer.from('data'), intent = intentFor(original, bytes), receiver = createAuthenticatedTransferReceiver({ stagingRoot: root,
+    current: () => original, accepted: { intent: async () => intent, authorize: async () => {} } })
+  const channels = pair(original, receiver.extension)
+  try {
+    const client = createChannelTransferClient(channels.worker)
+    await expect(client.receiver.start(intent, { ...transferContextForBinding(original), connectionEpoch: randomUUID() })).rejects.toThrow('transport')
+    expect(channels.rawWorker.frames.filter(frame => String(JSON.parse(frame).type).startsWith('application-'))).toHaveLength(0)
+  } finally { await channels.close(); await receiver.receiver.close() }
+})

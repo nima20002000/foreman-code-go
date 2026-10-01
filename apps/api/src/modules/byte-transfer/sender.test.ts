@@ -6,11 +6,12 @@ const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('h
 it('resumes the same immutable intent after lost chunk/final ACK and keeps reads bounded', async () => {
   const bytes = Buffer.from('abcdefgh'), contexts: TransferContext[] = []
   const context = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
-    authorizationRevision: 1, bootId: 'boot', connectionEpoch: 1 }
+    authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID() }
   const intent: TransferIntent = { ...context, version: 1, transferId: randomUUID(), operationId: randomUUID(), executionId: randomUUID(),
     attemptId: randomUUID(), placementHash: hash(bytes), rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-main',
     byteClass: 'source', sha256: hash(bytes), byteSize: bytes.length, manifestDigest: hash(bytes), chunkBytes: 4,
     expiresAt: new Date(Date.now() + 60_000).toISOString() }
+  const replacementEpoch = randomUUID()
   let offset = 0, lostChunk = true, lostFinal = true, starts = 0
   const progress = (): TransferProgress => ({ version: 1, transferId: intent.transferId, state: 'transferring',
     receivedInMemoryBytes: 0, durableOffset: offset, verifiedBytes: 0, updatedAt: new Date().toISOString() })
@@ -27,7 +28,7 @@ it('resumes the same immutable intent after lost chunk/final ACK and keeps reads
     cancel: async () => progress(),
   }
   const sender = new ResumableByteTransferSender(receiver, { read: async (_, at, length) => bytes.subarray(at, at + length) },
-    { current: async () => ({ ...context, connectionEpoch: contexts.length + 1 }), retryable: error => (error as Error).message === 'carrier-interrupted' })
+    { current: async () => ({ ...context, connectionEpoch: contexts.length ? replacementEpoch : context.connectionEpoch }), retryable: error => (error as Error).message === 'carrier-interrupted' })
   expect(await sender.send(intent)).toEqual(receipt); expect(starts).toBe(1); expect(offset).toBe(8)
-  expect(contexts.map(c => c.connectionEpoch)).toEqual([1, 2])
+  expect(contexts.map(c => c.connectionEpoch)).toEqual([context.connectionEpoch, replacementEpoch])
 })

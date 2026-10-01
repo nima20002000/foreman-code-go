@@ -77,3 +77,17 @@ main persisted intent and C publication/retention wiring; source immutable sende
 adapter; real two-process crash-lock reconciliation; peak memory and aggregate
 quota calibration; actual ENOSPC/EIO; real PC/laptop source/edge execution after
 W07-HUMAN approval. These unit ports alone do not close those live gates.
+
+The concrete `carrier.ts` adapters use W07's negotiated `byte-transfer-v1` namespace
+and actual `captureRequest` closures. `transferContextForBinding` retains its
+opaque UUID epoch and UUID boot; connectionGeneration is never substituted.
+Incoming metadata names only a transfer ID/operation/offset/hash; an authoritative
+accepted-intent resolver supplies the immutable main-issued identity. Device JSON
+cannot supply connection context, roots or an intent. Private operation grants are
+rechecked between two comparisons against the actual current W07 binding.
+Reconnect supplies a new current UUID context while the journal/receipt keeps its
+original UUID provenance. No numeric-epoch migration or fallback is provided.
+Main/worker factories return the actual receiver, verified reader and receipt
+lookup, namespace handler and bounded source-package sender. Compose the handler
+with C's output handler in the one registered byte-transfer namespace; never
+register two competing handlers or another transport.

@@ -10,9 +10,9 @@ const roots: string[] = [], services: ResumableByteTransferService[] = []
 afterEach(async () => { for (const service of services.splice(0)) await service.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture(bytes = Buffer.from('abcdefgh')) {
   const root = await mkdtemp(join(homedir(), '.graphql-transfer-test-')); roots.push(root)
-  let epoch = 1, revoked = false, now = Date.now(), failure: string | undefined
+  let epoch = randomUUID(), revoked = false, now = Date.now(), failure: string | undefined
   const context: TransferContext = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
-    keyRevision: 1, authorizationRevision: 1, bootId: 'boot', connectionEpoch: 1 }
+    keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: epoch }
   const intent: TransferIntent = { ...context, version: 1, transferId: randomUUID(), operationId: randomUUID(),
     executionId: randomUUID(), attemptId: randomUUID(), placementHash: hash(Buffer.from('placement')),
     rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-main', byteClass: 'source',
@@ -27,7 +27,7 @@ async function fixture(bytes = Buffer.from('abcdefgh')) {
   const service = create()
   const chunk = (offset: number, value = bytes.subarray(offset, offset + 4)) => ({ offset, bytes: value, sha256: hash(value) })
   return { root, context, intent, bytes, service, create, chunk,
-    revoke: () => { revoked = true }, reconnect: () => { epoch++; return { ...context, connectionEpoch: epoch, bootId: 'new-boot' } },
+    revoke: () => { revoked = true }, reconnect: () => { epoch = randomUUID(); return { ...context, connectionEpoch: epoch, bootId: randomUUID() } },
     time: (ms: number) => { now += ms }, fail: (point?: string) => { failure = point } }
 }
 describe('bounded authenticated transfer staging', () => {
