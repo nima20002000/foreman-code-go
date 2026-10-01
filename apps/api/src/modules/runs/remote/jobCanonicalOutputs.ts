@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
@@ -14,6 +14,7 @@ import type { VerifiedArtifactReader } from '../../files/distributed/publication
 import { ResumableByteTransferSender, type TransferSenderConnection } from '../../byte-transfer/sender.js'
 import type { ByteTransferPort } from '@graphql/contracts/byte-transfer'
 import type { RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
+import type { RemoteOperationJournal } from './operationJournal.js'
 import type { JobSql } from '../../jobs/repository.js'
 
 /** Concrete main canonical adapter + verified original transfer reader; no alternate byte store. */
@@ -31,7 +32,7 @@ export interface JobOutputApplicationPort {
   publish(input: JobOutputPublicationInput): Promise<JobArtifact>
 }
 /** Only called after main's physical closure acknowledgement. Reads real sealed declared bytes. */
-export function createRemoteJobOutputCollector(receiver: ByteTransferPort, connection: TransferSenderConnection, main: JobOutputApplicationPort) {
+export function createRemoteJobOutputCollector(receiver: ByteTransferPort, connection: TransferSenderConnection, main: JobOutputApplicationPort, journal: RemoteOperationJournal) {
   return async (execution: JobExecution) => {
     if (execution.acceptedSpec.target.hostRef.kind !== 'device') throw new Error('Remote job outputs require their actual registered device')
     const outputs = await readDeclaredJobOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)
@@ -40,7 +41,7 @@ export function createRemoteJobOutputCollector(receiver: ByteTransferPort, conne
       if (!declared) throw new Error('Undeclared job output')
       const bytes = Buffer.from(output.bytes), sha256 = createHash('sha256').update(bytes).digest('hex')
       const input: JobOutputPublicationInput = { workspaceId: execution.workspaceId, executionId: execution.id, attemptId: execution.attemptId,
-        owner: execution.owner, commandId: randomUUID(), path: output.path, mediaType: declared.mediaType, sha256, byteSize: bytes.length }
+        owner: execution.owner, commandId: await journal.jobOutputCommand(execution.operationId, { path: output.path, mediaType: declared.mediaType, sha256, byteSize: bytes.length }), path: output.path, mediaType: declared.mediaType, sha256, byteSize: bytes.length }
       const intent = await main.admit(input)
       if (intent.executionId !== execution.id || intent.attemptId !== execution.attemptId || intent.direction !== 'to-main' || intent.byteClass !== 'artifact'
         || intent.placementHash !== execution.acceptedSpec.bindingHash || intent.manifestDigest !== execution.acceptedSpec.outputSpecDigest
@@ -57,7 +58,7 @@ export function createRemoteJobOutputCollector(receiver: ByteTransferPort, conne
 }
 
 /** Main-local jobs use real detached bytes, never invented device/transfer identities. */
-export function createLocalJobCanonicalOutputs(input: { pool: pg.Pool; storageRoot: string; authority: JobPublicationAuthority }) {
+export function createLocalJobCanonicalOutputs(input: { pool: pg.Pool; storageRoot: string; authority: JobPublicationAuthority; journal: RemoteOperationJournal }) {
   const sealed = new Map<string, { input: JobOutputPublicationInput; specDigest: string; bytes: Buffer }>()
   const artifacts = createCanonicalJobArtifactPort({ pool: input.pool, storageRoot: input.storageRoot, authority: input.authority,
     reader: { open: async (request, execution) => {
@@ -72,7 +73,8 @@ export function createLocalJobCanonicalOutputs(input: { pool: pg.Pool; storageRo
       for (const output of await readDeclaredJobOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)) {
         const declared = execution.acceptedSpec.outputs.find(value => value.path === output.path)
         if (!declared) throw new Error('Undeclared local job output')
-        const bytes = Buffer.from(output.bytes), commandId = randomUUID()
+        const bytes = Buffer.from(output.bytes), sha256 = createHash('sha256').update(bytes).digest('hex')
+        const commandId = await input.journal.jobOutputCommand(execution.operationId, { path: output.path, mediaType: declared.mediaType, sha256, byteSize: bytes.length })
         const request: JobOutputPublicationInput = { workspaceId: execution.workspaceId, executionId: execution.id, attemptId: execution.attemptId,
           owner: execution.owner, commandId, path: output.path, mediaType: declared.mediaType, sha256: createHash('sha256').update(bytes).digest('hex'), byteSize: bytes.length }
         if (sealed.size >= 4 || [...sealed.values()].reduce((sum,value) => sum+value.bytes.length,bytes.length) > 64*1024*1024) throw new Error('Main output sealing capacity exhausted')

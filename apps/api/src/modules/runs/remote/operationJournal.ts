@@ -15,7 +15,7 @@ import { RemoteJobOperationReceiptSchema, RemoteJobDispatchIntentSchema, RemoteJ
   type RemoteJobConnectionIdentity, type RemoteJobOperationReceipt, type RemoteJobDispatchIntent, type RemoteJobOwnerControl, type RemoteJobNativeIdentity, type RemoteJobTerminalEvidence, type RemoteJobOperationStatus } from '@graphql/contracts/remote-job-execution'
 
 const JournalSchema = z.object({ schemaVersion: z.literal(1), receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptSchema])),
-  reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
+  reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128), jobOutputs: z.array(z.object({ operationId: z.string(), commandId: z.uuid(), path: z.string(), mediaType: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().nonnegative() }).strict()).default([]), jobLogs: z.array(z.object({ operationId: z.string(), acknowledgedSequence: z.number().int().nonnegative(), chunks: z.array(JobLogChunkSchema).max(4096) }).strict()).default([]) }).strict()
 const same = isDeepStrictEqual
 
 /** Single worker owner; the caller must hold the worker installation's exclusive service lock.
@@ -43,7 +43,7 @@ export class RemoteOperationJournal {
         data = JournalSchema.parse(JSON.parse(serialized))
       } catch (error) {
         if (!options.initializeNewInstallation || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Journal unavailable: recovery required', { cause: error })
-        data = { schemaVersion: 1, receipts: [], reconciliations: [], jobLogs: [] }
+        data = { schemaVersion: 1, receipts: [], reconciliations: [], jobOutputs: [], jobLogs: [] }
       }
       if (data.receipts.length > capacity) throw new Error('Journal exceeds capacity')
       const journal = new RemoteOperationJournal(path, data, capacity, lock)
@@ -343,6 +343,25 @@ export class RemoteOperationJournal {
       if (!spool || sequence <= spool.acknowledgedSequence) return
       if (sequence !== spool.acknowledgedSequence + 1 || !spool.chunks.some(value => value.sequence === sequence)) throw new Error('Unpersisted job log acknowledgment')
       spool.acknowledgedSequence = sequence
+    })
+  }
+
+  jobOutputCommand(operationId: string, input: { path: string; mediaType: string; sha256: string; byteSize: number }) {
+    return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      if (!receipt.terminal) throw new Error('Job physical closure required before sealing outputs')
+      const declared = receipt.execution.acceptedSpec.outputs.find(output => output.path === input.path)
+      if (!declared || declared.mediaType !== input.mediaType || !/^[a-f0-9]{64}$/.test(input.sha256) || !Number.isSafeInteger(input.byteSize)
+        || input.byteSize < 0 || input.byteSize > receipt.execution.acceptedSpec.policy.maxOutputBytes) throw new Error('Unaccepted job output metadata')
+      const existing = data.jobOutputs.find(output => output.operationId === operationId && output.path === input.path)
+      if (existing) {
+        if (existing.sha256 !== input.sha256 || existing.byteSize !== input.byteSize || existing.mediaType !== input.mediaType) throw new Error('Original sealed job output changed')
+        return existing.commandId
+      }
+      const outputs = data.jobOutputs.filter(output => output.operationId === operationId)
+      if (outputs.length >= 64 || outputs.reduce((total, output) => total + output.byteSize, input.byteSize) > receipt.execution.acceptedSpec.policy.maxOutputBytes) throw new Error('Job output sealing budget exceeded')
+      const commandId = randomUUID()
+      data.jobOutputs.push({ operationId, commandId, ...input }); return commandId
     })
   }
 

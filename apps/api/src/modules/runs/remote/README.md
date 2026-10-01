@@ -43,3 +43,17 @@ corepack pnpm --filter @graphql/api typecheck
 corepack pnpm --filter @graphql/api exec eslint src/modules/runs/remote/*.ts src/infrastructure/remoteExecutionMigration.ts --max-warnings 0
 corepack pnpm --filter @graphql/api exec vitest run src/modules/runs/remote/operationJournal.test.ts src/modules/runs/remote/resultBridge.test.ts src/modules/runs/remote/executionHost.test.ts src/modules/runs/remote/persistence.test.ts --maxWorkers=1
 ```
+
+## Genuine job subjects and output sequencing
+
+`remoteJobExecution.ts` distinguishes workflow-node subjects with actual Run/node/node-execution IDs from manual-job subjects with actual workspace/job-execution/definition IDs. It does not manufacture an Agent, harness, native session or turn. The same journal file, fsync/rename boundary, exclusive owner lock, capacity and uncertain-entry fence now hold typed OCI job receipts, bounded log spools and immutable output command identities.
+
+`RemoteJobExecutionHost` invokes CI-A's real `executeJob` and `PodmanJobSupervisor`. Exact accepted configuration/input hashes, genuine CI-B job grant/attempt/operation, selected physical target and OCI container/supervisor identity are retained. Worker callbacks use narrow `WorkerJobApplicationSink` RPC; `JobApplicationBridge` checks the trusted W07 binding against the actual accepted job row and CI-B's live PostgreSQL job fence. The main uses `PostgresJobDispatch` and its original owner transaction, not a worker database or another scheduler.
+
+Process closure is journaled and acknowledged by main before collecting or publishing output bytes. Physical exit, log gaps, transport uncertainty and artifact publication remain separate. Main/worker restart and missing OCI inspection never repeat the job. A lost closure/publication acknowledgment retains the original receipt and pending/uncertain publication; it is not authorization for another execution.
+
+`createJobCanonicalOutputs` uses W09's actual canonical artifact port and verified transfer reader with CI-B's locked receipt projector. The remote collector reads only sealed declared output bytes, requires the main-admitted immutable transfer intent, sends through W09-B's actual resumable sender, and verifies pinned canonical artifact readback. Main-local jobs use bounded detached real bytes through the same canonical port, without fabricated device or transfer IDs. Output command IDs are persisted in the operation journal before output admission and reused across retry/restart; changed hashes, sizes or declarations fail closed. W09-C owns the persisted main output-admission/resolver service and RPC schema.
+
+Workflow runtime validation now treats `managedRuntimeRoot` as the registered accepted base. Each actual runtime leaf must be a strict native canonical descendant and carry an exact local attestation for the execution, attempt, operation, placement hash, directory identity and accepted source materialization. Base equality, traversal, project overlap and another execution's attestation are rejected before native submission.
+
+Additional focused fixtures: `jobExecutionHost.test.ts` and `jobCanonicalOutputs.test.ts`. Their OCI command and transfer doubles are model-free contract checks; they are not installed-runtime, live-device or native-acceptance evidence.
