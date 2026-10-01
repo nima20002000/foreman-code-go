@@ -272,6 +272,7 @@ export function buildProductionApp(
   )
   const interactions = new InteractionService(
     repository, budgets, approvals, (interaction) => engine.resumeInteraction(interaction), responseJournal,
+    (interaction) => approvals.inspectInteractionActivity(interaction),
   )
   registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
