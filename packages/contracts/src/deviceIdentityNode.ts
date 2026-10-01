@@ -31,7 +31,7 @@ export async function loadOrCreateWorkerIdentity(directory: string): Promise<Wor
   async function read(): Promise<WorkerLocalIdentity> {
     await requirePrivateFile(file)
     const identity = JSON.parse(await readFile(file, 'utf8')) as WorkerLocalIdentity
-    if (identity.formatVersion !== 1 || !/^[0-9a-f-]{36}$/.test(identity.workerInstallationId)
+    if (identity.formatVersion !== 1 || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identity.workerInstallationId)
       || !Number.isSafeInteger(identity.keyRevision) || identity.keyRevision < 1 || publicKeyFingerprint(identity.publicKey) !== identity.publicKeyFingerprint
       || publicKeyFingerprint(createPublicKey(createPrivateKey(identity.privateKey)).export({ type: 'spki', format: 'pem' }).toString()) !== identity.publicKeyFingerprint) {
       throw new Error('Worker identity is corrupt; explicit recovery is required.')
@@ -91,5 +91,5 @@ export async function updateWorkerEndpoint(directory: string, endpoint: string):
   await syncPath(temporary)
   const { rename } = await import('node:fs/promises')
   try { await rename(temporary, join(directory, 'pairing.json')); await syncPath(directory) }
-  catch (error) { await unlink(temporary); throw error }
+  catch (error) { await unlink(temporary).catch(() => undefined); throw error }
 }

@@ -51,7 +51,11 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     expect((await client.callTool({ name: 'device_pairing_grant_create', arguments: args })).structuredContent).toEqual(issued)
     const pairing = { mainId, workerInstallationId: args.workerInstallationId, publicKey, grant: issued.grant, requestId: randomUUID() }
     const input = { ...pairing, signature: sign(null, Buffer.from(pairingProof(pairing)), keys.privateKey).toString('base64url') }
-    const paired = await devices.pair(input)
+    const simultaneous = await Promise.all([devices.pair(input), devices.pair(input)])
+    const paired = simultaneous[0]!
+    expect(simultaneous[1]).toEqual(paired)
+    const replay = { ...pairing, requestId: randomUUID() }
+    await expect(devices.pair({ ...replay, signature: sign(null, Buffer.from(pairingProof(replay)), keys.privateKey).toString('base64url') })).rejects.toMatchObject({ code: 'conflict' })
     devices = new PostgresDeviceAccessService(pool, mainId)
     expect(await devices.pair(input)).toEqual(paired)
     const principal = await devices.authenticateDevice(paired.credential, 'connect')
@@ -66,6 +70,12 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     await expect(devices.revalidateDevice(principal, 'heartbeat')).rejects.toThrow()
     expect((await devices.list(owner.principal))[0]?.status).toBe('revoked')
     expect(JSON.stringify((await pool.query('select result from management_command_receipts')).rows)).not.toContain(issued.grant)
+    const expiredGrant = await devices.createPairingGrant(owner.principal, { ...args, workerInstallationId: randomUUID(), scopes: ['connect'], commandId: randomUUID() })
+    await pool.query("update device_pairing_grants set expires_at=now()-interval '1 second' where device_id=$1", [expiredGrant.registration.deviceId])
+    const expired = { ...pairing, grant: expiredGrant.grant, workerInstallationId: expiredGrant.registration.workerInstallationId, requestId: randomUUID() }
+    await expect(devices.pair({ ...expired, signature: sign(null, Buffer.from(pairingProof(expired)), keys.privateKey).toString('base64url') })).rejects.toMatchObject({ code: 'expired' })
+    await pool.query('update management_principals set revoked_at=now() where id=$1', [owner.principal.id])
+    await expect(devices.list(owner.principal)).rejects.toThrow()
   } finally {
     await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end()
     await admin.query(`drop schema "${schema}" cascade`); await admin.end()

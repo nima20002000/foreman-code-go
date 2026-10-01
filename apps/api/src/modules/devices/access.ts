@@ -35,7 +35,7 @@ export class PostgresDeviceAccessService {
       return rows.rows.map(row => DeviceRegistrationSchema.parse(row.record))
     })
   }
-  async createPairingGrant(principal: ManagementPrincipal, input: { workerInstallationId: string; publicKey: string; expectedFingerprint: string; scopes: DeviceScope[]; commandId: string; expectedAuthorizationRevision?: number }, source: 'http' | 'mcp' = 'http'): Promise<{ registration: DeviceRegistration; grant: string; expiresAt: string }> {
+  async createPairingGrant(principal: ManagementPrincipal, input: { workerInstallationId: string; publicKey: string; expectedFingerprint: string; scopes: DeviceScope[]; commandId: string; expectedAuthorizationRevision?: number | undefined }, source: 'http' | 'mcp' = 'http'): Promise<{ registration: DeviceRegistration; grant: string; expiresAt: string }> {
     const fingerprint = publicKeyFingerprint(input.publicKey)
     if (fingerprint !== input.expectedFingerprint) throw new DeviceAccessError('unauthorized')
     let registration = DeviceRegistrationSchema.parse({ mainId: this.mainId, deviceId: randomUUID(), workerInstallationId: input.workerInstallationId,
