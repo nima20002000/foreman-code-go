@@ -5,7 +5,7 @@ export * from './claudeQualification.js';
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
 import { InteractionActivityProjectionSchema, NativeInteractionResponseAvailabilitySchema } from "./interaction-activity.js";
 import { z } from "zod";
-import { FileWithRevisionSchema, MessageAttachmentFields } from "./files.js";
+import { FileWithRevisionSchema, MessageAttachmentFields, MessageAttachmentRefsSchema } from "./files.js";
 import { IdSchema, TimestampSchema, GraphIdSchema, RunInputSchema } from "./schemaPrimitives.js";
 export { IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 export type { Id, Timestamp } from "./schemaPrimitives.js";
@@ -797,6 +797,8 @@ export const MessageSchema = z
     activityNative: ActivityNativeIdentitySchema.optional(),
     revision: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
     sequence: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
+    /** Exact admitted send source; displayed publications are never new send inputs. */
+    originalInput: z.object({ requestId: IdSchema, content: z.string(), attachments: MessageAttachmentRefsSchema }).strict().nullable().optional(),
     nativeMessageId: IdSchema.optional(),
     /** OpenCode text-part identity is nativeMessageId; this is its assistant message. */
     nativeParentMessageId: IdSchema.optional(),
@@ -1491,6 +1493,7 @@ export const OperatorConversationSummarySchema = OperatorConversationStateSchema
   conversationId: IdSchema,
   title: z.string().optional(),
   needsAttention: z.boolean(),
+  backgroundActivity: z.enum(['running', 'unknown']).nullable().optional(),
 }).strict();
 export type OperatorConversationSummary = z.infer<typeof OperatorConversationSummarySchema>;
 export const OperatorConversationSummariesQuerySchema = z.object({
