@@ -89,6 +89,7 @@ export class RemoteExecutionHost {
     if (recorded.status === 'known' && !isDeepStrictEqual(recorded.receipt.intent, frame.intent)) throw new Error('RPC stale execution owner')
     await this.ports.authorize(frame.intent, placement, frame.method === 'control' ? 'control' : ['prepare', 'start-turn'].includes(frame.method) ? 'start' : 'read')
     if (frame.method === 'prepare') return this.prepare(frame)
+    if (frame.method === 'reattach') return this.reattach(frame)
     if (frame.method === 'capabilities' || frame.method === 'inspect-mcp') return this.inspect(frame, frame.method === 'capabilities' ? 'capabilities' : 'inspectMcp')
     if (frame.method === 'reconcile-response') { const resident = await this.resident(frame.intent.operationId, 'read'); if (!resident.manager.reconcileResponse) throw new Error('Exact native response recovery unavailable'); return { history: await resident.manager.reconcileResponse(resident.session, frame.response), status: await this.ports.journal.status(frame.intent.operationId) } }
     if (frame.method === 'control') return this.control(frame.command, frame)
@@ -172,28 +173,68 @@ export class RemoteExecutionHost {
     } catch (error) { await this.ports.journal.uncertain(intent.operationId, 'Native session preparation acknowledgment unavailable'); throw error }
     finally { this.launchControllers.delete(intent.operationId) }
   }
-  async recover(raw: { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; session: NativeSessionReference; evidenceDigest: string }) {
+  /** Observation of the existing lifetime only; never invokes provider attach,
+   * which may start another process even for the same saved native thread. */
+  private async reattach(raw: { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; session: NativeSessionReference }) {
+    const resident = await this.resident(raw.intent.operationId, 'read')
+    if (!isDeepStrictEqual(resident.intent, raw.intent) || !isDeepStrictEqual(resident.placement, raw.placement)
+      || !isDeepStrictEqual(resident.request, raw.request) || !isDeepStrictEqual(resident.session, raw.session)) throw new Error('Original reattachment binding mismatch')
+    const status = await this.ports.journal.status(raw.intent.operationId)
+    if (status.status !== 'known' || !status.receipt.native || status.receipt.terminal || status.receipt.phase === 'uncertain') throw new Error('Original resident lifetime requires reconciliation')
+    const native = await this.ports.nativeEvidence(raw.intent, raw.session, { manager: resident.manager, request: resident.request, signal: resident.controller.signal })
+    if (native.sessionId !== status.receipt.native.sessionId || native.processIdentityDigest !== status.receipt.native.processIdentityDigest
+      || native.turnId !== undefined && native.turnId !== status.receipt.native.turnId) throw new Error('Reattachment replaced original native lifetime')
+    await this.ports.authorize(raw.intent, resident.placement, 'read')
+    const current = await this.ports.journal.status(raw.intent.operationId)
+    if (current.status !== 'known' || !isDeepStrictEqual(current.receipt.intent, raw.intent)
+      || !isDeepStrictEqual(current.receipt.native, status.receipt.native) || current.receipt.terminal || current.receipt.phase === 'uncertain') throw new Error('Original reattachment owner changed')
+    return { session: structuredClone(resident.session), status: current }
+  }
+  recover(raw: { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; session: NativeSessionReference; evidenceDigest: string; executionPlacement?: NativeExecutionPlacement }) {
+    return this.track(() => this.recoverOwned(raw))
+  }
+  private async recoverOwned(raw: { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; session: NativeSessionReference; evidenceDigest: string; executionPlacement?: NativeExecutionPlacement }) {
     const status = await this.ports.journal.status(raw.intent.operationId)
     if (status.status !== 'known' || !status.receipt.native || !this.ports.verifyRecovery
-      || !isDeepStrictEqual(status.receipt.intent, raw.intent) || status.receipt.native.sessionId !== raw.session.nativeSessionId) throw new Error('Original native recovery evidence required')
+      || status.receipt.terminal || !isDeepStrictEqual(status.receipt.intent, raw.intent)
+      || status.receipt.native.sessionId !== raw.session.nativeSessionId) throw new Error('Original native recovery evidence required')
     const placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
-    if (placement.bindingHash !== raw.intent.bindingHash || placement.payload.kind !== 'agent' || placement.payload.agentConfigurationVersionId !== request.configuration.id
-      || request.executionId !== raw.intent.executionId || request.workingDirectory !== placement.destination.canonicalCwd) throw new Error('Recovery binding mismatch')
+    const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
+      ? readNativeExecutionBinding(placement, raw.intent, raw.executionPlacement) : undefined
+    if (placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== this.ports.connection.deviceId
+      || placement.mainId !== this.ports.connection.mainId || placement.runId !== raw.intent.runId || placement.nodeId !== raw.intent.nodeId
+      || placement.bindingHash !== raw.intent.bindingHash || placement.payload.kind !== 'agent'
+      || placement.payload.agentConfigurationVersionId !== request.configuration.id || placement.payload.agentId !== request.configuration.agentId
+      || request.executionId !== raw.intent.executionId || request.runId !== raw.intent.runId || request.workflowNodeId !== raw.intent.nodeId
+      || raw.session.harness !== request.configuration.harness.harness
+      || request.workingDirectory !== (executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd)
+      || raw.intent.inputDigest !== `sha256:${createHash('sha256').update(canonicalGraphJson(request.input)).digest('hex')}`) throw new Error('Recovery binding mismatch')
     await this.ports.authorize(raw.intent, placement, 'read')
     assertRuntimeLeafPath(request.runtimeDirectory, placement)
-    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(raw.intent, placement, request), request.runtimeDirectory, raw.intent, placement)
+    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(raw.intent, placement, request, executionPlacement), request.runtimeDirectory, raw.intent, placement, executionPlacement)
     await this.ports.verifyRecovery(status.receipt, raw.session, raw.evidenceDigest)
+    const existing = this.residents.get(raw.intent.operationId)
+    if (existing && (!isDeepStrictEqual(existing.request, request) || !isDeepStrictEqual(existing.session, raw.session)
+      || !isDeepStrictEqual(existing.placement, placement))) throw new Error('Recovery changed original resident')
     const resolved = this.ports.managers.resolve({ executionId: raw.intent.executionId, agentId: request.configuration.agentId,
       harness: request.configuration.harness.harness, configuration: request.configuration, workingDirectory: request.workingDirectory })
-    if (resolved.processState === 'needs_start') resolved.beginStart?.()
-    const session = await resolved.manager.attachSession(raw.session, { request, correlationId: `execution:${raw.intent.executionId}`, instructionsDelivered: true })
-    if (session.nativeSessionId !== raw.session.nativeSessionId) throw new Error('Recovery replaced original session')
-    resolved.markResident?.()
+    // A saved provider thread is not the surviving original physical lifetime.
+    // Cold attachment may launch a replacement process: never call it here.
+    if (resolved.processState !== 'resident') throw new Error('Original resident native lifetime required; cold recovery unavailable')
+    const controller = existing?.controller ?? new AbortController()
+    const native = await this.ports.nativeEvidence(raw.intent, raw.session, { manager: resolved.manager, request, signal: controller.signal })
+    if (native.sessionId !== status.receipt.native.sessionId || native.processIdentityDigest !== status.receipt.native.processIdentityDigest
+      || native.turnId !== undefined && native.turnId !== status.receipt.native.turnId) throw new Error('Recovery replaced original native lifetime')
+    await this.ports.authorize(raw.intent, placement, 'read')
+    const current = await this.ports.journal.status(raw.intent.operationId)
+    if (current.status !== 'known' || !isDeepStrictEqual(current.receipt.intent, raw.intent)
+      || !isDeepStrictEqual(current.receipt.native, status.receipt.native) || current.receipt.terminal) throw new Error('Original recovery owner changed')
+    const confirmed = await this.ports.journal.confirmRecovered(raw.intent.operationId, current.receipt.native!)
+    if (!isDeepStrictEqual(confirmed.intent, raw.intent)) throw new Error('Original recovery owner changed')
     this.bindings.set(raw.intent.operationId, { intent: raw.intent, placement })
-    this.residents.set(raw.intent.operationId, { intent: raw.intent, placement, request, manager: resolved.manager, session, controller: new AbortController() })
-    await this.ports.journal.confirmRecovered(raw.intent.operationId, status.receipt.native)
-    if (status.receipt.stopFence) await resolved.manager.cancel(session, undefined, status.receipt.native.turnId)
-    return { session, status: await this.ports.journal.status(raw.intent.operationId) }
+    this.residents.set(raw.intent.operationId, existing ?? { intent: raw.intent, placement, request, manager: resolved.manager, session: raw.session, controller })
+    if (confirmed.stopFence) await resolved.manager.cancel(raw.session, undefined, confirmed.native!.turnId)
+    return { session: raw.session, status: await this.ports.journal.status(raw.intent.operationId) }
   }
   /** Invoke on credential policy refresh/revocation; offline requested cancellation stays non-terminal. */
   async refreshAuthority() {
