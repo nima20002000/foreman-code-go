@@ -11,6 +11,7 @@ import { publicKeyFingerprint } from '@graphql/contracts/device-identity-node'
 import { PostgresDeviceAccessService, pairingProof } from './access.js'
 import { loadOrCreateMainDeviceIdentity, mainDeviceIdentityMigration } from './mainIdentity.js'
 import { deviceIdentityMigration } from './migration.js'
+import { authorizeDeviceHost } from './hostAuthorization.js'
 import { registerDeviceManagementTools } from './management.js'
 
 it('persists pair/revoke with denied and authenticated Operator MCP readback across main restart', async () => {
@@ -64,6 +65,7 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     devices = new PostgresDeviceAccessService(pool, mainId)
     expect(await devices.pair(input)).toEqual(paired)
     const principal = await devices.authenticateDevice(paired.credential, 'connect')
+    await expect(authorizeDeviceHost(pool, reader.principal, 'harnesses:read', { kind: 'device', mainId, deviceId: paired.registration.deviceId }, args.workerInstallationId)).rejects.toThrow()
     const readback = (await client.callTool({ name: 'devices_list', arguments: {} })).structuredContent as { devices: unknown[] }
     expect(readback.devices).toEqual([paired.registration])
     const revoke = { commandId: randomUUID(), deviceId: paired.registration.deviceId, expectedRevision: 1 }
