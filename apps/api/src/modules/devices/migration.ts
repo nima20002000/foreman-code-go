@@ -1,5 +1,4 @@
 export const deviceIdentityMigration = { version: 282101, sql: `
-create table device_main_identity (main_id uuid primary key, record jsonb not null);
 create table device_authorization_secret (singleton boolean primary key check(singleton), secret text not null);
 create table device_registrations (
  id uuid primary key, main_id uuid not null, worker_installation_id uuid not null unique,
