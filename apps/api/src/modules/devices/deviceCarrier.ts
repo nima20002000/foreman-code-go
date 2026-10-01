@@ -1,0 +1,54 @@
+import type { IncomingMessage } from 'node:http'
+import type { Duplex } from 'node:stream'
+import { DeviceEndpoint } from './deviceEndpoint.js'
+import { adaptDeviceSocket, DeviceConnectionError, type DeviceSocket, type RawDeviceSocket } from './deviceWire.js'
+
+export interface UpgradeServer {
+  handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, callback: (socket: RawDeviceSocket) => void): void
+}
+/** ws server MUST use {noServer:true,maxPayload:16384,perMessageDeflate:false}. */
+export function deviceUpgradeHandler(endpoint: DeviceEndpoint, server: UpgradeServer) {
+  return (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (request.url !== '/device/connect' || request.headers['sec-websocket-extensions']) { socket.destroy(); return }
+    // Catch every post-upgrade path explicitly; no Fastify/browser auth middleware is involved.
+    void endpoint.authenticate({
+      ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}),
+      ...(request.headers.cookie ? { cookie: request.headers.cookie } : {}),
+      ...(request.headers.origin ? { origin: request.headers.origin } : {}),
+    }).then((principal) => {
+      if (socket.destroyed) return
+      server.handleUpgrade(request, socket, head, (raw) => { void endpoint.acceptAuthenticated(principal, adaptDeviceSocket(raw)).catch(() => raw.close()) })
+    }).catch((error: unknown) => {
+      const code = error instanceof DeviceConnectionError ? error.code : 'transport'
+      const status = code === 'authentication' ? 401 : code === 'permission' ? 403 : code === 'wrong-main' ? 409 : 503
+      if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} Device connection rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+    })
+  }
+}
+export interface ClientDeviceSocket extends RawDeviceSocket {
+  on(event: 'open' | 'message' | 'error' | 'close' | 'unexpected-response', listener: (...args: unknown[]) => void): void
+  off(event: 'open' | 'message' | 'error' | 'close' | 'unexpected-response', listener: (...args: unknown[]) => void): void
+}
+/** Factory is ws's constructor; never pass owner cookies/provider/MCP credentials. */
+export function deviceConnector(options: {
+  url: string; credential: string
+  create(url: string, options: { headers: { Authorization: string }; rejectUnauthorized: true; perMessageDeflate: false; maxPayload: number; handshakeTimeout: number }): ClientDeviceSocket
+}): (signal: AbortSignal) => Promise<DeviceSocket> {
+  const url = new URL(options.url)
+  if (url.protocol !== 'wss:' || url.username || url.password || url.pathname !== '/device/connect' || url.search || url.hash) throw new DeviceConnectionError('wrong-main')
+  return (signal) => {
+    if (signal.aborted) return Promise.reject(new DeviceConnectionError('transport'))
+    const raw = options.create(url.href, { headers: { Authorization: `Bearer ${options.credential}` }, rejectUnauthorized: true, perMessageDeflate: false, maxPayload: 16_384, handshakeTimeout: 10_000 })
+    const adapted = adaptDeviceSocket(raw)
+    return new Promise<DeviceSocket>((resolve, reject) => {
+      const cleanup = () => { raw.off('open', open); raw.off('error', fail); raw.off('close', fail); raw.off('unexpected-response', rejected); signal.removeEventListener('abort', fail) }
+      const rejected = (_request: unknown, response: unknown) => {
+        const status = (response as { statusCode?: number })?.statusCode
+        cleanup(); adapted.close(); reject(new DeviceConnectionError(status === 401 ? 'authentication' : status === 403 ? 'permission' : status === 409 ? 'wrong-main' : 'transport'))
+      }
+      const open = () => { cleanup(); resolve(adapted) }
+      const fail = () => { cleanup(); adapted.close(); reject(new DeviceConnectionError('transport')) }
+      raw.on('open', open); raw.on('error', fail); raw.on('close', fail); raw.on('unexpected-response', rejected); signal.addEventListener('abort', fail, { once: true })
+    })
+  }
+}
