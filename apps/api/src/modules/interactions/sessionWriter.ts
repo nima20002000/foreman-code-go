@@ -1,3 +1,4 @@
+import type { ResponseAvailabilityInspector } from '../harnesses/responseAvailability.js'
 import { randomUUID } from 'node:crypto'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
@@ -5,7 +6,7 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@graphql/contracts'
 
 import { DomainError } from '../errors.js'
-import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput, NativeInitialTurnInput } from '../harnesses/port.js'
 import { PostgresInteractionCoordinationRepository, type WriterFence } from './coordination.js'
 import { definitelyRejected, ReviewEvidenceTracker, reviewTurnEvidence, type TurnEvidence } from './reviewerEvidence.js'
 
@@ -127,13 +128,19 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   private readonly active = new Map<string, SessionWriteLease>()
   private controlTail: Promise<unknown> = Promise.resolve()
   private disposal: Promise<void> | undefined
+  readonly startInitialTurn?: NonNullable<NativeHarnessSessionManager['startInitialTurn']>
+  readonly inspectResponseAvailability?: NonNullable<ResponseAvailabilityInspector['inspectResponseAvailability']>
 
   constructor(
-    private readonly manager: NativeHarnessSessionManager,
+    private readonly manager: NativeHarnessSessionManager & ResponseAvailabilityInspector,
     private readonly coordination: PostgresInteractionCoordinationRepository,
     readonly agentId: string,
     private readonly leaseMs = 30_000,
-  ) { this.harness = manager.harness }
+  ) {
+    this.harness = manager.harness
+    if (manager.inspectResponseAvailability) this.inspectResponseAvailability = manager.inspectResponseAvailability.bind(manager)
+    if (manager.startInitialTurn) this.startInitialTurn = (start, input, signal) => this.initialTurn(start, input, signal)
+  }
 
   capabilities: NativeHarnessSessionManager['capabilities'] = (signal) => this.manager.capabilities(signal)
   inspectMcp: NativeHarnessSessionManager['inspectMcp'] = (signal) => this.manager.inspectMcp(signal)
@@ -288,6 +295,69 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       : evidence.acknowledged || evidence.nativeBusy ? 'busy' : 'uncertain'
   }
 
+  private async *initialTurn(start: NativeSessionStart, input: NativeInitialTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
+    signal?.throwIfAborted()
+    if (this.disposal || !this.manager.startInitialTurn) throw new DomainError('NATIVE_INITIAL_TURN_UNAVAILABLE', 'The admitted initial lifecycle is unavailable.', 409)
+    let session: NativeSessionReference | undefined
+    let lease: SessionWriteLease | undefined
+    let evidence: ReviewEvidenceTracker | undefined
+    const controller = new AbortController()
+    const initialSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    let lost: (() => void) | undefined
+    // The existing execution/conversation admission owns the pre-SID offer.
+    // There is no native lane identity until the provider actually reports it.
+    try {
+      const events = this.manager.startInitialTurn(start, {
+        prompt: input.prompt, clientCorrelationId: input.clientCorrelationId,
+        onSessionObserved: async (observed) => {
+          session = observed
+          if (observed.harness !== this.harness) throw new DomainError('NATIVE_SESSION_IDENTITY_CONFLICT', 'Observed session has a different provider.', 409)
+          lease = await this.acquire(observed, input.clientCorrelationId, initialSignal)
+          lost = () => controller.abort(lease!.guard.signal.reason)
+          lease.guard.signal.addEventListener('abort', lost, { once: true })
+          await lease.guard.check()
+          await this.coordination.bindLaneTurn(lease.fence, input.clientCorrelationId)
+          lease.observedStatus = 'uncertain'
+          delete lease.providerId
+          this.active.set(observed.nativeSessionId, lease)
+          evidence = new ReviewEvidenceTracker(observed, input.clientCorrelationId)
+          await input.onSessionObserved(observed)
+          await lease.guard.check()
+        },
+        onMessageSubmitted: async (receipt) => {
+          if (!session || !lease || !evidence || receipt.nativeSessionId !== session.nativeSessionId
+            || receipt.clientCorrelationId !== input.clientCorrelationId) throw new DomainError('NATIVE_MESSAGE_IDENTITY_CONFLICT', 'Initial receipt differs from the observed owner.', 409)
+          await lease.guard.check()
+          evidence.acknowledge(receipt.nativeMessageId)
+          if (evidence.snapshot().identityConflict) throw new DomainError('NATIVE_MESSAGE_IDENTITY_CONFLICT', 'Initial receipt conflicts with its writer lane.', 409)
+          lease.providerId = receipt.nativeMessageId
+          await input.onMessageSubmitted?.(receipt)
+          await lease.guard.check()
+        },
+      }, initialSignal)
+      for await (const event of events) {
+        if (!lease || !evidence) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Provider output preceded observed session persistence.', 409)
+        await lease.guard.check()
+        evidence.observeEvent(event)
+        this.observeEvidence(evidence.snapshot(), lease)
+        yield event
+      }
+      if (!session || !lease || !evidence) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Initial input has no observed native session.', 409)
+      const history = await lease.guard.wait(this.manager.reconcile(session, input.clientCorrelationId, lease.guard.signal))
+      await lease.guard.check()
+      evidence.observeHistory(history)
+      this.observeEvidence(evidence.snapshot(), lease)
+    } catch (error) {
+      // An offered initial input is never a definite create/non-submission failure.
+      if (lease && !isLeaseLost(error)) lease.observedStatus = 'uncertain'
+      throw error
+    } finally {
+      if (lease && lost) lease.guard.signal.removeEventListener('abort', lost)
+      if (session && lease && this.active.get(session.nativeSessionId) === lease) this.active.delete(session.nativeSessionId)
+      if (lease) await this.release(lease)
+    }
+  }
+
   async *startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
     const lease = await this.acquire(session, input.clientCorrelationId, signal)
     const evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
@@ -302,6 +372,18 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       submitted = true
       for await (const event of ownedEvents(this.manager.startTurn(session, {
         ...input,
+        onMessageSubmitted: async (receipt) => {
+          await lease.guard.check()
+          if (receipt.nativeSessionId !== session.nativeSessionId || receipt.clientCorrelationId !== input.clientCorrelationId) {
+            throw new DomainError('NATIVE_MESSAGE_IDENTITY_CONFLICT', 'The native message receipt differs from the owned writer lane.', 409)
+          }
+          evidence.acknowledge(receipt.nativeMessageId)
+          if (evidence.snapshot().identityConflict) throw new DomainError('NATIVE_MESSAGE_IDENTITY_CONFLICT',
+            'The provider returned conflicting message identities. Native work will not be replayed.', 409)
+          lease.providerId = receipt.nativeMessageId
+          await input.onMessageSubmitted?.(receipt)
+          await lease.guard.check()
+        },
         onSubmitted: async (providerId) => {
           await lease.guard.check()
           evidence.acknowledge(providerId)

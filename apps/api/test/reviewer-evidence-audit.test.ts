@@ -211,3 +211,20 @@ it('F11: an idle lane retaining the last provider ID can accept a new correlatio
   assert.equal(starts, 2)
   assert.equal(reviewTurnEvidence(session, { events: history.events, pendingInteractions: [] }, 'third-review').terminal, false)
 })
+
+
+it('Claude evidence requires an exact observed native message receipt and terminal identity', () => {
+  const claude = { ...session, harness: 'claude' as const, providerVersion: '2.1.284' }
+  const message = { kind: 'message' as const, nativeSessionId: claude.nativeSessionId,
+    nativeMessageId: 'native-observed-message', clientCorrelationId: correlationId }
+  const history = { events: [], pendingInteractions: [], correlationId, nativeSubmission: message,
+    terminalTurn: { correlationId, providerId: message.nativeMessageId, result: { outcome: 'succeeded' as const } } }
+  assert.equal(reviewTurnEvidence(claude, history, correlationId).terminal, true)
+  for (const receipt of [{ ...message, nativeSessionId: 'other-session' },
+    { ...message, clientCorrelationId: 'other-correlation' }, { ...message, nativeMessageId: 'other-message' }]) {
+    assert.equal(reviewTurnEvidence(claude, { ...history, nativeSubmission: receipt }, correlationId).terminal, false)
+  }
+  const noReceipt = { events: [], pendingInteractions: [], correlationId, terminalTurn: history.terminalTurn }
+  assert.equal(reviewTurnEvidence(claude, noReceipt, correlationId).terminal, false)
+  assert.equal(reviewTurnEvidence(claude, { ...history, pendingInteractions: [permission()] }, correlationId).terminal, false)
+})

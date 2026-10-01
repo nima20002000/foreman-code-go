@@ -1313,31 +1313,53 @@ export class ApprovalExecutionCoordinator {
         signal.throwIfAborted()
         input.owner.assertOwned()
         await assertBoundary()
-        session = await this.openingSession(ownedSession, manager.createSession({ request, ...(environment ? { environment } : {}) }, signal))
-        if (session.harness !== context.harness) throw new Error('The created native session has the wrong harness.')
-        resolved.markResident?.()
-        const createdEvidence = this.captureNative(input.owner, execution, { type: 'session_created', session }, 'live')
-        execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId, state: 'running' })
-        await this.runs.updateExecution(execution, input.owner, createdEvidence)
-        ownedSession.execution = execution
-        // Qualification and credential preparation may await external work.
-        // Recheck accepted authority/location at the actual turn boundary.
-        await this.validateContinuation?.(execution.id, signal)
-        signal.throwIfAborted()
-        input.owner.assertOwned()
-        await assertBoundary()
-        for await (const event of manager.startTurn(session, {
-          prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
-        }, signal)) {
+        const start = { request, ...(environment ? { environment } : {}) }
+        const persistObservedSession = async (observed: NativeSessionReference) => {
+          if (observed.harness !== context!.harness) throw new Error('The observed native session has the wrong harness.')
+          session = observed
+          resolved!.markResident?.()
+          const createdEvidence = this.captureNative(input.owner, execution, { type: 'session_created', session: observed }, 'live')
+          execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: observed.nativeSessionId, state: 'running' })
+          await this.runs.updateExecution(execution, input.owner, createdEvidence)
+          ownedSession!.execution = execution
+          await this.validateContinuation?.(execution.id, signal)
           signal.throwIfAborted()
-          await this.budgets.assertActive(execution.id)
-          const lease = manager.currentProjectionLease(session)
-          const originalEvent = safeValue({ ...event, executionId: execution.id })
-          await this.runs.appendNativeEvent(originalEvent, input.owner, lease, undefined, undefined,
-            this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'live', manager.capturedLease(session)))
-          const waiting = await observePending(await manager.history(session, signal), event, lease)
-          if (waiting) return waiting
+          input.owner.assertOwned()
+          await assertBoundary()
         }
+        let nativeEvents: AsyncIterable<NativeHarnessEvent>
+        let rejectObserved: ((error: unknown) => void) | undefined
+        try {
+          if (manager.startInitialTurn) {
+            let resolveObserved!: (observed: NativeSessionReference) => void
+            const observed = new Promise<NativeSessionReference>((resolve, reject) => { resolveObserved = resolve; rejectObserved = reject })
+            const opening = this.openingSession(ownedSession, observed)
+            void opening.catch(() => undefined) // Joined by the existing owned-session lifecycle.
+            nativeEvents = manager.startInitialTurn(start, {
+              prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              onSessionObserved: async (native) => {
+                resolveObserved(native)
+                await persistObservedSession(await opening)
+              },
+            }, signal)
+          } else {
+            await persistObservedSession(await this.openingSession(ownedSession, manager.createSession(start, signal)))
+            nativeEvents = manager.startTurn(session!, {
+              prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+            }, signal)
+          }
+          for await (const event of nativeEvents) {
+            signal.throwIfAborted()
+            await this.budgets.assertActive(execution.id)
+            const lease = manager.currentProjectionLease(session!)
+            const originalEvent = safeValue({ ...event, executionId: execution.id })
+            await this.runs.appendNativeEvent(originalEvent, input.owner, lease, undefined, undefined,
+              this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'live', manager.capturedLease(session!)))
+            const waiting = await observePending(await manager.history(session!, signal), event, lease)
+            if (waiting) return waiting
+          }
+        } catch (error) { rejectObserved?.(error); throw error }
+        finally { if (!session) rejectObserved?.(new Error('Initial input has no observed native session.')) }
       } else {
         if (!session) throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Recovery requires the exact saved session.', 409)
         ownedSession.session = session
@@ -1361,20 +1383,26 @@ export class ApprovalExecutionCoordinator {
         // redundant attachSession() requiring a newly supplied environment.
       }
 
+      if (!session) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Initial input has no observed session identity.', 409)
       for (;;) {
         signal.throwIfAborted()
         input.owner.assertOwned()
         await this.budgets.assertActive(execution.id)
         const observed = await manager.withLane(session, `execution:${execution.id}`, signal, async (nativeManager, lane) => {
           const observed = await nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal)
+          const messageReceipt = observed.nativeSubmission
+          const messageIdentity = messageReceipt?.kind === 'message' && messageReceipt.nativeSessionId === session!.nativeSessionId
+            && messageReceipt.clientCorrelationId === `execution:${execution.id}`
+          const providerId = session!.harness === 'claude'
+            ? messageIdentity ? messageReceipt.nativeMessageId : undefined : observed.nativeTurnId
           const exactTerminal = observed.terminalTurn?.correlationId === `execution:${execution.id}`
-            && observed.correlationId === `execution:${execution.id}` && Boolean(observed.nativeTurnId)
-            && (!observed.nativeTurnId || observed.terminalTurn.providerId === observed.nativeTurnId)
+            && observed.correlationId === `execution:${execution.id}` && Boolean(providerId)
+            && observed.terminalTurn.providerId === providerId
             && !observed.pendingInteraction && observed.pendingInteractions.length === 0
           if (exactTerminal) {
             lane.providerId = observed.terminalTurn!.providerId
-          } else if (observed.correlationId === `execution:${execution.id}` && observed.nativeTurnId) {
-            lane.providerId = observed.nativeTurnId
+          } else if (observed.correlationId === `execution:${execution.id}` && providerId) {
+            lane.providerId = providerId
           }
           const lease = { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: false as const }
           const captured = this.captureNative(input.owner, execution,
