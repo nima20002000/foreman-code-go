@@ -2,11 +2,13 @@ import { createHash, randomUUID } from 'node:crypto'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import {
   RESOURCE_TELEMETRY_CAPABILITY, TELEMETRY_LIMITS, TelemetryCollectedBatchSchema, TelemetryHostSchema,
-  TelemetrySelectorSchema, telemetryCanonical, telemetrySelectorKey,
+  TelemetrySelectorSchema, TelemetrySelectorTargetSchema, telemetryCanonical, telemetrySelectorKey,
   type CollectionChallenge, type TelemetryCollectedBatch, type TelemetryCollectedRow, type TelemetryCpu,
   type TelemetryIdentity, type TelemetryReason, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector,
+  type TelemetrySelectorResult, type TelemetrySelectorTarget,
   type TrustedTelemetryContext, type TelemetryReadService,
 } from '@graphql/contracts/resource-telemetry'
+import type { TelemetryOwnedTargetFacts, TelemetryTargetAuthority } from '../readback/selector.js'
 import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryOwnershipView, TelemetryReadAuthority, TelemetrySessionAuthority } from './ports.js'
 
 export type IngestReceipt = { status: 'accepted' | 'duplicate'; sampleId: string; gaps: string }
@@ -282,6 +284,49 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     const parsed = ManagementPrincipalSchema.safeParse(principal)
     return parsed.success && parsed.data.audience === 'operator' && parsed.data.revokedAt === null
       && Date.parse(parsed.data.expiresAt) > this.ports.clock.unixMs()
+  }
+  /** Resolve public references only from current authenticated identities and existing scoped ownership. */
+  async resolveSelector(principal: ManagementPrincipal, rawTarget: TelemetrySelectorTarget, signal: AbortSignal,
+    authority: TelemetryTargetAuthority): Promise<TelemetrySelectorResult> {
+    const target = TelemetrySelectorTargetSchema.parse(rawTarget)
+    signal.throwIfAborted()
+    const denied = { kind: 'denied' } as const, unavailable = { kind: 'unavailable' } as const
+    if (!this.#principalActive(principal) || !await authority.allowTarget(principal, target, signal)) return denied
+    let facts: TelemetryOwnedTargetFacts | undefined
+    if (target.scope === 'owned') {
+      const resolved = await authority.resolveOwned(principal, target, signal)
+      if (resolved.kind !== 'owned') return resolved
+      facts = resolved.facts
+      const owner = facts.owner, reference = target.target
+      const matches = owner.kind === 'workflow-execution' && reference.kind === owner.kind
+        ? owner.workspaceId === reference.workspaceId && owner.workflowId === reference.workflowId
+          && owner.runId === reference.runId && owner.nodeId === reference.nodeId && owner.executionId === reference.executionId
+        : owner.kind === 'ci-job' && reference.kind === owner.kind
+          ? owner.subject.workspaceId === reference.workspaceId && owner.executionId === reference.jobExecutionId && owner.attemptId === reference.attemptId
+          : owner.kind === 'agent-conversation' && reference.kind === owner.kind
+            ? owner.workspaceId === reference.workspaceId && owner.workflowId === reference.workflowId
+              && owner.nodeId === reference.nodeId && owner.agentId === reference.agentId && owner.conversationId === reference.conversationId
+            : owner.kind === 'operator-conversation' && reference.kind === owner.kind && owner.conversationId === reference.conversationId
+      if (!matches) return unavailable
+    }
+    signal.throwIfAborted()
+    if (!this.#principalActive(principal)) return denied
+    const state = [...this.#devices.values()].find(item => item.identity.mainId === target.mainId
+      && (target.scope === 'computer' ? telemetryCanonical(item.identity.host.hostRef) === telemetryCanonical(target.hostRef)
+        : facts && telemetryCanonical({ ...item.identity.host, collectorGeneration: null }) === telemetryCanonical({ ...facts.host, collectorGeneration: null })))
+    if (!state || state.retired || this.#closed) return unavailable
+    const parsed = TelemetrySelectorSchema.safeParse(target.scope === 'computer'
+      ? { schemaVersion: 1, scope: 'computer', mainId: target.mainId, host: state.identity.host }
+      : { schemaVersion: 1, scope: 'owned', mainId: target.mainId, host: state.identity.host,
+        owner: facts!.owner, attributionRef: facts!.attributionRef, attributionRevision: facts!.attributionRevision })
+    if (!parsed.success) return unavailable
+    const result = await this.read(principal, parsed.data, signal)
+    if (result.kind === 'denied') return denied
+    if (result.kind === 'no-sample' && (result.reason === 'ownership-unavailable' || result.reason === 'shared-restricted')) return unavailable
+    signal.throwIfAborted()
+    if (!this.#principalActive(principal) || !await authority.allowTarget(principal, target, signal)) return denied
+    if (state.retired || this.#closed || this.#devices.get(state.key) !== state) return unavailable
+    return { kind: 'selector', selector: structuredClone(parsed.data) }
   }
   async read(principal: ManagementPrincipal, rawSelector: TelemetrySelector, signal: AbortSignal): Promise<TelemetryReadResult> {
     const selector = TelemetrySelectorSchema.parse(rawSelector), key = telemetrySelectorKey(selector)
