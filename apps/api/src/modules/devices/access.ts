@@ -47,6 +47,7 @@ export class PostgresDeviceAccessService {
     const result = await new PostgresCommandCoordinator(this.pool).execute({ principal, source, operation: 'device_pairing_grant_create', commandId: input.commandId,
       targetKey: this.mainId, payload: input, authorize: client => this.management(client, principal, true), perform: async client => {
         const expiresAt = new Date(Date.now() + 300_000).toISOString()
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`device-installation:${input.workerInstallationId}`])
         const existing = await client.query<{ record: DeviceRegistration }>('select record from device_registrations where worker_installation_id=$1 for update', [input.workerInstallationId])
         if (existing.rows[0]) {
           const previous = existing.rows[0].record
