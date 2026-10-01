@@ -2,12 +2,13 @@ import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { deviceNegotiationHash, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
 import { mainIdentityProofMessage } from '@graphql/contracts/device-identity-node'
-import type { MainIdentityProofRequest } from '@graphql/contracts/device-identity'
+import type { MainIdentityProofRequest, MainEnrollmentProofRequest } from '@graphql/contracts/device-identity'
 import WebSocket, { WebSocketServer } from 'ws'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { signMainEnrollmentProof } from '../src/modules/devices/mainIdentity.js'
 import { deviceHttpHandler } from '../src/modules/devices/deviceHttp.js'
 import { DeviceEndpoint, type AuthenticatedDevice } from '../src/modules/devices/deviceEndpoint.js'
 import { DeviceConnectionSupervisor } from '../src/modules/devices/connectionSupervisor.js'
@@ -52,7 +53,7 @@ describe('device-only carrier and lifecycle', () => {
     socket.frame({ type: 'ready', connectionEpoch: socket.sent[0]!.connectionEpoch }); await flush()
     socket.frame({ type: 'ping', connectionEpoch: socket.sent[0]!.connectionEpoch }); await flush()
     expect(socket.sent[1]!.type).toBe('pong'); expect(auth.revalidateDevice).toHaveBeenCalledTimes(3)
-    endpoint.revoke(identity.deviceId); await task
+    endpoint.revoke(identity.deviceId, 2); await task
     expect(presence.mock.calls.map(([view]) => view.phase)).toEqual(['ready', 'offline'])
   })
   it.each([undefined, 0, 2])('blocks absent/old/new wire protocol %s', async (version) => {
@@ -85,7 +86,7 @@ describe('device-only carrier and lifecycle', () => {
     const { endpoint, auth, presence } = makeEndpoint(); let resolve!: (value: AuthenticatedDevice) => void
     auth.authenticateDevice.mockReturnValueOnce(new Promise((done) => { resolve = done }))
     const socket = new Socket(); const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket))
-    endpoint.revoke(identity.deviceId); resolve(principal); await task
+    endpoint.revoke(identity.deviceId, 2); resolve(principal); await task
     expect(presence).not.toHaveBeenCalled(); expect(socket.sent[0]).toEqual({ type: 'blocked', code: 'authentication' })
   })
   it('retains a classified blocked failure when peer closes immediately after its frame', async () => {
@@ -171,7 +172,7 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       client.send(JSON.stringify({ type: 'ready', connectionEpoch: negotiated.connectionEpoch }))
       const pong = once(client, 'message'); client.send(JSON.stringify({ type: 'ping', connectionEpoch: negotiated.connectionEpoch }))
       expect(JSON.parse(String((await pong)[0]))).toEqual({ type: 'pong', connectionEpoch: negotiated.connectionEpoch })
-      const closed = once(client, 'close'); endpoint.revoke(identity.deviceId); await closed
+      const closed = once(client, 'close'); endpoint.revoke(identity.deviceId, 2); await closed
       await flush(); expect(presence.mock.calls.at(-1)![0].phase).toBe('offline')
     } finally {
       endpoint.close(); client.terminate(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -223,7 +224,7 @@ describe('pinned ws adapter on disposable loopback transport', () => {
 describe('device-only HTTP bootstrap', () => {
   it('returns selected-main descriptor and bounded signed pairing only', async () => {
     const pair = vi.fn(async () => ({ credential: 'device-only' }))
-    const server = createServer(deviceHttpHandler({ mainId: identity.mainId, mainPublicKeyFingerprint: fingerprint, appVersion: 'build', pair, signMainIdentityProof: proof }))
+    const server = createServer(deviceHttpHandler({ mainId: identity.mainId, mainPublicKeyFingerprint: fingerprint, appVersion: 'build', pair, signMainEnrollmentProof: async (request: MainEnrollmentProofRequest) => signMainEnrollmentProof({ mainId: identity.mainId, publicKey: mainPublicKey, privateKey: mainKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), publicKeyFingerprint: fingerprint }, request, 'build') }))
     server.listen(0, '127.0.0.1'); await once(server, 'listening')
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing address')
     const base = `http://127.0.0.1:${address.port}`
@@ -232,7 +233,7 @@ describe('device-only HTTP bootstrap', () => {
       expect(await descriptor.json()).toMatchObject({ mainId: identity.mainId, mainPublicKeyFingerprint: fingerprint, capabilities: { dispatch: false } })
       expect((await fetch(`${base}/device/identity`, { headers: { Cookie: 'owner=secret' } })).status).toBe(401)
       const input = { grant: Buffer.alloc(32).toString('base64url'), requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', mainId: identity.mainId, workerInstallationId: identity.workerInstallationId, publicKey: 'public', signature: 'A'.repeat(86) }
-      const challengeRequest: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', mainId: identity.mainId, workerInstallationId: identity.workerInstallationId, nonce: hello.nonce, protocolVersion: 1, workerApplicationVersion: 'build' }
+      const challengeRequest: MainEnrollmentProofRequest = { audience: 'graphql-worker-main-enrollment-v1', mainId: identity.mainId, workerInstallationId: identity.workerInstallationId, nonce: hello.nonce, protocolVersion: 1, workerApplicationVersion: 'build' }
       const challenge = await fetch(`${base}/device/challenge`, { method: 'POST', body: JSON.stringify(challengeRequest) })
       expect(challenge.status).toBe(200); expect(await challenge.json()).toMatchObject({ request: challengeRequest, mainPublicKeyFingerprint: fingerprint })
       const paired = await fetch(`${base}/device/pair`, { method: 'POST', body: JSON.stringify(input) })

@@ -17,20 +17,20 @@ export interface DevicePresence {
   dispatch: boolean
   transfer: boolean
 }
-const permanentAuth = (error: unknown) => {
+const authorizationFailure = (error: unknown) => {
   const code = (error as { code?: string })?.code
   if (code === 'wrong_main') return new DeviceConnectionError('wrong-main')
   if (code === 'forbidden') return new DeviceConnectionError('permission')
-  return new DeviceConnectionError('authentication')
+  if (code === 'unauthorized' || code === 'revoked' || code === 'expired') return new DeviceConnectionError('authentication')
+  return error instanceof DeviceConnectionError ? error : new DeviceConnectionError('transport')
 }
 /** Mount on a separately approved device-only listener, never the browser/MCP server. */
 export class DeviceEndpoint {
-  private readonly sessions = new Map<string, { epoch: string; socket: DeviceSocket; abort: AbortController; binding?: DeviceSessionBinding }>()
+  private readonly sessions = new Map<string, { epoch: string; authorizationRevision: number; socket: DeviceSocket; abort: AbortController; binding?: DeviceSessionBinding }>()
   private closed = false
   private readonly channels = new Map<string, DeviceApplicationChannel>()
-  private revocationSerial = 0
   private readonly revoked = new Map<string, number>()
-  private readonly tickets = new WeakMap<AuthenticatedDevice, number>()
+  private readonly tickets = new WeakSet<AuthenticatedDevice>()
   private readonly pending = new Set<AbortController>()
   constructor(private readonly options: {
     mainId: string; appVersion: string; auth: DeviceAuthenticator
@@ -41,17 +41,16 @@ export class DeviceEndpoint {
   }) { extensionDescriptors(options.extensions ?? []) }
 
   async authenticate(headers: { authorization?: string; cookie?: string; origin?: string }): Promise<AuthenticatedDevice> {
-    const started = this.revocationSerial
     if (this.pending.size >= 32) throw new DeviceConnectionError('backpressure')
     const abort = new AbortController(); this.pending.add(abort)
     try {
       if (this.closed || headers.cookie !== undefined || headers.origin !== undefined || !headers.authorization?.startsWith('Bearer ')) throw new DeviceConnectionError('authentication')
       let principal: AuthenticatedDevice
-      try { principal = await withDeviceDeadline(this.options.auth.authenticateDevice(headers.authorization.slice(7), 'connect'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
+      try { principal = await withDeviceDeadline(this.options.auth.authenticateDevice(headers.authorization.slice(7), 'connect'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { throw authorizationFailure(error) }
       if (this.closed || abort.signal.aborted) throw new DeviceConnectionError('transport')
       if (principal.audience !== 'graphql-worker' || principal.mainId !== this.options.mainId) throw new DeviceConnectionError('wrong-main')
-      if ((this.revoked.get(principal.deviceId) ?? 0) > started) throw new DeviceConnectionError('authentication')
-      this.tickets.set(principal, this.revoked.get(principal.deviceId) ?? 0)
+      if (principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
+      this.tickets.add(principal)
       return principal
     } finally { abort.abort(); this.pending.delete(abort) }
   }
@@ -70,12 +69,12 @@ export class DeviceEndpoint {
     let binding: DeviceSessionBinding | undefined
     try {
       if (this.closed || principal.mainId !== this.options.mainId || principal.audience !== 'graphql-worker') throw new DeviceConnectionError('authentication')
-      if (!this.tickets.has(principal) || this.tickets.get(principal) !== (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
+      if (!this.tickets.has(principal) || principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
       const previous = this.sessions.get(principal.deviceId)
       previous?.abort.abort(); previous?.socket.close()
       if (previous?.binding) this.options.presence({ binding: previous.binding, phase: 'offline', dispatch: false, transfer: false })
       const epoch = randomUUID()
-      this.sessions.set(principal.deviceId, { epoch, socket, abort })
+      this.sessions.set(principal.deviceId, { epoch, authorizationRevision: principal.authorizationRevision, socket, abort })
       const current = () => !abort.signal.aborted && this.sessions.get(principal!.deviceId)?.epoch === epoch
       const iterator = socket.messages[Symbol.asyncIterator]()
       const first = await nextFrame(iterator, abort.signal, this.options.handshakeMs ?? 10_000)
@@ -87,7 +86,7 @@ export class DeviceEndpoint {
       binding = { mainId: principal.mainId, deviceId: principal.deviceId, workerInstallationId: principal.workerInstallationId, keyRevision: principal.keyRevision, authorizationRevision: principal.authorizationRevision, bootId: hello.bootId, connectionEpoch: epoch, connectionGeneration: Number(hello.connectionGeneration) }
       const session = this.sessions.get(principal.deviceId)
       if (session?.abort === abort) session.binding = binding
-      try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
+      try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { throw authorizationFailure(error) }
       if (!current()) throw new DeviceConnectionError('transport')
       let extensions
       try { extensions = negotiateDeviceExtensions(extensionDescriptors(this.options.extensions ?? []), parseExtensionDescriptors(hello.extensions ?? [])) } catch { throw new DeviceConnectionError('malformed-frame') }
@@ -100,9 +99,9 @@ export class DeviceEndpoint {
       if (acknowledged.done || !current()) throw new DeviceConnectionError('transport')
       const ready = readFrame(acknowledged.value)
       if (ready.type !== 'ready' || ready.connectionEpoch !== epoch) throw new DeviceConnectionError('malformed-frame')
-      try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { if (error instanceof DeviceConnectionError) throw error; throw permanentAuth(error) }
+      try { await withDeviceDeadline(this.options.auth.revalidateDevice(principal, 'heartbeat'), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { throw authorizationFailure(error) }
       if (!current()) throw new DeviceConnectionError('transport')
-      const channel = new DeviceApplicationChannel({ side: 'main', binding, socket, signal: abort.signal, extensions, registrations: this.options.extensions ?? [], revalidate: async () => { try { await this.options.auth.revalidateDevice(principal, 'heartbeat') } catch (error) { throw permanentAuth(error) } } })
+      const channel = new DeviceApplicationChannel({ side: 'main', binding, socket, signal: abort.signal, extensions, registrations: this.options.extensions ?? [], revalidate: async () => { try { await this.options.auth.revalidateDevice(principal, 'heartbeat') } catch (error) { throw authorizationFailure(error) } } })
       this.channels.set(principal.deviceId, channel)
       const channelTask = channel.run(iterator, this.options.heartbeatMs ?? 30_000).catch((error: unknown) => { abort.abort(); throw error })
       void channelTask.catch(() => undefined)
@@ -127,6 +126,12 @@ export class DeviceEndpoint {
     return channel.request(namespace, payload, options)
   }
   capabilities(deviceId: string) { return this.channels.get(deviceId)?.capabilities() ?? [] }
-  revoke(deviceId: string) { this.revoked.set(deviceId, ++this.revocationSerial); this.channels.get(deviceId)?.close(new DeviceConnectionError('authentication')); const session = this.sessions.get(deviceId); session?.abort.abort(); session?.socket.close() }
+  /** A committed revoke receipt fences its revision, including lost-response replay. */
+  revoke(deviceId: string, authorizationRevision: number) {
+    const revision = Math.max(this.revoked.get(deviceId) ?? 0, authorizationRevision)
+    this.revoked.set(deviceId, revision)
+    const session = this.sessions.get(deviceId)
+    if (session && session.authorizationRevision <= revision) { this.channels.get(deviceId)?.close(new DeviceConnectionError('authentication')); session.abort.abort(); session.socket.close() }
+  }
   close() { this.closed = true; for (const abort of this.pending) abort.abort(); for (const session of this.sessions.values()) { session.abort.abort(); session.socket.close() } }
 }

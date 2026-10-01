@@ -123,6 +123,23 @@ export async function verifyMainIdentityProof(proof: unknown, expected: import('
   } catch { return false }
 }
 
+export function mainEnrollmentProofMessage(request: import('./deviceIdentity.js').MainEnrollmentProofRequest, mainApplicationVersion: string): string {
+  return JSON.stringify([request.audience, request.mainId, request.nonce, request.workerInstallationId,
+    request.protocolVersion, request.workerApplicationVersion, mainApplicationVersion])
+}
+export async function verifyMainEnrollmentProof(proof: unknown, expected: import('./deviceIdentity.js').MainEnrollmentProofRequest,
+  expectedFingerprint: string): Promise<boolean> {
+  const { MainEnrollmentProofRequestSchema, MainSignedEnrollmentProofSchema } = await import('./deviceIdentity.js')
+  const { verify } = await import('node:crypto')
+  try {
+    const parsed = MainSignedEnrollmentProofSchema.parse(proof), request = MainEnrollmentProofRequestSchema.parse(expected)
+    return parsed.mainPublicKeyFingerprint === expectedFingerprint
+      && publicKeyFingerprint(parsed.mainPublicKey) === expectedFingerprint
+      && mainEnrollmentProofMessage(parsed.request, parsed.mainApplicationVersion) === mainEnrollmentProofMessage(request, parsed.mainApplicationVersion)
+      && verify(null, Buffer.from(mainEnrollmentProofMessage(parsed.request, parsed.mainApplicationVersion)), parsed.mainPublicKey, Buffer.from(parsed.signature, 'base64url'))
+  } catch { return false }
+}
+
 export function pairingProof(input: Omit<import('./deviceIdentity.js').DevicePairingRequest, 'signature'>): string {
   return JSON.stringify(['graphql-worker-pair-v1', input.mainId, input.workerInstallationId, publicKeyFingerprint(input.publicKey),
     input.requestId, createHash('sha256').update(input.grant).digest('hex')])
