@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { telemetryCanonical, type TelemetryCollectedRow, type TelemetryIdentity } from '@graphql/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, telemetryCanonical, type TelemetryCollectedRow, type TelemetryIdentity } from '@graphql/contracts/resource-telemetry'
 import { cpuWindow, type CpuBaseline } from './cpu.js'
 import { disjointAccounting } from './linuxCgroup.js'
 import { counter as parseCounter, parseHostCpu, parseHostMemory, parseOnlineCpus, safeBytes, sourceFailure, type HostConstants } from './linuxProcfs.js'
@@ -64,13 +64,18 @@ export class LinuxSampler {
         previousCounter: window.previous, currentCounter: window.current, previousTotal: window.previousTotal,
         currentTotal: window.currentTotal, intervalDeltaNs, baselineRef: createHash('sha256').update(current.generation + ':' + (this.sources.get(key) ?? 'process-set')).digest('hex') }
     }
-    let host: TelemetryCollectedRow | null = null
+    let host: TelemetryCollectedRow
     if (p.wholeHostVisible) {
       const [cpu, memory] = await Promise.allSettled([p.read('/proc/stat', signal).then(text => ({ ...parseHostCpu(text), monoNs: p.now() })), p.read('/proc/meminfo', signal).then(parseHostMemory)])
       host = { selector: { schemaVersion: 1, scope: 'computer', ...identity }, coverage: { boundary: 'complete-boundary', shared: false, reasons: [] },
         cpu: cpu.status === 'fulfilled' ? cpuCapture('computer', cpu.value.active, cpu.value.total, 'host-active-ticks', cpu.value.monoNs) : failed(cpu.reason),
         memory: memory.status === 'fulfilled' ? { state: 'ok', value: { kind: 'host-used-estimate', ...memory.value, sharedPagesMayDoubleCount: false } } : failed(memory.reason) }
       if (cpu.status === 'rejected') this.baselines.delete('computer')
+    } else {
+      this.baselines.delete('computer')
+      host = { selector: { schemaVersion: 1, scope: 'computer', ...identity },
+        coverage: { boundary: 'partial', shared: false, reasons: ['namespace-restricted'] },
+        cpu: { state: 'unavailable', reason: 'namespace-restricted' }, memory: { state: 'unavailable', reason: 'namespace-restricted' } }
     }
     let snapshot
     try { snapshot = await p.ownership.snapshot(signal) } catch (error) {
@@ -81,7 +86,8 @@ export class LinuxSampler {
       return { host, owned: [], logicalCpuCount, truncated: reason(error) === 'limit',
         diagnostics: [...new Set<Reason>([reason(error), 'ownership-unavailable', ...(p.wholeHostVisible ? [] : ['namespace-restricted' as const])])] }
     }
-    const views = snapshot.views.slice(0, 64)
+    const ownedLimit = TELEMETRY_LIMITS.rows - 1
+    const views = snapshot.views.slice(0, ownedLimit)
     const alive = new Set(['computer']); const owned: TelemetryCollectedRow[] = []
     const budget = { remaining: 4096 }
     const capturedMemberships: Array<{ row: TelemetryCollectedRow; identities: Set<string> }> = []
@@ -93,6 +99,11 @@ export class LinuxSampler {
       if (selector.mainId !== identity.mainId || telemetryCanonical(selector.host) !== telemetryCanonical(identity.host)
         || view.observedDeviceId !== identity.host.deviceId || view.observedInstallationId !== identity.host.applicationInstallationId) continue
       const coverage: TelemetryCollectedRow['coverage'] = { boundary: 'partial', shared: view.shared, reasons: [] }
+      if (view.lifecycle === 'closed' || view.lifecycle === 'ended') {
+        this.baselines.delete(key)
+        const reason = view.lifecycle
+        owned.push({ selector, coverage, cpu: { state: 'unavailable', reason }, memory: { state: 'unavailable', reason } }); continue
+      }
       if (p.now() > deadlineNs) {
         this.baselines.delete(key)
         owned.push({ selector, coverage: { ...coverage, reasons: ['limit'] }, cpu: { state: 'unavailable', reason: 'limit' }, memory: { state: 'unavailable', reason: 'limit' } }); continue
@@ -103,11 +114,6 @@ export class LinuxSampler {
       }
       let captured: ProcessIdentity[] = []
       let cpu: TelemetryCollectedRow['cpu']; let memory: TelemetryCollectedRow['memory']
-      if (view.lifecycle === 'closed' || view.lifecycle === 'ended') {
-        this.baselines.delete(key)
-        const reason = view.lifecycle === 'closed' ? 'closed' : 'ended'
-        owned.push({ selector, coverage, cpu: { state: 'unavailable', reason }, memory: { state: 'unavailable', reason } }); continue
-      }
       const accounting = disjointAccounting(view.accountingHandles)
       coverage.shared ||= accounting.shared || views.some(other => other !== view && other.accountingHandles.some(a => accounting.handles.some(b => a.boundary.device === b.boundary.device && (a.boundary.inode === b.boundary.inode || a.boundary.path.startsWith(b.boundary.path + '/') || b.boundary.path.startsWith(a.boundary.path + '/')))))
       coverage.shared ||= views.some(other => other !== view && other.roots.some(a => view.roots.some(b => a.bootId === b.bootId && a.pid === b.pid && a.startTicks === b.startTicks)))
@@ -151,7 +157,7 @@ export class LinuxSampler {
     for (const key of this.sources.keys()) if (!alive.has(key)) this.sources.delete(key)
     const bootAfter = await p.read('/proc/sys/kernel/random/boot_id', signal, 128)
     if (bootAfter.trim() !== identity.host.bootId) { this.reset(); throw new Error('identity-changed') }
-    return { host, owned, logicalCpuCount, truncated: snapshot.views.length > 64 || budget.remaining <= 0 || owned.some(row => row.coverage.reasons.includes('limit')),
+    return { host, owned, logicalCpuCount, truncated: snapshot.views.length > ownedLimit || budget.remaining <= 0 || owned.some(row => row.coverage.reasons.includes('limit')),
       diagnostics: p.wholeHostVisible ? [] : ['namespace-restricted'] }
   }
 }

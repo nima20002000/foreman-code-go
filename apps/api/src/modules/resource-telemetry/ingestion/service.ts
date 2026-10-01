@@ -7,15 +7,17 @@ import {
   type TelemetryIdentity, type TelemetryReason, type TelemetryReadResult, type TelemetrySample, type TelemetrySelector,
   type TrustedTelemetryContext, type TelemetryReadService,
 } from '@graphql/contracts/resource-telemetry'
-import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryReadAuthority, TelemetrySessionAuthority } from './ports.js'
+import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryOwnershipView, TelemetryReadAuthority, TelemetrySessionAuthority } from './ports.js'
 
 export type IngestReceipt = { status: 'accepted' | 'duplicate'; sampleId: string; gaps: string }
 interface CachedRow { latest: TelemetrySample; lastKnown: TelemetrySample | null; issuedMonoMs: number;
   storedMonoMs: number; lastKnownMonoMs: number; logicalCpuCount: number; contextKey: string; capture: TelemetryCollectedRow; captureStart: bigint; captureEnd: bigint }
+interface RowTombstone { reason: TelemetryReason; storedMonoMs: number }
+type RetainedRow = CachedRow | RowTombstone
 interface DeviceState { context: TrustedTelemetryContext; identity: TelemetryIdentity; key: string; retired: boolean;
   challenges: Map<string, { monoMs: number; challenge: CollectionChallenge }>; lastIssued: number;
   sequence: bigint | null; digest: string | null; receipt: IngestReceipt | null; queued: number; tail: Promise<void>; abort: AbortController;
-  rows: Map<string, CachedRow> }
+  rows: Map<string, RetainedRow> }
 export class TelemetryRejected extends Error { constructor(readonly reason: string) { super(`Telemetry rejected: ${reason}`) } }
 const contextKey = (context: TrustedTelemetryContext) => telemetryCanonical(context)
 const digest = (value: unknown) => createHash('sha256').update(telemetryCanonical(value)).digest('hex')
@@ -129,7 +131,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
       if (row.selector.mainId !== state.identity.mainId || telemetryCanonical(row.selector.host) !== telemetryCanonical(state.identity.host)) throw new TelemetryRejected('observed-host')
       if (row.selector.scope === 'owned') {
         const owner = await this.ports.ownership.resolve(row.selector, signal)
-        if (!owner || telemetrySelectorKey(owner.selector) !== telemetrySelectorKey(row.selector) || owner.state !== 'active' && owner.state !== 'closure-unconfirmed') throw new TelemetryRejected('owner-binding')
+        if (!this.#ownerMatches(row, owner)) throw new TelemetryRejected('owner-binding')
         if (owner.sharedOwners.length && !row.coverage.shared) throw new TelemetryRejected('shared-binding')
         validated.push({ row, lifecycle: owner.state })
       } else validated.push({ row, lifecycle: 'active' })
@@ -139,8 +141,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     for (const entry of validated) if (entry.row.selector.scope === 'owned') {
       const row = entry.row as TelemetryCollectedRow & { selector: Extract<TelemetrySelector, { scope: 'owned' }> }
       const currentOwner = await this.ports.ownership.resolve(row.selector, signal)
-      if (!currentOwner || telemetrySelectorKey(currentOwner.selector) !== telemetrySelectorKey(row.selector)
-        || currentOwner.state !== 'active' && currentOwner.state !== 'closure-unconfirmed') throw new TelemetryRejected('owner-binding')
+      if (!this.#ownerMatches(row, currentOwner)) throw new TelemetryRejected('owner-binding')
       if (currentOwner.sharedOwners.length && !row.coverage.shared) throw new TelemetryRejected('shared-binding')
       entry.lifecycle = currentOwner.state
     }
@@ -152,10 +153,11 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
       gaps: state.sequence === null ? '0' : (seq - state.sequence - 1n).toString() }
     const wall = this.ports.clock.unixMs()
     const freshUntil = Math.floor(wall + TELEMETRY_LIMITS.freshMs - (commitMono - challenge.monoMs))
-    const replacements = new Map<string, CachedRow>()
+    const replacements = new Map<string, RetainedRow>()
     for (const { row, lifecycle } of validated) {
       const key = telemetrySelectorKey(row.selector)
-      const previous = state.rows.get(key)
+      const retained = state.rows.get(key)
+      const previous = retained && !('reason' in retained) ? retained : undefined
       const base = { sampledAtUnixMs: batch.collectedAtUnixMs, freshUntilUnixMs: freshUntil }
       const cpu = this.#cpu(batch, row, previous)
       const sample: TelemetrySample = { schemaVersion: 1, selector: row.selector, selectorKey: key,
@@ -177,6 +179,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     }
     // Missing rows never remain fresh from an earlier complete batch.
     for (const [key, cached] of state.rows) if (!replacements.has(key)) {
+      if ('reason' in cached) { replacements.set(key, cached); continue }
       replacements.set(key, { ...cached, latest: { ...cached.latest,
         coverage: { ...cached.latest.coverage, boundary: 'partial', reasons: ['source-failure'] },
         cpu: { state: 'unavailable', value: null, reason: 'source-failure', sampledAtUnixMs: null, freshUntilUnixMs: null },
@@ -189,6 +192,14 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     this.#trim()
     this.#notify()
     return receipt
+  }
+  #ownerMatches(row: TelemetryCollectedRow, owner: TelemetryOwnershipView | null): owner is TelemetryOwnershipView {
+    if (!owner || telemetrySelectorKey(owner.selector) !== telemetrySelectorKey(row.selector)) return false
+    if (owner.state === 'ended' || owner.state === 'closed') return row.cpu.state === 'unavailable' && row.cpu.reason === owner.state
+      && row.memory.state === 'unavailable' && row.memory.reason === owner.state
+    // Collector lifecycle claims cannot close an owner that the authority still considers live.
+    return !(row.cpu.state !== 'ok' && (row.cpu.reason === 'ended' || row.cpu.reason === 'closed'))
+      && !(row.memory.state !== 'ok' && (row.memory.reason === 'ended' || row.memory.reason === 'closed'))
   }
   #cpu(batch: TelemetryCollectedBatch, row: TelemetryCollectedRow, previous: CachedRow | undefined):
     | { kind: 'ok'; value: TelemetryCpu }
@@ -227,24 +238,39 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     return { kind: 'ok', value: { basis: c.basis, normalization: 'whole-host-capacity', logicalCpuCount: batch.logicalCpuCount,
       hostCapacityPercent, oneCorePercent, elapsedNs: elapsed.toString(), cpuDeltaNs } }
   }
-  #retainedBytes(key: string, row: CachedRow): number {
+  #retainedBytes(key: string, row: RetainedRow): number {
     // Conservative UTF-16/object/map overhead allowance; no process tables are retained.
-    return 1024 + 2 * Buffer.byteLength(JSON.stringify({ key, latest: row.latest, lastKnown: row.lastKnown, capture: row.capture }))
+    return 1024 + 2 * Buffer.byteLength(JSON.stringify('reason' in row ? { key, ...row } : { key, latest: row.latest, lastKnown: row.lastKnown, capture: row.capture }))
   }
   #trim(): void {
     const now = this.ports.clock.monotonicMs()
     let bytes = 0
-    const rows: { state: DeviceState; key: string; row: CachedRow }[] = []
+    const rows: { state: DeviceState; key: string; row: RetainedRow }[] = []
     for (const state of this.#devices.values()) for (const [key, row] of state.rows) {
-      if (now - row.lastKnownMonoMs >= TELEMETRY_LIMITS.lastKnownMs) { state.rows.delete(key); continue }
-      bytes += this.#retainedBytes(key, row)
-      rows.push({ state, key, row })
+      const retained: RetainedRow = !('reason' in row) && now - row.lastKnownMonoMs >= TELEMETRY_LIMITS.lastKnownMs
+        ? { reason: row.latest.ownershipState === 'ended' || row.latest.ownershipState === 'closed' ? row.latest.ownershipState
+          : row.latest.cpu.reason !== null && row.latest.cpu.reason === row.latest.memory.reason ? row.latest.cpu.reason : 'stale', storedMonoMs: row.storedMonoMs }
+        : row
+      state.rows.set(key, retained)
+      bytes += this.#retainedBytes(key, retained)
+      rows.push({ state, key, row: retained })
     }
     rows.sort((a, b) => a.row.storedMonoMs - b.row.storedMonoMs)
     for (const item of rows) {
       if (bytes <= TELEMETRY_LIMITS.cacheBytes) break
       bytes -= this.#retainedBytes(item.key, item.row)
-      item.state.rows.delete(item.key)
+      if ('reason' in item.row) item.state.rows.delete(item.key)
+      else {
+        const tombstone: RowTombstone = { reason: item.row.latest.ownershipState === 'ended' || item.row.latest.ownershipState === 'closed'
+          ? item.row.latest.ownershipState : 'evicted', storedMonoMs: item.row.storedMonoMs }
+        item.state.rows.set(item.key, tombstone); item.row = tombstone
+        bytes += this.#retainedBytes(item.key, tombstone)
+      }
+    }
+    // Tombstones share the existing row/device/byte bounds; under further pressure oldest reasons may also be dropped.
+    for (const item of rows) {
+      if (bytes <= TELEMETRY_LIMITS.cacheBytes) break
+      if ('reason' in item.row && item.state.rows.has(item.key)) { bytes -= this.#retainedBytes(item.key, item.row); item.state.rows.delete(item.key) }
     }
   }
   revoke(context: TrustedTelemetryContext): void {
@@ -266,7 +292,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
     this.#trim()
     const state = [...this.#devices.values()].find(item => item.identity.mainId === selector.mainId
       && telemetryCanonical(item.identity.host) === telemetryCanonical(selector.host))
-    const noSample = (reason: 'not-yet-sampled' | 'ownership-unavailable' | 'shared-restricted'): TelemetryReadResult =>
+    const noSample = (reason: TelemetryReason): TelemetryReadResult =>
       ({ kind: 'no-sample', selector, selectorKey: key, reason, identity: null })
     let lifecycle: TelemetrySample['ownershipState'] = 'active', shared = false
     if (selector.scope === 'owned') {
@@ -290,7 +316,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
       if (!this.#principalActive(principal) || state.retired || !await this.ports.reads.allow(principal, selector, signal)) return denied
     }
     const cached = state.rows.get(key)
-    if (!cached) return noSample('not-yet-sampled')
+    if (!cached || 'reason' in cached) return noSample(lifecycle === 'ended' || lifecycle === 'closed' ? lifecycle : cached?.reason ?? 'not-yet-sampled')
     if (shared && !cached.latest.coverage.shared) return noSample('shared-restricted')
     const age = this.ports.clock.monotonicMs() - cached.issuedMonoMs
     const current = structuredClone(cached.latest)

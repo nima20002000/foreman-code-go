@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { telemetryComputerFixture, telemetryOwnedFixture } from '@graphql/contracts/resource-telemetry-fixtures'
-import { TelemetryCollectedBatchSchema, TelemetryReadResultSchema, TelemetryReasonSchema, telemetrySelectorKey, type TelemetryCollectedBatch, type CollectionChallenge, type TrustedTelemetryContext } from '@graphql/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, TelemetryCollectedBatchSchema, TelemetryReadResultSchema, TelemetryReasonSchema, telemetrySelectorKey, type TelemetryCollectedBatch, type CollectionChallenge, type TrustedTelemetryContext } from '@graphql/contracts/resource-telemetry'
 import { ResourceTelemetryService } from './service.js'
 import type { TelemetryOwnershipView } from './ports.js'
+import { createResourceCollector } from '../collector/lifecycle.js'
+import type { OwnershipView } from '../collector/ownership.js'
 const principal: ManagementPrincipal = { id: 'operator-1', name: 'Test Operator', audience: 'operator',
   grants: [], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }
 const signal = () => new AbortController().signal
@@ -40,7 +42,76 @@ async function capture(s: ReturnType<typeof setup>, seq = '1', start = '1000000'
 async function ready() {
   const s = setup(); await s.service.handshake(s.context, 'collector-1', signal()); return s
 }
+async function collected(s: ReturnType<typeof setup>, views: OwnershipView[], wholeHostVisible = true) {
+  const challenge = (await s.service.challenge(s.context, signal()))!
+  vi.useFakeTimers()
+  const collector = createResourceCollector({ identity: challenge.identity,
+    clock: { now: () => 1_000_000n, wall: () => challenge.issuedAtUnixMs, setTimer: setTimeout, clearTimer: clearTimeout },
+    ports: { now: () => 1_000_000n, wholeHostVisible, constants: { clockTicksPerSecond: 100n, pageSize: 4096n },
+      read: async path => path.includes('boot_id') ? challenge.identity.host.bootId : path.includes('online') ? '0-7'
+        : path.includes('meminfo') ? 'MemTotal: 8 kB\nMemAvailable: 4 kB' : 'cpu 1 0 0 10 0 0 0 0',
+      process: { stat: async () => { throw new Error('unexpected process read') }, children: async () => [] },
+      ownership: { snapshot: async () => ({ revision: '1', views }), changes: async function* () {} } } })
+  const iterator = collector.samples(signal())[Symbol.asyncIterator]()
+  try {
+    expect(collector.offer(challenge)).toBe('accepted'); await vi.advanceTimersByTimeAsync(1)
+    return TelemetryCollectedBatchSchema.parse((await iterator.next()).value)
+  } finally { await collector.close(); await iterator.return?.(); vi.useRealTimers() }
+}
+const collectorView = (lifecycle: OwnershipView['lifecycle']): OwnershipView => ({ selector: telemetryOwnedFixture,
+  lifecycle, leaseId: 'lease-1', launchIds: ['launch-1'], observedDeviceId: telemetryOwnedFixture.host.deviceId,
+  observedInstallationId: telemetryOwnedFixture.host.applicationInstallationId, roots: [], shared: false,
+  accountingHandles: [{ boundary: { kind: 'cgroup-v2', path: '/sys/fs/cgroup/owned', device: '1', inode: '1' }, exclusive: true,
+    read: async () => ({ cpu: 100n, memory: 4096, cpuFailure: null, memoryFailure: null }) }] })
 describe('authenticated telemetry ingestion and scoped readback', () => {
+  it('reads real collector namespace restrictions without authorizing the computer from an owned grant', async () => {
+    const s = await ready(), b = await collected(s, [collectorView('active')], false)
+    await s.service.ingest(s.context, JSON.stringify(b), signal())
+    const read = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryComputerFixture, signal()))
+    expect(read.kind).toBe('sample')
+    if (read.kind !== 'sample') throw new Error('sample')
+    expect(read.sample.identity).toEqual(b.identity); expect(read.lastKnown).toBeNull()
+    expect(read.sample.cpu).toMatchObject({ state: 'unavailable', reason: 'namespace-restricted', value: null })
+    expect(read.sample.memory).toMatchObject({ state: 'unavailable', reason: 'namespace-restricted', value: null })
+    s.service.ports.reads.allow = async (_p, selector) => selector.scope === 'owned'
+    expect((await s.service.read(principal, telemetryComputerFixture, signal())).kind).toBe('denied')
+    expect((await s.service.read(principal, telemetryOwnedFixture, signal())).kind).toBe('sample')
+  })
+  it.each(['ended', 'closed'] as const)('accepts real collector %s rows while refreshing host and another live owner', async lifecycle => {
+    const s = await ready(), terminal = collectorView(lifecycle), live = collectorView('active')
+    terminal.launchIds = []
+    if (telemetryOwnedFixture.owner.kind !== 'workflow-execution') throw new Error('workflow fixture')
+    live.selector = { ...telemetryOwnedFixture, owner: { ...telemetryOwnedFixture.owner, attemptId: 'attempt-live' }, attributionRef: 'lease-live' }
+    s.service.ports.ownership.resolve = async selector => ({ selector, state: telemetrySelectorKey(selector) === telemetrySelectorKey(terminal.selector) ? lifecycle : 'active', sharedOwners: [] })
+    const b = await collected(s, [terminal, live]); await s.service.ingest(s.context, JSON.stringify(b), signal())
+    for (const selector of [telemetryComputerFixture, live.selector]) {
+      const read = TelemetryReadResultSchema.parse(await s.service.read(principal, selector, signal()))
+      expect(read.kind === 'sample' && read.sample.memory.state).toBe('fresh')
+    }
+    const read = TelemetryReadResultSchema.parse(await s.service.read(principal, terminal.selector, signal()))
+    expect(read.kind === 'sample' && read.sample.ownershipState).toBe(lifecycle)
+    expect(read.kind === 'sample' && read.sample.memory.reason).toBe(lifecycle)
+    expect(read.kind === 'sample' && read.lastKnown).toBeNull()
+  })
+  it.each(['ended', 'closed'] as const)('rejects forged %s rows, numeric terminal rows and retired attempts', async lifecycle => {
+    const s = await ready(), c = (await s.service.challenge(s.context, signal()))!, b = batch(c)
+    const unavailable = { state: 'unavailable', reason: lifecycle } as const
+    b.owned[0]!.cpu = unavailable; b.owned[0]!.memory = unavailable
+    await expect(s.service.ingest(s.context, JSON.stringify(b), signal())).rejects.toThrow('owner-binding')
+    s.ownership({ selector: telemetryOwnedFixture, state: lifecycle, sharedOwners: [] })
+    await expect(s.service.ingest(s.context, JSON.stringify(batch(c)), signal())).rejects.toThrow('owner-binding')
+    s.ownership(null)
+    await expect(s.service.ingest(s.context, JSON.stringify(b), signal())).rejects.toThrow('owner-binding')
+    expect((await s.service.read(principal, telemetryComputerFixture, signal())).kind).toBe('no-sample')
+  })
+  it('revalidates exact terminal ownership after asynchronous authority reads', async () => {
+    const s = await ready(), c = (await s.service.challenge(s.context, signal()))!, b = batch(c)
+    b.owned[0]!.cpu = { state: 'unavailable', reason: 'closed' }; b.owned[0]!.memory = { state: 'unavailable', reason: 'closed' }
+    let calls = 0
+    s.service.ports.ownership.resolve = async () => ({ selector: telemetryOwnedFixture, state: ++calls === 1 ? 'closed' : 'active', sharedOwners: [] })
+    await expect(s.service.ingest(s.context, JSON.stringify(b), signal())).rejects.toThrow('owner-binding')
+    expect((await s.service.read(principal, telemetryComputerFixture, signal())).kind).toBe('no-sample')
+  })
   it('issues one-use bounded challenges and rejects prechallenge/expired capture', async () => {
     const s = await ready(); const c = (await s.service.challenge(s.context, signal()))!
     expect(await s.service.challenge(s.context, signal())).toBeNull()
@@ -147,7 +218,45 @@ describe('authenticated telemetry ingestion and scoped readback', () => {
     expect(offline.kind === 'sample' && offline.lastKnown!.memory.state).toBe('fresh')
     s.presence('online'); s.ownership({ selector: telemetryOwnedFixture, state: 'ended', sharedOwners: [] })
     expect((await s.service.read(principal, telemetryOwnedFixture, signal())).kind).toBe('sample')
-    s.advance(900000); expect((await s.service.read(principal, telemetryOwnedFixture, signal())).kind).toBe('no-sample')
+    s.advance(2000)
+    const c = (await s.service.challenge(s.context, signal()))!, ended = batch(c, '2')
+    ended.owned[0]!.cpu = { state: 'unavailable', reason: 'ended' }; ended.owned[0]!.memory = { state: 'unavailable', reason: 'ended' }
+    await s.service.ingest(s.context, JSON.stringify(ended), signal())
+    const terminal = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryOwnedFixture, signal()))
+    expect(terminal.kind === 'sample' && terminal.sample.memory.reason).toBe('ended')
+    expect(terminal.kind === 'sample' && terminal.lastKnown!.receivedAtUnixMs).toBe(1_000_000)
+    expect(terminal.kind === 'sample' && terminal.lastKnown!.memory.value?.bytes).toBe(4096)
+    s.advance(900000)
+    const expired = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryOwnedFixture, signal()))
+    expect(expired.kind === 'no-sample' && expired.reason).toBe('ended')
+    expect(JSON.stringify(expired)).not.toContain('4096')
+    s.permitted(false); expect((await s.service.read(principal, telemetryOwnedFixture, signal())).kind).toBe('denied')
+  })
+  it('expires numeric samples into reason-only tombstones and clears them on revocation', async () => {
+    const s = await ready(); await capture(s); s.advance(TELEMETRY_LIMITS.lastKnownMs)
+    const expired = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryComputerFixture, signal()))
+    expect(expired.kind === 'no-sample' && expired.reason).toBe('stale')
+    expect(JSON.stringify(expired)).not.toContain('8192')
+    s.service.revoke(s.context)
+    expect((await s.service.read(principal, telemetryComputerFixture, signal())).kind).toBe('no-sample')
+    const reset = await s.service.handshake(s.context, 'collector-1', signal())
+    expect(reset.host).toEqual(telemetryComputerFixture.host)
+    const read = await s.service.read(principal, telemetryComputerFixture, signal())
+    expect(read.kind === 'no-sample' && read.reason).toBe('not-yet-sampled')
+  })
+  it.each(['active', 'ended', 'closed'] as const)('keeps a bounded nonnumeric reason after cache pressure for an %s owner', async lifecycle => {
+    const s = await ready()
+    const byteLength = Buffer.byteLength
+    // Force the actual cache accounting path over its fixed cap without weakening wire/schema bounds.
+    const accounting = vi.spyOn(Buffer, 'byteLength').mockImplementation((value, encoding) =>
+      typeof value === 'string' && value.includes('"latest":') ? TELEMETRY_LIMITS.cacheBytes : byteLength(value, encoding))
+    try {
+      await capture(s); s.ownership({ selector: telemetryOwnedFixture, state: lifecycle, sharedOwners: [] })
+      const read = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryOwnedFixture, signal()))
+      expect(read.kind === 'no-sample' && read.reason).toBe(lifecycle === 'active' ? 'evicted' : lifecycle)
+      expect(JSON.stringify(read)).not.toContain('4096')
+      s.permitted(false); expect((await s.service.read(principal, telemetryOwnedFixture, signal())).kind).toBe('denied')
+    } finally { accounting.mockRestore() }
   })
   it('fences identity, collector generation, observed host and stale accepted ownership', async () => {
     const s = await ready(); const c = (await s.service.challenge(s.context, signal()))!

@@ -11,11 +11,11 @@ import { registerResourceTelemetryTools } from '../../../mcp/operator/resourceTe
 import { RESOURCE_TELEMETRY_READ_ROUTE, RESOURCE_TELEMETRY_READ_TOOL } from './adapters.js'
 const principal: ManagementPrincipal = { id: 'operator', name: 'Reader', audience: 'operator', grants: [], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }
 describe('authenticated HTTP/Operator MCP ResourceTelemetry parity', () => {
-  it.each(['ordinary', 'fractional-monotonic', 'truncated-full-coverage'] as const)('reads retained %s samples identically and rejects denied and unauthenticated callers without private data', async mode => {
+  it.each(['ordinary', 'fractional-monotonic', 'truncated-full-coverage', 'namespace-restricted', 'ended-expired'] as const)('reads retained %s samples identically and rejects denied and unauthenticated callers without private data', async mode => {
     let mono = 0
     const service = new ResourceTelemetryService({ clock: { monotonicMs: () => mono, unixMs: () => 1000 },
       sessions: { active: async () => true, presence: async () => 'online' },
-      ownership: { resolve: async selector => ({ selector, state: 'active', sharedOwners: [] }) },
+      ownership: { resolve: async selector => ({ selector, state: mode === 'ended-expired' ? 'ended' : 'active', sharedOwners: [] }) },
       reads: { allow: async p => p.id === 'operator', allowSharedOwner: async () => false } })
     const h = telemetryComputerFixture.host
     const context: TrustedTelemetryContext = { kind: 'main-local', mainId: telemetryComputerFixture.mainId,
@@ -23,7 +23,13 @@ describe('authenticated HTTP/Operator MCP ResourceTelemetry parity', () => {
     const signal = new AbortController().signal
     await service.handshake(context, 'collector-1', signal)
     const challenge = (await service.challenge(context, signal))!
-    const row = (selector: TelemetrySelector): TelemetryCollectedBatch['owned'][number] => ({ selector,
+    const row = (selector: TelemetrySelector): TelemetryCollectedBatch['owned'][number] => mode === 'namespace-restricted' && selector.scope === 'computer'
+      ? { selector, coverage: { boundary: 'partial', shared: false, reasons: ['namespace-restricted'] },
+        cpu: { state: 'unavailable', reason: 'namespace-restricted' }, memory: { state: 'unavailable', reason: 'namespace-restricted' } }
+      : mode === 'ended-expired' && selector.scope === 'owned'
+      ? { selector, coverage: { boundary: 'partial', shared: false, reasons: [] },
+        cpu: { state: 'unavailable', reason: 'ended' }, memory: { state: 'unavailable', reason: 'ended' } }
+      : ({ selector,
       coverage: { boundary: 'partial', shared: false, reasons: mode === 'truncated-full-coverage' ? TelemetryReasonSchema.options.filter(reason => reason !== 'limit').slice(0, 16) : ['process-tree-partial'] }, cpu: { state: 'warmup', reason: 'warmup' },
       memory: { state: 'ok', value: selector.scope === 'computer'
         ? { kind: 'host-used-estimate', bytes: 0, totalBytes: 8192, availableBytes: 8192, sharedPagesMayDoubleCount: false }
@@ -34,6 +40,7 @@ describe('authenticated HTTP/Operator MCP ResourceTelemetry parity', () => {
       challengeReceivedMonoNs: '0', captureStartMonoNs: '0', captureEndMonoNs: '1000', logicalCpuCount: 8,
       host: row(telemetryComputerFixture), owned: [row(telemetryOwnedFixture)], diagnostics: [], truncated: mode === 'truncated-full-coverage' } satisfies TelemetryCollectedBatch), signal)
     if (mode === 'fractional-monotonic') mono += 0.5
+    if (mode === 'ended-expired') mono = 900_000
     const audit: string[] = []
     const denialAudit = { record: async (id: string, source: 'http' | 'mcp') => { audit.push(`${source}:${id}`) } }
     const app = Fastify()
@@ -66,8 +73,19 @@ describe('authenticated HTTP/Operator MCP ResourceTelemetry parity', () => {
           else {
             expect(http.statusCode).toBe(200)
             const read = TelemetryReadResultSchema.parse(http.json())
+            if (mode === 'ended-expired') {
+              expect(read.kind === 'no-sample' && read.reason).toBe(selector.scope === 'owned' ? 'ended' : 'stale')
+              expect(http.json().lastKnown).toBeUndefined()
+              continue
+            }
             if (read.kind !== 'sample') throw new Error('sample')
             expect(read.sample.selector).toEqual(selector)
+            if (mode === 'namespace-restricted' && selector.scope === 'computer') {
+              expect(read.lastKnown).toBeNull()
+              expect(read.sample.memory).toMatchObject({ state: 'unavailable', reason: 'namespace-restricted', value: null })
+              expect(read.sample.cpu).toMatchObject({ state: 'unavailable', reason: 'namespace-restricted', value: null })
+              continue
+            }
             expect(read.lastKnown!.memory.value).toEqual(read.sample.memory.value)
             if (mode === 'fractional-monotonic') {
               expect(read.sample.freshUntilUnixMs).toBe(6999)
