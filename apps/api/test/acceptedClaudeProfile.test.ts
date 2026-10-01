@@ -49,8 +49,8 @@ describe('exact accepted Claude profile admission', () => {
   })
   it('rejects changed instance head, target and configuration instead of matching another profile', async () => {
     for (const mutate of [(f: ReturnType<typeof fixture>) => { f.value.instanceRevision = '2' },
-      (f: ReturnType<typeof fixture>) => { f.registry.selection = { ...f.registry.selection, installationFingerprint: 'new' } },
-      (f: ReturnType<typeof fixture>) => { f.registry.instance = { ...f.registry.instance, configuration: {} } }]) {
+      (f: ReturnType<typeof fixture>) => { Object.assign(f.registry, { selection: { ...f.registry.selection, installationFingerprint: 'new' } }) },
+      (f: ReturnType<typeof fixture>) => { Object.assign(f.registry, { instance: { ...f.registry.instance, configuration: {} } }) }]) {
       const f = fixture(); mutate(f)
       await expect(f.admission.admit('owner', f.selector)).rejects.toThrow('stale')
     }
