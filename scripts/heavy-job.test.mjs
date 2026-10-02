@@ -219,6 +219,24 @@ test('a coordinator crash at spawn leaves acquiring provenance in every marker',
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
 
+test('marker publication failure stops the spawned group before releasing its slot', { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    const scriptPath = join(f.first, 'scripts/heavy-job.mjs')
+    const pidPath = join(f.home, 'unpublished-pid')
+    const script = readFileSync(scriptPath, 'utf8').replace('writeFileSync }', 'writeFileSync as actualWriteFileSync }')
+    writeFileSync(scriptPath, `${script}\nfunction writeFileSync(path, data, ...args) { if (path.startsWith(queue + '/') && JSON.parse(data).phase === 'running') { actualWriteFileSync(${JSON.stringify(pidPath)}, String(JSON.parse(data).pgid)); throw new Error('fixture marker publication failure') } return actualWriteFileSync(path, data, ...args) }\n`)
+    const result = await run(f.first, ['--stop-grace-ms', '100', '--', process.execPath, '-e', 'setInterval(()=>{},1000)'])
+    assert.equal(result.code, 1, result.output)
+    assert.match(result.output, /fixture marker publication failure/)
+    assert.equal(pidRunning(Number(readFileSync(pidPath, 'utf8'))), false)
+    assert.equal(existsSync(join(f.state, 'active')), false)
+    assert.deepEqual(readdirSync(join(f.state, 'queue')), [])
+    copyFileSync(source, scriptPath)
+    assert.equal((await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])).code, 0)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
 test('malformed queue and missing active ownership remain reserved', { timeout: 6000 }, async () => {
   const f = fixture()
   try {

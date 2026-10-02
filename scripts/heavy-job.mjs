@@ -268,6 +268,11 @@ async function main() {
     if (command.at(-1) === '__hold') while (tokenUsed(token)) await sleep(200)
     if (interrupted && exitCode === 0) exitCode = 124
     if (buildKind && exitCode === 0) stampBuild(buildKind, freshness)
+  } catch (error) {
+    // Marker publication can fail after spawn. Stop our group before releasing
+    // its reservations, just as cancellation does.
+    if (child?.pid) { stop('SIGTERM'); await waitGroup(child.pid, stopGraceMs) }
+    throw error
   } finally {
     clearTimeout(timer)
     clearTimeout(killTimer)
