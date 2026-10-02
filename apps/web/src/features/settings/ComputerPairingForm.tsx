@@ -6,6 +6,7 @@ import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { TextField, Textarea, Button } from '../../shared/ui/nocturne'
+import { DeviceSetupGuide } from './DeviceSetupGuide'
 
 const unavailable = {
   'listener-unconfigured': 'This main has no computer listener configured. Configure the LAN device listener on the main, then reload this page.',
@@ -69,8 +70,9 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
     <UnsavedEditorGuard editor={{ label: 'computer pairing command', dirty: attempt.unresolved, busy: approval.isPending, uncertain: attempt.unresolved,
       save: submit, discard: () => { if (!attempt.unresolved) reset() }, error: approval.error?.message }} />
     <h2 className="computers-title">Add computer</h2>
+    <DeviceSetupGuide />
     <ol className="computer-steps">
-      <li>Open the companion on the computer and copy its request code.</li>
+      <li>Open the installed companion on the computer and copy its request code.</li>
       <li>Paste the code here and approve the computer.</li>
       <li>Enter the private pairing code you get into the companion.</li>
     </ol>
@@ -92,7 +94,7 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
         <div><dt>Computer key fingerprint</dt><dd>{identity.publicKeyFingerprint}</dd></div>
         <div><dt>This main · fingerprint</dt><dd>{mainFingerprint ?? 'Reading…'}</dd></div>
         <div><dt>Device endpoint</dt><dd>{endpoint ?? 'Unavailable'}</dd></div>
-        <div><dt>Access</dt><dd>Connect and heartbeat only</dd></div>
+        <div><dt>Access</dt><dd>Connect and heartbeat only. This does not approve remote commands.</dd></div>
       </dl>
     </details> : null}
     {expired ? <p role="status">The one-use pairing code expired. Read the computer status before requesting a fresh code.</p> : null}

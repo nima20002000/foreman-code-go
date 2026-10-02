@@ -7,6 +7,7 @@ import { useHostHarnessRegistryQuery, useRegisteredComputersQuery, useSelectedMa
 import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
 import { ComputerRevokeButton } from './ComputerRevokeButton'
 import { ComputerPairingForm } from './ComputerPairingForm'
+import { ConnectionSetupStatus } from './DeviceSetupGuide'
 import { HostHarnessOverrides } from './HostHarnessOverrides'
 import { HostHarnessInventory } from './HostHarnessInventory'
 import './computerSettings.css'
@@ -31,6 +32,7 @@ function RegistrationFacts({ registration }: { registration: DeviceRegistration 
         <div><dt>Authorization revision</dt><dd>{registration.authorizationRevision}</dd></div>
       </dl>
     </details>
+    <ConnectionSetupStatus registration={registration} />
   </>
 }
 function Inventory({ host, applicationInstallationId }: { host: CanonicalMachineReference; applicationInstallationId: string }) {

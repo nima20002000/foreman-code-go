@@ -55,6 +55,10 @@
 .computer-unavailable p { margin: 0; }
 .computer-unavailable .computer-details { margin: .25rem 0 0; }
 .computer-pairing-result { display: grid; gap: .5rem; justify-items: start; }
+.device-setup-guide, .device-setup-status { margin: .5rem 0 1rem; padding: .6rem .8rem; border: 1px solid var(--n-border); border-radius: var(--n-radius-sm); }
+.device-setup-guide h3, .device-setup-status h3 { margin: 0 0 .35rem; }
+.device-setup-status[data-state='blocked'] { border-color: var(--n-warning); background: var(--n-warning-subtle); }
+.device-setup-status p { margin: .25rem 0; }
 .computers-page, .computers-page * { min-width: 0; }
 .computers-page dd, .computers-page li, .computers-page summary + * { overflow-wrap: anywhere; }
 @media (max-width: 540px) {
