@@ -29,7 +29,7 @@ export class ActivityProductionReplay {
   nextStart: 'active' | 'complete' | 'approval' | 'reject' | 'uncertain' = 'active'
 
   private transport: NonNullable<Extract<CodexSessionDependencies, { mode: 'replay' }>['transport']> = (
-    _binary, _cwd, _environment, _protocol, onRequest, onNotification, onDisconnect,
+    _binary, _cwd, _environment, _protocol, onRequest, onNotification, onDisconnect, _timeoutMs, _recovery, disabledMcpServerNames = [],
   ): CodexTransport => {
     let sessionId: string | undefined
     const channel: Channel = { connected: true, request: onRequest, notify: onNotification, disconnect: onDisconnect }
@@ -91,7 +91,8 @@ export class ActivityProductionReplay {
           turn.status = 'interrupted'; turn.completedAt = 2
           channel.notify('turn/completed', { threadId: thread.id, turn: structuredClone(turn) }); return {}
         }
-        if (method === 'config/read') return { config: { approval_policy: 'on-request' }, origins: {}, layers: [] }
+        if (method === 'config/read') return { config: { approval_policy: 'on-request',
+          mcp_servers: { graphql: { enabled: !disabledMcpServerNames.includes('graphql'), required: true } } }, origins: {}, layers: [] }
         if (method === 'mcpServerStatus/list') return { data: [], nextCursor: null }
         if (method === 'model/list') return { data: [{ id: 'test-model' }], nextCursor: null }
         if (method === 'config/mcpServer/reload') return {}
@@ -105,6 +106,8 @@ export class ActivityProductionReplay {
           this.nextResponse = 'acknowledged'
           throw new CodexRpcError('native/respond', rpcId, true, 'CODEX_RESPONSE_UNCERTAIN')
         }
+        // Recorded provider confirmation is distinct from writing the transport reply.
+        channel.notify('serverRequest/resolved', { threadId: sessionId, requestId: rpcId })
       },
       reject: async () => { throw new Error('Unexpected automatic native rejection in manual replay.') },
       close: async () => { if (channel.connected && sessionId) this.closes.push(sessionId); channel.connected = false },

@@ -26,3 +26,12 @@ export async function startActivityReplayProduction(production: Production, repl
   await production.initialize()
   return production.app.listen({ host: '127.0.0.1', port })
 }
+
+/** Layout supplied to the real production workspace admission service. */
+export async function createActivityReplayWorkspace(directory: string) {
+  const workspaceStorageRoot = join(directory, 'projects'), workingDirectory = join(workspaceStorageRoot, 'replay')
+  const harnessWorkspaceRoot = join(directory, 'runtime')
+  await mkdir(workingDirectory, { recursive: true })
+  await mkdir(harnessWorkspaceRoot, { recursive: true })
+  return { workingDirectory, workspaceStorageRoot, harnessWorkspaceRoot }
+}
