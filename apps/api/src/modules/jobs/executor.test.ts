@@ -1,9 +1,10 @@
+import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
 import { JOB_INPUT_DIRECTORY,type JobInputDeliveryReceipt } from '@graphql/contracts/job-inputs'
 import { jobInputSnapshotDigest } from '@graphql/contracts/job-inputs-node'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { JobDefinition, JobExecution, RunInput } from '@graphql/contracts'
@@ -20,7 +21,7 @@ import { readDeclaredJobOutputs } from './executorOutputs.js'
 
 const id = '00000000-0000-4000-8000-000000000001'
 const digest = 'a'.repeat(64)
-const profile: QualifiedJobProfile = { policyId: id, policyRevision: 1, imageDigest: `sha256:${digest}`, toolchainDigest: digest,
+const profile: QualifiedJobProfile = { workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, policyId: id, policyRevision: 1, imageDigest: `sha256:${digest}`, toolchainDigest: digest,
   runtimeVersion: 'qualified-test', ociRuntimeVersion: 'qualified-test', kernelVersion: 'qualified-test', qualificationId: id,
   rootless: true, cgroupV2: true, filesystemBounded: true, descendantContainment: true, network: 'none',
   cpuLimit: 1, memoryBytes: 1024, pidsLimit: 64, diskBytes: 1024 }
@@ -32,7 +33,7 @@ function execution(): JobExecution {
       workflowInput: null, definitionId: id, definitionRevision: 1, definitionVersionId: id, scriptDigest: digest, outputSpecDigest: digest, specDigest: digest, bindingHash: digest,
       source: { approvedSourceId: id, snapshotId: id, commit: 'a'.repeat(40), manifestDigest: digest, materializationId: id, materializationDigest: digest },
       target: { schemaVersion: 1, mainId: id, hostRef: { kind: 'main', mainId: id }, registration: null, mainInstallationId: id,
-        destination: { canonicalProjectRoot: '/private/source', canonicalCwd: '/private/source', managedRuntimeRoot: '/private/runtime', directoryIdentityHash: digest,
+        destination: { canonicalProjectRoot: `/private/${id}/tree`, canonicalCwd: `/private/${id}/tree`, managedRuntimeRoot: '/private/runtime', directoryIdentityHash: digest,
           rootPolicyId: id, rootPolicyRevision: '1', locationRevision: '1', attestationId: id, attestationHash: digest } },
       argv: ['node', 'fixture.mjs', '$(touch /escape); &'], inputs: [], outputs: [],
       policy: { isolationPolicyId: id, isolationPolicyRevision: 1, imageDigest: `sha256:${digest}`, toolchainDigest: digest, environmentScopeRefs: [], network: 'none',
@@ -54,11 +55,12 @@ function inputReceipt(execution:JobExecution):JobInputDeliveryReceipt {
   return {version:1,bindingId:'9'.repeat(64),recipient:{workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest},inputSnapshotDigest:jobInputSnapshotDigest(execution),manifestSha256:hash(manifest),manifestByteSize:manifest.length,directory:{relativePath:JOB_INPUT_DIRECTORY,device:'1',inode:'2',mountId:'3'},files:[{relativePath:'manifest.json',sha256:hash(manifest),byteSize:manifest.length},{relativePath:'workflow-input.json',sha256:hash(workflow),byteSize:workflow.length},...spec.inputs.map(input=>({relativePath:`files/${input.path}`,sha256:input.sha256,byteSize:input.byteSize}))],readonlyMountRequired:true}
 }
 function ports(exit: { exitCode: number | null; signal: string | null; execError?: string; timedOut?: boolean } = { exitCode: 0, signal: null }): JobExecutorPorts {
+  let current:JobExecution|undefined
   const process: JobSupervisedProcess = { stdout: chunks('stdout'), stderr: chunks('stderr'), exited: Promise.resolve(exit),
     stop: vi.fn(async () => true), proveStopped: vi.fn(async () => true) }
-  return { authority: { recheck: vi.fn(async () => {}), claim: vi.fn(async () => 'launch' as const), launched: vi.fn(async () => {}) },
+  return { authority: { recheck: vi.fn(async execution=>{current=execution}), claim: vi.fn(async () => 'launch' as const), launched: vi.fn(async () => {}) },
     inputs:{prepare:vi.fn(async execution=>inputReceipt(execution))},
-    source: { verify: vi.fn(async () => ({ privateRepositoryRoot: '/private/source', directoryIdentityHash: digest, privateGit: true as const, diskQuotaBytes: 1024 })) },
+    source: { verify: vi.fn(async spec => ({ privateRepositoryRoot: spec.target.destination.canonicalProjectRoot, directoryIdentityHash: spec.target.destination.directoryIdentityHash, privateGit: true as const, diskQuotaBytes: 1024,gitMounts:mountFixture(current!) })) },
     supervisor: { qualifiedProfile: profile, launch: vi.fn(async () => process) }, appendLog: vi.fn(async () => {}), collectOutputs: vi.fn(async () => {}) }
 }
 
@@ -69,13 +71,13 @@ async function admit(workflowInput: RunInput | null) {
   const definition: JobDefinition = { schemaVersion: 1, id, workspaceId: id, name: 'Accepted producer fixture', revision: 1, versionId: id,
     createdAt: fixture.createdAt, updatedAt: fixture.updatedAt, spec: { source: selectedSource, target: structuredClone(target), argv, policy, outputs,
       relativeCwd: 'build', inputs: [{ path: 'inputs/config.json', fileId: id, revisionId: id, sha256: digest, byteSize: 12 }] } }
-  definition.spec.target.destination.canonicalCwd = '/private/source/build'
+  definition.spec.target.destination.canonicalCwd = `/private/${id}/tree/build`
   const principal = ManagementPrincipalSchema.parse({ id, name: 'Accepted node actor', audience: 'operator',
     grants: [{ actions: ['runs:start'], scope: { workspaceIds: [id] } }], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null })
   const query = vi.fn<JobSql['query']>(async () => ({ command: 'INSERT', rowCount: 1, oid: 0, fields: [], rows: [] }))
   const sql = { query } as unknown as JobSql
   const materialize = vi.fn<JobPreparationSources['materialize']>(async (_sql, _principal, _workspaceId, spec, identity) => ({ ...spec,
-    source: { ...spec.source, materializationId: identity.executionId, materializationDigest: digest } }))
+    target:{...spec.target,destination:{...spec.target.destination,canonicalProjectRoot:`/private/${identity.executionId}/tree`,canonicalCwd:`/private/${identity.executionId}/tree${spec.relativeCwd?'/'+spec.relativeCwd:''}`}},source: { ...spec.source, materializationId: identity.executionId, materializationDigest: digest } }))
   const adoptFinalBinding = vi.fn(async () => {})
   const preparation = new JobPreparationService({
     revalidateAccepted:async()=>{},
@@ -93,10 +95,11 @@ async function admit(workflowInput: RunInput | null) {
 describe('real main admission to worker executor contract (SQL/source/supervisor doubles)', () => {
   it('executes the unchanged published CI-B manual receipt', async () => {
     const job = jobExecution(), p = ports(), spec = job.acceptedSpec
+    spec.target.destination.canonicalProjectRoot=`/approved/${spec.source.materializationId}/tree`;spec.target.destination.canonicalCwd=spec.target.destination.canonicalProjectRoot;repin(job)
     p.supervisor.qualifiedProfile = { ...profile, policyId: spec.policy.isolationPolicyId, imageDigest: spec.policy.imageDigest,
       toolchainDigest: spec.policy.toolchainDigest, diskBytes: 4096 }
     p.source.verify = vi.fn(async () => ({ privateRepositoryRoot: spec.target.destination.canonicalProjectRoot,
-      directoryIdentityHash: spec.target.destination.directoryIdentityHash, privateGit: true as const, diskQuotaBytes: 1024 }))
+      directoryIdentityHash: spec.target.destination.directoryIdentityHash, privateGit: true as const, diskQuotaBytes: 1024,gitMounts:mountFixture(job) }))
     expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('succeeded')
     expect(p.supervisor.launch).toHaveBeenCalledOnce()
   })
@@ -115,9 +118,18 @@ describe('real main admission to worker executor contract (SQL/source/supervisor
       expect(p.source.verify).toHaveBeenCalledWith(accepted.job.acceptedSpec, expect.any(AbortSignal))
       const plan = vi.mocked(p.supervisor.launch).mock.calls[0]![0]
       expect(plan.execution.acceptedSpec).toEqual(persisted)
-      expect(plan.cwd).toBe('/private/source/build')
+      expect(plan.cwd).toBe(`${accepted.job.acceptedSpec.target.destination.canonicalProjectRoot}/build`)
       expect(plan.execution.acceptedSpec.inputs[0]!.path).toBe('inputs/config.json')
     })
+  it('denies a private Git boolean without original mount metadata before inputs or native claim', async () => {
+    const job = execution(), p = ports()
+    p.source.verify = vi.fn(async spec => ({ privateRepositoryRoot: spec.target.destination.canonicalProjectRoot,
+      directoryIdentityHash: spec.target.destination.directoryIdentityHash, privateGit: true as const, diskQuotaBytes: 1024 }))
+    expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
+    expect(p.inputs.prepare).not.toHaveBeenCalled()
+    expect(p.authority.claim).not.toHaveBeenCalled()
+    expect(p.supervisor.launch).not.toHaveBeenCalled()
+  })
   it('denies refused immutable input delivery before native claim',async()=>{
     const job=execution(),p=ports();p.inputs.prepare=vi.fn(async()=>{throw new Error('Exact file scope denied')})
     expect((await executeJob(job,p,new AbortController().signal)).outcome).toBe('preparation_failed')
@@ -176,7 +188,7 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     expect(result.outcome).toBe('succeeded')
     const plan = vi.mocked(p.supervisor.launch).mock.calls[0]![0]
     expect(plan.argv[2]).toBe('$(touch /escape); &')
-    expect(plan.environment).toEqual({ HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',GRAPHQL_JOB_INPUT_MANIFEST:'/workspace/.graphql-job-inputs/manifest.json' })
+    expect(plan.environment).toEqual({ HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',...JOB_GIT_ENVIRONMENT,GRAPHQL_JOB_INPUT_MANIFEST:'/workspace/.graphql-job-inputs/manifest.json' })
     expect(plan.stdin).toBe('closed')
     expect(plan.pty).toBe(false)
     const argv = podmanCreateArgv(plan)
@@ -301,3 +313,10 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 })
+
+// Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
+function mountFixture(execution:JobExecution,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
+  const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
+  return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
+    git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}
+}

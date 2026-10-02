@@ -1,3 +1,5 @@
+import { deflateSync } from 'node:zlib'
+import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, JOB_GIT_CONTAINER_DIRECTORY } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { constants } from 'node:fs'
@@ -5,14 +7,14 @@ import { mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, 
 import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import { JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, JobQualificationCandidateSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
 import type { JobSql } from './repository.js'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
 
-export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-volume-v1' as const
+export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-private-git-v2' as const
 export { JobQualificationCandidateSchema } from '@graphql/contracts/job-runtime'
 export type { JobQualificationCandidate, InstalledJobRuntimeDescriptor } from '@graphql/contracts/job-runtime'
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
@@ -104,11 +106,11 @@ async function installedCandidate(profile: JobRuntimeProfile, descriptor: Instal
   const mountId = qualificationMountId(root.path, await readFile('/proc/self/mountinfo', 'utf8'))
   if (root.device !== profile.root.binding.filesystem.device || root.inode !== profile.root.binding.filesystem.inode || mountId !== profile.root.binding.filesystem.mountId) throw new Error('Current root identity changed.')
   const diagnostics = { findmntBinary: findmnt.path, findmntBinarySha256: findmnt.sha256!, backingFile: descriptor.backingFile, backingBytes: profile.limits.diskBytes }
-  const fingerprint = JobRuntimeFingerprintSchema.parse({ schemaVersion: 1, profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest,
+  const fingerprint = CurrentJobRuntimeFingerprintSchema.parse({ schemaVersion: 1, profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest,
     ...descriptor.target, bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim(), root: profile.root,
     runtimeExecutable: runtime.path, runtimeBinarySha256: runtime.sha256, ociExecutable: oci.path, ociBinarySha256: oci.sha256,
     configurationDigest: hash(await captureJobRuntimeConfiguration(descriptor.runtimeRoot, descriptor.controllerEnvironment, diagnostics)),
-    imageDigest: profile.policy.imageDigest, toolchainDigest: profile.policy.toolchainDigest, limits: profile.limits })
+    workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,imageDigest: profile.policy.imageDigest, toolchainDigest: profile.policy.toolchainDigest, limits: profile.limits })
   return { fingerprint, diagnostics }
 }
 
@@ -137,6 +139,7 @@ export function createPhysicalJobRuntimeProducer(dependencies: PhysicalJobRuntim
     revalidate: async (sql: JobSql, profile: JobRuntimeProfile) => {
       const measurement = profile.measurement
       if (profile.status !== 'qualified' || !measurement || measurement.origin !== 'real-runtime') return { ready: false, reasons: ['unqualified'] }
+      if (measurement.runtime.workspaceLayout !== JOB_PRIVATE_GIT_LAYOUT || measurement.fingerprint.workspaceLayout !== JOB_PRIVATE_GIT_LAYOUT) return { ready: false, reasons: ['unsupported_workspace_layout'] }
       if (Date.parse(measurement.expiresAt) <= Date.now()) return { ready: false, reasons: ['expired'] }
       const current = await dependencies.currentMetadata(sql, profile)
       if (!current || hash(current) !== measurement.fingerprintDigest || hash(measurement.fingerprint) !== measurement.fingerprintDigest) return { ready: false, reasons: ['context_changed'] }
@@ -186,11 +189,12 @@ export function verifyJobQualification(record: JobQualificationRecord | null, ca
   if (!record) return { ready: false as const, reason: 'missing' as const, profile: null }
   if (record.outcome !== 'qualified') return { ready: false as const, reason: 'denied' as const, profile: null }
   if (!Number.isFinite(Date.parse(record.expiresAt)) || Date.parse(record.expiresAt) <= now) return { ready: false as const, reason: 'expired' as const, profile: null }
-  if (record.suite !== CI_QUALIFICATION_SUITE || record.fingerprint !== jobQualificationFingerprint(candidate) ||
+  if (candidate.fingerprint.workspaceLayout!==JOB_PRIVATE_GIT_LAYOUT
+    ||record.suite !== CI_QUALIFICATION_SUITE || record.fingerprint !== jobQualificationFingerprint(candidate) ||
     record.fingerprint !== jobQualificationFingerprint(record.candidate) || hash(candidate) !== hash(record.candidate)) return { ready: false as const, reason: 'context_changed' as const, profile: null }
   if (record.closure !== 'confirmed' || !record.measurements || !record.measurements.qualifiedRuntime || record.measuredFingerprint !== hash(record.measurements) || !record.profile ||
     hash(record.profile) !== hash(record.measurements.qualifiedRuntime) ||
-    record.profile.qualificationId !== candidate.qualificationId || record.profile.policyId !== candidate.fingerprint.profileId ||
+    record.profile.workspaceLayout!==JOB_PRIVATE_GIT_LAYOUT||record.profile.qualificationId !== candidate.qualificationId || record.profile.policyId !== candidate.fingerprint.profileId ||
     record.profile.policyRevision !== candidate.fingerprint.profileRevision || record.profile.imageDigest !== candidate.fingerprint.imageDigest) return { ready: false as const, reason: 'evidence_invalid' as const, profile: null }
   return { ready: true as const, reason: null, profile: record.profile }
 }
@@ -207,7 +211,7 @@ export function jobRuntimeMeasurement(record: JobQualificationRecord): JobRuntim
     ['network-none', measurements.probe], ['image-toolchain', { image: measurements.image, probe: measurements.probe }],
     ['credential-isolation', { probe: measurements.probe, context: measurements.context }],
   ] as const
-  return JobRuntimeMeasurementSchema.parse({ schemaVersion: 1, qualificationId: candidate.qualificationId,
+  return CurrentJobRuntimeMeasurementSchema.parse({ schemaVersion: 1, qualificationId: candidate.qualificationId,
     profileId: candidate.fingerprint.profileId, profileRevision: candidate.fingerprint.profileRevision, specDigest: candidate.fingerprint.specDigest,
     hostRef: candidate.fingerprint.hostRef, registration: candidate.fingerprint.registration, root: candidate.fingerprint.root,
     runtime: verified.profile, runtimeBinarySha256: candidate.fingerprint.runtimeBinarySha256, ociBinarySha256: candidate.fingerprint.ociBinarySha256,
@@ -317,7 +321,7 @@ export async function captureJobRuntimeConfiguration(runtimeRoot: string, enviro
   }
   const binary = await fingerprintQualificationPath(diagnostics.findmntBinary, true)
   if (binary.sha256 !== diagnostics.findmntBinarySha256) throw new Error('Approved diagnostic binary changed.')
-  return { suite: CI_QUALIFICATION_SUITE, probeDigest: hash(QUALIFICATION_PROBE), environment,
+  return { suite: CI_QUALIFICATION_SUITE,workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, probeDigest: hash(QUALIFICATION_PROBE), environment,
     runtimeRoot: await fingerprintQualificationPath(runtimeRoot), hooksDirectory: join(runtimeRoot, 'ci-empty-oci-hooks'), configuration,
     diagnosticBinary: binary, backingFile: await measureBackingFile(diagnostics.backingFile, diagnostics.backingBytes) }
 
@@ -345,6 +349,7 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
     return { ...record, reasons: ['approval_denied_or_expired'] }
   }
   record.expiresAt = new Date(Math.min(Date.parse(record.expiresAt), Date.parse(approval.expiresAt))).toISOString()
+  if(candidate.fingerprint.workspaceLayout!==JOB_PRIVATE_GIT_LAYOUT)return {...record,reasons:['workspace_layout_unqualified']}
   if (signal.aborted) return { ...record, reasons: ['cancelled_before_admission'] }
   try { await authority.assertCurrent(candidate) } catch { return { ...record, reasons: ['context_changed'] } }
   let owner: QualificationNativeOwner
@@ -377,14 +382,17 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
     const volume = await measureBoundedExt4Volume(candidate, mount)
     scratch = await mkdtemp(join(candidate.sourceParent, '.ci-qualification-'))
     if ((await stat(scratch, { bigint: true })).dev.toString() !== volume.device) throw new Error('Scratch left the approved bounded filesystem.')
-    const inputRoot = join(scratch, JOB_INPUT_DIRECTORY)
+    const sourceRoot=join(scratch,'tree'),gitDirectory=join(scratch,'repository'),schedulerDirectory=join(scratch,'job-heavy-jobs')
+    await mkdir(sourceRoot,{mode:0o700});await mkdir(schedulerDirectory,{mode:0o700})
+    await prepareQualificationPrivateGit(gitDirectory,sourceRoot)
+    const inputRoot = join(sourceRoot, JOB_INPUT_DIRECTORY)
     await mkdir(inputRoot, { mode: 0o700 })
     await writeFile(join(inputRoot, 'manifest.json'), JSON.stringify(JobBuildInputManifestSchema.parse({ version: 1,
       inputSnapshotDigest: hash({ inputs: [], workflowInput: null }), workflowInput: null, files: [] })), { mode: 0o444 })
     await owner.registerContainer(identity, fingerprint) // Cleanup ownership before create/possible lost acknowledgement.
-    const argv = podmanIsolationCreateArgv({ identity, sourceRoot: scratch, runtimeRoot: candidate.runtimeRoot, cwd: scratch,
+    const argv = podmanIsolationCreateArgv({ identity, sourceRoot, runtimeRoot: candidate.runtimeRoot, cwd: sourceRoot,
       argv: ['node', '-e', QUALIFICATION_PROBE], profile: { ...candidate.fingerprint.limits, imageDigest: candidate.fingerprint.imageDigest },
-      spoolBytes: candidate.spoolBytes, inputRoot, labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } })
+      spoolBytes: candidate.spoolBytes, inputRoot,gitDirectory,schedulerDirectory, labels: { 'graphql.qualification.identity': identity, 'graphql.qualification.fingerprint': fingerprint } })
     const id = (await podman(argv)).trim()
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Container creation identity unknown.')
     await owner.observeContainer(identity, id)
@@ -397,12 +405,11 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     if (!measurement) throw new Error('Bounded model-free isolation probe did not return.')
-    const rows = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean }; Config: { Labels: Record<string, string> }; Mounts: Array<{ Type: string; Source: string; Destination: string }> }>
+    const rows = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean }; Config: { Labels: Record<string, string> }; Mounts: QualificationMount[] }>
     const row = rows[0]
     if (rows.length !== 1 || row?.Id !== id || row.Config.Labels['graphql.qualification.fingerprint'] !== fingerprint || !row.State.Running || row.State.Pid <= 0) throw new Error('Qualification container ownership mismatch.')
     await owner.enterContainer(identity, id)
-    if (row.Mounts.filter(item => item.Type === 'bind').length !== 2 || row.Mounts.some(item =>
-      item.Type === 'bind' ? !(item.Source === scratch && item.Destination === '/workspace' || item.Source === inputRoot && item.Destination === `/workspace/${JOB_INPUT_DIRECTORY}`) : item.Type !== 'tmpfs' || item.Destination !== '/tmp')) throw new Error('Unexpected container mount rejected.')
+    validateJobQualificationMounts(row.Mounts,{sourceRoot,inputRoot,gitDirectory,schedulerDirectory})
     const cgroup = (await readFile(`/proc/${row.State.Pid}/cgroup`, 'utf8')).trim()
     const relative = /^0::(\/[^\n]*)$/.exec(cgroup)?.[1]
     if (!relative || relative.split('/').includes('..') || !relative.includes(`libpod-${id}.scope`)) throw new Error('Owned cgroup identity unavailable.')
@@ -425,7 +432,7 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
     const toolchainDigest = hash(measurement.toolchain)
     if (toolchainDigest !== candidate.fingerprint.toolchainDigest) throw new Error('Approved toolchain fingerprint changed.')
     const profile: QualifiedJobProfile = {
-      policyId: candidate.fingerprint.profileId, policyRevision: candidate.fingerprint.profileRevision, imageDigest: candidate.fingerprint.imageDigest, toolchainDigest,
+      workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,policyId: candidate.fingerprint.profileId, policyRevision: candidate.fingerprint.profileRevision, imageDigest: candidate.fingerprint.imageDigest, toolchainDigest,
       runtimeVersion: info.version.Version, ociRuntimeVersion: info.host.ociRuntime.version.split('\n')[0]!, kernelVersion: before.kernel,
       qualificationId: candidate.qualificationId, rootless: true, cgroupV2: true, filesystemBounded: true,
       descendantContainment: true, network: 'none', ...candidate.fingerprint.limits }
@@ -477,13 +484,48 @@ export function validateIsolationMeasurement(probe: Record<string, unknown>, can
     probe.memoryMax !== String(candidate.fingerprint.limits.memoryBytes) || probe.swapMax !== '0' || probe.pidsMax !== String(candidate.fingerprint.limits.pidsLimit) ||
     probe.cpuRatio !== candidate.fingerprint.limits.cpuLimit || probe.detachedChild !== true ||
     probe.capabilities !== '0000000000000000' || probe.noNewPrivileges !== '1' ||
-    probe.inputRead !== true || probe.inputWriteError !== 'EROFS' ||
-    JSON.stringify(probe.environment) !== '["CI","GRAPHQL_JOB_INPUT_MANIFEST","HOME","LANG","PATH"]') throw new Error('Measured isolation/toolchain/resource controls rejected.')
+    probe.gitCommon!==JOB_GIT_CONTAINER_DIRECTORY||probe.gitRead!==true||probe.gitConfigWriteError!=='EROFS'
+    ||probe.gitIndexWriteError!=='EROFS'||probe.gitHeadWriteError!=='EROFS'||probe.gitObjectWriteError!=='EROFS'||probe.schedulerWrite!==true
+    ||probe.inputRead !== true || probe.inputWriteError !== 'EROFS' ||
+    JSON.stringify(probe.environment)!==JSON.stringify(['CI','GRAPHQL_JOB_INPUT_MANIFEST','HOME','LANG','PATH',...Object.keys(JOB_GIT_ENVIRONMENT)].sort())) throw new Error('Measured isolation/toolchain/resource controls rejected.')
+}
+
+export interface QualificationMount {Type:string;Source:string;Destination:string;RW:boolean}
+/** Pure exact-layout verifier, reused only after genuine original OCI inspection. */
+export function validateJobQualificationMounts(mounts:QualificationMount[],paths:{sourceRoot:string;inputRoot:string;gitDirectory:string;schedulerDirectory:string}) {
+  const expected=[{source:paths.sourceRoot,destination:'/workspace',rw:true},
+    {source:paths.inputRoot,destination:'/workspace/.graphql-job-inputs',rw:false},
+    {source:paths.gitDirectory,destination:JOB_GIT_CONTAINER_DIRECTORY,rw:false},
+    {source:paths.schedulerDirectory,destination:`${JOB_GIT_CONTAINER_DIRECTORY}/graphql-heavy-jobs`,rw:true}]
+  if(!Array.isArray(mounts)||mounts.length!==5||expected.some(value=>mounts.filter(item=>item.Type==='bind'&&item.Source===value.source&&item.Destination===value.destination&&item.RW===value.rw).length!==1)
+    ||mounts.filter(item=>item.Type==='tmpfs'&&item.Destination==='/tmp'&&item.RW===true).length!==1)
+    throw new Error('Unexpected private Git qualification mount rejected.')
+}
+/** Qualification-only app-owned diagnostic Git objects. Never a Job repository,
+ * source clone, history grant, or reuse of an unrelated host .git. */
+export async function prepareQualificationPrivateGit(directory:string,tree:string) {
+  await mkdir(directory,{mode:0o700});await mkdir(join(directory,'objects'),{mode:0o700})
+  await mkdir(join(directory,'refs'),{mode:0o700})
+  await mkdir(join(directory,'graphql-heavy-jobs'),{mode:0o700})
+  const object=async(kind:string,bytes:Buffer)=>{
+    const value=Buffer.concat([Buffer.from(`${kind} ${bytes.length}\0`),bytes]),id=createHash('sha1').update(value).digest('hex')
+    await mkdir(join(directory,'objects',id.slice(0,2)),{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error})
+    await writeFile(join(directory,'objects',id.slice(0,2),id.slice(2)),deflateSync(value),{mode:0o600})
+    return id
+  }
+  const blob=await object('blob',Buffer.from('original qualification snapshot'))
+  const gitTree=await object('tree',Buffer.concat([Buffer.from('100644 qualification.txt\0'),Buffer.from(blob,'hex')]))
+  const commit=await object('commit',Buffer.from(`tree ${gitTree}\nauthor GraphQL <qualification@graphql.invalid> 0 +0000\ncommitter GraphQL <qualification@graphql.invalid> 0 +0000\n\nPrivate Git mount qualification\n`))
+  await writeFile(join(directory,'HEAD'),`${commit}\n`,{mode:0o600})
+  const index=Buffer.alloc(12);index.write('DIRC');index.writeUInt32BE(2,4)
+  await writeFile(join(directory,'index'),Buffer.concat([index,createHash('sha1').update(index).digest()]),{mode:0o600})
+  await writeFile(join(directory,'config'),`[core]\nrepositoryformatversion = 0\nbare = false\nworktree = ${tree}\n`,{mode:0o600})
+  await writeFile(join(tree,'qualification.txt'),'original qualification snapshot',{mode:0o600})
 }
 
 const QUALIFICATION_PROBE = `const fs=require('node:fs'),cp=require('node:child_process');
 const version=(argv)=>{const p=cp.spawnSync(argv[0],argv.slice(1),{encoding:'utf8',timeout:5000});if(p.status!==0)throw Error('required tool unavailable');return p.stdout.trim()};
 fs.mkdirSync(process.env.HOME,{recursive:true});let rootfsWriteError=null;try{fs.writeFileSync('/ci-qualification-outside','x')}catch(e){rootfsWriteError=e.code}
-fs.writeFileSync('/workspace/probe','bounded qualification write');const input=JSON.parse(fs.readFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'utf8')),inputRead=input.version===1&&input.workflowInput===null&&Array.isArray(input.files)&&input.files.length===0;let inputWriteError=null;try{fs.writeFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'changed')}catch(e){inputWriteError=e.code}const cpu=fs.readFileSync('/sys/fs/cgroup/cpu.max','utf8').trim().split(' ');
+const gitCommon=version(['git','rev-parse','--path-format=absolute','--git-common-dir']),gitRead=version(['git','show','HEAD:qualification.txt'])==='original qualification snapshot';const deniedWrite=(path)=>{try{fs.writeFileSync(path,'changed');return null}catch(e){return e.code}};const gitConfigWriteError=deniedWrite('/graphql-job-git/config'),gitIndexWriteError=deniedWrite('/graphql-job-git/index'),gitHeadWriteError=deniedWrite('/graphql-job-git/HEAD');const head=fs.readFileSync('/graphql-job-git/HEAD','utf8').trim(),gitObjectWriteError=deniedWrite('/graphql-job-git/objects/'+head.slice(0,2)+'/'+head.slice(2));const schedulerFile=fs.openSync('/graphql-job-git/graphql-heavy-jobs/probe','wx',0o600);fs.writeSync(schedulerFile,'original scheduler state');fs.fsyncSync(schedulerFile);fs.closeSync(schedulerFile);const schedulerWrite=fs.readFileSync('/graphql-job-git/graphql-heavy-jobs/probe','utf8')==='original scheduler state';fs.writeFileSync('/workspace/probe','bounded qualification write');const input=JSON.parse(fs.readFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'utf8')),inputRead=input.version===1&&input.workflowInput===null&&Array.isArray(input.files)&&input.files.length===0;let inputWriteError=null;try{fs.writeFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'changed')}catch(e){inputWriteError=e.code}const cpu=fs.readFileSync('/sys/fs/cgroup/cpu.max','utf8').trim().split(' ');
 const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}),status=fs.readFileSync('/proc/self/status','utf8');
-console.log('GRAPHQL_CI_QUALIFICATION '+JSON.stringify({toolchain:{node:process.version,corepack:version(['corepack','--version']),pnpm:version(['corepack','pnpm','--version']),git:version(['git','--version']),flock:version(['flock','--version'])},rootfsWriteError,inputRead,inputWriteError,sourceWrite:true,proc:fs.existsSync('/proc/self/stat'),pidNamespace:fs.readlinkSync('/proc/self/ns/pid'),networkNamespace:fs.readlinkSync('/proc/self/ns/net'),interfaces:fs.readdirSync('/sys/class/net').sort(),memoryMax:fs.readFileSync('/sys/fs/cgroup/memory.max','utf8').trim(),swapMax:fs.readFileSync('/sys/fs/cgroup/memory.swap.max','utf8').trim(),pidsMax:fs.readFileSync('/sys/fs/cgroup/pids.max','utf8').trim(),cpuRatio:Number(cpu[0])/Number(cpu[1]),environment:Object.keys(process.env).sort(),detachedChild:!!child.pid,capabilities:status.match(/^CapEff:\\s*(.*)$/m)?.[1],noNewPrivileges:status.match(/^NoNewPrivs:\\s*(.*)$/m)?.[1]}));setInterval(()=>{},1000);`
+console.log('GRAPHQL_CI_QUALIFICATION '+JSON.stringify({toolchain:{node:process.version,corepack:version(['corepack','--version']),pnpm:version(['corepack','pnpm','--version']),git:version(['git','--version']),flock:version(['flock','--version'])},rootfsWriteError,gitCommon,gitRead,gitConfigWriteError,gitIndexWriteError,gitHeadWriteError,gitObjectWriteError,schedulerWrite,inputRead,inputWriteError,sourceWrite:true,proc:fs.existsSync('/proc/self/stat'),pidNamespace:fs.readlinkSync('/proc/self/ns/pid'),networkNamespace:fs.readlinkSync('/proc/self/ns/net'),interfaces:fs.readdirSync('/sys/class/net').sort(),memoryMax:fs.readFileSync('/sys/fs/cgroup/memory.max','utf8').trim(),swapMax:fs.readFileSync('/sys/fs/cgroup/memory.swap.max','utf8').trim(),pidsMax:fs.readFileSync('/sys/fs/cgroup/pids.max','utf8').trim(),cpuRatio:Number(cpu[0])/Number(cpu[1]),environment:Object.keys(process.env).sort(),detachedChild:!!child.pid,capabilities:status.match(/^CapEff:\\s*(.*)$/m)?.[1],noNewPrivileges:status.match(/^NoNewPrivs:\\s*(.*)$/m)?.[1]}));setInterval(()=>{},1000);`
