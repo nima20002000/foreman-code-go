@@ -50,6 +50,10 @@ export interface RepeatRepositoryServices {
   assertSettlementLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, ids: readonly string[], owner: RunOwnership): Promise<void>
   allowTechnicalRetryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     version: WorkflowVersionV3, execution: HarnessExecution): Promise<boolean>
+  /** Complete immutable original publication mappings, resampled in this same
+   * SQL transaction and before COMMIT. Never performs byte/native IO. */
+  assertWorkflowArtifactOutputsLocked?(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
+    version: WorkflowVersionV3, execution: HarnessExecution): Promise<void>
   completeRunLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     version: WorkflowVersionV3, terminals: readonly RepeatSource[], owner: RunOwnership): Promise<void>
 }
@@ -182,6 +186,13 @@ export class RepeatRepositoryFactory {
         await this.services.admitPlacementExecutionLocked?.(transaction, owner, run, execution, ref, inputDigest)
       },
       assertAuthorityLocked: authority,
+      ...(this.services.assertWorkflowArtifactOutputsLocked ? {
+        assertWorkflowArtifactOutputsLocked: async (transaction: GraphTransactionSql, execution: HarnessExecution) => {
+          sameTransaction(transaction)
+          await authority(transaction)
+          await this.services.assertWorkflowArtifactOutputsLocked!(transaction, run, version, execution)
+        },
+      } : {}),
       assertAdmissionLocked: async (transaction, execution, ref) => {
         sameTransaction(transaction)
         assertRepeatExecution(version, scope, ref, execution)
