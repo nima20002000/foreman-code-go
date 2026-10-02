@@ -53,7 +53,7 @@ export async function readAdmittedRemoteOwnerControl(sql: GraphTransactionSql, o
   if (control.operationId !== binding.intent.operationId || control.attemptId !== binding.intent.attemptId
     || control.executionId !== binding.intent.executionId || control.bindingHash !== binding.intent.bindingHash
     || control.action.kind !== 'respond' || control.action.interactionId !== claim.interaction.id
-    || control.native.sessionId !== claim.interaction.nativeSessionId || control.action.nativeInteractionId !== claim.interaction.nativeRequestId
+    || !control.native || control.native.sessionId !== claim.interaction.nativeSessionId || control.action.nativeInteractionId !== claim.interaction.nativeRequestId
     || !sameWorkflowValue(control.action.response, claim.interaction.responseOptions.find(option => option.optionId === claim.interaction.selectedOptionId))) {
     throw new DomainError('REMOTE_CONTROL_ADMISSION_CONFLICT', 'The retained response admission identifies a different original operation.', 409)
   }
