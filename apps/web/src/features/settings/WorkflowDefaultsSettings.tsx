@@ -25,7 +25,7 @@ export function WorkflowDefaultsSettings() {
   return <section className="settings-editor-page" aria-label="Workflow defaults">
     {query.isError ? <div className="settings-form-feedback"><Alert live tone="danger" title="The refresh failed. Your draft is preserved." action={<Button onClick={() => void query.refetch()}>Retry refresh</Button>} /></div> : null}
     <SettingsFormFeedback form={form} />
-    <div ref={(node) => { root.current = node }} className="settings-editor-content settings-single-column">
+    <div ref={(node) => { root.current = node }} className="settings-editor-content settings-single-column settings-single-column--compact">
       <header className="settings-section-heading"><h2>Approval routing</h2><p>Choose who handles approval requests in new workflows.</p></header>
       <Select label="Approval handler" value={draft.approvalHandler} error={handlerError} hint="Normal graph edges do not determine approval authority; workflow roles and settings do." options={approvalOptions}
         onChange={(event) => form.setDraft({ approvalHandler: event.target.value as WorkflowDefaults['approvalHandler'] })} />

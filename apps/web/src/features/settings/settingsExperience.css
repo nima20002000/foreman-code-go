@@ -88,3 +88,5 @@
 .settings-editor-content :is(input:not([type='checkbox'], [type='radio']), select, textarea) { max-width: 100%; }
 .settings-editor-content :is(pre, code) { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 540px) { .settings-check-row > * { min-width: 0; } .settings-editor-page .settings-save-actions > button { flex: 1 1 8rem; } }
+.settings-single-column--compact { width: 100%; max-width: 560px; min-height: 0; padding: 18px; }
+.settings-single-column--compact > .n-field { width: 100%; max-width: 360px; }

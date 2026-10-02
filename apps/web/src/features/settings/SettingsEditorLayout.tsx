@@ -19,7 +19,7 @@ export function SettingsChoice({ title, description, summary, onSelect, draftSta
     <span className="settings-choice-heading"><span className="settings-choice-icon"><Icon name={icon} size={21} /></span>
       <span><strong>{title}</strong><small>{description}</small></span><Icon name="chevron" size={17} /></span>
     <span className="settings-choice-summary">{summary.map((item) => <span className="settings-summary-row" key={item.label}><span>{item.label}</span><strong title={item.value}>{item.value}</strong></span>)}</span>
-    <span className="settings-choice-action">{draftStatus ? <span className="settings-draft-badge">{draftStatus}</span> : 'Edit defaults'} <span aria-hidden="true">→</span></span>
+    {draftStatus ? <span className="settings-choice-action"><span className="settings-draft-badge">{draftStatus}</span></span> : null}
   </button>
 }
 
