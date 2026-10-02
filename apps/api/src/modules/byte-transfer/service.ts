@@ -237,6 +237,8 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
       if (existing && existing.canonical !== false) {
         const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR)
         try { await this.reconcile(existing, data) } finally { await data.close() }
+        // A visible journal may follow a rename whose directory sync failed before ACK.
+        await this.syncDirectory()
         await this.authorize(existing, context, 'start'); return existing.progress
       }
       j.canonical = true; delete j.canonicalReclaimed
@@ -253,6 +255,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
       const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'status')
       const handle = await this.regular(this.path(id, 'part'), constants.O_RDWR)
       try { await this.reconcile(j, handle) } finally { await handle.close() }
+      await this.syncDirectory()
       await this.authorize(j, context, 'status')
       return j.progress
     })
@@ -274,6 +277,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
           const previous = Buffer.alloc(bytes.length)
           const { bytesRead } = await handle.read(previous, 0, previous.length, chunk.offset)
           if (bytesRead !== bytes.length || !previous.equals(bytes)) throw new Error('Conflicting duplicate chunk')
+          await this.syncDirectory()
           await this.authorize(j, context, 'append')
           return j.progress
         }
@@ -301,6 +305,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
       try {
         await this.reconcile(j, handle)
         if (j.progress.durableOffset !== j.intent.byteSize || await this.hash(handle, j.intent.byteSize) !== j.intent.sha256) throw new Error('Whole transfer integrity mismatch')
+        if (j.receipt) await this.syncDirectory()
         await this.authorize(j, context, 'finish')
         if (j.receipt) return j.receipt
         j.receipt = { version: 1, receiptId: randomUUID(), transferId: id, intent: j.intent,
@@ -366,6 +371,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
     return this.locked(id, async () => {
       const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'read')
       if (j.progress.state !== 'verified' || !j.receipt) throw new Error('Transfer is not verified')
+      await this.syncDirectory(); await this.authorize(j, context, 'read')
       return j.receipt
     })
   }
