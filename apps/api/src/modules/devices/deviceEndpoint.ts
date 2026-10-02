@@ -30,11 +30,15 @@ export class DeviceEndpoint {
   private readonly revoked = new Map<string, number>()
   private readonly tickets = new WeakSet<AuthenticatedDevice>()
   private readonly pending = new Set<AbortController>()
+  private readonly bindingLossFailures: unknown[] = []
   constructor(private readonly options: {
     mainId: string; appVersion: string; auth: DeviceAuthenticator
     signMainIdentityProof(request: MainIdentityProofRequest): Promise<MainSignedIdentityProof>
     reconcile(binding: DeviceSessionBinding, signal: AbortSignal): Promise<void>
     presence(view: DevicePresence): void
+    /** Revoke original domain admission synchronously; join() awaits physical
+     * cleanup and reports failure. This binding never follows a replacement. */
+    onBindingLost?(binding: Readonly<DeviceSessionBinding>): void | Promise<void>
     handshakeMs?: number; heartbeatMs?: number; extensions?: DeviceExtensionRegistration[]
   }) { extensionDescriptors(options.extensions ?? []) }
 
@@ -44,7 +48,17 @@ export class DeviceEndpoint {
     return task
   }
   /** Drain admitted readers and physical auth/domain callbacks before closing their dependencies. */
-  async join(): Promise<void> { while (this.tasks.size) await Promise.allSettled([...this.tasks]) }
+  async join(): Promise<void> {
+    while (this.tasks.size) await Promise.allSettled([...this.tasks])
+    if (this.bindingLossFailures.length) throw new AggregateError(this.bindingLossFailures, 'Original device binding cleanup remains incomplete.')
+  }
+  private bindingLost(binding: Readonly<DeviceSessionBinding>): void {
+    if (!this.options.onBindingLost) return
+    let cleanup: Promise<void>
+    try { cleanup = Promise.resolve(this.options.onBindingLost(binding)) }
+    catch (error) { cleanup = Promise.reject(error) }
+    void this.track(cleanup).catch(error => { this.bindingLossFailures.push(error) })
+  }
   authenticate(headers: { authorization?: string; cookie?: string; origin?: string }): Promise<AuthenticatedDevice> { return this.track(this.authenticateInternal(headers)) }
   private async authenticateInternal(headers: { authorization?: string; cookie?: string; origin?: string }): Promise<AuthenticatedDevice> {
     if (this.pending.size >= 32) throw new DeviceConnectionError('backpressure')
@@ -102,6 +116,8 @@ export class DeviceEndpoint {
       session = this.sessions.get(principal.deviceId)
       if (session?.abort === abort) {
         session.binding = binding
+        const original = binding
+        abort.signal.addEventListener('abort', () => this.bindingLost(original), { once: true })
         session.presence = Object.freeze({ binding, phase: 'offline', dispatch: false, transfer: false, appVersion: hello.appVersion, protocolVersion: hello.protocolVersion, lastSeenAt: helloSeenAt })
       }
       try { await withDeviceDeadline(this.track(this.options.auth.revalidateDevice(principal, 'heartbeat')), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { throw authorizationFailure(error) }
