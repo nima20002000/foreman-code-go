@@ -9,18 +9,22 @@ import { RemoteWorkflowPhysicalReadoutSchema,RemoteWorkflowPhysicalAckSchema, ty
 import type { AcceptedNodePlacement } from '@graphql/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@graphql/contracts/remote-execution'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
-import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
+import type { WorkflowOriginalNativeSource, WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
 import type { RemoteNativePhysicalVerification, VerifiedRemoteOriginalSource } from '../../placement/remoteNativeSource.js'
 import { readAcceptedPlacement, readNativePlacement } from '../../placement/persistence.js'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { sourceMaterializationDigest } from '../../sources/bindingHash.js'
-import { assertGraphTransaction,didGraphTransactionCommit, type GraphTransactionSql } from '../../run-graph/connection.js'
+import { assertGraphTransaction,didGraphTransactionCommit,beforeGraphCommit,poisonGraphTransaction, type GraphTransactionSql } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
 import { readReconciledDispatchIntent } from './persistence.js'
-import { repeatExecutionIdentity } from '../repeatResolution.js'
+import { repeatExecutionIdentity,repeatDigest } from '../repeatResolution.js'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import { remoteWorkflowProcessDigest, remoteWorkflowSourceDigest,remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
 import { DomainError } from '../../errors.js'
+import { transferContextForBinding } from '../../byte-transfer/carrier.js'
+import type { TransferContext } from '@graphql/contracts/byte-transfer'
+import { assertRepeatCanonicalReceiptLocked,requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
+import type { WorkflowPhysicalArtifactsPort } from './workflowPhysicalArtifacts.js'
 
 export interface RemoteWorkflowMainLifetime {
   execution: HarnessExecution
@@ -43,7 +47,7 @@ interface Prepared {
   assertCurrent(): void
   acknowledge(sourceDigest:string):Promise<RemoteWorkflowPhysicalAck>
 }
-interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql> }
+interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
 const unavailable = (): never => { throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'Actual authenticated original native and source evidence is required.', 409) }
 function same(left: unknown, right: unknown) { return isDeepStrictEqual(left, right) }
 function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOriginalNativeSource) {
@@ -60,7 +64,7 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
     const terminal = readout.history?.terminalTurn
     if (!readout.closure || observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty'
       || !same(readout.closure.launch, observation) || !readout.closure.ownerClosed
-      || receipt.terminal.kind === 'not_started' || (receipt.terminal.artifactDigests?.length ?? 0) !== 0
+      || receipt.terminal.kind === 'not_started'
       || receipt.terminal.closureEvidenceDigest !== commandInputHash({ intent:receipt.intent,native:receipt.native,
         launch,physicalOwnerClosed:true }).slice('sha256:'.length)) return unavailable()
     if (receipt.terminal.result) {
@@ -69,7 +73,8 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
         || !readout.output || !same(readout.output.result, terminal.result)
         || receipt.terminal.resultDigest !== commandInputHash(terminal.result).slice('sha256:'.length)
         || receipt.terminal.kind !== (terminal.result.outcome==='succeeded'?'completed':terminal.result.outcome==='failed'?'failed':'cancelled')) return unavailable()
-    } else if(receipt.terminal.kind!=='cancelled'||!receipt.stopFence||readout.output)return unavailable()
+      if(readout.output.kind==='text-only'&&(receipt.terminal.artifactDigests?.length??0)!==0)return unavailable()
+    } else if(receipt.terminal.kind!=='cancelled'||!receipt.stopFence||readout.output||(receipt.terminal.artifactDigests?.length??0)!==0)return unavailable()
   } else {
     if (readout.output || (readout.closure
       ? observation.lifecycle !== 'closed' || observation.closureEvidence !== 'cgroup_v2_empty' || !same(readout.closure.launch,observation)
@@ -81,6 +86,7 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
  * reads retained evidence and original Main rows; it never performs native IO. */
 export function createRemoteWorkflowPhysicalVerification(input: {
   endpoint(): Pick<DeviceEndpoint, 'captureRequest' | 'currentBinding'>
+  artifacts?: WorkflowPhysicalArtifactsPort
 }): RemoteNativePhysicalVerification & {
   passiveNativeOwner(original: VerifiedRemoteOriginalSource): PassiveRemoteNativeOwner | undefined
   prefetch(receipt: RemoteOperationReceipt, placement: AcceptedNodePlacement, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<PreparedRemoteWorkflowPhysical>
@@ -89,8 +95,12 @@ export function createRemoteWorkflowPhysicalVerification(input: {
   acknowledge(original:VerifiedRemoteOriginalSource):Promise<RemoteWorkflowPhysicalAck>
   /** Requires every original event in this reply to have durably published. */
   acknowledgeReply(original:VerifiedRemoteOriginalSource):Promise<RemoteWorkflowPhysicalAck>
+  artifactTerminalContext(sql:GraphTransactionSql,owner:RunOwnership,original:VerifiedRemoteOriginalSource,capture:WorkflowNativeCapture,proof:WorkflowNativeProofRecord):Promise<TransferContext>
+  assertArtifactTerminal(sql:GraphTransactionSql,owner:RunOwnership,capture:WorkflowNativeCapture,proof:WorkflowNativeProofRecord):Promise<void>
+  assertAdoptedArtifacts(sql:GraphTransactionSql,owner:RunOwnership,original:VerifiedRemoteOriginalSource):Promise<void>
 } {
   const prepared = new WeakMap<object, Prepared>(), bound = new WeakMap<object, Bound>()
+  const terminals=new WeakMap<WorkflowNativeCapture,{original:VerifiedRemoteOriginalSource;capture:Bound;proof:WorkflowNativeProofRecord;sql:GraphTransactionSql}>()
   return {
     async prefetch(receipt, placement, source, signal) {
       signal?.throwIfAborted()
@@ -144,7 +154,8 @@ export function createRemoteWorkflowPhysicalVerification(input: {
           ||!same(previous.lifetime.lane,lifetime.lane)||!same(repeatExecutionIdentity(previous.lifetime.execution),repeatExecutionIdentity(lifetime.execution)))return unavailable()
         previous.lifetime.assertCurrent();return
       }
-      bound.set(original, { ...capture, owner, lifetime,publications:new Set(),replyPublications:new Set() })
+      bound.set(original, { ...capture, owner, lifetime:{...lifetime,execution:structuredClone(lifetime.execution),session:structuredClone(lifetime.session),
+        lane:lifetime.lane?structuredClone(lifetime.lane):null},publications:new Set(),replyPublications:new Set() })
     },
     passiveNativeOwner(original) {
       const capture = bound.get(original)
@@ -171,12 +182,98 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       original.assertCurrent();capture.assertCurrent()
       return capture.acknowledge(remoteWorkflowSourceDigest({type:'history',history:remoteWorkflowNativeHistory(capture.readout.history)}))
     },
-    async assertOriginal(sql: GraphTransactionSql, owner, original) {
+    async artifactTerminalContext(sql,owner,original,capture,proof) {
+      assertGraphTransaction(sql)
+      try {
+        const actual=bound.get(original)
+        if(!actual||actual.owner!==owner||!same(actual.lifetime.session,capture.session)
+          ||!same(repeatExecutionIdentity(actual.lifetime.execution),repeatExecutionIdentity(capture.execution))
+          ||actual.lifetime.lifetimeGeneration!==capture.lifetimeGeneration||actual.lifetime.closureGeneration!==capture.closureGeneration
+          ||!same(actual.lifetime.lane,capture.lane)
+          ||actual.readout.output?.kind!=='published-artifacts'||!actual.readout.closure
+          ||capture.source.type!=='history'||proof.original.type!=='history'
+          ||capture.owner!==owner||!same(capture.source,original.source)||!same(proof.original,capture.source)
+          ||!same(proof.execution,repeatExecutionIdentity(capture.execution))||!same(proof.session,capture.session)
+          ||!same(proof.lane,capture.lane)||proof.lifetimeGeneration!==capture.lifetimeGeneration
+          ||proof.closureGeneration!==capture.closureGeneration||proof.commandId!==`execution:${capture.execution.id}`
+          ||proof.scope.runId!==owner.runId||proof.ref.nodeId!==capture.execution.workflowNodeId
+          ||proof.inputDigest!==repeatDigest(capture.execution.input))return unavailable()
+        // Establish this capability while the genuine private producer still owns the capture.
+        actual.assertCurrent();capture.assertCurrent()
+        await assertBound(sql,owner,original,false)
+        const previous=terminals.get(capture)
+        if(previous&&(!same(previous.proof,proof)||previous.original!==original||previous.capture!==actual))return unavailable()
+        const retained={original,capture:actual,proof:structuredClone(proof),sql}
+        await assertTerminal(sql,owner,capture,retained,false)
+        terminals.set(capture,retained)
+        actual.terminalCapture=capture
+        requireRepeatCanonicalReceiptBeforeCommit(sql,{scope:proof.scope,evidence:{sourceKind:'native_event',sourceId:proof.proofId,sourceRevision:'1'},
+          sourceDigest:repeatDigest(proof,4*1024*1024),effect:null})
+        beforeGraphCommit(sql,()=>assertTerminal(sql,owner,capture,retained,false))
+        return transferContextForBinding(actual.binding)
+      }catch(error){poisonGraphTransaction(sql);throw error}
+    },
+    async assertArtifactTerminal(sql,owner,capture,proof) {
+      assertGraphTransaction(sql)
+      try {
+        const retained=terminals.get(capture)
+        if(!retained||!didGraphTransactionCommit(retained.sql)||!same(retained.proof,proof))return unavailable()
+        await assertTerminal(sql,owner,capture,retained,true)
+        beforeGraphCommit(sql,()=>assertTerminal(sql,owner,capture,retained,true))
+      }catch(error){poisonGraphTransaction(sql);throw error}
+    },
+    async assertAdoptedArtifacts(sql,owner,original) {
+      assertGraphTransaction(sql)
+      try {
+        const capture=bound.get(original)
+        const terminal=capture?.terminalCapture&&terminals.get(capture.terminalCapture)
+        if(!capture?.terminalCapture||!terminal||terminal.original!==original||!didGraphTransactionCommit(terminal.sql)
+          ||![...capture.publications].some(didGraphTransactionCommit)||!input.artifacts)return unavailable()
+        await assertTerminal(sql,owner,capture.terminalCapture,terminal,true)
+        await input.artifacts.assertAdopted(sql,capture.readout,capture.binding)
+        beforeGraphCommit(sql,async()=>{await assertTerminal(sql,owner,capture.terminalCapture!,terminal,true);await input.artifacts!.assertAdopted(sql,capture.readout,capture.binding)})
+      }catch(error){poisonGraphTransaction(sql);throw error}
+    },
+    assertOriginal: (sql: GraphTransactionSql, owner: RunOwnership, original: VerifiedRemoteOriginalSource) => assertBound(sql, owner, original, false),
+  }
+  async function assertTerminal(sql:GraphTransactionSql,owner:RunOwnership,captured:WorkflowNativeCapture,
+    retained:NonNullable<ReturnType<typeof terminals.get>>,committed:boolean) {
+    try {
+      if(retained.capture.owner!==owner||captured.owner!==owner||bound.get(retained.original)!==retained.capture)return unavailable()
+      if(!committed)retained.capture.assertCurrent()
+      const proof=retained.proof
+      const fence=await owner.readOneShotFence(sql)
+      if(fence.ownerId!==proof.ownerId||fence.fence!==proof.ownerFence)return unavailable()
+      const row=(await sql.query<{record:WorkflowNativeProofRecord;source_digest:string}>(
+        'select record,source_digest from workflow_native_proofs where proof_id=$1 and run_id=$2 and execution_id=$3 for share',
+        [proof.proofId,proof.scope.runId,captured.execution.id])).rows[0]
+      if(!row||!same(row.record,proof)||row.source_digest!==repeatDigest(proof,4*1024*1024))return unavailable()
+      await assertBound(sql,owner,retained.original,true)
+      if(committed){
+        const execution=(await sql.query<{record:unknown}>('select record from harness_executions where id=$1 and run_id=$2 for share',
+          [captured.execution.id,owner.runId])).rows[0]
+        const saved=HarnessExecutionSchema.safeParse(execution?.record)
+        if(!saved.success||saved.data.state!=='completed'||!same(saved.data.result,retained.capture.readout.output?.result))return unavailable()
+        await assertRepeatCanonicalReceiptLocked(sql,{scope:proof.scope,
+          evidence:{sourceKind:'native_event',sourceId:proof.proofId,sourceRevision:'1'},sourceDigest:row.source_digest,effect:null})
+      }
+    }catch(error){poisonGraphTransaction(sql);throw error}
+  }
+  async function assertBound(sql: GraphTransactionSql, owner: RunOwnership, original: VerifiedRemoteOriginalSource, retained: boolean) {
       assertGraphTransaction(sql)
       const capture = bound.get(original)
       if (!capture || capture.owner !== owner) return unavailable()
       const { readout, lifetime } = capture, receipt = readout.receipt, intent = receipt.intent
-      const check = () => { owner.assertOwned(); original.assertCurrent(); capture.assertCurrent(); lifetime.assertCurrent(); assertSource(readout, original.source) }
+      const published=readout.output?.kind==='published-artifacts'
+      const check = () => {
+        owner.assertOwned()
+        if(retained){
+          if(!published||!readout.closure||!same(input.endpoint().currentBinding(capture.binding.deviceId),capture.binding)
+            ||!same(original.verified.receipt,receipt)||!same(original.source,capture.source)
+            ||original.sourceDigest!==remoteWorkflowSourceDigest(capture.source))return unavailable()
+        }else{original.assertCurrent();capture.assertCurrent();lifetime.assertCurrent()}
+        assertSource(readout,original.source)
+      }
       check()
       const current = await readReconciledDispatchIntent(sql, intent.operationId, true)
       const placement = await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
@@ -197,6 +294,14 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         || execution.data.agentId !== lifetime.execution.agentId || execution.data.attempt !== intent.technicalAttempt
         || execution.data.workflowNodeId !== intent.nodeId || execution.data.workingDirectory !== native.workingTree.canonicalCwd
         || execution.data.nativeSessionId !== undefined && execution.data.nativeSessionId !== readout.session.nativeSessionId) return unavailable()
+      if(published){
+        if(execution.data.runId!==lifetime.execution.runId||!same(repeatExecutionIdentity(execution.data),repeatExecutionIdentity(lifetime.execution))
+          ||execution.data.runtimeDirectory!==lifetime.execution.runtimeDirectory||!same(execution.data.input,lifetime.execution.input)
+          ||execution.data.createdAt!==lifetime.execution.createdAt
+          ||execution.data.result!==undefined&&!same(execution.data.result,readout.output?.result))return unavailable()
+        const saved=(await sql.query<{receipt:unknown}>('select receipt from remote_execution_receipts where operation_id=$1 for share',[intent.operationId])).rows[0]
+        if(!saved||!same(saved.receipt,receipt))return unavailable()
+      }
       const entry = (await sql.query<{ phase: string; source_id: string | null; source_digest: string | null;
         reservation: { execution: ReturnType<typeof repeatExecutionIdentity>; scope: {runId:string} };
         transition: { phase: string; launchDigest: string | null; reservation: unknown } }>(
@@ -206,22 +311,32 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         || !same(entry.transition.reservation,entry.reservation)) return unavailable()
       const sessionRow = (await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1 for share', [intent.executionId])).rows[0]
       if (sessionRow ? !same(NativeSessionReferenceSchema.parse(sessionRow.reference), readout.session) : original.source.type !== 'session_created') return unavailable()
-      const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed: boolean }>(`select generation::text,expected_reference,
-        (closed_at is not null or detached_at is not null) as closed from execution_native_closures where execution_id=$1 order by generation desc limit 1 for share`, [intent.executionId])).rows[0]
-      if (!closure || closure.generation !== lifetime.closureGeneration || closure.closed
+      const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed_reference:unknown; closed: boolean; detached:boolean;
+        closed_without_session:boolean; execution_identity:unknown }>(`select generation::text,expected_reference,closed_reference,execution_identity,closed_without_session,
+        closed_at is not null as closed,detached_at is not null as detached from execution_native_closures where execution_id=$1 order by generation desc limit 1 for share`, [intent.executionId])).rows[0]
+      if (!closure || closure.generation !== lifetime.closureGeneration || closure.detached
         || closure.expected_reference !== null && !same(closure.expected_reference, readout.session)) return unavailable()
+      if(closure.closed){
+        const e=execution.data
+        const identity={id:e.id,runId:e.runId,workflowNodeId:e.workflowNodeId,agentId:e.agentId,
+          agentConfigurationVersionId:e.agentConfigurationVersionId,attempt:e.attempt,
+          ...(e.workingDirectory?{workingDirectory:e.workingDirectory}:{}),...(e.runtimeDirectory?{runtimeDirectory:e.runtimeDirectory}:{})}
+        if(!published||!readout.closure||closure.closed_without_session||!same(closure.closed_reference,readout.session)
+          ||!same(closure.execution_identity,identity))return unavailable()
+      }
       if (lifetime.lane) {
         const lane = (await sql.query<{ owner_agent_id: string; harness: string; native_session_id: string; generation: string;
           token: string | null; correlation: string | null; provider_id: string | null; held: boolean }>(`select owner_agent_id,harness,native_session_id,
           record->>'connectionGeneration' as generation,record->>'leaseToken' as token,record->>'correlationId' as correlation,
           record->>'currentTurnOrMessageId' as provider_id,coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
           from native_session_lanes where id=$1 for share`, [lifetime.lane.id])).rows[0]
-        if (!lane?.held || lane.owner_agent_id !== execution.data.agentId || lane.harness !== readout.session.harness
-          || lane.native_session_id !== readout.session.nativeSessionId || lane.token !== lifetime.lane.token
+        if (!lane || (!lane.held&&!(retained&&closure.closed&&lane.token===null)) || lane.owner_agent_id !== execution.data.agentId || lane.harness !== readout.session.harness
+          || lane.native_session_id !== readout.session.nativeSessionId || lane.token !== lifetime.lane.token&&!(retained&&closure.closed&&lane.token===null)
           || lane.generation !== String(lifetime.lane.connectionGeneration) || lane.correlation !== `execution:${intent.executionId}`
           || receipt.native?.turnId !== undefined && lane.provider_id !== receipt.native.turnId
           || lifetime.lane.providerId !== null && lane.provider_id !== lifetime.lane.providerId) return unavailable()
       } else if (original.source.type === 'history' || original.source.type === 'event') return unavailable()
+      if(published){if(!input.artifacts)return unavailable();await input.artifacts.assertPublications(sql,readout,capture.binding)}
       check()
       // Publication is acknowledged only after this exact original was retained
       // by the existing canonical writer AND its owning transaction committed.
@@ -237,6 +352,5 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         if(sources.every(source=>events.rows.some(row=>same(row.original,source)))&&capture.publications.has(sql))capture.replyPublications.add(sql)
       }
       check()
-    },
   }
 }
