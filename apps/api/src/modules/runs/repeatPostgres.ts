@@ -933,9 +933,9 @@ export class RepeatRunRepository {
         assertRepeatBodyComplete(context.version, ref.occurrence!, resolutions)
         await this.settleAttempts(context, { kind: 'occurrence', id: ref.occurrence!.occurrenceId })
         const current = await this.occurrence(context, ref.occurrence!.occurrenceId)
-        const choice = context.version.definition.nodes.find((node) => node.id === ref.nodeId)!.choice!
+        const exit = context.version.definition.nodes.find((node) => node.id === ref.nodeId)!
         decision = validateRepeatDecisionV1(context.version, decideRepeatExit(context.version, current.occurrence, execution,
-          parseRepeatExitResultV1(execution.result, choice), context.now), execution.result)
+          parseRepeatExitResultV1(execution.result, exit.choice!, exit.kind === 'job' ? undefined : exit.artifactOutputs), context.now), execution.result)
         if (decision.reason === 'repeat') {
           successor = makeRepeatOccurrence(context.scope, block, repeatSuccessorInput(current.input, decision, execution.result!), decision)
           validateRepeatSuccessorV1(context.version, decision, successor.occurrence, execution.result)
