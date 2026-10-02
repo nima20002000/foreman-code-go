@@ -41,6 +41,10 @@
 .operator-chat .operator-chat-new { color: var(--color-accent); flex: 0 0 auto; justify-content: flex-start; gap: var(--space-2); width: 100%; font-size: 12px; margin-bottom: .5rem; }
 .operator-chat-load-more { flex: 0 0 auto; }
 .operator-chat-main { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; padding: 3rem .75rem .75rem; gap: var(--space-2); }
+.operator-chat-start { display: grid; align-content: center; flex: 1; min-height: 0; overflow: auto; }
+.operator-chat-start .n-empty { width: 100%; max-width: 22rem; margin: auto; padding: 1.25rem 1rem; justify-items: start; text-align: left; gap: var(--space-2); }
+.operator-chat-start .n-empty-icon { width: 2rem; height: 2rem; border: 0; background: transparent; margin: 0; place-items: start; }
+.operator-chat-start .n-empty :is(h3, p) { margin: 0; }
 .operator-chat-transcript { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; min-width: 0; }
 .operator-chat-transcript-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; padding: .25rem; }
 .operator-chat-transcript ol { padding-left: 1.25rem; }

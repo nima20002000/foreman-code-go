@@ -490,7 +490,10 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
-          {!selectedId && !accessDenied ? <Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation} disabled={create.isPending} loading={create.isPending}>Start a new conversation</Button> : null}
+          {!selectedId && !accessDenied ? <div className="operator-chat-start"><EmptyState icon="chat" title="Chat with Operator"
+            description="Ask about your workspaces and workflows, or describe a change you need."
+            action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation}
+              disabled={create.isPending} loading={create.isPending} loadingLabel="Starting…">Start chat</Button>} /></div> : null}
           {selected.isLoading ? <LoadingState label="Loading conversation…" rows={4} /> : null}
           {selected.isError && !missingSelection ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
           {conversation ? <>
