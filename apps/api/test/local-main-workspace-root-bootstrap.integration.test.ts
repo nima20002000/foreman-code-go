@@ -163,4 +163,23 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       expect((await db.pool.query('select count(*)::int as count from workspace_root_host_configurations')).rows[0]?.count).toBe(1)
     } finally { await db.close(); await rm(directory, { recursive: true, force: true }) }
   }, 120_000)
+
+  it('uses an already-private isolated server storage override under sticky /tmp without touching default storage', async () => {
+    const db = await currentDatabase(), storageRoot = await workspaceRootDirectory(), runtimeRoot = await workspaceRootDirectory()
+    try {
+      home.path = join(storageRoot, 'unused-default-home')
+      const mainId = (await db.pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
+      const commands = new PostgresCommandCoordinator(db.pool)
+      const sources = await createProductionSources({ pool: db.pool, commands, mainId, runtimeRoot,
+        locations: new WorkspaceLocationService(db.pool, commands, runtimeRoot),
+        endpoint: () => { throw new Error('No remote roots') }, dispatch: () => { throw new Error('No jobs') } })
+      const input = { pool: db.pool, policies: sources.policies, mainId, runtimeRoot, appStorageRoot: storageRoot }
+      const approved = await bootstrapLocalMainWorkspaceRoot(input)
+      expect(approved.bases[0]!.canonicalPath).toBe(storageRoot)
+      expect(await bootstrapLocalMainWorkspaceRoot(input)).toEqual(approved)
+      await expect(stat(workspaceStorageRoot())).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await db.close(); await rm(storageRoot, { recursive: true, force: true }); await rm(runtimeRoot, { recursive: true, force: true })
+    }
+  }, 120_000)
 })

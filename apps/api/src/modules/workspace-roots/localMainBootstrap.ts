@@ -19,6 +19,37 @@ function storageBaseId(mainId: string, storageRoot: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+async function initializePrivateStorage(storageRoot: string): Promise<void> {
+  try {
+    const root = await openPrivateRoot(storageRoot)
+    await root.close()
+    return
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT' && code !== 'SOURCE_ROOT_NOT_PRIVATE') throw error
+  }
+  // Establish the application's own private directory through its protected
+  // parent. Never follow a symlink or change permissions on a user project.
+  await mkdir(dirname(storageRoot), { recursive: true, mode: 0o700 })
+  const parent = await openPrivateRoot(dirname(storageRoot))
+  try {
+    const leaf = storageRoot.slice(dirname(storageRoot).length + 1)
+    try { await mkdir(anchored(parent, leaf), { mode: 0o700 }) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    // Existing app storage may predate private-root initialization. Parent
+    // protection and leaf ownership are checked before tightening its mode.
+    const root = await open(anchored(parent, leaf), directoryFlags)
+    try {
+      if ((await root.stat()).uid !== process.getuid?.()) throw new DomainError('ROOT_ACCESS_DENIED', 'App storage must be owned by Main.', 403)
+      await root.chmod(0o700)
+      await root.sync()
+    } finally { await root.close() }
+    const verified = await openChildDirectory(parent, leaf)
+    await verified.close()
+  } finally { await parent.close() }
+}
+
 /** Trusted installation composition only. App-managed storage is already the
  * local workspace provisioning boundary; defaults and browser/MCP paths never
  * enter this bootstrap. Other Main/device roots still require owner approval.
@@ -57,26 +88,7 @@ export async function bootstrapLocalMainWorkspaceRoot(input: {
       await sql.query('commit')
       return approved
     }
-    // Establish the application's own private directory through its protected
-    // parent. Never follow a symlink or change permissions on a user project.
-    await mkdir(dirname(storageRoot), { recursive: true, mode: 0o700 })
-    const parent = await openPrivateRoot(dirname(storageRoot))
-    try {
-      const leaf = storageRoot.slice(dirname(storageRoot).length + 1)
-      try { await mkdir(anchored(parent, leaf), { mode: 0o700 }) } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      }
-      // Existing app storage may predate private-root initialization. Parent
-      // protection and leaf ownership are checked before tightening its mode.
-      const root = await open(anchored(parent, leaf), directoryFlags)
-      try {
-        if ((await root.stat()).uid !== process.getuid?.()) throw new DomainError('ROOT_ACCESS_DENIED', 'App storage must be owned by Main.', 403)
-        await root.chmod(0o700)
-        await root.sync()
-      } finally { await root.close() }
-      const verified = await openChildDirectory(parent, leaf)
-      await verified.close()
-    } finally { await parent.close() }
+    await initializePrivateStorage(storageRoot)
     const approved = await qualifyApprovedRootAllowlist({ schemaVersion: 1, hostRef, applicationInstallationId: input.mainId,
       configurationRevision: '1', bases: [{ baseId, canonicalPath: storageRoot, accessModes: ['read-only', 'read-write'] }], managedRuntimeRoot: runtimeRoot })
     await input.policies.publishApprovedHostConfiguration(sql, approved, { mainId: input.mainId, hostRef,
