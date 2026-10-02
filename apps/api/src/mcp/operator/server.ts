@@ -8,7 +8,6 @@ import { registerJobTools } from './tools/jobs.js'
 import { registerJobRuntimeTools } from './tools/jobRuntimeProfiles.js'
 import { registerTrustedConnectionTools } from '../../modules/devices/trustedConnectionManagement.js'
 import { registerDeviceOperatorTools } from './tools/devices.js'
-import { registerOperatorControlTools } from './tools/operatorControls.js'
 import { registerSourceTools } from '../../modules/sources/mcp.js'
 import { registerFileReferenceTools } from './tools/fileReferences.js'
 import { McpServer } from '@modelcontextprotocol/server'
@@ -52,7 +51,6 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerJobRuntimeTools(server, context)
   registerDeviceOperatorTools(server, context)
   if (context.services.trustedConnections) registerTrustedConnectionTools(server, context.services.trustedConnections, context.principal)
-  registerOperatorControlTools(server, context)
   registerFileReferenceTools(server, context)
   registerContextTools(server, context)
   registerHarnessTools(server, context)
