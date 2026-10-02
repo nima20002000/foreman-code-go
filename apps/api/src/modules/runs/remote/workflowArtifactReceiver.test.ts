@@ -2,7 +2,6 @@ import type pg from 'pg'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import Fastify, { type FastifyRequest } from 'fastify'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -31,7 +30,9 @@ const request = (token = 'unit-workflow') => ({ headers: { authorization: `Beare
 // Unit SQL/authentication boundaries; the receiver uses real private file storage.
 // These fixtures cannot authorize a production worker or establish physical acceptance.
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'graphql-workflow-artifacts-')); roots.push(root)
+  // The scheduler's TMPDIR may have shared ancestors. Linux /tmp is sticky;
+  // mkdtemp creates this receiver's owned 0700 staging directory below it.
+  const root = await mkdtemp('/tmp/graphql-workflow-artifacts-'); roots.push(root)
   const digest = 'a'.repeat(64), mainId = randomUUID(), deviceId = randomUUID(), installation = randomUUID()
   const original: DeviceSessionBinding = { mainId, deviceId, workerInstallationId: installation, keyRevision: 1,
     authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 7 }
