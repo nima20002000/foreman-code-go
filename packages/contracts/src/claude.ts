@@ -2,6 +2,17 @@ import { z } from 'zod';
 
 const AbsolutePath = z.string().min(1).max(4096).refine((value) => value.startsWith('/') && !value.includes('\0'), 'An absolute local path is required');
 const ToolName = z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,199}$/);
+export const ClaudeMcpServerNameSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,99}$/);
+export const ClaudeMcpServerSchema = z.object({
+  type: z.literal('http'), url: z.url().refine((url) => {
+    const value = new URL(url);
+    return !value.username && !value.password && !value.hash && !value.search && (value.protocol === 'https:'
+      || (value.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(value.hostname)));
+  }, 'Use HTTPS or a local HTTP endpoint without credentials'),
+}).strict();
+/** Supplied by the owning API; browser origins are not MCP endpoint authorities. */
+export const ClaudeSetupOptionsSchema = z.object({ graphqlMcp: ClaudeMcpServerSchema.nullable() }).strict();
+export type ClaudeSetupOptions = z.infer<typeof ClaudeSetupOptionsSchema>;
 /** Explicit accepted policy. Ambient Claude settings and launch flags are never inputs. */
 export const ClaudeHarnessConfigurationSchema = z.object({
   harness: z.literal('claude'), model: z.string().trim().min(1),
@@ -10,13 +21,7 @@ export const ClaudeHarnessConfigurationSchema = z.object({
   tools: z.array(ToolName).max(100),
   permissionRules: z.array(z.object({ tool: ToolName, effect: z.enum(['allow', 'ask', 'deny']) }).strict()).max(100),
   instructions: z.string().max(200_000),
-  mcpServers: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,99}$/), z.object({
-    type: z.literal('http'), url: z.url().refine((url) => {
-      const value = new URL(url);
-      return !value.username && !value.password && !value.hash && !value.search && (value.protocol === 'https:'
-        || (value.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(value.hostname)));
-    }, 'Use HTTPS or a local HTTP endpoint without credentials'),
-  }).strict()),
+  mcpServers: z.record(ClaudeMcpServerNameSchema, ClaudeMcpServerSchema),
 }).strict().superRefine((value, context) => {
   if (new Set(value.tools).size !== value.tools.length) context.addIssue({ code: 'custom', path: ['tools'], message: 'Tools must be unique' });
   const rules = new Set<string>();

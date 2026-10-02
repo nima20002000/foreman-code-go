@@ -16,8 +16,10 @@ export function ClaudeConfigurationFields({ value, onChange, models, qualified, 
   const options = models.map((model) => ({ value: model.id, label: model.name ?? model.id, description: model.id, disabled: false }))
   if (!options.some((option) => option.value === value.model)) options.unshift({ value: value.model, label: value.model, description: 'Saved model · awaiting native qualification', disabled: true })
   return <div className="harness-basic-fields">
-    <Combobox label="Model" value={value.model} options={options} error={fieldMessage(issues, 'model')}
+    {models.length ? <Combobox label="Model" value={value.model} options={options} error={fieldMessage(issues, 'model')}
       onValueChange={(model) => { if (models.some((item) => item.id === model)) onChange({ ...value, model }) }} />
+      : <TextField label="Model" value={value.model} error={fieldMessage(issues, 'model')} hint="An explicit model choice; saving it does not prove native model availability."
+        onChange={event => onChange({ ...value, model: event.target.value })} />}
     <TextField label="Local Claude profile directory" value={value.configDirectory} error={fieldMessage(issues, 'configDirectory')}
       hint="Sign in on the selected computer using this profile."
       onChange={(event) => onChange({ ...value, configDirectory: event.target.value })} />

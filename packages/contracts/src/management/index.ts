@@ -667,6 +667,7 @@ export const OperatorToolNameSchema = z.enum([
   "codex_plugins_list", "codex_plugin_get",
   "harness_configuration_check",
   "execution_readiness_get",
+  "claude_setup_options_get",
   "harness_options_get",
   "harness_options_refresh",
   "opencode_models_cache_update",

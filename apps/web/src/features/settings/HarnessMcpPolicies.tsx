@@ -9,7 +9,18 @@ export function HarnessMcpPolicies({ editor, onChange }: { editor: HarnessEditor
   const value = withAdvancedDefaults(editor.configuration)
   const servers = useNativeMcpServers(value.harness, value.harness !== 'claude')
   const [expanded, setExpanded] = useState<string>()
-  if (value.harness === 'claude') return <p>Claude MCP servers and tool approval rules are pinned in the accepted configuration. Native connection overrides are excluded.</p>
+  if (value.harness === 'claude') return <section className="harness-form-stack" aria-label="Claude tool policy">
+    <p>Enable exact tool names deliberately. MCP tools use <code>mcp__server__tool</code>. Adding a connection does not enable its tools. Native qualification must observe every enabled tool before execution.</p>
+    <HarnessTokenList label="Enabled Claude tools" values={value.tools} onChange={(tools) => onChange({ ...editor, configuration: {
+      ...value, tools, permissionRules: tools.map(tool => value.permissionRules.find(rule => rule.tool === tool) ?? { tool, effect: 'ask' as const }),
+    } })} />
+    {value.tools.map(tool => <Select key={tool} label={`${tool} approval`} value={value.permissionRules.find(rule => rule.tool === tool)?.effect ?? ''}
+      options={[{ value: '', label: 'Native default' }, { value: 'ask', label: 'Ask through app routing' }, { value: 'allow', label: 'Allow' }, { value: 'deny', label: 'Deny' }]}
+      onChange={event => onChange({ ...editor, configuration: { ...value, permissionRules: [
+        ...value.permissionRules.filter(rule => rule.tool !== tool), ...(event.target.value ? [{ tool, effect: event.target.value as 'ask' | 'allow' | 'deny' }] : []),
+      ] } })} />)}
+    <p className="harness-muted">These permissions belong to the saved configuration. App grants and the selected sandbox are checked separately.</p>
+  </section>
   const policies = value.harness === 'codex' ? value.advanced!.mcpServers : value.advanced!.mcp.serverEnabled
   const names = [...new Set([...Object.keys(policies), ...(servers.data?.servers.map((server) => server.name) ?? [])])].sort()
   const setPolicy = (name: string, enabled?: boolean) => {

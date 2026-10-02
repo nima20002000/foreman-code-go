@@ -73,6 +73,35 @@ Primary source references:
 - [Official streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode)
 - [Official session resume and fork](https://code.claude.com/docs/en/agent-sdk/sessions)
 
+## App settings and MCP setup
+
+Claude presets are explicit configuration templates. In Settings → Harnesses →
+Claude, choose the host-local profile directory, model, authentication and sandbox.
+The optional **Include GraphQL MCP** action copies this API's HTTP endpoint into
+the preset. After saving, **MCP connections** can add/remove validated HTTP
+endpoints, and **Tool permissions** can enable exact tool names and approval rules.
+New tools default to app-routed `ask`. Adding a connection grants no tools.
+Native login files and ambient CLI MCP configuration are not modified or imported.
+Only future configurations copy preset edits; existing Agent/WorkflowVersion/Run
+pins retain their exact values.
+
+`claude_setup_options_get` and its authenticated HTTP equivalent read the owning
+API endpoint. `harness_defaults_update` and `harness_instance_save` preserve their
+existing permissions, revisions, idempotency and audit contracts. Preset saves
+validate configuration but cannot produce native qualification. The runtime
+returns `CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE` rather than pretending that a
+saved preset is ready. Missing presets return a structured blocked readiness
+result with `HARNESS_PROFILE_REQUIRED`; server/authentication failures are not
+converted into setup evidence. Claude's local rollout switch is
+`GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK`, independent of OpenCode.
+
+Production Claude host qualification is still unavailable. The native lifecycle,
+authentication and sandbox proof gates below remain mandatory; an installed and
+signed-in PATH CLI does not satisfy them. Scoped GraphQL HTTP credentials are
+delivered only by the existing admitted execution owner, never stored in the
+preset. [Official MCP configuration](https://code.claude.com/docs/en/agent-sdk/mcp)
+describes direct `mcpServers` configuration, HTTP transport and exact tool names.
+
 ## Required production proof and remaining gates
 
 The root-owned **zero-input initialization probe** on

@@ -4,6 +4,7 @@ import { HarnessSectionFields } from './HarnessSectionFields'
 import { HarnessTokenList } from './HarnessTokenList'
 import type { HarnessEditor } from './harnessEditor'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
+import { ClaudeMcpConfiguration } from './ClaudeMcpConfiguration'
 
 /** Configuration editing is passive. Native catalogs/checks are never queried on the API host. */
 export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
@@ -28,8 +29,7 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
     {value.permissionRules.map(rule => <p key={rule.tool}>{rule.tool}: {rule.effect}</p>)}
     <h4>Session behavior</h4><p>Accepted instructions: {value.instructions || 'None'}</p>
     <h4>Pinned MCP policy</h4>
-    {Object.entries(value.mcpServers).map(([name, server]) => <p key={name}>{name}: {server.url}</p>)}
-    {!Object.keys(value.mcpServers).length ? <p>No MCP servers are configured.</p> : null}
+    <ClaudeMcpConfiguration value={value} onChange={change} appPreset={false} />
   </div>
   return <div className="harness-form-stack">
     <TextField label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')} onChange={event => change({ ...value, model: event.target.value })} />

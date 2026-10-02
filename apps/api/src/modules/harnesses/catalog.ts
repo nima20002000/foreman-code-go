@@ -3,7 +3,7 @@ import { canonical } from './codexProtocol.js'
 import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 
-import { HarnessQualificationSchema, withAdvancedDefaults, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
+import { HarnessDefaultsSchema, HarnessQualificationSchema, withAdvancedDefaults, type HarnessConfiguration, type AgentHarness, type HarnessDefaults } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 
 import { requireAuthorization } from '../access/policy.js'
@@ -11,6 +11,7 @@ import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSettingsRepository } from '../settings/postgres.js'
 import type { HarnessConfigurationQualifier } from './port.js'
 import { DomainError } from '../errors.js'
+import { ClaudeSetupOptionsSchema } from '@graphql/contracts/claude'
 
 export class HarnessCatalogService {
   private readonly checks = new QualificationCache<{ qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string }>()
@@ -40,7 +41,13 @@ export class HarnessCatalogService {
     private readonly settings: PostgresSettingsRepository,
     private readonly commands: PostgresCommandCoordinator,
     private readonly qualificationDirectory: string,
+    private readonly appMcpEndpoint?: string,
   ) {}
+
+  claudeSetupOptions(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'harnesses:read')
+    return ClaudeSetupOptionsSchema.parse({ graphqlMcp: this.appMcpEndpoint ? { type: 'http', url: this.appMcpEndpoint } : null })
+  }
 
   async list(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'harnesses:read')
@@ -67,7 +74,7 @@ export class HarnessCatalogService {
   private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number) {
     requireAuthorization(principal, 'harnesses:read')
     const configuration = defaults[harness]
-    if (!configuration) throw new DomainError('HARNESS_PROFILE_REQUIRED', 'Configure the selected harness with an actual host-local profile first.', 409)
+    if (!configuration) throw new DomainError('HARNESS_PROFILE_REQUIRED', 'Save a Claude preset with an actual host-local profile, model, authentication and sandbox choice in Claude settings. Installation alone does not create this app configuration.', 409)
     try {
       const capability = await this.qualifyConfiguration(configuration)
       return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError: null }
@@ -83,6 +90,7 @@ export class HarnessCatalogService {
     commandId: string; expectedRevision: number; defaults: HarnessDefaults
   }) {
     requireAuthorization(principal, 'harnesses:update')
+    const defaults = HarnessDefaultsSchema.parse(input.defaults)
     return this.commands.execute({
       principal, source, operation: 'harness.defaults.update', commandId: input.commandId,
       targetKey: 'harness-defaults', payload: input,
@@ -90,11 +98,15 @@ export class HarnessCatalogService {
         const current = await this.settings.getManagedHarnessDefaults(client)
         if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
         for (const harness of ['codex', 'opencode', 'claude'] as const) {
-          const next = input.defaults[harness], previous = current.defaults[harness]
+          const next = defaults[harness], previous = current.defaults[harness]
           if (!next || (previous && isDeepStrictEqual(withAdvancedDefaults(previous), withAdvancedDefaults(next)))) continue
+          // Claude presets are configuration templates, like unqualified host
+          // overrides. Exact-host proof is required separately at admission;
+          // the model-free defaults checker cannot produce that native proof.
+          if (harness === 'claude') continue
           await this.qualifyConfiguration(next)
         }
-        return this.settings.updateManagedHarnessDefaults(client, input.defaults, input.expectedRevision)
+        return this.settings.updateManagedHarnessDefaults(client, defaults, input.expectedRevision)
       },
     })
   }

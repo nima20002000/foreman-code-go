@@ -3,12 +3,30 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { ExecutionReadinessService } from '../src/modules/harnesses/executionReadiness.js'
 import type { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
 import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
+import { DomainError } from '../src/modules/errors.js'
 
 const principal: ManagementPrincipal = { id: 'reader', name: 'Reader', audience: 'operator', expiresAt: '2099-01-01T00:00:00Z', revokedAt: null,
   grants: [{ actions: ['harnesses:read'], scope: {} }] }
 const catalog = (discoveryError: { code: string; message: string } | null = null) => ({ get: vi.fn(async () => ({ defaultsRevision: 7, discoveryError })) }) as unknown as Pick<HarnessCatalogService, 'get'>
 
 describe('execution readiness', () => {
+  it('returns an actionable blocked result for an absent Claude preset instead of a failed check', async () => {
+    const source = { get: vi.fn(async () => { throw new DomainError('HARNESS_PROFILE_REQUIRED', 'Configure the selected harness with an actual host-local profile first.', 409) }) }
+    const result = await new ExecutionReadinessService(new NativeRollout({}), source).get(principal, 'claude')
+    expect(result).toMatchObject({ harness: 'claude', status: 'blocked', rolloutEnabled: true, defaultsRevision: null,
+      reason: { code: 'HARNESS_PROFILE_REQUIRED', message: 'Configure the selected harness with an actual host-local profile first.' } })
+  })
+  it('does not convert authorization or server failures into setup evidence', async () => {
+    const source = { get: vi.fn(async () => { throw new DomainError('ACCESS_DENIED', 'Denied', 403) }) }
+    await expect(new ExecutionReadinessService(new NativeRollout({}), source).get(principal, 'claude')).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+  })
+  it('keeps Claude rollout independent from OpenCode and preserves its production restriction', async () => {
+    expect(new NativeRollout({ GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0' }).enabled('claude')).toBe(true)
+    expect(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: '0' }).enabled('claude')).toBe(false)
+    expect(new NativeRollout({ NODE_ENV: 'production', GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: '1' }).enabled('claude')).toBe(false)
+    const result = await new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK: '0' }), catalog()).get(principal, 'claude')
+    expect(result.reason?.message).toContain('Claude execution')
+  })
   it.each(['codex', 'opencode'] as const)('reports explicitly disabled %s execution without probing', async (harness) => {
     const source = catalog()
     const result = await new ExecutionReadinessService(new NativeRollout({ GRAPHQL_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: '0', GRAPHQL_OPENCODE_PARITY_QUALIFIED: '0' }), source).get(principal, harness)

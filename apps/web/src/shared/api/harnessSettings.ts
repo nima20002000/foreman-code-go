@@ -19,6 +19,13 @@ import { reservePluginOperation, restorePluginOperation, pluginOperationFailed, 
 import { sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError } from './sessionBoundary'
 import { managedMcpFailed, managedMcpSucceeded, reserveManagedMcpOperation, terminalMcpPlan, type ManagedMcpOperation } from './managedMcpOperation'
 import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema, type WorkspaceFolderDeleteInput } from '@graphql/contracts/management'
+import { ClaudeSetupOptionsSchema } from '@graphql/contracts/claude'
+
+export function useClaudeSetupOptions(enabled = true) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: [...harnessSettingsKeys.root, sessionGeneration(), 'claude', 'setup-options'], retry: false,
+    enabled: enabled && !sessionIsSwitching(), queryFn: ({ signal }) => apiClient.request('/api/management/harnesses/claude/setup-options', ClaudeSetupOptionsSchema, { signal }) })
+}
 
 // Each abort rotates the existing session controller synchronously. Re-arm after rotation.
 function subscribeSession(changed: () => void) {

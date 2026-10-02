@@ -3,6 +3,7 @@ import { ExecutionReadinessSchema, type ManagementPrincipal } from '@graphql/con
 import { requireAuthorization } from '../access/policy.js'
 import type { HarnessCatalogService } from './catalog.js'
 import type { NativeRollout } from './nativeRollout.js'
+import { DomainError } from '../errors.js'
 
 /** Model-free qualification of saved defaults; run-specific admission remains authoritative. */
 export class ExecutionReadinessService {
@@ -12,13 +13,22 @@ export class ExecutionReadinessService {
   async get(principal: ManagementPrincipal, harness: AgentHarness) {
     requireAuthorization(principal, 'harnesses:read')
     const rolloutEnabled = this.rollout.enabled(harness)
-    const entry = rolloutEnabled ? await this.catalog.get(principal, harness) : null
+    let entry: Awaited<ReturnType<HarnessCatalogService['get']>> | null = null
+    let setupReason: { code: string; message: string } | null = null
+    if (rolloutEnabled) {
+      try { entry = await this.catalog.get(principal, harness) }
+      catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'HARNESS_PROFILE_REQUIRED') throw error
+        setupReason = { code: error.code, message: error.message }
+      }
+    }
     const reason = !rolloutEnabled ? {
       code: 'NATIVE_ROLLOUT_DISABLED',
       message: harness === 'codex'
         ? 'Codex execution is disabled by this app’s runtime configuration.'
-        : 'OpenCode execution is disabled by this app’s runtime configuration.',
-    } : entry?.discoveryError ?? null
+        : harness === 'claude' ? 'Claude execution is disabled by this app’s runtime configuration.'
+          : 'OpenCode execution is disabled by this app’s runtime configuration.',
+    } : setupReason ?? entry?.discoveryError ?? null
     const unverified = reason && /CHECK_TIMEOUT|QUALIFICATION_FAILED|DISCOVERY_UNAVAILABLE/.test(reason.code)
     return ExecutionReadinessSchema.parse({
       harness, scope: 'saved-harness-defaults', status: unverified ? 'unverified' : reason ? 'blocked' : 'eligible', rolloutEnabled,

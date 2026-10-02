@@ -16,8 +16,11 @@ import { requireAuthorization } from '../modules/access/policy.js'
 import { DomainError } from '../modules/errors.js'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@graphql/contracts/management'
+import { ClaudeSetupOptionsSchema } from '@graphql/contracts/claude'
 
 export function registerHarnessSettingsRoutes(app: FastifyInstance, services: OperatorServices): void {
+  app.get('/api/management/harnesses/claude/setup-options', async (request) =>
+    ClaudeSetupOptionsSchema.parse(services.harnesses.claudeSetupOptions(requirePrincipal(request))))
   app.get('/api/management/harnesses/:harness/execution-readiness', async (request) => {
     const principal = requirePrincipal(request)
     requireAuthorization(principal, 'harnesses:read')
