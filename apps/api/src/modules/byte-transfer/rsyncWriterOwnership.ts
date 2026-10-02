@@ -32,6 +32,11 @@ const Waiting = Reference.extend({ version: z.literal(1), nonce: z.uuid(), hostB
 const Grant = Waiting.extend({ issuer: Identity, binding: DeviceSessionBindingSchema,
   grantedAt: z.number().int().nonnegative(), expiresAt: z.number().int().nonnegative() }).strict()
 const Lock = Reference.extend({ version: z.literal(1), root: Root, lock: Root }).strict()
+const Cleanup = z.object({ version: z.literal(1), sequence: z.number().int().min(1).max(POLICY.maxRecords),
+  intent: TransferIntentSchema, root: Root, hostBootId: z.uuid(), issuer: Identity }).strict()
+const CleanupProof = z.object({ version: z.literal(1), transferId: z.uuid(), sequence: z.number().int().min(1), ownerDigest: Hash,
+  evidence: z.enum(['access-drained', 'access-process-gone', 'host-boot-changed']) }).strict()
+const CleanupLock = CleanupProof.omit({ evidence: true }).extend({ root: Root, lock: Root }).strict()
 export type RsyncOwnerReference = z.infer<typeof Reference>
 export interface RsyncProcessLaunch extends RsyncOwnerReference { ownership: RsyncWriterOwnership }
 export interface RsyncRemoteWriter extends RsyncOwnerReference { nodeBinary: string; entryPoint: string }
@@ -48,6 +53,8 @@ export interface RsyncStoreOwnership {
   processesQuiescent(intent: TransferIntent, signal: AbortSignal, requireProcess?: boolean): Promise<void>
   quiescent(intent: TransferIntent, signal: AbortSignal): Promise<void>
   assertLock(intent: TransferIntent): void
+  captureRetirementLock(intent: TransferIntent): void
+  captureRetirementHandle(intent: TransferIntent, handle: FileHandle): void
   retire<T>(intent: TransferIntent, work: () => Promise<T>): Promise<T>
 }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -85,6 +92,8 @@ export class RsyncWriterOwnership {
   private readonly accesses = new Map<string, RsyncAccessLease>()
   private draining = false
   private readonly stopping = new Set<string>()
+  private readonly cleanups = new Map<string, { row: z.infer<typeof Cleanup>; work: Promise<unknown>; handles: Set<FileHandle>; settled: boolean }>()
+  private readonly drainedCleanups = new Set<string>()
   constructor(root: string, private readonly current: (deviceId: string) => Readonly<DeviceSessionBinding> | undefined) {
     if (process.platform !== 'linux') throw new Error('Rsync writer ownership requires Linux')
     this.root = privateDirectory(resolve(root)); this.rootIdentity = certificate(this.root)
@@ -441,6 +450,12 @@ export class RsyncWriterOwnership {
     const i = this.original(input), refs = this.references(i)
     if (!refs.length) throw new Error('Rsync causal ownership unavailable')
     for (const ref of refs) await this.quiet(ref, signal, false)
+    for (const row of this.cleanupClaims(i)) {
+      signal.throwIfAborted()
+      const captured = this.cleanups.get(i.transferId)
+      if (captured?.settled && isDeepStrictEqual(captured.row, row)) await bounded(this.finishRetirement(captured), signal)
+      this.cleanupQuiet(row)
+    }
     if (readdirSync(this.root).some(name => name.startsWith(`${i.transferId}.`) && name.endsWith('.input'))) throw new Error('Rsync source-materializer residue retains its original hold')
   }
   async stopProcesses(input: TransferIntent, signal: AbortSignal) {
@@ -456,10 +471,13 @@ export class RsyncWriterOwnership {
     const i = this.original(input), refs = this.references(i)
     this.stopping.add(i.transferId)
     for (const ref of refs) this.revoke(ref)
-    const results = await Promise.allSettled(refs.map(ref => {
+    const tasks = refs.map(ref => {
       const access = this.accesses.get(ref.ownerId)
       return access ? access.close(signal) : this.quiet(ref, signal, true)
-    }))
+    })
+    const cleanup = this.cleanups.get(i.transferId)
+    if (cleanup) tasks.push(bounded(cleanup.work.then(() => undefined), signal))
+    const results = await Promise.allSettled(tasks)
     const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     if (failures.length) throw new AggregateError(failures, 'Rsync byte ownership stop remains unconfirmed')
     await this.quiescent(i, signal)
@@ -467,7 +485,8 @@ export class RsyncWriterOwnership {
   }
   async drain(signal: AbortSignal) {
     this.draining = true
-    const closing = Promise.allSettled([...this.accesses.values()].map(access => access.close(signal)))
+    const closing = Promise.allSettled([...this.accesses.values()].map(access => access.close(signal)).concat(
+      [...this.cleanups.values()].map(cleanup => bounded(cleanup.work.then(() => undefined), signal))))
     // Begin all transfers before awaiting, so one stuck IO cannot leave another writer admitted.
     let transfers: Promise<void>[]
     try { transfers = this.inventory().map(i => this.stop(i, signal)) } catch (error) { transfers = [Promise.reject(error)] }
@@ -554,13 +573,99 @@ export class RsyncWriterOwnership {
       if (lock.transferId !== ref.transferId || lock.ownerId !== ref.ownerId || lock.ownerDigest !== ref.ownerDigest || !isDeepStrictEqual(lock.root, this.rootIdentity)) throw new Error('Rsync writer lock owner conflicts')
       if (isDeepStrictEqual(lock.lock, actual)) matches++
     }
+    for (const row of this.cleanupClaims(i)) {
+      const raw = readRecord(`${this.cleanupPath(row)}.lock`)
+      if (raw === undefined) continue
+      const lock = CleanupLock.parse(raw)
+      if (!isDeepStrictEqual(lock, { version: 1, transferId: i.transferId, sequence: row.sequence, ownerDigest: digest(row), root: this.rootIdentity, lock: lock.lock })) throw new Error('Rsync cleanup lock owner conflicts')
+      if (isDeepStrictEqual(lock.lock, actual)) matches++
+    }
     if (matches !== 1) throw new Error('Exact rsync writer lock ownership unavailable')
+  }
+  private cleanupPath(row: z.infer<typeof Cleanup>) { return join(this.directory(row.intent), `retirement-${row.sequence}`) }
+  private cleanupClaims(i: TransferIntent) {
+    const result: z.infer<typeof Cleanup>[] = []
+    for (let sequence = 1; sequence <= POLICY.maxRecords; sequence++) {
+      const raw = readRecord(join(this.directory(i), `retirement-${sequence}.cleanup`))
+      if (raw === undefined) return result
+      const row = Cleanup.parse(raw)
+      if (row.sequence !== sequence || !isDeepStrictEqual(row.intent, i) || !isDeepStrictEqual(row.root, this.rootIdentity)) throw new Error('Original rsync cleanup identity conflicts')
+      result.push(row)
+    }
+    throw new Error('Rsync cleanup history exceeds policy')
+  }
+  private closeCleanup(row: z.infer<typeof Cleanup>, evidence: z.infer<typeof CleanupProof>['evidence']) {
+    this.original(row.intent)
+    const value = { version: 1 as const, transferId: row.intent.transferId, sequence: row.sequence, ownerDigest: digest(row), evidence }
+    const path = `${this.cleanupPath(row)}.closed`
+    try { writeRecord(path, value, true) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      this.cleanupQuiet(row)
+    }
+  }
+  private cleanupQuiet(row: z.infer<typeof Cleanup>) {
+    this.original(row.intent)
+    const raw = readRecord(`${this.cleanupPath(row)}.closed`)
+    if (raw !== undefined) {
+      const proof = CleanupProof.parse(raw)
+      if (proof.transferId !== row.intent.transferId || proof.sequence !== row.sequence || proof.ownerDigest !== digest(row)
+        || (proof.evidence === 'host-boot-changed' && row.hostBootId === bootIdentity())
+        || (proof.evidence === 'access-process-gone' && row.hostBootId === bootIdentity() && identityAlive(row.issuer))) throw new Error('Original rsync cleanup closure conflicts')
+      syncDirectory(this.directory(row.intent)); return
+    }
+    if (row.hostBootId !== bootIdentity()) this.closeCleanup(row, 'host-boot-changed')
+    else if (!identityAlive(row.issuer)) this.closeCleanup(row, 'access-process-gone')
+    else if (isDeepStrictEqual(row.issuer, self()) && this.drainedCleanups.has(digest(row))) this.closeCleanup(row, 'access-drained')
+    else throw new Error('Rsync cleanup remains active or unconfirmed')
+  }
+  captureRetirementLock(input: TransferIntent) {
+    const i = this.original(input), cleanup = this.cleanups.get(i.transferId)
+    if (!cleanup || cleanup.settled || cleanup.row.hostBootId !== bootIdentity() || !isDeepStrictEqual(cleanup.row.issuer, self())) throw new Error('Actual rsync cleanup owner unavailable')
+    const row = cleanup.row
+    writeRecord(`${this.cleanupPath(row)}.lock`, { version: 1, transferId: i.transferId, sequence: row.sequence,
+      ownerDigest: digest(row), root: this.rootIdentity, lock: certificate(join(this.root, `${i.transferId}.lock`)) }, true)
+  }
+  captureRetirementHandle(input: TransferIntent, handle: FileHandle) {
+    const i = this.original(input), cleanup = this.cleanups.get(i.transferId)
+    if (!cleanup || cleanup.settled || cleanup.row.hostBootId !== bootIdentity() || !isDeepStrictEqual(cleanup.row.issuer, self())) throw new Error('Actual rsync cleanup owner unavailable')
+    cleanup.handles.add(handle)
+  }
+  private async finishRetirement(cleanup: { row: z.infer<typeof Cleanup>; handles: Set<FileHandle>; settled: boolean }) {
+    if (!cleanup.settled) throw new Error('Rsync cleanup remains active or unconfirmed')
+    await Promise.all([...cleanup.handles].map(handle => handle.close()))
+    this.drainedCleanups.add(digest(cleanup.row)); this.closeCleanup(cleanup.row, 'access-drained')
+    if (this.cleanups.get(cleanup.row.intent.transferId) === cleanup) this.cleanups.delete(cleanup.row.intent.transferId)
   }
   async retire<T>(input: TransferIntent, work: () => Promise<T>): Promise<T> {
     const i = this.original(input), path = join(this.directory(i), 'retiring.json')
-    if (readRecord(path) === undefined) writeRecord(path, { version: 1, intent: i }, true)
+    if (this.draining || this.stopping.has(i.transferId)) throw new Error('Rsync cleanup admission is closed')
+    const barrier = { version: 1, intent: i }, existing = readRecord(path)
+    if (existing === undefined) {
+      try { writeRecord(path, barrier, true) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || !isDeepStrictEqual(readRecord(path), barrier)) throw error }
+    } else if (!isDeepStrictEqual(existing, barrier)) throw new Error('Original rsync retirement barrier conflicts')
+    syncDirectory(this.directory(i))
     await this.quiescent(i, AbortSignal.timeout(5000))
-    return work()
+    if (this.draining || this.stopping.has(i.transferId)) throw new Error('Rsync cleanup admission is closed')
+    const claims = this.cleanupClaims(i)
+    // Recheck after the await. The fixed next sequence is an exclusive, single-winner CAS.
+    for (const claim of claims) this.cleanupQuiet(claim)
+    const row = Cleanup.parse({ version: 1, sequence: claims.length + 1,
+      intent: i, root: this.rootIdentity, hostBootId: bootIdentity(), issuer: self() })
+    try { writeRecord(`${this.cleanupPath(row)}.cleanup`, row, true) }
+    catch (error) {
+      // An interrupted original claim can be closed only by this actual call, before work starts.
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' && isDeepStrictEqual(readRecord(`${this.cleanupPath(row)}.cleanup`), row)) {
+        this.drainedCleanups.add(digest(row)); this.closeCleanup(row, 'access-drained')
+      }
+      throw error
+    }
+    const captured = { row, work: Promise.resolve<unknown>(undefined), handles: new Set<FileHandle>(), settled: false }
+    const task = Promise.resolve().then(work).finally(async () => { captured.settled = true; await this.finishRetirement(captured) })
+    captured.work = task
+    this.cleanups.set(i.transferId, captured)
+    return task
   }
   store(): RsyncStoreOwnership {
     return { access: (i, role) => {
@@ -568,7 +673,8 @@ export class RsyncWriterOwnership {
       if (!binding) throw new Error('Rsync writer current binding unavailable')
       return this.access(i, binding, role)
     }, processesQuiescent: (i, s, required) => this.processesQuiescent(i, s, required), quiescent: (i, s) => this.quiescent(i, s),
-    assertLock: i => this.assertLock(i), retire: (i, work) => this.retire(i, work) }
+    assertLock: i => this.assertLock(i), captureRetirementLock: i => this.captureRetirementLock(i),
+    captureRetirementHandle: (i, handle) => this.captureRetirementHandle(i, handle), retire: (i, work) => this.retire(i, work) }
   }
 }
 export const rsyncArgumentDigest = (args: readonly string[]) => digest(args)
