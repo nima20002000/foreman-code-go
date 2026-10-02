@@ -21,6 +21,17 @@ function messageSink(f: ReturnType<typeof fixture>) {
     f.store.messages.set(message.id, message)
     return true
   }
+  f.service['messages'].appendAssistantTextOperation = async (conversationId, requestId, operation) => {
+    assert.equal(conversationId, f.store.row.id)
+    assert.equal(requestId, f.store.row.active_request_id)
+    assert.equal(operation.identity.sessionId, f.store.row.native_session_id)
+    assert.equal(operation.identity.turnId, f.store.row.active_native_turn_id)
+    assert(operation.identity.parentId)
+    const inserted = await f.service['messages'].appendAssistantMessage(conversationId, requestId, operation.identity.itemId, operation.text,
+      { parentMessageId: operation.identity.parentId, complete: operation.final })
+    if (!inserted) return { status: 'ignored', revision: String(f.store.row.revision) }
+    return { status: 'committed', revision: String(f.store.row.revision), messageRevision: String(f.store.row.revision) }
+  }
   const connect = f.store.pool.connect.bind(f.store.pool)
   f.store.pool.connect = (async () => {
     const client = await connect()
@@ -104,6 +115,8 @@ describe('G2 A2-PF-03: actual OpenCode adapter, synthetic HTTP/SSE only', () => 
       server.complete(correlationB, 'Completed B', session.nativeSessionId)
       await f.idle()
       assert.equal(f.store.turns.get('B')?.delivery, 'completed')
+      assert.equal(f.store.turns.get('B')?.native_turn_id, nativeMessageId(correlationB))
+      assert.deepEqual(f.store.turns.get('B')?.result, { outcome: 'succeeded', output: { text: 'Completed B' } })
       assert.equal(submitted(correlationB).length, 1)
     } finally {
       if (heartbeat) clearInterval(heartbeat)
