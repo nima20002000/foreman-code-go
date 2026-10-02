@@ -92,6 +92,24 @@ it('discovers real unregistered folders without writes and safely deletes conten
     expect((await read(client)).items[0]!.name).toBe('B missing')
     expect((await pool.query("select result from management_command_receipts where operation='workspace.storage_folder.delete' and command_id=$1", [input.commandId])).rows[0].result).toEqual({ path: input.path })
 
+    // The bulk UI uses these same authenticated per-folder commands and receipts.
+    const bulkPaths = ['Bulk first', 'Bulk second'].map((name) => join(root, name))
+    for (const path of bulkPaths) { await mkdir(path); await writeFile(join(path, 'owned.txt'), 'owned bulk test content') }
+    const bulkFolders = c.WorkspaceStorageFoldersPageSchema.parse((await client.callTool({
+      name: 'workspace_storage_folders_list', arguments: { limit: 100 },
+    })).structuredContent).items.filter((item) => bulkPaths.includes(item.path))
+    expect(bulkFolders).toHaveLength(2)
+    for (const item of bulkFolders) {
+      const command = { commandId: randomUUID(), path: item.path, expectedIdentity: item.identity }
+      await expect(denied.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).rejects.toThrow('not found')
+      const result = c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).structuredContent)
+      expect(result.value.path).toBe(item.path)
+      expect(c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).structuredContent).replayed).toBe(true)
+      expect((await pool.query("select result->>'path' as path from management_command_receipts where operation='workspace.storage_folder.delete' and command_id=$1", [command.commandId])).rows[0].path).toBe(item.path)
+      await expect(lstat(item.path)).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    expect((await workspaces.storageFolders.list(owner.principal, { limit: 100 })).items.some((item) => bulkPaths.includes(item.path))).toBe(false)
+
     // The original identity is required even when a different folder now has the same name.
     const replacement = second.items[0]!
     const moved = join(directory, 'moved'); await rename(replacement.path, moved); await mkdir(replacement.path)
@@ -142,7 +160,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
     expect(c.WorkspaceStorageFolderDeleteResultSchema.parse(removedHttp.json()).value.path).toBe(httpPath)
     await expect(lstat(httpPath)).rejects.toMatchObject({ code: 'ENOENT' })
     expect((await workspaces.storageFolders.list(owner.principal, { limit: 100 })).items.some((item) => item.path === httpPath)).toBe(false)
-    expect((await pool.query("select 1 from management_audit where action='workspace.storage_folder.delete' and outcome='succeeded'")).rowCount).toBe(2)
+    expect((await pool.query("select 1 from management_audit where action='workspace.storage_folder.delete' and outcome='succeeded'")).rowCount).toBe(4)
   } finally {
     for (const client of clients) await client.close()
     await app.close(); await pool.end()

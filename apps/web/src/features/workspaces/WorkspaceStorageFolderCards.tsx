@@ -5,11 +5,20 @@ import { ApiError, apiClient } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { queryKeys, useWorkspaceStorageFolderPages } from '../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { Alert, Button, Card, Dialog, ErrorState, Icon, LoadingState } from '../../shared/ui/nocturne'
+import { Alert, Button, Card, Checkbox, Dialog, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { LoadMore } from '../../shared/ui/LoadMore'
+import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
 import './workspaceStorageFolders.css'
 
-function FolderCard({ folder }: { folder: WorkspaceStorageFolder }) {
+interface FolderSelection {
+  selecting: boolean
+  selected: Record<string, WorkspaceSelectionTarget>
+  locked: boolean
+  count: number
+  toggle: (id: string, value: WorkspaceSelectionTarget) => void
+}
+
+function FolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; selection: FolderSelection }) {
   const [confirming, setConfirming] = useState(false)
   const queryClient = useQueryClient()
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -37,18 +46,25 @@ function FolderCard({ folder }: { folder: WorkspaceStorageFolder }) {
     } catch (error) { attempt.current.failed(error) }
     finally { inFlight.current = false }
   }
-  return <Card className="workspace-card resource-card workspace-disk-folder">
-    <div className="workspace-card-open resource-card-open">
+  const selected = folderSelectionId(folder.path) in selection.selected
+  return <Card className={`workspace-card resource-card workspace-resource-card workspace-disk-folder${selected ? ' is-selected' : ''}${selection.selecting ? ' is-selecting' : ''}`}>
+    {selection.selecting ? <Checkbox className="resource-card-select" label={folder.name}
+      hint={folder.deletion.status === 'protected' ? <span className="visually-hidden">{folder.deletion.message}</span> : undefined}
+      aria-label={`Select folder ${folder.name}`} title={folder.name} checked={selected}
+      disabled={selection.locked || (!selected && (folder.deletion.status === 'protected' || selection.count >= 100))}
+      onChange={() => selection.toggle(folderSelectionId(folder.path), { kind: 'folder', name: folder.name, path: folder.path, identity: folder.identity })} /> : <>
+    <div className="workspace-card-open resource-card-open" title={folder.name}>
       <Icon name="folder" size={16} />
       <span className="resource-card-copy">
         <span className="resource-card-name">{folder.name}</span>
-        <small dir="ltr">{folder.path}</small>
-        <small className="workspace-disk-folder-note">Folder on disk · Not in the active workspace list</small>
-        {folder.deletion.status === 'protected' ? <small className="workspace-disk-folder-note">{folder.deletion.message}</small> : null}
       </span>
     </div>
-    <Button variant="danger" size="sm" disabled={folder.deletion.status === 'protected'}
-      onClick={() => { target.current = folder; setConfirming(true) }}>Delete folder</Button>
+    <IconButton variant="ghost" label={`Delete folder ${folder.name}`} title={folder.deletion.status === 'protected'
+      ? folder.deletion.message : `Delete folder ${folder.name}`} disabled={folder.deletion.status === 'protected'}
+      onClick={() => { target.current = folder; setConfirming(true) }}><Icon name="trash" size={14} /></IconButton>
+    </>}
+    {folder.deletion.status === 'protected' ? <span className="workspace-folder-protection" role="img"
+      aria-label={`Protected folder. ${folder.deletion.message}`} title={folder.deletion.message}><Icon name="lock" size={14} /></span> : null}
     <Dialog open={confirming} onOpenChange={(open) => { if (!open) close() }}
       title={`Delete ${target.current.name}?`} busy={locked} initialFocusRef={cancelRef} size="sm"
       description="This permanently deletes this workspace folder and all its files and subfolders. It cannot be undone."
@@ -65,21 +81,21 @@ function FolderCard({ folder }: { folder: WorkspaceStorageFolder }) {
   </Card>
 }
 
-export function WorkspaceStorageFolderCards({ enabled }: { enabled: boolean }) {
-  const folders = useWorkspaceStorageFolderPages(enabled)
+export function WorkspaceStorageFolderCards({ enabled, folders, selection }: {
+  enabled: boolean; folders: ReturnType<typeof useWorkspaceStorageFolderPages>; selection: FolderSelection
+}) {
   // Workspace-scoped readers cannot browse unrelated folders on the runner.
   if (!enabled || (folders.isError && ApiError.is(folders.error) && folders.error.status === 403)) return null
-  const items = folders.data?.pages.flatMap((page) => page.items) ?? []
+  const items = [...new Map((folders.data?.pages.flatMap((page) => page.items) ?? []).map((folder) => [folder.path, folder])).values()]
   if (folders.isPending) return <LoadingState label="Checking workspace folders…" />
   if (folders.isError && !folders.isFetchNextPageError) return <ErrorState title="Workspace folders unavailable"
     description="Folders on disk could not be checked." onRetry={() => void folders.refetch()} />
   if (!items.length) return null
   return <section aria-label="Workspace folders on disk">
     <h2>Workspace folders on disk</h2>
-    <p>Other folders in the app’s Workspaces location. Folders still used by workspace settings or active runs are protected.</p>
     <ul className="workspace-card-list resource-card-list">
-      {items.map((folder) => <li key={folder.path}><FolderCard folder={folder} /></li>)}
+      {items.map((folder) => <li key={folder.path}><FolderCard folder={folder} selection={selection} /></li>)}
     </ul>
-    <LoadMore label="workspace folders" query={folders} />
+    <LoadMore loadAll label="workspace folders" query={folders} />
   </section>
 }

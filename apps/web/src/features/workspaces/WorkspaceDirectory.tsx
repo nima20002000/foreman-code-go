@@ -5,11 +5,12 @@ import { createResourceSelection } from '../../shared/ui/resourceSelection'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { InfiniteData } from '@tanstack/react-query'
 import { LoadMore } from '../../shared/ui/LoadMore'
-import type { ManagedWorkspace, WorkspaceBatchArchiveInput } from '@graphql/contracts/management'
+import type { ManagedWorkspace, WorkspaceBatchArchiveInput, WorkspaceStorageFolderDeleteInput } from '@graphql/contracts/management'
 
 import {
   queryKeys, useArchiveManagedWorkspaceMutation, useWorkspacePages,
   useUpdateManagedWorkspaceMutation,
+  useWorkspaceStorageFolderPages,
 } from '../../shared/api/query'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ApiError, apiClient } from '../../shared/api/client'
@@ -18,6 +19,7 @@ import { Alert, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Icon, Ic
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import '../../shared/ui/resourceDirectory.css'
 import { WorkspaceStorageFolderCards } from './WorkspaceStorageFolderCards'
+import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
 interface CardCommand { type: 'rename' | 'archive'; workspaceId: string; expectedRevision: number; name?: string }
 
 function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
@@ -97,14 +99,20 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
 
 export function WorkspaceDirectory() {
   const queryClient = useQueryClient()
-  const managedQuery = useWorkspacePages(true)
+  const managedQuery = useWorkspacePages(true, 'directory')
   const updateWorkspace = useUpdateManagedWorkspaceMutation()
   const archiveWorkspace = useArchiveManagedWorkspaceMutation()
 
-  const [selectionStore] = useState(createResourceSelection)
+  const failed = managedQuery.isError && !managedQuery.isFetchNextPageError
+  const loading = managedQuery.isPending
+  const folderQuery = useWorkspaceStorageFolderPages(!loading && !failed)
+  const [selectionStore] = useState(() => createResourceSelection<WorkspaceSelectionTarget>())
   const selection = useStore(selectionStore)
   const count = Object.keys(selection.selected).length
   const attempt = useRef(new CommandAttempt<Omit<WorkspaceBatchArchiveInput, 'commandId'>>())
+  const folderAttempts = useRef(new Map<string, CommandAttempt<Omit<WorkspaceStorageFolderDeleteInput, 'commandId'>>>())
+  const confirmationTargets = useRef<WorkspaceSelectionTarget[]>([])
+  const confirmedDeleted = useRef(0)
   const inFlight = useRef(false)
   const selectRef = useRef<HTMLButtonElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -113,46 +121,88 @@ export function WorkspaceDirectory() {
     if (wasSelecting.current && !selection.selecting) selectRef.current?.focus()
     wasSelecting.current = selection.selecting
   }, [selection.selecting])
-  const batch = useMutation({
-    mutationFn: (input: WorkspaceBatchArchiveInput) => apiClient.archiveManagedWorkspaceBatch(input),
-    onError: (error) => attempt.current.failed(error),
-  })
-  const locked = batch.isPending || attempt.current.unresolved
+  const recordDeleted = (ids: string[]) => {
+    confirmedDeleted.current += ids.length
+    selectionStore.setState((current) => ({
+      selected: Object.fromEntries(Object.entries(current.selected).filter(([id]) => !ids.includes(id))),
+      notice: `${confirmedDeleted.current} deleted. Undeleted selections are kept until their removal is confirmed.`,
+    }))
+  }
+  const batch = useMutation({ mutationFn: async (targets: WorkspaceSelectionTarget[]) => {
+    const generation = sessionGeneration()
+    const workspaces = targets.filter((target) => target.kind === 'workspace')
+    if (workspaces.length) {
+      try {
+        const result = await apiClient.archiveManagedWorkspaceBatch(attempt.current.input({
+          workspaces: workspaces.map(({ workspaceId, expectedRevision }) => ({ workspaceId, expectedRevision })),
+        }))
+        assertSession(generation)
+        attempt.current.succeeded()
+        const deleted = new Set(result.value.workspaceIds)
+        queryClient.setQueriesData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkspacePage>>>>(
+          { queryKey: [...queryKeys.managedWorkspaces, 'pages'] }, (current) => current ? {
+            ...current, pages: current.pages.map((page) => ({ ...page, items: page.items.filter((item) => !deleted.has(item.workspace.id)) })),
+          } : current,
+        )
+        recordDeleted([...deleted])
+        queryClient.removeQueries({ predicate: (query) => deleted.has(String(query.queryKey[3]))
+          && query.queryKey[1] === 'management' && query.queryKey[2] === 'workspace' })
+      } catch (error) { attempt.current.failed(error); throw error }
+    }
+    for (const target of targets) {
+      if (target.kind !== 'folder') continue
+      const folderAttempt = folderAttempts.current.get(target.path) ?? new CommandAttempt<Omit<WorkspaceStorageFolderDeleteInput, 'commandId'>>()
+      folderAttempts.current.set(target.path, folderAttempt)
+      try {
+        const result = await apiClient.deleteWorkspaceStorageFolder(folderAttempt.input({ path: target.path, expectedIdentity: target.identity }))
+        assertSession(generation)
+        folderAttempt.succeeded()
+        queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof apiClient.listWorkspaceStorageFolderPage>>>>(
+          queryKeys.workspaceStorageFolders, (current) => current ? {
+            ...current, pages: current.pages.map((page) => ({ ...page, items: page.items.filter((item) => item.path !== result.value.path) })),
+          } : current,
+        )
+        recordDeleted([folderSelectionId(result.value.path)])
+      } catch (error) { folderAttempt.failed(error); throw error }
+    }
+  } })
+  const uncertain = attempt.current.unresolved || [...folderAttempts.current.values()].some((value) => value.unresolved)
+  const locked = batch.isPending || uncertain
   const closeConfirmation = () => { if (!locked) { selection.confirm(false); batch.reset() } }
   const deleteSelected = async () => {
     if (inFlight.current) return
     inFlight.current = true
-    const generation = sessionGeneration()
     try {
-      const result = await batch.mutateAsync(attempt.current.input({
-        workspaces: Object.entries(selection.selected).map(([workspaceId, expectedRevision]) => ({ workspaceId, expectedRevision })),
-      }))
-      assertSession(generation)
-      attempt.current.succeeded()
-      const deleted = new Set(result.value.workspaceIds)
-      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkspacePage>>>>(
-        [...queryKeys.managedWorkspaces, 'pages'], (current) => current ? {
-          ...current, pages: current.pages.map((page) => ({ ...page, items: page.items.filter((item) => !deleted.has(item.workspace.id)) })),
-        } : current,
-      )
-      selection.clear(`${deleted.size} ${deleted.size === 1 ? 'workspace' : 'workspaces'} deleted.`)
+      await batch.mutateAsync(Object.values(selectionStore.getState().selected))
+      const noun = confirmationTargets.current.every((target) => target.kind === 'workspace') ? 'workspace'
+        : confirmationTargets.current.every((target) => target.kind === 'folder') ? 'folder' : 'item'
+      selection.clear(`${confirmedDeleted.current} ${noun}${confirmedDeleted.current === 1 ? '' : 's'} deleted.`)
+    } catch { /* The mutation shows the error; only confirmed targets leave the selection. */ }
+    finally {
+      inFlight.current = false
       void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces })
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStorageFolders })
-      // Refresh cached details for every removed workspace without per-item HTTP reads.
-      queryClient.removeQueries({ predicate: (query) => deleted.has(String(query.queryKey[3]))
-        && query.queryKey[1] === 'management' && query.queryKey[2] === 'workspace' })
-    } catch (error) { attempt.current.failed(error) }
-    finally { inFlight.current = false }
+    }
   }
 
-  const items = useMemo(() => managedQuery.data?.pages.flatMap((page) => page.items) ?? [], [managedQuery.data])
+  const items = useMemo(() => [...new Map((managedQuery.data?.pages.flatMap((page) => page.items) ?? [])
+    .map((item) => [item.workspace.id, item])).values()], [managedQuery.data])
   const workspaces = useMemo(
     () => items.map((item) => item.workspace),
     [items],
   )
-  const selectable = items.slice(0, 100).map((item) => ({ id: item.workspace.id, revision: item.revision }))
+  const folders = [...new Map((folderQuery.data?.pages.flatMap((page) => page.items) ?? []).map((folder) => [folder.path, folder])).values()]
+  const selectable = [
+    ...items.map((item) => ({ id: item.workspace.id, revision: { kind: 'workspace' as const, workspaceId: item.workspace.id, name: item.workspace.name, expectedRevision: item.revision } })),
+    ...folders.filter((folder) => folder.deletion.status === 'available').map((folder) => ({ id: folderSelectionId(folder.path),
+      revision: { kind: 'folder' as const, name: folder.name, path: folder.path, identity: folder.identity } })),
+  ].slice(0, 100)
   const allShownSelected = selectable.length > 0 && selectable.every((item) => item.id in selection.selected)
   const managedById = new Map(items.map((item) => [item.workspace.id, item]))
+  const selectedProtected = folders.some((folder) => folder.deletion.status === 'protected' && folderSelectionId(folder.path) in selection.selected)
+  const confirmationNoun = confirmationTargets.current.every((target) => target.kind === 'workspace') ? 'workspace'
+    : confirmationTargets.current.every((target) => target.kind === 'folder') ? 'folder' : 'item'
+  const confirmationLabel = `${confirmationTargets.current.length} ${confirmationNoun}${confirmationTargets.current.length === 1 ? '' : 's'}`
 
   const execute = async (input: CardCommand & { commandId: string }) => {
     const { workspaceId, commandId, expectedRevision } = input
@@ -160,7 +210,7 @@ export function WorkspaceDirectory() {
       ? await updateWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision, name: input.name! })
       : await archiveWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision })
     // The write has committed. Cache refresh failure must not turn it into a retryable write.
-    queryClient.setQueryData<InfiniteData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>>([...queryKeys.managedWorkspaces, 'pages'], (current) => current ? {
+    queryClient.setQueriesData<InfiniteData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>>({ queryKey: [...queryKeys.managedWorkspaces, 'pages'] }, (current) => current ? {
       ...current,
       pages: current.pages.map((page) => ({ ...page, items: input.type === 'archive' ? page.items.filter((item) => item.workspace.id !== workspaceId)
         : page.items.map((item) => item.workspace.id === workspaceId ? response.value : item) })),
@@ -171,26 +221,29 @@ export function WorkspaceDirectory() {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
     ]).catch(() => undefined)
   }
-  const failed = managedQuery.isError && !managedQuery.isFetchNextPageError
-  const loading = managedQuery.isPending
   const needsAccess = failed && ApiError.is(managedQuery.error) && managedQuery.error.status === 401
   return (
     <section className="workspace-directory resource-directory" aria-label="Workspaces">
       <PageHeader
         title="Workspaces"
-        actions={workspaces.length > 0 && !failed ? <div className="resource-directory-actions">
+        actions={(workspaces.length > 0 || folders.length > 0 || selection.selecting) && !failed ? <div className="resource-directory-actions">
           {!selection.selecting ? <Button ref={selectRef} onClick={selection.start}>Select workspaces</Button> : <>
             <span role="status">{count} selected</span>
-            <Button disabled={locked} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
-              {allShownSelected ? 'Clear selection' : items.length > 100 ? 'Select first 100 shown' : 'Select all shown'}
+            <Button disabled={locked || !selectable.length} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
+              {allShownSelected ? 'Clear selection' : items.length + folders.filter((folder) => folder.deletion.status === 'available').length > 100 ? 'Select first 100 shown' : 'Select all shown'}
             </Button>
-            <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
+            <Button variant="danger" disabled={!count || locked || selectedProtected} onClick={() => {
+              confirmationTargets.current = Object.values(selection.selected)
+              confirmedDeleted.current = 0
+              batch.reset(); selection.confirm(true)
+            }}>Delete selected{count ? ` (${count})` : ''}</Button>
             <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
           </>}
         </div> : undefined}
       />
       {selection.notice ? <p role="status">{selection.notice}</p> : null}
-      {selection.selecting ? <p className="resource-selection-hint">Select workspaces to delete. You can show more and keep your selection. Up to 100 at a time.</p> : null}
+      {selection.selecting ? <p className="resource-selection-hint">Select workspaces and disk folders to delete. You can show more and keep your selection. Up to 100 at a time. Protected folders cannot be selected for deletion.</p> : null}
+      {selectedProtected ? <Alert tone="warning" title="A selected folder is now protected.">Deselect it to continue. Its protection reason is shown on its card.</Alert> : null}
       {needsAccess ? <EmptyState icon="warning" title="Connect this browser"
         description="App access is required to load workspaces."
         action={<Link to="/settings/operator-access" className="n-button n-button--primary">Open App access</Link>} />
@@ -198,43 +251,51 @@ export function WorkspaceDirectory() {
           onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
         <ul className="workspace-card-list resource-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
-            <Card className={`workspace-card resource-card${workspace.id in selection.selected ? ' is-selected' : ''}`} data-testid={`workspace-card-${workspace.id}`}>
+            <Card className={`workspace-card resource-card workspace-resource-card${workspace.id in selection.selected ? ' is-selected' : ''}`} data-testid={`workspace-card-${workspace.id}`}>
               {selection.selecting ? <Checkbox className="resource-card-select" label={workspace.name}
                 aria-label={`Select ${workspace.name}`} checked={workspace.id in selection.selected}
                 disabled={locked || (count >= 100 && !(workspace.id in selection.selected))}
-                onChange={() => selection.toggle(workspace.id, managedById.get(workspace.id)!.revision)} /> : <>
-              <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open resource-card-open" aria-label={workspace.name}>
-                <Icon name="grid" size={16} />
+                onChange={() => selection.toggle(workspace.id, { kind: 'workspace', workspaceId: workspace.id,
+                  name: workspace.name, expectedRevision: managedById.get(workspace.id)!.revision })} /> : <>
+              <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open resource-card-open" aria-label={workspace.name} title={workspace.name}>
+                <Icon name="folder" size={16} />
                 <span className="resource-card-copy">
                   <span className="resource-card-name">{workspace.name}</span>
-                  <small dir="ltr">{managedById.get(workspace.id)?.locationValidation.status === 'restricted'
-                    ? 'Location restricted' : managedById.get(workspace.id)?.executionLocation?.rootPath || 'Choose a destination'}</small>
                 </span>
               </Link>
               <WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
-                revision={managedById.get(workspace.id)?.revision} onCommand={execute} /></>}
+                revision={managedById.get(workspace.id)?.revision} onCommand={execute} />
+              {managedById.get(workspace.id)?.locationValidation.status === 'restricted' ? <span
+                className="workspace-folder-protection" role="img" aria-label="Location restricted" title="Location restricted"><Icon name="lock" size={14} /></span> : null}
+              </>}
             </Card>
           </li>)}
         </ul>
       ) : loading ? <LoadingState label="Loading workspaces…" />
         : failed ? <Alert live tone="danger" title="Workspaces unavailable" />
-          : <div data-testid="workspace-directory-empty">
+          : !folders.length ? <div data-testid="workspace-directory-empty">
             <EmptyState icon="folder" title="No workspaces yet" description="Use New workspace in the navigation to create one." />
-          </div>}
-      <LoadMore label="workspaces" query={managedQuery} />
-      <WorkspaceStorageFolderCards enabled={!loading && !failed} />
+          </div> : null}
+      <LoadMore loadAll label="workspaces" query={managedQuery} />
+      <WorkspaceStorageFolderCards enabled={!loading && !failed} folders={folderQuery} selection={{ ...selection, locked, count }} />
       <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
-        title={`Delete ${count} ${count === 1 ? 'workspace' : 'workspaces'}?`}
-        description="Selected workspaces will be removed from the list. App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained. Workspaces with active runs cannot be deleted."
+        title={`Delete ${confirmationLabel}?`}
+        description="App-created project folders and selected disk folders will be permanently deleted with all files and subfolders. Existing folders selected as workspace destinations are kept. Workflow and run history is retained. Active runs block workspace deletion. Folder deletions run one at a time; earlier confirmed deletions remain if a later target fails."
         busy={locked} initialFocusRef={cancelRef} size="sm"
         footer={<>
           <Button ref={cancelRef} disabled={locked} onClick={closeConfirmation}>Cancel</Button>
-          <Button variant="danger" disabled={batch.isPending} onClick={() => void deleteSelected()}>
-            {batch.isPending ? 'Deleting…' : attempt.current.unresolved ? 'Retry deletion' : `Delete ${count} ${count === 1 ? 'workspace' : 'workspaces'}`}
+          <Button variant="danger" disabled={batch.isPending || (selectedProtected && !uncertain)} onClick={() => void deleteSelected()}>
+            {batch.isPending ? 'Deleting…' : uncertain ? 'Retry deletion' : confirmedDeleted.current ? `Delete remaining (${count})` : `Delete ${confirmationLabel}`}
           </Button>
         </>}>
+        <ul>{confirmationTargets.current.map((target) => <li key={target.kind === 'folder' ? folderSelectionId(target.path) : target.workspaceId}>
+          {target.name}{target.kind === 'folder' ? <span dir="ltr"> — {target.path}</span> : null}
+          {!((target.kind === 'folder' ? folderSelectionId(target.path) : target.workspaceId) in selection.selected) ? <small> — Deleted</small> : null}
+        </li>)}</ul>
+        {confirmedDeleted.current > 0 ? <p role="status">{confirmedDeleted.current} deleted. {count} remaining selections.</p> : null}
+        {selectedProtected && !uncertain ? <Alert tone="warning" title="A selected folder is now protected.">Close this confirmation and deselect it to continue.</Alert> : null}
         {batch.isError ? <Alert tone="danger" live title={batch.error.message} /> : null}
-        {attempt.current.unresolved && !batch.isPending ? <p role="status">The request may have succeeded. Retry deletion to check its outcome safely.</p> : null}
+        {uncertain && !batch.isPending ? <p role="status">The request may have succeeded. Retry deletion to check its outcome safely.</p> : null}
       </Dialog>
     </section>
   )
