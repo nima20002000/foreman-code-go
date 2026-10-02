@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -16,6 +14,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { buildProductionApp } from '../src/production.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
+import { createActivityReplayFileStorage, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 
 const closes: Array<() => Promise<void>> = []
@@ -70,13 +69,8 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: db.directory,
     PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex', OPENCODE_BINARY: '/recorded-no-native-opencode' })
   config.workspaceStorageRoot = db.directory
-  if (options.operatorSandbox === 'workspace-write') {
-    // Explicitly accepted write-enabled Operator, with the real private file host outside all native writable roots.
-    const parent = join(homedir(), '.local', 'state', 'graphql', 'activity-replay-files')
-    await mkdir(parent, { recursive: true, mode: 0o700 })
-    config.fileStorageRoot = await mkdtemp(join(parent, 'owned-'))
-    closes.push(() => rm(config.fileStorageRoot!, { recursive: true, force: true }))
-  } else config.fileStorageRoot = join(db.directory, 'files')
+  config.fileStorageRoot = await createActivityReplayFileStorage()
+  closes.push(() => rm(config.fileStorageRoot!, { recursive: true, force: true }))
   const cpSchema = `${db.schema}_cp`
   const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
   await checkpoints.setup()
@@ -94,10 +88,7 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   const database = { pool: db.pool, ping: async () => { await db.pool.query('select 1') },
     migrate: () => applyApplicationMigrations(db.pool), close: async () => {} }
   let production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, replay.infrastructure())
-  production.registerFileStorage()
-  await production.initialize()
-  let origin = await production.app.listen({ host: '127.0.0.1', port: config.port })
-  closes.push(async () => { await replay.drain(); await production.shutdown() })
+  let origin = await startActivityReplayProduction(production, replay, closes, config.port)
   const headers = { authorization: `Bearer ${writer.token}` }
   async function http(method: 'GET' | 'POST' | 'PUT', url: string, payload?: Record<string, unknown>, token = writer.token) {
     const response = await production.app.inject({ method, url, headers: { authorization: `Bearer ${token}` }, ...(payload !== undefined ? { payload } : {}) })
@@ -118,8 +109,7 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   async function restart() {
     await production.shutdown()
     production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, replay.infrastructure())
-    production.registerFileStorage()
-    await production.initialize(); origin = await production.app.listen({ host: '127.0.0.1', port: config.port })
+    origin = await startActivityReplayProduction(production, replay, closes, config.port)
   }
   return { db, saved, access, writer, denied, replay, headers, http, call, restart, reconcile: () => production.reconcile((error) => { throw error }), get origin() { return origin } }
 }
