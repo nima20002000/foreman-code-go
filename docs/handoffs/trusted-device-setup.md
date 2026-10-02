@@ -147,8 +147,8 @@ current consent revision and original human decision are rechecked. A consumed
 receipt cannot be used again; configure command retry returns its original result
 through the original coordinator without consuming twice.
 
-Root must publish the four approval DTO schemas/types sent in the interface
-message before UI consumption, mount routes behind the existing verified
+Root published the four approval DTO schemas/types in e195a767. Mount routes
+behind the existing verified
 browser/CSRF authenticator, add actionFor permissions/capability descriptions, and
 run actual PostgreSQL/browser tests. Source tests mock SQL transactions and verify
 browser-only Fastify helpers; they do not claim authentic browser-session or real
@@ -184,11 +184,13 @@ remain browser-only. Configure and persisted readback work through the existing
 Operator MCP registrar; exact retries consume once.
 
 Root was sent exact optional shared schema declarations before implementation and
-approved them. No reserved contract file was edited in this lane. Until root
-publishes, the owned authority module extends root's original approval schemas
-with the approved optional fields. Root e195a767 was consumed as local prerequisite
+approved them. No reserved contract file was edited in this lane. Root published all approved optional binding fields in83ab70d6 (local borrowed
+prerequisite11f06be0). The authority now imports shared approval exports directly;
+the apply-authority alias derives from sharedReceipt.shape.applyAuthority.unwrap(),
+and its type from NonNullable<sharedReceipt['applyAuthority']>. No field is
+reconstructed or stripped. Root e195a767 was consumed as local prerequisite
 7096472d (includes shared approval import replacement); do not cherry-pick that
-borrowed commit again. Pending shared DTO/UI publication must expose explicit
+borrowed commit again. UI consumption of the published shared DTO must expose explicit
 selection, never select a delegate automatically or synthesize a grant.
 
 Verification:62/62 four-file cases, API tsc and eight-file ESLint passed in
@@ -198,3 +200,11 @@ transaction storage. Denial cases assert exact codes and no consumption. Real
 PostgreSQL/authenticated HTTP-MCP/native Operator acceptance remains integration
 owner work, with no claim of live grant changes. Final extra time-stability case
 is in `device-setup-delegated-stability.log`.
+
+Shared-binding final verification: all63 cases across four suites, full API
+`tsc --noEmit`, and eight owned TypeScript files' ESLint passed against committed
+root83ab70d6 via the unchanged host scheduler. Log:
+`_orchestration/resume-20261001/device-setup-delegated-shared.log`.
+No approval binding field mismatch was found. Shared publication is complete;
+production composition/UI and actual PostgreSQL/browser/MCP acceptance remain
+integration-owner verification, with no live credentials/grants altered here.

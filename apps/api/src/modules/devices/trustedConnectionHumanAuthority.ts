@@ -3,10 +3,11 @@ import type pg from 'pg'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DeviceRegistrationSchema, type DeviceRegistration } from '@graphql/contracts/device-identity'
-import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionApprovalRequestSchema as SharedApprovalRequestSchema,
-  TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema as SharedApprovalReceiptSchema, TrustedConnectionApprovalReadSchema as SharedApprovalReadSchema,
-  type TrustedConnectionConfigure } from '@graphql/contracts/trusted-device-connection'
-export { TrustedConnectionApprovalCommandSchema } from '@graphql/contracts/trusted-device-connection'
+import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionApprovalRequestSchema,
+  TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema,
+  type TrustedConnectionConfigure, type TrustedConnectionApprovalReceipt, type TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
+export { TrustedConnectionApprovalRequestSchema, TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema } from '@graphql/contracts/trusted-device-connection'
+export type { TrustedConnectionApprovalReceipt, TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
 import { z } from 'zod'
 import { requireBrowserSession, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -16,15 +17,9 @@ import { DomainError } from '../errors.js'
 import { intersectGrants } from '../access/operatorDelegation.js'
 import { operatorChatGrants } from '../access/operatorChatDelegation.js'
 
-// Approved optional extension pending root shared publication. No default delegate.
-export const TrustedConnectionApplyAuthoritySchema = z.object({ principalId: z.string().min(1).max(200), audience: z.literal('operator'),
-  delegatedFromOwnerId: z.string().min(1).max(200), conversationId: z.string().min(1).max(200), authorityHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
-export type TrustedConnectionApplyAuthority = z.infer<typeof TrustedConnectionApplyAuthoritySchema>
-export const TrustedConnectionApprovalRequestSchema = SharedApprovalRequestSchema.extend({ applyPrincipalId: z.string().min(1).max(200).optional() }).strict()
-export const TrustedConnectionApprovalReceiptSchema = SharedApprovalReceiptSchema.extend({ applyAuthority: TrustedConnectionApplyAuthoritySchema.optional() }).strict()
-export const TrustedConnectionApprovalReadSchema = SharedApprovalReadSchema.extend({ applyAuthority: TrustedConnectionApplyAuthoritySchema.optional() }).strict()
-export type TrustedConnectionApprovalReceipt = z.infer<typeof TrustedConnectionApprovalReceiptSchema>
-export type TrustedConnectionApprovalRead = z.infer<typeof TrustedConnectionApprovalReadSchema>
+// Use the exact root-owned nested schema; never reconstruct or strip its binding.
+export const TrustedConnectionApplyAuthoritySchema = TrustedConnectionApprovalReceiptSchema.shape.applyAuthority.unwrap()
+export type TrustedConnectionApplyAuthority = NonNullable<TrustedConnectionApprovalReceipt['applyAuthority']>
 
 const REQUEST = 'device.trusted-connection.approval.request'
 const APPROVE = 'device.trusted-connection.approval.approve'
