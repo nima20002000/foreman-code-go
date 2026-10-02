@@ -40,8 +40,11 @@ export function authenticatedTransferAuthority(current: (deviceId: string) => Re
 }
 /** Existing W07 carrier; the frame supplies identity, never worker JSON or a synthesized context. */
 export function createAuthenticatedTransferReceiver(input: { stagingRoot: string;
-  current(deviceId: string): Readonly<DeviceSessionBinding> | undefined; accepted: AcceptedTransferAuthority; clock?: () => number }) {
-  const receiver = new ResumableByteTransferService(input.stagingRoot, authenticatedTransferAuthority(input.current, input.accepted), input.clock)
+  current(deviceId: string): Readonly<DeviceSessionBinding> | undefined; accepted: AcceptedTransferAuthority; clock?: () => number;
+  /** Reuse the original canonical store when another byte backend shares its allocation. */
+  receiver?: ResumableByteTransferService }) {
+  const authority = authenticatedTransferAuthority(input.current, input.accepted)
+  const receiver = input.receiver ?? new ResumableByteTransferService(input.stagingRoot, authority, input.clock)
   const handle = async (raw: unknown, frame: DeviceExtensionContext) => {
     frame.signal.throwIfAborted()
     const request = RequestSchema.parse(raw), context = transferContextForBinding(frame.binding)
@@ -51,6 +54,7 @@ export function createAuthenticatedTransferReceiver(input: { stagingRoot: string
     const intent = TransferIntentSchema.parse(await input.accepted.intent(request.transferId, frame.binding))
     if (intent.transferId !== request.transferId) throw new Error('Accepted transfer identity differs')
     frame.signal.throwIfAborted()
+    if (input.receiver) await authority.authorize(intent, context, request.method)
     let payload
     if (request.method === 'start') payload = await receiver.start(intent, context)
     else if (request.method === 'status') payload = await receiver.status(intent.transferId, context)
@@ -60,6 +64,7 @@ export function createAuthenticatedTransferReceiver(input: { stagingRoot: string
       if (!frame.bytes || frame.bytes.byteLength !== request.byteLength) throw new Error('Transfer binary length differs')
       payload = await receiver.append(intent.transferId, context, { offset: request.offset, sha256: request.sha256, bytes: frame.bytes })
     } else throw new Error('Unknown transfer operation')
+    if (input.receiver) await authority.authorize(intent, context, request.method)
     frame.signal.throwIfAborted()
     return { payload }
   }

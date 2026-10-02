@@ -1,3 +1,5 @@
+import { createProductionRsyncComposition } from './modules/byte-transfer/productionComposition.js'
+import { RSYNC_STAGE_EXTENSION } from '@graphql/contracts/byte-transfer'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@graphql/contracts/job-runtime'
 import { interactionConnection } from './modules/interactions/connection.js'
 import { createProductionRemoteWorkflow } from './modules/placement/productionRemoteWorkflow.js'
@@ -207,8 +209,11 @@ export function buildProductionApp(
   let workflowPhysicalArtifacts: PostgresWorkflowPhysicalArtifacts | undefined
   let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
+  const rsync = createProductionRsyncComposition({ side: 'main', providers: infrastructure?.rsync,
+    current: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding })
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
+      ...rsync.extensions,
       { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(payload, context) {
         const handler = jobRuntime?.qualificationExtension.handle
         if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual diagnostic qualification authority is unavailable.', 503)
@@ -1010,6 +1015,7 @@ export function buildProductionApp(
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         activeNativeSession, captureNativeSession,
+        ...(infrastructure?.rsync ? { transferSender: source => rsync.sender(source) } : {}),
         ...(processRegistry instanceof NativeProcessRegistry ? { nativeRegistry: processRegistry } : {}),
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
       if (selectedSuites) {
@@ -1136,7 +1142,7 @@ export function buildProductionApp(
     applicationClose ??= Promise.resolve().then(() => app.close())
     return applicationClose
   }
-  return { app, engine, initialize, reconcile, shutdown, drainShutdown,
+  return { app, engine, initialize, reconcile, shutdown, drainShutdown, rsync,
     registerFileStorage: () => {
       fileStorage ??= registerProductionFileStorage(app, database.pool, config)
       mountArtifacts()

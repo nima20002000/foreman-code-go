@@ -1,3 +1,4 @@
+import type { ProductionMainRsyncProviders } from '../byte-transfer/productionComposition.js'
 import type { AcceptedClaudeProfileAdmission, AcceptedProfileAuthority } from './instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from './claudeSdk/production.js'
 import type { ProductionJobInfrastructure } from '../jobs/production.js'
@@ -33,6 +34,8 @@ export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
   claudeCurrentProfile?: AcceptedProfileAuthority<ClaudeProfileOwner>['current']
   claudeClient?: Parameters<typeof productionClaudeManager>[0]['loadClient']
   claudeFileSdk?: () => Promise<ClaudeFileSdk>
+  /** Complete protected original transfer ports; absent means the existing byte carrier. */
+  rsync?: ProductionMainRsyncProviders
   jobs?: ProductionJobInfrastructure
   deviceListener?: DeviceListenerConfig
   deviceDomains?: DeviceDomainComposition

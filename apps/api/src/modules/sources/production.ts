@@ -8,7 +8,7 @@ import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
-import { ExistingByteTransferSourcePackageSender } from './operationSender.js'
+import { ExistingByteTransferSourcePackageSender, type SourcePackageTransferAdmission } from './operationSender.js'
 import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
 import type { MainWorkerCarrier } from '../placement/workerCarrier.js'
 import { mkdir } from 'node:fs/promises'
@@ -36,7 +36,8 @@ import { DomainError } from '../errors.js'
 export async function createProductionSources(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; endpoint(): DeviceEndpoint;
   dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost;
-  activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader }) {
+  activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader;
+  transferSender?: SourcePackageTransferAdmission['sender'] }) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
   const hosts: WorkspaceRootHostPort = {
     authorize: async (sql, _principal, host, installationId) => {
@@ -108,7 +109,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash, owner: execution.owner }))
   }
   const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed, input.activeNativeSession)
-  const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint)
+  const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint, input.transferSender)
   const carrier: MainWorkerCarrier = { capture(deviceId) {
     const channel = input.endpoint().captureRequest(deviceId, SOURCE_OPERATION_EXTENSION.namespace)
     if (!channel) return unavailable()

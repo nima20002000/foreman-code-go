@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+import { ResumableByteTransferService } from './service.js'
 import { EventEmitter } from 'node:events'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
@@ -98,4 +100,28 @@ it('rejects an old captured sender context before dispatching through a replacem
     await expect(client.receiver.start(intent, { ...transferContextForBinding(original), connectionEpoch: randomUUID() })).rejects.toThrow('transport')
     expect(channels.rawWorker.frames.filter(frame => String(JSON.parse(frame).type).startsWith('application-'))).toHaveLength(0)
   } finally { await channels.close(); await receiver.receiver.close() }
+})
+
+it('shares the supplied original canonical journal with fallback and preserves its accepted/current fences', async () => {
+  const root = await mkdtemp(join(fileURLToPath(new URL('../../../../../../../../', import.meta.url)), '.graphql-shared-carrier-')); roots.push(root)
+  const original = binding(), bytes = Buffer.from('data'), intent = intentFor(original, bytes)
+  let bound = original, denied = false
+  const accepted = { intent: async () => intent, authorize: async () => { if (denied) throw new Error('Denied original grant') } }
+  const canonical = new ResumableByteTransferService(root, accepted)
+  const carrier = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => bound, accepted, receiver: canonical })
+  try {
+    expect(carrier.receiver).toBe(canonical)
+    const context = transferContextForBinding(original), frame = { binding: original, signal: new AbortController().signal }
+    await canonical.reserve(intent, context, { kind: 'rsync-receiver', byteSize: intent.byteSize * 3 })
+    await carrier.handle({ method: 'start', transferId: intent.transferId }, frame)
+    await carrier.handle({ method: 'append', transferId: intent.transferId, offset: 0, sha256: hash(bytes), byteLength: bytes.length }, { ...frame, bytes })
+    const receipt = (await carrier.handle({ method: 'finish', transferId: intent.transferId }, frame)).payload
+    expect(await canonical.resolveVerifiedReceipt(intent.transferId, context)).toEqual(receipt)
+    const journal = JSON.parse(await readFile(join(root, `${intent.transferId}.json`), 'utf8'))
+    expect(journal.payload).toMatchObject({ canonical: true, external: { 'rsync-receiver': { byteSize: bytes.length * 3, released: false } } })
+    denied = true
+    await expect(carrier.handle({ method: 'status', transferId: intent.transferId }, frame)).rejects.toThrow('Denied')
+    denied = false; bound = { ...original, connectionGeneration: 78 }
+    await expect(carrier.handle({ method: 'status', transferId: intent.transferId }, frame)).rejects.toThrow('stale')
+  } finally { await canonical.close() }
 })
