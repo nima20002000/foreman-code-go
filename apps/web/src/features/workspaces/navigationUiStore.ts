@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 export const DEFAULT_NAVIGATION_WIDTH = 264
+export const COLLAPSED_NAVIGATION_WIDTH = 60
 export const MIN_NAVIGATION_WIDTH = 192
 export const MAX_NAVIGATION_WIDTH = 360
 
@@ -8,16 +9,18 @@ const COLLAPSED_STORAGE_KEY = 'graphql-navigation-collapsed'
 const WIDTH_STORAGE_KEY = 'graphql-navigation-width'
 
 type ExpandableWorkspaceSection = 'agents' | 'workflows'
+type NavigationMotion = 'instant' | 'manual'
 
 interface NavigationUiState {
   collapsed: boolean
   width: number
+  motion: NavigationMotion
   activeWorkspaceId?: string
   workspacesExpanded: boolean
   expandedWorkspaceIds: Readonly<Record<string, boolean>>
   expandedSections: Readonly<Record<string, Partial<Record<ExpandableWorkspaceSection, boolean>>>>
-  setCollapsed: (collapsed: boolean) => void
-  setWidth: (width: number) => void
+  setCollapsed: (collapsed: boolean, motion?: NavigationMotion) => void
+  setWidth: (width: number, motion?: NavigationMotion) => void
   rememberWorkspace: (workspaceId: string) => void
   setWorkspacesExpanded: (expanded: boolean) => void
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void
@@ -71,6 +74,7 @@ function initialState() {
   return {
     collapsed: readCollapsed(),
     width: readWidth(),
+    motion: 'instant' as const,
     activeWorkspaceId: undefined,
     workspacesExpanded: true,
     expandedWorkspaceIds: {},
@@ -85,14 +89,14 @@ function initialState() {
  */
 export const useNavigationUiStore = create<NavigationUiState>((set) => ({
   ...initialState(),
-  setCollapsed: (collapsed) => {
+  setCollapsed: (collapsed, motion = 'instant') => {
     writeSessionValue(COLLAPSED_STORAGE_KEY, String(collapsed))
-    set((state) => state.collapsed === collapsed ? state : { collapsed })
+    set((state) => state.collapsed === collapsed && state.motion === motion ? state : { collapsed, motion })
   },
-  setWidth: (width) => {
+  setWidth: (width, motion = 'instant') => {
     const nextWidth = clampWidth(width)
     writeSessionValue(WIDTH_STORAGE_KEY, String(nextWidth))
-    set((state) => state.width === nextWidth ? state : { width: nextWidth })
+    set((state) => state.width === nextWidth && state.motion === motion ? state : { width: nextWidth, motion })
   },
   rememberWorkspace: (workspaceId) => {
     set((state) => state.activeWorkspaceId === workspaceId
@@ -134,6 +138,7 @@ export const useNavigationUiStore = create<NavigationUiState>((set) => ({
     set({
       collapsed: false,
       width: DEFAULT_NAVIGATION_WIDTH,
+      motion: 'instant',
       activeWorkspaceId: undefined,
       workspacesExpanded: true,
       expandedWorkspaceIds: {},

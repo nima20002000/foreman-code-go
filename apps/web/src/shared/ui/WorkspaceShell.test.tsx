@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
@@ -7,6 +7,8 @@ import { renderWithRouter } from '../../test/renderWithRouter'
 import {
   DEFAULT_NAVIGATION_WIDTH,
   MAX_NAVIGATION_WIDTH,
+  MIN_NAVIGATION_WIDTH,
+  useNavigationUiStore,
 } from '../../features/workspaces'
 import { WorkspaceShell } from './WorkspaceShell'
 
@@ -120,8 +122,9 @@ describe('WorkspaceShell', () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const collapse = await screen.findByRole('button', { name: 'Collapse navigation' })
-    await user.click(collapse)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    resize.focus()
+    await user.keyboard('{Enter}')
 
     expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
     expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toHaveAttribute('data-collapsed', 'true')
@@ -130,12 +133,13 @@ describe('WorkspaceShell', () => {
     expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
 
-    const expand = screen.getByRole('button', { name: 'Expand navigation' })
-    expect(expand).toHaveAttribute('aria-expanded', 'false')
-    await user.click(expand)
+    expect(resize).toHaveAttribute('tabindex', '0')
+    expect(resize).toHaveAttribute('aria-valuenow', '60')
+    expect(screen.queryByRole('button', { name: /navigation/ })).not.toBeInTheDocument()
+    await user.keyboard('{Enter}')
 
     expect(screen.getByTestId('workspace-shell')).not.toHaveClass('workspace-shell-navigation-collapsed')
-    expect(screen.getByRole('button', { name: 'Collapse navigation' })).toHaveAttribute('aria-expanded', 'true')
+    expect(resize).toHaveAttribute('aria-valuenow', '264')
     expect(screen.getByRole('button', { name: 'New workspace' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
   })
@@ -151,7 +155,8 @@ describe('WorkspaceShell', () => {
     expect(mark).toHaveAttribute('aria-hidden', 'true')
     expect(brand.querySelector('.sidebar-brand-name')).toHaveTextContent('graphql')
 
-    await user.click(screen.getByRole('button', { name: 'Collapse navigation' }))
+    screen.getByRole('separator', { name: 'Resize navigation' }).focus()
+    await user.keyboard('{Enter}')
 
     expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('graphql')
     expect(screen.getByTestId('sidebar-brand').querySelector('.sidebar-brand-name')).toHaveTextContent('graphql')
@@ -269,9 +274,125 @@ describe('WorkspaceShell', () => {
     resize.focus()
     await user.keyboard('{End}{ArrowRight}')
     expect(resize).toHaveAttribute('aria-valuenow', String(MAX_NAVIGATION_WIDTH))
+    expect(screen.getByTestId('workspace-shell')).toHaveAttribute('data-navigation-motion', 'instant')
 
     await user.dblClick(resize)
     expect(resize).toHaveAttribute('aria-valuenow', String(DEFAULT_NAVIGATION_WIDTH))
+  })
+
+  it.each([192, 264, 320, 360])('collapses strictly below half the %spx drag-start width and restores it on reopening', async (startWidth) => {
+    useNavigationUiStore.getState().setWidth(startWidth)
+    const user = userEvent.setup()
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    const shell = screen.getByTestId('workspace-shell')
+
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: startWidth })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: startWidth / 2 })
+    expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
+    expect(resize).toHaveAttribute('aria-valuenow', String(MIN_NAVIGATION_WIDTH))
+
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: startWidth / 2 - 1 })
+    expect(shell).toHaveClass('workspace-shell-navigation-collapsed')
+    expect(shell).toHaveAttribute('data-navigation-motion', 'manual')
+    expect(shell).toHaveStyle(`--navigation-width: ${startWidth}px`)
+
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 350 })
+    expect(shell).toHaveStyle(`--navigation-width: ${startWidth}px`)
+    resize.focus()
+    await user.keyboard('{Enter}')
+    expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
+    expect(resize).toHaveAttribute('aria-valuenow', String(startWidth))
+  })
+
+  it('uses the measured sidebar width at drag start rather than a different remembered width', async () => {
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    vi.spyOn(resize.parentElement!, 'getBoundingClientRect').mockReturnValue({ width: 240 } as DOMRect)
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 240 })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 120 })
+    expect(screen.getByTestId('workspace-shell')).not.toHaveClass('workspace-shell-navigation-collapsed')
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 119 })
+    expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
+    expect(useNavigationUiStore.getState().width).toBe(240)
+  })
+
+  it('ignores other pointers and stops resizing on matching cancellation, external collapse, or unmount', async () => {
+    const view = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 264 })
+    fireEvent.pointerMove(window, { pointerId: 8, clientX: 50 })
+    fireEvent.pointerCancel(window, { pointerId: 8 })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 300 })
+    expect(useNavigationUiStore.getState()).toMatchObject({ collapsed: false, width: 300 })
+    fireEvent.pointerCancel(window, { pointerId: 7 })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 50 })
+    expect(useNavigationUiStore.getState()).toMatchObject({ collapsed: false, width: 300 })
+
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 300 })
+    act(() => useNavigationUiStore.getState().setCollapsed(true))
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 350 })
+    expect(useNavigationUiStore.getState().width).toBe(300)
+    act(() => useNavigationUiStore.getState().setCollapsed(false))
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 300 })
+    view.unmount()
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 350 })
+    expect(useNavigationUiStore.getState().width).toBe(300)
+  })
+
+  it.each(['{Enter}', ' ', '{Control>}b{/Control}', '{Meta>}b{/Meta}'])('keeps keyboard %s activation instant after manual sidebar changes', async (key) => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 264 })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 131 })
+    expect(screen.getByTestId('workspace-shell')).toHaveAttribute('data-navigation-motion', 'manual')
+    resize.focus()
+    await user.keyboard(key)
+    expect(screen.getByTestId('workspace-shell')).not.toHaveClass('workspace-shell-navigation-collapsed')
+    expect(screen.getByTestId('workspace-shell')).toHaveAttribute('data-navigation-motion', 'instant')
+    await user.keyboard(key)
+    expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
+    expect(screen.getByTestId('workspace-shell')).toHaveAttribute('data-navigation-motion', 'instant')
+  })
+
+  it('reopens and enlarges the collapsed rail by dragging outward without recollapsing in the same drag', async () => {
+    useNavigationUiStore.getState().setCollapsed(true)
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    const shell = screen.getByTestId('workspace-shell')
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 60 })
+    fireEvent.pointerMove(window, { pointerId: 8, clientX: 280 })
+    expect(shell).toHaveClass('workspace-shell-navigation-collapsed')
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 60 })
+    expect(shell).toHaveClass('workspace-shell-navigation-collapsed')
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 210 })
+    expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
+    expect(shell).toHaveStyle('--navigation-width: 210px')
+    expect(shell).toHaveAttribute('data-navigation-motion', 'manual')
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 280 })
+    expect(shell).toHaveStyle('--navigation-width: 280px')
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 61 })
+    expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
+    expect(shell).toHaveStyle('--navigation-width: 192px')
+    fireEvent.pointerUp(window, { pointerId: 7 })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 350 })
+    expect(shell).toHaveStyle('--navigation-width: 192px')
+  })
+
+  it('keeps Ctrl/Cmd+B out of editable controls and uses arrows to reopen the focused rail instantly', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" slots={{ main: <><input aria-label="Draft name" /><div contentEditable role="textbox" aria-label="Draft notes" /></> }} />)
+    await user.click(await screen.findByRole('textbox', { name: 'Draft name' }))
+    await user.keyboard('{Control>}b{/Control}')
+    expect(useNavigationUiStore.getState().collapsed).toBe(false)
+    await user.click(screen.getByRole('textbox', { name: 'Draft notes' }))
+    await user.keyboard('{Meta>}b{/Meta}')
+    expect(useNavigationUiStore.getState().collapsed).toBe(false)
+    const resize = screen.getByRole('separator', { name: 'Resize navigation' })
+    resize.focus()
+    await user.keyboard('{Enter}{ArrowRight}')
+    expect(useNavigationUiStore.getState()).toMatchObject({ collapsed: false, width: 272, motion: 'instant' })
   })
 
   it('keeps workflow submenu state across shell remounts', async () => {

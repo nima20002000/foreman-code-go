@@ -1,10 +1,29 @@
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { HarnessStatusMenu } from './HarnessStatusMenu'
+import { useNavigationUiStore } from '../workspaces/navigationUiStore'
+
+const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate')
+
+function mockRelocation() {
+  const cancel = vi.fn()
+  const animate = vi.fn(() => ({ cancel }))
+  Object.defineProperty(HTMLElement.prototype, 'animate', { configurable: true, value: animate })
+  vi.spyOn(HTMLAnchorElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLAnchorElement) {
+    const index = Array.from(this.parentElement!.children).indexOf(this)
+    const { collapsed, width } = useNavigationUiStore.getState()
+    return new DOMRect(collapsed ? 0 : 10 + index * width / 3, collapsed ? index * 34 : 0, 40, 32)
+  })
+  return { animate, cancel }
+}
 
 describe('HarnessStatusMenu', () => {
+  afterEach(() => {
+    if (originalAnimate) Object.defineProperty(HTMLElement.prototype, 'animate', originalAnimate)
+    else Reflect.deleteProperty(HTMLElement.prototype, 'animate')
+  })
   it.each([
     ['eligible', 'Available'], ['blocked', 'Unavailable'], ['unverified', 'Unverified'],
   ])('shows %s as an accessible status with the matching light', async (status, label) => {
@@ -24,5 +43,36 @@ describe('HarnessStatusMenu', () => {
     server.use(http.get('/api/management/harnesses/:harness/execution-readiness', () => HttpResponse.error()))
     renderWithRouter(<HarnessStatusMenu />)
     expect(await screen.findByRole('link', { name: 'Codex: Unverified' })).toHaveAttribute('title', expect.stringContaining('Could not check'))
+  })
+
+  it('animates manual relocation with transform/opacity and cancels it for instant keyboard changes', async () => {
+    const { animate, cancel } = mockRelocation()
+    renderWithRouter(<HarnessStatusMenu />)
+    await screen.findByRole('navigation', { name: 'Harness availability' })
+    expect(animate).not.toHaveBeenCalled()
+    act(() => useNavigationUiStore.getState().setCollapsed(true, 'manual'))
+    expect(animate).toHaveBeenCalledTimes(3)
+    expect(animate).toHaveBeenCalledWith([
+      { transform: expect.stringContaining('translate('), opacity: 0.75 },
+      { transform: 'translate(0, 0)', opacity: 1 },
+    ], { duration: 160, easing: 'cubic-bezier(0.22, 0, 0, 1)' })
+    act(() => useNavigationUiStore.getState().setCollapsed(false))
+    expect(cancel).toHaveBeenCalledTimes(3)
+    expect(animate).toHaveBeenCalledTimes(3)
+    act(() => useNavigationUiStore.getState().setWidth(300))
+    expect(animate).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps manual relocation instant when reduced motion is requested', async () => {
+    const { animate } = mockRelocation()
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+    try {
+      renderWithRouter(<HarnessStatusMenu />)
+      await screen.findByRole('navigation', { name: 'Harness availability' })
+      act(() => useNavigationUiStore.getState().setCollapsed(true, 'manual'))
+      expect(animate).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

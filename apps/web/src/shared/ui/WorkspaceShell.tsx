@@ -7,13 +7,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { ChevronLeft, ChevronRight, Settings, UserRound } from 'lucide-react'
+import { Settings, UserRound } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
 import { ThemeToggle } from '../../features/theme'
 import { HarnessStatusMenu } from '../../features/settings/HarnessStatusMenu'
 import { useWorkspacePages } from '../api/query'
-import { EmptyState, IconButton } from './nocturne'
+import { EmptyState } from './nocturne'
+import { COLLAPSED_NAVIGATION_WIDTH } from '../../features/workspaces/navigationUiStore'
 import {
   DEFAULT_NAVIGATION_WIDTH,
   MAX_NAVIGATION_WIDTH,
@@ -79,6 +80,7 @@ export function WorkspaceShell({
   const navigationWorkspaces = workspaces ?? workspacesQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workspace))
   const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
   const navigationWidth = useNavigationUiStore((state) => state.width)
+  const navigationMotion = useNavigationUiStore((state) => state.motion)
   const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
   const setCollapsed = useNavigationUiStore((state) => state.setCollapsed)
   const setNavigationWidth = useNavigationUiStore((state) => state.setWidth)
@@ -89,6 +91,23 @@ export function WorkspaceShell({
     : workspaceId
 
   useEffect(() => () => stopResizeRef.current?.(), [])
+
+  useEffect(() => {
+    if (navigationCollapsed) stopResizeRef.current?.()
+  }, [navigationCollapsed])
+
+  useEffect(() => {
+    const toggleNavigation = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey
+        || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'b') return
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"])')) return
+      event.preventDefault()
+      stopResizeRef.current?.()
+      setCollapsed(!useNavigationUiStore.getState().collapsed)
+    }
+    window.addEventListener('keydown', toggleNavigation)
+    return () => window.removeEventListener('keydown', toggleNavigation)
+  }, [setCollapsed])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
@@ -102,13 +121,14 @@ export function WorkspaceShell({
   }, [setCollapsed])
 
   const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || navigationCollapsed) return
+    if (event.button !== 0) return
     event.preventDefault()
     stopResizeRef.current?.()
 
     const pointerId = event.pointerId
     const startX = event.clientX
-    const startWidth = navigationWidth
+    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width
+      || (navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : navigationWidth)
 
     const stop = () => {
       window.removeEventListener('pointermove', resize)
@@ -118,7 +138,20 @@ export function WorkspaceShell({
     }
     const resize = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return
-      setNavigationWidth(startWidth + moveEvent.clientX - startX)
+      const rawWidth = startWidth + moveEvent.clientX - startX
+      if (navigationCollapsed) {
+        if (rawWidth <= startWidth) return
+        setNavigationWidth(rawWidth, 'manual')
+        setCollapsed(false, 'manual')
+        return
+      }
+      if (rawWidth < startWidth / 2) {
+        stop()
+        setNavigationWidth(startWidth, 'manual')
+        setCollapsed(true, 'manual')
+        return
+      }
+      setNavigationWidth(rawWidth, 'manual')
     }
     const finish = (endEvent: PointerEvent) => {
       if (endEvent.pointerId === pointerId) stop()
@@ -128,9 +161,15 @@ export function WorkspaceShell({
     window.addEventListener('pointermove', resize)
     window.addEventListener('pointerup', finish)
     window.addEventListener('pointercancel', finish)
-  }, [navigationCollapsed, navigationWidth, setNavigationWidth])
+  }, [navigationCollapsed, navigationWidth, setCollapsed, setNavigationWidth])
 
   const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      stopResizeRef.current?.()
+      setCollapsed(!navigationCollapsed)
+      return
+    }
     const step = event.shiftKey ? 32 : 8
     let nextWidth: number | undefined
     if (event.key === 'ArrowLeft') nextWidth = navigationWidth - step
@@ -139,6 +178,9 @@ export function WorkspaceShell({
     if (event.key === 'End') nextWidth = MAX_NAVIGATION_WIDTH
     if (nextWidth === undefined) return
     event.preventDefault()
+    stopResizeRef.current?.()
+    if (navigationCollapsed && event.key === 'ArrowLeft') return
+    setCollapsed(false)
     setNavigationWidth(nextWidth)
   }
 
@@ -146,6 +188,7 @@ export function WorkspaceShell({
     <div
       className={`workspace-shell${navigationCollapsed ? ' workspace-shell-navigation-collapsed' : ''}`}
       data-testid="workspace-shell"
+      data-navigation-motion={navigationMotion}
       style={{ '--navigation-width': `${navigationWidth}px` } as CSSProperties}
     >
       <aside
@@ -153,33 +196,25 @@ export function WorkspaceShell({
         aria-label="Primary navigation"
         data-collapsed={navigationCollapsed}
       >
-        <IconButton
-          className="sidebar-collapse-button"
-          label={navigationCollapsed ? 'Expand navigation' : 'Collapse navigation'}
-          aria-expanded={!navigationCollapsed}
-          aria-controls="workspace-primary-navigation"
-          onClick={() => setCollapsed(!navigationCollapsed)}
-        >
-          {navigationCollapsed ? (
-            <ChevronRight aria-hidden="true" size={16} />
-          ) : (
-            <ChevronLeft aria-hidden="true" size={16} />
-          )}
-        </IconButton>
-
         <div
           className="sidebar-resize-handle"
           role="separator"
           aria-label="Resize navigation"
           aria-orientation="vertical"
-          aria-valuemin={MIN_NAVIGATION_WIDTH}
+          aria-valuemin={navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : MIN_NAVIGATION_WIDTH}
           aria-valuemax={MAX_NAVIGATION_WIDTH}
-          aria-valuenow={navigationWidth}
-          tabIndex={navigationCollapsed ? -1 : 0}
-          title="Drag to resize navigation"
+          aria-valuenow={navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : navigationWidth}
+          aria-valuetext={navigationCollapsed ? 'Navigation collapsed. Drag right to expand.' : `${navigationWidth} pixels`}
+          aria-controls="workspace-primary-navigation"
+          aria-keyshortcuts="Control+b Meta+b Enter Space ArrowLeft ArrowRight Home End"
+          tabIndex={0}
+          title="Drag to resize navigation. Ctrl/Cmd+B or Enter toggles navigation. Arrow keys resize."
           onPointerDown={startResize}
           onKeyDown={resizeWithKeyboard}
-          onDoubleClick={() => setNavigationWidth(DEFAULT_NAVIGATION_WIDTH)}
+          onDoubleClick={() => {
+            setNavigationWidth(DEFAULT_NAVIGATION_WIDTH, 'manual')
+            setCollapsed(false, 'manual')
+          }}
         />
 
         <nav className="shell-navigation" id="workspace-primary-navigation">
