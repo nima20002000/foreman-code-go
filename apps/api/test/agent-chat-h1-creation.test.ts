@@ -38,7 +38,7 @@ async function fixture() {
     harness: { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' },
   }
   const principal: ManagementPrincipal = {
-    id: 'h1-caller', name: 'H1 unit caller', audience: 'operator', revokedAt: null,
+    id: 'caller', name: 'H1 unit caller', audience: 'operator', revokedAt: null,
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
     grants: [{ scope: { workspaceIds: [context.workspaceId], workflowIds: [context.workflowId] },
       actions: ['agent_chat:read', 'agent_chat:write', 'agent_chat:cancel'] }],

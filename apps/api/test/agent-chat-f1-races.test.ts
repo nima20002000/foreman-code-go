@@ -94,6 +94,7 @@ describe('F1 A-R04: interrupts stay bound to the pre-admission turn', () => {
     assert.deepEqual(f.manager.cancels, [])
     assert.equal(f.store.turns.get('C')?.delivery, 'queued')
     assert.equal(f.store.row.cancel_requested, false)
+    assert.deepEqual(f.dispatchAttempts, [])
     f.manager.finish('B'); await f.idle()
   })
 
@@ -111,6 +112,7 @@ describe('F1 A-R04: interrupts stay bound to the pre-admission turn', () => {
     f.manager.holds.set('later', gate()); await f.send('later'); f.manager.finish('A')
     await eventually(() => f.store.row.active_native_turn_id === 'turn-later')
     resume.resolve(); await stopping
+    assert.deepEqual(f.dispatchAttempts, ['captured-interrupt'])
     assert.deepEqual(f.manager.cancels, [])
     assert.equal(f.store.row.cancel_requested, false)
     f.manager.finish('later'); await f.idle()

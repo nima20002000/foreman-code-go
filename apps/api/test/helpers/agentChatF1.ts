@@ -336,8 +336,10 @@ export function fixture(store = new F1Store()) {
     control<T>(id: string, operation: () => Promise<T>): Promise<T>
     pump(id: string): void
   }
+  const dispatchAttempts: string[] = []
   ;(service as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
-    execute: async (...args: unknown[]) => (args[5] as () => Promise<unknown>)(), drain: async () => undefined,
+    execute: async (...args: unknown[]) => (args[5] as (markDispatchAttempt: () => void) => Promise<unknown>)(
+      () => { dispatchAttempts.push(String(args[3])) }), drain: async () => undefined,
   }
   internals.runtimes.set(store.row.id, { manager, session: manager.session, configuration })
   const request = (requestId: string, extra: Partial<SendAgentChatMessageRequest> = {}): SendAgentChatMessageRequest => ({
@@ -345,7 +347,7 @@ export function fixture(store = new F1Store()) {
     context: { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId, agentId: context.agentId }, ...extra,
   })
   const send = (requestId: string, extra: Partial<SendAgentChatMessageRequest> = {}) => service.send(principal, context.workspaceId, request(requestId, extra))
-  return { store, repository, manager, service, internals, principal, request, send,
+  return { store, repository, manager, service, internals, principal, request, send, dispatchAttempts,
     read: () => service.readConversation(principal, context.workspaceId, store.row.id),
     async active(requestId = 'A') {
       manager.holds.set(requestId, deferred()); await send(requestId)
