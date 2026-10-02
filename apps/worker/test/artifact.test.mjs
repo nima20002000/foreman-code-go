@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, mkdtemp, rm, statfs } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
@@ -24,7 +23,8 @@ test('packaged bytes match manifest and doctor import creates no worker authorit
   const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
   assert.ok(manifest.files.some((file) => file.path === 'src/worker.mjs'));
   for (const file of manifest.files) assert.equal(createHash('sha256').update(await readFile(join(artifact, file.path))).digest('hex'), file.sha256);
-  const state = await mkdtemp(join(tmpdir(), 'worker-artifact-probe-'));
+  assert.equal((await statfs('/dev/shm')).type, 0x01021994);
+  const state = await mkdtemp(join('/dev/shm', 'worker-artifact-probe-'));
   t.after(() => rm(state, { recursive: true, force: true }));
   const result = JSON.parse(execFileSync(process.execPath, [join(artifact, 'src/cli.mjs'), 'doctor', '--state', state], { encoding: 'utf8', timeout: 5000 }));
   assert.equal(result.versions.commit, manifest.commit);
@@ -32,7 +32,7 @@ test('packaged bytes match manifest and doctor import creates no worker authorit
   assert.equal(result.service.active, false);
   assert.equal(result.pairing, 'unpaired');
   await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
-  // This test's tmpfs root is intentionally unqualified; it is not a laptop boot test.
+  // This verified tmpfs state is intentionally unqualified.
   assert.equal(result.persistentState, false);
   const run = spawnSync(process.execPath, [join(artifact, 'src/cli.mjs'), 'run', '--state', state], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 1);
