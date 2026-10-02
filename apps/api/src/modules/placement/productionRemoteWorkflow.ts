@@ -1,3 +1,4 @@
+import type { CapturedRemoteTelemetryNativeOwner } from '../resource-telemetry/productionAuthority.js'
 import type pg from 'pg'
 import type { HarnessExecution } from '@graphql/contracts'
 import { sameWorkflowValue, canonicalGraphJson } from '@graphql/contracts/wave25'
@@ -22,7 +23,8 @@ import { remoteWorkflowSourceDigest } from '../runs/remote/workflowPhysicalReado
 import type { WorkflowOriginalNativeSource, WorkflowNativeCapture, WorkflowNativeCaptureInput } from '../interactions/workflowNativeCapture.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
-import { prepareRemoteOwnerControl } from '../runs/remote/ownerControl.js'
+import { admitRemoteOwnerControl } from '../runs/remote/ownerControlAdmission.js'
+import { readOriginalInteractionDeliveryClaim } from '../interactions/originalDeliveryClaim.js'
 
 /** One Main owner and its actual authenticated worker sources. Allocation is
  * IO-free; preparation/prefetch runs before the existing canonical transaction. */
@@ -39,7 +41,7 @@ export function createProductionRemoteWorkflow(input: {
   const acknowledgments = new Set<VerifiedRemoteOriginalSource>()
   const companions = new WeakMap<WorkflowNativeCapture, RemoteNativeSourceEvidence>()
   const latest = new Map<string, string>()
-  const retained = new Map<string, Map<string, { source: WorkflowOriginalNativeSource; prepared: PreparedRemoteWorkflowPhysical; evidence?: RemoteNativeSourceEvidence; acknowledged?: boolean }>>()
+  const retained = new Map<string, Map<string, { source: WorkflowOriginalNativeSource; prepared: PreparedRemoteWorkflowPhysical; evidence?: RemoteNativeSourceEvidence; acknowledged?: boolean; capture?: WorkflowNativeCapture }>>()
   const requireProducer = () => {
     const producer = input.producer()
     if (!producer) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual placement producer is unavailable.', 503)
@@ -138,7 +140,7 @@ export function createProductionRemoteWorkflow(input: {
         controlFor: async command => {
           if (interactionConnection.getStore()) throw new DomainError('REMOTE_CONTROL_TRANSACTION_UNAVAILABLE', 'Remote native response delivery requires an admitted effect outside the Main delivery transaction.', 409)
           const owner = requireOwner()
-          return owner.oneShotConnection().transaction(sql => prepareRemoteOwnerControl(sql, owner, binding, command))
+          return owner.oneShotConnection().transaction(sql => admitRemoteOwnerControl(sql, owner, binding, command, readOriginalInteractionDeliveryClaim()))
         },
       })
     },
@@ -155,7 +157,29 @@ export function createProductionRemoteWorkflow(input: {
           lifetimeGeneration: capture.lifetimeGeneration, closureGeneration: capture.closureGeneration, lane: capture.lane,
           assertCurrent: capture.assertCurrent })
       }
+      entry.capture = capture
       companions.set(capture, entry.evidence)
+    },
+    getRemoteNativeOwners(): readonly CapturedRemoteTelemetryNativeOwner[] {
+      const owners: CapturedRemoteTelemetryNativeOwner[] = []
+      for (const [executionId, entries] of retained) {
+        const entry = entries.get(latest.get(executionId) ?? '')
+        const capture = entry?.capture
+        if (!entry?.evidence || !capture?.lane) continue
+        let physicalOwner: ReturnType<typeof physical.passiveNativeOwner>
+        try { physicalOwner = physical.passiveNativeOwner(channel.verify.read(entry.evidence)) } catch { continue }
+        if (!physicalOwner) continue
+        const assertCurrent = () => {
+          if (retained.get(executionId)?.get(latest.get(executionId) ?? '') !== entry || entry.capture !== capture)
+            throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'The original remote telemetry lifetime changed.', 409)
+          capture.assertCurrent(); physicalOwner.assertCurrent()
+        }
+        try { assertCurrent() } catch { continue }
+        owners.push({ execution: structuredClone(capture.execution), session: structuredClone(capture.session),
+          writer: { id: capture.lane.id, token: capture.lane.token, connectionGeneration: capture.lane.connectionGeneration },
+          ...physicalOwner, assertCurrent })
+      }
+      return owners
     },
     async afterCommit(capture: WorkflowNativeCapture) {
       const evidence = companions.get(capture)

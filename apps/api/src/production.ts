@@ -994,6 +994,7 @@ export function buildProductionApp(
           mainContext: () => mainTelemetryContext, mainActive: () => !closing && runtimeOwner.active,
           deviceBinding: id => deviceRuntime.currentBinding(id), presence: id => deviceRuntime.presenceFor(id),
           deviceCapabilities: id => deviceRuntime.endpointForDomains().capabilities(id),
+          getRemoteNativeOwners: () => remoteWorkflow.getRemoteNativeOwners(),
           getNativeOwners: () => approvals.passiveOwnedNativeSessions().flatMap(owned => {
             const captured = launchScopes.get(owned.manager)
             return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, assertCurrent: owned.assertCurrent, nativeOwner: captured.owner }] : []
