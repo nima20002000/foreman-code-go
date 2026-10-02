@@ -156,7 +156,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator), options.operator?.services)
   if (options.operator || options.appMcp) registerGraphqlMcp(app, {
     access: (options.operator?.access ?? options.appMcp?.access)!,
-    ...(options.operator ? { operator: { ...options.operator.services, workerToolsMcpImplemented: Boolean(options.appMcp) } } : {}),
+    ...(options.operator ? { operator: Object.assign(options.operator.services, { workerToolsMcpImplemented: Boolean(options.appMcp) }) } : {}),
     ...(options.appMcp ? { interactions: options.appMcp.interactions } : {}),
     ...(options.workerArtifacts ? { workerArtifacts: options.workerArtifacts } : {}),
   })
