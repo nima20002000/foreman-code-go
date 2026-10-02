@@ -5,10 +5,10 @@ import { ApiError, apiClient } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { queryKeys, useWorkspaceStorageFolderPages } from '../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { Alert, Button, Card, Checkbox, Dialog, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
+import { Alert, Button, Dialog, ErrorState, LoadingState } from '../../shared/ui/nocturne'
+import { ResourceCard, TrashIconButton } from '../../shared/ui/ResourceCard'
 import { LoadMore } from '../../shared/ui/LoadMore'
 import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
-import './workspaceStorageFolders.css'
 
 interface FolderSelection {
   selecting: boolean
@@ -47,24 +47,17 @@ function FolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; sel
     finally { inFlight.current = false }
   }
   const selected = folderSelectionId(folder.path) in selection.selected
-  return <Card className={`workspace-card resource-card workspace-resource-card workspace-disk-folder${selected ? ' is-selected' : ''}${selection.selecting ? ' is-selecting' : ''}`}>
-    {selection.selecting ? <Checkbox className="resource-card-select" label={folder.name}
-      hint={folder.deletion.status === 'protected' ? <span className="visually-hidden">{folder.deletion.message}</span> : undefined}
-      aria-label={`Select folder ${folder.name}`} title={folder.name} checked={selected}
-      disabled={selection.locked || (!selected && (folder.deletion.status === 'protected' || selection.count >= 100))}
-      onChange={() => selection.toggle(folderSelectionId(folder.path), { kind: 'folder', name: folder.name, path: folder.path, identity: folder.identity })} /> : <>
-    <div className="workspace-card-open resource-card-open" title={folder.name}>
-      <Icon name="folder" size={16} />
-      <span className="resource-card-copy">
-        <span className="resource-card-name">{folder.name}</span>
-      </span>
-    </div>
-    <IconButton variant="ghost" label={`Delete folder ${folder.name}`} title={folder.deletion.status === 'protected'
-      ? folder.deletion.message : `Delete folder ${folder.name}`} disabled={folder.deletion.status === 'protected'}
-      onClick={() => { target.current = folder; setConfirming(true) }}><Icon name="trash" size={14} /></IconButton>
-    </>}
-    {folder.deletion.status === 'protected' ? <span className="workspace-folder-protection" role="img"
-      aria-label={`Protected folder. ${folder.deletion.message}`} title={folder.deletion.message}><Icon name="lock" size={14} /></span> : null}
+  return <ResourceCard name={folder.name} icon="folder"
+    selection={selection.selecting ? {
+      hint: folder.deletion.status === 'protected' ? <span className="visually-hidden">{folder.deletion.message}</span> : undefined,
+      'aria-label': `Select folder ${folder.name}`, checked: selected,
+      disabled: selection.locked || (!selected && (folder.deletion.status === 'protected' || selection.count >= 100)),
+      onChange: () => selection.toggle(folderSelectionId(folder.path), { kind: 'folder', name: folder.name, path: folder.path, identity: folder.identity }),
+    } : undefined}
+    actions={<TrashIconButton target={`folder ${folder.name}`} disabled={folder.deletion.status === 'protected'}
+      disabledReason={folder.deletion.status === 'protected' ? folder.deletion.message : undefined}
+      onClick={() => { target.current = folder; setConfirming(true) }} />}
+    protection={folder.deletion.status === 'protected' ? { label: `Protected folder. ${folder.deletion.message}`, reason: folder.deletion.message } : undefined}>
     <Dialog open={confirming} onOpenChange={(open) => { if (!open) close() }}
       title={`Delete ${target.current.name}?`} busy={locked} initialFocusRef={cancelRef} size="sm"
       description="This permanently deletes this workspace folder and all its files and subfolders. It cannot be undone."
@@ -78,7 +71,7 @@ function FolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; sel
       {removal.isError ? <Alert live tone="danger" title={removal.error.message} /> : null}
       {attempt.current.unresolved && !removal.isPending ? <p role="status">The request may have succeeded. Retry deletion to check its outcome safely.</p> : null}
     </Dialog>
-  </Card>
+  </ResourceCard>
 }
 
 export function WorkspaceStorageFolderCards({ enabled, folders, selection }: {

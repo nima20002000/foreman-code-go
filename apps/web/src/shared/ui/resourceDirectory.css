@@ -17,8 +17,7 @@
 .workspace-detail h1 { font: var(--type-title); }
 .workspace-overview .n-page-header,
 .workspace-detail .n-page-header { margin: 0; }
-.resource-card-list.workspace-card-list,
-.resource-card-list.workflow-card-list {
+.resource-card-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
   gap: var(--space-3);
@@ -41,8 +40,7 @@
 .workspace-detail > .workspace-location-form { width: min(100%, 38rem); }
 .workspace-detail .settings-back-link { font-size: 13px; min-height: 44px; }
 @media (max-width: 480px) {
-  .resource-card-list.workspace-card-list,
-  .resource-card-list.workflow-card-list,
+  .resource-card-list,
   .workspace-overview .settings-card-list { grid-template-columns: minmax(0, 1fr); }
 }
 

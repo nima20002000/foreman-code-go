@@ -15,7 +15,8 @@ import {
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ApiError, apiClient } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { Alert, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
+import { Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
+import { ResourceCard } from '../../shared/ui/ResourceCard'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import '../../shared/ui/resourceDirectory.css'
 import { WorkspaceStorageFolderCards } from './WorkspaceStorageFolderCards'
@@ -71,13 +72,13 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
   }
   const uncertain = attempt.current.unresolved && !pending
   return (
-    <div className="workspace-card-actions-wrap">
+    <div>
       <IconButton ref={triggerRef} label={`Open actions for ${name}`} variant="ghost"
         aria-haspopup="dialog" aria-expanded={open}
         onClick={() => { if (open) close(); else { setNextName(name); setBaseRevision(revision); setError(undefined); setConfirmingRemove(false); setOpen(true) } }}>
         <Icon name="more" size={16} />
       </IconButton>
-      {open ? <div ref={surfaceRef} className="workspace-card-actions" role="dialog" aria-label={`${name} actions`}>
+      {open ? <div ref={surfaceRef} className="resource-card-menu" role="dialog" aria-label={`${name} actions`}>
         <TextField label="Name" disabled={pending || uncertain} value={nextName} onChange={(event) => setNextName(event.target.value)} />
         {error ? <Alert live tone="danger" title={error} /> : null}
         {uncertain ? <>
@@ -251,24 +252,17 @@ export function WorkspaceDirectory() {
           onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
         <ul className="workspace-card-list resource-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
-            <Card className={`workspace-card resource-card workspace-resource-card${workspace.id in selection.selected ? ' is-selected' : ''}`} data-testid={`workspace-card-${workspace.id}`}>
-              {selection.selecting ? <Checkbox className="resource-card-select" label={workspace.name}
-                aria-label={`Select ${workspace.name}`} checked={workspace.id in selection.selected}
-                disabled={locked || (count >= 100 && !(workspace.id in selection.selected))}
-                onChange={() => selection.toggle(workspace.id, { kind: 'workspace', workspaceId: workspace.id,
-                  name: workspace.name, expectedRevision: managedById.get(workspace.id)!.revision })} /> : <>
-              <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} className="workspace-card-open resource-card-open" aria-label={workspace.name} title={workspace.name}>
-                <Icon name="folder" size={16} />
-                <span className="resource-card-copy">
-                  <span className="resource-card-name">{workspace.name}</span>
-                </span>
-              </Link>
-              <WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
-                revision={managedById.get(workspace.id)?.revision} onCommand={execute} />
-              {managedById.get(workspace.id)?.locationValidation.status === 'restricted' ? <span
-                className="workspace-folder-protection" role="img" aria-label="Location restricted" title="Location restricted"><Icon name="lock" size={14} /></span> : null}
-              </>}
-            </Card>
+            <ResourceCard name={workspace.name} icon="folder" data-testid={`workspace-card-${workspace.id}`}
+              selection={selection.selecting ? {
+                'aria-label': `Select ${workspace.name}`, checked: workspace.id in selection.selected,
+                disabled: locked || (count >= 100 && !(workspace.id in selection.selected)),
+                onChange: () => selection.toggle(workspace.id, { kind: 'workspace', workspaceId: workspace.id,
+                  name: workspace.name, expectedRevision: managedById.get(workspace.id)!.revision }),
+              } : undefined}
+              open={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} aria-label={workspace.name} />}
+              actions={<WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
+                revision={managedById.get(workspace.id)?.revision} onCommand={execute} />}
+              protection={managedById.get(workspace.id)?.locationValidation.status === 'restricted' ? { label: 'Location restricted' } : undefined} />
           </li>)}
         </ul>
       ) : loading ? <LoadingState label="Loading workspaces…" />
