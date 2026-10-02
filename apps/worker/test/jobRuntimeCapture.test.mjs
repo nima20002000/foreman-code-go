@@ -1,18 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile, stat, readdir, rm, chmod, symlink, link } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, writeFile, stat, readdir, rm, chmod, symlink, link, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { acquireWorkerLock } from '../src/runtime.mjs';
 
 const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
-const repository = resolve(import.meta.dirname, '../../..');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(t) {
-  const directory = await mkdtemp(join(repository, '.job-runtime-cli-'));
+  // Capture requires persistent storage with private ancestors, including HOME.
+  const directory = await mkdtemp(join('/var/tmp', 'job-runtime-cli-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const state = join(directory, 'state'), base = join(directory, 'projects'), runtime = join(directory, 'managed');
   for (const path of [state, base, runtime]) await mkdir(path, { mode: 0o700 });
@@ -41,8 +41,9 @@ async function fixture(t) {
     ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', registration, attestationId: 'attestation', attestationDigest: 'd'.repeat(64), boundAt: '2026-10-01T00:00:00.000Z' };
   const backingFile = join(directory, 'backing-metadata-fixture');
   await writeFile(backingFile, Buffer.alloc(4096), { mode: 0o400 });
+  const executable = await realpath('/usr/bin/true');
   const input = { schemaVersion: 1, target: { hostRef, registration, mainInstallationId: pairing.mainId }, root,
-    runtimeExecutable: '/usr/bin/true', ociExecutable: '/usr/bin/true', findmntExecutable: '/usr/bin/true', runtimeRoot: runtime, backingFile,
+    runtimeExecutable: executable, ociExecutable: executable, findmntExecutable: executable, runtimeRoot: runtime, backingFile,
     controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: directory, LANG: 'C.UTF-8' }, imageDigest: `sha256:${'e'.repeat(64)}`, toolchainDigest: 'f'.repeat(64), diskBytes: 4096 };
   for (const [name, value] of [['identity.json', identity], ['pairing.json', pairing], ['approved-roots.json', approved],
     ['workflow-operations.json', { retainedOriginal: 'workflow' }], ['job-runtime-operations.json', { retainedOriginal: 'job' }]]) {
@@ -80,7 +81,7 @@ test('packaged capture uses the passive helper, publishes protected pins once an
   const path = join(f.state, 'job-runtime.json'), info = await stat(path), bytes = await readFile(path);
   assert.equal(info.uid, process.getuid()); assert.equal(info.mode & 0o777, 0o600); assert.equal(info.nlink, 1); assert.ok(info.size <= 65536);
   const output = JSON.parse(bytes);
-  assert.equal(output.pins.runtimeBinarySha256, hash(await readFile('/usr/bin/true')));
+  assert.equal(output.pins.runtimeBinarySha256, hash(await readFile(f.input.runtimeExecutable)));
   assert.equal(output.pins.diskBytes, f.input.diskBytes);
   assert.equal(output.pins.bootId, (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim());
   assert.match(output.pins.configurationDigest, /^[a-f0-9]{64}$/);
