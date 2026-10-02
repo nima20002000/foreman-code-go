@@ -103,18 +103,12 @@ export class PostgresOperatorActivityRepository {
           where conversation_id=$1 and request_id=$2 and activity_id=$3`, [conversationId, requestId, value.id, JSON.stringify(source)])
         await client.query('commit'); return undefined
       }
-      // Reconciled history corrects content without erasing the original ordering proof.
-      // Keep incoming-only watermarks above so retained values do not make history stale.
-      const persistedSource = fence.authoritativeReconciliation ? { ...source,
-        connectionId: connectionId ?? stored.connectionId,
-        nativeSequence: nativeSequence ?? previousNative,
-        transportSequence: transportSequence ?? (connectionId === undefined || sameConnection ? previousTransport : undefined) } : source
       const applied = (await client.query<{ record: unknown; sequence: string; revision: string }>(`
         insert into operator_conversation_activity as activity (conversation_id,request_id,activity_id,record,source_provenance)
           values ($1,$2,$3,$4::jsonb,$5::jsonb)
         on conflict(conversation_id,request_id,activity_id) do update set record=excluded.record,
           source_provenance=excluded.source_provenance,revision=activity.revision+1
-        returning record,sequence::text,revision::text`, [conversationId, requestId, value.id, JSON.stringify(merged), JSON.stringify(persistedSource)])).rows[0]!
+        returning record,sequence::text,revision::text`, [conversationId, requestId, value.id, JSON.stringify(merged), JSON.stringify(source)])).rows[0]!
       const revision = (await client.query<{ revision: string }>(`update operator_conversations set revision=revision+1 where id=$1 returning revision::text`, [conversationId])).rows[0]!.revision
       await client.query('commit')
       return { activity: OperatorActivitySchema.parse({ ...(applied.record as object), sequence: applied.sequence, revision: Number(applied.revision) }), revision: Number(revision), scopeRevision: revision, itemRevision: applied.revision }
