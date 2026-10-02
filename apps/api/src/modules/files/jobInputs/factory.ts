@@ -7,7 +7,7 @@ import { MAX_FILE_BYTES } from '@graphql/contracts/files'
 import { JobInputAuthority } from './authority.js'
 import { CanonicalJobInputs } from './service.js'
 import { ReadonlyJobInputDelivery } from './delivery.js'
-import { AuthenticatedJobInputSource, jobInputDeviceExtension, type JobInputWorkerChannel } from './channel.js'
+import { jobInputDeviceExtension } from './channel.js'
 /** Actual existing canonical store/ownership/preparation/W07 services; no worker DB handle or caller bytes. */
 export function createCanonicalJobInputPorts(input:{pool:pg.Pool;storageRoot:string;runtime:PostgresJobDispatch;preparation:JobPreparationPort;endpoint:Pick<DeviceEndpoint,'currentBinding'>;receiptRoot:string;clock?:()=>Date}){
   const authority=new JobInputAuthority(input.pool,input.runtime,input.preparation,input.clock)
@@ -15,8 +15,4 @@ export function createCanonicalJobInputPorts(input:{pool:pg.Pool;storageRoot:str
   const local=new ReadonlyJobInputDelivery({admit:(execution,signal)=>{signal.throwIfAborted();return main.bind(execution)},recheck:(execution,admission,signal)=>{signal.throwIfAborted();return main.recheck(execution,admission)},read:(execution,admission,path,offset,length,signal)=>{signal.throwIfAborted();return main.read(execution,admission,path,offset,length)}},input.receiptRoot)
   return {main,local,extension:jobInputDeviceExtension(main),validateDeclaredJobInputs:authority.validateDeclaredJobInputs.bind(authority)}
 }
-export function createWorkerJobInputPort(input:{channel:JobInputWorkerChannel;stagingRoot:string;receiptRoot:string}){
-  const source=new AuthenticatedJobInputSource(input.channel,input.stagingRoot)
-  const delivery=new ReadonlyJobInputDelivery(source,input.receiptRoot)
-  return {prepare:delivery.prepare.bind(delivery),close:()=>source.close()}
-}
+export { createWorkerJobInputPort } from './workerFactory.js'

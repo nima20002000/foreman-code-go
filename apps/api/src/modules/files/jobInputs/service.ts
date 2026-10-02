@@ -15,7 +15,8 @@ import { DomainError } from '../../errors.js'
 import type { JobInputAuthority } from './authority.js'
 import { inputHash, makeManifest, manifestBytes, recipient, snapshotDigest } from './manifest.js'
 import { outputTransferContext } from '../jobs/outputAdmission.js'
-export const JOB_INPUT_NAMESPACE='job-inputs-v1'
+import { JOB_INPUT_NAMESPACE } from './protocol.js'
+export { JOB_INPUT_NAMESPACE } from './protocol.js'
 /** Main canonical pin/grant authority. Neither callers nor workers supply paths or bytes. */
 export class CanonicalJobInputs {
   private readonly commands:PostgresCommandCoordinator
