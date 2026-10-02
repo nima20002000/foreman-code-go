@@ -1,5 +1,5 @@
 import { createInstalledRsyncComposition } from './modules/byte-transfer/productionComposition.js'
-import { RSYNC_STAGE_EXTENSION } from '@graphql/contracts/byte-transfer'
+import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import { transferContextForBinding } from './modules/byte-transfer/carrier.js'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@graphql/contracts/job-runtime'
 import { interactionConnection } from './modules/interactions/connection.js'
@@ -210,6 +210,7 @@ export function buildProductionApp(
   let workflowPhysicalArtifacts: PostgresWorkflowPhysicalArtifacts | undefined
   let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
+  const inputAcknowledgements = new Map<string, TransferIntent>()
   const rsyncProviders=infrastructure?.rsync?{...infrastructure.rsync,acknowledged:async(...args:Parameters<NonNullable<typeof infrastructure.rsync.acknowledged>>)=>{
     const [intent,context]=args
     const binding=deviceRuntime.endpointForDomains().captureRequest(intent.deviceId,RSYNC_STAGE_EXTENSION.namespace)?.binding
@@ -220,6 +221,9 @@ export function buildProductionApp(
     }else if(intent.byteClass==='artifact'&&intent.direction==='to-main'&&jobRuntime&&await jobRuntime.outputs.ownsTransfer(intent.transferId)){
       await jobRuntime.outputs.admission.authorizeTransfer(intent,context)
       await jobRuntime.outputs.lifecycle.acknowledged(intent)
+    }else if(isDeepStrictEqual(inputAcknowledgements.get(intent.transferId),intent)){
+      if(!jobRuntime)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The original input delivery authority is unavailable.',503)
+      await jobRuntime.inputs.main.acknowledged(intent.transferId,binding)
     }else await infrastructure.rsync!.acknowledged(...args)
   }}:undefined
   const rsync = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
@@ -1045,6 +1049,15 @@ export function buildProductionApp(
             if(rsync.kind!=='configured')throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE','The selected original rsync lifecycle is unavailable.',409)
             await rsync.backend.acknowledge(intent,signal)
           }},
+          inputRsync: { stage: async (intent, source, signal) => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
+            return rsync.backend.send(intent, source, signal)
+          }, acknowledge: async (intent, signal) => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
+            if (inputAcknowledgements.has(intent.transferId)) throw new DomainError('JOB_INPUT_ACK_BUSY', 'Original input delivery ACK is already coordinating.', 409)
+            inputAcknowledgements.set(intent.transferId, structuredClone(intent))
+            try { await rsync.backend.acknowledge(intent, signal) } finally { inputAcknowledgements.delete(intent.transferId) }
+          } },
           transferAcknowledged: async intent => {
             if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
             await rsync.backend.acknowledge(intent)

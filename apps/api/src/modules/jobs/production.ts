@@ -22,6 +22,7 @@ import { CanonicalJobPreparationSources, CanonicalJobPreparationService, Canonic
 import type { JobPreparationPort } from './ports.js'
 import { JobPublicationAuthority } from './authority.js'
 import { createCanonicalJobInputPorts } from '../files/jobInputs/factory.js'
+import { createMainJobInputRsyncExtension, type MainJobInputRsyncPorts } from '../files/jobInputs/rsyncProduction.js'
 import { createAdmittedJobOutputs } from '../files/jobs/admittedFactory.js'
 import type { ResumableByteTransferService } from '../byte-transfer/service.js'
 import type { MainJobOutputRsyncPorts } from '../files/jobs/rsyncProduction.js'
@@ -54,7 +55,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']>; nativeRegistry?: NativeProcessRegistry;
   transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']>;
   transferAcknowledged?: NonNullable<Parameters<typeof createProductionSources>[0]['transferAcknowledged']>;
-  outputRsync?:MainJobOutputRsyncPorts; transferReceiver?:ResumableByteTransferService }) {
+  outputRsync?:MainJobOutputRsyncPorts; inputRsync?:MainJobInputRsyncPorts; transferReceiver?:ResumableByteTransferService }) {
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
   const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
@@ -105,8 +106,9 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       } else await projectJobReceiptLocked(sql, execution, receipt, artifacts)
     },
   })
-  const inputs = createCanonicalJobInputPorts({ pool: input.pool, storageRoot: input.storageRoot, runtime: dispatch,
+  const canonicalInputs = createCanonicalJobInputPorts({ pool: input.pool, storageRoot: input.storageRoot, runtime: dispatch,
     preparation: preparationPort, endpoint: { currentBinding: deviceId => input.endpoint().currentBinding(deviceId) }, receiptRoot: join(input.runtimeRoot, 'job-input-receipts') })
+  const inputs = { ...canonicalInputs, extension: createMainJobInputRsyncExtension(canonicalInputs.main, canonicalInputs.extension, input.inputRsync) }
   const privateRepositories = new CanonicalJobPrivateRepositories(input.pool, source.sources, source.executions,
     input.infrastructure?.privateRepositoryRemote ?? { async preparePrivateRepository(principal, record) {
       const sql = await input.pool.connect()

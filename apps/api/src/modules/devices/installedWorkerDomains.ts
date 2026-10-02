@@ -10,6 +10,7 @@ import { createWorkerJobInputPort } from '../files/jobInputs/workerFactory.js'
 import { JOB_INPUT_NAMESPACE } from '../files/jobInputs/protocol.js'
 import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.js'
 import { createInstalledJobOutputRsync } from '../runs/remote/installedJobOutputRsync.js'
+import { createInstalledJobInputRsync } from '../runs/remote/installedJobInputRsync.js'
 import { DeviceConnectionError } from './deviceWire.js'
 import type { RemoteJobExecutionHost } from '../runs/remote/jobExecutionHost.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -76,6 +77,7 @@ export async function createInstalledWorkerDomains(input: {
   }
   const approved = await input.approvedRoots()
   let jobOutputRsync: Awaited<ReturnType<typeof createInstalledJobOutputRsync>> | undefined
+  let jobInputRsync: ReturnType<typeof createInstalledJobInputRsync> | undefined
   const sourceAcknowledgement = input.rsync && createWorkerSourceRsyncAcknowledgement({
     authenticate: async (intent, context, signal) => {
       if (!isDeepStrictEqual(transferContextForBinding(current()), context)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source acknowledgement requires the original current channel.', 409)
@@ -97,6 +99,7 @@ export async function createInstalledWorkerDomains(input: {
     acknowledged: async (intent, context) => {
     if (intent.byteClass === 'source' && intent.direction === 'to-worker') await sourceAcknowledgement!.acknowledged(intent, context)
     else if(jobOutputRsync&&await jobOutputRsync.owns(intent))await jobOutputRsync.acknowledged(intent,context)
+    else if(jobInputRsync&&await jobInputRsync.owns(intent))await jobInputRsync.acknowledged(intent,context)
     else await input.rsync!.acknowledged(intent, context)
   } } : undefined
   const rsync = createInstalledRsyncComposition({ side: 'worker', providers: approved ? rsyncProviders : undefined,
@@ -104,6 +107,9 @@ export async function createInstalledWorkerDomains(input: {
   if (rsync.kind === 'configured' && input.rsync && input.jobConfiguration && approved) jobOutputRsync = await createInstalledJobOutputRsync({
     providers: { ...input.rsync, quiescent: async (intent, signal) => { await rsync.writers.quiescent(intent, signal); await input.rsync!.quiescent(intent, signal) } },
     journal: await jobJournal(), current, request })
+  if (rsync.kind === 'configured' && input.rsync && input.jobConfiguration && approved) jobInputRsync = createInstalledJobInputRsync({
+    receiver: input.rsync.receiver, journal: await jobJournal(), channel: { request, currentBinding: current },
+    receiptRoot: join(input.stateDirectory, 'job-input-receipts'), admissionRoot: join(input.stateDirectory, 'job-input-rsync-admissions') })
   const extensions: DeviceExtensionRegistration[] = [...rsync.extensions]
   let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
   let native: Awaited<ReturnType<typeof createInstalledWorkflowHost>> | undefined
@@ -147,11 +153,11 @@ export async function createInstalledWorkerDomains(input: {
     },
   })
   let jobs: RemoteJobExecutionHost | undefined, jobOpening: Promise<RemoteJobExecutionHost> | undefined
-  let jobInputs: ReturnType<typeof createWorkerJobInputPort> | undefined
+  let jobInputs: ReturnType<typeof createWorkerJobInputPort> | ReturnType<typeof createInstalledJobInputRsync> | undefined
   const openJobs = () => jobOpening ??= (async () => {
     const connection = current(), retained = await jobJournal()
     const application = new WorkerJobApplicationSink({ request })
-    jobInputs = createWorkerJobInputPort({ channel: { request, currentBinding: current },
+    jobInputs = jobInputRsync ?? createWorkerJobInputPort({ channel: { request, currentBinding: current },
       stagingRoot: join(input.stateDirectory, 'job-input-transfer-staging'), receiptRoot: join(input.stateDirectory, 'job-input-receipts') })
     const host = createInstalledJobExecutionHost({ configuration: input.jobConfiguration ?? null, registry: jobRegistry,
       connection, incarnationId: randomUUID(), journal: retained, currentBinding: current,
