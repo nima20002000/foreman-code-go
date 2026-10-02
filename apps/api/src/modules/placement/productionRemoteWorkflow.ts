@@ -25,6 +25,7 @@ import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { admitRemoteOwnerControl } from '../runs/remote/ownerControlAdmission.js'
 import { readOriginalInteractionDeliveryClaim } from '../interactions/originalDeliveryClaim.js'
+import { transferContextForBinding } from '../byte-transfer/carrier.js'
 
 /** One Main owner and its actual authenticated worker sources. Allocation is
  * IO-free; preparation/prefetch runs before the existing canonical transaction. */
@@ -159,6 +160,16 @@ export function createProductionRemoteWorkflow(input: {
       }
       entry.capture = capture
       companions.set(capture, entry.evidence)
+    },
+    fileTransferContext(capture: WorkflowNativeCapture) {
+      if (bindings.get(capture.execution.id)?.placement.hostRef.kind !== 'device') return undefined
+      const evidence = companions.get(capture)
+      const original = evidence && channel.verify.read(evidence)
+      if (!original) throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical file publisher is unavailable.', 409)
+      const captured = physical.passiveNativeOwner(original)
+      if (!captured) return undefined // Closed native observations cannot admit a live file publisher.
+      capture.assertCurrent(); captured.assertCurrent()
+      return transferContextForBinding(captured.binding)
     },
     getRemoteNativeOwners(): readonly CapturedRemoteTelemetryNativeOwner[] {
       const owners: CapturedRemoteTelemetryNativeOwner[] = []
