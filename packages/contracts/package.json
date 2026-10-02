@@ -231,6 +231,10 @@
     "./workflow-artifact-result": {
       "types": "./dist/workflowArtifactResult.d.ts",
       "import": "./dist/workflowArtifactResult.js"
+    },
+    "./trusted-device-connection": {
+      "types": "./dist/trustedDeviceConnection.d.ts",
+      "import": "./dist/trustedDeviceConnection.js"
     }
   },
   "scripts": {
