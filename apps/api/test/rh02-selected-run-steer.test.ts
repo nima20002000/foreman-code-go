@@ -81,7 +81,10 @@ it('RH-02 keeps new, in-steer replay and ordinary replay responses on the explic
     get: vi.fn(async (id: string) => rows.find((row) => row.id === id)),
     byKey: vi.fn(async (key: string) => rows.find((row) => row.agent_key === key)),
     state: vi.fn(async (id: string) => ({ row: rows.find((row) => row.id === id), turns: receipts.get(id),
-      messages: messages.get(id), hasEarlierMessages: false })),
+      messages: messages.get(id), hasEarlierMessages: false,
+      selection: { workflowVersionId: saved.version.id, attemptKey: String(executions.find(execution => execution.id === rows.find(row => row.id === id)?.origin_execution_id)!.attempt) },
+      latestRequestId: receipts.get(id)?.at(-1)?.requestId ?? null, activeStartedAt: id === selected.id ? new Date(saved.createdAt) : null,
+      unfinishedActivities: [], publicationReceipts: [], activityPage: { activities: [], itemRevisions: {}, nextCursor: null } })),
     open: vi.fn(async () => [selected]), restoreUnsettled: vi.fn(async () => selected),
     unconfirmedSteers: vi.fn(async () => []), accepted: vi.fn(async () => true), pending: vi.fn(async () => {}),
     turn: vi.fn(async (id: string, requestId: string) => {
