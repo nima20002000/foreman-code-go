@@ -21,27 +21,42 @@ const readJson = (path) => { try { return JSON.parse(readFileSync(path, 'utf8'))
 const ageMs = (path) => { try { return Date.now() - statSync(path).mtimeMs } catch { return 0 } }
 const isDirectory = (path) => { try { return lstatSync(path).isDirectory() } catch { return false } }
 const procStart = (pid) => { try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19] } catch { return null } }
-const alive = (record) => record?.pid > 0 && procStart(record.pid) === record.start
-const tokenUsed = (token, exceptPid = 0) => {
+const namespace = { boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), pid: readlinkSync('/proc/self/ns/pid') }
+const gone = (error) => error.code === 'ENOENT' || error.code === 'ESRCH'
+const alive = (record) => {
+  // A PID/start pair has meaning only in the namespace that recorded it.
+  // Legacy, foreign, malformed, or unreadable ownership is unknown, not stale.
+  if (record?.namespace?.boot !== namespace.boot || record?.namespace?.pid !== namespace.pid || !Number.isSafeInteger(record.pid) || record.pid <= 0 || typeof record.start !== 'string' || !/^\d+$/.test(record.start) || typeof record.token !== 'string' || !record.token) return true
+  try {
+    const text = readFileSync(`/proc/${record.pid}/stat`, 'utf8')
+    const fields = text.slice(text.lastIndexOf(') ') + 2).split(' ')
+    if (!/^\d+$/.test(fields[19])) return true
+    return fields[19] === record.start && fields[0] !== 'Z'
+  } catch (error) { return !gone(error) }
+}
+const tokenUsed = (token, exceptPid = 0, conservative = false) => {
   if (!token) return false
   try {
     for (const entry of readdirSync('/proc')) {
       if (!/^\d+$/.test(entry)) continue
       if (Number(entry) === exceptPid) continue
-      try { if (readFileSync(`/proc/${entry}/environ`).includes(Buffer.from(`GRAPHQL_HEAVY_JOB_TOKEN=${token}\0`))) return true } catch { /* process exited */ }
+      try { if (readFileSync(`/proc/${entry}/environ`).includes(Buffer.from(`GRAPHQL_HEAVY_JOB_TOKEN=${token}\0`))) return true } catch (error) { if (conservative && !gone(error)) return true }
     }
   } catch { return true }
   return false
 }
-const groupUsed = (pgid) => {
-  if (!Number.isInteger(pgid) || pgid <= 0) return false
+const groupUsed = (pgid, conservative = false) => {
+  if (pgid === null) return false
+  if (!Number.isSafeInteger(pgid) || pgid <= 0) return conservative
   try {
     for (const entry of readdirSync('/proc')) {
       if (!/^\d+$/.test(entry)) continue
       try {
-        const fields = readFileSync(`/proc/${entry}/stat`, 'utf8').split(') ')[1].split(' ')
+        const text = readFileSync(`/proc/${entry}/stat`, 'utf8')
+        const fields = text.slice(text.lastIndexOf(') ') + 2).split(' ')
+        if (conservative && !/^\d+$/.test(fields[2])) return true
         if (Number(fields[2]) === pgid && fields[0] !== 'Z') return true
-      } catch { /* process exited */ }
+      } catch (error) { if (conservative && !gone(error)) return true }
     }
   } catch { return true }
   return false
@@ -51,13 +66,13 @@ const usedPath = (path) => {
     for (const entry of readdirSync('/proc')) {
       if (!/^\d+$/.test(entry)) continue
       for (const kind of ['cwd', 'root']) {
-        try { const target = realpathSync(`/proc/${entry}/${kind}`); if (target === path || target.startsWith(`${path}${sep}`)) return true } catch { /* process exited */ }
+        try { const target = realpathSync(`/proc/${entry}/${kind}`); if (target === path || target.startsWith(`${path}${sep}`)) return true } catch (error) { if (!gone(error)) return true }
       }
       try {
         for (const fd of readdirSync(`/proc/${entry}/fd`)) {
-          try { const target = readlinkSync(`/proc/${entry}/fd/${fd}`); if (target === path || target.startsWith(`${path}${sep}`) || target.startsWith(`${path} (deleted)`)) return true } catch { /* fd closed */ }
+          try { const target = readlinkSync(`/proc/${entry}/fd/${fd}`); if (target === path || target.startsWith(`${path}${sep}`) || target.startsWith(`${path} (deleted)`)) return true } catch (error) { if (!gone(error)) return true }
         }
-      } catch { /* process exited */ }
+      } catch (error) { if (!gone(error)) return true }
     }
   } catch { return true }
   return false
@@ -67,7 +82,7 @@ function cleanTemps() {
   for (const entry of readdirSync(tempRoot)) {
     const path = join(tempRoot, entry)
     const marker = readJson(join(path, 'owner.json'))
-    if (!isDirectory(path) || ageMs(path) < 10 * 60_000 || !marker || marker.common !== common || alive(marker) || groupUsed(marker.pgid) || tokenUsed(marker.token) || usedPath(path)) continue
+    if (!isDirectory(path) || ageMs(path) < 10 * 60_000 || !marker || marker.common !== common || alive(marker) || groupUsed(marker.pgid, true) || tokenUsed(marker.token, 0, true) || usedPath(path)) continue
     // Verify whether the recorded checkout still belongs to this common Git directory.
     const check = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: marker.worktree, encoding: 'utf8' })
     if (check.status === 0 && realpathSync(check.stdout.trim()) !== common) continue
@@ -77,18 +92,17 @@ function cleanTemps() {
 function cleanQueue() {
   mkdirSync(queue, { recursive: true })
   const held = readJson(join(active, 'owner.json'))
-  if (ageMs(active) > 10_000 && !alive(held) && !groupUsed(held?.pgid) && !tokenUsed(held?.token)) rmSync(active, { recursive: true, force: true })
+  if (held?.common === common && ageMs(active) > 10_000 && !alive(held) && !groupUsed(held.pgid, true) && !tokenUsed(held.token, 0, true)) rmSync(active, { recursive: true, force: true })
   for (const name of readdirSync(queue)) {
     const path = join(queue, name)
     const record = readJson(path)
-    if (!record && /^\d{12}-[\da-f-]+$/.test(name) && ageMs(path) > 10_000) { rmSync(path, { force: true }); continue }
-    if (record?.common === common && !alive(record) && !groupUsed(record.pgid)) rmSync(path, { force: true })
+    if (record?.common === common && !alive(record) && !groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)) rmSync(path, { force: true })
   }
 }
-function register() {
+function register(token) {
   mkdirSync(queue, { recursive: true })
   // flock serializes sequence assignment; the short registration lock is never held during work.
-  const result = spawnSync('flock', ['-x', join(state, 'register.lock'), process.execPath, import.meta.filename, '__ticket', String(process.pid), procStart(process.pid), root], { encoding: 'utf8' })
+  const result = spawnSync('flock', ['-x', join(state, 'register.lock'), process.execPath, import.meta.filename, '__ticket', String(process.pid), procStart(process.pid), root, JSON.stringify(namespace), token], { encoding: 'utf8' })
   if (result.status !== 0) throw new Error(result.stderr || 'Queue registration failed')
   return result.stdout.trim()
 }
@@ -96,7 +110,7 @@ if (process.argv[2] === '__ticket') {
   mkdirSync(queue, { recursive: true })
   const existing = readdirSync(queue).map((name) => Number(name.split('-')[0])).filter(Number.isFinite)
   const ticket = `${String(Math.max(0, ...existing) + 1).padStart(12, '0')}-${randomUUID()}`
-  writeFileSync(join(queue, ticket), JSON.stringify({ common, pid: Number(process.argv[3]), start: process.argv[4], worktree: process.argv[5], pgid: null }))
+  writeFileSync(join(queue, ticket), JSON.stringify({ common, pid: Number(process.argv[3]), start: process.argv[4], worktree: process.argv[5], pgid: null, namespace: process.argv[6] ? JSON.parse(process.argv[6]) : undefined, token: process.argv[7] }))
   process.stdout.write(ticket)
   process.exit(0)
 }
@@ -187,7 +201,8 @@ async function main() {
   const stopGraceMs = graceIndex >= 0 ? Number(options[graceIndex + 1]) : 30_000
   if (!Number.isSafeInteger(stopGraceMs) || stopGraceMs <= 0) throw new Error('Invalid stop grace')
   const command = process.argv.slice(divider + 1)
-  const nested = process.env.GRAPHQL_HEAVY_JOB_COMMON === common && process.env.GRAPHQL_HEAVY_JOB_TOKEN === readJson(join(active, 'owner.json'))?.token
+  const inherited = readJson(join(active, 'owner.json'))
+  const nested = inherited?.token && process.env.GRAPHQL_HEAVY_JOB_COMMON === common && process.env.GRAPHQL_HEAVY_JOB_TOKEN === inherited.token
   mkdirSync(state, { recursive: true })
   if (nested) {
     const freshness = buildKind ? freshBuild(buildKind) : null
@@ -199,9 +214,10 @@ async function main() {
   }
   cleanQueue()
   cleanTemps()
-  const ticket = register()
+  const token = randomUUID()
+  const ticket = register(token)
   const ticketPath = join(queue, ticket)
-  let child, timer, killTimer, interrupted = false, exitCode = 1, tempPath, token
+  let child, timer, killTimer, interrupted = false, exitCode = 1, tempPath
   const stop = (signal) => {
     interrupted = true
     if (child?.pid && !killTimer) {
@@ -226,18 +242,17 @@ async function main() {
       await sleep(300)
     }
     if (interrupted) { exitCode = 130; return }
-    token = randomUUID()
-    writeFileSync(join(active, 'owner.json'), JSON.stringify({ common, pid: process.pid, start: procStart(process.pid), pgid: null, token }))
+    writeFileSync(join(active, 'owner.json'), JSON.stringify({ common, pid: process.pid, start: procStart(process.pid), pgid: null, namespace, token }))
     const freshness = buildKind ? freshBuild(buildKind) : null
     if (freshness?.fresh) { console.log(`[heavy-job] running ${ticket}`); console.log(`[heavy-job] ${buildKind} build is current in this worktree`); exitCode = 0; return }
     tempPath = join(tempRoot, randomUUID())
     mkdirSync(tempPath)
-    writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, token }))
+    writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, namespace, token }))
     const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })
     const pgid = child.pid
     for (const path of [join(active, 'owner.json'), join(ticketPath), join(tempPath, 'owner.json')]) {
-      const record = readJson(path); if (record) writeFileSync(path, JSON.stringify({ ...record, pgid, ...(path === join(active, 'owner.json') ? { tempPath } : {}) }))
+      const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, ...(path === join(active, 'owner.json') ? { tempPath } : {}) }))
     }
     console.log(`[heavy-job] running ${ticket}`)
     if (interrupted) stop('SIGTERM')
@@ -251,9 +266,9 @@ async function main() {
     clearTimeout(timer)
     clearTimeout(killTimer)
     process.off('SIGINT', stop); process.off('SIGTERM', stop)
-    if (tempPath) rmSync(tempPath, { recursive: true, force: true })
-    if (readJson(join(active, 'owner.json'))?.pid === process.pid) rmSync(active, { recursive: true, force: true })
-    rmSync(ticketPath, { force: true })
+    if (tempPath && readJson(join(tempPath, 'owner.json'))?.token === token) rmSync(tempPath, { recursive: true, force: true })
+    if (readJson(join(active, 'owner.json'))?.token === token) rmSync(active, { recursive: true, force: true })
+    if (readJson(ticketPath)?.token === token) rmSync(ticketPath, { force: true })
     process.exitCode = exitCode
   }
 }
