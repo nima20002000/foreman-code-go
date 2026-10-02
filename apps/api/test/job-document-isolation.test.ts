@@ -27,8 +27,25 @@ describe('CI artifact/document native isolation',()=>{
     const accepted={ownerPrincipalId:f.principal.id,scope:f.scope,nativeSessionId:'native',admissionId:'admission',messageId:'message',executionHostId:'host',
       projectMode:'read' as const,allowMutation:false,allowedTools:['files.read' as const],expiresAt:new Date('2026-01-01T00:30:00Z'),attachments:[ref]}
     await expect(CodexFileTurn.prepare(accepted,{source:{open,recheck:async()=>job},
-      host:{materialize,executionHostId:'host',pathStyle:'posix',close:async()=>{}},clock:()=>new Date(now),limits:{fileBytes:4096,readBytes:1024,attachments:1},files:{}} as never)).rejects.toThrow('CODEX_FILE_SCOPE_INVALID')
+      host:{materialize,executionHostId:'host',pathStyle:'posix',close:async()=>{}},clock:()=>new Date(now),limits:{fileBytes:4096,readBytes:1024,attachments:1},files:{}} as never)).rejects.toThrow('CODEX_FILE_DOCUMENT_REQUIRED')
     expect(open).toHaveBeenCalledTimes(1)
     expect(materialize).not.toHaveBeenCalled()
+  })
+  it('denies an uploaded foreign-conversation document before materialization',async()=>{
+    const f=await fileToolFixture(),document=await f.upload('# foreign document',f.foreign)
+    const stored=await f.repository.read(document.fileId,document.revisionId)
+    expect(stored!.value.revision).toMatchObject({origin:'upload',mediaType:'text/markdown'})
+    const stream=await f.bytes.download(stored!.storageKey!,stored!.value.revision)
+    const materialize=vi.fn(async()=>{throw new Error('Denied document must not be materialized.')})
+    const open=vi.fn(async()=>({value:stored!.value,stream})),recheck=vi.fn(async()=>stored!.value)
+    const accepted={ownerPrincipalId:f.principal.id,scope:f.scope,nativeSessionId:'native',admissionId:'admission',messageId:'message',executionHostId:'host',
+      projectMode:'read' as const,allowMutation:false,allowedTools:['files.read' as const],expiresAt:new Date('2026-01-01T00:30:00Z'),attachments:[document]}
+    await expect(CodexFileTurn.prepare(accepted,{source:{open,recheck},
+      host:{materialize,executionHostId:'host',pathStyle:'posix',sealCompleted:async()=>{throw new Error('Denied document must not be sealed.')},close:async()=>{}},
+      clock:()=>new Date(now),limits:{fileBytes:4096,readBytes:1024,attachments:1},files:f.service,parseRead:vi.fn(),parseCall:vi.fn()})).rejects.toThrow('CODEX_FILE_SCOPE_INVALID')
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(materialize).not.toHaveBeenCalled()
+    expect(recheck).not.toHaveBeenCalled()
+    expect(stream.destroyed).toBe(true)
   })
 })

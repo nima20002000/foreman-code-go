@@ -16,6 +16,7 @@ import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration
 import { fileToolsMigration } from '../src/modules/files/tools/migration.js'
 import { jobArtifactStorageMigration } from '../src/infrastructure/jobArtifactStorageMigration.js'
 import { jobOutputAdmissionMigration } from '../src/infrastructure/jobOutputAdmissionMigration.js'
+import { jobRunCleanupMigration } from '../src/infrastructure/jobRunCleanupMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { JobPublicationAuthority } from '../src/modules/jobs/authority.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
@@ -60,12 +61,13 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
       create table management_audit(principal_id text,source text,action text,target_key text,outcome text,details jsonb);
       create table job_executions(id text primary key,workspace_id text,record jsonb,accepted_spec jsonb,accepted_by text);
       create table job_definition_versions(id text primary key,workspace_id text,definition_id text,record jsonb);
-      create table job_dispatch_intents(execution_id text primary key,intent jsonb,last_receipt jsonb,receipt_sequence bigint,owner_id text,owner_fence text,cancel_principal_id text);
+      create table job_dispatch_intents(execution_id text primary key,workspace_id text not null,intent jsonb,last_receipt jsonb,receipt_sequence bigint,owner_id text,owner_fence text,cancel_command_id text,cancel_principal_id text,cancel_action text check(cancel_action in ('jobs:cancel','runs:stop')));
       create table source_root_catalog(root_id uuid primary key,current_binding_revision bigint);
       create table source_root_bindings(root_id uuid,binding_revision bigint,workspace_id text,record jsonb);
       create table workspace_root_policies(root_policy_id text,root_policy_revision bigint,workspace_id text,revoked_at timestamptz);
       create table source_execution_materializations(materialization_id uuid,workspace_id text,execution_id text,attempt_id text,record jsonb,state text);
       create table source_snapshots(workspace_id text,snapshot_id uuid,approved_source_id uuid,manifest_digest text,record jsonb,availability text);`)
+    await pool.query(jobRunCleanupMigration.sql)
     await pool.query('insert into application_installation values(true,$1)',[mainId])
     await pool.query("insert into management_principals values('owner','Owner','operator',null,$1,$2::jsonb,'2099-01-01',null,null)",[hash(operatorToken),JSON.stringify([{actions:['settings:read','settings:update','jobs:start','job_artifacts:read'],scope:{}}])])
     await pool.query(deviceIdentityMigration.sql);await pool.query(fileStorageMigration.sql);await pool.query(fileToolsMigration.sql);await pool.query(jobArtifactStorageMigration.sql);await pool.query(jobOutputAdmissionMigration.sql)
@@ -112,7 +114,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     const intent={schemaVersion:1,protocolVersion:1,mainId,subject:{kind:'manual-job',workspaceId:job.workspaceId,jobExecutionId:job.id,definitionId:job.acceptedSpec.definitionId},executionId:job.id,attemptId:job.attemptId,operationId:job.operationId,bindingHash:job.acceptedSpec.bindingHash,inputDigest:`sha256:${job.acceptedSpec.specDigest}`,owner:job.owner}
     const originalConnection={mainId:binding.mainId,deviceId:binding.deviceId,workerInstallationId:binding.workerInstallationId,keyRevision:binding.keyRevision,authorizationRevision:binding.authorizationRevision,bootId:binding.bootId,connectionGeneration:binding.connectionGeneration}
     const receipt={schemaVersion:1,kind:'job',intent,execution:job,connection:originalConnection,workerIncarnationId:randomUUID(),sequence:1,observedAt:job.createdAt,phase:'confirmed_terminal',entryAttempted:true,stopFence:false,native:{containerId:'fixture-original-container',supervisorIdentity:'fixture-original-supervisor',processIdentityDigest:hash('fixture-process'),startedAt:job.createdAt},controls:[],terminal:{finishedAt:job.finishedAt,closureEvidenceDigest:hash('fixture-closure'),outcome:'succeeded',exitCode:0,signal:null,processStopped:true,resultDigest:hash('fixture-result'),logGapPossible:false,logsTruncated:false,outputCollectionError:false,artifactDigests:[]},publication:'process_recorded'}
-    await pool.query('insert into job_dispatch_intents values($1,$2::jsonb,$3::jsonb,1,$4,$5,null)',[job.id,JSON.stringify(intent),JSON.stringify(receipt),ownerFence.ownerId,ownerFence.fence])
+    await pool.query('insert into job_dispatch_intents(execution_id,workspace_id,intent,last_receipt,receipt_sequence,owner_id,owner_fence) values($1,$2,$3::jsonb,$4::jsonb,1,$5,$6)',[job.id,job.workspaceId,JSON.stringify(intent),JSON.stringify(receipt),ownerFence.ownerId,ownerFence.fence])
     app=Fastify();app.setErrorHandler((error,_request,reply)=>{void reply.code(error instanceof DomainError?error.status:500).send({error:error instanceof DomainError?error.code:'ERROR'})})
     registerJobOutputMetadataEndpoints(app,{access,endpoint,admission:actual.admission,artifacts:actual.artifacts})
     address=await app.listen({host:'127.0.0.1',port:0})
