@@ -171,6 +171,7 @@ describe('installed actual Job factory with native/process doubles', () => {
     vi.spyOn(OwnedOCIContainer.prototype, 'entered').mockResolvedValue(undefined as never)
     vi.spyOn(OwnedOCIContainer.prototype, 'close').mockResolvedValue(true)
     const children = new Map<object, number>(), spawned: string[][] = [], cid = 'c'.repeat(64)
+    let started=false,released=false;const waiting:Array<()=>void>=[]
     const reserveLaunch = vi.fn((owner: string) => ({ root: f.root, owner, launchId: randomUUID() }))
     const registry = { reserveLaunch, closeRegistration: vi.fn(), abandonReservedLaunch: vi.fn(async () => true), closeOwner: vi.fn(async () => true), snapshot: () => ({ revision: '1', launches: [] }) } as unknown as NativeProcessRegistry
     vi.spyOn(processes, 'nativeProcessExit').mockImplementation(child => ({ exitCode: children.get(child) ?? null, exitSignal: null }))
@@ -182,10 +183,13 @@ describe('installed actual Job factory with native/process doubles', () => {
       spawned.push([...argv])
       const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() }, stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null as number | null })
       setImmediate(() => {
-        children.set(child, 0); child.exitCode = 0
-        const output = argv.includes('create') ? cid : argv.includes('wait') ? '7' : argv.includes('start') ? 'build failed exit7' : JSON.stringify([{ Id: cid,
-          Config: { Labels: { 'graphql.job.identity': jobSupervisorIdentity(f.execution), 'graphql.job.spec': f.execution.acceptedSpec.specDigest, 'graphql.job.attempt': f.execution.attemptId } }, State: { Running: false, Pid: 0, ExitCode: 7, Status: 'exited' } }])
-        child.stdout.end(output); child.stderr.end(); child.emit('close', 0, null)
+        const finish=(output:string)=>{children.set(child,0);child.exitCode=0;child.stdout.end(output);child.stderr.end();child.emit('close',0,null)}
+        if(argv.includes('start')){started=true;waiting.push(()=>finish('build failed exit7'));return}
+        if(argv.includes('wait')){if(released)finish('7');else waiting.push(()=>finish('7'));return}
+        if(argv.includes('exec')){released=true;for(const end of waiting.splice(0))end();finish('');return}
+        const output = argv.includes('create') ? cid : JSON.stringify([{ Id: cid,
+          Config: { Labels: { 'graphql.job.identity': jobSupervisorIdentity(f.execution), 'graphql.job.spec': f.execution.acceptedSpec.specDigest, 'graphql.job.attempt': f.execution.attemptId } }, State: { Running: started&&!released, Pid: started&&!released?100:0, ExitCode: 7, Status: released?'exited':started?'running':'created' } }])
+        finish(output)
       })
       // The reserveLaunch and fsynced Job write occurred BEFORE this entry.
       const journal = JSON.parse(requireRead(f.path, 'utf8'))
@@ -207,6 +211,7 @@ describe('installed actual Job factory with native/process doubles', () => {
       await host.deliver(f.intent, f.execution); await host.drain()
       expect(spawned.filter(argv => argv.includes('create'))).toHaveLength(1)
       expect(spawned.filter(argv => argv.includes('start'))).toHaveLength(1)
+      expect(spawned.filter(argv => argv.includes('exec'))).toHaveLength(1)
       expect(await f.journal.jobStatus(f.execution.operationId)).toMatchObject({ status: 'known', receipt: { terminal: { outcome: 'build_failed', exitCode: 7 }, publication: 'complete' } })
       await host.deliver(f.intent, f.execution)
       expect(spawned.filter(argv => argv.includes('create'))).toHaveLength(1)
