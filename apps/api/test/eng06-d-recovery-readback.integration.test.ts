@@ -83,7 +83,13 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
       expect(f.provider.originalResult(original)?.outcome).toBe('succeeded')
       await f.restart()
       const during = await readback(f), counts = { ...f.provider.counts }
-      expect(during).toEqual(before)
+      // Restart durably fences reentry before original transport detachment.
+      // It changes no model result, accepted input, task, session or Run fact;
+      // recovery/settlement below, not provider history, clears this obligation.
+      expect(during).toEqual({ ...before, record: { ...before.record, cleanupPending: true },
+        page: { ...before.page, run: { ...before.page.run, cleanupPending: true } },
+        details: before.details.map((detail) => ({ ...detail, run: { ...detail.run, cleanupPending: true } })) })
+      expect((await f.base.db.pool.query('select pending from run_cleanup_intents where run_id=$1', [f.base.f.run.id])).rows).toEqual([{ pending: true }])
       expect(f.provider.recoveryCalls).toEqual([])
       await f.settled()
       const after = await readback(f), recovered = after.details[0]!

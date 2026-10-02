@@ -131,3 +131,43 @@ test('restart retains the original owner when cleanup persistence fails and retr
   assert.equal(native.cancelRun.mock.calls.length, 0)
   assert.equal(native.finishRun.mock.calls.length, 0)
 })
+
+for (const failFirst of [false, true]) test(`naturally completing drive holds its owner through restart persistence${failFirst ? ' and retries failed intent' : ''}`, async () => {
+  const f = makeCurrentWorkflowFixture('restart-natural-finish', 'single')
+  const entered = deferred(), complete = deferred(), persisting = deferred(), persisted = deferred(), events: string[] = []
+  let released = false, attempt = 0
+  const owner = { runId: f.run.id, assertOwned() { assert.equal(released, false) }, release: async () => { released = true; events.push('release') } }
+  const runs = {
+    repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
+    getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations, stopRequested: false, cleanupPending: false }),
+    requestCleanup: async () => {
+      attempt++; persisting.resolve(); await persisted.promise; owner.assertOwned()
+      if (failFirst && attempt === 1) throw new Error('cleanup intent unavailable')
+      events.push('cleanup-intent')
+    },
+  }
+  const native = { requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { owner.assertOwned(); events.push('close') }) }
+  type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
+  const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {} as Args[1], native as unknown as Args[2],
+    new MemorySaver(), '/tmp/eng04-natural-finish', {} as Args[5], {} as Args[6], {} as Args[7])
+  runtime.work = async () => { entered.resolve(); await complete.promise }
+  const active = engine.start(f.run.id), activeResult = active.then(() => null, (error: unknown) => error)
+  await entered.promise
+  const shutdown = engine.shutdown(), shutdownResult = shutdown.then(() => null, (error: unknown) => error)
+  await persisting.promise
+  complete.resolve(); await setImmediate()
+  const releasedBeforeIntent = released
+  persisted.resolve()
+  const shutdownError = await shutdownResult, activeError = await activeResult
+  assert.equal(releasedBeforeIntent, false, 'intent persistence must retain the original owner even when its drive finishes')
+  if (!failFirst) { assert.equal(shutdownError, null); assert.equal(activeError, null) }
+  if (failFirst) {
+    assert.match(String(shutdownError), /cleanup intent remains unconfirmed/)
+    assert.equal(activeError, shutdownError)
+    assert.equal(released, false); assert.equal(native.closeForRestart.mock.calls.length, 0)
+    await engine.shutdown()
+  }
+  assert.deepEqual(events, ['cleanup-intent', 'close', 'release'])
+  assert.equal(attempt, failFirst ? 2 : 1)
+  await assert.rejects(engine.start('another-run'), { code: 'ENGINE_CLOSING' })
+})

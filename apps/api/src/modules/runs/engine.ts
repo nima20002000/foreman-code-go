@@ -43,6 +43,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private closing = false
   private reconciliation: Promise<void> | undefined
   private shutdownTask: Promise<void> | undefined
+  private restartIntent: Promise<void> | undefined
   private restartClosure: Promise<void> | undefined
 
   constructor(
@@ -212,10 +213,14 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // consumed approval is not callback failure merely because cleanup or a
       // sibling reviewer still needs to finish; reconcile() retries this thread.
     } finally {
+      // Shutdown publishes this barrier before queuing cleanup SQL. A drive may
+      // finish naturally during that write; its owner must remain usable. A
+      // failed intent retains the owner for the same shutdown retry.
+      if (this.restartIntent) await this.restartIntent
       // Wait only for captured native closure, never shutdownTask (which drains
       // this drive). A rejected closure is explicit uncertainty reported by
       // shutdown; release still drains G1 writes without rewriting Run history.
-      await this.restartClosure?.catch(() => undefined)
+      if (this.restartClosure) await this.restartClosure.catch(() => undefined)
       // Drains in-flight G1 writes. Old captures cannot write after release.
       if (this.activeOwners.get(runId) === owner) this.activeOwners.delete(runId)
       await owner.release()
@@ -329,11 +334,14 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     this.shutdownTask = (async () => {
       // Retain each actual Run owner until its durable stop-only cleanup intent
       // commits. Failed persistence must not authorize a Job abort or close.
-      const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
-        if (this.activeOwners.get(runId) === owner) await this.runs.requestCleanup(runId, owner)
-      })))
-      const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
-      if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')
+      this.restartIntent = Promise.resolve().then(async () => {
+        const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
+          if (this.activeOwners.get(runId) === owner) await this.runs.requestCleanup(runId, owner)
+        })))
+        const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
+        if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')
+      })
+      await this.restartIntent
       this.restartClosure = this.nativeExecutions.closeForRestart()
       for (const controller of this.activeRuns.values()) controller.abort(reason)
       const outcomes = await Promise.allSettled([
@@ -343,6 +351,15 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       ])
       const errors = outcomes.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Workflow restart closure or task draining remains unconfirmed.')
+      // A naturally finished drive may have retained its owner after a failed
+      // intent. Its task has already drained; successful retry closes its exact
+      // captured native lifetime before releasing that original owner.
+      for (const [runId, owner] of this.activeOwners) {
+        if (!this.activeTasks.has(runId)) {
+          this.activeOwners.delete(runId)
+          await owner.release()
+        }
+      }
     })()
     const attempt = this.shutdownTask
     // Preserve the admission fence, but retry the same captured native lifetime

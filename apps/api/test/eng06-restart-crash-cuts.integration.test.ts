@@ -140,8 +140,8 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
         // invent an unbound manager close and mask the real failure.
         vi.spyOn(t.native, 'closeForRestart').mockResolvedValue(undefined)
         const stopOld = async () => {
-          const stopped = t.engine.shutdown() // synchronously aborts ENGINE_RESTART
-          barrier.release() // only now may the original call unwind
+          const stopped = t.engine.shutdown() // fences admission; cleanup COMMIT precedes abort
+          barrier.release() // release the injected restart error, never a native dispatch
           await stopped
         }
         let restore: () => void = () => undefined
@@ -185,7 +185,11 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
           expect((await t.db.pool.query('select closed_at from execution_native_closures where execution_id=$1', [cut])).rows)
             .toEqual([{ closed_at: null }])
           expect((await t.db.pool.query('select 1 from execution_native_recoveries where execution_id=$1', [cut])).rowCount).toBe(0)
-          expect(await t.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
+          // Graceful shutdown commits a negative reentry fence even when the
+          // entered native reservation never dispatched. Only original registry
+          // recovery plus terminal settlement below may clear that obligation.
+          expect(await t.runs.hasPendingCleanup(t.f.run.id)).toBe(true)
+          expect((await t.db.pool.query('select pending from run_cleanup_intents where run_id=$1', [t.f.run.id])).rows).toEqual([{ pending: true }])
           restore()
           const next = t.compose()
           const recover = vi.fn((id: string, signal: AbortSignal) => registry.closeOwner(`execution:${id}`, signal))
