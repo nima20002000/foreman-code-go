@@ -203,7 +203,7 @@ describe('canonical Job artifact projection', () => {
     { open: async () => { throw new Error('Listing must not open bytes') } }, () => instant)
     assert.deepEqual(await files.list({ query }, principal, 'workspace', 'job'), [{ executionId: 'job', publicationId: metadata.requestId,
       path: 'result.bin', fileId: value.file.fileId, revisionId: value.revision.revisionId, sha256: metadata.sha256,
-      byteSize: metadata.byteSize, mediaType: metadata.mediaType, state: 'available' }])
+      byteSize: metadata.byteSize, mediaType: metadata.mediaType, state: 'available', expiresAt: '2026-10-01T14:00:00.000Z' }])
     assert.equal(query.mock.calls.length, 2)
     assert.equal('expiresAt' in value.file && value.file.expiresAt, '2026-10-01T14:00:00.000Z')
   })
