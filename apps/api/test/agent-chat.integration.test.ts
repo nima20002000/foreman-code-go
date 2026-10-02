@@ -651,6 +651,8 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
     const headers = { authorization: `Bearer ${writerToken}` }
     const http = (suffix: string, body: Record<string, unknown>) => f.app.inject({ method: 'POST', url: `${path}${suffix}`, headers, payload: body })
     const replay = (name: string, body: Record<string, unknown>) => mcp.callTool({ name, arguments: { workspaceId: fixture.scope.workspaceId, conversationId: id, ...body } })
+    const receipt = async (commandId: string) => (await pool.query(`select target_key,input_hash,result from management_command_receipts
+      where principal_id=$1 and operation='agent_chat_control' and command_id=$2`, [writer.id, commandId])).rows[0]
     const conflict = async (suffix: string, name: string, body: Record<string, unknown>, addressing = {}) => {
       const response = await http(suffix, body)
       expect(response.statusCode, response.body).toBe(409)
@@ -663,8 +665,12 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       const cancel = { requestId: randomUUID() }, cancelPath = `/turns/${queued.turn.requestId}/cancel`
       const canceled = await http(cancelPath, cancel)
       expect(canceled.statusCode, canceled.body).toBe(200)
+      const cancelReceipt = await receipt(cancel.requestId)
       const later = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later queued', id))
-      expect((await replay('agent_chat_cancel_queued', { ...cancel, turnRequestId: queued.turn.requestId })).structuredContent).toEqual(canceled.json())
+      expect((await replay('agent_chat_cancel_queued', { ...cancel, turnRequestId: queued.turn.requestId })).structuredContent).toEqual({ state: await read() })
+      expect(await receipt(cancel.requestId)).toEqual(cancelReceipt)
+      expect(cancelReceipt.result).toMatchObject({ status: 'completed', state: { conversation: { id },
+        turns: expect.arrayContaining([expect.objectContaining({ requestId: queued.turn.requestId, delivery: 'canceled' })]) } })
       await conflict(`/turns/${later.turn.requestId}/cancel`, 'agent_chat_cancel_queued', cancel, { turnRequestId: later.turn.requestId })
       expect((await read()).turns.find((turn) => turn.requestId === later.turn.requestId)?.delivery).toBe('queued')
       let responses = 0
@@ -677,18 +683,26 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       const respond = { requestId: randomUUID(), nativeRequestId: 'approval-one', optionId: 'codex-approve-once' }
       const responded = await http('/responses', respond)
       expect(responded.statusCode, responded.body).toBe(200)
+      const respondReceipt = await receipt(respond.requestId)
       await repository.pending(id, active.activeTurn!.requestId, { ...pending, turn: { ...pending.turn, nativeRequestId: 'approval-two' } })
-      expect((await replay('agent_chat_respond', respond)).structuredContent).toEqual(responded.json())
+      expect((await replay('agent_chat_respond', respond)).structuredContent).toEqual({ state: await read() })
+      expect(await receipt(respond.requestId)).toEqual(respondReceipt)
+      expect(respondReceipt.result).toMatchObject({ status: 'completed', acceptedControl: { modelRequestId: active.activeTurn!.requestId,
+        native: { sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId, requestId: 'approval-one' } } })
       await conflict('/responses', 'agent_chat_respond', { ...respond, optionId: 'codex-reject' })
       expect(responses).toBe(1)
       expect((await read()).pendingInteraction?.turn.nativeRequestId).toBe('approval-two')
       const interrupt = { requestId: randomUUID() }
       const interrupted = await http('/interrupt', interrupt)
       expect(interrupted.statusCode, interrupted.body).toBe(200)
+      const interruptReceipt = await receipt(interrupt.requestId)
       await settled(service, read)
       await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later active', id))
       const next = await settled(service, read, (state) => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
-      expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual(interrupted.json())
+      expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual({ state: await read() })
+      expect(await receipt(interrupt.requestId)).toEqual(interruptReceipt)
+      expect(interruptReceipt.result).toMatchObject({ status: 'completed', state: { conversation: { id },
+        turns: expect.arrayContaining([expect.objectContaining({ requestId: active.activeTurn!.requestId, nativeTurnId: active.activeTurn!.nativeTurnId })]) } })
       await conflict('/interrupt', 'agent_chat_interrupt', { ...interrupt, expectedNativeTurnId: next.activeTurn!.nativeTurnId! })
       expect(native.cancels).toBe(1)
       expect((await read()).activeTurn?.requestId).toBe(next.activeTurn?.requestId)

@@ -2,6 +2,9 @@ import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { nativeCorrelation } from '../src/modules/conversations/operatorChatRepository.js'
+import { OperatorConversationStateSchema } from '@graphql/contracts'
+import { OperatorChatCommands } from '../src/modules/conversations/operatorChatCommands.js'
+import type pg from 'pg'
 
 function fixture() {
   const principal = { id: 'owner', name: 'Owner', audience: 'operator', revokedAt: null, expiresAt: new Date(Date.now() + 600_000).toISOString(),
@@ -13,10 +16,21 @@ function fixture() {
     harness: 'codex', provider_version: 'test', native_session_id: 'session', active_request_id: 'request',
     active_native_turn_id: 'turn', active_phase: 'submitted', cancel_requested: false, revision: 1,
     pending_interaction: { turn: { nativeRequestId: 'approval' }, responseOptions: [option] } }
-  const repository = { active: vi.fn(async () => row), configuration: vi.fn(async () => configuration),
+  const records = new Map<string, { target_key: unknown; input_hash: unknown; result: unknown }>()
+  const commands = new OperatorChatCommands({ query: async (sql: string, values: unknown[]) => {
+    const key = JSON.stringify(values.slice(0, 3))
+    if (sql.includes('with claimed as')) {
+      if (records.has(key)) return { rows: [], rowCount: 0 }
+      records.set(key, { target_key: values[3], input_hash: values[4], result: JSON.parse(String(values[6])) }); return { rows: [], rowCount: 1 }
+    }
+    if (sql.includes('with settled as')) { records.get(key)!.result = JSON.parse(String(values[3])); return { rows: [], rowCount: 1 } }
+    if (sql.includes('select target_key,input_hash,result')) return { rows: [records.get(key)], rowCount: 1 }
+    throw new Error(`Unexpected receipt SQL: ${sql}`)
+  } } as unknown as Pick<pg.Pool, 'query'>)
+  const repository = { createControlCommands: () => commands, active: vi.fn(async () => row), configuration: vi.fn(async () => configuration),
     claimResponse: vi.fn(async () => true), pending: vi.fn(async () => {}), submitted: vi.fn(async () => true),
     finish: vi.fn(async () => true), uncertain: vi.fn(async () => {}), unfinished: vi.fn(async () => [row]),
-    activity: { append: vi.fn() }, get: vi.fn(async () => ({})) }
+    activity: { append: vi.fn(), unfinishedOwners: vi.fn(async () => ({ owners: [] })) }, get: vi.fn(async () => ({})) }
   const manager = { harness: 'codex', attachSession: vi.fn(async (session: { nativeSessionId: string }) => session), createSession: vi.fn(), startTurn: vi.fn(),
     respond: vi.fn(async () => {}), stopAutomaticResponses: vi.fn(), dispose: vi.fn(async () => {}),
     reconcile: vi.fn(async () => ({ correlationId: nativeCorrelation('chat', 'request'), nativeTurnId: 'turn', events: [],
@@ -25,7 +39,8 @@ function fixture() {
     setup: vi.fn(async () => { throw new Error('native configuration removed or inspection unavailable') }),
     prepare: vi.fn(async () => { throw new Error('new launch must be blocked') }), release: vi.fn(async () => {}) }
   const chat = new OperatorChatService(repository as never, {} as never, (() => manager) as never, '/tmp/pr18-operator', authority as never)
-  vi.spyOn(chat, 'get').mockResolvedValue({} as never)
+  vi.spyOn(chat, 'get').mockResolvedValue(OperatorConversationStateSchema.parse({ conversation: { id: 'chat', agentId: 'application-operator',
+    scope: 'application', operatorConfigurationVersionId: configuration.id }, messages: [], turnState: 'active', revision: 1, activeRequestId: 'request' }))
   return { chat, repository, manager, authority, principal, option }
 }
 it('delivers an owner rejection after MCP removal without setup or issuing new credentials', async () => {

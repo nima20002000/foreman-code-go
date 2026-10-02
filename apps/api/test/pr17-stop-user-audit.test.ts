@@ -10,6 +10,7 @@ import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import type { InteractionService } from '../src/modules/interactions/service.js'
 import { registerUserInteractions } from '../src/routes/userInteractions.js'
+import { projectInteractionActivity } from '../src/modules/interactions/activityProjection.js'
 
 it('F11: failed cleanup remains retryable after terminal settlement and a fresh engine instance', async () => {
   // This test begins AFTER business settlement. The retired fixture synthesized
@@ -97,7 +98,10 @@ it('F15: production User routes require a User bearer credential and expose actu
     return { interaction: { ...record, revision: 1, selectedOptionId: 'choice', selectedSemantic: 'approve_once', nativeResponse: null,
       decidedAt: '2026-09-16T00:00:01.000Z', deliveredAt: '2026-09-16T00:00:02.000Z', status: 'delivered', deliveryState: 'delivered' }, replayed: false }
   })
-  const interactions = { get: async () => record, respond } as unknown as InteractionService
+  const readActivity = vi.fn(async (current: DurableInteraction, authorized: boolean) => projectInteractionActivity(current,
+    { response: { authorized, qualified: true, usable: true, path: 'live_callback', identity: { interactionId: current.id,
+      revision: current.revision, sessionId: current.nativeSessionId, requestId: current.nativeRequestId, executionId: current.executionId } } }))
+  const interactions = { get: async () => record, readActivity, respond } as unknown as InteractionService
   registerUserInteractions(app, access, interactions)
   const headers = { host: '127.0.0.1:4100', origin: 'http://127.0.0.1:5173' }
   const url = `/api/user/interactions/${record.id}`
@@ -106,6 +110,8 @@ it('F15: production User routes require a User bearer credential and expose actu
     assert.equal(detail.statusCode, 200, detail.body); assert.equal(detail.json().canRespond, true)
     const reader = await app.inject({ method: 'GET', url, headers: { ...headers, authorization: 'Bearer test-reader' } })
     assert.equal(reader.statusCode, 200); assert.equal(reader.json().canRespond, false)
+    assert.equal(reader.json().activity.response.reason, 'unauthorized')
+    assert.deepEqual(readActivity.mock.calls.map((call) => call[1]), [true, false])
     for (const supplied of [{ authorization: 'Bearer operator-token' }, { cookie: 'graphql_operator=operator-cookie' }, { authorization: 'Bearer test-reader' }]) {
       const denied = await app.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, ...supplied }, payload: { interactionId: record.id, optionId: 'choice', expectedRevision: 0 } })
       assert(denied.statusCode >= 400)

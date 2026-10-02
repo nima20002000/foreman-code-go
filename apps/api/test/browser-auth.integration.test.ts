@@ -18,6 +18,7 @@ import { FoundationSettingsManagementService } from '../src/modules/settings/man
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { registerWorkspaceDefaultsRoutes } from '../src/routes/workspaceDefaults.js'
 import { registerUserInteractions } from '../src/routes/userInteractions.js'
+import { projectInteractionActivity } from '../src/modules/interactions/activityProjection.js'
 import type { InteractionService } from '../src/modules/interactions/service.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
@@ -263,13 +264,19 @@ describe('Better Auth owner browser lifecycle (PostgreSQL)', () => {
         selectedSemantic: interaction.responseOptions[0]!.semantic, nativeResponse: null,
         decidedAt: new Date().toISOString(), deliveredAt: new Date().toISOString() }, replayed: false }
     })
-    registerUserInteractions(server, access, { get: async () => interaction, respond } as unknown as InteractionService)
+    // Explicit live-callback fixture evidence; a pending row alone never offers a response.
+    const readActivity = vi.fn(async (current: typeof interaction, authorized: boolean) => projectInteractionActivity(current,
+      { response: { authorized, qualified: true, usable: true, path: 'live_callback', identity: {
+        interactionId: current.id, revision: current.revision, sessionId: current.nativeSessionId,
+        requestId: current.nativeRequestId, executionId: current.executionId } } }))
+    registerUserInteractions(server, access, { get: async () => interaction, readActivity, respond } as unknown as InteractionService)
     await setup(server)
     const cookie = cookies((await signIn(server)).headers['set-cookie'])
     const url = `/api/user/interactions/${interaction.id}`
     const detail = await server.inject({ method: 'GET', url, headers: { ...headers, cookie } })
     expect(detail.statusCode, detail.body).toBe(200)
     expect(detail.json().canRespond).toBe(true)
+    expect(readActivity).toHaveBeenCalledWith(interaction, true)
     const payload = { interactionId: interaction.id, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision }
     expect((await server.inject({ method: 'POST', url: `${url}/respond`, headers: { host: headers.host, cookie }, payload })).statusCode).toBe(403)
     expect((await server.inject({ method: 'POST', url: `${url}/respond`, headers: { ...headers, origin: 'https://foreign.example', cookie }, payload })).statusCode).toBe(403)

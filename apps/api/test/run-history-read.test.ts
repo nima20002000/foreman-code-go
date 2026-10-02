@@ -5,6 +5,8 @@ import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@graphq
 import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
 import { readAcceptedRepeatRunLocked } from '../src/modules/runs/repeatStartRead.js'
 import { readRepeatExecutionLocked } from '../src/modules/runs/repeatPostgres.js'
+import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from '../src/modules/runs/activities.js'
+import { RUN_NATIVE_ACTIVITY_FACTS_SQL } from '../src/modules/runs/nativeActivitySnapshot.js'
 
 // The immutable publication readers are ports here; live grants, transaction
 // ownership, bounded queries and public redaction run their real implementations.
@@ -41,6 +43,22 @@ function fixture() {
     if (sql.includes('from management_principals')) return { rows: [{ id: principal.id, name: principal.name,
       audience: 'operator', grants: liveGrants, expires_at: new Date(principal.expiresAt),
       revoked_at: revoked ? new Date() : null, delegated_from: null }] }
+    if (sql.startsWith('select activity_record_revision::text as revision,stop_requested_at')) {
+      expect(values).toEqual([run.id, run.workspaceId, run.workflowId, run.workflowVersionId])
+      return { rows: [{ revision: '1', stopped: false, outcome: run.outcome, started_at: null, execution_state: run.executionState }] }
+    }
+    if (sql === RUN_NATIVE_ACTIVITY_FACTS_SQL) { expect(values).toEqual([run.id]); return { rows: [] } }
+    if (sql === RUN_ACTIVITIES_PAGE_SQL.replace('__COMPARATOR__', '<=').replace('__ORDER__', 'desc')) {
+      expect(values).toEqual([run.id, '0', '0', '0', 101]); return { rows: [] }
+    }
+    if (sql.startsWith('select e.id,e.attempt,e.activity_record_revision')) {
+      expect(values).toEqual([run.id, run.workspaceId])
+      return { rows: [{ id: execution.id, attempt: 1, revision: '1', state: execution.state, outcome: execution.result?.outcome,
+        created_at: f.createdAt, started_at: null, native_session_id: null, harness: null, native_revision: '0' }] }
+    }
+    if (sql.includes('from workflow_job_executions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId, run.workflowVersionId]); return { rows: [] } }
+    if (sql.includes('from durable_interactions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId]); return { rows: [] } }
+    if (sql === RUN_ACTIVITIES_BOUNDS_SQL) { expect(values).toEqual([run.id]); return { rows: [{ high_water: '0', retained_from: '0', observed: 0 }] } }
     if (sql.includes('from harness_executions')) return { rows: [{ id: execution.id }] }
     if (sql.includes('from run_activity')) return { rows: [] }
     if (sql.includes('from run_cleanup_intents')) return { rows: [{ pending: false }] }
@@ -60,6 +78,7 @@ describe('saved current Run read', () => {
     expect(value.run).toMatchObject({ executionSemanticsVersion: 3, workflowVersionId: f.version.id,
       agentConfigurationVersionIds: f.version.agentConfigurationVersionIds, result: { output: { text: 'saved-result' } } })
     expect(value.executions[0]).toMatchObject({ id: f.execution.id, agentConfigurationVersionId: f.configurations[0]!.id })
+    expect(value.activitySnapshot).toMatchObject({ scope: { runId: f.run.id, workflowVersionId: f.version.id }, active: [], queued: [] })
     expect(JSON.stringify(value)).not.toMatch(/private-authority|private\/project|private\/runtime/)
     expect(readRepeatExecutionLocked).toHaveBeenCalledWith(expect.objectContaining({ transaction: true }),
       expect.objectContaining({ run: f.run }), f.execution.id)

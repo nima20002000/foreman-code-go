@@ -107,6 +107,12 @@ export class ProjectionDatabase {
       if (q === 'select projection_test_owner_fence') return result([{ owner_id: '42', fence: this.ownerFence }])
       if (q === 'update projection_test_domain set revision=revision+1') { s.domain++; return result() }
       if (q.startsWith('select effect_kind,entity_id,payload_digest from run_repeat_effects')) return result([])
+      if (q.startsWith("select p.preparation->>'executionId' as id,s.workflow_node_id,n.node->>'jobDefinitionId' as definition_id,")) {
+        assert.deepEqual(values, [projectionScope.runId, this.fixture.version.definition.nodes.map(node => node.id),
+          projectionScope.workflowVersionId, projectionScope.workspaceId, projectionScope.workflowId])
+        assert.ok(this.fixture.version.definition.nodes.every(node => node.kind !== 'job'), 'this fixture has no Job preparations')
+        return result([])
+      }
       if (q.startsWith('select p.ordinal,')) {
         const expected = JSON.parse(String(values[2])) as Array<{ ordinal: number; source_kind: string; source_revision: string; source_id: string | null;
           source_digest: string | null; semantic_digest: string; effect_kind: string | null; entity_id: string | null }>
