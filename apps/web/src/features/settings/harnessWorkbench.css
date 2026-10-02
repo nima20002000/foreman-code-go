@@ -56,9 +56,6 @@
 .harness-change-details ol { margin: 0; padding-left: 18px; }
 .harness-policy-row { border: 1px solid color-mix(in srgb,currentColor 12%,transparent); border-radius: var(--radius-md); padding: 12px; display: grid; gap: var(--space-2); }
 .harness-policy-row .harness-section-heading > .n-field { width: min(180px,100%); }
-.harness-rule { display: grid; grid-template-columns: 24px 1fr 1fr; gap: var(--space-2); align-items: end; padding: 12px; margin: 10px 0; border-radius: var(--radius-md); border: 1px solid color-mix(in srgb,currentColor 12%,transparent); }
-.harness-rule-number { align-self: center; opacity: .5; }
-.harness-rule > .harness-inline-actions { grid-column: 2/-1; }
 .harness-evidence-result { display: grid; gap: var(--space-2); padding: 12px; border: 1px solid color-mix(in srgb,currentColor 12%,transparent); border-radius: var(--radius-md); }
 .harness-evidence-grid { display: grid; gap: var(--space-3); }
 .harness-evidence-details { font-size: 13px; }
@@ -76,8 +73,6 @@
   .harness-change-details > div { grid-template-columns: minmax(0,1fr); gap: var(--space-1); }
   .harness-card-footer { align-items: flex-start; }
   .harness-card-footer > .harness-inline-actions { flex: 1 1 100%; }
-  .harness-rule { grid-template-columns: 20px minmax(0,1fr); }
-  .harness-rule > .n-field { grid-column: 2; }
 }
 @container (max-width: 760px) {
   .harness-server-list, .harness-preset-actions { grid-template-columns: repeat(2,minmax(0,1fr)); }

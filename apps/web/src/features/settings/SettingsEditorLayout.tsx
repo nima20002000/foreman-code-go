@@ -55,7 +55,7 @@ export function SettingsEditorLayout({ title, description, backLabel, onBack, se
           onClick={() => { if (item.id !== section) void leave(() => onSectionChange(item.id)) }}>{item.label}<span aria-hidden="true">›</span></button>)}
       </nav>
       <section className="settings-editor-content" aria-labelledby={`settings-section-${active.id}`}>
-        <header className="settings-section-heading"><h2 ref={sectionRef} tabIndex={-1} id={`settings-section-${active.id}`}>{active.label}</h2><p>{active.description}</p></header>
+        <header className="settings-section-heading"><h2 ref={sectionRef} tabIndex={-1} id={`settings-section-${active.id}`}>{active.label}</h2>{active.id !== 'permissions' ? <p>{active.description}</p> : null}</header>
         {children}
       </section>
     </div>

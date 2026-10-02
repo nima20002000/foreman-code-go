@@ -74,8 +74,9 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
                 onChange={(event) => codex({ ...value.advanced!, sessionPersistence: event.target.value as CodexAdvancedConfiguration['sessionPersistence'] })} />
             </div> : null}
             {value.harness === 'opencode' && section === 'permissions' ? <>
-              <Select label="Permission handling" value={value.advanced!.permissionHandling} error={error('advanced.permissionHandling') ?? error('autoApprove')}
+              <Select className="harness-opencode-approvals" label="Permission handling" value={value.advanced!.permissionHandling} error={error('advanced.permissionHandling') ?? error('autoApprove')}
                 options={[{ value: 'graphql_routed', label: 'App approval routing' }, { value: 'native_auto', label: 'Native automatic handling (unavailable)', disabled: true }]}
+                hint={value.advanced!.permissionHandling === 'native_auto' ? 'Native automatic handling is unavailable. Choose app approval routing.' : undefined}
                 onChange={(event) => opencode({ ...value.advanced!, permissionHandling: event.target.value as OpenCodeAdvancedConfiguration['permissionHandling'] })} />
               <HarnessPermissionRules value={value.advanced!.permissionRules} issues={issues} onChange={(permissionRules) => opencode({ ...value.advanced!, permissionRules })} />
             </> : null}
