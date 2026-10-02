@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { ManagementActionSchema } from '@graphql/contracts/management'
 import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { workspaceRootDirectory } from './helpers/workspaceRootDirectory.js'
 import { PostgresAccessService, bearerToken } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { registerOperatorHttpSecurity, requireLocalRequest } from '../src/modules/access/http.js'
@@ -26,11 +27,13 @@ import { DomainError } from '../src/modules/errors.js'
 describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () => {
   it('binds an unconfigured workspace without an Agent/Workflow, replays exact receipt and denies a scoped caller', async () => {
     const db = await currentDatabase(), app = Fastify(), clients: Client[] = []
+    let rootDirectory: string | undefined
     try {
       const workspaceId = randomUUID(), foreignId = randomUUID()
       for (const id of [workspaceId, foreignId]) await db.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [id, JSON.stringify({ id, name: 'Independent root fixture' })])
       const mainId = (await db.pool.query<{ id: string }>('select id from application_installation where singleton=true')).rows[0]!.id
-      const basePath = join(db.directory, 'approved-base'), runtimePath = join(db.directory, 'root-runtime')
+      rootDirectory = await workspaceRootDirectory()
+      const basePath = join(rootDirectory, 'approved-base'), runtimePath = join(rootDirectory, 'root-runtime')
       await mkdir(basePath, { mode: 0o700 }); await mkdir(runtimePath, { mode: 0o700 }); await mkdir(join(basePath, 'project'), { mode: 0o700 })
       const base = await openPrivateRoot(basePath), runtime = await openPrivateRoot(runtimePath)
       let allowlist: ApprovedRootAllowlist
@@ -93,6 +96,9 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
       expect(receipts).toHaveLength(1); expect(receipts[0]?.result).toEqual(saved.json().value)
       expect((await db.pool.query('select count(*)::int as count from workflows')).rows[0]?.count).toBe(0)
       expect((await db.pool.query('select count(*)::int as count from agents')).rows[0]?.count).toBe(0)
-    } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close(); await db.close() }
+    } finally {
+      try { await Promise.allSettled(clients.map(client => client.close())); await app.close(); await db.close() }
+      finally { if (rootDirectory) await rm(rootDirectory, { recursive: true, force: true }) }
+    }
   }, 120_000)
 })
