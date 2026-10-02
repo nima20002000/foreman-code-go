@@ -25,7 +25,7 @@ describe('original Job output canonical rsync ACK',()=>{
     const pending=fixture();pending.query.mockResolvedValue({rows:[]});await expect(pending.lifecycle.acknowledged(pending.record.intent)).rejects.toMatchObject({code:'JOB_PUBLICATION_PENDING'})
     const absent=fixture();absent.rows.splice(0);await expect(absent.lifecycle.acknowledged(absent.record.intent)).rejects.toMatchObject({code:'JOB_PUBLICATION_PENDING'})
     const altered=fixture();await expect(altered.lifecycle.acknowledged({...altered.record.intent,sha256:'0'.repeat(64)})).rejects.toMatchObject({code:'JOB_OUTPUT_TRANSFER_CONFLICT'})
-    const changed=fixture();changed.rows[0]!.value.revision.sha256='0'.repeat(64);await expect(changed.lifecycle.acknowledged(changed.record.intent)).rejects.toMatchObject({code:'JOB_PUBLICATION_PENDING'})
+    const changed=fixture();changed.rows[0]!.value={...changed.rows[0]!.value,revision:{...changed.rows[0]!.value.revision,sha256:'0'.repeat(64)}};await expect(changed.lifecycle.acknowledged(changed.record.intent)).rejects.toMatchObject({code:'JOB_PUBLICATION_PENDING'})
   })
   it('propagates revoked closure/owner authority on readback',async()=>{
     const f=fixture();f.admission.admissionForTransfer.mockRejectedValueOnce(new Error('revoked owner'))
