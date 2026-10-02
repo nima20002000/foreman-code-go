@@ -65,7 +65,7 @@ export function HarnessConfigurationFields({ editor, onChange, routedApproval = 
       routedApproval={routedApproval} allowAutoReview={allowAutoReview} requiresResume={requiresResume} workspaceId={workspaceId}
       qualified={check.current && check.result.isSuccess} checking={check.current && check.result.isFetching}
       checkError={check.current && check.result.isError ? check.result.error.message : undefined} />
-    {check.current && check.result.isError ? <Alert live tone="danger" title={check.result.error.message} /> : null}
+    {check.current && check.result.isError && !(value.harness === 'claude' && (section === 'model' || section === 'permissions')) ? <Alert live tone="danger" title={check.result.error.message} /> : null}
     {refresh.isError ? <Alert live tone="danger" title={refresh.error.message} /> : null}
     {upstreamRefresh.isError ? <Alert live tone="danger" title={upstreamRefresh.error.message} /> : null}
     {issues.length ? <p className="n-field-error" role="alert">{[...new Set(issues.map((issue) => issue.message))].join(' ')}</p> : null}

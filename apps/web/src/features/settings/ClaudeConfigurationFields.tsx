@@ -43,7 +43,6 @@ export function ClaudeConfigurationFields({ value, onChange, models, qualified, 
         onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
     </div>
     {pending ? <span className="harness-status" role="status">Checking the selected Claude configuration…</span> : null}
-    {error ? <Alert tone="danger" live title={error} /> : !qualified && !pending ? <Alert tone="warning" title="Claude is awaiting native qualification" >Execution requires verified authentication, settings isolation and sandbox support on the selected computer.</Alert> : null}
-    <p className="harness-status">Tool approvals use app routing. Native settings, hooks, plugins and agents are excluded from the accepted configuration.</p>
+    {error ? <Alert tone="danger" live title={error} /> : !qualified && !pending ? <Alert tone="warning" title="Claude profile is not verified">Check the saved profile in computer settings.</Alert> : null}
   </div>
 }

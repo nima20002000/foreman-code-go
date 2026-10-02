@@ -106,7 +106,7 @@ describe('Claude defaults through the HTTP boundary', () => {
     const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }, true)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
-    expect(screen.getByText('Claude is awaiting native qualification')).toBeVisible()
+    expect(screen.getByText('Claude profile is not verified')).toBeVisible()
     expect(screen.queryByText('Ready')).not.toBeInTheDocument()
     const field = screen.getByRole('textbox', { name: 'Local Claude profile directory' })
     await user.clear(field)

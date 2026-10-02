@@ -25,8 +25,8 @@ export function HostHarnessProfileCheck({ value, draftDirty }: { value: HostHarn
       save: submit, discard: () => { if (!attempt.unresolved) check.reset() }, error: check.error?.message }} />
     <h4>Check this profile</h4>
     <p className="computer-hint">{value.driverId === 'claude'
-      ? 'Runs a short Claude conversation and tool-policy checks with disposable files on this computer. Uses the saved subscription profile and its capacity. Unsaved edits are not included.'
-      : 'Runs native diagnostics on this computer with the saved profile. Unsaved edits are not included.'}</p>
+      ? `Checks the saved profile with a short Claude conversation and disposable files. Uses ${value.configuration.harness === 'claude' && value.configuration.authMode === 'api-key' ? 'API-key billing' : 'subscription capacity'}.`
+      : 'Runs native diagnostics with the saved profile.'}</p>
     <Button disabled={check.isPending || (!attempt.unresolved && (draftDirty || !value.enabled || value.qualification === 'installation-changed'))} onClick={() => void submit()}>
       {check.isPending ? 'Checking saved profile…' : attempt.unresolved ? 'Reconcile original profile check' : 'Check saved profile on this computer'}
     </Button>
