@@ -7,6 +7,21 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
+test('packaged rsync writer has separate source/output receipts and keeps diagnostics off protocol stdout', { skip: !artifact }, async () => {
+  const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
+  const entrypoint = 'apps/api/src/modules/byte-transfer/rsyncWriterCli.ts';
+  assert.ok(!manifest.workerApiModules.includes(entrypoint));
+  assert.ok(manifest.rsyncWriterApiModules.includes(entrypoint));
+  assert.ok(manifest.sourceSnapshot.files.some(file => file.path === entrypoint));
+  const output = manifest.files.find(file => file.path === 'src/rsync-writer.mjs');
+  assert.ok(output);
+  assert.equal(createHash('sha256').update(await readFile(join(artifact, output.path))).digest('hex'), output.sha256);
+  const invalid = spawnSync(process.execPath, [join(artifact, output.path), '--invalid'], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(invalid.status, 1);
+  assert.equal(invalid.stdout, '');
+  assert.equal(invalid.stderr.trim(), 'Rsync writer failed; original ownership retained');
+});
+
 test('built worker factory accepts supplied real registration and rejects placeholder servers', { skip: !artifact }, async () => {
   const { createWorkerConnection } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
   const pairing = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://package-check.example/device/connect', credential: 'a'.repeat(64), mainPublicKeyFingerprint: 'b'.repeat(64) };
