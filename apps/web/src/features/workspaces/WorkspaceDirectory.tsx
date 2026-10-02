@@ -15,7 +15,7 @@ import {
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ApiError, apiClient } from '../../shared/api/client'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
+import { ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
 import { ResourceCard } from '../../shared/ui/ResourceCard'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import '../../shared/ui/resourceDirectory.css'
@@ -234,14 +234,15 @@ export function WorkspaceDirectory() {
             confirmedDeleted.current = 0
             batch.reset(); selection.confirm(true)
           }}>Delete selected{count ? ` (${count})` : ''}</Button>
-          <Button disabled={locked || !selectable.length} onClick={() => allShownSelected ? selection.clear() : selection.selectMany(selectable)}>
-            {allShownSelected ? 'Clear selection' : items.length + folders.filter((folder) => folder.deletion.status === 'available').length > 100 ? 'Select first 100 shown' : 'Select all shown'}
-          </Button>
-          <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
+          <ActionMenu label="Selection options" width={200} disabled={locked} items={[
+            { id: 'select-shown', label: allShownSelected ? 'Clear selection'
+              : items.length + folders.filter((folder) => folder.deletion.status === 'available').length > 100 ? 'Select first 100 shown' : 'Select all shown',
+              disabled: !selectable.length, onSelect: () => allShownSelected ? selection.clear() : selection.selectMany(selectable) },
+            { id: 'cancel-selection', label: 'Cancel selection', onSelect: () => selection.clear() },
+          ]} />
         </div> : undefined}
       />
       {selection.notice ? <p role="status">{selection.notice}</p> : null}
-      {selection.selecting ? <p className="resource-selection-hint">Select workspaces and disk folders to delete. You can show more and keep your selection. Up to 100 at a time. Protected folders cannot be selected for deletion.</p> : null}
       {selectedProtected ? <Alert tone="warning" title="A selected folder is now protected.">Deselect it to continue. Its protection reason is shown on its card.</Alert> : null}
       {needsAccess ? <EmptyState icon="warning" title="Connect this browser"
         description="App access is required to load workspaces."
