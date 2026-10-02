@@ -31,6 +31,32 @@ function client(value = DEFAULT_AGENT_DEFAULTS, revision = 3) {
 beforeEach(() => { updateDefaults.mockReset(); updateDefaults.mockImplementation(async (input) => ({ value: { value: input.value, revision: input.expectedRevision + 1, versionId: 'agents-next' }, replayed: false })) })
 afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const item of clients.splice(0)) item.clear() })
 describe('Agent defaults page', () => {
+  it('uses full access only for a new Operator provider selection', async () => {
+    const value = structuredClone(DEFAULT_AGENT_DEFAULTS)
+    value.operator.harness = DEFAULT_HARNESS_DEFAULTS.opencode
+    const user = userEvent.setup()
+    render(<QueryClientProvider client={client(value)}><AgentDefaultsSettings /></QueryClientProvider>)
+    await user.click(await screen.findByRole('button', { name: 'Edit Operator defaults' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Harness' }), 'codex')
+    await user.click(screen.getByRole('button', { name: 'Save Operator' }))
+    await waitFor(() => expect(updateDefaults).toHaveBeenCalledOnce())
+    expect(updateDefaults.mock.calls[0]![0].value.operator.harness).toMatchObject({ sandbox: 'danger-full-access' })
+    expect(updateDefaults.mock.calls[0]![0].value.coder).toEqual(value.coder)
+    expect(updateDefaults.mock.calls[0]![0].value.orchestrator).toEqual(value.orchestrator)
+  })
+
+  it('preserves explicitly saved Operator read-only access on unrelated edits', async () => {
+    const value = structuredClone(DEFAULT_AGENT_DEFAULTS)
+    value.operator.harness = DEFAULT_HARNESS_DEFAULTS.codex
+    const user = userEvent.setup()
+    render(<QueryClientProvider client={client(value)}><AgentDefaultsSettings /></QueryClientProvider>)
+    await user.click(await screen.findByRole('button', { name: 'Edit Operator defaults' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Show Operator chat' }))
+    await user.click(screen.getByRole('button', { name: 'Save Operator' }))
+    await waitFor(() => expect(updateDefaults).toHaveBeenCalledOnce())
+    expect(updateDefaults.mock.calls[0]![0].value.operator.harness).toMatchObject({ sandbox: 'read-only' })
+  })
+
   it('starts with three summary cards, then saves only an explicit Operator draft', async () => {
     const queryClient = client(); const user = userEvent.setup()
     render(<QueryClientProvider client={queryClient}><AgentDefaultsSettings /></QueryClientProvider>)

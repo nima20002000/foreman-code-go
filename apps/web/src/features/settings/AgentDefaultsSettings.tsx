@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AgentDefaultsSchema, type AgentDefaults } from '@graphql/contracts'
+import { AgentDefaultsSchema, operatorHarnessDefaults, type AgentDefaults } from '@graphql/contracts'
 import type { HarnessSettingsSection, SettingsAgentRole } from '@graphql/contracts/management'
 import { Button, Checkbox, ErrorState, LoadingState } from '../../shared/ui/nocturne'
 import { useAgentDefaultsQuery, useUpdateAgentDefaultsMutation } from '../../shared/api/query'
@@ -66,7 +66,15 @@ function AgentTemplateEditor({ role, section, onSectionChange, onBack, showBack 
   if (!draft) return <LoadingState label="Loading agent defaults…" />
   const current = draft[role].harness
   const info = rolePresentation[role]
-  const update = (harness: HarnessEditor) => form.setDraft((value) => value && ({ ...value, [role]: { ...value[role], harness } }))
+  const update = (harness: HarnessEditor) => form.setDraft((value) => {
+    if (!value) return value
+    const previous = value[role]
+    const changingOperator = role === 'operator' && previous.harness.configuration.harness !== harness.configuration.harness
+    const next = { ...previous, harness: changingOperator && !previous.harness.drafts?.[harness.configuration.harness]
+      ? { ...harness, configuration: operatorHarnessDefaults(harness.configuration) } : harness }
+    if (changingOperator) delete next.harnessProfileSelection
+    return { ...value, [role]: next }
+  })
   return <div ref={(node) => { root.current = node }}>
     <SettingsEditorLayout showBack={showBack} title={`${info.title} defaults`} description={info.scope} backLabel="All agents" onBack={onBack}
       section={section} onSectionChange={onSectionChange}
