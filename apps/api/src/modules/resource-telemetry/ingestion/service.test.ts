@@ -287,7 +287,7 @@ describe('authenticated telemetry ingestion and scoped readback', () => {
     const missing = await s.service.read(principal, telemetryOwnedFixture, signal())
     expect(missing.kind === 'sample' && missing.sample.memory.state).toBe('unavailable')
   })
-  it('withholds shared values when the authority cannot enumerate genuine co-owners', async () => {
+  it('withholds historically unenumerated shared values until a new authorized capture', async () => {
     const s = await ready(), challenge = (await s.service.challenge(s.context, signal()))!, b = batch(challenge)
     b.owned[0]!.coverage.shared = true
     await s.service.ingest(s.context, JSON.stringify(b), signal())
@@ -297,6 +297,11 @@ describe('authenticated telemetry ingestion and scoped readback', () => {
     s.ownership({ selector: telemetryOwnedFixture, state: 'active', sharedOwners: [telemetryOwnedFixture.owner], sharedOwnersComplete: false })
     expect(await s.service.read(principal, telemetryOwnedFixture, signal())).toMatchObject({ kind: 'no-sample', reason: 'shared-restricted' })
     s.ownership({ selector: telemetryOwnedFixture, state: 'active', sharedOwners: [telemetryOwnedFixture.owner], sharedOwnersComplete: true })
+    expect(await s.service.read(principal, telemetryOwnedFixture, signal())).toMatchObject({ kind: 'no-sample', reason: 'shared-restricted' })
+    s.advance(2000)
+    const next = batch((await s.service.challenge(s.context, signal()))!, '2')
+    next.owned[0]!.coverage.shared = true
+    await s.service.ingest(s.context, JSON.stringify(next), signal())
     expect((await s.service.read(principal, telemetryOwnedFixture, signal())).kind).toBe('sample')
   })
   it('keeps all current accepted rows when a full batch replaces one omitted owner', async () => {
