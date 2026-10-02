@@ -16,7 +16,8 @@
 .workspace-detail-nav > a:hover { color: var(--n-text); background: var(--n-raised); }
 .workspace-detail-nav > a[aria-current='page'] { color: var(--n-text); background: var(--n-surface); border-color: var(--n-border); font-weight: 600; }
 .workspace-detail-content { min-width: 0; }
-.workspace-settings-summary { display: grid; gap: var(--space-3); }
-.workspace-settings-summary h2 { margin: 0; font-size: 16px; }
-.workspace-settings-summary p { max-width: 40rem; color: var(--n-muted); font-size: 13px; line-height: 1.65; }
+.workspace-detail-content--settings { min-height: 0; }
+.workspace-settings-actions { display: grid; gap: var(--space-2); width: min(100%, 24rem); }
+.workspace-settings-actions > .n-button { min-height: 44px; justify-content: flex-start; padding-inline: var(--space-3); text-align: start; }
+.workspace-settings-actions > .n-button--ghost { border-color: var(--n-border); }
 @media (max-width: 840px) { .workspace-detail-nav > a { flex: 1 1 140px; border-color: var(--n-border); } .workspace-detail-nav > a > span { display: none; } }
