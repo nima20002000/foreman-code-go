@@ -13,7 +13,7 @@ import { PostgresFoundationSettingsRepository } from '../../src/modules/settings
 import { FoundationSettingsManagementService } from '../../src/modules/settings/management.js'
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
 
-export async function reviewAuthMcpDatabase() {
+export async function reviewAuthMcpDatabase(options: { hostProfiles?: boolean } = {}) {
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
   const schema = `auth_mcp_${randomUUID().replaceAll('-', '')}`
   await admin.query(`create schema "${schema}"`)
@@ -35,7 +35,7 @@ export async function reviewAuthMcpDatabase() {
     }, async () => null)
     const repository = new PostgresFoundationSettingsRepository(pool), operators = new PostgresOperatorRepository(pool)
     const settings = new FoundationSettingsManagementService(repository, commands, undefined, operators, profiles)
-    const services = { commands, settings, harnessInstances: profiles } as unknown as OperatorServices
+    const services = { commands, settings, ...(options.hostProfiles === false ? {} : { harnessInstances: profiles }) } as unknown as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
