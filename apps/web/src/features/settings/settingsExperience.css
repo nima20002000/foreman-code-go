@@ -81,3 +81,10 @@
 
 .settings-inline-footer { display: flex; align-items: center; justify-content: flex-end; border-top: 1px solid var(--n-border); padding-top: 16px; }
 .settings-single-column { min-height: 0; }
+/* Narrow screens: grid tracks and form controls may shrink below their content width. */
+.settings-page.settings-experience, .settings-overview, .settings-editor-page { grid-template-columns: minmax(0, 1fr); max-width: 100%; }
+.settings-editor-content { max-width: 100%; }
+.settings-editor-content :is(.n-field, .n-input-wrap, .n-select-wrap, .n-check-field, .n-switch-field, .settings-simple-row, fieldset) { min-width: 0; max-width: 100%; }
+.settings-editor-content :is(input:not([type='checkbox'], [type='radio']), select, textarea) { max-width: 100%; }
+.settings-editor-content :is(pre, code) { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 540px) { .settings-check-row > * { min-width: 0; } .settings-editor-page .settings-save-actions > button { flex: 1 1 8rem; } }

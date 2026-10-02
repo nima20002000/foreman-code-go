@@ -60,6 +60,11 @@
 .device-setup-status[data-state='blocked'] { border-color: var(--n-warning); background: var(--n-warning-subtle); }
 .device-setup-status p { margin: .25rem 0; }
 .computers-page, .computers-page * { min-width: 0; }
+.settings-editor-page.computers-page { width: 100%; max-width: min(52rem, 100%); grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
+.computers-page :is(pre, code, kbd, samp) { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.computers-page :is(ol, ul, dl, details, section, textarea, input, select, .n-field) { max-width: 100%; }
+.device-setup-guide, .device-setup-status { max-width: 100%; overflow-wrap: anywhere; }
+@media (max-width: 540px) { .computers-page .computer-steps { padding-left: 1.1rem; } .device-setup-guide, .device-setup-status { padding: .5rem .6rem; } }
 .computers-page dd, .computers-page li, .computers-page summary + * { overflow-wrap: anywhere; }
 @media (max-width: 540px) {
   .computer-facts > div { grid-template-columns: 1fr; gap: .15rem; }

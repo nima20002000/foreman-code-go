@@ -9,11 +9,12 @@ import { createGraphGeometryAdapter, type GraphGeometryChange } from './geometry
 import { AGENT_HANDOFF_EDGE_TYPE } from './mapper'
 import { useGraphPresentation } from './useGraphPresentation'
 import { useGraphEvent } from './useGraphEvent'
+import { RESPONSIVE_FIT_OPTIONS, RESPONSIVE_MIN_ZOOM, useResponsiveGraphViewport } from './useResponsiveGraphViewport'
 import type { GraphNode, GraphEdge, GraphProjection } from './types'
 
 const nodeTypes = { agent: AgentNode, job: JobNode }
 const edgeTypes = { [AGENT_HANDOFF_EDGE_TYPE]: HandoffEdge }
-const fitViewOptions = { padding: 0.25, minZoom: 0.5, maxZoom: 1 }
+const fitViewOptions = RESPONSIVE_FIT_OPTIONS
 const proOptions = { hideAttribution: true }
 const defaultEdgeOptions = {
   type: AGENT_HANDOFF_EDGE_TYPE, selectable: false, focusable: false,
@@ -131,6 +132,11 @@ export const GraphCanvas = memo(function GraphCanvas({
     return [...topology.edges, ...departing.edges.filter((edge) => !ids.has(edge.id))]
   }, [topology.edges, departing.edges])
   const [connecting, setConnecting] = useState(false)
+  const { containerRef, onInit: fitOnInit } = useResponsiveGraphViewport<GraphNode, GraphEdge>()
+  const handleInit = useCallback((instance: ReactFlowInstance<GraphNode, GraphEdge>) => {
+    fitOnInit(instance)
+    onInit?.(instance)
+  }, [fitOnInit, onInit])
   const onDragStop = useCallback((_event: unknown, node: GraphNode, draggedNodes: GraphNode[]) => {
     if (readOnly || cancelled.current) return
     const moved = draggedNodes?.length ? draggedNodes : [node]
@@ -140,7 +146,7 @@ export const GraphCanvas = memo(function GraphCanvas({
     flush()
   }, [adapter, begin, flush, readOnly])
 
-  return <div className={`graph-render-adapter${connecting ? ' is-connecting' : ''}`} style={{ position: 'absolute', inset: 0 }}
+  return <div ref={containerRef} className={`graph-render-adapter${connecting ? ' is-connecting' : ''}`} style={{ position: 'absolute', inset: 0 }}
     onPointerDownCapture={() => { if (!gesturing.current) cancelled.current = false }}
     onPointerCancel={() => { flush(); cancelled.current = true }}
     onKeyDownCapture={(event) => {
@@ -156,9 +162,9 @@ export const GraphCanvas = memo(function GraphCanvas({
         onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
         onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}
         nodesDraggable={!readOnly} nodesConnectable={!readOnly} elementsSelectable
-        panOnDrag zoomOnScroll deleteKeyCode={null} fitView fitViewOptions={fitViewOptions}
+        panOnDrag zoomOnScroll deleteKeyCode={null} fitView fitViewOptions={fitViewOptions} minZoom={RESPONSIVE_MIN_ZOOM}
         defaultEdgeOptions={defaultEdgeOptions} proOptions={proOptions}
-        aria-label={readOnly ? 'Run graph canvas' : 'Workflow editor canvas'} onInit={onInit}>
+        aria-label={readOnly ? 'Run graph canvas' : 'Workflow editor canvas'} onInit={handleInit}>
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow>
     </GraphGeometryContext.Provider>

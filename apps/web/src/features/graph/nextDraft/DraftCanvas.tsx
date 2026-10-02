@@ -11,6 +11,7 @@ import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPres
 import { AgentHandles } from '../AgentHandles'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../signalEdge'
 import { SignalEdgeShape } from '../SignalEdgeShape'
+import { RESPONSIVE_FIT_OPTIONS, RESPONSIVE_MIN_ZOOM, useResponsiveGraphViewport } from '../useResponsiveGraphViewport'
 import type { GraphNode, AgentGraphNode, JobGraphNode } from '../types'
 import { nodeTitle, putRelationship, removeRelationship, setWorkConnectionLimit } from './model'
 import { WorkConnectionLimitEditor } from './WorkConnectionLimitEditor'
@@ -108,7 +109,7 @@ const DraftJob=memo(function DraftJob({id,data,selected}:NodeProps<JobGraphNode>
     {panel?<Dialog open className="job-dialog" title={data.label} description="Noninteractive job" onOpenChange={value=>{if(!value)inspect(()=>setOpen(undefined))}}>{panels(id).info}{panels(id).settings}</Dialog>:null}</>
 })
 const nodeTypes = { agent: DraftAgent, job: DraftJob }, edgeTypes = { typed: TypedEdge }
-const fitViewOptions = { padding: 0.25, minZoom: 0.5, maxZoom: 1 }
+const fitViewOptions = RESPONSIVE_FIT_OPTIONS
 const proOptions = { hideAttribution: true }
 export type DraftCanvasHandle = { flush(): void; cancel(): void }
 
@@ -126,6 +127,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   change, geometry, pending, report, inspect = (action) => action(), removalDisabled = false,
   open, setOpen = () => undefined, panels = () => ({ chat: null, settings: null, info: null }), children }, ref) {
   const selectedRun = useWorkflowBoard()?.run
+  const responsive = useResponsiveGraphViewport<GraphNode, DraftEdge>({ enabled: !selectedRun })
   const [project] = useState(() => createGraphTopologyProjector())
   const topology = useMemo(() => project(graph, agents), [project, graph, agents])
   const [adapter] = useState(() => createGraphGeometryAdapter(topology.nodes))
@@ -190,12 +192,12 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   })
   const context = { draftKey, inspect, open, setOpen, panels, selectNode }
   return <CanvasContext.Provider value={context}>
-    <div className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} style={selectedRun ? { display: 'none' } : undefined} aria-hidden={!!selectedRun} inert={!!selectedRun} aria-label="Editable workflow graph">
+    <div ref={responsive.containerRef} className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} style={selectedRun ? { display: 'none' } : undefined} aria-hidden={!!selectedRun} inert={!!selectedRun} aria-label="Editable workflow graph">
       {/* While a Run is shown, the draft's data stays mounted but its flow does not: a hidden
           flow measures a zero-size box and would come back empty on Return to draft. */}
       {selectedRun ? null : <ReactFlow<GraphNode, DraftEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} connectionMode={ConnectionMode.Loose} connectionRadius={120} deleteKeyCode={null}
-        fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.3} maxZoom={1.6}
+        fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={RESPONSIVE_MIN_ZOOM} maxZoom={1.6} onInit={responsive.onInit}
         isValidConnection={(connection) => connection.source !== connection.target}
         onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
         onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}
