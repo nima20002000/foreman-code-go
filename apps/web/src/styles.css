@@ -131,7 +131,8 @@ h1 {
   min-height: 100vh;
   grid-template-columns: var(--navigation-width, 13.5rem) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  overflow: hidden;
+  /* Clip without creating a scroll container that would trap the sticky sidebar. */
+  overflow: clip;
   background: var(--color-canvas);
 }
 
@@ -140,11 +141,14 @@ h1 {
 }
 
 .shell-sidebar {
-  position: relative;
+  position: sticky;
+  top: 0;
   display: flex;
   height: 100vh;
+  height: 100dvh;
   max-height: 100vh;
-  min-height: 100vh;
+  max-height: 100dvh;
+  min-height: 0;
   grid-row: 1 / -1;
   flex-direction: column;
   gap: var(--space-6);
@@ -385,6 +389,11 @@ h1 {
 
 .sidebar-footer {
   display: grid;
+  flex-shrink: 0;
+  max-height: calc(100% - var(--space-6));
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
   container-type: inline-size;
   container-name: sidebar-footer;
   margin-top: auto;
@@ -451,6 +460,10 @@ h1 {
 
 .workspace-shell-navigation-collapsed .shell-navigation {
   padding-top: 1.25rem;
+}
+
+.workspace-shell-navigation-collapsed .sidebar-footer {
+  max-height: calc(100% - var(--space-4) - 1.25rem);
 }
 
 .workspace-shell-navigation-collapsed .shell-navigation .nav-submenu {
@@ -1074,10 +1087,6 @@ h1 {
 
   .workspace-shell-navigation-collapsed {
     grid-template-columns: 3.75rem minmax(0, 1fr);
-  }
-
-  .shell-sidebar {
-    min-height: 100vh;
   }
 
   .sidebar-note {
