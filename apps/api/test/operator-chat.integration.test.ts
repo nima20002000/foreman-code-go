@@ -21,6 +21,9 @@ import { FoundationSettingsManagementService } from '../src/modules/settings/man
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
+import { PostgresOperatorChatAuthority } from '../src/modules/conversations/operatorChatAuthority.js'
+import type { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
+import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 
 const connectionString = process.env.TEST_DATABASE_URL
 
@@ -292,6 +295,82 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       await expect(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).rejects.toThrow('not found')
     } finally { for (const client of clients) await client.close(); await app.close() }
   })
+  it('inspects persisted Claude setup through read-only HTTP and MCP without creating an execution owner', async () => {
+    const settings = new PostgresFoundationSettingsRepository(pool)
+    const commands = new PostgresCommandCoordinator(pool)
+    const inspected: Array<{ principalId: string; configurationId: string; profileId?: string }> = []
+    let endpoint = ''
+    let managersCreated = 0
+    const inspectionAuthority: OperatorChatAuthority = { ...authority,
+      setupConfiguration: (principal, configuration, signal) => new PostgresOperatorChatAuthority(pool, access, {} as NativeRollout,
+        '/tmp/graphql-test-operator', endpoint, undefined, async () => {}, async (current, selected) => {
+          inspected.push({ principalId: current.id, configurationId: selected.id,
+            ...(selected.harnessProfileSelection ? { profileId: selected.harnessProfileSelection.instanceId } : {}) })
+          return { harness: 'claude', status: 'configured', endpoint, checkedAt: new Date().toISOString() }
+        }).setupConfiguration(principal, configuration, signal),
+    }
+    chat = new OperatorChatService(repository, operators, () => { managersCreated++; throw new Error('Setup must not allocate a turn manager') },
+      '/tmp/graphql-test-operator', inspectionAuthority)
+    const service = new FoundationSettingsManagementService(settings, commands, undefined, operators)
+    const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { settings: service, operatorChat: chat, commands } as unknown as OperatorServices } })
+    registerOperatorChatRoutes(app, chat)
+    const clients: Client[] = []
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 }); endpoint = `${address}/mcp`
+      const mainId = '11111111-1111-4111-8111-111111111111'
+      const selector = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef: { kind: 'main' as const, mainId },
+        applicationInstallationId: mainId, harnessInstallationId: 'synthetic-claude-installation', installationFingerprint: 'synthetic-payload' } }
+      const saved = await settings.updateAgentDefaults({ ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator,
+        harnessProfileSelection: selector, harness: { harness: 'claude', model: 'synthetic-claude-model', authMode: 'subscription',
+          configDirectory: '/synthetic/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '',
+          mcpServers: { graphql: { type: 'http', url: endpoint } } } } }, 0)
+      const first = (await operators.ensure()).configuration
+      const reader = await access.issue({ name: 'Claude installation reader', audience: 'operator',
+        grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+      const response = await fetch(`${address}/api/operator/setup?harness=claude&expectedDefaultsRevision=${saved.revision}`, { headers: { Authorization: `Bearer ${reader.token}` } })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ status: 'configured', harness: 'claude', configurationVersionId: first.id })
+      const client = new Client({ name: 'claude-setup-reader', version: '1' }); clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => reader.token } }))
+      expect((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).structuredContent).toMatchObject({ status: 'configured', configurationVersionId: first.id })
+      const readback = ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+      expect(readback.value.operator.harnessProfileSelection).toEqual(selector)
+      expect(readback.value.operator.harness).toMatchObject({ sandbox: 'danger-full-access' })
+      const nextSelector = { ...selector, instanceId: randomUUID(), instanceRevision: '2' }
+      const changed = await settings.updateAgentDefaults({ ...saved.value, operator: { ...saved.value.operator, harnessProfileSelection: nextSelector } }, saved.revision)
+      const connection = await pool.connect()
+      let second: typeof first
+      try {
+        await connection.query('begin')
+        second = (await operators.updateWithClient(connection, first.harness, first.id, first.showThinking, undefined, nextSelector)).configuration
+        await connection.query('commit')
+      } catch (error) { await connection.query('rollback'); throw error } finally { connection.release() }
+      expect(changed.value.operator.harnessProfileSelection).toEqual(nextSelector)
+      const transitioned = await fetch(`${address}/api/operator/setup?harness=claude&expectedDefaultsRevision=${changed.revision}`, { headers: { Authorization: `Bearer ${reader.token}` } })
+      expect(transitioned.status).toBe(200)
+      expect(await transitioned.json()).toMatchObject({ configurationVersionId: second.id })
+      expect(inspected).toEqual([
+        { principalId: reader.principal.id, configurationId: first.id, profileId: selector.instanceId },
+        { principalId: reader.principal.id, configurationId: first.id, profileId: selector.instanceId },
+        { principalId: reader.principal.id, configurationId: second.id, profileId: nextSelector.instanceId },
+      ])
+      expect((await repository.configuration(first.id))?.harnessProfileSelection).toEqual(selector)
+      const denied = await access.issue({ name: 'No installation grant', audience: 'operator', grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+      const deniedResponse = await fetch(`${address}/api/operator/setup?harness=claude`, { headers: { Authorization: `Bearer ${denied.token}` } })
+      expect(deniedResponse.status).toBe(403)
+      const deniedClient = new Client({ name: 'claude-setup-denied', version: '1' }); clients.push(deniedClient)
+      await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => denied.token } }))
+      expect((await deniedClient.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
+      await expect(deniedClient.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).rejects.toThrow('not found')
+      await expect(client.callTool({ name: 'operator_chat_create', arguments: {} })).rejects.toThrow('not found')
+      expect(managersCreated).toBe(0)
+      expect((await pool.query('select id from operator_conversations')).rowCount).toBe(0)
+      expect((await pool.query('select request_id from operator_conversation_turns')).rowCount).toBe(0)
+      expect((await pool.query('select principal_id from operator_chat_credentials')).rowCount).toBe(0)
+    } finally { for (const client of clients) await client.close(); await app.close() }
+  })
+
   it('checks the Operator MCP setup without creating an Operator or a conversation', async () => {
     expect(await chat.setup(owner)).toMatchObject({ harness: 'codex', status: 'configured' })
     expect((await pool.query('select id from application_operators')).rowCount).toBe(0)

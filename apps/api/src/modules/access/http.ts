@@ -54,6 +54,7 @@ function actionFor(request: FastifyRequest) {
   if (/^\/api\/workspaces\/[^/]+\/workflows\/[^/]+\/reference-files(?:\/|$)/.test(url)) {
     return request.method === 'GET' ? 'workflows:read' as const : 'workflows:update' as const
   }
+  if (url === '/api/operator/setup') return 'harnesses:read' as const
   if (url.startsWith('/api/operator/conversations')) {
     if (['GET', 'HEAD'].includes(request.method)) return 'operator_chat:read' as const
     // Upload IDs are data, not chat actions (for example: uploads/cancel or uploads/responses).

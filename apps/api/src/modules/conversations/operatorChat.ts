@@ -84,6 +84,8 @@ export interface OperatorChatAuthority {
   current(principalId: string): Promise<ManagementPrincipal>
   assertConfiguration(configuration: OperatorConfigurationVersion): void
   setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup>
+  /** Installation inspection has read authority and no accepted native turn. */
+  setupConfiguration?(principal: ManagementPrincipal, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<OperatorChatSetup>
   prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
     principalId: string, signal: AbortSignal): Promise<ChildProcessEnvironment>
   release(conversationId: string): Promise<void>
@@ -186,13 +188,20 @@ export class OperatorChatService {
       throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'The requested message configuration does not match its Operator harness.', 409)
     }
     const selected = configuration
-    const configurationId = `${selected.id}:${selected.contentHash}`
+    const configurationId = `${principal.id}:${selected.id}:${selected.contentHash}`
     if (this.setupCheck?.configurationId === configurationId) return this.setupCheck.promise
     const check = (async () => {
+      const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
+      if (selected.harness.harness === 'claude') {
+        if (!this.authority.setupConfiguration) throw new DomainError('OPERATOR_SETUP_INSPECTION_UNAVAILABLE',
+          'Claude installation inspection is unavailable.', 503)
+        const result = await this.authority.setupConfiguration(principal, selected, signal)
+        return { ...result, ...(selected.id === 'application-operator-inspection' ? {} : { configurationVersionId: selected.id }) }
+      }
       const id = `operator-setup:${randomUUID()}`
       const manager = this.managers(selected, id)
       try {
-        const result = await this.authority.setup(manager, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]), selected)
+        const result = await this.authority.setup(manager, signal, selected)
         return { ...result, ...(selected.id === 'application-operator-inspection' ? {} : { configurationVersionId: selected.id }) }
       } finally { try { await manager.dispose?.() } finally { this.managers.release?.(id) } }
     })()
