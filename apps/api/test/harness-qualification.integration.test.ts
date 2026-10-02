@@ -8,6 +8,7 @@ import { expect, it, vi } from 'vitest'
 import { HarnessQualificationListSchema } from '@graphql/contracts/harness-qualification'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { fileReferenceAccessMigration } from '../src/infrastructure/fileReferenceAccessMigration.js'
 import { harnessQualificationMigration } from '../src/infrastructure/harnessQualificationMigration.js'
 import { migrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -21,7 +22,9 @@ import type { QualificationSuite } from '../src/modules/harnesses/qualification/
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('registers the qualification migration after earlier blocks', () => {
-  expect(migrations.at(-1)).toBe(harnessQualificationMigration)
+  const prerequisite = migrations.indexOf(fileReferenceAccessMigration)
+  expect(prerequisite).toBeGreaterThanOrEqual(0)
+  expect(migrations.indexOf(harnessQualificationMigration)).toBeGreaterThan(prerequisite)
   expect(new Set(migrations.map((migration) => migration.version)).size).toBe(migrations.length)
 })
 

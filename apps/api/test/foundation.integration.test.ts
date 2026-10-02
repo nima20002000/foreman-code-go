@@ -4,7 +4,7 @@ import { DEFAULT_AGENT_DEFAULTS } from '@graphql/contracts'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { applyApplicationMigrations, migrations } from '../src/infrastructure/migrations.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
@@ -29,7 +29,7 @@ describe.skipIf(!connectionString)('HAP-01 durable foundation', () => {
     try {
       await applyApplicationMigrations(pool)
       await applyApplicationMigrations(pool)
-      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 100, 400, 401, 500, 501, 502, 503, 507, 508, 509, 700, 701, 800, 1701, 1702, 170017, 170018, 170019, 170020, 170021, 170022, 170023, 170024, 170025, 170026, 250001, 250002, 250003, 250005, 264201, 264401, 264402, 264403, 264404, 264405, 264501, 264502, 264601, 264602, 264603, 264604, 264701, 265501, 265502, 267201, 267202, 267203, 268201, 269301, 269401, 269501, 270203, 270204, 270205, 273601, 273605, 273636, 273637, 273640, 278001, 26090501])
+      expect((await pool.query<{ version: number }>('select version from application_migrations order by version')).rows.map((row) => row.version)).toEqual(migrations.map((migration) => migration.version).toSorted((a, b) => a - b))
       await ensureAcceptanceSeed(pool)
 
       const settings = new PostgresFoundationSettingsRepository(pool)
