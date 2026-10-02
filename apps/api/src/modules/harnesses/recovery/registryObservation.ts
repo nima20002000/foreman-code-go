@@ -37,9 +37,7 @@ function directory(path: string): boolean {
 function* entries(path: string): Iterable<string> {
   const handle = opendirSync(path)
   try {
-    let count = 0
     for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
-      if (++count > 10_000) throw new Error('limit-exceeded')
       yield entry.name
     }
   } finally { handle.closeSync() }
@@ -130,8 +128,9 @@ class Projection {
       const ownerDirectory = join(this.root, ownerKey)
       if (!directory(ownerDirectory)) continue
       for (const id of entries(ownerDirectory)) {
-        if (++scanned > 10_000) throw new Error('limit-exceeded')
+        // Compact retirement receipts and GC tombstones are not registrations.
         if (!/^[0-9a-f-]{36}$/.test(id)) continue
+        if (++scanned > 10_000) throw new Error('limit-exceeded')
         const launch = readLaunch(this.root, ownerKey, id)
         if (!launch) continue
         seen.add(id)
