@@ -47,6 +47,8 @@ describe('current workflow approval authority', () => {
     expect(() => validate(f)).not.toThrow()
     const repeated = structuredClone(f)
     repeated.version.definition.nodes[2]!.agentId = worker!.agentId
+    delete repeated.version.agentConfigurationVersionIds[bridge.agentId]
+    repeated.configurations = repeated.configurations.filter((configuration) => configuration.agentId !== bridge.agentId)
     expect(() => validate(repeated)).toThrow('an Agent may occur only once')
   })
 
