@@ -29,7 +29,7 @@ export function RemoveWorkflowButton({ workspaceId, workflowId, name, revision }
       assertSession(generation)
       attempt.current.succeeded()
       client.setQueryData(queryKeys.managedWorkflow(workspaceId, workflowId), result.value)
-      client.setQueryData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>>>([...queryKeys.managedWorkflows(workspaceId), 'pages'],
+      client.setQueriesData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>>>({ queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages'] },
         (current) => current ? { ...current, pages: current.pages.map((page) => ({ ...page,
           items: page.items.filter((item) => item.workflow.id !== workflowId) })) } : current)
       const location = router.state.location

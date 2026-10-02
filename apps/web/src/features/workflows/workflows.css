@@ -233,6 +233,31 @@
   box-shadow: var(--n-shadow);
 }
 
+.resource-card.workflow-card {
+  position: relative;
+  align-items: flex-start;
+  padding: 0.25rem;
+}
+
+.resource-card.workflow-card .resource-card-open {
+  min-height: 2.75rem;
+  gap: var(--space-2);
+  padding: 0.5rem;
+}
+
+.resource-card.workflow-card .workflow-card-actions-wrap > .n-icon-button {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  margin: 0.25rem;
+}
+
+.resource-card.workflow-card .resource-card-select > label {
+  min-height: 2.75rem;
+  padding: 0.5rem;
+}
+
 .new-workflow-form {
   display: grid;
   gap: var(--space-2);

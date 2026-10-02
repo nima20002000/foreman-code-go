@@ -86,10 +86,10 @@ export function WorkflowDirectory({ workspaceId, headingLevel = 1 }: { workspace
 
 function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: string; headingLevel: 1 | 2 }) {
   const queryClient = useQueryClient()
-  const managedQuery = useWorkflowPages(workspaceId, true)
+  const managedQuery = useWorkflowPages(workspaceId, true, 'directory')
   const updateWorkflow = useUpdateManagedWorkflowMutation()
   const archiveWorkflow = useArchiveManagedWorkflowMutation()
-  const [selectionStore] = useState(createResourceSelection)
+  const [selectionStore] = useState(() => createResourceSelection())
   const selection = useStore(selectionStore)
   const count = Object.keys(selection.selected).length
   const attempt = useRef(new CommandAttempt<Omit<WorkflowBatchArchiveInput, 'commandId'>>())
@@ -106,7 +106,8 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
     onError: (error) => attempt.current.failed(error),
   })
   const locked = batch.isPending || attempt.current.unresolved
-  const managed = managedQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const managed = [...new Map((managedQuery.data?.pages.flatMap((page) => page.items) ?? [])
+    .map((item) => [item.workflow.id, item])).values()]
   const closeConfirmation = () => { if (!locked) { selection.confirm(false); batch.reset() } }
   const deleteSelected = async () => {
     if (inFlight.current) return
@@ -119,8 +120,8 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
       assertSession(generation)
       attempt.current.succeeded()
       const deleted = new Set(result.value.workflowIds)
-      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>>>(
-        [...queryKeys.managedWorkflows(workspaceId), 'pages'], (current) => current ? {
+      queryClient.setQueriesData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>>>(
+        { queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages'] }, (current) => current ? {
           ...current, pages: current.pages.map((page) => ({ ...page, items: page.items.filter((item) => !deleted.has(item.workflow.id)) })),
         } : current,
       )
@@ -212,7 +213,7 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
           />
         </div>
       )}
-      <LoadMore label="workflows" query={managedQuery} />
+      <LoadMore loadAll label="workflows" query={managedQuery} />
       <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
         title={`Delete ${count} ${count === 1 ? 'workflow' : 'workflows'}?`}
         description="Selected workflows will be removed from the list. Saved versions and run history are retained. Workflows with active runs cannot be deleted."

@@ -104,9 +104,13 @@ export function useWorkspaceDetailsQuery(
   })
 }
 
-export function useWorkspacePages(enabled = true) {
+// Directory load-all must not expand the independently paged sidebar cache.
+type CatalogView = 'navigation' | 'directory'
+
+export function useWorkspacePages(enabled = true, view: CatalogView = 'navigation') {
   return useInfiniteQuery({
-    enabled, queryKey: [...queryKeys.managedWorkspaces, 'pages'], initialPageParam: undefined as string | undefined,
+    enabled, queryKey: [...queryKeys.managedWorkspaces, 'pages', ...(view === 'directory' ? ['directory'] : [])],
+    ...(view === 'directory' ? { maxPages: 0 } : {}), initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkspacePage(pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
@@ -117,7 +121,7 @@ export function useWorkspacePages(enabled = true) {
 
 export function useWorkspaceStorageFolderPages(enabled = true) {
   return useInfiniteQuery({
-    enabled, queryKey: queryKeys.workspaceStorageFolders, initialPageParam: undefined as string | undefined,
+    enabled, maxPages: 0, queryKey: queryKeys.workspaceStorageFolders, initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listWorkspaceStorageFolderPage(pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
@@ -133,9 +137,10 @@ export function useManagedWorkflowQuery(workspaceId: string, workflowId: string,
   })
 }
 
-export function useWorkflowPages(workspaceId: string, enabled = true) {
+export function useWorkflowPages(workspaceId: string, enabled = true, view: CatalogView = 'navigation') {
   return useInfiniteQuery({
-    enabled, queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages'], initialPageParam: undefined as string | undefined,
+    enabled, queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages', ...(view === 'directory' ? ['directory'] : [])],
+    ...(view === 'directory' ? { maxPages: 0 } : {}), initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkflowPage(workspaceId, pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
