@@ -11,6 +11,7 @@ import { requireAuthorization } from '../../access/policy.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../../commands/postgres.js'
 import type { HostHarnessInstanceProfileChecks } from './profileChecks.js'
 import { harnessHostKey, type HarnessInstanceSettingsRepository } from './repository.js'
+import { nativeProfileCheckId } from './profileChecks.js'
 
 export interface HostHarnessOverrideAuthority {
   authorize(principal: ManagementPrincipal, action: 'harnesses:read' | 'harnesses:update', hostRef: CanonicalMachineReference, applicationInstallationId: string, client?: pg.PoolClient): Promise<void>
@@ -29,6 +30,7 @@ export class HostHarnessOverrideService {
     private readonly authority: HostHarnessOverrideAuthority,
     private readonly evidence: (value: HostHarnessOverride, client?: pg.PoolClient) => Promise<HostHarnessOverrideEvidence | null>,
     private readonly profileChecks?: HostHarnessInstanceProfileChecks,
+    private readonly configurationTarget?: (configuration: HarnessConfiguration) => HostHarnessOverride['target'],
   ) {}
   get qualificationSupported(): boolean { return Boolean(this.profileChecks) }
   async closeChecks(): Promise<void> { await this.profileChecks?.close() }
@@ -82,6 +84,45 @@ export class HostHarnessOverrideService {
       || !isDeepStrictEqual(withAdvancedDefaults(value.configuration), canonicalConfiguration)) {
       throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'The selected configured profile or its canonical configuration changed. Read the exact host profile again before saving.', 409)
     }
+  }
+  /** New local Claude choices may reuse an exact qualified saved profile.
+   * No changed model/effort/access setting can borrow another profile's proof. */
+  async selectionForConfiguration(principal: ManagementPrincipal, configuration: HarnessConfiguration, client: pg.PoolClient): Promise<HarnessProfileSelection | undefined> {
+    requireAuthorization(principal, 'harnesses:read')
+    const installation = (await client.query<{ id: string }>('select id::text as id from application_installation')).rows[0]
+    if (!installation) return undefined
+    const hostRef = { kind: 'main' as const, mainId: installation.id }
+    await this.authority.authorize(principal, 'harnesses:read', hostRef, installation.id, client)
+    const profiles = await this.repository.list(hostRef, installation.id, client)
+    for (const profile of profiles) {
+      if (!profile.enabled || !isDeepStrictEqual(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration))) continue
+      if ((await this.describe(profile, client)).qualification !== 'qualified') continue
+      const selection = { instanceId: profile.instanceId, instanceRevision: profile.instanceRevision, target: profile.target }
+      await this.validateSelection(principal, selection, configuration, client)
+      return selection
+    }
+    return undefined
+  }
+  /** First Operator Claude setup shares the saved-profile operation, authority,
+   * idempotent receipts and native producer used by computer settings/MCP. */
+  async prepareOperatorConfiguration(principal: ManagementPrincipal, source: 'http' | 'mcp', configuration: HarnessConfiguration,
+    commandId: string): Promise<HarnessProfileSelection | undefined> {
+    if (configuration.harness !== 'claude' || !this.configurationTarget || !this.profileChecks) return undefined
+    requireAuthorization(principal, 'harnesses:read'); requireAuthorization(principal, 'harnesses:update')
+    const target = this.configurationTarget(configuration)
+    if (target.hostRef.kind !== 'main') throw new DomainError('HARNESS_HOST_MISMATCH', 'Automatic Operator setup uses only its actual local Claude installation.', 409)
+    const instanceId = nativeProfileCheckId(target.hostRef.mainId, principal.id, `operator-claude-profile:${commandId}`)
+    const saveCommandId = nativeProfileCheckId(target.hostRef.mainId, principal.id, `operator-claude-save:${commandId}`)
+    const checkCommandId = nativeProfileCheckId(target.hostRef.mainId, principal.id, `operator-claude-check:${commandId}`)
+    const existing = await this.repository.list(target.hostRef, target.applicationInstallationId)
+    const exact = existing.find(profile => profile.enabled && isDeepStrictEqual(profile.target, target)
+      && isDeepStrictEqual(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration)))
+    const profile = exact ?? (await this.save(principal, source, { instanceId, target, configuration, presetId: 'local-default:claude',
+      expectedRevision: 0, commandId: saveCommandId, enabled: true })).value
+    const checked = await this.check(principal, source, { instanceId: profile.instanceId, target: profile.target,
+      expectedRevision: profile.revision, commandId: checkCommandId })
+    if (!checked.proof.qualified) throw new DomainError('CLAUDE_DEFAULT_SETUP_UNQUALIFIED', checked.proof.failure?.message ?? 'The exact installed Claude profile did not qualify.', 409)
+    return { instanceId: checked.value.instanceId, instanceRevision: checked.value.instanceRevision, target: checked.value.target }
   }
   async save(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HostHarnessOverrideSave) {
     try { return await this.saveAuthorized(principal, source, raw) } catch (error) {

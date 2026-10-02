@@ -24,7 +24,9 @@ export function HostHarnessProfileCheck({ value, draftDirty }: { value: HostHarn
     <UnsavedEditorGuard editor={{ label: 'host profile diagnostic', dirty: attempt.unresolved, busy: check.isPending, uncertain: attempt.unresolved,
       save: submit, discard: () => { if (!attempt.unresolved) check.reset() }, error: check.error?.message }} />
     <h4>Check this profile</h4>
-    <p className="computer-hint">Runs native diagnostics on this computer with the saved profile. Unsaved edits are not included.</p>
+    <p className="computer-hint">{value.driverId === 'claude'
+      ? 'Runs a short Claude conversation and tool-policy checks with disposable files on this computer. Uses the saved subscription profile and its capacity. Unsaved edits are not included.'
+      : 'Runs native diagnostics on this computer with the saved profile. Unsaved edits are not included.'}</p>
     <Button disabled={check.isPending || (!attempt.unresolved && (draftDirty || !value.enabled || value.qualification === 'installation-changed'))} onClick={() => void submit()}>
       {check.isPending ? 'Checking saved profile…' : attempt.unresolved ? 'Reconcile original profile check' : 'Check saved profile on this computer'}
     </Button>
@@ -34,6 +36,7 @@ export function HostHarnessProfileCheck({ value, draftDirty }: { value: HostHarn
     {check.error ? <p role="alert">{check.error.message}</p> : null}
     {check.data && check.data.proof.instanceRevision !== value.instanceRevision ? <p role="status">This diagnostic belongs to an earlier saved revision and does not qualify the current profile.</p> : null}
     {check.data ? <>
+      {check.data.proof.failure ? <p role="alert">{check.data.proof.failure.message}</p> : null}
       <dl className="computer-facts computer-facts--status">
         <div><dt>Authenticated</dt><dd>{check.data.proof.authenticated ? 'Yes' : 'No'}</dd></div>
         <div><dt>Compatible</dt><dd>{check.data.proof.compatible ? 'Yes' : 'No'}</dd></div>

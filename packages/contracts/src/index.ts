@@ -1,6 +1,6 @@
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
-import { ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
+import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 import { changeCodexSandbox } from './harnessEditing.js';
 export * from './claude.js';
 export * from './claudeQualification.js';
@@ -1425,11 +1425,11 @@ export const OperatorChatSettingsSchema = z.discriminatedUnion("harness", [
     serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
   z.object({ harness: z.literal("opencode"), model: z.string().trim().min(1), variant: z.string(),
     showThinking: z.boolean() }).strict(),
-  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), showThinking: z.boolean() }).strict(),
+  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
 ]);
 export type OperatorChatSettings = z.infer<typeof OperatorChatSettingsSchema>;
 export function operatorChatSettings(harness: HarnessConfiguration, showThinking = false): OperatorChatSettings {
-  if (harness.harness === "claude") return { harness: "claude", model: harness.model, showThinking };
+  if (harness.harness === "claude") return { harness: "claude", model: harness.model, ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
   return harness.harness === "codex"
     ? { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort, serviceTier: harness.serviceTier, showThinking }
     : { harness: "opencode", model: harness.model, variant: harness.variant, showThinking: harness.thinking };
@@ -1437,7 +1437,8 @@ export function operatorChatSettings(harness: HarnessConfiguration, showThinking
 /** Apply chat controls without replacing the accepted execution permissions. */
 export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
   if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
-  if (settings.harness === "claude") return HarnessConfigurationSchema.parse({ ...base, model: settings.model });
+  if (settings.harness === "claude") return HarnessConfigurationSchema.parse({ ...base, model: settings.model,
+    ...(settings.effort ? { effort: settings.effort } : {}) });
   return HarnessConfigurationSchema.parse(settings.harness === "codex"
     ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
     : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking });

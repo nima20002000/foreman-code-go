@@ -38,6 +38,7 @@ export interface ClaudeCompiledConfiguration {
   qualification: ReturnType<typeof claudeQualificationCapabilities>
   cwd: string
   model: string
+  effort?: ClaudeHarnessConfiguration['effort']
   permissionMode: 'default'
   tools: string[]
   allowedTools: string[]
@@ -83,13 +84,21 @@ export function requireClaudePolicyQualification(configuration: ClaudeHarnessCon
 export function compileClaudeConfiguration(raw: unknown, cwd: string, qualification: ClaudePolicyQualification,
   source: NodeJS.ProcessEnv = process.env, apiKey?: string): ClaudeCompiledConfiguration {
   const configuration = ClaudeHarnessConfigurationSchema.parse(raw)
-  if (!cwd.startsWith('/') || cwd.includes('\0')) throw new HarnessExecutionError('CLAUDE_CWD_INVALID', 'An accepted absolute working directory is required.')
   const capabilities = requireClaudePolicyQualification(configuration, qualification)
+  return { ...claudeCandidateConfiguration(configuration, cwd, source, apiKey), qualification: capabilities }
+}
+
+/** Pure policy translation shared by owned qualification and admitted runtime.
+ * This does not allocate a manager or grant production admission. */
+export function claudeCandidateConfiguration(configuration: ClaudeHarnessConfiguration, cwd: string,
+  source: NodeJS.ProcessEnv = process.env, apiKey?: string): Omit<ClaudeCompiledConfiguration, 'qualification'> {
+  if (!cwd.startsWith('/') || cwd.includes('\0')) throw new HarnessExecutionError('CLAUDE_CWD_INVALID', 'An accepted absolute working directory is required.')
   // AskUserQuestion is a real available tool; allowedTools only configures approval, not availability.
   const tools = [...configuration.tools]
   const allowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'allow' && rule.tool !== 'AskUserQuestion').map((rule) => rule.tool)
   const disallowedTools = configuration.permissionRules.filter((rule) => rule.effect === 'deny').map((rule) => rule.tool)
-  return { configuration: structuredClone(configuration), qualification: capabilities, cwd, model: configuration.model, permissionMode: 'default',
+  return { configuration: structuredClone(configuration), cwd, model: configuration.model, permissionMode: 'default',
+    ...(configuration.effort ? { effort: configuration.effort } : {}),
     tools, allowedTools, disallowedTools, strictMcpConfig: true, settingSources: [], systemPrompt: configuration.instructions,
     mcpServers: structuredClone(configuration.mcpServers), env: claudeEnvironment(configuration, source, apiKey),
     sandbox: { enabled: configuration.sandbox !== 'danger-full-access', autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false } }

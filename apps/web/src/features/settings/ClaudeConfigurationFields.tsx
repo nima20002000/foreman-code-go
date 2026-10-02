@@ -1,11 +1,13 @@
-import type { ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import { ClaudeEffortSchema, type ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
+import type { HarnessOptions } from '@graphql/contracts/management'
 import { Alert, Combobox, Select, TextField } from '../../shared/ui/nocturne'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
+import './harnessModelFields.css'
 
 type Props = {
   value: ClaudeHarnessConfiguration
   onChange(value: ClaudeHarnessConfiguration): void
-  models: readonly { id: string; name?: string }[]
+  models: readonly (Pick<HarnessOptions['models'][number], 'id' | 'name'> & Partial<Pick<HarnessOptions['models'][number], 'reasoningEfforts'>>)[]
   qualified: boolean
   pending?: boolean
   error?: string
@@ -14,12 +16,21 @@ type Props = {
 /** Discovery and saved state are provided by the shared settings query/command owner. */
 export function ClaudeConfigurationFields({ value, onChange, models, qualified, pending = false, error, issues = [] }: Props) {
   const options = models.map((model) => ({ value: model.id, label: model.name ?? model.id, description: model.id, disabled: false }))
+  const selected = models.find(model => model.id === value.model)
+  const efforts = selected?.reasoningEfforts?.filter(effort => ClaudeEffortSchema.safeParse(effort).success) ?? []
   if (!options.some((option) => option.value === value.model)) options.unshift({ value: value.model, label: value.model, description: 'Saved model · awaiting native qualification', disabled: true })
   return <div className="harness-basic-fields">
+    <div className="harness-model-settings"><div className="harness-model-fields">
     {models.length ? <Combobox label="Model" value={value.model} options={options} error={fieldMessage(issues, 'model')}
-      onValueChange={(model) => { if (models.some((item) => item.id === model)) onChange({ ...value, model }) }} />
+      onValueChange={(model) => { const chosen = models.find(item => item.id === model); if (chosen) onChange({ ...value, model,
+        ...(chosen.reasoningEfforts?.includes(value.effort ?? '') ? {} : chosen.reasoningEfforts?.includes('medium') ? { effort: 'medium' } : { effort: undefined }) }) }} />
       : <TextField label="Model" value={value.model} error={fieldMessage(issues, 'model')} hint="An explicit model choice; saving it does not prove native model availability."
         onChange={event => onChange({ ...value, model: event.target.value })} />}
+    <Select label="Effort" value={value.effort ?? ''} error={fieldMessage(issues, 'effort')}
+      options={[{ value: '', label: 'Native default' }, ...[...new Set([...efforts, ...(value.effort ? [value.effort] : [])])].map(effort => ({
+        value: effort, label: efforts.includes(effort) ? effort : `${effort} · saved, unavailable`, disabled: !efforts.includes(effort) }))]}
+      onChange={event => onChange({ ...value, effort: event.target.value ? ClaudeEffortSchema.parse(event.target.value) : undefined })} />
+    </div></div>
     <TextField label="Local Claude profile directory" value={value.configDirectory} error={fieldMessage(issues, 'configDirectory')}
       hint="Sign in on the selected computer using this profile."
       onChange={(event) => onChange({ ...value, configDirectory: event.target.value })} />
@@ -32,7 +43,7 @@ export function ClaudeConfigurationFields({ value, onChange, models, qualified, 
         onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
     </div>
     {pending ? <span className="harness-status" role="status">Checking the selected Claude configuration…</span> : null}
-    {error ? <Alert tone="danger" live title={error} /> : !qualified && !pending ? <Alert tone="warning" title="Claude is awaiting native qualification" >Save and execution require verified authentication, settings isolation and sandbox support on the selected computer.</Alert> : null}
+    {error ? <Alert tone="danger" live title={error} /> : !qualified && !pending ? <Alert tone="warning" title="Claude is awaiting native qualification" >Execution requires verified authentication, settings isolation and sandbox support on the selected computer.</Alert> : null}
     <p className="harness-status">Tool approvals use app routing. Native settings, hooks, plugins and agents are excluded from the accepted configuration.</p>
   </div>
 }

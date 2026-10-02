@@ -111,7 +111,7 @@ function ClaudePresetSetup({ value, onChange, issues }: { value: ClaudeSetup; on
   const setup = useClaudeSetupOptions()
   return <div className="harness-basic-fields">
     <p>Claude has no saved preset.</p><p>Enter an actual profile on the selected computer and choose a model, authentication and sandbox explicitly. New presets enable no tools; approvals use app routing.</p>
-    <TextField label="Model" value={value.model ?? ''} error={fieldMessage(issues, 'model')}
+    <TextField label="Model" value={value.model ?? ''} error={fieldMessage(issues, 'model')} className="harness-model-secondary"
       onChange={(event) => onChange({ ...value, model: event.target.value })} />
     <TextField label="Local Claude profile directory" value={value.configDirectory ?? ''} error={fieldMessage(issues, 'configDirectory')}
       onChange={(event) => onChange({ ...value, configDirectory: event.target.value })} />
@@ -125,6 +125,6 @@ function ClaudePresetSetup({ value, onChange, issues }: { value: ClaudeSetup; on
       hint="Uses this app’s endpoint. Tool access is selected separately after saving."
       onChange={event => onChange({ ...value, mcpServers: event.target.checked && setup.data?.graphqlMcp ? { graphql: setup.data.graphqlMcp } : {} })} />
     {setup.isError ? <p role="alert">Could not read the app MCP endpoint. <Button size="sm" onClick={() => void setup.refetch()}>Retry</Button></p> : null}
-    <p>Saving stores this preset. Native Claude qualification is not available in this runtime; execution remains blocked until the exact host profile has verified authentication, sandbox and lifecycle evidence.</p>
+    <p>Saving stores this preset. Check the saved profile in computer settings before execution. Authentication, tool policy and lifecycle evidence must match that exact profile.</p>
   </div>
 }

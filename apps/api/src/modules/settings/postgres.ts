@@ -12,7 +12,13 @@ const SETTINGS_KEY = 'harness-defaults'
 
 /** Complete legacy templates on read without changing their explicit permission choice. */
 export function normalizeHarnessDefaults(record: unknown): HarnessDefaults {
-  const candidate = (record === undefined ? DEFAULT_HARNESS_DEFAULTS : record) as HarnessDefaults
+  const candidate = structuredClone(record === undefined ? DEFAULT_HARNESS_DEFAULTS : record) as HarnessDefaults
+  // Startup's native initializer persists actual discovered values. Until it
+  // completes, missing legacy fields can still be inventoried without executing.
+  for (const harness of ['codex', 'opencode'] as const) {
+    if (!candidate[harness]) candidate[harness] = structuredClone(DEFAULT_HARNESS_DEFAULTS[harness]) as never
+    else if (typeof candidate[harness].model !== 'string' || !candidate[harness].model.trim()) candidate[harness].model = DEFAULT_HARNESS_DEFAULTS[harness].model
+  }
   const defaults = HarnessDefaultsSchema.parse(candidate)
   return { codex: withAdvancedDefaults(defaults.codex), opencode: withAdvancedDefaults(defaults.opencode),
     ...(defaults.claude ? { claude: withAdvancedDefaults(defaults.claude) } : {}) }

@@ -13,9 +13,12 @@ export const ClaudeMcpServerSchema = z.object({
 /** Supplied by the owning API; browser origins are not MCP endpoint authorities. */
 export const ClaudeSetupOptionsSchema = z.object({ graphqlMcp: ClaudeMcpServerSchema.nullable() }).strict();
 export type ClaudeSetupOptions = z.infer<typeof ClaudeSetupOptionsSchema>;
+export const ClaudeEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 /** Explicit accepted policy. Ambient Claude settings and launch flags are never inputs. */
 export const ClaudeHarnessConfigurationSchema = z.object({
   harness: z.literal('claude'), model: z.string().trim().min(1),
+  /** Absent on historical pins; new detected defaults select medium when advertised. */
+  effort: ClaudeEffortSchema.optional(),
   authMode: z.enum(['subscription', 'api-key']), configDirectory: AbsolutePath,
   permissionMode: z.literal('default'), sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
   tools: z.array(ToolName).max(100),

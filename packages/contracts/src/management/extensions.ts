@@ -61,6 +61,8 @@ export const OpenCodeModelsRefreshInputSchema = z.object({ harness: z.literal("o
 export const HarnessModelOptionSchema = z.object({
   id: IdSchema, providerId: IdSchema.optional(), name: z.string().optional(),
   reasoningEfforts: z.array(z.string()), variants: z.array(z.string()), serviceTiers: z.array(z.string()),
+  /** Native catalog provenance, used only when initializing an unset selection. */
+  releasedAt: z.string().optional(), defaultPriority: z.number().finite().optional(),
 }).strict();
 export const HarnessOptionsResultSchema = z.object({
   harness: z.enum(["codex", "opencode", "claude"]), providerVersion: z.string().min(1),

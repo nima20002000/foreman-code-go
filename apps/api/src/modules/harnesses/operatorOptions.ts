@@ -13,7 +13,7 @@ function bounded(value: unknown, name: string): unknown[] {
 }
 
 export function codexModelOptions(value: unknown): HarnessOptions['models'] {
-  return bounded(object(value).models, 'models').map((item) => {
+  return bounded(object(value).models, 'models').filter(item => object(item).visibility !== 'hide').map((item) => {
     const model = object(item)
     if (typeof model.slug !== 'string' || !model.slug) throw new DomainError('HARNESS_CATALOG_INVALID', 'A native model has no ID.', 502)
     return {
@@ -21,6 +21,7 @@ export function codexModelOptions(value: unknown): HarnessOptions['models'] {
       ...(typeof model.display_name === 'string' ? { name: model.display_name } : {}),
       reasoningEfforts: strings(bounded(model.supported_reasoning_levels ?? [], 'reasoning levels').map((level) => object(level).effort)),
       variants: [], serviceTiers: ['standard', ...(strings(model.additional_speed_tiers).includes('fast') ? ['priority'] : [])],
+      ...(typeof model.priority === 'number' && Number.isFinite(model.priority) ? { defaultPriority: model.priority } : {}),
     }
   })
 }
@@ -40,9 +41,14 @@ export function openCodeOptions(value: unknown, agentsValue: unknown): Pick<Harn
     for (const [id, modelValue] of Object.entries(object(provider.models))) {
       if (models.length >= 10_000) throw new DomainError('HARNESS_CATALOG_INVALID', 'The native model catalog exceeds its limit.', 502)
       const model = object(modelValue)
+      if (model.status === 'deprecated' || model.status === 'disabled') continue
+      const outputModalities = strings(object(model.modalities).output)
+      if (outputModalities.length && !outputModalities.includes('text')) continue
       models.push({ id: `${provider.id}/${id}`, providerId: provider.id,
         ...(typeof model.name === 'string' ? {name: model.name} : {}),
         reasoningEfforts: [], variants: ['', ...Object.keys(object(model.variants))], serviceTiers: [],
+        ...(typeof model.release_date === 'string' && Number.isFinite(Date.parse(model.release_date)) ? { releasedAt: model.release_date } : {}),
+        ...(object(catalog.default)[provider.id] === id ? { defaultPriority: 0 } : {}),
       })
     }
   }
