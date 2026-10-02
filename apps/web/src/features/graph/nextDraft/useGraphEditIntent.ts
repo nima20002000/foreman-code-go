@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameExecutableWorkflow, sameWorkflowValue,
   type GraphEditIntentV3, type GraphEditReadResultV3 } from '@graphql/contracts/wave25'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
+import { queryKeys } from '../../../shared/api/query'
 import { useGraphDraftStore } from '../store'
 import { boardDraftContextKey } from '../../workflow-board/keys'
 import { acknowledgeAgentEdits, hasAgentEdits, stageAgentEdits, referencedAgentEdits } from './agentEdits'
@@ -144,7 +145,12 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
       if (acknowledged) storeEditSnapshot(draftKey, acknowledged)
       if (ownOutbox) acknowledgeEditOutbox(draftKey, intent.stageCommandId)
       setOutboxPending(!!readEditOutbox(draftKey))
-      if (intent.state === 'saved') void queryClient.invalidateQueries({ queryKey: boardDraftContextKey(workspaceId, workflowId) })
+      if (intent.state === 'saved') void Promise.all([
+        queryClient.invalidateQueries({ queryKey: boardDraftContextKey(workspaceId, workflowId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflow(workspaceId, workflowId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
+      ])
     } else if (activeEditIntent(intent) && hydrated.current !== intent.id) {
       const submission = readEditSubmission(draftKey, intent)
       const submittedGraph = submission?.target ?? intent.stagedDraft.graph
