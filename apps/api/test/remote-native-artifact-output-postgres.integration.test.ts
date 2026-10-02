@@ -61,14 +61,14 @@ describe.skipIf(!databaseUrl)('original native artifact output receipt SQL guard
     const workspaceId = `workspace-${suffix}`, agentId = `agent-${suffix}`, configurationId = randomUUID(), conversationId = randomUUID()
     const producer = { workspaceId, workflowId: `workflow-${suffix}`, runId: `run-${suffix}`, nodeId: 'sql-node', executionId: randomUUID(), attemptId: randomUUID(), placementHash: 'b'.repeat(64) }
     const scope = { kind: 'temporary' as const, chat: { kind: 'agent' as const, conversationId, agentId, workspaceId, workflowId: producer.workflowId, runId: producer.runId, executionId: producer.executionId } }
-    const context: FileToolContext = { ownerPrincipalId: principalId, scope, nativeSessionId: 'sql-native', turnId: 'sql-turn', allowMutation: true, allowedTools: ['files.publish_result'] }
+    const context: FileToolContext = { ownerPrincipalId: principalId, scope, nativeSessionId: `sql-native-${suffix}`, turnId: 'sql-turn', allowMutation: true, allowedTools: ['files.publish_result'] }
     const fileId = randomUUID(), revisionId = randomUUID(), transferId = randomUUID(), body = Buffer.from('SQL boundary fixture'), sha256 = createHash('sha256').update(body).digest('hex')
     const record = NativeArtifactOutputSchema.parse({ version: 1, producer, outputKey: 'report', commandId: 'sql-original-command', nativeIdentity: { nativeSessionId: context.nativeSessionId, turnId: context.turnId },
       publication: { ownerPrincipalId: principalId, requestId: randomUUID(), binding: bindingIdentity(context) }, pins: { fileId, revisionId, sha256, byteSize: body.length }, scope,
       transferReceipt: { version: 1, receiptId: randomUUID(), transferId, sha256, byteSize: body.length, verifiedAt: new Date().toISOString(), intent: { version: 1, mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), transferId, operationId: randomUUID(), executionId: producer.executionId, attemptId: producer.attemptId, placementHash: producer.placementHash, rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-main', byteClass: 'artifact', sha256, byteSize: body.length, manifestDigest: 'c'.repeat(64), chunkBytes: 1024, expiresAt: '2099-01-01T00:00:00.000Z' } } })
     const chatContext = { workspaceId, workflowId: producer.workflowId, runId: producer.runId, workflowNodeId: producer.nodeId, agentId }
     const agentKey = internalContext ? 'workflow-native-files:v1:' + JSON.stringify([mainId, producer.executionId, producer.attemptId]) : runChatStorageKey(chatContext, producer.executionId)
-    const conversationRecord = { origin: { kind: 'run_execution', runId: producer.runId, executionId: producer.executionId, sourceNativeSessionId: context.nativeSessionId }, workingDirectory: '/sql-fixture/source', runtimeDirectory: '/sql-fixture/runtime' }
+    const conversationRecord = { origin: { kind: 'run_execution', runId: producer.runId, executionId: producer.executionId, sourceNativeSessionId: context.nativeSessionId }, workingDirectory: '/sql-fixture/source', runtimeDirectory: '/sql-fixture/runtime', workflowFileContext: { fixture: 'original admission' } }
     const client = await pool.connect()
     try {
       await client.query('begin')
@@ -143,9 +143,9 @@ describe.skipIf(!databaseUrl)('original native artifact output receipt SQL guard
       select $2,kind,$3,workspace_id,workflow_id,workflow_node_id,agent_id,agent_configuration_version_id,harness,provider_version,'sql-human-fork',origin_run_id,origin_execution_id,record from operator_conversations where id=$1`, [f.conversationId, humanId, humanKey])
     const human = await findRunChatConversation(pool, f.chatContext, f.record.producer.executionId)
     expect(human?.id).toBe(humanId); expect(human?.native_session_id).toBe('sql-human-fork')
-    expect((await pool.query('select native_session_id from operator_conversations where id=$1', [f.conversationId])).rows[0].native_session_id).toBe('sql-native')
+    expect((await pool.query('select native_session_id from operator_conversations where id=$1', [f.conversationId])).rows[0].native_session_id).toBe(f.record.nativeIdentity.nativeSessionId)
     await expect(pool.query("update operator_conversations set agent_key='workflow-native-files:v1:replacement' where id=$1", [humanId])).rejects.toThrow('original Main admission insertion')
-    for (const replacement of ["native_session_id='replacement'", "provider_version='replacement'", "agent_key='replacement'", "record=jsonb_set(record,'{workingDirectory}','\"/replacement\"')", "record=jsonb_set(record,'{runtimeDirectory}','\"/replacement\"')", "record=jsonb_set(record,'{origin}','{}')"]) {
+    for (const replacement of ["native_session_id='replacement'", "provider_version='replacement'", "agent_key='replacement'", "record=jsonb_set(record,'{workingDirectory}','\"/replacement\"')", "record=jsonb_set(record,'{runtimeDirectory}','\"/replacement\"')", "record=jsonb_set(record,'{origin}','{}')", "record=jsonb_set(record,'{workflowFileContext}','{}')"]) {
       await expect(pool.query(`update operator_conversations set ${replacement} where id=$1`, [f.conversationId])).rejects.toThrow('identity is immutable')
     }
     await expect(pool.query('delete from operator_conversations where id=$1', [f.conversationId])).rejects.toThrow('must be retained')

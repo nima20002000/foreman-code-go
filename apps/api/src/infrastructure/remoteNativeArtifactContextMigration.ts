@@ -20,11 +20,11 @@ begin
     if row(old.id,old.kind,old.agent_key,old.operator_id,old.operator_configuration_version_id,old.owner_principal_id,
            old.workspace_id,old.workflow_id,old.workflow_node_id,old.agent_id,old.agent_configuration_version_id,
            old.origin_run_id,old.origin_execution_id,old.harness,old.provider_version,old.native_session_id,
-           old.record->'origin',old.record->>'workingDirectory',old.record->>'runtimeDirectory')
+           old.record)
       is distinct from row(new.id,new.kind,new.agent_key,new.operator_id,new.operator_configuration_version_id,new.owner_principal_id,
            new.workspace_id,new.workflow_id,new.workflow_node_id,new.agent_id,new.agent_configuration_version_id,
            new.origin_run_id,new.origin_execution_id,new.harness,new.provider_version,new.native_session_id,
-           new.record->'origin',new.record->>'workingDirectory',new.record->>'runtimeDirectory') then
+           new.record) then
       raise exception 'Original workflow file context identity is immutable.';
     end if;
   elsif tg_op='UPDATE' and new.agent_key like 'workflow-native-files:v1:%' then
