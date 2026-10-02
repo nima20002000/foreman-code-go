@@ -44,6 +44,8 @@
 }
 .workspace-folder-dialog .n-dialog-header > div { min-width: 0; text-align: center; }
 .workspace-folder-dialog .n-dialog-header h2 { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.workspace-folder-dialog--minimal-labels .n-dialog-header h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; padding: 0; border: 0; margin: -1px; }
+.workspace-folder-dialog--minimal-labels .workspace-folder-actions { margin-inline-start: auto; }
 .workspace-folder-dialog .n-dialog-header > button:first-child { justify-self: start; padding-inline: 8px; }
 .workspace-folder-dialog .n-dialog-header > button:last-child { justify-self: end; }
 .workspace-folder-dialog .n-button { min-height: 44px; font-size: 13px; }

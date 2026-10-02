@@ -216,7 +216,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
       if (!next && creating) { closeAfterName.current = true; if (!inFlight.current) void finishName(false); return }
       if (!locked) setOpen(next)
     }} busy={locked} title="Choose folder" description={directoryBinding ? 'Main' : undefined}
-      className="workspace-folder-dialog" onKeyDownCapture={(event) => {
+      className={`workspace-folder-dialog${directoryBinding ? ' workspace-folder-dialog--minimal-labels' : ''}`} onKeyDownCapture={(event) => {
         if (event.key === 'Delete' && !creating && !(event.target instanceof HTMLInputElement)) {
           if (markedPaths.length && !locked) { event.preventDefault(); void deleteFolders(markedPaths) }
         }
@@ -254,7 +254,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
         <div className="workspace-folder-toolbar">
           {data && data.roots.length > 1 && !locationsOpen
             ? <Button variant="ghost" disabled={!canBrowse} onClick={() => navigateFolder(location, true)}>Locations</Button>
-            : <h3 id={id + '-folders'}>{locationsOpen ? 'Locations' : 'Folders'}</h3>}
+            : directoryBinding && !locationsOpen ? null : <h3 id={id + '-folders'}>{locationsOpen ? 'Locations' : 'Folders'}</h3>}
           <span className="workspace-folder-actions">
           {markedPaths.length ? <Button variant="ghost" disabled={remove.isPending || (locked && !deleteAttempt.current.unresolved)} onClick={() => void deleteFolders(markedPaths)}>
             {deleteAttempt.current.unresolved && !remove.isPending ? 'Retry delete' : `Delete (${markedPaths.length})`}
