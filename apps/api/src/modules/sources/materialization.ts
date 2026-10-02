@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { open, mkdir, rename, statfs, readdir, unlink, type FileHandle } from 'node:fs/promises'
+import { open, mkdir, rename, statfs, readdir, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest } from '@graphql/contracts/source-materialization'
@@ -209,21 +209,49 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
   try {
     if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
     await withClaimLock(root, async () => {
-      const name = `binding-${binding.rootId}.lock`
-      const lock = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
-      try {
+      const name = `binding-${binding.rootId}.lock`, releasedName = 'released-claim.json'
+      const directory = await openChildDirectory(root, receipt.materializationId)
+      const validateClaim = async (lock: FileHandle): Promise<void> => {
         const stat = await lock.stat()
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid binding claim.')
-        const claim = JSON.parse(await lock.readFile('utf8')) as { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
-        if (claim.materializationId !== receipt.materializationId || !equal(claim.binding, binding)
+        const claim = JSON.parse(await lock.readFile('utf8')) as { version: number; materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
+        if (claim.version !== 1 || claim.materializationId !== receipt.materializationId || !equal(claim.binding, binding)
           || !equal(claim.attempt, { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId, keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }))
           throw new SourceError('SOURCE_CLAIM_CONFLICT', 'This receipt does not own the destination claim.')
-        const current = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+      }
+      try {
+        // The archived claim identifies the exact original owner; the immutable
+        // activation record binds replay to every fact of the original receipt.
+        const record = await open(anchored(directory, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
         try {
-          if (!equal(await identity(current), await identity(lock))) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'The validated destination claim was replaced.')
-        } finally { await current.close() }
-        await unlink(anchored(root, name)); await root.sync()
-      } finally { await lock.close() }
+          const stat = await record.stat()
+          if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid receipt record.')
+          if (!equal((JSON.parse(await record.readFile('utf8')) as { receipt: unknown }).receipt, receipt))
+            throw new SourceError('SOURCE_RECEIPT_CONFLICT', 'Release does not match the exact original materialization receipt.')
+        } finally { await record.close() }
+        const released = await open(anchored(directory, releasedName), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+          if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
+          throw error
+        })
+        if (released) {
+          try { await validateClaim(released); await released.sync() } finally { await released.close() }
+          // Finish durability after a crash/lost ACK during the original rename.
+          // Never inspect or delete a successor claim on this replay branch.
+          await directory.sync(); await root.sync(); return
+        }
+        const lock = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+        try {
+          await validateClaim(lock)
+          const current = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+          try {
+            if (!equal(await identity(current), await identity(lock))) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'The validated destination claim was replaced.')
+          } finally { await current.close() }
+          // Atomically remove active ownership AND preserve its original claim.
+          // Absence alone is never accepted as evidence that release completed.
+          await rename(anchored(root, name), anchored(directory, releasedName))
+          await lock.sync(); await directory.sync(); await root.sync()
+        } finally { await lock.close() }
+      } finally { await directory.close() }
     })
   } finally { await root.close() }
 }

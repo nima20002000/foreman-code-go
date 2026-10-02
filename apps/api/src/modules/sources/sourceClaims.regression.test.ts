@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
@@ -18,6 +18,11 @@ vi.mock('node:fs/promises', async original => {
       const pause = pauses.beforeUnlink; pauses.beforeUnlink = null; await pause()
     }
     return actual.unlink(path)
+  }, rename: async (from: Parameters<typeof actual.rename>[0], to: Parameters<typeof actual.rename>[1]) => {
+    if (String(from).endsWith('.lock') && pauses.beforeUnlink) {
+      const pause = pauses.beforeUnlink; pauses.beforeUnlink = null; await pause()
+    }
+    return actual.rename(from, to)
   } }
 })
 const roots: string[] = []
@@ -72,4 +77,66 @@ it('holds a kernel lock across validated claim deletion, including other process
     await expect(promisify(execFile)('/usr/bin/flock', ['--exclusive', '--nonblock', f.root, '/usr/bin/true'])).rejects.toMatchObject({ code: 1 })
   } finally { resume.resolve(); await release }
   await promisify(execFile)('/usr/bin/flock', ['--exclusive', '--nonblock', f.root, '/usr/bin/true'])
+})
+
+async function inFreshProcess(receipt: unknown, loseAcknowledgement = false) {
+  const script = `import { releaseMaterializationClaim } from './src/modules/sources/materialization.ts';
+    await releaseMaterializationClaim(JSON.parse(process.argv[1]), async () => 'released');
+    process.exit(${loseAcknowledgement ? 42 : 0});`
+  return promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, JSON.stringify(receipt)])
+}
+
+it('replays the exact durable release in a fresh process after a lost acknowledgement', async () => {
+  const f = await fixture(), receipt = await f.materializer().prepare(f)
+  await expect(inFreshProcess(receipt, true)).rejects.toMatchObject({ code: 42 })
+  await expect(readFile(join(f.root, `binding-${f.binding.rootId}.lock`))).rejects.toMatchObject({ code: 'ENOENT' })
+  await inFreshProcess(receipt)
+  expect(await readFile(join(f.root, receipt.materializationId, 'tree/src/app.ts'))).toEqual(f.bytes)
+})
+
+it('replays an old release without deleting a successor claim', async () => {
+  const f = await fixture(), receipt = await f.materializer().prepare(f)
+  await releaseMaterializationClaim(receipt, async () => 'released')
+  const next = { ...f, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
+  const successor = await f.materializer().prepare(next)
+  await inFreshProcess(receipt)
+  const claim = JSON.parse(await readFile(join(f.root, `binding-${f.binding.rootId}.lock`), 'utf8')) as { materializationId: string }
+  expect(claim.materializationId).toBe(successor.materializationId)
+  await expect(f.materializer().prepare({ ...next, attempt: { ...next.attempt, attemptId: randomUUID() } })).rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
+})
+
+it('rejects arbitrary missing claims without a durable original release', async () => {
+  const f = await fixture(), receipt = await f.materializer().prepare(f)
+  await unlink(join(f.root, `binding-${f.binding.rootId}.lock`))
+  await expect(releaseMaterializationClaim(receipt, async () => 'released')).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it.each(['owned', 'uncertain'] as const)('does not replay without positive reconciliation (%s)', async status => {
+  const f = await fixture(), receipt = await f.materializer().prepare(f)
+  await releaseMaterializationClaim(receipt, async () => 'released')
+  await expect(releaseMaterializationClaim(receipt, async () => status)).rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
+})
+
+it.each(['materializationId', 'attemptId', 'binding', 'localTreeIdentity', 'verifiedAt'] as const)('binds release evidence to the exact original receipt (%s)', async field => {
+  const f = await fixture(), receipt = await f.materializer().prepare(f)
+  await releaseMaterializationClaim(receipt, async () => 'released')
+  const changed = { ...receipt }
+  if (field === 'binding') changed.binding = { ...receipt.binding, bindingRevision: 2 }
+  else if (field === 'localTreeIdentity') changed.localTreeIdentity = { ...receipt.localTreeIdentity, inode: '9999999' }
+  else if (field === 'verifiedAt') changed.verifiedAt = '2020-01-01T00:00:00.000Z'
+  else changed[field] = randomUUID()
+  await expect(releaseMaterializationClaim(changed, async () => 'released')).rejects.toThrow()
+})
+
+it('rejects a corrupted durable release record', async () => {
+  const f = await fixture(), receipt = await f.materializer().prepare(f)
+  await releaseMaterializationClaim(receipt, async () => 'released')
+  await writeFile(join(f.root, receipt.materializationId, 'released-claim.json'), JSON.stringify({ version: 1, materializationId: randomUUID(), binding: f.binding, attempt: f.attempt }))
+  await expect(releaseMaterializationClaim(receipt, async () => 'released')).rejects.toMatchObject({ code: 'SOURCE_CLAIM_CONFLICT' })
+})
+
+it('rejects changed receipt facts before releasing an active claim', async () => {
+  const f = await fixture(), receipt = await f.materializer().prepare(f)
+  await expect(releaseMaterializationClaim({ ...receipt, verifiedAt: '2020-01-01T00:00:00.000Z' }, async () => 'released')).rejects.toMatchObject({ code: 'SOURCE_RECEIPT_CONFLICT' })
+  expect(JSON.parse(await readFile(join(f.root, `binding-${f.binding.rootId}.lock`), 'utf8'))).toMatchObject({ materializationId: receipt.materializationId })
 })
