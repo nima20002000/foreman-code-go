@@ -18,6 +18,7 @@ import { registerAgentChatRoutes } from '../src/routes/agentChat.js'
 
 const base = agentChatFixtures.idleAfterCompletion
 const actions: ManagementAction[] = ['agent_chat:read', 'agent_chat:write', 'agent_chat:cancel', 'agent_chat:respond']
+const livePrincipalSql = 'select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1 for share'
 function principal(allowed = actions, scope: ManagementScope = {}): ManagementPrincipal {
   return { id: 'f4-caller', name: 'F4 caller', audience: 'operator', grants: [{ actions: allowed, scope }], revokedAt: null,
     expiresAt: '2099-01-01T00:00:00Z' }
@@ -36,9 +37,18 @@ function fixture(runId?: string) {
       workingDirectory: '/tmp/f4', runtimeDirectory: '/tmp/f4' },
     created_at: new Date(base.conversation.createdAt), updated_at: new Date(base.conversation.updatedAt),
   }
-  const poolQuery = vi.fn(async () => ({ rows: [] }))
+  let live: ManagementPrincipal | null = principal()
+  const poolQuery = vi.fn(async (sql: string, values: unknown[]) => {
+    expect(sql).toBe(livePrincipalSql) // Any receipt, audit or reservation write is an error in this read-only port.
+    expect(values).toEqual(['f4-caller'])
+    return { rows: live ? [{ id: live.id, name: live.name, audience: live.audience, grants: live.grants,
+      expires_at: new Date(live.expiresAt), revoked_at: live.revokedAt ? new Date(live.revokedAt) : null, delegated_from: null }] : [] }
+  })
   const repository = { get: vi.fn(async () => row), byKey: vi.fn(async () => row),
-    state: vi.fn(async () => ({ row, turns: base.turns, messages: base.messages, hasEarlierMessages: false })),
+    state: vi.fn(async () => ({ row, turns: base.turns, messages: base.messages, hasEarlierMessages: false,
+      activityPage: { activities: [], nextCursor: null, itemRevisions: {}, itemProvenance: {} }, unfinishedActivities: [],
+      activeStartedAt: null, latestRequestId: base.turns.at(-1)?.requestId ?? null,
+      selection: runId ? { workflowVersionId: 'version', attemptKey: '1' } : null })),
     history: vi.fn(async () => ({ messages: base.messages, nextCursor: null })),
     turn: vi.fn(async () => base.turns[0]),
     admit: vi.fn(async () => ({ conversationId: row.id, turn: base.turns[0], replayed: true })),
@@ -55,10 +65,12 @@ function fixture(runId?: string) {
   const request: SendAgentChatMessageRequest = { requestId: 'request-1', content: base.messages[0]!.content, intent: 'next_turn',
     expectedConversationId: row.id, context: { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId,
       agentId: context.agentId, ...(runId ? { runId } : {}) } }
-  return { service, repository, native, poolQuery, row, context, request }
+  return { service, repository, native, poolQuery, row, context, request,
+    setLive: (value: ManagementPrincipal | null) => { live = value } }
 }
 
 function transport(f: ReturnType<typeof fixture>, caller: ManagementPrincipal) {
+  f.setLive(caller)
   const app = Fastify()
   registerOperatorHttpSecurity(app, { authenticate: async (token: string) => {
     if (token !== 'f4-token') throw new DomainError('AUTH_INVALID', 'Invalid credential.', 401)
@@ -127,7 +139,8 @@ describe('F4 A-R02/A-R03 scoped HTTP/MCP chat authorization', () => {
         }
         const history = await app.inject({ method: 'GET', url: `${root}/conversations/${f.row.id}/history`, headers })
         expect(history.statusCode).toBe(action === 'agent_chat:read' ? 200 : 403)
-        expect(f.poolQuery).not.toHaveBeenCalled() // no command receipt/audit/native reservation
+        // Current authorization reads are required; no command receipt/audit/native reservation is allowed.
+        for (const [sql, values] of f.poolQuery.mock.calls) { expect(sql).toBe(livePrincipalSql); expect(values).toEqual([caller.id]) }
         expect(f.repository.admit).not.toHaveBeenCalled()
         expect(f.repository.cancelQueued).not.toHaveBeenCalled()
         expect(f.repository.requestCancel).not.toHaveBeenCalled()
@@ -136,6 +149,38 @@ describe('F4 A-R02/A-R03 scoped HTTP/MCP chat authorization', () => {
       } finally { await app.close() }
     })
   }
+
+  it.each(['revoked', 'expired', 'missing', 'read-grant-removed'] as const)(
+    '%s live authority denies cached-principal transcript reads and controls before effects', async (failure) => {
+      const f = fixture(), caller = principal(), app = transport(f, caller)
+      f.setLive(failure === 'missing' ? null : failure === 'revoked' ? { ...caller, revokedAt: '2026-01-01T00:00:00Z' }
+        : failure === 'expired' ? { ...caller, expiresAt: '2026-01-01T00:00:00Z' }
+          : { ...caller, grants: [{ scope: {}, actions: ['agent_chat:write', 'agent_chat:cancel', 'agent_chat:respond'] }] })
+      const root = `/api/workspaces/${f.context.workspaceId}/agent-chat`
+      const query = new URLSearchParams(Object.entries(f.request.context).filter((entry): entry is [string, string] => entry[1] !== undefined)).toString()
+      try {
+        for (const url of [`${root}?${query}`, `${root}/conversations/${f.row.id}/history`]) {
+          const response = await app.inject({ method: 'GET', url, headers })
+          expect(response.statusCode, response.body).toBe(403)
+          expect(response.json().code).toBe(failure === 'read-grant-removed' ? 'ACCESS_DENIED' : 'AUTH_REVOKED')
+          expect(response.body).not.toContain(base.messages[0]!.content)
+        }
+        for (const [suffix, payload] of [
+          ['/interrupt', { requestId: 'interrupt' }],
+          ['/turns/request-1/cancel', { requestId: 'cancel' }],
+          ['/responses', { requestId: 'respond', nativeRequestId: 'approval', optionId: 'approve' }],
+        ] as const) {
+          const response = await app.inject({ method: 'POST', url: `${root}/conversations/${f.row.id}${suffix}`, headers, payload })
+          expect(response.statusCode, response.body).toBe(403)
+          expect(response.body).not.toContain(base.messages[0]!.content)
+        }
+        expect(f.poolQuery).toHaveBeenCalled()
+        expect(f.repository.state).not.toHaveBeenCalled(); expect(f.repository.history).not.toHaveBeenCalled()
+        expect(f.repository.admit).not.toHaveBeenCalled(); expect(f.repository.cancelQueued).not.toHaveBeenCalled()
+        expect(f.repository.requestCancel).not.toHaveBeenCalled(); expect(f.repository.pending).not.toHaveBeenCalled()
+        expect(f.native).not.toHaveBeenCalled()
+      } finally { await app.close() }
+    })
 
   it('A-R12 advertises strict shared MCP control schemas and carries their request IDs into the service', async () => {
     const f = fixture()

@@ -84,6 +84,14 @@ export class F1Store {
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
     if (sql.startsWith('with open as ( select principal_id,operation,command_id')) return result() // No accepted controls in this fixture.
+    if (sql.startsWith('select a.conversation_id,a.request_id,a.activity_id,a.source_provenance')) {
+      assert.equal(values[0], 'agent')
+      assert(values[1] === null || values[1] === this.row.id)
+      assert(sql.includes("a.source_provenance->>'ownerInputHash'=t.input_hash") && sql.endsWith('order by a.sequence limit 101'))
+      assert(this.activityRows.every(entry => entry.record.kind === 'thinking'
+        || !['pending', 'running', 'unknown'].includes(entry.record.status)), 'this fixture has no unfinished native activity owners')
+      return result()
+    }
     if (sql.startsWith('select m.id,t.request_id,t.payload')) {
       if (values[0] !== this.row.id) return result()
       return result([...this.turns.values()].flatMap(turn => {

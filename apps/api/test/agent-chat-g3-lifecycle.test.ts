@@ -31,6 +31,8 @@ describe('G3 shutdown ownership (fake SQL/native manager; real service and repai
         try {
           f.service['scheduleReconcile'](f.store.row.id)
           await entered(reached)
+          assert.ok(f.store.statements.some(({ sql, values }) => sql.startsWith('select a.conversation_id,a.request_id,a.activity_id,a.source_provenance')
+            && values[0] === 'agent' && values[1] === f.store.row.id), 'The real bounded activity owner inquiry precedes the gated SQL tail.')
           assert.equal(f.service['recovery'], undefined)
           assert.equal(f.service['controls'].size, 0)
           assert.equal(f.internals.tasks.size, 0)

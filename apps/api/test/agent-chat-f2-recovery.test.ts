@@ -293,6 +293,10 @@ function sqlFixture() {
       row.active_request_id = String(values[1]); row.active_native_turn_id = String(values[2])
     }
     if (sql.includes('select * from operator_conversations')) return { rows: [structuredClone(row)], rowCount: 1 }
+    if (sql.replace(/\s+/g, ' ').trim().startsWith('select (select started_at from operator_conversation_turns')) {
+      assert.deepEqual(values, [row.id, row.active_request_id])
+      return { rows: [{ started_at: null, latest_request_id: 'first' }], rowCount: 1 }
+    }
     if (sql.startsWith('select 1 from operator_conversation_messages')) return { rows: [], rowCount: existingPart || messages.length ? 1 : 0 }
     if (sql.startsWith('select coalesce(max(sequence)')) return { rows: [{ sequence: '0' }], rowCount: 1 }
     if (sql.startsWith('insert into operator_conversation_messages')) messages.push({ record: JSON.parse(String(values[4])), sequence: '1' })
@@ -360,7 +364,9 @@ describe('F2 durable SQL boundaries', () => {
     const clear = f.queries.findIndex(({ sql }) => sql.includes('set active_request_id=null'))
     const commit = f.queries.findIndex(({ sql }) => sql === 'commit')
     assert.ok(insert > 0 && insert < clear && clear < commit)
-    assert.deepEqual((await f.repository.state('conversation'))!.messages.map((message) => message.content), ['exact\nrecovered answer'])
+    const state = (await f.repository.state('conversation'))!
+    assert.equal(state.activeStartedAt, null); assert.equal(state.latestRequestId, 'first')
+    assert.deepEqual(state.messages.map((message) => message.content), ['exact\nrecovered answer'])
     assert.deepEqual((await f.repository.history('conversation', undefined, 100)).messages.map((message) => message.content), ['exact\nrecovered answer'])
   })
 
