@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, open, writeFile, readFile, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, open, writeFile, readFile, rm, symlink, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { TransferIntent } from '@graphql/contracts/byte-transfer'
 import { NodeRsyncExecutor, RsyncStagingTransport, rsyncCommand, validateRsyncEndpoint, verifyRsyncBinaries,
   type RsyncEndpoint, type RsyncExecutor, type RsyncStagingPorts } from './rsync.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
+import { RsyncWriterOwnership, rsyncArgumentDigest } from './rsyncWriterOwnership.js'
 
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const bytes = Buffer.from('immutable app output\n')
@@ -25,8 +26,20 @@ async function fixture() {
   const root = await mkdtemp('/tmp/graphql-rsync-'), input = join(root, 'source')
   await writeFile(input, bytes, { mode: 0o600 })
   const source = await open(input, 'r'), release = vi.fn(async () => {})
-  const store = new RsyncPrivateStore(join(root, 'private'), { reserve: vi.fn(async () => release), retire: async () => {} })
-  return { root, input, source, release, store, dispose: async () => { await source.close(); await rm(root, { recursive: true, force: true }) } }
+  const stagingRoot = join(root, 'private'), peerRoot = join(root, 'peer')
+  await mkdir(stagingRoot, { mode: 0o700 }); await mkdir(peerRoot, { mode: 0o700 })
+  const bindings = new Map<string, ReturnType<typeof context> & { connectionGeneration: number }>()
+  const current = (deviceId: string) => bindings.get(deviceId)
+  const ownership = new RsyncWriterOwnership(stagingRoot, current), peerOwnership = new RsyncWriterOwnership(peerRoot, current)
+  const bind = (i: TransferIntent) => { const binding = { ...context(i), connectionGeneration: 1 }; bindings.set(i.deviceId, binding); return binding }
+  const closeWriter = async (i: TransferIntent) => {
+    ownership.prepareProcess(i, current(i.deviceId)!, 'rsync-server', { executable: input, sha256: digest(bytes) })
+    await ownership.stopProcesses(i, signal())
+  }
+  const store = new RsyncPrivateStore(stagingRoot, { reserve: vi.fn(async () => release), retire: async () => {} }, ownership.store())
+  return { root, input, source, release, store, bind, current, ownership, peerOwnership, peerRoot, closeWriter,
+    dispose: async () => { await Promise.allSettled([ownership.drain(AbortSignal.timeout(5000)), peerOwnership.drain(AbortSignal.timeout(5000))]); await source.close(); await rm(root, { recursive: true, force: true }) } }
+
 }
 
 describe('rsync argument and security boundary', () => {
@@ -83,12 +96,13 @@ describe('rsync argument and security boundary', () => {
 describe('private frozen bytes and receiver', () => {
   it('freezes bytes, preserves them after original mutation, and rejects changed identity', async () => {
     const f = await fixture(), i = intent()
+    f.bind(i)
     try {
       const snapshot = await f.store.freeze(i, f.source, signal())
       await writeFile(f.input, Buffer.alloc(bytes.length, 7))
       await snapshot.verify(signal()); await snapshot.close()
       expect(await readFile(join(f.store.root, `${i.transferId}.snapshot`))).toEqual(bytes)
-      await expect(f.store.freeze({ ...i, attemptId: randomUUID() }, f.source, signal())).rejects.toThrow('identity conflicts')
+      await expect(f.store.freeze({ ...i, attemptId: randomUUID() }, f.source, signal())).rejects.toThrow('intent unavailable or changed')
       await f.store.retire(i)
     } finally { await f.dispose() }
   })
@@ -96,17 +110,20 @@ describe('private frozen bytes and receiver', () => {
     const f = await fixture()
     try {
       await symlink(f.root, join(f.root, 'linked'))
-      const store = new RsyncPrivateStore(join(f.root, 'linked'), { reserve: async () => async () => {}, retire: async () => {} })
-      await expect(store.receive(intent(), signal())).rejects.toThrow('ancestor')
+      const store = new RsyncPrivateStore(join(f.root, 'linked'), { reserve: async () => async () => {}, retire: async () => {} }, f.ownership.store())
+      const i = intent(); f.bind(i)
+      await expect(store.receive(i, signal())).rejects.toThrow('ancestor')
     } finally { await f.dispose() }
   })
   it('retains interrupted partials and verifies resumed exact bytes before read', async () => {
     const f = await fixture(), i = intent(), path = join(f.store.root, `${i.transferId}.part`)
+    f.bind(i)
     try {
       const first = await f.store.receive(i, signal())
       await writeFile(path, bytes.subarray(0, 5), { mode: 0o600 }); await first.interrupt()
       expect(f.release).not.toHaveBeenCalled()
       const second = await f.store.receive(i, signal())
+      await f.closeWriter(i)
       await expect(second.verify(signal())).rejects.toThrow('length mismatch')
       await writeFile(path, bytes, { mode: 0o600 })
       const staged = await second.verify(signal())
@@ -117,33 +134,56 @@ describe('private frozen bytes and receiver', () => {
   })
   it('rejects competing writers, mutated pins and wrong hashes', async () => {
     const f = await fixture(), i = intent()
+    f.bind(i)
     try {
       const lease = await f.store.receive(i, signal())
       await expect(f.store.receive(i, signal())).rejects.toThrow()
       await writeFile(join(f.store.root, `${i.transferId}.part`), Buffer.alloc(bytes.length), { mode: 0o600 })
+      await f.closeWriter(i)
       await expect(lease.verify(signal())).rejects.toThrow('SHA-256')
       await lease.interrupt()
-      await expect(f.store.receive({ ...i, executionId: randomUUID() }, signal())).rejects.toThrow('identity conflicts')
+      await expect(f.store.receive({ ...i, executionId: randomUUID() }, signal())).rejects.toThrow('intent unavailable or changed')
     } finally { await f.dispose() }
   })
   it('rejects part symlinks and quota failures', async () => {
     const f = await fixture(), i = intent()
+    f.bind(i)
     try {
       const lease = await f.store.receive(i, signal()); await lease.interrupt()
       const path = join(f.store.root, `${i.transferId}.part`)
       await rm(path); await symlink(f.input, path)
       await expect(f.store.receive(i, signal())).rejects.toThrow()
-      const denied = new RsyncPrivateStore(join(f.root, 'denied'), { reserve: async () => { throw new Error('quota') }, retire: async () => {} })
-      await expect(denied.receive(intent(), signal())).rejects.toThrow('quota')
+      const deniedRoot = join(f.root, 'denied'); await mkdir(deniedRoot, { mode: 0o700 })
+      const deniedOwner = new RsyncWriterOwnership(deniedRoot, f.current)
+      const denied = new RsyncPrivateStore(deniedRoot, { reserve: async () => { throw new Error('quota') }, retire: async () => {} }, deniedOwner.store())
+      const deniedIntent = intent(); f.bind(deniedIntent)
+      await expect(denied.receive(deniedIntent, signal())).rejects.toThrow('quota')
     } finally { await f.dispose() }
   })
 })
 describe('rsync transport composition', () => {
   async function transferFixture() {
     const f = await fixture(), i = { ...intent(), direction: 'to-main' as const }
-    const config = { ...endpoint, localBinary: f.input, localBinarySha256: digest(bytes), localRoot: f.store.root }
+    f.bind(i)
+    const config = { ...endpoint, localBinary: f.input, localBinarySha256: digest(bytes), localRoot: f.store.root, remoteRoot: f.peerRoot }
     const snapshot = { verify: vi.fn(async () => {}), close: vi.fn(async () => {}) }
-    const ports: RsyncStagingPorts = { source: vi.fn(async () => snapshot), receiver: async value => f.store.receive(value, signal()) }
+    const ports: RsyncStagingPorts = { source: vi.fn(async () => snapshot), receiver: async value => f.store.receive(value, signal()),
+      writers: {
+        local: async (value, command) => f.ownership.prepareProcess(value, f.current(value.deviceId)!, 'rsync-client', {
+          executable: command.executable, sha256: config.localBinarySha256, commandDigest: rsyncArgumentDigest(command.args),
+        }),
+        remote: async value => ({ ...f.peerOwnership.prepareProcess(value, f.current(value.deviceId)!, 'rsync-server', {
+          executable: config.remoteBinary, sha256: config.remoteBinarySha256,
+        }), nodeBinary: '/protected/node', entryPoint: '/protected/rsync-writer.mjs' }),
+        activate: async () => {},
+        quiescent: async (value, bounded) => {
+          // Fixture byte IO does not dispatch executables. Close the actual never-dispatched
+          // reservations on both original hosts; this is not physical rsync acceptance.
+          await f.ownership.stopProcesses(value, bounded); await f.peerOwnership.stopProcesses(value, bounded)
+          await f.ownership.processesQuiescent(value, bounded, true); await f.peerOwnership.processesQuiescent(value, bounded, true)
+        },
+        stop: async (value, bounded) => { await Promise.all([f.ownership.stopProcesses(value, bounded), f.peerOwnership.stopProcesses(value, bounded)]) },
+      } }
     const commandRun = vi.fn(async () => {
       await writeFile(join(f.store.root, `${i.transferId}.part`), bytes, { mode: 0o600 }); return ''
     })
@@ -202,9 +242,11 @@ describe('destination-local adoption', () => {
     const { importRsyncStagedBytes } = await import('./rsyncAdapter.js')
     const { ResumableByteTransferService } = await import('./service.js')
     const f = await fixture(), i = intent()
+    f.bind(i)
     try {
       const stagedLease = await f.store.receive(i, signal())
       await writeFile(join(f.store.root, `${i.transferId}.part`), bytes, { mode: 0o600 })
+      await f.closeWriter(i)
       const staged = await stagedLease.verify(signal())
       const receiver = new ResumableByteTransferService(join(f.root, 'verified'), { authorize: async () => {} })
       const receipt = await importRsyncStagedBytes(staged, receiver, async () => context(i))
