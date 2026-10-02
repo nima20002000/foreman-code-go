@@ -236,8 +236,13 @@ interface DbState {
   nativeEntries: Map<string, { reservation: WorkflowNativeReservation; reservation_json: string; reservation_digest: string; phase: 'reserved' }>
   native: Map<string, { session: { harness: 'codex'; providerVersion: string; nativeSessionId: string }; finalized: boolean; closed: boolean }>
 }
-function postgresShape(cap = 3) {
+function postgresShape(cap = 3, artifacts: false | 'enabled' | 'missing' = false) {
   const f = fixture(cap), events: string[] = []
+  if (artifacts) {
+    const work = f.version.definition.nodes.find(node => node.id === 'work')!
+    if (work.kind === 'job') throw new Error('fixture')
+    work.artifactOutputs = { version: 1, outputKeys: ['report'] }
+  }
   let state: DbState = { run: f.run, stopped: false, occurrences: new Map(), slots: new Map(), executions: new Map(),
     resolutions: new Map(), bindings: [], results: new Map(), decisions: new Map(), effects: new Map(), receipts: new Map(), nativeEntries: new Map(), native: new Map() }
   let saved: DbState | undefined, fault = '', lostCommit = false, fence = 0
@@ -364,6 +369,7 @@ function postgresShape(cap = 3) {
   const host: RepeatRepositoryHost = { openLocked: async () => ({
     run: state.run,
     assertAuthorityLocked: async () => { gate('authority') }, assertAdmissionLocked: async () => { gate('admission') },
+    ...(artifacts === 'enabled' ? { assertWorkflowArtifactOutputsLocked: async () => { gate('artifact.outputs') } } : {}),
     assertSettlementLocked: async () => { gate('settlement') }, allowTechnicalRetryLocked: async () => true,
     publishLocked: async (_sql, effect, _facts, mutate) => {
       gate('publication.before'); await mutate(); gate('publication.after'); state.receipts.set(key(effect.kind, effect.entityId), effect.digest)
@@ -402,6 +408,25 @@ function postgresShape(cap = 3) {
 }
 
 describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (not real PostgreSQL)', () => {
+  it('gates declared successful acceptance and replay before exposing a result, preserving rollback', async () => {
+    const db = postgresShape(3, 'enabled'), occ = await db.enter(), work = await db.admit(occ, 'work')
+    db.finish(work.id)
+    db.fail('artifact.outputs')
+    await expect(db.accept(work.id)).rejects.toThrow('artifact.outputs')
+    expect(db.state().results.has(work.id)).toBe(false)
+    expect(db.state().executions.get(work.id)!.accepted).toBe(false)
+    db.fail(''); await db.accept(work.id)
+    expect(db.state().results.has(work.id)).toBe(true)
+    db.fail('artifact.outputs')
+    await expect(db.repository().acceptTerminal(work.id)).rejects.toThrow('artifact.outputs')
+    expect(db.state().results.has(work.id)).toBe(true)
+  })
+  it('fails closed when declared outputs lack the SQL-only acceptance capability', async () => {
+    const db = postgresShape(3, 'missing'), occ = await db.enter(), work = await db.admit(occ, 'work')
+    db.finish(work.id)
+    await expect(db.accept(work.id)).rejects.toMatchObject({ code: 'WORKFLOW_ARTIFACT_OUTPUTS_UNAVAILABLE' })
+    expect(db.state().results.has(work.id)).toBe(false)
+  })
   it('atomically records accepted exit, route, decision and successor; replay is duplicate-free', async () => {
     const db = postgresShape(), first = await db.enter(), exitId = await db.body(first)
     const count = [db.state().occurrences.size, db.state().effects.size, db.state().executions.size]

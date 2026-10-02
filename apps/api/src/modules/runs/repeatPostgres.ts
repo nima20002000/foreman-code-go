@@ -66,6 +66,9 @@ export interface RepeatLockedHooks {
   native?: RepeatNativeLockedHooks
   run: RepeatRuntimeRun
   assertAuthorityLocked(sql: GraphTransactionSql): Promise<void>
+  /** SQL-only durable completeness for declared original artifacts. Optional
+   * for workflows without declarations; declared success fails closed. */
+  assertWorkflowArtifactOutputsLocked?(sql: GraphTransactionSql, execution: HarnessExecution): Promise<void>
   persistDispatchLocked?(sql: GraphTransactionSql, execution: HarnessExecution, ref: RepeatNodeRef, inputDigest: string): Promise<void>
   assertAdmissionLocked(sql: GraphTransactionSql, execution: HarnessExecution, ref: RepeatNodeRef): Promise<void>
   /** Exact terminal approval acknowledgement AND required native/reviewer cleanup;
@@ -271,6 +274,7 @@ export class RepeatRunRepository {
           return repeatConflict('WORK_TERMINAL_REPLAY_CONFLICT')
         }
         await this.recordedEffect(context, 'terminal.accept', executionId)
+        await this.assertArtifactOutputs(context, stored.execution)
         return { kind: 'accepted', execution: stored.execution, replayed: true }
       }
       this.active(context)
@@ -301,6 +305,7 @@ export class RepeatRunRepository {
         return { kind: 'retry', execution: queued }
       }
       if (stored.execution.result.outcome !== 'succeeded') return repeatConflict('WORK_SELECTED_EXECUTION_FAILED')
+      await this.assertArtifactOutputs(context, stored.execution)
       const result = AcceptedCurrentNodeResultSchema.parse(stored.execution.result)
       parseWorkHandoffResult(result)
       const resultJson = canonicalGraphJson(result, 64 * 1024), resultDigest = repeatDigest(result, 64 * 1024)
@@ -325,6 +330,13 @@ export class RepeatRunRepository {
         })
       return { kind: 'accepted', execution: stored.execution, replayed: false }
     })
+  }
+  private async assertArtifactOutputs(context: Context, execution: HarnessExecution): Promise<void> {
+    const node = context.version.definition.nodes.find(node => node.id === execution.workflowNodeId)
+    if (node?.kind === 'job' || !node?.artifactOutputs || execution.result?.outcome !== 'succeeded') return
+    await context.hooks.assertAuthorityLocked(context.sql)
+    if (!context.hooks.assertWorkflowArtifactOutputsLocked) return repeatConflict('WORKFLOW_ARTIFACT_OUTPUTS_UNAVAILABLE')
+    await context.hooks.assertWorkflowArtifactOutputsLocked(context.sql, execution)
   }
   private async effect(context: Context, kind: RepeatEffect['kind'], entityId: string, value: unknown,
     facts: RepeatFact[], mutate: () => Promise<void>): Promise<void> {
@@ -880,6 +892,7 @@ export class RepeatRunRepository {
         if (previous.value.execution?.executionId !== executionId) return repeatConflict('REPEAT_TERMINAL_CONFLICT')
         if (previous.value.acceptedResultDigest && previous.value.acceptedResultDigest !== repeatDigest(execution.result, 64 * 1024)) return repeatConflict('REPEAT_TERMINAL_CONFLICT')
         await this.recordedEffect(context, 'terminal.accept', executionId)
+        await this.assertArtifactOutputs(context, execution)
         return { kind: 'resolved', resolution: previous }
       }
       this.active(context)
@@ -891,6 +904,7 @@ export class RepeatRunRepository {
       }
       // Do not repair a previously written invalid success by overwriting it here.
       const resolution = repeatTerminalResolution(context.version, context.scope, ref, execution)
+      await this.assertArtifactOutputs(context, execution)
       if (execution.result?.outcome === 'failed' && execution.result.error?.retryable
         && await context.hooks.allowTechnicalRetryLocked(context.sql, execution)) {
         if (stored.accepted || execution.attempt >= 2147483647) return repeatConflict('REPEAT_RETRY_NOT_ALLOWED')
