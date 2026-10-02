@@ -10,6 +10,8 @@ import { currentOperatorIntegration } from './helpers/currentOperatorIntegration
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { buildApp } from '../src/app.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { authorizeOperatorConfigurationRead } from '../src/modules/operators/configurationRead.js'
+import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 
 // Real authenticated HTTP/MCP and persisted configuration; the native qualifier
 // is the existing provider fixture, not evidence of a real Claude native turn.
@@ -23,6 +25,7 @@ it.skipIf(!postgresEnabled)('reads the exact persisted Operator readiness throug
     const { configuration } = await operators.ensure()
     const defaults = await settings.getAgentDefaults()
     const executionReadiness = new ExecutionReadinessService(new NativeRollout({}), f.services.harnesses, async (principal, id) => {
+      if (id) await authorizeOperatorConfigurationRead(f.db.pool, principal, id)
       const selected = id ? await f.db.pool.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1', [id]) : undefined
       if (id && !selected?.rows[0]) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The pinned configuration is missing.', 409)
       const current = id ? OperatorConfigurationVersionSchema.parse(selected!.rows[0]!.record)
@@ -51,7 +54,10 @@ it.skipIf(!postgresEnabled)('reads the exact persisted Operator readiness throug
       configurationVersionId: configuration.id })
     expect(await read(configuration.id)).toMatchObject({ status: 'eligible', configurationVersionId: configuration.id, defaultsRevision: null })
     expect(await read(configuration.id)).toMatchObject({ status: 'eligible', configurationVersionId: configuration.id })
-    expect(await read('missing-config')).toMatchObject({ status: 'blocked', reason: { code: 'OPERATOR_CONFIGURATION_NOT_FOUND' } })
+    const missing = await client.callTool({ name: 'execution_readiness_get', arguments: {
+      harness: configuration.harness.harness, scope: 'operator-configuration', configurationVersionId: 'missing-config',
+    } })
+    expect(missing.isError).toBe(true); expect(JSON.stringify(missing)).toContain('ACCESS_DENIED')
     const url = new URL(`/api/management/harnesses/${configuration.harness.harness}/execution-readiness`, address)
     url.searchParams.set('scope', 'operator-configuration'); url.searchParams.set('configurationVersionId', configuration.id)
     const response = await fetch(url, { headers: { authorization: `Bearer ${f.writer.token}` } })
@@ -64,5 +70,27 @@ it.skipIf(!postgresEnabled)('reads the exact persisted Operator readiness throug
     } })).rejects.toThrow('not found')
     expect((await f.db.pool.query('select id,record from operator_configuration_versions order by id')).rows).toEqual(before.rows)
     expect(await settings.getAgentDefaults()).toEqual(defaults)
+
+    // Move the public default after recording the original pin in an owned
+    // conversation. A different reader may inspect the public default, but
+    // cannot borrow the private historical configuration or its host profile.
+    const conversations = new PostgresOperatorConversationRepository(f.db.pool)
+    const owned = await conversations.create(configuration.operatorId, configuration, f.writer.principal.id)
+    const next = await operators.update({ ...configuration.harness, model: 'fixture-next-model' }, configuration.id)
+    expect(await read(configuration.id)).toMatchObject({ status: 'eligible', configurationVersionId: configuration.id })
+    const other = await f.access.issue({ name: 'Other readiness reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
+      grants: [{ actions: ['harnesses:read', 'operator_chat:read'], scope: {} }] })
+    expect((await fetch(url, { headers: { authorization: `Bearer ${other.token}` } })).status).toBe(403)
+    const privatePin = await (await connect(other.token)).callTool({ name: 'execution_readiness_get', arguments: {
+      harness: configuration.harness.harness, scope: 'operator-configuration', configurationVersionId: configuration.id,
+    } })
+    expect(privatePin.isError).toBe(true); expect(JSON.stringify(privatePin)).toContain('ACCESS_DENIED')
+    const publicReader = await f.access.issue({ name: 'Public harness metadata reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
+      grants: [{ actions: ['harnesses:read'], scope: {} }] })
+    url.searchParams.set('configurationVersionId', next.configuration.id)
+    expect((await fetch(url, { headers: { authorization: `Bearer ${publicReader.token}` } })).status).toBe(200)
+    await conversations.setDeleted(owned.id, f.writer.principal.id, true)
+    url.searchParams.set('configurationVersionId', configuration.id)
+    expect((await fetch(url, { headers: { authorization: `Bearer ${f.writer.token}` } })).status).toBe(403)
   } finally { await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await f.close() }
 }, 60000)
