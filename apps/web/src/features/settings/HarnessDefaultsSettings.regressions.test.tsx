@@ -23,6 +23,7 @@ vi.mock('../../shared/api/harnessSettings', () => ({
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: true, result: { isFetching: false, isSuccess: true, isError: false } }),
   useHarnessSessionEpoch: () => 0,
+  useClaudeSetupOptions: () => ({ data: {}, isError: false, refetch: vi.fn() }),
 }))
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 
