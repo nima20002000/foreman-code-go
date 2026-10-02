@@ -82,9 +82,9 @@ it('keeps unrelated Agent edits when placement choices are denied for a saved pl
   await act(async () => { deny() })
   await screen.findByText('Computer choices are unavailable.')
   expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Renamed')
-  await userEvent.type(screen.getByRole('textbox', { name: 'Initial prompt' }), 'more')
+  await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), '!')
   const form = useGraphDraftStore.getState().nextDrafts[key]?.agentForms?.['node-0']
-  expect(form).toMatchObject({ name: 'Renamed', prompt: 'more' })
-  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Renamed')
+  expect(form).toMatchObject({ name: 'Renamed!' })
+  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Renamed!')
   view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
 })

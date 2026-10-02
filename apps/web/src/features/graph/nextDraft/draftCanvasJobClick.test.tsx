@@ -13,8 +13,17 @@ import { nextDraftKey } from './state'
 const key = nextDraftKey('workspace', 'workflow')
 const context = fixture()
 const graph = attachJob(context.draft.graph, { ...definition, workspaceId: 'workspace' }, 'job-node')
-beforeEach(() => { useGraphDraftStore.getState().installNextDraft(key, structuredClone(context)) })
-afterEach(() => { cleanup(); useGraphDraftStore.getState().clearAllDrafts() })
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private readonly notify: ResizeObserverCallback) {}
+    observe(target: Element) { queueMicrotask(() => this.notify([{ target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry], this as unknown as ResizeObserver)) }
+    unobserve() {} disconnect() {}
+  })
+  if (!globalThis.DOMMatrixReadOnly) vi.stubGlobal('DOMMatrixReadOnly', class { m11 = 1; m22 = 1; m41 = 0; m42 = 0 })
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1000)
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(800)
+  useGraphDraftStore.getState().installNextDraft(key, structuredClone(context)) })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); useGraphDraftStore.getState().clearAllDrafts() })
 
 function mount() {
   const change = vi.fn()
