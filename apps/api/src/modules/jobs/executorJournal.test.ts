@@ -159,6 +159,7 @@ describe('measured qualifier selection remains distinct from a Job grant', () =>
 describe('installed actual Job factory with native/process doubles', () => {
   it('journals guarded commands before spawn and keeps observed exit7 separate from publication transport', async () => {
     const f = await qualifiedFixture()
+    const mounts = await mountFixture(f.execution)
     const { EventEmitter } = await import('node:events'), { PassThrough } = await import('node:stream')
     const processes = await import('../harnesses/recovery/processRegistry.js')
     const installed = await import('./installedRuntimeHost.js'), qualification = await import('./qualification.js')
@@ -197,7 +198,7 @@ describe('installed actual Job factory with native/process doubles', () => {
       return child as unknown as ReturnType<typeof processes.spawnNativeProcess>
     })
     const host = createInstalledJobExecutionHost({ journal: f.journal, connection: f.connection, incarnationId: randomUUID(), configuration: { path: join(f.root, 'protected-unit-config'), ownerUid: process.getuid!() }, registry,
-      source: { verify: async () => ({ privateRepositoryRoot: f.execution.acceptedSpec.target.destination.canonicalProjectRoot, directoryIdentityHash: f.execution.acceptedSpec.target.destination.directoryIdentityHash, privateGit: true, diskQuotaBytes: 1048576,gitMounts:mountFixture(f.execution,f.candidate.fingerprint.root.binding.filesystem) }) },
+      source: { verify: async () => ({ privateRepositoryRoot: f.execution.acceptedSpec.target.destination.canonicalProjectRoot, directoryIdentityHash: f.execution.acceptedSpec.target.destination.directoryIdentityHash, privateGit: true, diskQuotaBytes: 1048576,gitMounts:mounts }) },
       inputs: { prepare: async execution => {
         const path = join(execution.acceptedSpec.target.destination.canonicalProjectRoot, JOB_INPUT_DIRECTORY); await mkdir(path)
         const inputSnapshotDigest = jobInputSnapshotDigest(execution), manifest = Buffer.from(JSON.stringify({ version: 1, inputSnapshotDigest, workflowInput: null, files: [] })), workflow = Buffer.from('null')
@@ -221,10 +222,17 @@ describe('installed actual Job factory with native/process doubles', () => {
 })
 
 // Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
-function mountFixture(execution:JobExecution,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
+async function mountFixture(execution:JobExecution):Promise<VerifiedJobGitMounts> {
   const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
+  const directoryIdentity = async (directory: string) => {
+    await mkdir(directory, { mode: 0o700 })
+    const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+    try { return await identity(handle) } finally { await handle.close() }
+  }
+  const gitFilesystem = await directoryIdentity(join(parent, 'repository'))
+  const schedulerFilesystem = await directoryIdentity(join(parent, 'job-heavy-jobs'))
   return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
-    git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}
+    git:{directory:join(parent,'repository'),filesystem:gitFilesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:gitFilesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem:schedulerFilesystem},receiptDigest:digest}
 }
 
 // This suite models OCI/native boundaries; original filesystem receipts are independently tested.
