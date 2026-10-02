@@ -142,6 +142,7 @@ h1 {
 
 .shell-sidebar {
   position: sticky;
+  min-width: 0;
   top: 0;
   display: flex;
   height: 100vh;

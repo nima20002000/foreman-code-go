@@ -14,6 +14,8 @@ type NavigationMotion = 'instant' | 'manual'
 interface NavigationUiState {
   collapsed: boolean
   width: number
+  /** Pointer preview; saved expanded widths retain their normal bounds. */
+  resizeWidth: number | null
   motion: NavigationMotion
   activeWorkspaceId?: string
   workspacesExpanded: boolean
@@ -21,6 +23,7 @@ interface NavigationUiState {
   expandedSections: Readonly<Record<string, Partial<Record<ExpandableWorkspaceSection, boolean>>>>
   setCollapsed: (collapsed: boolean, motion?: NavigationMotion) => void
   setWidth: (width: number, motion?: NavigationMotion) => void
+  setResizeWidth: (width: number) => void
   rememberWorkspace: (workspaceId: string) => void
   setWorkspacesExpanded: (expanded: boolean) => void
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void
@@ -74,6 +77,7 @@ function initialState() {
   return {
     collapsed: readCollapsed(),
     width: readWidth(),
+    resizeWidth: null,
     motion: 'instant' as const,
     activeWorkspaceId: undefined,
     workspacesExpanded: true,
@@ -91,13 +95,16 @@ export const useNavigationUiStore = create<NavigationUiState>((set) => ({
   ...initialState(),
   setCollapsed: (collapsed, motion = 'instant') => {
     writeSessionValue(COLLAPSED_STORAGE_KEY, String(collapsed))
-    set((state) => state.collapsed === collapsed && state.motion === motion ? state : { collapsed, motion })
+    set((state) => state.collapsed === collapsed && state.motion === motion && state.resizeWidth === null
+      ? state : { collapsed, motion, resizeWidth: null })
   },
   setWidth: (width, motion = 'instant') => {
     const nextWidth = clampWidth(width)
     writeSessionValue(WIDTH_STORAGE_KEY, String(nextWidth))
-    set((state) => state.width === nextWidth && state.motion === motion ? state : { width: nextWidth, motion })
+    set((state) => state.width === nextWidth && state.motion === motion && state.resizeWidth === null
+      ? state : { width: nextWidth, motion, resizeWidth: null })
   },
+  setResizeWidth: (resizeWidth) => set({ resizeWidth, motion: 'manual' }),
   rememberWorkspace: (workspaceId) => {
     set((state) => state.activeWorkspaceId === workspaceId
       ? state
@@ -138,6 +145,7 @@ export const useNavigationUiStore = create<NavigationUiState>((set) => ({
     set({
       collapsed: false,
       width: DEFAULT_NAVIGATION_WIDTH,
+      resizeWidth: null,
       motion: 'instant',
       activeWorkspaceId: undefined,
       workspacesExpanded: true,
