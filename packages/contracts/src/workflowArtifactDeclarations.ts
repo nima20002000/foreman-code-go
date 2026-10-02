@@ -18,3 +18,18 @@ export const WorkflowArtifactResultV1Schema = z.object({
 }).strict().refine(value => new Set(value.outputs.map(output => output.outputKey)).size === value.outputs.length,
   'Artifact result keys must be unique.')
 export type WorkflowArtifactResultV1 = z.infer<typeof WorkflowArtifactResultV1Schema>
+
+const DigestOutputsSchema = z.array(z.object({
+  outputKey: ArtifactEdgeBindingSchema.shape.outputKey,
+  sha256: ArtifactEdgeBindingSchema.shape.pins.shape.sha256,
+}).strict()).max(64).refine(outputs => new Set(outputs.map(output => output.outputKey)).size === outputs.length,
+  'Artifact digest output keys must be unique.')
+
+/** Canonical receipt hashes in ascending output-key order (UTF-16 code units).
+ * Original result mappings retain provider order. This orders verified facts;
+ * it never establishes publication, bytes or authority. Explicit aliases each
+ * retain their hash; hashes are not deduplicated. */
+export function workflowArtifactDigestsByOutputKey(outputs: readonly { outputKey: string; sha256: string }[]): string[] {
+  return DigestOutputsSchema.parse(outputs).sort((a, b) => a.outputKey < b.outputKey ? -1 : a.outputKey > b.outputKey ? 1 : 0)
+    .map(output => output.sha256)
+}

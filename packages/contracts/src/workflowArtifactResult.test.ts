@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   WorkflowArtifactOutputsV1Schema, WorkflowArtifactInputsV1Schema, WorkflowArtifactResultV1Schema,
   parseWorkflowArtifactResult,
+  workflowArtifactDigestsByOutputKey,
 } from './workflowArtifactResult.js'
 import { makeCurrentWorkflowFixture } from './wave25/currentFixture.js'
 import { WorkflowVersionV3Schema } from './wave25/saved.js'
@@ -16,6 +17,16 @@ const native = (value: unknown) => ({ outcome: 'succeeded', output: { text: JSON
 const choice = { outcomes: [{ outcome: 'ready', target: { kind: 'branch_end' as const } }] }
 
 describe('saved original workflow artifact declarations and result association', () => {
+  it('orders canonical digests by output key without rewriting mappings or deduplicating aliases', () => {
+    const outputs = [{ outputKey: 'z', sha256: 'a'.repeat(64) }, { outputKey: 'a', sha256: 'b'.repeat(64) },
+      { outputKey: 'a-alias', sha256: 'b'.repeat(64) }]
+    const before = JSON.stringify(outputs)
+    expect(workflowArtifactDigestsByOutputKey(outputs)).toEqual(['b'.repeat(64), 'b'.repeat(64), 'a'.repeat(64)])
+    expect(JSON.stringify(outputs)).toBe(before)
+    expect(workflowArtifactDigestsByOutputKey([])).toEqual([])
+    expect(() => workflowArtifactDigestsByOutputKey([outputs[0]!, outputs[0]!])).toThrow()
+    expect(() => workflowArtifactDigestsByOutputKey([{ outputKey: 'bad', sha256: 'caller-hash' }])).toThrow()
+  })
   it('retains exact declarations through the current immutable version and changes complete definition identity', () => {
     const f = makeCurrentWorkflowFixture('artifact', 'sequential')
     const before = canonicalGraphJson(f.version.definition)
