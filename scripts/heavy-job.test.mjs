@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 const source = new URL('./heavy-job.mjs', import.meta.url).pathname
 const hookSource = new URL('./vitest-heavy-setup.mjs', import.meta.url).pathname
-const run = (cwd, args) => new Promise((resolve) => {
-  const env = { ...process.env }
+const namespace = { boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), pid: readlinkSync('/proc/self/ns/pid') }
+const jobEnv = (cwd) => {
+  const env = { ...process.env, GRAPHQL_HEAVY_BASE_TMPDIR: dirname(cwd) }
   delete env.GRAPHQL_HEAVY_JOB_COMMON
   delete env.GRAPHQL_HEAVY_JOB_TOKEN
+  return env
+}
+const run = (cwd, args) => new Promise((resolve) => {
+  const env = jobEnv(cwd)
   const child = spawn(process.execPath, ['scripts/heavy-job.mjs', ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
   let output = ''
   child.stdout.on('data', (data) => { output += data })
@@ -41,7 +46,16 @@ function fixture() {
     mkdirSync(join(worktree, 'packages/contracts'), { recursive: true })
     symlinkSync(join(new URL('..', import.meta.url).pathname, 'packages/contracts/node_modules'), join(worktree, 'packages/contracts/node_modules'), 'dir')
   }
-  return { home, first, second, common: git(first, 'rev-parse', '--path-format=absolute', '--git-common-dir') }
+  const common = git(first, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+  const state = join(common, 'graphql-heavy-jobs')
+  const tempRoot = join(home, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
+  return { home, first, second, common, state, tempRoot }
+}
+function mockProc(f, declarations) {
+  // Change only the disposable script's read functions to model visibility errors.
+  const path = join(f.first, 'scripts/heavy-job.mjs')
+  const script = readFileSync(path, 'utf8').replace('readFileSync,', 'readFileSync as actualReadFileSync,').replace('readdirSync,', 'readdirSync as actualReaddirSync,')
+  writeFileSync(path, `${script}\n${declarations}\n`)
 }
 const waitFile = async (path) => {
   for (let i = 0; i < 100; i++) {
@@ -54,13 +68,154 @@ const pidRunning = (pid) => {
   try { const text = readFileSync(`/proc/${pid}/stat`, 'utf8'); return text.split(') ')[1][0] !== 'Z' } catch { return false }
 }
 
+// Each probe uses the normal scheduler in a disposable Git common directory.
+// Stop only the fixture waiter once it reports admission or queuing.
+async function probe(f) {
+  const ran = join(f.home, 'probe-ran')
+  const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(ran)},'yes')`], { cwd: f.first, env: jobEnv(f.first), stdio: ['ignore', 'pipe', 'pipe'] })
+  let output = '', ready
+  const announced = new Promise((resolve) => { ready = resolve })
+  const exited = new Promise((resolve) => child.once('exit', resolve))
+  child.stdout.on('data', (data) => { output += data; if (/\[heavy-job\] (queued|running)/.test(output)) ready() })
+  child.stderr.on('data', (data) => { output += data })
+  child.once('exit', ready)
+  const timer = setTimeout(() => { child.kill('SIGTERM'); ready() }, 4000)
+  try {
+    await announced
+    if (child.exitCode === null) child.kill('SIGTERM')
+    await exited
+    return { output, ran: existsSync(ran) }
+  } finally { clearTimeout(timer) }
+}
+
+for (const [name, identity] of [
+  ['foreign PID namespace', { ...namespace, pid: 'pid:[foreign-fixture]' }],
+  ['foreign boot', { ...namespace, boot: 'foreign-fixture' }],
+  ['legacy ownership without namespace', undefined],
+]) {
+  test(`cleanup preserves ${name} queue, active slot, and temp`, { timeout: 6000 }, async () => {
+    const f = fixture()
+    try {
+      const record = JSON.stringify({ common: f.common, worktree: f.first, pid: 99999999, start: '0', pgid: null, token: randomUUID(), namespace: identity })
+      const ticket = join(f.state, 'queue', '000000000001-foreign')
+      const active = join(f.state, 'active')
+      const temp = join(f.tempRoot, 'peer-temp')
+      mkdirSync(dirname(ticket), { recursive: true })
+      mkdirSync(active)
+      mkdirSync(temp, { recursive: true })
+      for (const path of [ticket, join(active, 'owner.json'), join(temp, 'owner.json')]) writeFileSync(path, record)
+      for (const path of [ticket, active, temp]) utimesSync(path, new Date(0), new Date(0))
+      const result = await probe(f)
+      assert.match(result.output, /queued .*waiting/)
+      assert.equal(result.ran, false)
+      for (const path of [ticket, join(active, 'owner.json'), join(temp, 'owner.json')]) assert.equal(readFileSync(path, 'utf8'), record)
+    } finally { rmSync(f.home, { recursive: true, force: true }) }
+  })
+}
+
+for (const [name, pgid, denied] of [
+  ['owner', null, '/proc/99999999/stat'],
+  ['process group', 99999998, '/proc/99999998/stat'],
+  ['token', null, '/proc/99999998/environ'],
+]) test(`unreadable local ${name} evidence remains reserved`, { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    mockProc(f, `function readFileSync(path, ...args) { if (path === ${JSON.stringify(denied)}) throw Object.assign(new Error('fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998'] : actualReaddirSync(path, ...args) }`)
+    const path = join(f.state, 'queue', '000000000001-unreadable')
+    mkdirSync(dirname(path), { recursive: true })
+    const record = JSON.stringify({ common: f.common, pid: 99999999, start: '0', pgid, token: randomUUID(), namespace })
+    writeFileSync(path, record)
+    const result = await probe(f)
+    assert.match(result.output, /queued .*waiting/)
+    assert.equal(result.ran, false)
+    assert.equal(readFileSync(path, 'utf8'), record)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
+test('malformed queue and missing active ownership remain reserved', { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    const path = join(f.state, 'queue', '000000000001-aaaaaaaa')
+    const active = join(f.state, 'active')
+    mkdirSync(dirname(path), { recursive: true })
+    mkdirSync(active)
+    writeFileSync(path, '{')
+    for (const entry of [path, active]) utimesSync(entry, new Date(0), new Date(0))
+    const result = await probe(f)
+    assert.match(result.output, /queued .*waiting/)
+    assert.equal(result.ran, false)
+    assert.equal(readFileSync(path, 'utf8'), '{')
+    assert.equal(existsSync(active), true)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
+test('matching namespace with complete dead-process evidence reclaims stale reservations', { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    mockProc(f, `function readFileSync(...args) { return actualReadFileSync(...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999999'] : actualReaddirSync(path, ...args) }`)
+    const record = JSON.stringify({ common: f.common, worktree: f.first, pid: 99999999, start: '0', pgid: null, token: randomUUID(), namespace })
+    const ticket = join(f.state, 'queue', '000000000001-stale')
+    const active = join(f.state, 'active')
+    const temp = join(f.tempRoot, 'stale-temp')
+    mkdirSync(dirname(ticket), { recursive: true })
+    mkdirSync(active)
+    mkdirSync(temp, { recursive: true })
+    for (const path of [ticket, join(active, 'owner.json'), join(temp, 'owner.json')]) writeFileSync(path, record)
+    for (const path of [ticket, active, temp]) utimesSync(path, new Date(0), new Date(0))
+    const result = await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])
+    assert.equal(result.code, 0, result.output)
+    for (const path of [ticket, active, temp]) assert.equal(existsSync(path), false)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
+test('one stable token owns ticket, active slot, and temp; release preserves replacement ownership', { timeout: 6000 }, async () => {
+  const f = fixture()
+  const started = join(f.home, 'started')
+  const released = join(f.home, 'released')
+  const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'yes');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(released)})) clearInterval(timer)},20)`], { cwd: f.first, env: jobEnv(f.first), stdio: 'pipe' })
+  const exited = new Promise((resolve) => child.once('exit', resolve))
+  try {
+    await waitFile(started)
+    const activePath = join(f.state, 'active', 'owner.json')
+    const owner = JSON.parse(readFileSync(activePath, 'utf8'))
+    const ticketPath = join(f.state, 'queue', readdirSync(join(f.state, 'queue'))[0])
+    const tempPath = join(owner.tempPath, 'owner.json')
+    const replacement = randomUUID()
+    for (const path of [ticketPath, activePath, tempPath]) {
+      const record = JSON.parse(readFileSync(path, 'utf8'))
+      assert.equal(record.token, owner.token)
+      assert.deepEqual(record.namespace, namespace)
+      writeFileSync(path, JSON.stringify({ ...record, token: replacement }))
+    }
+    writeFileSync(released, 'yes')
+    assert.equal(await exited, 0)
+    for (const path of [ticketPath, activePath, tempPath]) assert.equal(JSON.parse(readFileSync(path, 'utf8')).token, replacement)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
+    await exited
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
+test('nested worktree jobs reuse the same integration owner', { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    const result = await run(f.first, ['--', process.execPath, join(f.second, 'scripts/heavy-job.mjs'), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(join(f.home, 'nested-ran'))},'yes')`])
+    assert.equal(result.code, 0, result.output)
+    assert.equal((result.output.match(/\[heavy-job\] running /g) || []).length, 1)
+    assert.equal(existsSync(join(f.home, 'nested-ran')), true)
+    assert.equal(existsSync(join(f.state, 'active')), false)
+    assert.deepEqual(readdirSync(join(f.state, 'queue')), [])
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
 test('linked worktrees take one visible slot in ticket order', async () => {
   const f = fixture()
   try {
     const started = join(f.home, 'started')
     const released = join(f.home, 'released')
     const secondRan = join(f.home, 'second-ran')
-    const first = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(started)},'yes'); while(!require('fs').existsSync(${JSON.stringify(released)})) require('child_process').spawnSync('sleep',['0.05'])`], { cwd: f.first, stdio: 'pipe' })
+    const first = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(started)},'yes'); while(!require('fs').existsSync(${JSON.stringify(released)})) require('child_process').spawnSync('sleep',['0.05'])`], { cwd: f.first, env: jobEnv(f.first), stdio: 'pipe' })
     await waitFile(started)
     const second = run(f.second, ['--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(secondRan)},'yes')`])
     await new Promise((resolve) => setTimeout(resolve, 500))
@@ -78,7 +233,7 @@ test('termination stops descendants before releasing the slot', async () => {
   const f = fixture()
   try {
     const pidFile = join(f.home, 'descendant-pid')
-    const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `const c=require('child_process').spawn('sleep',['60']); require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid)); setInterval(()=>{},1000)`], { cwd: f.first, stdio: 'pipe' })
+    const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `const c=require('child_process').spawn('sleep',['60']); require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid)); setInterval(()=>{},1000)`], { cwd: f.first, env: jobEnv(f.first), stdio: 'pipe' })
     await waitFile(pidFile)
     const pid = Number(readFileSync(pidFile, 'utf8'))
     child.kill('SIGTERM')
@@ -113,7 +268,7 @@ test('a TERM-ignoring child is killed after the grace period', async () => {
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
 
-test('build freshness stays local and invalidates on source change; stale owned temp is removed', async () => {
+test('build freshness stays local and invalidates on source change; legacy temp is preserved', async () => {
   const f = fixture()
   try {
     const script = `const fs=require('fs');fs.mkdirSync('packages/contracts/dist',{recursive:true});fs.writeFileSync('packages/contracts/dist/index.js','built');fs.appendFileSync('count','x')`
@@ -126,13 +281,12 @@ test('build freshness stays local and invalidates on source change; stale owned 
     writeFileSync(join(f.first, 'source.txt'), 'changed')
     assert.equal((await run(f.first, args)).code, 0)
     assert.equal(readFileSync(join(f.first, 'count'), 'utf8'), 'xx')
-    const tempRoot = join(tmpdir(), `graphql-heavy-${createHash('sha256').update(f.common).digest('hex').slice(0, 16)}`)
-    const stale = join(tempRoot, 'stale-owned')
+    const stale = join(f.tempRoot, 'legacy-owned')
     mkdirSync(stale, { recursive: true })
     writeFileSync(join(stale, 'owner.json'), JSON.stringify({ common: f.common, worktree: f.first, pid: 99999999, start: '0', pgid: null }))
     utimesSync(stale, new Date(0), new Date(0))
     assert.equal((await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])).code, 0)
-    assert.equal(existsSync(stale), false)
+    assert.equal(existsSync(stale), true, 'legacy temp liveness is unknown')
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
 
