@@ -1680,3 +1680,5 @@ export * from "./trustedDeviceConnection.js";
 export * from './workflowArtifactDeclarations.js'
 
 export * from './workerNativeOutput.js'
+export * from './byteTransfer.js'
+export * from './jobInputs.js'

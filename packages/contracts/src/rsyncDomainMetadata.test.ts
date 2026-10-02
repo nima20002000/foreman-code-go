@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { SourceTransferStatusRequestSchema, SourceTransferStatusResponseSchema } from './sourceOperations.js'
-import { JobInputStageRequestSchema, JobInputDeliveryAckRequestSchema } from './jobInputs.js'
+import { JobInputStageRequestSchema, JobInputDeliveryAckRequestSchema, JobInputDeliveryStatusRequestSchema } from './jobInputs.js'
 import { JobOutputStageRequestSchema, JobOutputStatusRequestSchema } from './jobOutputTransfer.js'
 
 const hash = '1'.repeat(64)
@@ -34,7 +34,7 @@ describe('original domain rsync metadata', () => {
   it('accepts ID-only staging and status requests on the existing domains', () => {
     expect(SourceTransferStatusRequestSchema.parse({ version: 1, operation: 'sources.transfer-status', transferId })).toBeDefined()
     for (const [schema, method] of [[JobInputStageRequestSchema, 'stage'], [JobOutputStageRequestSchema, 'job-output-stage'],
-      [JobOutputStatusRequestSchema, 'job-output-status']] as const) {
+      [JobOutputStatusRequestSchema, 'job-output-status'], [JobInputDeliveryStatusRequestSchema, 'delivery-status']] as const) {
       expect(schema.parse({ method, transferId })).toEqual({ method, transferId })
       expect(schema.safeParse({ method, transferId: 'not-an-original-id' }).success).toBe(false)
       for (const extra of [{ intent: {} }, { path: '/caller' }, { published: true }, { binding: {} }, { executionId: randomUUID() }]) {

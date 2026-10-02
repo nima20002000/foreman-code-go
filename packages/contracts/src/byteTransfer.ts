@@ -49,14 +49,34 @@ export const RSYNC_STAGE_EXTENSION = Object.freeze({
 export const RsyncControlRequestSchema = z.object({
   kind: z.literal('rsync-stage-v1'),
   method: z.enum(['source-prepare', 'source-verify', 'source-close', 'receiver-prepare',
-    'receiver-verify', 'receiver-interrupt', 'acknowledge']),
+    'receiver-verify', 'receiver-interrupt', 'acknowledge',
+    'writer-prepare', 'writer-activate', 'writer-status', 'writer-stop']),
   transferId: z.uuid(),
 }).strict()
 export type RsyncControlRequest = z.infer<typeof RsyncControlRequestSchema>
+export const RsyncWriterPrepareRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-prepare') }).strict()
+export const RsyncWriterActivateRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-activate') }).strict()
+export const RsyncWriterStatusRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-status') }).strict()
+export const RsyncWriterStopRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-stop') }).strict()
+/** Original server owner reference only; installation and process facts stay local. */
+export const RsyncWriterPrepareResponseSchema = z.object({ transferId: z.uuid(), ownerId: z.uuid(), ownerDigest: Hash }).strict()
+export const RsyncWriterActivateResponseSchema = RsyncWriterActivateRequestSchema
+/** Success means positive original process closure, not a caller-supplied stopped flag. */
+export const RsyncWriterStatusResponseSchema = RsyncWriterStatusRequestSchema
+export const RsyncWriterStopResponseSchema = RsyncWriterStopRequestSchema
+export type RsyncWriterPrepareRequest = z.infer<typeof RsyncWriterPrepareRequestSchema>
+export type RsyncWriterActivateRequest = z.infer<typeof RsyncWriterActivateRequestSchema>
+export type RsyncWriterStatusRequest = z.infer<typeof RsyncWriterStatusRequestSchema>
+export type RsyncWriterStopRequest = z.infer<typeof RsyncWriterStopRequestSchema>
+export type RsyncWriterPrepareResponse = z.infer<typeof RsyncWriterPrepareResponseSchema>
+export type RsyncWriterActivateResponse = z.infer<typeof RsyncWriterActivateResponseSchema>
+export type RsyncWriterStatusResponse = z.infer<typeof RsyncWriterStatusResponseSchema>
+export type RsyncWriterStopResponse = z.infer<typeof RsyncWriterStopResponseSchema>
 export const RsyncControlResponseSchema = z.discriminatedUnion('method', [
   RsyncControlRequestSchema.extend({ method: z.literal('receiver-verify'), receipt: VerifiedTransferReceiptSchema }),
+  RsyncWriterPrepareRequestSchema.extend({ ownerId: z.uuid(), ownerDigest: Hash }).strict(),
   RsyncControlRequestSchema.extend({ method: z.enum(['source-prepare', 'source-verify', 'source-close',
-    'receiver-prepare', 'receiver-interrupt', 'acknowledge']) }),
+    'receiver-prepare', 'receiver-interrupt', 'acknowledge', 'writer-activate', 'writer-status', 'writer-stop']) }),
 ]).refine(value => value.method !== 'receiver-verify'
   || (value.receipt.transferId === value.transferId && value.receipt.intent.transferId === value.transferId),
 { message: 'Verified receipt must identify the same admitted transfer' })

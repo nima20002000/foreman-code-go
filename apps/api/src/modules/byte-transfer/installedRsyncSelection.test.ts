@@ -9,7 +9,8 @@ import type { DeviceRegistration } from '@graphql/contracts/device-identity'
 import type { TrustedConnectionConsent } from '@graphql/contracts/trusted-device-connection'
 import { PostgresTrustedConnectionSetup } from '../devices/trustedConnectionSetup.js'
 import { transferContextForBinding } from './carrier.js'
-import { createInstalledRsyncSelectionProvider, readProtectedInstalledRsyncSelection, type InstalledRsyncSelection } from './installedRsyncSelection.js'
+import { InstalledRsyncSelectionSchema, createInstalledRsyncSelectionProvider, readProtectedInstalledRsyncSelection,
+  readProtectedInstalledRsyncWriterSelection, type InstalledRsyncSelection } from './installedRsyncSelection.js'
 import type { RsyncCommand } from './rsync.js'
 
 const roots: string[] = []
@@ -34,6 +35,8 @@ async function fixture() {
     endpoint: { user: 'dexter', host: '100.76.219.118', localRoot: join(root, 'main-stage'), remoteRoot: '/home/dexter/.local/state/graphql-worker/rsync-stage' },
     localBinary: { path: localBinary, sha256: createHash('sha256').update('fixture app-private rsync bytes').digest('hex'), version: '3.5.1' },
     remoteBinary: { path: '/home/dexter/.local/share/graphql-tools/rsync/3.5.1/bin/rsync', sha256: 'e'.repeat(64), version: '3.5.1' },
+    nodeBinary: { path: '/home/dexter/.local/share/graphql-worker/node/bin/node', sha256: '2'.repeat(64) },
+    entryPoint: { path: '/home/dexter/.local/share/graphql-worker/src/rsync-writer.mjs', sha256: '3'.repeat(64) },
     sourceProvenance: { sourceSha256: 'f'.repeat(64), releaseSignerFingerprint: 'A'.repeat(40) } }
   const file = join(root, 'installed-selection.json')
   await writeFile(file, JSON.stringify(selected), { mode: 0o600 })
@@ -46,6 +49,7 @@ async function fixture() {
   const accepted = { intent: vi.fn(async (id: string) => { if (id !== intent.transferId) throw new Error('unknown original intent'); return intent }),
     authorize: vi.fn(async (candidate: TransferIntent) => { if (grantDenied) throw new Error('original accepted grant denied'); if (JSON.stringify(candidate) !== JSON.stringify(intent)) throw new Error('changed intent') }) }
   const baseRun = async (command: RsyncCommand) => command.executable === localBinary ? `rsync  version ${version}  protocol version 33\n`
+    : command.args.at(-1)?.includes(selected!.nodeBinary.path) ? `${selected!.nodeBinary.sha256}  ${selected!.nodeBinary.path}\n${selected!.entryPoint.sha256}  ${selected!.entryPoint.path}\n`
     : command.args.at(-1)?.startsWith('/usr/bin/sha256sum') ? `${remoteDigest}  ${selected!.remoteBinary.path}\n`
     : `rsync  version ${version}  protocol version 33\n${remoteDigest}  ${selected!.remoteBinary.path}\n`
   const executor = { run: vi.fn(baseRun) }
@@ -78,10 +82,49 @@ describe('protected explicit installed rsync selection', () => {
     expect(selection.backend).toBe('rsync'); expect(selection.check.state).toBe('ready')
     expect(selection.check.probe?.rsyncVersion).toContain('3.2.7')
     expect(selection.endpoint.localBinary).toBe(f.selected.localBinary.path); expect(selection.endpoint.remoteBinarySha256).toBe(f.selected.remoteBinary.sha256)
+    expect(selection).toMatchObject({ nodeBinary: f.selected.nodeBinary.path, entryPoint: f.selected.entryPoint.path })
     expect(f.executor.run.mock.calls[0]![0].args.at(-1)).toBe(`/usr/bin/sha256sum -- ${f.selected.remoteBinary.path}`)
     expect(f.executor.run.mock.calls.some(([command]) => command.executable === '/usr/bin/rsync')).toBe(false)
     expect(f.query.mock.calls.some(([sql]) => sql.includes('management_principals'))).toBe(false)
     expect(f.accepted.authorize).toHaveBeenCalled(); expect(f.installed.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+  it('requires explicit pinned writer installation facts and rejects relative or shell paths', async () => {
+    const f = await fixture()
+    for (const field of ['nodeBinary', 'entryPoint'] as const) {
+      expect(InstalledRsyncSelectionSchema.safeParse({ ...f.selected, [field]: undefined }).success).toBe(false)
+      for (const path of ['node', '/tmp/../caller', '/tmp/node;id', '/tmp/$(id)', '/tmp/space path']) {
+        expect(InstalledRsyncSelectionSchema.safeParse({ ...f.selected, [field]: { ...f.selected[field], path } }).success).toBe(false)
+      }
+      expect(InstalledRsyncSelectionSchema.safeParse({ ...f.selected, [field]: { ...f.selected[field], sha256: undefined } }).success).toBe(false)
+    }
+  })
+  it('reads worker rsync and writer package pins only from protected original installation facts', async () => {
+    const f = await fixture(), signal = new AbortController().signal
+    const node = join(f.root, 'node'), script = join(f.root, 'rsync-writer.mjs')
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex')
+    await writeFile(node, 'node bytes', { mode: 0o500 }); await writeFile(script, 'script bytes', { mode: 0o400 })
+    f.updateSelection({ remoteBinary: f.selected.localBinary, nodeBinary: { path: node, sha256: digest('node bytes') },
+      entryPoint: { path: script, sha256: digest('script bytes') } })
+    await writeFile(f.file, JSON.stringify(f.selected))
+    expect(await readProtectedInstalledRsyncWriterSelection(f.file, f.selected.registration, signal)).toEqual({
+      stagingRoot: f.selected.endpoint.remoteRoot, binary: { executable: f.localBinary, sha256: f.selected.localBinary.sha256 },
+      nodeBinary: node, entryPoint: script })
+    expect(await readProtectedInstalledRsyncWriterSelection(join(f.root, 'absent.json'), f.selected.registration, signal)).toBeUndefined()
+    await expect(readProtectedInstalledRsyncWriterSelection(f.file, { ...f.selected.registration, keyRevision: 2 }, signal)).rejects.toThrow('paired identity')
+    await chmod(script, 0o600); await writeFile(script, 'changed script')
+    await expect(readProtectedInstalledRsyncWriterSelection(f.file, f.selected.registration, signal)).rejects.toThrow('changed before verification')
+  })
+  it('denies changed remote writer bytes and changed installation pins during verification', async () => {
+    const f = await fixture()
+    f.executor.run.mockImplementation(async command => command.args.at(-1)?.includes(f.selected.nodeBinary.path) ? 'changed writer bytes\n' : f.baseRun(command))
+    await expect(f.provider.selection(f.intent, new AbortController().signal)).rejects.toThrow('writer installation changed')
+    const g = await fixture()
+    g.executor.run.mockImplementation(async command => {
+      const result = await g.baseRun(command)
+      if (command.args.at(-1)?.includes(g.selected.nodeBinary.path)) g.updateSelection({ entryPoint: { ...g.selected.entryPoint, sha256: '4'.repeat(64) } })
+      return result
+    })
+    await expect(g.provider.selection(g.intent, new AbortController().signal)).rejects.toThrow()
   })
   it('does not activate from consent alone and never auto-selects a backend', async () => {
     const f = await fixture(); f.removeSelection()
