@@ -78,18 +78,18 @@ export class RsyncPrivateStore {
   /** Copy from an already authorized source FD; verify expected hash before exposing snapshot. */
   async freeze(input: TransferIntent, source: FileHandle, signal: AbortSignal): Promise<RsyncSnapshot> {
     const intent = TransferIntentSchema.parse(input), owners = this.owners(), access = owners.access(intent, 'snapshot')
-    const directory = await this.directory()
+    const directory = await access.run(async () => { const handle = await this.directory(); access.attach(handle); return handle })
     const path = `/proc/self/fd/${directory.fd}/${intent.transferId}.snapshot`
     let handle: FileHandle | undefined
     try {
       await access.run(() => this.identity(directory, intent))
-      await this.quota.reserve(intent)
+      await access.run(() => this.quota.reserve(intent))
       try { handle = await access.run(async () => { const file = await regular(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL); access.attach(file); return file }) }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
         handle = await access.run(async () => { const file = await regular(path, constants.O_RDONLY); access.attach(file); return file })
         await access.run(() => verify(handle!, intent, signal))
-        return { verify: bounded => access.run(() => verify(handle!, intent, bounded)), close: async () => { await access.close(); await directory.close() } }
+        return { verify: bounded => access.run(() => verify(handle!, intent, bounded)), close: () => access.close() }
       }
       const buffer = Buffer.alloc(Math.min(POLICY.maxChunkBytes, Math.max(1, intent.byteSize)))
       for (let offset = 0; offset < intent.byteSize;) {
@@ -104,11 +104,11 @@ export class RsyncPrivateStore {
         }
         offset += bytesRead
       }
-      if ((await source.stat()).size !== intent.byteSize) throw new Error('Source length changed')
+      if ((await access.run(() => source.stat())).size !== intent.byteSize) throw new Error('Source length changed')
       await access.run(async () => { await verify(handle!, intent, signal); await handle!.chmod(0o400); await handle!.sync(); await directory.sync() })
-      return { verify: bounded => access.run(() => verify(handle!, intent, bounded)), close: async () => { await access.close(); await directory.close() } }
+      return { verify: bounded => access.run(() => verify(handle!, intent, bounded)), close: () => access.close() }
     } catch (error) {
-      await access.close(); await directory.close()
+      await access.close()
       // Failed snapshots remain fail-closed. Trusted cleanup after stopped-owner reconciliation can retire them.
       throw error
     }
@@ -116,28 +116,28 @@ export class RsyncPrivateStore {
   async receive(input: TransferIntent, signal: AbortSignal): Promise<RsyncReceiverLease> {
     signal.throwIfAborted()
     const intent = TransferIntentSchema.parse(input), owners = this.owners(), access = owners.access(intent, 'receiver')
-    const directory = await this.directory()
+    const directory = await access.run(async () => { const handle = await this.directory(); access.attach(handle); return handle })
     const base = `/proc/self/fd/${directory.fd}/${intent.transferId}`
     let reserved: (() => Promise<void>) | undefined, locked = false
     try {
       await access.run(() => mkdir(`${base}.lock`, { mode: 0o700 })); locked = true; access.captureLock()
-      await this.identity(directory, intent)
+      await access.run(() => this.identity(directory, intent))
       const partial = `/proc/self/fd/${directory.fd}/.rsync-partial`
-      await mkdir(partial, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error })
-      const partialStat = await lstat(partial)
+      await access.run(() => mkdir(partial, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error }))
+      const partialStat = await access.run(() => lstat(partial))
       if (!partialStat.isDirectory() || partialStat.isSymbolicLink() || (partialStat.mode & 0o077)
         || partialStat.uid !== process.getuid?.()) throw new Error('Unsafe rsync partial directory')
-      reserved = await this.quota.reserve(intent)
+      reserved = await access.run(() => this.quota.reserve(intent))
       let handle: FileHandle
       try { handle = await access.run(async () => { const file = await regular(`${base}.part`, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL); access.attach(file); return file }) }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; handle = await access.run(async () => { const file = await regular(`${base}.part`, constants.O_RDONLY); access.attach(file); return file }) }
-      await handle.close(); await directory.sync()
+      await access.run(async () => { await handle.close(); await directory.sync() })
       let closed = false
       const unlock = async () => {
         try {
-          await access.close(); await owners.processesQuiescent(intent, AbortSignal.timeout(5000)); owners.assertLock(intent)
-          await rmdir(`${base}.lock`); await directory.sync()
-        } finally { await directory.close() }
+          await owners.processesQuiescent(intent, AbortSignal.timeout(5000))
+          await access.run(async () => { owners.assertLock(intent); await rmdir(`${base}.lock`); await directory.sync() })
+        } finally { await access.close() }
       }
       return {
         interrupt: async () => { if (closed) return; closed = true; await unlock() },
@@ -151,7 +151,7 @@ export class RsyncPrivateStore {
           try { await access.run(async () => { await verify(bytes, intent, bounded); await bytes.sync(); await directory.sync() }) }
           catch (error) { await bytes.close(); throw error }
           closed = true
-          let disposed = false
+          let disposed = false, released = false, closing: Promise<void> | undefined
           const staged: RsyncStagedBytes = { intent, sha256: intent.sha256, byteSize: intent.byteSize,
             read: async (offset, length, readSignal) => {
               if (disposed) throw new Error('Staging bytes closed')
@@ -162,24 +162,40 @@ export class RsyncPrivateStore {
               if (result.bytesRead !== length) throw new Error('Staging bytes changed')
               return buffer
             },
-            close: async () => {
-              if (disposed) return; disposed = true
-              await access.close()
-              try {
+            close: () => {
+              disposed = true
+              if (released) return Promise.resolve()
+              if (closing) return closing
+              const attempt = (async () => {
+                await access.close()
                 await owners.retire(intent, async () => {
-                  await unlink(`${base}.part`); await reserved!(); await unlock()
+                  const cleanupDirectory = await this.directory()
+                  try { owners.captureRetirementHandle(intent, cleanupDirectory) }
+                  catch (error) { await cleanupDirectory.close(); throw error }
+                  const cleanupBase = `/proc/self/fd/${cleanupDirectory.fd}/${intent.transferId}`
+                  await unlink(`${cleanupBase}.part`).catch(error => { if (error.code !== 'ENOENT') throw error })
+                  await cleanupDirectory.sync(); await reserved!()
+                  try { await lstat(`${cleanupBase}.lock`); owners.assertLock(intent); await rmdir(`${cleanupBase}.lock`) }
+                  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+                  await cleanupDirectory.sync()
                 })
-              } finally { await directory.close() }
+                released = true
+              })()
+              closing = attempt
+              void attempt.catch(() => { if (closing === attempt) closing = undefined })
+              return attempt
             } }
           return staged
         },
       }
     } catch (error) {
       try {
-        await access.close()
-        if (locked) { await owners.processesQuiescent(intent, AbortSignal.timeout(5000)); owners.assertLock(intent); await rmdir(`${base}.lock`) }
+        if (locked) {
+          await owners.processesQuiescent(intent, AbortSignal.timeout(5000))
+          await access.run(async () => { owners.assertLock(intent); await rmdir(`${base}.lock`); await directory.sync() })
+        }
         // Reservations survive failed admission/write; the existing trusted supervisor retires them.
-      } finally { await directory.close() }
+      } finally { await access.close() }
       throw error
     }
   }
@@ -189,6 +205,8 @@ export class RsyncPrivateStore {
     const intent = TransferIntentSchema.parse(input), owners = this.owners()
     return owners.retire(intent, async () => {
       const directory = await this.directory()
+      try { owners.captureRetirementHandle(intent, directory) }
+      catch (error) { await directory.close(); throw error }
       try {
         const base = `/proc/self/fd/${directory.fd}/${intent.transferId}`
         let original: FileHandle | undefined
@@ -199,16 +217,18 @@ export class RsyncPrivateStore {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || Date.now() < Date.parse(intent.expiresAt)) throw error
         }
         if (original) try {
+          owners.captureRetirementHandle(intent, original)
           if ((await original.stat()).size > 16384 || JSON.stringify(TransferIntentSchema.parse(JSON.parse(await original!.readFile('utf8')))) !== JSON.stringify(intent)) throw new Error('Transfer immutable identity conflicts')
         } finally { await original.close() }
         try { await lstat(`${base}.lock`); owners.assertLock(intent); await rmdir(`${base}.lock`) }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
         await mkdir(`${base}.lock`, { mode: 0o700 })
+        owners.captureRetirementLock(intent)
         try {
           for (const suffix of ['part', 'snapshot', ...(Date.now() >= Date.parse(intent.expiresAt) ? ['intent'] : [])]) await unlink(`${base}.${suffix}`).catch(error => { if (error.code !== 'ENOENT') throw error })
           await unlink(`/proc/self/fd/${directory.fd}/.rsync-partial/${intent.transferId}.part`).catch(error => { if (error.code !== 'ENOENT') throw error })
           await directory.sync(); await this.quota.retire(intent)
-        } finally { await rmdir(`${base}.lock`); await directory.sync() }
+        } finally { owners.assertLock(intent); await rmdir(`${base}.lock`); await directory.sync() }
       } finally { await directory.close() }
     })
   }

@@ -326,6 +326,151 @@ describe.skipIf(process.platform !== 'linux')('rsync store causal lock and quota
       expect(f.ownership.expiredInventory()).toEqual([f.intent])
     } finally { clock?.mockRestore(); await f.dispose() }
   })
+  it('fences a genuinely pending shared-quota cleanup across reconstructed registries and bounded stop', async () => {
+    const f = await fixture()
+    try {
+      const source = await open(f.pin.executable, 'r')
+      try { const snapshot = await f.store.freeze(f.intent, source, signal()); await snapshot.close() }
+      finally { await source.close() }
+      let started!: () => void, finish!: () => void
+      const ready = new Promise<void>(resolve => { started = resolve }), pending = new Promise<void>(resolve => { finish = resolve })
+      f.retire.mockImplementationOnce(async () => { started(); await pending })
+      const cleaning = f.store.retire(f.intent); await ready
+      const path = join(f.root, '.rsync-writers', f.intent.transferId, 'retirement-1')
+      expect(readRecord(`${path}.cleanup`)).toMatchObject({ intent: f.intent, hostBootId: bootIdentity(), issuer: { pid: process.pid } })
+      expect(readRecord(`${path}.lock`)).toMatchObject({ transferId: f.intent.transferId, sequence: 1 })
+      expect(readRecord(`${path}.closed`)).toBeUndefined()
+      const reconstructed = new RsyncWriterOwnership(f.root, () => f.binding), callback = vi.fn(async () => {})
+      await expect(reconstructed.retire(f.intent, callback)).rejects.toThrow('cleanup remains active or unconfirmed')
+      const controller = new AbortController(), stopping = f.ownership.stop(f.intent, controller.signal)
+      controller.abort(new Error('cleanup drain deadline'))
+      await expect(stopping).rejects.toThrow('stop remains unconfirmed')
+      expect(callback).not.toHaveBeenCalled(); expect(f.retire).toHaveBeenCalledOnce()
+      expect(readRecord(`${path}.closed`)).toBeUndefined()
+      finish(); await cleaning; await f.ownership.stop(f.intent, signal())
+      expect(readRecord(`${path}.closed`)).toMatchObject({ evidence: 'access-drained' })
+      await reconstructed.quiescent(f.intent, signal())
+    } finally { await f.dispose() }
+  })
+  it('joins a late reservation and retains the actual root FD until admitted IO settles', async () => {
+    const f = await fixture()
+    const source = await open(f.pin.executable, 'r')
+    try {
+      const adapter = f.ownership.store(), handles: Awaited<ReturnType<typeof open>>[] = [], original = adapter.access
+      adapter.access = (intent, role) => {
+        const lease = original(intent, role), attach = lease.attach
+        lease.attach = handle => { handles.push(handle); attach(handle) }
+        return lease
+      }
+      const store = new RsyncPrivateStore(f.root, f.quota, adapter)
+      let started!: () => void, finish!: () => void
+      const ready = new Promise<void>(resolve => { started = resolve }), pending = new Promise<void>(resolve => { finish = resolve })
+      f.quota.reserve.mockImplementationOnce(async () => { started(); await pending; return f.release })
+      const copying = store.freeze(f.intent, source, signal()), observed = copying.catch(error => error)
+      await ready
+      const directory = handles[0]!
+      expect((await directory.stat()).isDirectory()).toBe(true)
+      const controller = new AbortController(), stopping = f.ownership.stop(f.intent, controller.signal)
+      controller.abort(new Error('reservation stop deadline'))
+      await expect(stopping).rejects.toThrow('stop remains unconfirmed')
+      expect((await directory.stat()).isDirectory()).toBe(true)
+      await expect(f.ownership.quiescent(f.intent, signal())).rejects.toThrow('active or unconfirmed')
+      finish(); expect(await observed).toBeInstanceOf(Error)
+      await f.ownership.stop(f.intent, signal())
+      await expect(directory.stat()).rejects.toThrow()
+      await expect(readFile(join(f.root, `${f.intent.transferId}.snapshot`))).rejects.toThrow()
+      expect(f.release).not.toHaveBeenCalled(); expect(f.retire).not.toHaveBeenCalled()
+    } finally { await source.close(); await f.dispose() }
+  })
+  it.each(['claim', 'receipt'] as const)('repairs an interrupted cleanup %s without replaying a callback or changing intent', async defect => {
+    const f = await fixture()
+    let fault: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      const lease = f.ownership.access(f.intent, f.binding, 'snapshot'); await lease.close()
+      const path = join(f.root, '.rsync-writers', f.intent.transferId, 'retirement-1'), write = storage.writeRecord
+      const callback = vi.fn(async () => {})
+      fault = vi.spyOn(storage, 'writeRecord').mockImplementation((target, value, exclusive) => {
+        write(target, value, exclusive)
+        if (target === `${path}.${defect === 'claim' ? 'cleanup' : 'closed'}`) throw new Error('cleanup journal interrupted')
+      })
+      await expect(f.ownership.retire(f.intent, callback)).rejects.toThrow('cleanup journal interrupted')
+      expect(callback).toHaveBeenCalledTimes(defect === 'claim' ? 0 : 1)
+      const original = readRecord(`${path}.cleanup`)
+      fault.mockRestore()
+      await f.ownership.quiescent(f.intent, signal())
+      expect(readRecord(`${path}.closed`)).toMatchObject({ evidence: 'access-drained' })
+      expect(readRecord(`${path}.cleanup`)).toEqual(original)
+      await f.ownership.retire(f.intent, callback)
+      expect(callback).toHaveBeenCalledTimes(defect === 'claim' ? 1 : 2)
+      expect(f.ownership.inventory()).toEqual([f.intent])
+    } finally { fault?.mockRestore(); await f.dispose() }
+  })
+  it('admits exactly one concurrent cleanup callback through the durable sequence claim', async () => {
+    const f = await fixture()
+    try {
+      const lease = f.ownership.access(f.intent, f.binding, 'snapshot'); await lease.close()
+      let finish!: () => void, started!: () => void
+      const ready = new Promise<void>(resolve => { started = resolve })
+      const pending = new Promise<void>(resolve => { finish = resolve }), callback = vi.fn(async () => { started(); await pending })
+      const other = new RsyncWriterOwnership(f.root, () => f.binding)
+      const first = f.ownership.retire(f.intent, callback), second = other.retire(f.intent, callback)
+      const observed = second.catch(error => error)
+      await ready
+      expect(await observed).toBeInstanceOf(Error)
+      expect(callback).toHaveBeenCalledOnce()
+      finish(); await first
+      await f.ownership.quiescent(f.intent, signal())
+    } finally { await f.dispose() }
+  })
+  it('retains an actual failed cleanup FD and repairs closure only through its original captured handle', async () => {
+    const f = await fixture()
+    try {
+      const lease = f.ownership.access(f.intent, f.binding, 'snapshot'); await lease.close()
+      const handle = await open(f.pin.executable, 'r'), close = vi.spyOn(handle, 'close').mockRejectedValueOnce(new Error('cleanup FD close interrupted'))
+      await expect(f.ownership.retire(f.intent, async () => {
+        f.ownership.captureRetirementHandle(f.intent, handle)
+        throw new Error('cleanup IO interrupted')
+      })).rejects.toThrow('cleanup FD close interrupted')
+      const path = join(f.root, '.rsync-writers', f.intent.transferId, 'retirement-1')
+      expect(readRecord(`${path}.closed`)).toBeUndefined(); expect(await handle.stat()).toBeTruthy()
+      const other = new RsyncWriterOwnership(f.root, () => f.binding)
+      await expect(other.quiescent(f.intent, signal())).rejects.toThrow('cleanup remains active or unconfirmed')
+      await f.ownership.quiescent(f.intent, signal())
+      expect(readRecord(`${path}.closed`)).toMatchObject({ evidence: 'access-drained' })
+      await expect(handle.stat()).rejects.toThrow(); expect(close).toHaveBeenCalledTimes(2)
+    } finally { await f.dispose() }
+  })
+  it('recovers only the exact captured cleanup lock after a settled callback error', async () => {
+    const f = await fixture()
+    try {
+      const source = await open(f.pin.executable, 'r')
+      try { const snapshot = await f.store.freeze(f.intent, source, signal()); await snapshot.close() }
+      finally { await source.close() }
+      await expect(f.ownership.retire(f.intent, async () => {
+        await mkdir(join(f.root, `${f.intent.transferId}.lock`), { mode: 0o700 })
+        f.ownership.captureRetirementLock(f.intent)
+        throw new Error('cleanup interrupted after lock capture')
+      })).rejects.toThrow('after lock capture')
+      await f.store.retire(f.intent)
+      expect(f.retire).toHaveBeenCalledOnce()
+      await expect(readFile(join(f.root, `${f.intent.transferId}.snapshot`))).rejects.toThrow()
+    } finally { await f.dispose() }
+  })
+  it('retries staged closure after failed quota release while permanently denying further reads', async () => {
+    const f = await fixture()
+    try {
+      const lease = await f.store.receive(f.intent, signal())
+      await writeFile(join(f.root, `${f.intent.transferId}.part`), bytes)
+      f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin); await f.ownership.stopProcesses(f.intent, signal())
+      const staged = await lease.verify(signal())
+      f.release.mockRejectedValueOnce(new Error('quota release interrupted'))
+      await expect(staged.close()).rejects.toThrow('quota release interrupted')
+      await expect(staged.read(0, 1, signal())).rejects.toThrow('closed')
+      await staged.close(); await staged.close()
+      expect(f.release).toHaveBeenCalledTimes(2)
+      await f.ownership.quiescent(f.intent, signal())
+    } finally { await f.dispose() }
+  })
   it('never removes a replaced lock inode or unregistered source-materializer residue', async () => {
     const f = await fixture()
     try {
