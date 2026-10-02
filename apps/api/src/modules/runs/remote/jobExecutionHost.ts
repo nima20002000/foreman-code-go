@@ -46,7 +46,7 @@ export class RemoteJobExecutionHost {
     for (const receipt of await this.ports.journal.jobOperations()) {
       if (!receipt.entryAttempted || receipt.terminal) continue
       this.validate(receipt.intent, receipt.execution)
-      const observed = await (await this.supervisor(receipt.execution)).reconcile(receipt.execution)
+      const observed = await this.reconcileSupervisor(receipt)
       if (!observed) await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent during worker recovery')
     }
   }
@@ -132,6 +132,17 @@ export class RemoteJobExecutionHost {
   private supervisor(execution: JobExecution) {
     return typeof this.ports.supervisor === 'function' ? this.ports.supervisor(execution) : Promise.resolve(this.ports.supervisor)
   }
+  private async reconcileSupervisor(receipt: RemoteJobOperationReceipt) {
+    const supervisor = await this.supervisor(receipt.execution)
+    let observed = await supervisor.reconcile(receipt.execution)
+    if (receipt.native && observed && receipt.native.containerId !== observed.containerId) throw new Error('Recovered OCI container identity changed')
+    if (receipt.stopFence && observed && !observed.stopped) {
+      await supervisor.stopExecution(receipt.execution, receipt.execution.acceptedSpec.policy.cancellationGraceMs, observed.containerId)
+      observed = await supervisor.reconcile(receipt.execution)
+      if (receipt.native && observed && receipt.native.containerId !== observed.containerId) throw new Error('Recovered OCI container identity changed')
+    }
+    return observed
+  }
   /** Each transition is fsynced before transport IO. Lost ACKs resume the same output commands. */
   private async publish(original: RemoteJobOperationReceipt) {
     let receipt = original
@@ -178,10 +189,8 @@ export class RemoteJobExecutionHost {
       return this.ports.journal.jobStatus(receipt.intent.operationId)
     }
     await this.ports.authorize(receipt.intent, receipt.execution, 'read')
-    const supervisor = await this.supervisor(receipt.execution)
-    const observed = await supervisor.reconcile(receipt.execution)
+    const observed = await this.reconcileSupervisor(receipt)
     if (!observed) { await this.ports.journal.jobUncertain(receipt.intent.operationId, 'Original OCI supervisor absent: nonexecution not proven'); return this.ports.journal.jobStatus(receipt.intent.operationId) }
-    if (receipt.native && receipt.native.containerId !== observed.containerId) throw new Error('Recovered OCI container identity changed')
     if (!receipt.native) await this.ports.journal.jobAcknowledgeLaunch(receipt.intent.operationId, { containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution), processIdentityDigest: digest({ executionId: receipt.execution.id, attemptId: receipt.execution.attemptId, operationId: receipt.execution.operationId, containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution) }) })
     // Recovered absence of logs is explicit; stopped without exact exit outcome remains uncertain.
     if (!observed.stopped || observed.exitCode === null) return this.ports.journal.jobStatus(receipt.intent.operationId)
@@ -193,7 +202,7 @@ export class RemoteJobExecutionHost {
   private async control(command: RemoteJobOwnerControl) {
     const recorded = await this.ports.journal.jobControl(command)
     this.tasks.get(command.operationId)?.controller.abort()
-    if (recorded.dispatch) await (await this.supervisor(recorded.receipt.execution)).stopExecution(recorded.receipt.execution,
+    if (recorded.dispatch && this.tasks.has(command.operationId)) await (await this.supervisor(recorded.receipt.execution)).stopExecution(recorded.receipt.execution,
       recorded.receipt.execution.acceptedSpec.policy.cancellationGraceMs, recorded.receipt.native?.containerId)
     return this.reconcile(recorded.receipt)
   }
