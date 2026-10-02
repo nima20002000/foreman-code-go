@@ -1682,3 +1682,5 @@ export * from './workflowArtifactDeclarations.js'
 export * from './workerNativeOutput.js'
 export * from './byteTransfer.js'
 export * from './jobInputs.js'
+
+export * from './deviceProvisioning.js'
