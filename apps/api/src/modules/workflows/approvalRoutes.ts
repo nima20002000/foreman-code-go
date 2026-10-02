@@ -31,9 +31,7 @@ export function hasSupportedApprovalTopology(version: WorkflowVersionV3): boolea
   if (version.executionSemanticsVersion !== 3 || graph.executionSemanticsVersion !== 3
     || !graph.entryNodeId || graph.entryNodeId !== version.entryNodeId) return false
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
-  const agents = graph.nodes.filter((node) => node.kind !== 'job')
   if (nodes.size !== graph.nodes.length
-    || new Set(agents.map((node) => node.agentId)).size !== agents.length
     || new Set(graph.edges.map((edge) => edge.id)).size !== graph.edges.length) return false
   const entry = nodes.get(version.entryNodeId)
   if (!entry) return false
