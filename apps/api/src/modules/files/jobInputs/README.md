@@ -8,7 +8,7 @@ SQL-only definition/Start validation, including empty inputs. It must run before
 source preparation. `local.prepare` implements the required executor input port.
 
 For devices, register `extension` on the actual W07 server and construct
-`createWorkerJobInputPort` with the existing signed application channel plus its
+`createWorkerJobInputPort` from `workerFactory.ts` with the existing signed application channel plus its
 actual current authenticated binding accessor. Main-owned intents and exact
 canonical ranges use namespace `job-inputs-v1`; the worker uses the existing
 ResumableByteTransferService for verified staging. No worker SQL or management
@@ -33,3 +33,17 @@ Focused invocation:
 
 Root still owns PostgreSQL/authenticated HTTP-MCP persisted-readback execution,
 production composition, CI-B readonly-mount/native proof and physical acceptance.
+
+Worker bundle boundary: `workerFactory.ts` imports the authenticated input channel and
+read-only delivery only. `factory.ts` keeps the original compatibility re-export for Main
+consumers. Input/output namespace and context helpers remain identical through SQL-free
+`protocol.ts` and `../jobs/workerProtocol.ts`; no SQL authority is loaded on a worker.
+
+Worker output collection is exported from `../../runs/remote/workerJobOutputs.ts`.
+`jobCanonicalOutputs.ts` keeps its original worker API re-exports while retaining Main
+canonical allocation/publication/projection composition. HRT must import these worker
+leaves directly; packaging owns the captured-source allowlist update and full rebuild.
+
+Focused leaf compatibility/graph verification: `test/job-worker-leaves.test.ts` uses the
+production `assertWorkerDependency` guard and esbuild's actual transitive input graph.
+It does not weaken the captured-source allowlist or replace canonical ports.

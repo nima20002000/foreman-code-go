@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { JobInputRevisionSchema, type JobExecution } from '@graphql/contracts/jobs'
 import { JobInputEntrySchema, JobInputManifestSchema, type JobInputEntry, type JobInputManifest } from '@graphql/contracts/job-inputs'
 import { jobInputSnapshotDigest, jobBuildInputManifestBytes } from '@graphql/contracts/job-inputs-node'
-import { commandInputHash } from '../../commands/postgres.js'
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import { DomainError } from '../../errors.js'
 export const inputHash=(value:unknown)=>commandInputHash(value).slice(7)
 export function recipient(execution:JobExecution) { return {workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,

@@ -5,7 +5,8 @@ import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import type { ResumableByteTransferService } from '../../byte-transfer/service.js'
 import type { CanonicalJobArtifactPort } from './port.js'
-import { JOB_OUTPUT_NAMESPACE, PostgresJobOutputAdmission, outputTransferContext } from './outputAdmission.js'
+import type { PostgresJobOutputAdmission } from './outputAdmission.js'
+import { JOB_OUTPUT_NAMESPACE, outputTransferContext } from './workerProtocol.js'
 import { DomainError } from '../../errors.js'
 
 /** Main handler only accepts metadata/assertions. Intent IDs/roots/context come from its durable ledger. */

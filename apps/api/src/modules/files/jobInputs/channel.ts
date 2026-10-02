@@ -7,9 +7,10 @@ import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../../devices/deviceApplicationChannel.js'
 import { ResumableByteTransferService } from '../../byte-transfer/service.js'
 import type { JobInputDeliverySource } from './delivery.js'
-import { CanonicalJobInputs, JOB_INPUT_NAMESPACE } from './service.js'
+import type { CanonicalJobInputs } from './service.js'
+import { JOB_INPUT_NAMESPACE } from './protocol.js'
 import { inputHash, recipient, manifestBytes, snapshotDigest } from './manifest.js'
-import { outputTransferContext } from '../jobs/outputAdmission.js'
+import { outputTransferContext } from '../jobs/workerProtocol.js'
 import { DomainError } from '../../errors.js'
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex')
 export function jobInputDeviceExtension(service:CanonicalJobInputs):DeviceExtensionRegistration {

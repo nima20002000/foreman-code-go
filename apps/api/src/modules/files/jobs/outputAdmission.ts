@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { JobOutputAdmissionSchema, JobOutputPublicationInputSchema, type JobOutputAdmission, type JobOutputPublicationInput } from '@graphql/contracts/job-output-transfer'
-import { BYTE_TRANSFER_POLICY, TransferContextSchema, TransferIntentSchema, type TransferContext, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { BYTE_TRANSFER_POLICY, TransferIntentSchema, type TransferContext, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import { authorizeDevice, DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptSchema } from '@graphql/contracts/remote-job-execution'
@@ -19,15 +19,9 @@ import { DomainError } from '../../errors.js'
 import type { FileMutationSource } from '../repository.js'
 import type { AcceptedJobTransferResolver } from './transferReader.js'
 
-export const JOB_OUTPUT_NAMESPACE = 'byte-transfer-v1'
+import { JOB_OUTPUT_NAMESPACE, outputTransferContext } from './workerProtocol.js'
+export { JOB_OUTPUT_NAMESPACE, outputTransferContext } from './workerProtocol.js'
 const OPERATION = 'job.output.admit'
-/** Use the genuine W07 numeric connection generation for B's legacy numeric epoch field.
- * The opaque main session epoch is additionally fenced by the trusted frame scope below. */
-export function outputTransferContext(binding: Readonly<DeviceSessionBinding>): TransferContext {
-  return TransferContextSchema.parse({ mainId: binding.mainId, deviceId: binding.deviceId,
-    workerInstallationId: binding.workerInstallationId, keyRevision: binding.keyRevision,
-    authorizationRevision: binding.authorizationRevision, bootId: binding.bootId, connectionEpoch: binding.connectionGeneration })
-}
 export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
   private readonly commands: PostgresCommandCoordinator
   private readonly frames = new AsyncLocalStorage<Readonly<DeviceSessionBinding>>()
