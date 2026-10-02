@@ -11,8 +11,8 @@ vi.mock('../jobs/workerQualificationCarrier.js', () => ({ createWorkerQualificat
 vi.mock('../runs/remote/operationJournal.js', () => ({ RemoteOperationJournal: { open: ports.open } }))
 vi.mock('../runs/remote/installedWorkflowHost.js', () => ({ createInstalledWorkflowHost: async () => ({ kind: 'unavailable' }) }))
 vi.mock('../jobs/executorInstalled.js', () => ({ createInstalledJobExecutionHost: ports.jobs }))
-vi.mock('../files/jobInputs/factory.js', () => ({ createWorkerJobInputPort: () => ({ prepare: ports.inputs, close: async () => {} }) }))
-vi.mock('../runs/remote/jobCanonicalOutputs.js', () => ({ createWorkerJobOutputCollector: () => async () => {} }))
+vi.mock('../files/jobInputs/workerFactory.js', () => ({ createWorkerJobInputPort: () => ({ prepare: ports.inputs, close: async () => {} }) }))
+vi.mock('../runs/remote/workerJobOutputs.js', () => ({ createWorkerJobOutputCollector: () => async () => {} }))
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 
 describe('original installed Job qualification composition, no native entry', () => {
