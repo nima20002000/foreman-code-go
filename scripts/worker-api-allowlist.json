@@ -1,6 +1,11 @@
 [
   "apps/api/src/infrastructure/logger.ts",
   "apps/api/src/modules/byte-transfer/carrier.ts",
+  "apps/api/src/modules/byte-transfer/productionComposition.ts",
+  "apps/api/src/modules/byte-transfer/rsync.ts",
+  "apps/api/src/modules/byte-transfer/rsyncAdapter.ts",
+  "apps/api/src/modules/byte-transfer/rsyncProduction.ts",
+  "apps/api/src/modules/byte-transfer/rsyncStore.ts",
   "apps/api/src/modules/byte-transfer/sender.ts",
   "apps/api/src/modules/byte-transfer/service.ts",
   "apps/api/src/modules/devices/connectionSupervisor.ts",
