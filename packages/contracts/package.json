@@ -219,6 +219,10 @@
     "./remote-workflow-physical": {
       "types": "./dist/remoteWorkflowPhysical.d.ts",
       "import": "./dist/remoteWorkflowPhysical.js"
+    },
+    "./trusted-device-connection": {
+      "types": "./dist/trustedDeviceConnection.d.ts",
+      "import": "./dist/trustedDeviceConnection.js"
     }
   },
   "scripts": {

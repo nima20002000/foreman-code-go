@@ -1674,3 +1674,4 @@ export * from "./jobOutputTransfer.js";
 export * from "./jobRuntime.js";
 
 export * from "./resourceTelemetry.js";
+export * from "./trustedDeviceConnection.js";
