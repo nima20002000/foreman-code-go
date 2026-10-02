@@ -27,7 +27,7 @@ export function SettingsChoice({ title, description, summary, onSelect, draftSta
 export function SettingsEditorLayout({ title, description, backLabel, onBack, section, onSectionChange,
   connections = false, plugins = false, children, feedback, footer, showBack = true,
 }: {
-  title: string; description: string; backLabel: string; onBack(): void;
+  title: string; description?: string; backLabel: string; onBack(): void;
   section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void;
   showBack?: boolean; connections?: boolean; plugins?: boolean; children: ReactNode; feedback?: ReactNode; footer: ReactNode;
 }) {
@@ -46,7 +46,7 @@ export function SettingsEditorLayout({ title, description, backLabel, onBack, se
   return <section className="settings-editor-page" aria-label={title}>
     <header className="settings-experience-heading">
       {showBack ? <Button variant="ghost" size="sm" onClick={() => void leave(onBack)} leading={<span aria-hidden="true">←</span>}>{backLabel}</Button> : null}
-      <h1 ref={titleRef} tabIndex={-1}>{title}</h1><p>{description}</p>
+      <h1 ref={titleRef} tabIndex={-1}>{title}</h1>{description ? <p>{description}</p> : null}
     </header>
     {feedback}
     <div className="settings-editor-layout">

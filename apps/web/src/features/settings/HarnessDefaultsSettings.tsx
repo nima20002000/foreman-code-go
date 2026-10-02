@@ -90,7 +90,7 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
       return { ...next, claude: { ...current.claude, configuration: { ...current.claude.configuration, ...claudeSetup } } }
     })
   }
-  return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`} description="Provider preset for new configurations. Existing agents and sessions keep their settings."
+  return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`}
     backLabel="All harnesses" onBack={onBack} section={activeSection} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
     feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={{ ...form, reapply }} /></>}
     footer={(activeSection === 'connections' && harness !== 'claude') || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}

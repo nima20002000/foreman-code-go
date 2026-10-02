@@ -21,8 +21,6 @@ export function HarnessBasicFields({ value, onChange, issues = [], includeSandbo
     <Combobox label="Model" value={value.model} options={models} error={fieldMessage(issues, 'model')}
       onValueChange={(id) => { const model = query.data?.models.find((item) => item.id === id); if (model) onChange(selectNativeModel(value, model)) }} />
     {query.isPending ? <span className="harness-status" role="status">Loading native models…</span> : null}
-    {query.data ? <p className="harness-status">API host model catalog · {query.data.providerVersion} · checked <time dateTime={query.data.checkedAt}>
-      {new Date(query.data.checkedAt).toLocaleString()}</time></p> : null}
     {query.isError || refresh.isError ? <Alert live tone="danger" title={(refresh.error ?? query.error)?.message ?? 'Model discovery failed.'}
       action={<Button size="sm" disabled={refresh.isPending} onClick={() => refresh.mutate()}>Retry</Button>} /> : null}
     {value.harness === 'codex' ? <div className="harness-two-columns">
