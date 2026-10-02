@@ -132,6 +132,33 @@ describe.skipIf(!postgresEnabled)('Current authenticated management editing pari
     }
     expect(await count(t, 'workflow_versions')).toBe(0)
   })
+  it('rejects duplicate Agents over HTTP and MCP, then persists the distinct topology with exact readback', async () => {
+    const t = await fixture()
+    const input = structuredClone(t.input)
+    const [first, second] = input.graph.nodes
+    if (!first || !second || first.kind === 'job' || second.kind === 'job') throw new Error('Two Agent nodes expected')
+    delete input.expectedAgentConfigurationVersionIds[second.agentId]
+    second.agentId = first.agentId
+    input.graph.requiredAgentCount = 1
+    const rejected = await httpSave(t, input)
+    expect(rejected.statusCode, rejected.body).toBe(409)
+    expect(rejected.json()).toMatchObject({ error: { code: 'AGENT_CONFIGURATION_CONFLICT' } })
+    const remote = await t.call(CURRENT_WORKFLOW_TOOLS.save, input)
+    expect(remote.result?.isError).toBe(true)
+    expect(graphRpcValue(remote.result)).toMatchObject({ error: { code: 'AGENT_CONFIGURATION_CONFLICT' } })
+    expect(await count(t, 'workflow_versions')).toBe(0)
+    expect(await count(t, 'runs')).toBe(0)
+    const saved = await t.call(CURRENT_WORKFLOW_TOOLS.save, t.input)
+    expect(saved.result?.isError).not.toBe(true)
+    const value = CurrentWorkflowSaveResultSchema.parse(graphRpcValue(saved.result)).value
+    const scope = { workspaceId: t.input.workspaceId, workflowId: t.input.workflowId }
+    const read = await t.call(CURRENT_WORKFLOW_TOOLS.saved, scope)
+    expect(CurrentWorkflowReadResultSchema.parse(graphRpcValue(read.result)).version).toEqual(value.version)
+    const http = await t.app.inject({ method: 'GET', url: t.url, headers: graphHeaders(t.writer.token) })
+    expect(http.statusCode, http.body).toBe(200)
+    expect(CurrentWorkflowReadResultSchema.parse(http.json()).version).toEqual(value.version)
+    expect(await count(t, 'workflow_versions')).toBe(1)
+  })
   it('denies read-only, wrong-scope, revoked and missing callers; both transports audit denied writes', async () => {
     const t = await fixture()
     const readonly = await t.credential([{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [t.input.workspaceId] } }])
