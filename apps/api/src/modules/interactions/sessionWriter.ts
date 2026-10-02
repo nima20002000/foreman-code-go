@@ -126,6 +126,7 @@ export function isLeaseLost(error: unknown): boolean {
 export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   readonly harness: NativeHarnessSessionManager['harness']
   private readonly active = new Map<string, SessionWriteLease>()
+  private readonly releasing = new Map<string, Promise<void>>()
   private controlTail: Promise<unknown> = Promise.resolve()
   private disposal: Promise<void> | undefined
   readonly startInitialTurn?: NonNullable<NativeHarnessSessionManager['startInitialTurn']>
@@ -241,6 +242,17 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     } finally { lease.finish() }
   }
 
+  private async releaseSession(session: NativeSessionReference, lease: SessionWriteLease): Promise<void> {
+    if (this.active.get(session.nativeSessionId) === lease) this.active.delete(session.nativeSessionId)
+    const release = this.release(lease)
+    // Removing the observer does not release its persisted lane. Restart close
+    // must observe this exact release before attempting another fenced claim.
+    this.releasing.set(session.nativeSessionId, release)
+    try { await release } finally {
+      if (this.releasing.get(session.nativeSessionId) === release) this.releasing.delete(session.nativeSessionId)
+    }
+  }
+
   async withLane<T>(session: NativeSessionReference, correlationId: string, signal: AbortSignal | undefined,
     work: (manager: NativeHarnessSessionManager, lease: SessionWriteLease) => Promise<T>): Promise<T> {
     const lease = await this.acquire(session, correlationId, signal)
@@ -249,9 +261,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       this.active.set(session.nativeSessionId, lease)
       return await work(this.manager, lease)
     } finally {
-      if (this.active.get(session.nativeSessionId) === lease) this.active.delete(session.nativeSessionId)
       // A stale owner must not overwrite the successor's observations, including in cleanup.
-      await this.release(lease)
+      await this.releaseSession(session, lease)
     }
   }
 
@@ -353,8 +364,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       throw error
     } finally {
       if (lease && lost) lease.guard.signal.removeEventListener('abort', lost)
-      if (session && lease && this.active.get(session.nativeSessionId) === lease) this.active.delete(session.nativeSessionId)
-      if (lease) await this.release(lease)
+      if (lease) await this.releaseSession(session!, lease)
     }
   }
 
@@ -410,8 +420,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       }
       throw error
     } finally {
-      if (this.active.get(session.nativeSessionId) === lease) this.active.delete(session.nativeSessionId)
-      await this.release(lease)
+      await this.releaseSession(session, lease)
     }
   }
 
@@ -509,6 +518,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   private async closeOwned(session: NativeSessionReference, restart: boolean): Promise<void> {
     const close = (manager: NativeHarnessSessionManager) => restart && manager.closeForRestart
       ? manager.closeForRestart(session) : manager.close(session)
+    const releasing = this.releasing.get(session.nativeSessionId)
+    if (releasing) await releasing
     let active = this.active.get(session.nativeSessionId)
     if (active?.operation === 'attach' && active.guard.signal.aborted && !isLeaseLost(active.guard.signal.reason)) {
       await this.coordination.assertLaneLease(active.fence.id, active.fence.token)
