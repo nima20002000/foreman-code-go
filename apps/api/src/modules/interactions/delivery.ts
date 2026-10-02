@@ -10,6 +10,9 @@ export interface InteractionDeliveryClaim {
   ownerToken: string
   correlationId: string
   mode: 'submit' | 'reconcile'
+  /** Captured by the atomic v3 claim; mandatory for remote response admission. */
+  deliveryFence?: string
+  approvalConnectionGeneration?: string
 }
 
 export interface NativeDeliveryOutcome {

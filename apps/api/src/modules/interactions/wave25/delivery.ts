@@ -41,9 +41,22 @@ async function ownAttempt(sql: GraphTransactionSql, claim: InteractionDeliveryCl
      from durable_interactions where id=$1`, [current.id])).rows[0]
   if (!attempt || !lease?.live || lease.delivery_token !== claim.ownerToken || attempt.lease_owner !== claim.ownerToken
     || !attempt.leased || attempt.attempt !== claim.attempt || attempt.delivery_fence !== lease.delivery_fence
+    || claim.deliveryFence !== undefined && claim.deliveryFence !== attempt.delivery_fence
+    || claim.approvalConnectionGeneration !== undefined && claim.approvalConnectionGeneration !== attempt.approval_connection_generation
     || current.selectedOptionId !== claim.interaction.selectedOptionId || attempt.correlation_id !== claim.correlationId) return fail('DELIVERY_OWNER_LOST')
   if (claim.mode === 'submit' && attempt.approval_connection_generation !== await generationFor(sql, current)) return fail('GRAPH_STALE_GENERATION')
   return { current, attempt, expiresAt: lease.expires_at }
+}
+/** Same SQL-only native-write fence used by local dispatch and remote admission. */
+export async function assertInteractionNativeDispatchLocked(sql: GraphTransactionSql, claim: InteractionDeliveryClaim): Promise<{ interaction: DurableInteraction; expiresAt: Date }> {
+  const { current, attempt, expiresAt } = await ownAttempt(sql, claim)
+  requireLeaseAtCommit(sql, expiresAt, 'DELIVERY_OWNER_LOST')
+  await readContext(sql, current, true)
+  await assertBudget(sql, current)
+  if (claim.mode !== 'submit' || !attempt.approval_write_started_at
+    || current.status !== 'delivery_pending' || current.deliveryState !== 'submitted'
+    || !await settled(sql, current)) return fail('GRAPH_SUBMISSION_NOT_REPLAYABLE')
+  return { interaction: current, expiresAt }
 }
 export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeliveryRepository {
   constructor(private readonly approvalPool: pg.Pool) { super(approvalPool) }
@@ -84,7 +97,8 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
         values($1,$2,'submitted',$3,$4,$5,$6,clock_timestamp()+($7::integer*interval '1 millisecond'),$8::bigint,$9::bigint)`,
       [id, attempt, current.nativeSessionId, current.nativeRequestId, correlationId, ownerToken, INTERACTION_DELIVERY_LEASE_MS, fence, generation])
       // No public revision or progress is created by acquiring a lease.
-      return { interaction: current, attempt, ownerToken, correlationId, mode: reconcile ? 'reconcile' : 'submit' }
+      return { interaction: current, attempt, ownerToken, correlationId, mode: reconcile ? 'reconcile' : 'submit',
+        deliveryFence: fence, approvalConnectionGeneration: prior && reconcile ? prior.approval_connection_generation ?? generation : generation }
     })
   }
 
@@ -159,14 +173,7 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
    * before entering the callback; a claimed attempt is never a replay permit. */
   async assertNativeDispatch(claim: InteractionDeliveryClaim): Promise<{ interaction: DurableInteraction; expiresAt: Date }> {
     return transact(this.approvalPool, claim.interaction.runId, async (publication) => {
-      const { current, attempt, expiresAt } = await ownAttempt(publication.sql, claim)
-      requireLeaseAtCommit(publication.sql, expiresAt, 'DELIVERY_OWNER_LOST')
-      await readContext(publication.sql, current, true)
-      await assertBudget(publication.sql, current)
-      if (claim.mode !== 'submit' || !attempt.approval_write_started_at
-        || current.status !== 'delivery_pending' || current.deliveryState !== 'submitted'
-        || !await settled(publication.sql, current)) return fail('GRAPH_SUBMISSION_NOT_REPLAYABLE')
-      return { interaction: current, expiresAt }
+      return assertInteractionNativeDispatchLocked(publication.sql, claim)
     })
   }
 
