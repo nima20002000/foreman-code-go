@@ -7,6 +7,7 @@ import type { PostgresJobDispatch } from '../../jobs/dispatch.js'
 import type { JobWorkerService } from '../../jobs/worker.js'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
+import { readAcceptedJobSource, type AcceptedJobSourceReadout } from './jobAcceptedSource.js'
 import { requireAuthorization } from '../../access/policy.js'
 
 /** Authenticated W07 handler invokes this with trusted carrier binding, never payload identity. */
@@ -16,27 +17,40 @@ export class JobApplicationBridge {
     private readonly workers: Pick<JobWorkerService, 'appendLog'>, private readonly publication: Pick<JobPublicationAuthority, 'authorizePublication'>) {}
   private async authorize(intent: RemoteJobDispatchIntent, binding: Readonly<DeviceSessionBinding>, action: 'start'|'read'|'control'|'publish') {
     const sql = await this.pool.connect()
-    try {
-      const execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId)
-      const target = execution.acceptedSpec.target
-      if (target.hostRef.kind !== 'device' || target.mainId !== binding.mainId || target.hostRef.deviceId !== binding.deviceId
-        || target.registration?.workerInstallationId !== binding.workerInstallationId || target.registration.keyRevision !== binding.keyRevision
-        || target.registration.authorizationRevision !== binding.authorizationRevision) throw new Error('Authenticated worker does not own the accepted job target')
-      const accepted = (await sql.query<{ intent: unknown }>('select intent from job_dispatch_intents where execution_id=$1', [execution.id])).rows[0]
-      if (!accepted || !isDeepStrictEqual(RemoteJobDispatchIntentSchema.parse(accepted.intent), intent)) throw new Error('Unaccepted or stale job operation')
-      if (action === 'start' || action === 'publish') {
+    try { return await this.authorizeInSql(sql, intent, binding, action) } finally { sql.release() }
+  }
+  private async authorizeInSql(sql: pg.PoolClient, intent: RemoteJobDispatchIntent, binding: Readonly<DeviceSessionBinding>, action: 'start'|'read'|'control'|'publish') {
+    const execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId)
+    const target = execution.acceptedSpec.target
+    if (target.hostRef.kind !== 'device' || target.mainId !== binding.mainId || target.hostRef.deviceId !== binding.deviceId
+      || target.registration?.workerInstallationId !== binding.workerInstallationId || target.registration.keyRevision !== binding.keyRevision
+      || target.registration.authorizationRevision !== binding.authorizationRevision) throw new Error('Authenticated worker does not own the accepted job target')
+    const accepted = (await sql.query<{ intent: unknown }>('select intent from job_dispatch_intents where execution_id=$1', [execution.id])).rows[0]
+    if (!accepted || !isDeepStrictEqual(RemoteJobDispatchIntentSchema.parse(accepted.intent), intent)) throw new Error('Unaccepted or stale job operation')
+    if (action === 'start' || action === 'publish') {
       const actor = (await sql.query<{ accepted_by: string }>('select accepted_by from job_executions where id=$1', [execution.id])).rows[0]
       if (!actor) throw new Error('Accepted job principal missing')
       const principal = await readLiveManagementPrincipal(sql, actor.accepted_by)
       requireAuthorization(principal, execution.workflow ? 'runs:start' : 'jobs:start', { workspaceId: execution.workspaceId, ...(execution.workflow ? { workflowId: execution.workflow.workflowId, runId: execution.workflow.runId } : {}) })
-      }
-      const fence = { attemptId: intent.attemptId, owner: intent.owner }
-      if (action === 'control') await this.dispatch.requireControl(sql, execution, fence)
-      else if (action === 'read') await this.dispatch.requireEvidence(sql, execution, fence)
-      else await this.dispatch.require(sql, execution, fence)
-      if (action === 'publish') await this.publication.authorizePublication(sql, { workspaceId: execution.workspaceId, executionId: execution.id, attemptId: intent.attemptId, owner: intent.owner })
-      return execution
-    } finally { sql.release() }
+    }
+    const fence = { attemptId: intent.attemptId, owner: intent.owner }
+    if (action === 'control') await this.dispatch.requireControl(sql, execution, fence)
+    else if (action === 'read') await this.dispatch.requireEvidence(sql, execution, fence)
+    else await this.dispatch.require(sql, execution, fence)
+    if (action === 'publish') await this.publication.authorizePublication(sql, { workspaceId: execution.workspaceId, executionId: execution.id, attemptId: intent.attemptId, owner: intent.owner })
+    return execution
+  }
+  /** Metadata-only original source readback. Physical W09 verification and fresh
+   * start authority remain separate and mandatory on the selected worker. */
+  async resolveAcceptedSource(raw: RemoteJobDispatchIntent, binding: Readonly<DeviceSessionBinding>): Promise<AcceptedJobSourceReadout> {
+    const intent = RemoteJobDispatchIntentSchema.parse(raw), sql = await this.pool.connect()
+    try {
+      await sql.query('begin')
+      const execution = await this.authorizeInSql(sql, intent, binding, 'read')
+      const source = await readAcceptedJobSource(sql, execution)
+      await sql.query('commit')
+      return source
+    } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
   }
   async handle(raw: unknown, binding: Readonly<DeviceSessionBinding>) {
     const frame = RemoteJobMainRpcRequestSchema.parse(raw)
