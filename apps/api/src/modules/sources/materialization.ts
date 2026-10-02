@@ -1,4 +1,5 @@
 import { constants } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, unlink, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -9,6 +10,21 @@ import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } 
 import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
 
 const equal = isDeepStrictEqual
+/** Lock the anchored directory inode, never a replaceable lock pathname. Linux
+ * flock is shared across processes and automatically released on process death. */
+async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>): Promise<T> {
+  const guard = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      // The child locks the inherited open file description; our guard keeps
+      // that same kernel lock alive after flock exits until the critical section ends.
+      const child = spawn('/usr/bin/flock', ['--exclusive', '3'], { stdio: ['ignore', 'ignore', 'ignore', guard.fd] })
+      child.once('error', reject)
+      child.once('close', code => code === 0 ? resolve() : reject(new SourceError('SOURCE_CLAIM_LOCK_FAILED', 'Source ownership serialization failed.')))
+    })
+    return await work()
+  } finally { await guard.close() }
+}
 export class PrivateSourceMaterializer implements SourceMaterializationPort {
   private active = 0
   constructor(private readonly bytes: SourceByteReader | null, private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>) {}
@@ -40,8 +56,10 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       signal.throwIfAborted()
       root = await openPrivateRoot(binding.canonicalPath)
       if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination filesystem identity changed.')
-      lock = await open(anchored(root, lockName), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-      await lock.writeFile(JSON.stringify({ version: 1, materializationId: id, binding, attempt })); await lock.sync(); await root.sync()
+      await withClaimLock(root, async () => {
+        lock = await open(anchored(root!, lockName), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+        await lock.writeFile(JSON.stringify({ version: 1, materializationId: id, binding, attempt })); await lock.sync(); await root!.sync()
+      })
       // Reservation covers staging, activated copy and retained/reference space.
       const disk = await statfs(anchored(root), { bigint: true })
       const required = BigInt(manifest.totalBytes * 3 + manifest.totalEntries * 8192 + 1024 * 1024)
@@ -190,16 +208,22 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
   const binding = receipt.binding, root = await openPrivateRoot(binding.canonicalPath)
   try {
     if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
-    const name = `binding-${binding.rootId}.lock`
-    const lock = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
-    try {
-      const stat = await lock.stat()
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid binding claim.')
-      const claim = JSON.parse(await lock.readFile('utf8')) as { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
-      if (claim.materializationId !== receipt.materializationId || !equal(claim.binding, binding)
-        || !equal(claim.attempt, { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId, keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }))
-        throw new SourceError('SOURCE_CLAIM_CONFLICT', 'This receipt does not own the destination claim.')
-    } finally { await lock.close() }
-    await unlink(anchored(root, name)); await root.sync()
+    await withClaimLock(root, async () => {
+      const name = `binding-${binding.rootId}.lock`
+      const lock = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+      try {
+        const stat = await lock.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid binding claim.')
+        const claim = JSON.parse(await lock.readFile('utf8')) as { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
+        if (claim.materializationId !== receipt.materializationId || !equal(claim.binding, binding)
+          || !equal(claim.attempt, { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId, keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }))
+          throw new SourceError('SOURCE_CLAIM_CONFLICT', 'This receipt does not own the destination claim.')
+        const current = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+        try {
+          if (!equal(await identity(current), await identity(lock))) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'The validated destination claim was replaced.')
+        } finally { await current.close() }
+        await unlink(anchored(root, name)); await root.sync()
+      } finally { await lock.close() }
+    })
   } finally { await root.close() }
 }
