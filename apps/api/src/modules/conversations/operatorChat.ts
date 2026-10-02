@@ -182,6 +182,13 @@ export class OperatorChatService {
     if (!configuration && row && (!input.harness || input.harness === row.harness)) {
       configuration = await this.repository.configuration(row.operator_configuration_version_id)
     }
+    // Before admission, a cross-harness command pins its source conversation
+    // and the reviewed destination defaults. A persisted receipt wins above.
+    if (!accepted && configuration && row && input.requestId && input.harness && configuration.harness.harness !== input.harness) {
+      if (input.expectedDefaultsRevision === undefined || input.configurationVersionId !== row.operator_configuration_version_id) throw new DomainError(
+        'OPERATOR_CONFIGURATION_CONFLICT', 'The pending harness change no longer matches its reviewed source configuration.', 409)
+      configuration = await this.operators.inspectionConfiguration(input.expectedDefaultsRevision)
+    }
     configuration ??= await this.operators.inspectionConfiguration(input.expectedDefaultsRevision)
     if ((input.harness && configuration.harness.harness !== input.harness)
       || (row && configuration.operatorId !== 'application-operator')) {

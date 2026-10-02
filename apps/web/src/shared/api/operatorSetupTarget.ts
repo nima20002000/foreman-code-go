@@ -6,5 +6,6 @@ export function pendingOperatorSetupTarget(conversationId: string | undefined,
   return { ...(conversationId ? { conversationId } : {}),
     ...(command ? { requestId: command.requestId } : {}),
     ...(command?.settings ? { harness: command.settings.harness } : {}),
+    ...(command?.defaultsRevision === undefined ? {} : { expectedDefaultsRevision: command.defaultsRevision }),
     ...(command?.configurationVersionId ? { configurationVersionId: command.configurationVersionId } : {}) }
 }

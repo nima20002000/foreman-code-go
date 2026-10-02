@@ -459,6 +459,70 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect((await pool.query('select id from application_operators')).rowCount).toBe(0)
     expect((await pool.query('select id from operator_conversations')).rowCount).toBe(0)
   })
+  it('checks reviewed Claude defaults for an unaccepted harness change without replacing its source pin or admitting a turn', async () => {
+    const source = await chat.create(owner)
+    const sourcePin = source.operatorConfigurationVersionId!
+    const settings = new PostgresFoundationSettingsRepository(pool)
+    const mainId = '11111111-1111-4111-8111-111111111111'
+    const selector = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef: { kind: 'main' as const, mainId },
+      applicationInstallationId: mainId, harnessInstallationId: 'synthetic-claude', installationFingerprint: 'synthetic-payload' } }
+    const harness = { harness: 'claude' as const, model: 'synthetic-claude', authMode: 'subscription' as const, configDirectory: '/synthetic/profile',
+      permissionMode: 'default' as const, sandbox: 'danger-full-access' as const, tools: [], permissionRules: [], instructions: '',
+      mcpServers: { graphql: { type: 'http' as const, url: 'http://127.0.0.1:3050/mcp' } } }
+    const saved = await settings.updateAgentDefaults({ ...DEFAULT_AGENT_DEFAULTS,
+      operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness, harnessProfileSelection: selector } }, 0)
+    const connection = await pool.connect()
+    let targetPin: string
+    try {
+      await connection.query('begin')
+      targetPin = (await operators.updateWithClient(connection, harness, sourcePin, false, undefined, selector)).configuration.id
+      await connection.query('commit')
+    } catch (error) { await connection.query('rollback'); throw error } finally { connection.release() }
+    let inspections = 0
+    authority.setupConfiguration = async (_principal, configuration) => {
+      inspections++
+      expect(configuration.id).toBe(targetPin)
+      expect(configuration.harnessProfileSelection).toEqual(selector)
+      return { harness: 'claude', status: 'configured', endpoint: harness.mcpServers.graphql.url, checkedAt: new Date().toISOString() }
+    }
+    const pending = { conversationId: source.id, requestId: 'pending-unaccepted', configurationVersionId: sourcePin,
+      harness: 'claude' as const, expectedDefaultsRevision: saved.revision }
+    expect(await chat.setup(owner, pending)).toMatchObject({ status: 'configured', harness: 'claude', configurationVersionId: targetPin })
+    expect((await repository.active(source.id))?.operator_configuration_version_id).toBe(sourcePin)
+    expect(await repository.hasTurn(source.id, pending.requestId)).toBe(false)
+    expect(manager.sessions).toBe(0)
+    await expect(chat.setup(owner, { conversationId: source.id, requestId: pending.requestId,
+      configurationVersionId: sourcePin, harness: 'claude' })).rejects.toMatchObject({ code: 'OPERATOR_CONFIGURATION_CONFLICT' })
+    await expect(chat.setup(owner, { ...pending, configurationVersionId: targetPin, harness: 'opencode' })).rejects.toMatchObject({ code: 'OPERATOR_CONFIGURATION_CONFLICT' })
+    await settings.updateAgentDefaults(saved.value, saved.revision)
+    await expect(chat.setup(owner, pending)).rejects.toMatchObject({ code: 'OPERATOR_DEFAULTS_CHANGED' })
+    expect(inspections).toBe(1)
+  })
+
+  it('checks an accepted harness-change receipt instead of newer defaults or its original source pin', async () => {
+    const source = await chat.create(owner)
+    const sourcePin = source.operatorConfigurationVersionId!
+    const settings = new PostgresFoundationSettingsRepository(pool)
+    const saved = await settings.updateAgentDefaults({ ...DEFAULT_AGENT_DEFAULTS,
+      operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } }, 0)
+    await operators.update(DEFAULT_HARNESS_DEFAULTS.opencode, (await operators.ensure()).configuration.id)
+    const openCode = new ChatManager('opencode')
+    chat = new OperatorChatService(repository, operators, (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+      '/tmp/graphql-test-operator', authority)
+    const request = { requestId: 'accepted-change', content: 'Synthetic receipt fixture', configurationVersionId: sourcePin,
+      defaultsRevision: saved.revision, settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode) }
+    await chat.send(source.id, request, owner)
+    await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
+    const accepted = await repository.acceptedConfiguration(source.id, request.requestId)
+    expect(accepted?.harness.harness).toBe('opencode')
+    await settings.updateAgentDefaults({ ...saved.value, operator: { ...saved.value.operator, harness: DEFAULT_HARNESS_DEFAULTS.codex } }, saved.revision)
+    await operators.update(DEFAULT_HARNESS_DEFAULTS.codex, (await operators.ensure()).configuration.id)
+    expect(await chat.setup(owner, { conversationId: source.id, requestId: request.requestId, configurationVersionId: sourcePin,
+      harness: 'opencode', expectedDefaultsRevision: saved.revision })).toMatchObject({ harness: 'opencode', status: 'configured', configurationVersionId: accepted!.id })
+    expect(await repository.acceptedConfiguration(source.id, request.requestId)).toEqual(accepted)
+    expect(openCode.turns).toBe(1)
+  })
+
   it('shares saved chat defaults with future sessions through authenticated MCP, preserving conflicts and denied callers', async () => {
     const settings = new PostgresFoundationSettingsRepository(pool)
     const commands = new PostgresCommandCoordinator(pool)
