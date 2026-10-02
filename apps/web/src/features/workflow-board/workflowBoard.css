@@ -127,7 +127,8 @@
 .board-name-field { width: 100%; min-width: 0; }
 .board-name-field > label { display: none; }
 .board-name-field .n-input { height: auto; min-height: 0; padding: 4px 0; border: 0; border-radius: 0; background: transparent; font: var(--type-heading); line-height: inherit; }
-.board-alert-trigger { gap: var(--space-1); font-variant-numeric: tabular-nums; }
+.board-alerts { position: absolute; z-index: 5; bottom: var(--space-4); left: var(--space-4); }
+.board-alert-trigger { gap: var(--space-1); font-variant-numeric: tabular-nums; box-shadow: var(--shadow-popover); }
 .n-dialog.board-alert-dialog { width: min(360px, calc(100vw - 24px)); }
 .n-dialog.board-alert-dialog::backdrop { background: transparent; backdrop-filter: none; }
 .board-alert-dialog .n-dialog-header { padding: var(--space-2) var(--space-3); }

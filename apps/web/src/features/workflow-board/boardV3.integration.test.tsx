@@ -145,6 +145,31 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
+  it('keeps real alerts outside the top toolbar and opens workflow history from an accessible Activities icon', async () => {
+    const mock = newBoardMock(), user = userEvent.setup()
+    const mounted = await mount(mock)
+    const { key } = await create(mock, user)
+    const alert = within(authoring()).getByRole('button', { name: /Workflow alerts, [1-9]/ })
+    expect(alert.closest('.board-alerts')?.parentElement).toHaveClass('workflow-graph-canvas')
+    expect(alert.closest('.board-topbar')).toBeNull()
+    expect(within(controls()).queryByRole('button', { name: /Workflow alerts/ })).not.toBeInTheDocument()
+    const activities = control('Activities')
+    expect(activities).toHaveClass('n-icon-button')
+    expect(activities).toHaveAttribute('title', 'Activities')
+    expect(activities.textContent).toBe('')
+    expect(activities.querySelector('svg')).toBeInTheDocument()
+    const selection = mounted.router.state.location.search
+    await user.click(activities)
+    const history = screen.getByRole('dialog', { name: 'Activities' })
+    expect(history).toHaveTextContent('No runs yet')
+    expect(mounted.router.state.location.search).toEqual(selection)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Activities' })).not.toBeInTheDocument()
+    expect(activities).toHaveFocus()
+    stageShape(key, 'single', mock)
+    await waitFor(() => expect(within(authoring()).queryByRole('button', { name: /Workflow alerts/ })).not.toBeInTheDocument())
+  }, 15_000)
+
   it('keeps saved Board actions hidden for inspection and no-ops, and hides them again after Undo', async () => {
     const mock = newBoardMock(), user = userEvent.setup()
     await mount(mock)

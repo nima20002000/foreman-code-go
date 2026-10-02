@@ -487,18 +487,18 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             title="Approval inbox" onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId: graph.workspaceId, workflowId: graph.id })}><Inbox aria-hidden="true" size={16} />
             {pendingApprovals ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{pendingApprovals}</span> : null}</Button>
           {!graph.handoffs ? <Button size="sm" variant="ghost" onClick={() => openPanel('repeat')}>Repeats</Button> : null}
-          <BoardAlerts scope={draftKey} hints={hints} validation={edit.validation} error={editIntent.mutation.error ?? undefined}
-            pending={editIntent.mutation.isPending} openField={openSaveField} openIssue={(issue) => {
-              if (issue.nodeId) openAgent(issue.nodeId)
-              else if (issue.relationshipId) inspect(() => presentation.getState().setFocusedEdgeId(issue.relationshipId))
-              else openPanel(issue.code === 'ENTRY_REQUIRED' && !graph.nodes.length ? 'agents' : 'workflow')
-            }} />
-          {board ? <Button variant="ghost" aria-label="Activities" leading={<Icon name="history" size={16} />} onClick={board.openRuns}>Activities</Button> : null}
+          {board ? <IconButton label="Activities" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
           <Button variant="primary" leading={<Icon name="play" size={14} />} aria-label={pendingStart ? 'Reconcile Start' : needsSave ? 'Save and run' : 'Start saved version'}
             title={startReason} disabled={startDisabled} loading={starting} onClick={() => void (pendingStart ? start() : prepare(() => needsSave ? startMutation.mutateAsync({ saveFirst: true }) : start())).catch(report)}>{pendingStart ? 'Confirm start' : needsSave ? 'Save and run' : 'Run'}</Button>
         </Toolbar>
         </div>
       </header>
+      <BoardAlerts scope={draftKey} hints={hints} validation={edit.validation} error={editIntent.mutation.error ?? undefined}
+        pending={editIntent.mutation.isPending} openField={openSaveField} openIssue={(issue) => {
+          if (issue.nodeId) openAgent(issue.nodeId)
+          else if (issue.relationshipId) inspect(() => presentation.getState().setFocusedEdgeId(issue.relationshipId))
+          else openPanel(issue.code === 'ENTRY_REQUIRED' && !graph.nodes.length ? 'agents' : 'workflow')
+        }} />
       <div className="board-notices" aria-live="polite">
         {layout.isError || layout.retained || layout.journalError ? <BoardNotice tone="warning" title="Positions are retained locally.">{layout.journalError ?? layout.error?.message}
           <Button size="sm" disabled={layout.isPending || !!layout.journalError} onClick={() => layout.mutate()}>Reconcile layout</Button></BoardNotice> : null}
