@@ -39,8 +39,8 @@ export function projectNativeActivityFacts(rows: readonly NativeActivityFact[], 
     const context = resolve(row.execution_id)
     const child = row.item_type === 'subagent'
     const kind = child ? 'subagent' : 'tool'
-    const provenTerminal = ['completed', 'failed', 'error', 'canceled', 'cancelled', 'interrupted'].includes(row.status ?? '')
-    const status = row.status === 'error' || row.status === 'failed' ? 'failed'
+    const provenTerminal = ['completed', 'failed', 'declined', 'error', 'canceled', 'cancelled', 'interrupted'].includes(row.status ?? '')
+    const status = row.status === 'error' || row.status === 'failed' || row.status === 'declined' ? 'failed'
       : ['canceled', 'cancelled', 'interrupted'].includes(row.status ?? '') ? 'canceled'
         : row.status === 'completed' ? 'completed' : context.terminal || row.status === 'unknown' ? 'unknown' : row.status === 'pending' ? 'pending' : 'running'
     const nativeSession = row.native_session_id ?? (child ? null : context.sessionId)
