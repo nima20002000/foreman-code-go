@@ -60,7 +60,7 @@ describe.skipIf(!databaseUrl)('original native artifact output receipt SQL guard
     const workspaceId = `workspace-${suffix}`, agentId = `agent-${suffix}`, configurationId = randomUUID(), conversationId = randomUUID()
     const producer = { workspaceId, workflowId: 'sql-workflow', runId: 'sql-run', nodeId: 'sql-node', executionId: randomUUID(), attemptId: randomUUID(), placementHash: 'b'.repeat(64) }
     const scope = { kind: 'temporary' as const, chat: { kind: 'agent' as const, conversationId, agentId, workspaceId, workflowId: producer.workflowId, runId: producer.runId, executionId: producer.executionId } }
-    const context: FileToolContext = { ownerPrincipalId: principalId, scope, nativeSessionId: 'sql-native', turnId: 'sql-turn', allowMutation: true, allowedTools: ['agent_file_publish'] }
+    const context: FileToolContext = { ownerPrincipalId: principalId, scope, nativeSessionId: 'sql-native', turnId: 'sql-turn', allowMutation: true, allowedTools: ['files.publish_result'] }
     const fileId = randomUUID(), revisionId = randomUUID(), transferId = randomUUID(), body = Buffer.from('SQL boundary fixture'), sha256 = createHash('sha256').update(body).digest('hex')
     const record = NativeArtifactOutputSchema.parse({ version: 1, producer, outputKey: 'report', commandId: 'sql-original-command', nativeIdentity: { nativeSessionId: context.nativeSessionId, turnId: context.turnId },
       publication: { ownerPrincipalId: principalId, requestId: randomUUID(), binding: bindingIdentity(context) }, pins: { fileId, revisionId, sha256, byteSize: body.length }, scope,
