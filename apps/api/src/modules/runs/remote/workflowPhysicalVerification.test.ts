@@ -1,0 +1,275 @@
+import { randomUUID } from 'node:crypto'
+import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeSessionReference } from '@graphql/contracts'
+import { DispatchIntentSchema } from '@graphql/contracts/node-placement'
+import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
+import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
+import { bootIdentity } from '../../harnesses/recovery/linuxIdentity.js'
+import { RemoteOperationJournal } from './operationJournal.js'
+import { captureInstalledWorkflowNativeOwner, attestInstalledWorkflowRuntimeLeaf } from './installedWorkflowHost.js'
+import { SourceOperationWorkerService } from '../../sources/operationWorker.js'
+import { PrivateSourceMaterializer } from '../../sources/materialization.js'
+import { createSourceManifest, sourceSha256 } from '../../sources/manifest.js'
+import { sourceBindingHash } from '../../sources/bindingHash.js'
+import { identity, openPrivateRoot } from '../../sources/privateFilesystem.js'
+import { verifyMaterializedWorkingDirectory } from '../../sources/workingDirectory.js'
+import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
+import { bindNativeExecution } from '../../placement/executionBinding.js'
+import type { SourceRootRecord, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
+import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
+import type { HarnessExecution } from '@graphql/contracts'
+import type pg from 'pg'
+import { createRemoteWorkflowPhysicalVerification, type RemoteWorkflowMainLifetime } from './workflowPhysicalVerification.js'
+import { RemoteWorkflowPhysicalReadoutSchema } from '@graphql/contracts/remote-workflow-physical'
+import { createRemoteNativeSourceChannel } from '../../placement/remoteNativeSource.js'
+import { VerifiedRemoteEvidence } from './resultBridge.js'
+import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
+import { repeatExecutionIdentity, repeatDigest } from '../repeatResolution.js'
+
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
+import type { WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
+import type { WorkflowPhysicalArtifactsPort } from './workflowPhysicalArtifacts.js'
+const roots:string[]=[],journals:RemoteOperationJournal[]=[]
+afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
+async function directory() {const root=await mkdtemp('/tmp/installed-workflow-');roots.push(root);return root}
+function nativeFixture() {
+  const connection=DeviceConnectionIdentitySchema.parse({mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),
+    bootId:bootIdentity(),keyRevision:1,authorizationRevision:1,connectionGeneration:4})
+  const intent=DispatchIntentSchema.parse({schemaVersion:1,protocolVersion:1,mainId:connection.mainId,runId:'run',nodeId:'node',executionId:'execution',
+    occurrenceId:null,occurrenceIndex:0,technicalAttempt:1,attemptId:'attempt',operationId:'operation',bindingHash:'a'.repeat(64),inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
+  const session:NativeSessionReference={harness:'codex',providerVersion:'codex-cli 0.154.0',nativeSessionId:'native-session'}
+  // Provider/closure doubles test the exact consumer contract; no process or physical closure is produced here.
+  const launch:NativeLaunchObservation={owner:'execution:execution',launchId:randomUUID(),bootId:connection.bootId,
+    guardian:{pid:200,startTicks:'2000'},provider:{pid:201,startTicks:'2001'},boundary:{kind:'cgroup-v2',path:'/unit/boundary',device:'1',inode:'2'},lifecycle:'active'}
+  const registry=new NativeProcessRegistry('/unit/registry'),snapshot=vi.spyOn(registry,'snapshot').mockReturnValue({revision:'snapshot:1',launches:[launch]})
+  return {connection,intent,session,launch,registry,snapshot}
+}
+async function sourceFixture(relativeCwd='') {
+  const root=await directory(),runtime=join(root,'runtime'),project=join(root,'project'),namespace=join(runtime,'source-materializations',randomUUID())
+  await mkdir(runtime,{mode:0o700});await mkdir(project,{mode:0o700});await mkdir(namespace,{recursive:true,mode:0o700})
+  if(relativeCwd)await mkdir(join(project,relativeCwd),{recursive:true,mode:0o700})
+  const fsIdentity=async(path:string)=>{const handle=await openPrivateRoot(path);try{return await identity(handle)}finally{await handle.close()}}
+  const binding:DeviceSessionBinding={mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),bootId:bootIdentity(),
+    keyRevision:1,authorizationRevision:1,connectionEpoch:randomUUID(),connectionGeneration:3}
+  const approvedRoots:ApprovedRootAllowlist={schemaVersion:1,hostRef:{kind:'device',mainId:binding.mainId,deviceId:binding.deviceId},
+    applicationInstallationId:binding.workerInstallationId,configurationRevision:'1',bases:[{baseId:randomUUID(),canonicalPath:project,filesystem:await fsIdentity(project),accessModes:['read-only']}],
+    managedRuntimeRoot:runtime,runtimeFilesystem:await fsIdentity(runtime)}
+  const bytes=Buffer.from('export const fixture = true\n'),manifest=createSourceManifest({version:1,snapshotId:randomUUID(),approvedSourceId:randomUUID(),
+    capturePolicy:'exclusive-explicit-bytes-v1',executablePolicy:'strip',deletions:[],entries:[{path:relativeCwd?`${relativeCwd}/source.ts`:'source.ts',kind:'file',byteSize:bytes.length,sha256:sourceSha256(bytes),executable:false}]})
+  const source={approvedSourceId:manifest.approvedSourceId,snapshotId:manifest.snapshotId,manifestDigest:manifest.manifestDigest},rootPolicyId=namespace.split('/').at(-1)!
+  const sourceRoot:SourceRootRecord={version:1,source,selection:{hostRef:approvedRoots.hostRef,rootPolicyId,rootPolicyRevision:'1',locationRevision:'1'},
+    binding:{version:1,mainId:binding.mainId,deviceId:binding.deviceId,workerInstallationId:binding.workerInstallationId,workspaceId:'workspace',rootId:randomUUID(),bindingRevision:1,
+      locationRevision:1,canonicalPath:namespace,filesystem:await fsIdentity(namespace),accessMode:'exclusive-write',snapshotId:manifest.snapshotId,manifestDigest:manifest.manifestDigest},
+    ownerPrincipalId:'owner',authorizedByPrincipalId:'owner',registration:{workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1},
+    attestationId:'attestation',attestationDigest:'a'.repeat(64),boundAt:new Date().toISOString()}
+  const placement=freezePlacement({schemaVersion:1,mainId:binding.mainId,mainInstallationId:binding.mainId,runId:'run',nodeId:'node',hostRef:approvedRoots.hostRef,registration:sourceRoot.registration,
+    destination:{canonicalProjectRoot:project,canonicalCwd:join(project,relativeCwd),managedRuntimeRoot:runtime,directoryIdentityHash:'a'.repeat(64),rootPolicyId,rootPolicyRevision:'1',locationRevision:'1',attestationId:'attestation',attestationHash:'a'.repeat(64)},
+    source:{kind:'pending',...source,revisionId:'revision',rootId:sourceRoot.binding.rootId,bindingRevision:1,materializationId:null,materializationDigest:null},
+    payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:'codex',driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:'installed-codex',installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:'codex-native-adapter-v1',credentialScopeRefs:[]}})
+  const intent=deriveDispatch(placement,{executionId:'execution',attemptId:'attempt',operationId:'operation',technicalAttempt:1,occurrenceId:null,occurrenceIndex:0,inputDigest:`sha256:${'b'.repeat(64)}`,owner:{grantId:'grant',epoch:'1'}})
+  const attempt={executionId:intent.executionId,attemptId:intent.attemptId,keyRevision:1,authorizationRevision:1,placementHash:''}
+  attempt.placementHash=sourceBindingHash(sourceRoot,attempt,intent.operationId)
+  const receipt=await new PrivateSourceMaterializer({read:async()=>bytes},async()=>undefined).prepare({manifest,binding:sourceRoot.binding,attempt,signal:new AbortController().signal})
+  const record:SourceMaterializationRecord={receipt,rootPolicyId,rootPolicyRevision:'1',operationId:intent.operationId,reservationId:randomUUID(),sourceBindingHash:attempt.placementHash,finalDispatchBindingHash:null,state:'prepared'}
+  const workingTree=await verifyMaterializedWorkingDirectory(record,relativeCwd,async()=>undefined)
+  const nativePlacement=bindNativeExecution(placement,intent,record,workingTree)
+  nativePlacement.materialization.finalDispatchBindingHash=nativePlacement.bindingHash
+  const owner:SourceOperationOwner={identity:{operationId:intent.operationId,ownerPrincipalId:'owner',expiresAt:'2099-01-01T00:00:00.000Z'},root:sourceRoot,attempt,source,record:nativePlacement.materialization,physicalClosureConfirmed:false}
+  const sources=new SourceOperationWorkerService({authenticate:async()=>undefined,approvedRoots:async()=>approvedRoots,currentOwner:async()=>owner,
+    transfers:{resolveVerifiedReceipt:vi.fn().mockRejectedValue(new Error('Verify-only fixture')),openVerified:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))},transferContext:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))})
+  const configuration:AgentConfigurationVersion={id:'configuration',agentId:'agent',workspaceId:'workspace',version:1,prompt:{system:'Unit workflow instructions.'},assignedSkills:[],harness:DEFAULT_HARNESS_DEFAULTS.codex,contentHash:'fixture',createdAt:new Date().toISOString()}
+  const request={executionId:intent.executionId,runId:intent.runId,workspaceId:'workspace',workflowNodeId:intent.nodeId,workingDirectory:workingTree.canonicalCwd,
+    runtimeDirectory:join(runtime,'workflow-runs',intent.executionId,intent.attemptId),configuration,input:{}}
+  return {root,approvedRoots,sources,owner,nativePlacement,intent,placement,request,context:{binding,signal:new AbortController().signal}}
+}
+async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
+  const f=await sourceFixture(),n=nativeFixture()
+  const connection=DeviceConnectionIdentitySchema.parse({mainId:f.context.binding.mainId,deviceId:f.context.binding.deviceId,
+    workerInstallationId:f.context.binding.workerInstallationId,keyRevision:f.context.binding.keyRevision,authorizationRevision:f.context.binding.authorizationRevision,
+    bootId:f.context.binding.bootId,connectionGeneration:f.context.binding.connectionGeneration})
+  const captured=captureInstalledWorkflowNativeOwner(n.registry,connection,f.intent,n.session)
+  const journal=await RemoteOperationJournal.open(join(f.root,'physical-journal'),{initializeNewInstallation:true});journals.push(journal)
+  await journal.accept(f.intent,connection,randomUUID());await journal.reserveEntry(f.intent.operationId)
+  await journal.acknowledgeStart(f.intent.operationId,captured.native)
+  await journal.reserveTurn(f.intent.operationId,{correlationId:`execution:${f.intent.executionId}`,promptDigest:'c'.repeat(64)})
+  await journal.acknowledgeTurn(f.intent.operationId,'original-turn');await journal.markRunning(f.intent.operationId)
+  const status=await journal.status(f.intent.operationId)
+  if(status.status!=='known')throw new Error('Unit journal must retain its original receipt')
+  const history={events:[],pendingInteractions:[],correlationId:`execution:${f.intent.executionId}`,nativeTurnId:'original-turn'}
+  const source={type:'history' as const,history}
+  const runtimeLeaf=await attestInstalledWorkflowRuntimeLeaf(f)
+  const readout=RemoteWorkflowPhysicalReadoutSchema.parse({version:1,expiresAt:new Date(Date.now()+60_000).toISOString(),
+    receipt:status.receipt,session:n.session,launch:captured.launch,
+    observation:captured.launch,runtimeLeaf,source:{record:f.nativePlacement.materialization,workingTree:f.nativePlacement.workingTree},history})
+  const execution:HarnessExecution={id:f.intent.executionId,runId:f.intent.runId,workflowNodeId:f.intent.nodeId,agentId:f.request.configuration.agentId,
+    agentConfigurationVersionId:f.request.configuration.id,attempt:f.intent.technicalAttempt,state:'running',nativeSessionId:n.session.nativeSessionId,
+    input:{},createdAt:new Date().toISOString(),workingDirectory:f.request.workingDirectory,runtimeDirectory:f.request.runtimeDirectory}
+  const lifetime:RemoteWorkflowMainLifetime={execution,session:n.session,lifetimeGeneration:1,closureGeneration:'1',
+    lane:{id:'original-main-lane',token:'unit-original-private-lane-token',connectionGeneration:2,providerId:'original-turn'},assertCurrent:vi.fn()}
+  const reservation={execution:repeatExecutionIdentity(execution),scope:{runId:execution.runId}}
+  const entry={phase:'entered',reservation,transition:{phase:'entered',reservation,launchDigest:`sha256:${'e'.repeat(64)}`},source_id:'actual-unit-entry',source_digest:`sha256:${'f'.repeat(64)}`}
+  const lane={owner_agent_id:execution.agentId,harness:n.session.harness,native_session_id:n.session.nativeSessionId,generation:'2',token:lifetime.lane!.token as string|null,
+    correlation:`execution:${execution.id}`,provider_id:'original-turn',held:true}
+  const request=vi.fn(async(payload:unknown):Promise<DeviceApplicationResult>=>{void payload;return {payload:readout}}),currentBinding=vi.fn(()=>f.context.binding)
+  const canonicalProofs:{record:{execution:ReturnType<typeof repeatExecutionIdentity>;session:NativeSessionReference;original:typeof source}}[]=[]
+  // Authenticated carrier/SQL/process observations are explicit unit doubles.
+  // The real source materialization/runtime directory above exercises FD/CWD receipts; no native or signed connection is produced.
+  const producer=createRemoteWorkflowPhysicalVerification({...artifacts?{artifacts}:{},endpoint:()=>({currentBinding,captureRequest:()=>({binding:f.context.binding,request})})})
+  const closure={generation:'1',expected_reference:n.session,closed_reference:null as NativeSessionReference|null,closed:false,detached:false,closed_without_session:false,execution_identity:null as unknown}
+  const retained={proof:undefined as WorkflowNativeProofRecord|undefined,canonical:true,receipt:readout.receipt}
+  const query=vi.fn(async(text:string)=>{
+    if(['begin isolation level read committed','commit','rollback'].includes(text))return {rows:[],rowCount:0}
+    if(text.includes('from execution_dispatch_intents'))return {rows:[{...f.intent,operation_id:f.intent.operationId,execution_id:f.intent.executionId,run_id:f.intent.runId,
+      node_id:f.intent.nodeId,binding_hash:f.intent.bindingHash,attempt_id:f.intent.attemptId,record:f.intent}],rowCount:1}
+    if(text.includes('remote_execution_owner_reconciliations'))return {rows:[],rowCount:0}
+    if(text.includes('run_node_placements'))return {rows:[{record:f.placement}],rowCount:1}
+    if(text.includes('execution_native_placements'))return {rows:[{record:f.nativePlacement}],rowCount:1}
+    if(text.includes('source_execution_materializations'))return {rows:[{record:f.nativePlacement.materialization,state:f.nativePlacement.materialization.state}],rowCount:1}
+    if(text.includes('remote_dispatch_origins'))return {rows:[{connection}],rowCount:1}
+    if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:true}],rowCount:1}
+    if(text.includes('workflow_native_entries'))return {rows:[entry],rowCount:1}
+    if(text.includes('source_digest from workflow_native_proofs'))return {rows:retained.proof?[{record:retained.proof,source_digest:repeatDigest(retained.proof,4*1024*1024)}]:[],rowCount:retained.proof?1:0}
+    if(text.includes('workflow_native_proofs'))return {rows:canonicalProofs.map(row=>({...row,original:row.record.original})),rowCount:canonicalProofs.length}
+    if(text.includes('execution_native_sessions'))return {rows:[{reference:n.session}],rowCount:1}
+    if(text.includes('execution_native_closures'))return {rows:[closure],rowCount:1}
+    if(text.includes('remote_execution_receipts'))return {rows:[{receipt:retained.receipt}],rowCount:1}
+    if(text.includes('join run_graph_sources'))return {rows:retained.canonical&&retained.proof?[{workspace_id:'workspace',workflow_id:'workflow',workflow_version_id:'version',execution_semantics_version:3,protocol_version:1,head_sequence:'2',source_digest:repeatDigest(retained.proof,4*1024*1024),source_semantic_digest:repeatDigest('semantic'),source_sequence:'2'}]:[],rowCount:retained.canonical?1:0}
+    if(text.includes('native_session_lanes'))return {rows:[lane],rowCount:1}
+    throw new Error(`Unexpected physical SQL: ${text}`)
+  })
+  const sqlConnection=new ExclusiveGraphConnection({query} as unknown as pg.ClientBase,()=>{})
+  const owner={runId:f.intent.runId,assertOwned:vi.fn(),readOneShotFence:vi.fn(async()=>({ownerId:'original-owner',fence:'1'}))} as unknown as Parameters<typeof producer.bind>[2]
+  const originals=createRemoteNativeSourceChannel()
+  let original:Parameters<typeof producer.bind>[0]|undefined
+  const bind=async()=>{
+    const prepared=await producer.prefetch(readout.receipt,f.placement,source)
+    await VerifiedRemoteEvidence.commit(readout.receipt,connection,{transaction:async(_operation,work)=>work({authority:async()=>({intent:f.intent,placement:f.placement,
+      originalConnection:connection,originalIncarnationId:readout.receipt.workerIncarnationId,grantIsLive:true,lastSequence:0,lastReceipt:null,native:null,terminal:null}),
+      reject:async()=>{throw new Error('Unit original receipt rejected')},accept:async verified=>{
+        originals.observe(verified,source,()=>{});original=originals.verify.read(originals.capture(f.intent.executionId,source))
+        producer.bind(original,prepared,owner,lifetime)
+      }})})
+    if(!original)throw new Error('Expected private unit original-source capability')
+    return original
+  }
+  return {...f,registry:n.registry,snapshot:n.snapshot,session:n.session,launch:n.launch,connection,captured,journal,readout,source,execution,lifetime,
+    entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs,closure,retained}
+}
+// Real private directories and original capability; SQL/carrier/process boundaries
+// are unit doubles. These fixtures never establish physical qualification.
+async function terminalFixture() {
+  const artifacts={assertPublications:vi.fn(async()=>{}),assertAdopted:vi.fn(async()=>{})}
+  const f=await physicalFixture(artifacts)
+  const artifactOutputs={version:1 as const,outputs:[{outputKey:'report',commandId:randomUUID()}]}
+  const result={outcome:'succeeded' as const,output:{text:JSON.stringify({data:{original:true},artifactOutputs})}}
+  const history={...f.source.history,terminalTurn:{correlationId:`execution:${f.execution.id}`,providerId:'original-turn',result}}
+  await f.journal.terminal(f.intent.operationId,{kind:'completed',result,
+    resultDigest:commandInputHash(result).slice('sha256:'.length),artifactDigests:['a'.repeat(64)],
+    closureEvidenceDigest:commandInputHash({intent:f.intent,native:f.readout.receipt.native,launch:f.captured.launch,physicalOwnerClosed:true}).slice('sha256:'.length)})
+  const status=await f.journal.status(f.intent.operationId)
+  if(status.status!=='known')throw new Error('Expected unit original terminal')
+  f.readout.receipt=status.receipt;f.retained.receipt=status.receipt
+  f.readout.history=history;f.source.history=history
+  f.readout.observation=RemoteWorkflowPhysicalReadoutSchema.shape.observation.parse({...f.captured.launch,lifecycle:'closed',closureEvidence:'cgroup_v2_empty'})
+  f.readout.closure={ownerClosed:true,launch:f.readout.observation}
+  f.readout.output={kind:'published-artifacts',result,artifactOutputs}
+  const original=await f.bind()
+  const capture:WorkflowNativeCapture={kind:'live',observedAt:f.execution.createdAt,owner:f.owner,...f.lifetime,source:f.source,assertCurrent:vi.fn()}
+  const proof:WorkflowNativeProofRecord={proofId:randomUUID(),scope:{workspaceId:'workspace',workflowId:'workflow',runId:f.execution.runId,
+    workflowVersionId:'version',executionSemanticsVersion:3},ref:{nodeId:f.execution.workflowNodeId,occurrence:null},
+    execution:repeatExecutionIdentity(f.execution),inputDigest:repeatDigest(f.execution.input),commandId:`execution:${f.execution.id}`,
+    session:f.session,original:f.source,observedAt:f.execution.createdAt,ownerId:'original-owner',ownerFence:'1',
+    lifetimeGeneration:1,closureGeneration:'1',lane:f.lifetime.lane}
+  f.retained.proof=structuredClone(proof);f.canonicalProofs.push({record:{execution:proof.execution,session:proof.session,original:f.source}})
+  const retain=()=>f.sqlConnection.transaction(sql=>f.producer.artifactTerminalContext(sql,f.owner,original,capture,proof))
+  const complete=()=>{
+    f.execution.state='completed';f.execution.result=result;f.execution.finishedAt=new Date().toISOString()
+    f.closure.closed=true;f.closure.closed_reference=f.session
+    const e=f.execution
+    f.closure.execution_identity={id:e.id,runId:e.runId,workflowNodeId:e.workflowNodeId,agentId:e.agentId,
+      agentConfigurationVersionId:e.agentConfigurationVersionId,attempt:e.attempt,workingDirectory:e.workingDirectory,runtimeDirectory:e.runtimeDirectory}
+    f.lane.held=false;f.lane.token=null
+    vi.mocked(f.lifetime.assertCurrent).mockImplementation(()=>{throw new Error('Original live lifetime ended')})
+    vi.mocked(capture.assertCurrent).mockImplementation(()=>{throw new Error('Original live capture ended')})
+  }
+  return {...f,artifacts,result,original,capture,proof,retain,complete}
+}
+describe('original published-artifact terminal physical companion',()=>{
+  it('retains running-SQL proof before adoption, then verifies completed SQL after original lifetime and lane release',async()=>{
+    const f=await terminalFixture()
+    try {
+      expect(f.execution.state).toBe('running')
+      expect(await f.retain()).toMatchObject({mainId:f.context.binding.mainId,deviceId:f.context.binding.deviceId})
+      expect(f.artifacts.assertAdopted).not.toHaveBeenCalled()
+      f.complete()
+      await f.sqlConnection.transaction(sql=>f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof))
+      await f.sqlConnection.transaction(sql=>f.producer.assertAdoptedArtifacts(sql,f.owner,f.original))
+      expect(f.artifacts.assertAdopted).toHaveBeenCalledTimes(2)
+      expect(f.request).toHaveBeenCalledOnce()
+    }finally{await f.sqlConnection.close()}
+  })
+  it('requires a committed first witness and rejects rollback even if the original failure was caught',async()=>{
+    const f=await terminalFixture()
+    try {
+      await expect(f.sqlConnection.transaction(async sql=>{
+        await f.producer.artifactTerminalContext(sql,f.owner,f.original,f.capture,f.proof)
+        await expect(f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof)).rejects.toThrow()
+      })).rejects.toThrow()
+      f.complete()
+      await expect(f.sqlConnection.transaction(sql=>f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof))).rejects.toThrow()
+    }finally{await f.sqlConnection.close()}
+  })
+  it('does not treat a committed running row as the persisted completed result',async()=>{
+    const f=await terminalFixture()
+    try {await f.retain();await expect(f.sqlConnection.transaction(sql=>f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof))).rejects.toThrow()}
+    finally{await f.sqlConnection.close()}
+  })
+  it.each(['detached','unproven-close','changed-close','generation','lane-generation','new-lane-token','device','session','runtime','execution-input',
+    'result','canonical-receipt','remote-receipt','proof','capture','owner-fence','publication'] as const)('rejects retained %s substitution without native IO',async defect=>{
+    const f=await terminalFixture()
+    try {
+      await f.retain();f.complete()
+      let capture=f.capture,proof=f.proof
+      if(defect==='detached')f.closure.detached=true
+      if(defect==='unproven-close'){f.closure.closed=false;f.closure.closed_reference=null}
+      if(defect==='changed-close')f.closure.closed_reference={...f.session,nativeSessionId:'replacement'}
+      if(defect==='generation')f.closure.generation='2'
+      if(defect==='lane-generation')f.lane.generation='3'
+      if(defect==='new-lane-token')f.lane.token='replacement-token'
+      if(defect==='device')f.currentBinding.mockReturnValue({...f.context.binding,connectionGeneration:4})
+      if(defect==='session')f.lane.native_session_id='replacement'
+      if(defect==='runtime')f.execution.runtimeDirectory='/replacement/runtime'
+      if(defect==='execution-input')f.execution.input={replacement:true}
+      if(defect==='result')f.execution.result={outcome:'succeeded',output:{text:'replacement'}}
+      if(defect==='canonical-receipt')f.retained.canonical=false
+      if(defect==='remote-receipt')f.retained.receipt={...f.retained.receipt,sequence:f.retained.receipt.sequence+1}
+      if(defect==='proof')proof={...proof,proofId:randomUUID()}
+      if(defect==='capture')capture={...capture}
+      if(defect==='owner-fence')vi.spyOn(f.owner,'readOneShotFence').mockResolvedValue({ownerId:'replacement-owner',fence:'2'})
+      if(defect==='publication')f.artifacts.assertPublications.mockRejectedValue(new Error('Original canonical publication missing'))
+      await expect(f.sqlConnection.transaction(sql=>f.producer.assertArtifactTerminal(sql,f.owner,capture,proof))).rejects.toThrow()
+      expect(f.request).toHaveBeenCalledOnce()
+    }finally{await f.sqlConnection.close()}
+  })
+  it('rechecks the actual binding at COMMIT and poisons failed final adoption',async()=>{
+    const f=await terminalFixture()
+    try {
+      await f.retain();f.complete()
+      await expect(f.sqlConnection.transaction(async sql=>{
+        await f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof)
+        f.currentBinding.mockReturnValue({...f.context.binding,connectionGeneration:4})
+      })).rejects.toThrow()
+      f.currentBinding.mockReturnValue(f.context.binding)
+      f.artifacts.assertAdopted.mockRejectedValue(new Error('W09 map absent'))
+      await expect(f.sqlConnection.transaction(async sql=>{
+        await expect(f.producer.assertAdoptedArtifacts(sql,f.owner,f.original)).rejects.toThrow('W09 map absent')
+      })).rejects.toThrow()
+    }finally{await f.sqlConnection.close()}
+  })
+})
