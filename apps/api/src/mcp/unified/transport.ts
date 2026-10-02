@@ -7,8 +7,9 @@ import type { FileReferenceService } from '../../modules/files/references/servic
 import { MAX_REFERENCE_MCP_BODY_BYTES } from '../../modules/files/references/requests.js'
 import { unavailableFileReferenceToolCall } from '../operator/tools/fileReferences.js'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
-import type { ManagementAudience } from '@graphql/contracts/management'
-import type { FastifyInstance } from 'fastify'
+import type { ManagementAudience, ManagementPrincipal } from '@graphql/contracts/management'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
+import type { McpServer } from '@modelcontextprotocol/server'
 
 import { requireLocalRequest } from '../../modules/access/http.js'
 import { bearerToken, type PostgresAccessService } from '../../modules/access/postgres.js'
@@ -27,12 +28,19 @@ import { createGraphqlMcpServer, roleDeniedToolCall } from './server.js'
 
 export const GRAPHQL_MCP_PATH = '/mcp'
 
+/** Closed artifact group: separate native context authority, never graph-tool grants. */
+export interface WorkerArtifactMcpExtension {
+  register(server: McpServer, request: FastifyRequest, principal: ManagementPrincipal): Promise<void>
+  call(request: FastifyRequest, principal: ManagementPrincipal, body: unknown): Promise<unknown | undefined>
+}
+
 export interface GraphqlMcpServices {
   access: PostgresAccessService
   /** Serves Operator credentials. */
   operator?: OperatorServices
   /** Serves Worker credentials (Orchestrator and Coder Agents). */
   interactions?: AppInteractionService
+  workerArtifacts?: () => WorkerArtifactMcpExtension | undefined
 }
 
 /** The single, stateless GraphQL MCP endpoint. The bearer credential decides the role. */
@@ -83,7 +91,11 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       ...(services.interactions ? { interactions: services.interactions } : {}) }
     const denied = await roleDeniedToolCall(context, request.body)
     if (denied) return reply.send(denied)
+    const artifacts = principal.audience === 'worker' ? services.workerArtifacts?.() : undefined
+    const artifactCall = await artifacts?.call(request, principal, request.body)
+    if (artifactCall !== undefined) return reply.send(artifactCall)
     const server = await createGraphqlMcpServer(context)
+    await artifacts?.register(server, request, principal)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     await server.connect(transport)

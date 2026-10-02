@@ -12,7 +12,7 @@ import type pg from 'pg'
 import { z } from 'zod'
 
 import type { AppMcpServices } from './mcp/app/types.js'
-import { registerGraphqlMcp } from './mcp/unified/transport.js'
+import { registerGraphqlMcp, type GraphqlMcpServices } from './mcp/unified/transport.js'
 import type { OperatorServices } from './mcp/operator/types.js'
 import { registerOperatorHttpSecurity } from './modules/access/http.js'
 import { registerBrowserAuthRoutes } from './modules/browser-auth/routes.js'
@@ -46,6 +46,7 @@ export interface BuildAppOptions {
   product?: ProductServices
   operator?: { access: PostgresAccessService; services: OperatorServices }
   appMcp?: AppMcpServices
+  workerArtifacts?: GraphqlMcpServices['workerArtifacts']
   mcpDetection?: { pool: pg.Pool; service: McpDetectionService }
   logger?: boolean | FastifyBaseLogger
 }
@@ -157,6 +158,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     access: (options.operator?.access ?? options.appMcp?.access)!,
     ...(options.operator ? { operator: { ...options.operator.services, workerToolsMcpImplemented: Boolean(options.appMcp) } } : {}),
     ...(options.appMcp ? { interactions: options.appMcp.interactions } : {}),
+    ...(options.workerArtifacts ? { workerArtifacts: options.workerArtifacts } : {}),
   })
 
   app.setErrorHandler(async (error, request, reply) => {
