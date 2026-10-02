@@ -1,6 +1,7 @@
 import { z } from 'zod'
+import { DeviceExecutionAdmissionFields } from './deviceResources.js'
 import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, ApprovalResponseOptionSchema, NativeSessionReferenceSchema } from './index.js'
-import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema } from './nodePlacement.js'
+import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema, CurrentAcceptedNodePlacementSchema, CurrentDispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema } from './remoteExecution.js'
 const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
@@ -18,3 +19,16 @@ export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
 export type RemoteExecutionRpcRequest = z.infer<typeof RemoteExecutionRpcRequestSchema>
 /** W07 authenticated extension kind. Frame bounds/operation grant remain carrier-owned. */
 export const REMOTE_EXECUTION_EXTENSION = 'execution-v1' as const
+
+/** New native entry/turn must use this stricter envelope; historical status and Stop remain supported. */
+export const CurrentRemoteExecutionRpcRequestSchema = RemoteExecutionRpcRequestSchema.superRefine((value, ctx) => {
+  if (!['prepare', 'start-turn'].includes(value.method)) return
+  const placement = CurrentAcceptedNodePlacementSchema.safeParse(value.placement)
+  const intent = CurrentDispatchIntentSchema.safeParse(value.intent)
+  if (!placement.success || !intent.success || value.intent.bindingHash !== value.placement.bindingHash
+    || value.intent.mainId !== value.placement.mainId || value.intent.runId !== value.placement.runId
+    || value.intent.nodeId !== value.placement.nodeId || Object.keys(DeviceExecutionAdmissionFields).some(field =>
+    value.intent[field as keyof typeof DeviceExecutionAdmissionFields] !== value.placement[field as keyof typeof DeviceExecutionAdmissionFields]))
+    ctx.addIssue({ code: 'custom', message: 'Native entry requires the identical original resource policy and device approval.' })
+})
+export type CurrentRemoteExecutionRpcRequest = z.infer<typeof CurrentRemoteExecutionRpcRequestSchema>

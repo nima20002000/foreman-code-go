@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { DeviceProvisioningHostReferenceSchema, HistoricalDeviceExecutionAdmissionFields, DeviceExecutionAdmissionFields,
+  validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 import { SourcePinSchema, SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema } from './sourceAdmission.js'
 import { GraphIdSchema, IdSchema } from './schemaPrimitives.js'
@@ -8,10 +10,7 @@ import { WorkflowArtifactOutputsV1Schema } from './workflowArtifactDeclarations.
 export const PLACEMENT_CONTRACT_VERSION = 1 as const
 export const PlacementDigestSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const Revision = z.string().regex(/^[1-9][0-9]*$/)
-export const MachineReferenceSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('main'), mainId: z.uuid() }).strict(),
-  z.object({ kind: z.literal('device'), mainId: z.uuid(), deviceId: z.uuid() }).strict(),
-])
+export const MachineReferenceSchema = DeviceProvisioningHostReferenceSchema
 export const SavedNodePlacementSchema = z.object({
   schemaVersion: z.literal(1), hostRef: MachineReferenceSchema,
   rootPolicyId: IdSchema, rootPolicyRevision: Revision, locationRevision: Revision,
@@ -55,20 +54,28 @@ export const AcceptedNodePlacementSchema = z.object({
     z.object({ kind: z.literal('pending'), approvedSourceId: z.uuid(), snapshotId: z.uuid(),
       revisionId: IdSchema, manifestDigest: PlacementDigestSchema, rootId: z.uuid(), bindingRevision: z.number().int().positive(),
       materializationId: z.null(), materializationDigest: z.null() }).strict()]),
+  ...HistoricalDeviceExecutionAdmissionFields,
   payload: z.discriminatedUnion('kind', [AgentPayload, JobPayload]), bindingHash: PlacementDigestSchema,
 }).strict().superRefine((value, context) => {
+  validateHistoricalDeviceExecutionAdmission(value, context)
   if (value.mainId !== value.hostRef.mainId || (value.hostRef.kind === 'device') !== (value.registration !== null)) {
     context.addIssue({ code: 'custom', message: 'Placement main/registration identity mismatch.' })
   }
 })
+/** New execution entry requires policy and revocable device approval; the base schema is immutable history. */
+export const CurrentAcceptedNodePlacementSchema = AcceptedNodePlacementSchema.safeExtend(DeviceExecutionAdmissionFields)
+export type CurrentAcceptedNodePlacement = z.infer<typeof CurrentAcceptedNodePlacementSchema>
 export type AcceptedNodePlacement = z.infer<typeof AcceptedNodePlacementSchema>
 export const DispatchIntentSchema = z.object({
   schemaVersion: z.literal(1), protocolVersion: z.literal(1), mainId: z.uuid(), runId: IdSchema,
   nodeId: GraphIdSchema, executionId: IdSchema, occurrenceId: IdSchema.nullable(),
   occurrenceIndex: z.number().int().nonnegative(), technicalAttempt: z.number().int().positive(), attemptId: IdSchema, operationId: IdSchema,
+  ...HistoricalDeviceExecutionAdmissionFields,
   bindingHash: PlacementDigestSchema, inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   owner: z.object({ grantId: IdSchema, epoch: Revision }).strict(),
 }).strict()
+export const CurrentDispatchIntentSchema = DispatchIntentSchema.safeExtend(DeviceExecutionAdmissionFields)
+export type CurrentDispatchIntent = z.infer<typeof CurrentDispatchIntentSchema>
 export type DispatchIntent = z.infer<typeof DispatchIntentSchema>
 export const PlacementStatusSchema = z.enum(['unavailable', 'revoked', 'placement_conflict', 'acknowledgment_unknown', 'recovery_required'])
 export const WorkerObservationSchema = z.object({

@@ -1,5 +1,6 @@
 import type { JobWorkflowExecutionReference } from './jobWorkflow.js'
 import { z } from 'zod'
+import { HistoricalDeviceExecutionAdmissionFields, DeviceExecutionAdmissionFields, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
 import { AcceptedNodePlacementSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { JobArtifactMediaTypeSchema, JobArtifactRetentionSchema } from './jobArtifacts.js'
 import { IdSchema, TimestampSchema, RunInputSchema } from './schemaPrimitives.js'
@@ -58,10 +59,13 @@ export const JobStartSchema = z.object({ commandId: IdSchema, definitionId: IdSc
 export const PreparedJobSpecSchema=JobDefinitionSpecSchema.safeExtend({source:JobSourceSchema}).strict()
 export type PreparedJobSpec=z.infer<typeof PreparedJobSpecSchema>
 export const AcceptedJobSpecSchema = PreparedJobSpecSchema.safeExtend({
+  ...HistoricalDeviceExecutionAdmissionFields,
   workflowInput:RunInputSchema.nullable(),
   definitionId: IdSchema, definitionRevision: Revision, definitionVersionId: IdSchema,
   scriptDigest: PlacementDigestSchema, outputSpecDigest: PlacementDigestSchema, specDigest: PlacementDigestSchema, bindingHash: PlacementDigestSchema,
-}).strict()
+}).strict().superRefine(validateHistoricalDeviceExecutionAdmission)
+export const CurrentAcceptedJobSpecSchema = AcceptedJobSpecSchema.safeExtend(DeviceExecutionAdmissionFields)
+export type CurrentAcceptedJobSpec = z.infer<typeof CurrentAcceptedJobSpecSchema>
 export const JobProcessStateSchema = z.object({
   phase: z.enum(['queued', 'preparing', 'running', 'terminal']),
   outcome: z.enum(['succeeded', 'build_failed', 'cancelled', 'timed_out', 'preparation_failed', 'spawn_failed']).nullable(),
@@ -82,6 +86,8 @@ export const JobExecutionSchema = z.object({
   resultIssue: z.enum(['missing_output', 'corrupt_output', 'publication_failed', 'log_overflow', 'log_delivery_unknown']).nullable(),
   cancelRequestedAt: TimestampSchema.nullable(), createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict()
+export const CurrentJobExecutionSchema = JobExecutionSchema.safeExtend({ acceptedSpec: CurrentAcceptedJobSpecSchema })
+export type CurrentJobExecution = z.infer<typeof CurrentJobExecutionSchema>
 export const JobLogChunkSchema = z.object({
   executionId: IdSchema, attemptId: IdSchema, sequence: z.number().int().positive(), stream: z.enum(['stdout', 'stderr']),
   text: z.string().max(65536), byteSize: z.number().int().nonnegative().max(65536), createdAt: TimestampSchema,
