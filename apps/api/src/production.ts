@@ -16,7 +16,6 @@ import { readAcceptedPlacement } from './modules/placement/persistence.js'
 import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
 import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
 import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
-import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
 import { retainInstalledCodexInventory } from './modules/harnesses/installedCodexInspection.js'
 import { readFile } from 'node:fs/promises'
 import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@graphql/contracts/resource-telemetry'
@@ -73,7 +72,9 @@ import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
 import { registerProductionFileStorage } from './modules/files/production.js'
 import { createProductionWorkflowFileContexts } from './modules/runs/remote/workflowNativeFilesProduction.js'
-import { PostgresArtifactPublicationAuthority } from './modules/runs/remote/nativeArtifactAuthority.js'
+import { PostgresArtifactPublicationAuthority, PostgresAcceptedArtifactAttemptFence, type NativeArtifactAuthorityPorts } from './modules/runs/remote/nativeArtifactAuthority.js'
+import { mountProductionWorkflowArtifacts } from './modules/runs/remote/workflowArtifactProduction.js'
+import { createMainWorkflowArtifactTransferExtension } from './modules/runs/remote/workflowArtifactTransferProduction.js'
 import type { TemporaryFileService } from './modules/files/service.js'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
 import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
@@ -198,6 +199,8 @@ export function buildProductionApp(
   let agentPlacement: AgentPlacementProducer | undefined
   let agentPreparation: AgentExecutionPreparation | undefined
   let executionAuthority: ReturnType<typeof createExecutionAuthorityExtension> | undefined
+  let workflowArtifacts: ReturnType<typeof mountProductionWorkflowArtifacts> | undefined
+  let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
@@ -223,9 +226,8 @@ export function buildProductionApp(
         if (!handler) throw new DomainError('SOURCE_RUNTIME_UNAVAILABLE', 'The actual Main source domain has not initialized.', 503)
         return handler(payload, context)
       } },
-      ...((infrastructure?.deviceDomains?.extensions ?? []).some(value => value.namespace === BYTE_TRANSFER_NAMESPACE) ? [] : [{
-        namespace: BYTE_TRANSFER_NAMESPACE, version: 1, role: 'client' as const, maxJsonBytes: 16384, maxBinaryBytes: BYTE_TRANSFER_POLICY.maxChunkBytes,
-      }]),
+      createMainWorkflowArtifactTransferExtension(() => workflowArtifacts?.receiver,
+        infrastructure?.deviceDomains?.extensions.find(value => value.namespace === BYTE_TRANSFER_NAMESPACE)),
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
@@ -244,7 +246,7 @@ export function buildProductionApp(
           if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual Job input authority is unavailable.', 503)
           return handler(payload, context)
         } },
-      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE].includes(value.namespace)) ?? []),
+      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE].includes(value.namespace)) ?? []),
     ],
     async reconcile(binding, signal, endpoint) {
       if (endpoint.capabilities(binding.deviceId).some((item) => item.namespace === 'harness-discovery-v1' && item.mainCanRequest)) {
@@ -833,10 +835,17 @@ export function buildProductionApp(
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
     appMcp: { access, interactions: new PostgresAppInteractionService(database.pool, repository, commands, interactions) },
+    workerArtifacts: () => workflowArtifacts?.extension,
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
   registerFileRetentionRoutes(app, operatorServices.fileRetention)
+  const mountArtifacts = () => {
+    if (workflowArtifacts || !fileStorage || !artifactComposition) return
+    workflowArtifacts = mountProductionWorkflowArtifacts({ app, pool: database.pool, files: fileStorage,
+      ...artifactComposition, attempts: artifactComposition.fence, commands, access,
+      endpoint: deviceRuntime.endpointForDomains(), stagingRoot: resolve(fileStorageRoot, 'workflow-artifact-transfers') })
+  }
   let httpClosing = false
   let initialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
@@ -876,6 +885,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
@@ -978,13 +988,17 @@ export function buildProductionApp(
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
       }
       mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app))
-      const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, { locations,
+      const artifactPorts: NativeArtifactAuthorityPorts = { locations,
         producer: { assertPinsCurrent: (...args) => {
           if (!agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual artifact placement producer is unavailable.', 503)
           return agentPlacement.assertPinsCurrent(...args)
-        } } })
+        } } }
+      const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, artifactPorts)
       admitWorkflowFileContext = createProductionWorkflowFileContexts(machine.installationId, { captures: workflowCapture.verify,
         assertPhysical: remoteWorkflow.assertPhysical, authority: artifactAuthority, transferContext: remoteWorkflow.fileTransferContext })
+      artifactComposition = { mainId: machine.installationId, authority: artifactAuthority,
+        fence: new PostgresAcceptedArtifactAttemptFence(machine.installationId, artifactPorts) }
+      mountArtifacts()
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
@@ -1091,6 +1105,7 @@ export function buildProductionApp(
   return { app, engine, initialize, reconcile, shutdown, drainShutdown,
     registerFileStorage: () => {
       fileStorage ??= registerProductionFileStorage(app, database.pool, config)
+      mountArtifacts()
       return fileStorage
     }, startDeviceListener: () => deviceRuntime.startListener() }
 }

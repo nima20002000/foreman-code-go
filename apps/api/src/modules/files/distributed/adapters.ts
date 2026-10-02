@@ -15,8 +15,8 @@ export interface DistributedArtifactEndpointAuthorization {
   consumer(request: FastifyRequest): Promise<{ attempt: ArtifactAttempt; authority: ArtifactAuthority }>
   producer(request: FastifyRequest): Promise<AcceptedArtifactPublication>
 }
-export function registerDistributedArtifacts(app: FastifyInstance, edges: ArtifactEdgeService,
-  publications: DistributedArtifactPublicationService, auth: DistributedArtifactEndpointAuthorization): void {
+export function createDistributedArtifactActions(edges: ArtifactEdgeService,
+  publications: DistributedArtifactPublicationService, auth: DistributedArtifactEndpointAuthorization) {
   const read = async (request: FastifyRequest, raw: unknown) => {
     const caller = await auth.consumer(request), input = ArtifactEdgeReadSchema.parse(raw)
     return edges.readAccepted(input.edgeId, caller.attempt, caller.authority, input.offset, input.length)
@@ -25,6 +25,24 @@ export function registerDistributedArtifacts(app: FastifyInstance, edges: Artifa
     const accepted = await auth.producer(request), input = Publish.parse(raw)
     return publications.publishAccepted(accepted, input.transferId, input.publication, source)
   }
+  const registerInputTool = (server: McpServer, request: FastifyRequest) => {
+    server.registerTool('files.read_edge_input', { inputSchema: ArtifactEdgeReadSchema, outputSchema: AgentFileReadResultSchema,
+      description: 'Read at most 64 KiB of the exact persisted input for the authenticated accepted execution/attempt. Rechecks both sender and receiver grants and expiry.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    }, async (input) => { try { return toolResult(await read(request, input)) } catch (error) { return toolFailure(error) } })
+  }
+  const registerPublicationTool = (server: McpServer, request: FastifyRequest) => {
+    server.registerTool('files.publish_transferred_result', { inputSchema: Publish, outputSchema: AgentFilePublishResultSchema,
+      description: 'Publish verified immutable artifact bytes through the common document validation/allocation/finalization ledger. commandId is the retry key; different content or ownership conflicts.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    }, async (input) => { try { return toolResult(await publish(request, input, 'mcp')) } catch (error) { return toolFailure(error) } })
+  }
+  return { read, publish, registerInputTool, registerPublicationTool }
+}
+export function registerDistributedArtifacts(app: FastifyInstance, edges: ArtifactEdgeService,
+  publications: DistributedArtifactPublicationService, auth: DistributedArtifactEndpointAuthorization) {
+  const actions = createDistributedArtifactActions(edges, publications, auth)
+  const { read, publish } = actions
   app.post('/api/artifact-inputs/read', { bodyLimit: 4096,
     onRequest: async (request) => { await auth.consumer(request) } }, async (request, reply) => {
     reply.header('cache-control', 'no-store')
@@ -39,10 +57,7 @@ export function registerDistributedArtifacts(app: FastifyInstance, edges: Artifa
     onRequest: async (request) => { await auth.consumer(request) } }, async (request, reply) => {
     const server = new McpServer({ name: 'graphql-artifact-inputs', version: '1.0.0' }, { instructions:
       'Accepted revision-pinned artifact inputs only. Hashes and edge IDs confer no authority. No reference editing or delegation creation.' })
-    server.registerTool('files.read_edge_input', { inputSchema: ArtifactEdgeReadSchema, outputSchema: AgentFileReadResultSchema,
-      description: 'Read at most 64 KiB of the exact persisted input for the authenticated accepted execution/attempt. Rechecks both sender and receiver grants and expiry.',
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    }, async (input) => { try { return toolResult(await read(request, input)) } catch (error) { return toolFailure(error) } })
+    actions.registerInputTool(server, request)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     reply.header('cache-control', 'no-store')
@@ -53,14 +68,12 @@ export function registerDistributedArtifacts(app: FastifyInstance, edges: Artifa
     onRequest: async (request) => { await auth.producer(request) } }, async (request, reply) => {
     const server = new McpServer({ name: 'graphql-artifact-publications', version: '1.0.0' }, { instructions:
       'Publish verified artifact transfers owned by this accepted sender. Accepted sandbox mutation permission remains required; source packages use a separate class.' })
-    server.registerTool('files.publish_transferred_result', { inputSchema: Publish, outputSchema: AgentFilePublishResultSchema,
-      description: 'Publish verified immutable artifact bytes through the common document validation/allocation/finalization ledger. commandId is the retry key; different content or ownership conflicts.',
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    }, async (input) => { try { return toolResult(await publish(request, input, 'mcp')) } catch (error) { return toolFailure(error) } })
+    actions.registerPublicationTool(server, request)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     reply.header('cache-control', 'no-store')
     await server.connect(transport); reply.hijack()
     await transport.handleRequest(request.raw, reply.raw, request.body)
   })
+  return actions
 }
