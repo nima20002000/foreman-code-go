@@ -8,30 +8,9 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import { DomainError } from '../errors.js'
 import { ConnectionProbeSchema, TrustedEndpointSchema, probeTrustedConnection, discoverTrustedConnectionHost, type HostDiscovery, type ConnectionProbe } from './trustedConnectionProbe.js'
 
-const FingerprintSchema = z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/)
-export const TrustedConnectionConfigureSchema = z.object({
-  deviceId: z.uuid(), commandId: z.string().min(8).max(200), expectedRevision: z.number().int().nonnegative(),
-  expectedAuthorizationRevision: z.number().int().positive(),
-  endpoint: TrustedEndpointSchema, hostKeyFingerprint: FingerprintSchema,
-  allowOwnerCommands: z.boolean(), approvalId: z.uuid(),
-}).strict()
-export type TrustedConnectionConfigure = z.infer<typeof TrustedConnectionConfigureSchema>
-export const TrustedConnectionConsentSchema = z.object({
-  revision: z.number().int().positive(), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
-  keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
-  publicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-  endpoint: TrustedEndpointSchema, hostKeyFingerprint: FingerprintSchema,
-  allowOwnerCommands: z.boolean(), approvedBy: z.string(), approvalId: z.uuid(), approvedAt: z.string().datetime(),
-  privilege: z.literal('selected-os-user'), automaticSudo: z.literal(false), grantsAgentPermissions: z.literal(false),
-}).strict()
-export type TrustedConnectionConsent = z.infer<typeof TrustedConnectionConsentSchema>
-export const TrustedConnectionReadSchema = z.object({ registration: DeviceRegistrationSchema, consent: TrustedConnectionConsentSchema.nullable() }).strict()
-export type TrustedConnectionRead = z.infer<typeof TrustedConnectionReadSchema>
-export const TrustedConnectionCheckSchema = TrustedConnectionReadSchema.extend({
-  state: z.enum(['pairing-required', 'revoked', 'consent-required', 'consent-revoked', 'identity-changed', 'offline', 'authentication-required', 'host-key-mismatch', 'host-key-untrusted', 'permission-denied', 'unavailable', 'tools-missing', 'ready']),
-  probe: ConnectionProbeSchema.nullable(), checkedAt: z.string().datetime(),
-}).strict()
-export type TrustedConnectionCheck = z.infer<typeof TrustedConnectionCheckSchema>
+import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionReadSchema, TrustedConnectionCheckSchema, type TrustedConnectionConfigure, type TrustedConnectionConsent, type TrustedConnectionRead, type TrustedConnectionCheck } from '@graphql/contracts/trusted-device-connection'
+export { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionReadSchema, TrustedConnectionCheckSchema } from '@graphql/contracts/trusted-device-connection'
+export type { TrustedConnectionConfigure, TrustedConnectionConsent, TrustedConnectionRead, TrustedConnectionCheck } from '@graphql/contracts/trusted-device-connection'
 const OPERATION = 'device.trusted-connection.configure'
 export interface TrustedConnectionSetupPorts {
   /** Verify/consume an existing explicit human owner approval in this SQL transaction.

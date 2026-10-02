@@ -97,3 +97,61 @@ The diagnostic deliberately reports the actual PATH rsync3.2.7 on Dexter. Parent
 reports app-private patched rsync3.5.1 available; the rsync adapter/integration
 owner must supply its explicit verified binary selection. This diagnostic does
 not certify the system rsync as approved for transfers or silently replace it.
+
+## Human authority implementation (follow-up assignment)
+
+Consumed root shared DTO commit ee0fcad5 (local prerequisite e86a6f50); core setup,
+probe, consent and readiness shapes now import
+`@graphql/contracts/trusted-device-connection`. Do not cherry-pick the borrowed
+shared commit again.
+
+New owned `trustedConnectionHumanAuthority.ts` and its focused test implement the
+previous missing verifier. Compose:
+
+```ts
+const authority = new PostgresTrustedConnectionHumanAuthority(pool, mainId)
+const setup = new PostgresTrustedConnectionSetup(pool, mainId, {
+  verifyOwnerApproval: authority.verifyOwnerApproval,
+})
+registerTrustedConnectionApprovalRoutes(app, authority)
+```
+
+These four approval routes require `requireBrowserSession(request)` plus live
+unscoped settings authority and exact `browser_auth_owner` principal mapping:
+
+- POST `/api/devices/connection-approvals`: `{requestCommandId, action}`;
+  action is TrustedConnectionConfigure without approvalId. Server issues ID,
+  captures exact paired registration and original five-minute expiry.
+- GET `/api/devices/connection-approvals/:approvalId`: exact request plus derived
+  pending/approved/consumed/expired/stale/revoked state and decision timestamps.
+- POST `.../:approvalId/approve`: `{commandId}`. Human decision covers the saved
+  immutable action, not caller-replaced fields or a generic allow checkbox.
+- POST `.../:approvalId/revoke`: `{commandId}`. Withdraws an unused request or
+  approval; does not claim to reverse a previously consumed configuration.
+
+Configuration input is the readback's full `action`, including server-issued
+approvalId and the original configure commandId. Request and decision command IDs
+are separately idempotent. Request retries retain original ID/expiry and derive
+current state. Human-only receipt issuance/decision is intentionally unavailable
+through MCP/bearer authentication; previously approved configuration retains the
+shared HTTP/MCP service and requires the same current human-owner principal.
+Settings:update alone cannot issue or consume someone else's approval.
+
+Storage uses four connection-specific immutable management command operations
+(approval.request/approve/revoke/consume) and an approval advisory lock, with
+existing command audit and existing receipt table. No migration, Job receipt,
+secret token, new credential or SSH/network change. Consumption writes through
+the caller's configure SQL transaction, so consent failure rolls it back. Exact
+full action and registration hashes, owner mapping, live grants, original expiry,
+current consent revision and original human decision are rechecked. A consumed
+receipt cannot be used again; configure command retry returns its original result
+through the original coordinator without consuming twice.
+
+Root must publish the four approval DTO schemas/types sent in the interface
+message before UI consumption, mount routes behind the existing verified
+browser/CSRF authenticator, add actionFor permissions/capability descriptions, and
+run actual PostgreSQL/browser tests. Source tests mock SQL transactions and verify
+browser-only Fastify helpers; they do not claim authentic browser-session or real
+SQL concurrency proof. Real inherited host scheduler namespace/token evidence:
+`device-setup-authority-scheduler-evidence.json`;52 focused cases + API types and
+owned lint passed before the final extra expiry/agent-consumption regression.
