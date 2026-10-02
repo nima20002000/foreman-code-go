@@ -9,6 +9,7 @@ import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration
 import { workflowJobsMigration } from './workflowJobsMigration.js'
 import { jobRuntimeProfilesMigration } from './jobRuntimeProfilesMigration.js'
 import { jobRuntimeNativeAdmissionMigration } from './jobRuntimeNativeAdmissionMigration.js'
+import { remoteOwnerControlAdmissionMigration } from './remoteOwnerControlAdmissionMigration.js'
 import { jobPreparationDeadlineMigration } from './jobPreparationDeadlineMigration.js'
 import { jobRunCleanupMigration } from './jobRunCleanupMigration.js'
 import { jobAcceptedIdentityMigration } from './jobAcceptedIdentityMigration.js'
@@ -800,6 +801,7 @@ export const migrations = [
   jobInputAdmissionMigration,
   agentPlacementProducerMigration,
   jobRuntimeNativeAdmissionMigration,
+  remoteOwnerControlAdmissionMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
