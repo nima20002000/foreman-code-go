@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
@@ -7,11 +7,13 @@ const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute', '-
 if (commonResult.status !== 0) throw new Error(commonResult.stderr || 'Cannot find Git common directory')
 const common = commonResult.stdout.trim()
 const activePath = join(common, 'graphql-heavy-jobs', 'active', 'owner.json')
-const owner = () => { try { return JSON.parse(readFileSync(activePath, 'utf8')) } catch { return null } }
+const running = join(common, 'graphql-heavy-jobs', 'running')
+const readOwner = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null } }
+const owner = (matches) => [readOwner(activePath), ...(existsSync(running) ? readdirSync(running).map((name) => readOwner(join(running, name))) : [])].find((record) => record && matches(record))
 
 export default async function setup() {
-  const inherited = owner()
-  if (process.env.GRAPHQL_HEAVY_JOB_COMMON === common && process.env.GRAPHQL_HEAVY_JOB_TOKEN === inherited?.token) return
+  const inherited = owner((record) => record.token && record.token === process.env.GRAPHQL_HEAVY_JOB_TOKEN)
+  if (inherited?.token && process.env.GRAPHQL_HEAVY_JOB_COMMON === common && process.env.GRAPHQL_HEAVY_JOB_TOKEN === inherited.token) return
   const child = spawn(process.execPath, [join(root, 'scripts/heavy-job.mjs'), '--', process.execPath, join(root, 'scripts/heavy-job.mjs'), '__hold'], { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] })
   await new Promise((resolveReady, reject) => {
     let output = ''
@@ -30,7 +32,7 @@ export default async function setup() {
     child.once('error', reject)
     child.once('exit', (code) => reject(new Error(`Heavy-job holder exited before admission (${code})`)))
   })
-  const admitted = owner()
+  const admitted = owner((record) => record.pid === child.pid)
   if (!admitted?.token || !admitted.tempPath) {
     child.stdin.end()
     throw new Error('Heavy-job holder did not publish its owned slot')
