@@ -39,6 +39,12 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     await sql.query('update job_dispatch_intents set cancel_command_id=coalesce(cancel_command_id,$2),cancel_principal_id=coalesce(cancel_principal_id,$3),cancel_action=coalesce(cancel_action,$4) where execution_id=$1',[execution.id,commandId,principal.id,action])
   }
   cancelForRunCleanup(sql:GraphTransactionSql,execution:JobExecution,owner:RunOwnership,reason:JobRunCleanup['reason']) {return requestRunJobCleanup(sql,execution,owner,reason)}
+  /** The accepted Run association is immutable. Acquire Run before Job, as workflow polling does. */
+  private async readExecutionLocked(sql:JobSql,workspaceId:string,executionId:string):Promise<JobExecution> {
+    const accepted=await this.repository.execution(sql,workspaceId,executionId)
+    if(accepted.workflow)await sql.query('select id from runs where id=$1 for share',[accepted.workflow.runId])
+    return this.repository.execution(sql,workspaceId,executionId,true)
+  }
   private async requireOwner(sql:JobSql,execution:JobExecution,fence:JobWorkerFence):Promise<void> {
     const row=(await sql.query<{intent:unknown;owner_id:string|null;owner_fence:string|null}>('select intent,owner_id,owner_fence from job_dispatch_intents where execution_id=$1 for share',[execution.id])).rows[0]
     if(!row)throw new DomainError('JOB_DISPATCH_MISSING','The accepted W08 job dispatch intent is missing.',409)
@@ -76,7 +82,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       const prepared=await owner.connection.transaction(async sql=>{
         const scope=(await sql.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
         if(!scope)throw new DomainError('JOB_NOT_FOUND','The accepted job is missing.',404)
-        const execution=await this.repository.execution(sql,scope.workspace_id,executionId,true)
+        const execution=await this.readExecutionLocked(sql,scope.workspace_id,executionId)
         const row=(await sql.query<{intent:unknown;delivery_attempted:boolean;cancel_command_id:string|null;cancel_principal_id:string|null;cancel_action:'jobs:cancel'|'runs:stop'|null}>('select intent,delivery_attempted,cancel_command_id,cancel_principal_id,cancel_action from job_dispatch_intents where execution_id=$1 for update',[executionId])).rows[0]!
         const accepted=(await sql.query<{accepted_by:string}>('select accepted_by from job_executions where id=$1',[executionId])).rows[0]!
         const cleanup=await readRunJobCleanup(sql,execution)
@@ -104,7 +110,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       if(prepared.cancelCommandId&&prepared.execution.process.phase!=='terminal') status=await this.remote.control({schemaVersion:1,protocolVersion:1,commandId:prepared.cancelCommandId,operationId:prepared.intent.operationId,attemptId:prepared.intent.attemptId,executionId,subject:prepared.intent.subject,bindingHash:prepared.intent.bindingHash,owner:prepared.intent.owner,action:{kind:'stop'}})
       owner.assertOwned()
       const finished=await owner.connection.transaction(async sql=>{
-        const execution=await this.repository.execution(sql,prepared.execution.workspaceId,executionId,true)
+        const execution=await this.readExecutionLocked(sql,prepared.execution.workspaceId,executionId)
         await this.requireEvidence(sql,execution,{attemptId:execution.attemptId,owner:execution.owner})
         beforeGraphCommit(sql,()=>this.requireControl(sql,execution,{attemptId:execution.attemptId,owner:execution.owner}))
         if(status.status==='known'&&await this.acceptReceipt(sql,execution,status.receipt))await this.host.observe(sql,execution,status.receipt)
@@ -124,7 +130,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     if(!active)throw new DomainError('JOB_RECONCILIATION_REQUIRED','Acquire the original job owner and reconcile its journal before accepting a receipt.',409)
     active.owner.assertOwned()
     const terminal=await active.owner.connection.transaction(async sql=>{
-      const execution=await this.repository.execution(sql,workspaceId,executionId,true)
+      const execution=await this.readExecutionLocked(sql,workspaceId,executionId)
       await this.requireEvidence(sql,execution,{attemptId:receipt.intent.attemptId,owner:receipt.intent.owner})
       beforeGraphCommit(sql,()=>this.requireEvidence(sql,execution,{attemptId:receipt.intent.attemptId,owner:receipt.intent.owner}))
       if(await this.acceptReceipt(sql,execution,receipt))await this.host.observe(sql,execution,receipt)

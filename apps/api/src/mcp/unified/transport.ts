@@ -1,6 +1,7 @@
 import { unavailableResourceTelemetryToolCall } from '../operator/resourceTelemetryUnavailable.js'
 import { unavailableJobToolCall } from '../operator/tools/jobs.js'
 import { unavailableJobRuntimeToolCall } from '../operator/tools/jobRuntimeProfiles.js'
+import { unavailableHostHarnessToolCall } from '../../modules/harnesses/instanceSettings/management.js'
 import { unavailableDeviceOperatorToolCall } from '../operator/tools/devices.js'
 import { unavailableOperatorControlToolCall } from '../operator/tools/operatorControls.js'
 import type { FileReferenceService } from '../../modules/files/references/service.js'
@@ -84,6 +85,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableOperatorControlToolCall(context, request.body)
         ?? await unavailableJobToolCall(context, request.body)
         ?? await unavailableJobRuntimeToolCall(context, request.body)
+        ?? await unavailableHostHarnessToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
     const context = { role, principal, ...(access ? { tools: access.tools } : {}),

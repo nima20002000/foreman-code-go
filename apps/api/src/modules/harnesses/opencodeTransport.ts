@@ -123,7 +123,9 @@ export class ManagedOpenCodeServer implements OpenCodeServerController {
   }
 
   get credentialEnvironmentFingerprint(): string | undefined {
-    return this.desiredEnvironment ? childEnvironmentFingerprint(this.desiredEnvironment) : undefined
+    const environment = this.desiredEnvironment ?? (this.options.appMcpAccess === 'none'
+      ? { agentId: this.options.ownerAgentId, variables: {} } : undefined)
+    return environment ? childEnvironmentFingerprint(environment) : undefined
   }
   get mcpCredentialReferences(): Readonly<Record<string, string>> { return this.references }
 

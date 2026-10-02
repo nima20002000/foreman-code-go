@@ -233,7 +233,9 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         if (execution.nativeSessionId) throw new DomainError('NATIVE_ENTRY_CONFLICT', 'A first entry already owns a native session.', 409)
         await store.beginNativeEntry(execution.id)
         check()
-        await withFilesystemDeadline((checkFilesystem) => checkFilesystem(() => mkdir(paths.runtimeDirectory, { recursive: true })), signal)
+        if (node.placement?.hostRef.kind !== 'device') {
+          await withFilesystemDeadline((checkFilesystem) => checkFilesystem(() => mkdir(paths.runtimeDirectory, { recursive: true })), signal)
+        }
         check()
       }
       const boundary: RepeatNativeObservationStore = {
