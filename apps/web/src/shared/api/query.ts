@@ -23,7 +23,6 @@ import type {
 import {
   apiClient,
   getConversation,
-  getHarnessDefaults,
   getRun,
   getAgent,
   getWorkflow,
@@ -70,7 +69,6 @@ export const queryKeys = {
   messages: (workspaceId: string, conversationId: string) =>
     ['workbench', 'workspace', workspaceId, 'conversation', conversationId, 'messages'] as const,
   resources: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'resources'] as const,
-  harnessDefaults: ['workbench', 'settings', 'harness-defaults'] as const,
   managedWorkspaces: ['workbench', 'management', 'workspaces'] as const,
   workspaceStorageFolders: ['workbench', 'management', 'workspace-storage-folders'] as const,
   managedWorkspace: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId] as const,
@@ -259,7 +257,15 @@ export function useUpdateManagedHarnessDefaultsMutation() {
   return useMutation({
     mutationFn: (input: Parameters<typeof updateManagedHarnessDefaults>[0]) => updateManagedHarnessDefaults(input),
     onSuccess: (response) => {
-      client.setQueryData(queryKeys.harnessDefaults, { defaults: response.value.defaults })
+      client.setQueryData<Awaited<ReturnType<typeof getManagedHarnessCatalog>>>(queryKeys.managedHarnessCatalog, (current) => {
+        if (!current || current.some(entry => entry.defaultsRevision > response.value.revision)) return current
+        return Object.values(response.value.defaults).map(defaults => {
+          const prior = current.find(entry => entry.harness === defaults.harness)
+          const unchanged = prior && JSON.stringify(prior.defaults) === JSON.stringify(defaults)
+          return { harness: defaults.harness, defaults, defaultsRevision: response.value.revision,
+            capability: unchanged ? prior.capability : null, discoveryError: unchanged ? prior.discoveryError : null }
+        })
+      })
       void client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog }).catch(() => undefined)
       void client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }).catch(() => undefined)
     },
@@ -370,19 +376,18 @@ export function useRespondToInteractionMutation() {
 
 export const useWorkspaceQuery = useWorkspaceDetailsQuery
 
-export function useHarnessDefaultsQuery(options?: QueryOptions<GetHarnessDefaultsResponse>) {
-  const realMode = true
+export function useHarnessDefaultsQuery(options?: Omit<QueryOptions<Awaited<ReturnType<typeof getManagedHarnessCatalog>>>, 'select'>) {
   return useQuery({
-    refetchInterval: realMode ? 3_000 : false,
+    refetchInterval: 3_000,
     ...options,
-    queryKey: queryKeys.harnessDefaults,
-    queryFn: async ({ signal }) => {
-      if (!realMode) return getHarnessDefaults({ signal })
-      const catalog = await getManagedHarnessCatalog({ signal })
+    queryKey: queryKeys.managedHarnessCatalog,
+    queryFn: ({ signal }) => getManagedHarnessCatalog({ signal }),
+    select: (catalog): GetHarnessDefaultsResponse => {
       const codex = catalog.find((entry) => entry.harness === 'codex')?.defaults
       const opencode = catalog.find((entry) => entry.harness === 'opencode')?.defaults
+      const claude = catalog.find((entry) => entry.harness === 'claude')?.defaults
       if (codex?.harness !== 'codex' || opencode?.harness !== 'opencode') throw new Error('Harness defaults are unavailable.')
-      return { defaults: { codex, opencode } }
+      return { defaults: { codex, opencode, ...(claude?.harness === 'claude' ? { claude } : {}) } }
     },
   })
 }

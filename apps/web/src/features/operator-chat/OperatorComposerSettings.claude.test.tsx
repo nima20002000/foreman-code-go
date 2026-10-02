@@ -17,7 +17,8 @@ const clients: QueryClient[] = []
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
 function mount(defaults: HarnessDefaults, selected: HarnessConfiguration = savedClaudeConfiguration) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
-  client.setQueryData(queryKeys.harnessDefaults, { defaults })
+  client.setQueryData(queryKeys.managedHarnessCatalog, Object.entries(defaults).map(([harness, defaults]) =>
+    ({ harness, defaults, defaultsRevision: 1, capability: null, discoveryError: null })))
   clients.push(client)
   const onChange = vi.fn()
   render(<QueryClientProvider client={client}><OperatorComposerSettings value={operatorChatSettings(selected)} onChange={onChange} disabled={false} /></QueryClientProvider>)

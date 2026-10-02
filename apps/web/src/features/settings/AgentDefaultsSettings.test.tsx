@@ -25,7 +25,8 @@ const clients: QueryClient[] = []
 function client(value = DEFAULT_AGENT_DEFAULTS, revision = 3) {
   const result = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   result.setQueryData(queryKeys.agentDefaults, { value, revision, versionId: `agents-v${revision}` })
-  result.setQueryData(queryKeys.harnessDefaults, { defaults: DEFAULT_HARNESS_DEFAULTS })
+  result.setQueryData(queryKeys.managedHarnessCatalog, Object.entries(DEFAULT_HARNESS_DEFAULTS).map(([harness, defaults]) =>
+    ({ harness, defaults, defaultsRevision: 1, capability: null, discoveryError: null })))
   clients.push(result); return result
 }
 beforeEach(() => { updateDefaults.mockReset(); updateDefaults.mockImplementation(async (input) => ({ value: { value: input.value, revision: input.expectedRevision + 1, versionId: 'agents-next' }, replayed: false })) })
