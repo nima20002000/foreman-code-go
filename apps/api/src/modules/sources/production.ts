@@ -1,3 +1,5 @@
+import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { AgentSourceAttemptAuthority, installedSourceAttemptAuthority } from './agentSourceAuthority.js'
 import { readAcceptedPlacement, readDispatchIntent, readNativePlacement } from '../placement/persistence.js'
 import { readReconciledDispatchIntent, readRemoteReceipts } from '../runs/remote/persistence.js'
@@ -37,7 +39,8 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; endpoint(): DeviceEndpoint;
   dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost;
   activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader;
-  transferSender?: SourcePackageTransferAdmission['sender'] }) {
+  transferSender?: SourcePackageTransferAdmission['sender'];
+  transferAcknowledged?: (intent: TransferIntent) => Promise<void> }) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
   const hosts: WorkspaceRootHostPort = {
     authorize: async (sql, _principal, host, installationId) => {
@@ -110,6 +113,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   }
   const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed, input.activeNativeSession)
   const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint, input.transferSender)
+  const lifecycle = new PostgresSourceRsyncLifecycle(input.pool, transfers)
   const carrier: MainWorkerCarrier = { capture(deviceId) {
     const channel = input.endpoint().captureRequest(deviceId, SOURCE_OPERATION_EXTENSION.namespace)
     if (!channel) return unavailable()
@@ -129,7 +133,14 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
         return await confirmedClosed(sql, record)
       } finally { sql.release() }
     },
-  })
-  return { sources, policies, executions, snapshots, attempts, owners, transfers,
-    sourceExtension: createMainSourceOperationExtension(owners, transfers) }
+  }, input.transferAcknowledged ? async record => {
+    const deviceId = record.receipt.binding.deviceId
+    if (!deviceId) return
+    const channel = input.endpoint().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)
+    if (!channel) unavailable()
+    const intent = await lifecycle.forMaterialization(record, channel!.binding)
+    await input.transferAcknowledged!(intent)
+  } : undefined)
+  return { sources, policies, executions, snapshots, attempts, owners, transfers, lifecycle,
+    sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle) }
 }

@@ -8,8 +8,14 @@ import { ResumableByteTransferSender, type TransferSenderConnection } from '../.
 import type { RemoteOperationJournal } from './operationJournal.js'
 
 /** Worker metadata and sealed bytes share its existing selected-main signed carrier. */
-export function createWorkerJobOutputCollector(channel: WorkerJobOutputChannel, connection: TransferSenderConnection, journal: RemoteOperationJournal) {
-  return createRemoteJobOutputCollector(new WorkerJobOutputReceiver(channel), connection, new WorkerJobOutputApplication(channel), journal)
+export function createWorkerJobOutputCollector(channel: WorkerJobOutputChannel, connection: TransferSenderConnection, journal: RemoteOperationJournal,rsync?:WorkerJobOutputRsyncPort) {
+  return createRemoteJobOutputCollector(new WorkerJobOutputReceiver(channel), connection, new WorkerJobOutputApplication(channel), journal,rsync)
+}
+
+export interface WorkerJobOutputRsyncPort {
+  published(intent:TransferIntent,signal:AbortSignal):Promise<JobArtifact|undefined>
+  register(execution:JobExecution,input:JobOutputPublicationInput,intent:TransferIntent,bytes:Uint8Array,signal:AbortSignal):Promise<void>
+  stage(intent:TransferIntent,signal:AbortSignal):Promise<void>
 }
 
 export interface JobOutputApplicationPort {
@@ -20,7 +26,7 @@ export interface JobOutputApplicationPort {
   publish(input: JobOutputPublicationInput): Promise<JobArtifact>
 }
 /** Only called after main's physical closure acknowledgement. Reads real sealed declared bytes. */
-export function createRemoteJobOutputCollector(receiver: ByteTransferPort, connection: TransferSenderConnection, main: JobOutputApplicationPort, journal: RemoteOperationJournal) {
+export function createRemoteJobOutputCollector(receiver: ByteTransferPort, connection: TransferSenderConnection, main: JobOutputApplicationPort, journal: RemoteOperationJournal,rsync?:WorkerJobOutputRsyncPort) {
   return async (execution: JobExecution) => {
     if (execution.acceptedSpec.target.hostRef.kind !== 'device') throw new Error('Remote job outputs require their actual registered device')
     const outputs = await readDeclaredJobOutputs(execution.acceptedSpec.target.destination.canonicalProjectRoot, execution.acceptedSpec)
@@ -37,7 +43,14 @@ export function createRemoteJobOutputCollector(receiver: ByteTransferPort, conne
       // Main admits an expired original intent only for an already finalized,
       // retained canonical allocation. Reconcile through its freshly authorized
       // publication readback; never reopen an expired byte attempt.
-      if (Date.parse(intent.expiresAt) > Date.now()) await new ResumableByteTransferSender(receiver, { read: async (accepted, offset, length) => {
+      const signal=AbortSignal.timeout(15*60*1000)
+      if(rsync){
+        const published=await rsync.published(intent,signal)
+        if(!published&&Date.parse(intent.expiresAt)>Date.now()){
+          await rsync.register(execution,input,intent,bytes,signal)
+          await rsync.stage(intent,signal)
+        }
+      }else if (Date.parse(intent.expiresAt) > Date.now()) await new ResumableByteTransferSender(receiver, { read: async (accepted, offset, length) => {
         if (accepted.transferId !== intent.transferId || accepted.sha256 !== sha256 || offset < 0 || offset + length > bytes.length) throw new Error('Sealed output transfer binding changed')
         return bytes.subarray(offset, offset + length)
       } }, connection).send(intent)
