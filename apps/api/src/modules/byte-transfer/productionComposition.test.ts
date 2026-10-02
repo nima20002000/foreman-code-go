@@ -8,6 +8,8 @@ import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/b
 import { createProductionRsyncComposition, type ProductionRsyncProviders } from './productionComposition.js'
 import { ResumableByteTransferService } from './service.js'
 import { transferContextForBinding } from './carrier.js'
+import { RsyncWriterOwnership } from './rsyncWriterOwnership.js'
+import type { RsyncTransferWriters } from './rsync.js'
 
 const roots: string[] = [], receivers: ResumableByteTransferService[] = []
 afterEach(async () => {
@@ -29,7 +31,16 @@ async function fixture() {
   const accepted = { intent: async (id: string) => { if (id !== intent.transferId) throw new Error('Unknown original intent'); return intent },
     authorize: vi.fn(async () => { if (denied) throw new Error('Denied original accepted owner') }) }
   const receiver = new ResumableByteTransferService(join(root, 'canonical'), accepted); receivers.push(receiver)
-  const providers: ProductionRsyncProviders = { stagingRoot, accepted, receiver,
+  const ownership = new RsyncWriterOwnership(stagingRoot, () => binding)
+  const writers: RsyncTransferWriters = {
+    local: async () => { throw new Error('No selected client command in this fixture') },
+    remote: async () => { throw new Error('No authenticated peer in this fixture') },
+    activate: async () => { throw new Error('No actual waiting wrapper in this fixture') },
+    quiescent: (intent, signal) => ownership.processesQuiescent(intent, signal, true),
+    stop: (intent, signal) => ownership.stopProcesses(intent, signal),
+  }
+  const ownershipPorts = { ownership, writers }
+  const providers: ProductionRsyncProviders = { stagingRoot, accepted, receiver, ...ownershipPorts,
     resolveSource: vi.fn(async () => ({ read: async () => { throw new Error('No output bytes supplied by this composition-only fixture') } })),
     acknowledged: vi.fn(async () => { throw new Error('No canonical acknowledgement in this fixture') }),
     quiescent: vi.fn(async () => { throw new Error('No stopped-writer proof in this fixture') }) }
