@@ -1,3 +1,4 @@
+import { JOB_GIT_ENVIRONMENT, JOB_PRIVATE_GIT_LAYOUT, requireJobGitMounts, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { requireJobInputReceipt,JOB_INPUT_MANIFEST_CONTAINER_PATH,type JobAcceptedInputPort,type VerifiedJobSource } from './inputs.js'
 import type { JobInputDeliveryReceipt } from '@graphql/contracts/job-inputs'
 import { createHash } from 'node:crypto'
@@ -13,9 +14,10 @@ export interface JobLaunchAuthority {
   launched(execution: JobExecution, supervisorIdentity: string, containerId?: string): Promise<void>
 }
 export interface JobSourcePort {
-  verify(spec: AcceptedJobSpec, signal: AbortSignal): Promise<{ privateRepositoryRoot: string; directoryIdentityHash: string; privateGit: true; diskQuotaBytes: number }>
+  verify(spec: AcceptedJobSpec, signal: AbortSignal): Promise<{ privateRepositoryRoot: string; directoryIdentityHash: string; privateGit: true; diskQuotaBytes: number; gitMounts?:VerifiedJobGitMounts }>
 }
 export interface QualifiedJobProfile {
+  workspaceLayout?:string|undefined
   policyId: string
   policyRevision: number
   imageDigest: string
@@ -92,7 +94,7 @@ function requireProfile(spec: AcceptedJobSpec, profile: QualifiedJobProfile | nu
     profile.policyId !== spec.policy.isolationPolicyId || profile.policyRevision !== spec.policy.isolationPolicyRevision ||
     profile.imageDigest !== spec.policy.imageDigest || profile.toolchainDigest !== spec.policy.toolchainDigest ||
     profile.rootless !== true || profile.cgroupV2 !== true || profile.filesystemBounded !== true || profile.descendantContainment !== true ||
-    profile.network !== 'none' || spec.policy.network !== 'none' || spec.policy.environmentScopeRefs.length > 0 || spec.policy.maxLogChunkBytes < 4 || spec.policy.maxWorkerSpoolBytes < 8 ||
+    profile.workspaceLayout !== JOB_PRIVATE_GIT_LAYOUT || profile.network !== 'none' || spec.policy.network !== 'none' || spec.policy.environmentScopeRefs.length > 0 || spec.policy.maxLogChunkBytes < 4 || spec.policy.maxWorkerSpoolBytes < 8 ||
     [spec.policy.preparationTimeoutMs, spec.policy.executionTimeoutMs, spec.policy.cancellationGraceMs].some(value => value > 2147423647) ||
     ![profile.cpuLimit, profile.memoryBytes, profile.pidsLimit, profile.diskBytes].every(value => Number.isFinite(value) && value > 0)) {
     throw new Error('Qualified offline rootless isolation unavailable for the accepted policy.')
@@ -141,12 +143,13 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
         !source.privateRepositoryRoot.startsWith('/') || source.privateRepositoryRoot !== spec.target.destination.canonicalProjectRoot) {
         throw new Error('Accepted private source/root identity changed.')
       }
+      requireJobGitMounts(execution,source)
       const inputs=requireJobInputReceipt(execution,source,await ports.inputs.prepare(execution,source,signal))
       if(signal.aborted)throw new Error('Input delivery interrupted.')
       const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot
       if (cwd !== spec.target.destination.canonicalCwd) throw new Error('Accepted working directory changed.')
       const prepared: JobLaunchPlan = { identity, execution, privateRepositoryRoot: source.privateRepositoryRoot, verifiedSource:{...source}, inputs, cwd, argv: spec.argv,
-        environment: { HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',GRAPHQL_JOB_INPUT_MANIFEST:JOB_INPUT_MANIFEST_CONTAINER_PATH }, stdin: 'closed', pty: false, profile }
+        environment: { HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',...JOB_GIT_ENVIRONMENT,GRAPHQL_JOB_INPUT_MANIFEST:JOB_INPUT_MANIFEST_CONTAINER_PATH }, stdin: 'closed', pty: false, profile }
       await ports.authority.recheck(execution)
       return prepared
     })
