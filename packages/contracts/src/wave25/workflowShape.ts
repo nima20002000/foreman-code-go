@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js'
 import { JobWorkflowNodeSchema } from '../jobWorkflow.js'
 import { SavedNodePlacementSchema } from '../nodePlacement.js'
+import { WorkflowArtifactInputsV1Schema, WorkflowArtifactOutputsV1Schema } from '../workflowArtifactDeclarations.js'
 import { GraphqlToolOverrideSchema } from '../graphqlMcpTools.js'
 import { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
 export { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
@@ -86,6 +87,7 @@ export const CurrentAgentWorkflowNodeFields = {
   join: z.object({ mode: z.literal('all') }).strict().optional(), choice: WorkflowChoiceSchema.optional(),
   /** Changes the Agent's default GraphQL MCP tools for this node only. */
   graphqlTools: GraphqlToolOverrideSchema.optional(),
+  artifactOutputs: WorkflowArtifactOutputsV1Schema.optional(),
 }
 export const CurrentAgentWorkflowNodeSchema = z.object(CurrentAgentWorkflowNodeFields).strict().superRefine((node, context) => {
   if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
@@ -98,6 +100,7 @@ export const CurrentWorkflowRelationshipSchema = z.object({
   maxWorkHandoffsPerRun: z.number().int().min(1).max(2147483647).optional(),
   /** A correlated return is always permitted; this controls independent new work. */
   workRequestDirection: z.enum(['source_to_target', 'both']).optional(),
+  artifactInputs: WorkflowArtifactInputsV1Schema.optional(),
 }).strict()
 /** Incomplete authoring is allowed here; immutable executable validation below
  * requires a real entry, complete approval and enough execution budget. */

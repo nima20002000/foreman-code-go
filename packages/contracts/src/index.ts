@@ -1676,3 +1676,5 @@ export * from "./jobRuntime.js";
 
 export * from "./resourceTelemetry.js";
 export * from "./trustedDeviceConnection.js";
+
+export * from './workflowArtifactDeclarations.js'
