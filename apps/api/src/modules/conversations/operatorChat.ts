@@ -715,6 +715,11 @@ export class OperatorChatService {
     if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== row.native_session_id) return
     const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
     await this.repository.pending(id, requestId, pending)
+    if (!this.responding.has(id) && history.nativeTurnId && history.responseDeliveries?.length) {
+      const state = await this.repository.get(id)
+      if (state) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+        runtime.session, history.nativeTurnId, history.responseDeliveries, state)
+    }
     if (history.terminalResult && !pending && (!messageIdentity || history.terminalTurn?.correlationId === correlationId
       && history.terminalTurn.providerId === receipt!.nativeMessageId)) {
       await this.complete(id, requestId, history.terminalResult, history.nativeMessageId)
