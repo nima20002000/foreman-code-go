@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest'
+import { PendingNativeInteractionSchema } from '@graphql/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
-import { inspectNativeResponse, type NativeResponseAvailability, type ResponseAvailabilityInspector } from '../src/modules/harnesses/responseAvailability.js'
+import { inspectNativeResponse, pendingResponseQuery, type NativeResponseAvailability, type ResponseAvailabilityInspector } from '../src/modules/harnesses/responseAvailability.js'
 const session = { harness: 'codex' as const, providerVersion: 'pinned', nativeSessionId: 'session' }
 const query = { nativeRequestId: 'request', nativeRequestType: 'approval', expectedNativeTurnId: 'turn' }
 const live: NativeResponseAvailability = { nativeSessionId: 'session', nativeRequestId: 'request', nativeRequestType: 'approval',
@@ -31,4 +32,24 @@ it('fences a callback disposed while inspection was in flight and treats restart
   expect((await inspectNativeResponse(absent, session, query, { isCurrent: () => true })).reason).toBe('unsupported')
   expect((await inspectNativeResponse(manager({ ...live, state: 'recovery_required', path: null, reason: 'callback_lost' }), session, query,
     { isCurrent: () => true })).state).toBe('recovery_required')
+})
+
+it('fences message callbacks with the original pending message and generation', async () => {
+  const pending = PendingNativeInteractionSchema.parse({ session: { ...session, harness: 'claude' },
+    turn: { nativeMessageId: 'original-message', nativeRequestId: 'request' }, nativeRequestType: 'approval',
+    request: { generation: 'original-generation' }, responseOptions: [{ optionId: 'allow', label: 'Allow', semantic: 'approve_once',
+      persistence: 'request', affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }] })
+  const expected = pendingResponseQuery(pending)!
+  expect(expected).toEqual({ nativeRequestId: 'request', nativeRequestType: 'approval',
+    expectedNativeMessageId: 'original-message', expectedGeneration: 'original-generation' })
+  const callback: NativeResponseAvailability = { ...live, nativeMessageId: 'original-message', generation: 'original-generation' }
+  delete callback.nativeTurnId
+  expect((await inspectNativeResponse(manager(callback), pending.session, expected, { isCurrent: () => true })).state).toBe('available')
+  const missingMessage = { ...callback }, missingGeneration = { ...callback }
+  delete missingMessage.nativeMessageId; delete missingGeneration.generation
+  for (const mismatch of [{ ...callback, nativeMessageId: 'later-message' }, missingMessage,
+    { ...callback, generation: 'later-generation' }, missingGeneration]) {
+    expect((await inspectNativeResponse(manager(mismatch), pending.session, expected,
+      { isCurrent: () => true })).reason).toBe('identity_mismatch')
+  }
 })

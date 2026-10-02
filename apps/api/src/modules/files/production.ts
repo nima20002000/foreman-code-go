@@ -1,3 +1,6 @@
+import { CanonicalNativeArtifactResults } from './distributed/nativeResults.js'
+import { DistributedArtifactPublicationService, type ArtifactPublicationAuthority, type VerifiedArtifactReader } from './distributed/publication.js'
+import { PostgresDistributedPublicationLedger } from './distributed/publicationLedger.js'
 import type { FastifyInstance } from 'fastify'
 import type pg from 'pg'
 import { MAX_FILE_BYTES } from '@graphql/contracts/files'
@@ -50,4 +53,15 @@ export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Poo
   // Drain the sweeper before server.ts's onClose hooks dispose the shared pool.
   app.addHook('preClose', () => cleanup.stop())
   return service
+}
+
+/** Publication and recovery share the original canonical store, ledger and
+ * accepted-attempt authority. Callers supply genuine W08 authority/transfer ports. */
+export function createProductionDistributedArtifacts(input: { pool: pg.Pool; files: TemporaryFileService;
+  authority: ArtifactPublicationAuthority; transfers: VerifiedArtifactReader }) {
+  const ledger = new PostgresDistributedPublicationLedger(input.pool)
+  return {
+    publications: new DistributedArtifactPublicationService(input.files, ledger, input.transfers, input.authority),
+    results: new CanonicalNativeArtifactResults(input.files, ledger, input.authority),
+  }
 }
