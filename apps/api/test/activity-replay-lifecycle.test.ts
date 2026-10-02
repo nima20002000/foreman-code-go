@@ -1,9 +1,13 @@
-import { rm } from 'node:fs/promises'
+import type pg from 'pg'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { expect, it, vi } from 'vitest'
 import { FileByteStorage } from '../src/modules/files/storage.js'
-import { createActivityReplayFileStorage, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
+import { createActivityReplayFileStorage, createActivityReplayWorkspace, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
 
 it('initializes real private fixture storage outside the temporary workspace and harness roots', async () => {
   const root = await createActivityReplayFileStorage()
@@ -50,4 +54,23 @@ it('shuts down the exact initial and restarted instances even if replay drain fa
   expect(initial).not.toHaveBeenCalled()
   await expect(closes.pop()!()).rejects.toBe(failure)
   expect(initial).toHaveBeenCalledOnce()
+})
+
+it('admits the replay project on the real local runner without overlapping harness storage', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'activity-replay-layout-'))
+  const pool = { query: async () => ({ rows: [{ archived_at: null }] }) } as unknown as pg.Pool
+  const commands = { recordAudit: vi.fn(async () => undefined) } as unknown as PostgresCommandCoordinator
+  const principal: ManagementPrincipal = { id: 'fixture-owner', name: 'Fixture owner', audience: 'operator',
+    expiresAt: '2099-01-01T00:00:00Z', revokedAt: null,
+    grants: [{ actions: ['workspace_locations:validate'], scope: { workspaceIds: ['workspace'] } }] }
+  try {
+    const layout = await createActivityReplayWorkspace(directory)
+    const locations = new WorkspaceLocationService(pool, commands, layout.harnessWorkspaceRoot, LOCAL_RUNNER_ID, layout.workspaceStorageRoot)
+    const request = { workspaceId: 'workspace', runnerId: LOCAL_RUNNER_ID, rootPath: layout.workingDirectory, accessMode: 'read-only' as const }
+    expect(await locations.validate(principal, 'http', request)).toMatchObject({ location: { runnerId: 'runner-local', rootPath: layout.workingDirectory } })
+    await expect(locations.validate(principal, 'http', { ...request, runnerId: 'local' })).rejects.toMatchObject({ code: 'RUNNER_UNSUPPORTED' })
+    const overlap = new WorkspaceLocationService(pool, commands, layout.harnessWorkspaceRoot)
+    await expect(overlap.validate(principal, 'http', { ...request, rootPath: layout.harnessWorkspaceRoot }))
+      .rejects.toMatchObject({ code: 'WORKSPACE_LOCATION_RUNTIME_OVERLAP' })
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })

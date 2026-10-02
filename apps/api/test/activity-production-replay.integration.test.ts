@@ -5,16 +5,17 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema, OperatorConversationStateSchema } from '@graphql/contracts'
 import { AgentChatHistoryPageSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema } from '@graphql/contracts/agent-chat'
-import { ManagementActionSchema, ManagedAgentDefaultsSchema } from '@graphql/contracts/management'
+import { ManagementActionSchema, ManagedAgentDefaultsSchema, WorkspaceLocationSetResultSchema } from '@graphql/contracts/management'
 import { ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
 import { ReadSelectedRunChatResponseSchema } from '@graphql/contracts/selected-run-chat'
+import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
 import { loadConfig } from '../src/config.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { buildProductionApp } from '../src/production.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
-import { createActivityReplayFileStorage, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
+import { createActivityReplayFileStorage, createActivityReplayWorkspace, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 
 const closes: Array<() => Promise<void>> = []
@@ -66,9 +67,10 @@ async function freePort() {
 }
 async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write' } = {}) {
   const db = await agent3Database(); closes.push(db.close)
-  const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: db.directory,
+  const workspace = await createActivityReplayWorkspace(db.directory)
+  const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: workspace.harnessWorkspaceRoot,
     PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex', OPENCODE_BINARY: '/recorded-no-native-opencode' })
-  config.workspaceStorageRoot = db.directory
+  config.workspaceStorageRoot = workspace.workspaceStorageRoot
   config.fileStorageRoot = await createActivityReplayFileStorage()
   closes.push(() => rm(config.fileStorageRoot!, { recursive: true, force: true }))
   const cpSchema = `${db.schema}_cp`
@@ -78,7 +80,7 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   const seed = makeCurrentWorkflowFixture(randomUUID(), 'single')
   seed.configurations = seed.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({ ...configuration,
     harness: { harness: 'codex', model: 'test-model', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } }))
-  const saved = await seedAgent3(db.pool, db.directory, seed, { run: false })
+  const saved = await seedAgent3(db.pool, workspace.workingDirectory, seed, { run: false })
   const access = new PostgresAccessService(db.pool)
   const writer = await access.issue({ name: 'W05 production fixture writer', audience: 'operator',
     expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
@@ -101,6 +103,12 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
       return await client.callTool({ name, arguments: args })
     } finally { await client.close() }
   }
+  // Replace the seed's synthetic location with the real producer's canonical identity.
+  const located = await http('PUT', `/api/management/workspaces/${saved.scope.workspaceId}/location`, {
+    commandId: randomUUID(), expectedLocationRevision: 1, runnerId: LOCAL_RUNNER_ID, rootPath: workspace.workingDirectory,
+  })
+  expect(located.statusCode, located.body).toBe(200)
+  const location = WorkspaceLocationSetResultSchema.parse(located.json()).value
   const defaults = ManagedAgentDefaultsSchema.parse((await http('GET', '/api/management/settings/agents')).json())
   const changed = await http('PUT', '/api/management/settings/agents', { commandId: randomUUID(), expectedRevision: defaults.revision,
     value: { ...defaults.value, operator: { ...defaults.value.operator,
@@ -111,7 +119,7 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
     production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, replay.infrastructure())
     origin = await startActivityReplayProduction(production, replay, closes, config.port)
   }
-  return { db, saved, access, writer, denied, replay, headers, http, call, restart, reconcile: () => production.reconcile((error) => { throw error }), get origin() { return origin } }
+  return { db, saved, location, access, writer, denied, replay, headers, http, call, restart, reconcile: () => production.reconcile((error) => { throw error }), get origin() { return origin } }
 }
 
 async function admittedRun(f: Awaited<ReturnType<typeof setup>>, mode: 'complete' | 'approval' = 'complete') {
@@ -120,7 +128,7 @@ async function admittedRun(f: Awaited<ReturnType<typeof setup>>, mode: 'complete
   const response = await f.http('POST', `/api/management/workspaces/${f.saved.scope.workspaceId}/workflows/${f.saved.scope.workflowId}/runs`, {
     workflowVersionId: f.saved.version.id, commandId: randomUUID(), executionSemanticsVersion: 3,
     expectedWorkflowRevision: Number(row.revision), expectedAgentConfigurationVersionIds: f.saved.version.agentConfigurationVersionIds,
-    expectedLocationRevision: 1, input: {},
+    expectedLocationRevision: f.location.locationRevision, input: {},
   })
   expect(response.statusCode, response.body).toBe(202)
   return ManualRunStartResultSchema.parse(response.json())
@@ -154,14 +162,14 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     }
     const message = (requestId: string, expectedConversationId: string | null) => ({ requestId, content: 'recorded active message', intent: 'next_turn', expectedConversationId })
     const first = await f.http('POST', `${base}/messages`, selected ? { ...message('active-A', null), executionId: execution!.id }
-      : { ...message('active-A', null), context: { workspaceId, ...query } })
+      : { ...message('active-A', null), context: query })
     expect(first.statusCode, first.body).toBe(202)
     const initial = SendAgentChatMessageResponseSchema.parse(first.json())
     const id = initial.state.conversation!.id
     const active = await eventually(read, (state) => !!state.activeTurn?.nativeTurnId)
     const native = active.activitySnapshot!.active.find((owner) => owner.ref.kind === 'chat_request')!.native!
     const second = await f.http('POST', `${base}/messages`, selected ? { ...message('queued-B', id), executionId: execution!.id }
-      : { ...message('queued-B', id), context: { workspaceId, ...query } })
+      : { ...message('queued-B', id), context: query })
     expect(second.statusCode, second.body).toBe(202)
     const queued = await read()
     expect(queued.activitySnapshot!.active[0]!.ref).toMatchObject({ requestId: 'active-A' })
@@ -248,7 +256,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     const node = f.saved.version.definition.nodes[0]!, query = { workflowId, workflowNodeId: node.id, agentId: node.agentId }
     const base = `/api/workspaces/${workspaceId}/agent-chat`
     const first = await f.http('POST', `${base}/messages`, { requestId: 'approval-owner', content: 'recorded waiting message',
-      intent: 'next_turn', expectedConversationId: null, context: { workspaceId, ...query } })
+      intent: 'next_turn', expectedConversationId: null, context: query })
     expect(first.statusCode, first.body).toBe(202)
     const id = SendAgentChatMessageResponseSchema.parse(first.json()).state.conversation!.id
     const read = async () => AgentChatStateSchema.parse((await f.http('GET',
