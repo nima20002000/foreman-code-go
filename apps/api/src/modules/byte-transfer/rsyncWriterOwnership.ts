@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { FileHandle } from 'node:fs/promises'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { z } from 'zod'
@@ -27,6 +28,9 @@ const Launch = Reference.extend({ version: z.literal(1), launchId: z.uuid() }).s
 const Closed = Reference.extend({ version: z.literal(1), evidence: z.enum(['access-drained', 'access-process-gone',
   'host-boot-changed', 'never-dispatched', 'rsync-process-closed']), launchId: z.uuid().optional() }).strict()
 const Revoked = Reference.extend({ version: z.literal(1) }).strict()
+const Waiting = Reference.extend({ version: z.literal(1), nonce: z.uuid(), hostBootId: z.uuid(), process: Identity }).strict()
+const Grant = Waiting.extend({ issuer: Identity, binding: DeviceSessionBindingSchema,
+  grantedAt: z.number().int().nonnegative(), expiresAt: z.number().int().nonnegative() }).strict()
 const Lock = Reference.extend({ version: z.literal(1), root: Root, lock: Root }).strict()
 export type RsyncOwnerReference = z.infer<typeof Reference>
 export interface RsyncProcessLaunch extends RsyncOwnerReference { ownership: RsyncWriterOwnership }
@@ -152,17 +156,31 @@ export class RsyncWriterOwnership {
   }
   prepareProcess(i: TransferIntent, binding: Readonly<DeviceSessionBinding>, role: 'rsync-client' | 'rsync-server', binary: z.infer<typeof Binary>): RsyncProcessLaunch {
     this.pin()
+    const b = this.binding(i, binding), pin = Binary.parse(binary)
+    this.admissible(i)
     if (role === 'rsync-client' && !binary.commandDigest) throw new Error('Original rsync client command pin unavailable')
     const existing = readRecord(join(this.directory(TransferIntentSchema.parse(i)), 'intent.json'))
+    let prepared: RsyncOwnerReference | undefined
     if (existing !== undefined) for (const old of this.references(this.original(i))) {
       const { row, path } = this.read(old)
       if (row.role === role) {
         const closed = readRecord(`${path}.closed`)
-        if (closed === undefined) throw new Error('An original rsync process owner is still active or unconfirmed')
+        if (closed === undefined) {
+          // Lost prepare ACK reads back the SAME reservation. A claim/launch is never replayed.
+          if (row.hostBootId === bootIdentity() && isDeepStrictEqual(row.issuer, self())
+            && isDeepStrictEqual(row.binding, b) && isDeepStrictEqual(row.binary, pin)
+            && !this.revoked(old) && readRecord(`${path}.claim`) === undefined && readRecord(`${path}.launch`) === undefined) {
+            if (prepared) throw new Error('An original rsync process owner is still active or unconfirmed')
+            prepared = old
+            continue
+          }
+          throw new Error('An original rsync process owner is still active or unconfirmed')
+        }
         this.assertClosed(old, closed)
       }
     }
-    const ref = this.prepare(i, binding, role, Binary.parse(binary))
+    if (prepared) { syncDirectory(this.directory(i)); return { ...prepared, ownership: this } }
+    const ref = this.prepare(i, b, role, pin)
     this.admissible(i)
     return { ...ref, ownership: this }
   }
@@ -217,11 +235,109 @@ export class RsyncWriterOwnership {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
     }
   }
+  /** Existing W07 handler resolves the sole original reservation; no PID/path comes from RPC. */
+  serverAdmission(input: TransferIntent, binding: Readonly<DeviceSessionBinding>): RsyncOwnerReference {
+    const i = this.original(input), b = this.binding(i, binding)
+    this.admissible(i)
+    const pending = this.references(i).filter(ref => {
+      const { row, path } = this.read(ref), closed = readRecord(`${path}.closed`)
+      if (row.role !== 'rsync-server') return false
+      if (closed !== undefined) { this.assertClosed(ref, closed); return false }
+      return true
+    })
+    if (pending.length !== 1) throw new Error('Exact pending rsync server ownership unavailable')
+    const ref = pending[0]!, { row, path } = this.read(ref)
+    if (!row.binary || row.hostBootId !== bootIdentity() || !isDeepStrictEqual(row.issuer, self())
+      || !isDeepStrictEqual(row.binding, b) || this.revoked(ref) || readRecord(`${path}.claim`) !== undefined) {
+      throw new Error('Original rsync server admission is no longer current')
+    }
+    return ref
+  }
+  private waiting(reference: RsyncOwnerReference, raw: unknown) {
+    const { row, ref } = this.read(reference), waiting = Waiting.parse(raw)
+    if (!isDeepStrictEqual(Reference.parse({ transferId: waiting.transferId, ownerId: waiting.ownerId, ownerDigest: waiting.ownerDigest }), ref)
+      || waiting.hostBootId !== row.hostBootId || waiting.hostBootId !== bootIdentity() || !identityAlive(waiting.process)) {
+      throw new Error('Original rsync waiting process unavailable or changed')
+    }
+    return waiting
+  }
+  private grant(reference: RsyncOwnerReference, raw: unknown) {
+    const { row, path } = this.read(reference), grant = Grant.parse(raw)
+    const waiting = this.waiting(reference, readRecord(`${path}.waiting`))
+    if (!isDeepStrictEqual(Waiting.parse({ version: grant.version, transferId: grant.transferId, ownerId: grant.ownerId,
+      ownerDigest: grant.ownerDigest, nonce: grant.nonce, hostBootId: grant.hostBootId, process: grant.process }), waiting)
+      || !isDeepStrictEqual(grant.binding, row.binding) || !isDeepStrictEqual(grant.issuer, row.issuer)
+      || !identityAlive(grant.issuer) || Date.now() < grant.grantedAt || Date.now() >= grant.expiresAt
+      || grant.expiresAt - grant.grantedAt > 5000 || grant.expiresAt > Date.parse(row.intent.expiresAt)) {
+      throw new Error('Original rsync server grant unavailable or stale')
+    }
+    syncDirectory(this.directory(row.intent))
+    return grant
+  }
+  private admissionWait(i: TransferIntent, signal: AbortSignal) {
+    return AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(30_000, Date.parse(i.expiresAt) - Date.now())))])
+  }
+  /** Revalidate accepted authority after the actual wrapper appears, immediately before grant.
+   * This read-only callback must use the existing W07 admission service, never saved placement. */
+  async activateServer(reference: RsyncOwnerReference, binding: Readonly<DeviceSessionBinding>, signal: AbortSignal,
+    revalidateAccepted: (intent: TransferIntent, binding: Readonly<DeviceSessionBinding>, signal: AbortSignal) => Promise<void>) {
+    const { row, path, ref } = this.read(reference), wait = this.admissionWait(row.intent, signal)
+    const check = () => {
+      wait.throwIfAborted()
+      if (!isDeepStrictEqual(this.serverAdmission(row.intent, binding), ref)) throw new Error('Original rsync server admission changed')
+    }
+    let waiting: z.infer<typeof Waiting>
+    for (;;) {
+      check()
+      const raw = readRecord(`${path}.waiting`)
+      if (raw !== undefined) { waiting = this.waiting(ref, raw); break }
+      await delay(25, undefined, { signal: wait })
+    }
+    await bounded(Promise.resolve().then(() => revalidateAccepted(row.intent, row.binding, wait)), wait)
+    check()
+    if (!isDeepStrictEqual(this.waiting(ref, readRecord(`${path}.waiting`)), waiting)) throw new Error('Rsync waiting process changed')
+    const previous = readRecord(`${path}.grant`)
+    if (previous !== undefined) { this.grant(ref, previous); syncDirectory(this.directory(row.intent)); return }
+    const grantedAt = Date.now(), grant = Grant.parse({ ...waiting, issuer: self(), binding: row.binding,
+      grantedAt, expiresAt: Math.min(grantedAt + 5000, Date.parse(row.intent.expiresAt)) })
+    try { writeRecord(`${path}.grant`, grant, true) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      this.grant(ref, readRecord(`${path}.grant`)); syncDirectory(this.directory(row.intent))
+    }
+  }
+  /** Actual standalone wrapper writes its own Linux identity, then waits for fresh W07 authority. */
+  async waitForServerGrant(reference: RsyncOwnerReference, signal: AbortSignal) {
+    const { row, path, ref } = this.read(reference), wait = this.admissionWait(row.intent, signal)
+    wait.throwIfAborted(); this.admissible(row.intent)
+    if (row.role !== 'rsync-server' || !row.binary || row.hostBootId !== bootIdentity() || !identityAlive(row.issuer)
+      || this.revoked(ref) || readRecord(`${path}.claim`) !== undefined || readRecord(`${path}.closed`) !== undefined) {
+      throw new Error('Original rsync server reservation unavailable')
+    }
+    const raw = readRecord(`${path}.waiting`)
+    if (raw !== undefined) {
+      if (!isDeepStrictEqual(this.waiting(ref, raw).process, self())) throw new Error('Original rsync wrapper already owns admission')
+      syncDirectory(this.directory(row.intent))
+    } else writeRecord(`${path}.waiting`, { version: 1, ...ref, nonce: randomUUID(), hostBootId: bootIdentity(), process: self() }, true)
+    for (;;) {
+      wait.throwIfAborted(); this.admissible(row.intent)
+      if (this.revoked(ref) || readRecord(`${path}.claim`) !== undefined || readRecord(`${path}.closed`) !== undefined) throw new Error('Original rsync server reservation unavailable')
+      const grant = readRecord(`${path}.grant`)
+      if (grant !== undefined) { this.grant(ref, grant); return }
+      await delay(25, undefined, { signal: wait })
+    }
+  }
   /** Single-use causal handoff. Current binding, pinned binary, exact owner and write-ahead
    * native registration are all checked before sending any executable configuration. */
   spawnProcess(reference: RsyncOwnerReference, executable: string, args: string[], signal: AbortSignal): ChildProcessWithoutNullStreams {
+    return this.launch(reference, executable, args, signal, () => {
+      const { row } = this.read(reference)
+      this.binding(row.intent, row.binding)
+    })
+  }
+  private launch(reference: RsyncOwnerReference, executable: string, args: string[], signal: AbortSignal, admit: () => void): ChildProcessWithoutNullStreams {
     const { row, path, ref } = this.read(reference)
-    signal.throwIfAborted(); this.admissible(row.intent); this.binding(row.intent, row.binding)
+    signal.throwIfAborted(); this.admissible(row.intent); admit()
     if (row.hostBootId !== bootIdentity() || this.revoked(ref) || readRecord(`${path}.closed`) !== undefined) throw new Error('Original rsync process owner is no longer dispatchable')
     if (!row.binary || executable !== row.binary.executable || digestBytes(readFileSync(executable)) !== row.binary.sha256
       || !['rsync-client', 'rsync-server'].includes(row.role)
@@ -231,16 +347,34 @@ export class RsyncWriterOwnership {
     if (this.revoked(ref)) throw new Error('Original rsync process owner is revoked')
     const scope = this.processes.reserveLaunch(this.scope(ref).owner)
     writeRecord(`${path}.launch`, { version: 1, ...ref, launchId: scope.launchId }, true)
+    signal.throwIfAborted(); this.admissible(row.intent); admit()
     if (this.revoked(ref)) throw new Error('Original rsync process owner is revoked')
     // scope belongs to this live launching parent. It is never reconstructed for a replacement spawn.
     return spawnNativeProcess(executable, args, { cwd: this.root, env: { PATH: '/usr/bin:/bin', LANG: 'C' }, recovery: scope })
   }
-  spawnServer(reference: RsyncOwnerReference, args: string[], signal: AbortSignal) {
+  private serverCommand(reference: RsyncOwnerReference, args: string[]) {
     const { row } = this.read(reference)
     if (row.role !== 'rsync-server' || !row.binary || args[0] !== '--server' || args.includes('--daemon')
       || args.includes('--sender') !== (row.intent.direction === 'to-main') || args.length > 64
       || args.some(value => value.includes('\0') || value.length > 4096)) throw new Error('Invalid admitted rsync server command')
-    return this.spawnProcess(reference, row.binary.executable, args, signal)
+    return row.binary.executable
+  }
+  spawnServer(reference: RsyncOwnerReference, args: string[], signal: AbortSignal) {
+    return this.spawnProcess(reference, this.serverCommand(reference, args), args, signal)
+  }
+  spawnGrantedServer(reference: RsyncOwnerReference, args: string[], signal: AbortSignal) {
+    return this.launch(reference, this.serverCommand(reference, args), args, signal, () => {
+      const { path } = this.read(reference), grant = this.grant(reference, readRecord(`${path}.grant`))
+      if (!isDeepStrictEqual(grant.process, self())) throw new Error('Only original rsync wrapper can consume its grant')
+    })
+  }
+  serverLifetime(reference: RsyncOwnerReference, signal: AbortSignal) {
+    const { row } = this.read(reference)
+    return AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(POLICY.maxLifetimeMs, Date.parse(row.intent.expiresAt) - Date.now())))])
+  }
+  async stopServer(reference: RsyncOwnerReference, signal: AbortSignal) {
+    this.revoke(reference)
+    await this.quiet(reference, signal, true)
   }
   async completeProcess(reference: RsyncOwnerReference, signal: AbortSignal) {
     const { path, ref } = this.read(reference), launch = Launch.parse(readRecord(`${path}.launch`))
@@ -440,23 +574,31 @@ export class RsyncWriterOwnership {
 export const rsyncArgumentDigest = (args: readonly string[]) => digest(args)
 const digestBytes = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 
-/** Called by the protected remote wrapper supplied by the common owner, with a LIVE W07 binding
- * reader. It causally registers the actual remote server before native config/stdio is admitted.
- * No installed-root/binary/credentials/current-binding fallback is synthesized here. */
+/** Standalone protected SSH wrapper. Fresh admission is granted by the live W07 service;
+ * this process owns the actual server's write-ahead scope and protocol streams. */
 export async function runRsyncRemoteServer(input: { ownership: RsyncWriterOwnership; reference: RsyncOwnerReference;
   args: string[]; signal: AbortSignal }): Promise<number> {
-  const child = input.ownership.spawnServer(input.reference, input.args, input.signal)
-  process.stdin.pipe(child.stdin); child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr)
-  const stop = () => { void input.ownership.completeProcess(input.reference, AbortSignal.timeout(5000)).catch(error => process.stderr.write(`Rsync writer stop unconfirmed: ${String(error)}\n`)) }
-  input.signal.addEventListener('abort', stop, { once: true }); if (input.signal.aborted) stop()
+  const signal = input.ownership.serverLifetime(input.reference, input.signal)
+  let child: ChildProcessWithoutNullStreams | undefined
+  const stop = () => { void input.ownership.stopServer(input.reference, AbortSignal.timeout(5000)).catch(() => process.stderr.write('Rsync writer stop unconfirmed\n')) }
+  signal.addEventListener('abort', stop, { once: true })
   try {
-    const outcome = await new Promise<{ exitCode: number | null; exitSignal: NodeJS.Signals | null }>((resolve, reject) => {
-      child.once('error', reject); child.once('close', (exitCode, exitSignal) => {
-        try { resolve(nativeProcessExit(child, { exitCode, exitSignal })) } catch (error) { reject(error) }
+    await input.ownership.waitForServerGrant(input.reference, signal)
+    child = input.ownership.spawnGrantedServer(input.reference, input.args, signal)
+    const server = child
+    const outcome = new Promise<{ exitCode: number | null; exitSignal: NodeJS.Signals | null }>((resolve, reject) => {
+      server.once('error', reject); server.stdin.on('error', reject); server.once('close', (exitCode, exitSignal) => {
+        try { resolve(nativeProcessExit(server, { exitCode, exitSignal })) } catch (error) { reject(error) }
       })
     })
+    process.stdin.pipe(server.stdin); server.stdout.pipe(process.stdout); server.stderr.pipe(process.stderr)
+    const result = await bounded(outcome, signal)
     await input.ownership.completeProcess(input.reference, AbortSignal.timeout(5000))
-    input.signal.throwIfAborted()
-    return outcome.exitCode ?? 1
-  } finally { process.stdin.unpipe(child.stdin); input.signal.removeEventListener('abort', stop) }
+    signal.throwIfAborted()
+    return result.exitCode ?? 1
+  } finally {
+    signal.removeEventListener('abort', stop)
+    if (child) { process.stdin.unpipe(child.stdin); child.stdout.unpipe(process.stdout); child.stderr.unpipe(process.stderr) }
+    await input.ownership.stopServer(input.reference, AbortSignal.timeout(5000))
+  }
 }
