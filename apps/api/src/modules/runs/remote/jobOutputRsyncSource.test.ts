@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { RemoteJobOperationStatus } from '@graphql/contracts/remote-job-execution'
-import { TransferIntentSchema } from '@graphql/contracts/byte-transfer'
+import { TransferIntentSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import { JobOutputRsyncSource, type RetainedJobOutputRsyncStore, type RetainedJobOutputRsyncRecord } from './jobOutputRsyncSource.js'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 function fixture() {
@@ -11,7 +11,7 @@ function fixture() {
   execution.process={phase:'terminal',outcome:'succeeded',exitCode:0,signal:null,processStopped:true};execution.finishedAt=new Date().toISOString()
   execution.acceptedSpec.outputs=[{path:'result.json',mediaType:'application/json',required:true}]
   const input={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,owner:execution.owner,commandId:randomUUID(),path:'result.json',mediaType:'application/json' as const,sha256:createHash('sha256').update(bytes).digest('hex'),byteSize:bytes.length}
-  const intent=TransferIntentSchema.parse({version:1,mainId,deviceId,workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:randomUUID(),connectionEpoch:randomUUID(),connectionGeneration:1,transferId:randomUUID(),operationId:randomUUID(),executionId:execution.id,attemptId:execution.attemptId,placementHash:execution.acceptedSpec.bindingHash,rootId:randomUUID(),rootBindingRevision:1,direction:'to-main',byteClass:'artifact',sha256:input.sha256,byteSize:bytes.length,manifestDigest:execution.acceptedSpec.outputSpecDigest,expiresAt:new Date(Date.now()+60000).toISOString(),chunkBytes:8192})
+  const intent=TransferIntentSchema.parse({version:1,mainId,deviceId,workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:randomUUID(),connectionEpoch:randomUUID(),transferId:randomUUID(),operationId:randomUUID(),executionId:execution.id,attemptId:execution.attemptId,placementHash:execution.acceptedSpec.bindingHash,rootId:randomUUID(),rootBindingRevision:1,direction:'to-main',byteClass:'artifact',sha256:input.sha256,byteSize:bytes.length,manifestDigest:execution.acceptedSpec.outputSpecDigest,expiresAt:new Date(Date.now()+60000).toISOString(),chunkBytes:8192})
   const status={status:'known',receipt:{phase:'confirmed_terminal',entryAttempted:true,native:{containerId:'original'},terminal:{processStopped:true,finishedAt:execution.finishedAt,closureEvidenceDigest:'4'.repeat(64)},execution,intent:{executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,bindingHash:execution.acceptedSpec.bindingHash}}} as RemoteJobOperationStatus
   const journal={jobStatus:vi.fn(async()=>status)},retained=new Map<string,{record:RetainedJobOutputRsyncRecord;bytes:Buffer}>()
   const store:RetainedJobOutputRsyncStore={retain:vi.fn(async(record,captured)=>{
@@ -20,7 +20,7 @@ function fixture() {
     retained.set(record.intent.transferId,{record:structuredClone(record),bytes:Buffer.from(captured)})
   }),resolve:vi.fn(async id=>{
     const original=retained.get(id);if(!original)throw new Error('No original sealed reader')
-    return {record:original.record,source:{read:async(_intent,offset,length)=>Buffer.from(original.bytes.subarray(offset,offset+length))}}
+    return {record:original.record,source:{read:async(_intent:TransferIntent,offset:number,length:number)=>Buffer.from(original.bytes.subarray(offset,offset+length))}}
   })}
   return {execution,input,intent,bytes,status,journal,store,retained,source:new JobOutputRsyncSource(journal,store)}
 }
