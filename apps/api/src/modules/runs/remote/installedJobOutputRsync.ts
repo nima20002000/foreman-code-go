@@ -3,7 +3,7 @@ import { VerifiedTransferReceiptSchema, type TransferIntent, type TransferContex
 import { JobArtifactSchema } from '@graphql/contracts/jobs'
 import { JobOutputStageRequestSchema, JobOutputStatusRequestSchema } from '@graphql/contracts/job-output-transfer'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { ProductionRsyncProviders } from '../../byte-transfer/productionComposition.js'
+import type { InstalledRsyncProviders } from '../../byte-transfer/productionComposition.js'
 import { transferContextForBinding } from '../../byte-transfer/carrier.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationChannel.js'
 import { DomainError } from '../../errors.js'
@@ -14,7 +14,7 @@ import type { RemoteOperationJournal } from './operationJournal.js'
 import type { WorkerJobOutputRsyncPort } from './workerJobOutputs.js'
 
 /** Actual closed Job journal, original quota and current W07 carrier. */
-export async function createInstalledJobOutputRsync(input:{providers:ProductionRsyncProviders;journal:RemoteOperationJournal;
+export async function createInstalledJobOutputRsync(input:{providers:InstalledRsyncProviders;journal:RemoteOperationJournal;
   current():Readonly<DeviceSessionBinding>;
   request(namespace:string,payload:unknown,options:{signal:AbortSignal}):Promise<{payload:unknown;bytes?:Uint8Array}>}){
   const context=async(signal?:AbortSignal)=>{signal?.throwIfAborted();return transferContextForBinding(input.current())}

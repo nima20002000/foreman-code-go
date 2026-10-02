@@ -15,6 +15,7 @@ import { ProductionDevicePresence } from './productionPresence.js'
 export interface DeviceDomainComposition {
   extensions: DeviceExtensionRegistration[]
   reconcile(binding: DeviceSessionBinding, signal: AbortSignal, endpoint: DeviceEndpoint): Promise<void>
+  bindingLost?(binding: Readonly<DeviceSessionBinding>): void | Promise<void>
 }
 
 /** The management facade and device listener delegate to one persisted-main
@@ -93,6 +94,9 @@ export class ProductionDeviceRuntime {
         // connectivity. There is no execution or transfer state to reconcile.
       }),
       presence: (view) => presence.publish(view),
+      // Cleanup uses the captured original binding even after request admission
+      // closes; Endpoint.join retains failures before runtime ownership release.
+      onBindingLost: binding => this.domains?.bindingLost?.(binding),
     })
     this.service = access; this.endpoint = endpoint; this.presence = presence
     if (this.listenerConfig) this.listener = new ProductionDeviceListener(this.listenerConfig, endpoint, {
