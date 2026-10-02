@@ -126,7 +126,7 @@ function retiredOwner(directory: string, owner: string, id?: string): boolean {
 }
 
 function retireRegistration(directory: string, launch: LaunchRecord): void {
-  publishObservation(dirname(dirname(directory)))
+  publishRetirement(directory)
   if (!closedRecord(directory, launch)) throw new Error('Unconfirmed native registrations cannot be retired.')
   const rawBirth = readRecord(join(directory, 'birth.json'))
   if (launch.boot === bootIdentity()) {
@@ -165,37 +165,39 @@ function confirmClosed(directory: string, launch: LaunchRecord, evidence: Closur
 
 /** Compact proven closures BEFORE enforcing the unresolved-work bound. */
 function inventory(directory: string, owner: string): string[] {
-  const ids: string[] = []
-  for (const id of readdirSync(directory)) {
-    if (id === 'retired.json') { retiredOwner(directory, owner); continue }
-    if (/^\.retired-[0-9a-f-]{36}$/.test(id)) {
-      privateDirectory(join(directory, id))
-      rmSync(join(directory, id), { recursive: true })
-      syncDirectory(directory)
-      continue
-    }
-    // storage.writeRecord may leave a private temporary receipt after a crash.
-    // It is not a registration or closure proof; a live writer may still own it.
-    if (/^\.pending-[0-9a-f-]{36}$/.test(id)) continue
-    if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Unexpected native process inventory entry.')
-    const path = privateDirectory(join(directory, id))
-    const launch = launchRecord(readRecord(join(path, 'intent.json')))
-    if (launch.owner !== owner || launch.id !== id) throw new Error('Native owner inventory mismatch.')
-    if (closedRecord(path, launch)) { retireRegistration(path, launch); continue }
-    if (launch.boot !== bootIdentity()) { confirmClosed(path, launch, 'linux_boot_changed'); continue }
-    const notStarted = readRecord(join(path, 'not-started.json'))
-    if (notStarted !== undefined) {
-      const row = recordObject(notStarted)
-      if (row.id !== id || row.owner !== owner || readRecord(join(path, 'birth.json')) !== undefined) {
-        throw new Error('Conflicting native startup evidence.')
+  return nativeRegistryProjection(dirname(directory)).retirementBatch(() => {
+    const ids: string[] = []
+    for (const id of readdirSync(directory)) {
+      if (id === 'retired.json') { retiredOwner(directory, owner); continue }
+      if (/^\.retired-[0-9a-f-]{36}$/.test(id)) {
+        privateDirectory(join(directory, id))
+        rmSync(join(directory, id), { recursive: true })
+        syncDirectory(directory)
+        continue
       }
-      confirmClosed(path, launch, 'native_not_started')
-      continue
+      // storage.writeRecord may leave a private temporary receipt after a crash.
+      // It is not a registration or closure proof; a live writer may still own it.
+      if (/^\.pending-[0-9a-f-]{36}$/.test(id)) continue
+      if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Unexpected native process inventory entry.')
+      const path = privateDirectory(join(directory, id))
+      const launch = launchRecord(readRecord(join(path, 'intent.json')))
+      if (launch.owner !== owner || launch.id !== id) throw new Error('Native owner inventory mismatch.')
+      if (closedRecord(path, launch)) { retireRegistration(path, launch); continue }
+      if (launch.boot !== bootIdentity()) { confirmClosed(path, launch, 'linux_boot_changed'); continue }
+      const notStarted = readRecord(join(path, 'not-started.json'))
+      if (notStarted !== undefined) {
+        const row = recordObject(notStarted)
+        if (row.id !== id || row.owner !== owner || readRecord(join(path, 'birth.json')) !== undefined) {
+          throw new Error('Conflicting native startup evidence.')
+        }
+        confirmClosed(path, launch, 'native_not_started')
+        continue
+      }
+      ids.push(id)
+      if (ids.length > 10_000) throw new Error('Native recovery inventory exceeds its unresolved-work scan limit.')
     }
-    ids.push(id)
-    if (ids.length > 10_000) throw new Error('Native recovery inventory exceeds its unresolved-work scan limit.')
-  }
-  return ids
+    return ids
+  })
 }
 
 /** Backend-owned registry. An empty registry is NOT evidence about pre-upgrade processes. */
@@ -466,6 +468,10 @@ const harnessLog = componentLogger('harness')
 function publishObservation(root: string): void {
   // Telemetry never changes dispatch or closure qualification on read failure.
   try { nativeRegistryProjection(root).snapshot() } catch { harnessLog.warn('Native observation publication unavailable') }
+}
+function publishRetirement(directory: string): void {
+  try { nativeRegistryProjection(dirname(dirname(directory))).observeRetirement(directory) }
+  catch { harnessLog.warn('Native observation publication unavailable') }
 }
 /** Every native harness start and end is logged: binary name, pid, exit code or signal.
  * Arguments and environment are never logged; they can carry prompts and credentials. */

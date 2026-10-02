@@ -1,0 +1,160 @@
+import { createHash,randomUUID } from 'node:crypto'
+import { existsSync,mkdirSync,mkdtempSync,readdirSync,rmSync,writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
+import { describe,expect,it,vi } from 'vitest'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { nativeRegistryProjection,type NativeLaunchObservation } from '../src/modules/harnesses/recovery/registryObservation.js'
+import { bootIdentity,processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
+import { privateDirectory,writeRecord } from '../src/modules/harnesses/recovery/storage.js'
+
+function fixture() {
+  const root=mkdtempSync('/tmp/native-retirement-'),owner='original-retirement-test-owner'
+  const ownerDirectory=privateDirectory(join(root,createHash('sha256').update(owner).digest('hex')))
+  const registry=new NativeProcessRegistry(root)
+  function seedClosed(id=randomUUID(),oldBoot=false) {
+    const path=join(ownerDirectory,id);mkdirSync(path,{mode:0o700})
+    const intent={format:1,id,owner,boot:oldBoot?'earlier-boot':bootIdentity(),parent:processIdentity(process.pid)!,controlKey:'a'.repeat(64)}
+    // Same prior durable-certificate fixture and 10,005 scale as original F11.
+    // No provider, guardian or process is launched by these metadata tests.
+    writeFileSync(join(path,'intent.json'),JSON.stringify(intent),{mode:0o600})
+    writeFileSync(join(path,'closed.json'),JSON.stringify(oldBoot?{format:1,id,owner,evidence:'linux_boot_or_session_absence'}
+      :{format:2,id,owner,boot:intent.boot,evidence:'native_not_started'}),{mode:0o600})
+    return {id,path,intent}
+  }
+  return {root,owner,ownerDirectory,registry,seedClosed}
+}
+describe.skipIf(process.platform!=='linux')('bounded original native retirement projection',()=>{
+  it('compacts all 10,005 original F11 registrations with a bounded number of full inventory scans',async()=>{
+    const f=fixture(),projection=nativeRegistryProjection(f.root)
+    const baseline=f.registry.snapshot(),controller=new AbortController()
+    const iterator=f.registry.changes(baseline.revision,controller.signal)[Symbol.asyncIterator](),pending=iterator.next()
+    const snapshot=projection.snapshot.bind(projection),captures=vi.spyOn(projection,'observeRetirement')
+    let scans=0
+    // Bound the BEFORE diagnostic: execute one genuine full scan and count all
+    // subsequent calls without repeating quadratic IO. This changes derived
+    // telemetry in this probe only; every real retirement/receipt/GC still runs.
+    const probe=vi.spyOn(projection,'snapshot').mockImplementation(()=>{
+      scans++
+      return scans===1?snapshot():{revision:projection.revision(),launches:[]}
+    })
+    try {
+      for(let index=0;index<10_005;index++)f.seedClosed(randomUUID(),index<3)
+      const started=performance.now()
+      expect(await f.registry.closeOwner(f.owner)).toBe(true)
+      const elapsedMs=Math.round(performance.now()-started)
+      process.stdout.write(`${JSON.stringify({probe:'F11-retirement',registrations:10_005,fullScans:scans,targetedCaptures:captures.mock.calls.length,elapsedMs})}\n`)
+      expect(readdirSync(f.ownerDirectory)).toEqual(['retired.json'])
+      expect(scans).toBeLessThanOrEqual(1)
+      expect(captures).toHaveBeenCalledTimes(10_005)
+      const event=await pending
+      expect(event.value?.gap).toBe(true)
+      expect(event.value?.revision.split(':').at(-1)).toBe('1')
+      expect(event.value?.launches).toHaveLength(10_000)
+      probe.mockRestore()
+      const current=f.registry.snapshot()
+      expect(current.launches).toHaveLength(10_000)
+      expect(current.launches.every(row=>row.lifecycle==='closed')).toBe(true)
+      expect(await f.registry.closeOwner(f.owner)).toBe(true)
+      const next=f.registry.reserveLaunch(f.owner)
+      writeRecord(join(f.ownerDirectory,next.launchId!,'not-started.json'),{id:next.launchId,owner:f.owner})
+      await f.registry.closeRegistration(next,next.launchId!)
+      await f.registry.closeRegistration(next,next.launchId!)
+      await expect(f.registry.closeRegistration(next,randomUUID())).rejects.toMatchObject({code:'ENOENT'})
+    }finally{probe.mockRestore();captures.mockRestore();controller.abort();await iterator.return?.();rmSync(f.root,{recursive:true,force:true})}
+  },60_000)
+  it('publishes a positive exact closure to subscribers before an immediate read after retirement',async()=>{
+    const f=fixture(),controller=new AbortController()
+    try {
+      const scope=f.registry.reserveLaunch(f.owner),before=f.registry.snapshot()
+      const iterator=f.registry.changes(before.revision,controller.signal)[Symbol.asyncIterator](),pending=iterator.next()
+      writeRecord(join(f.ownerDirectory,scope.launchId!,'not-started.json'),{id:scope.launchId,owner:f.owner})
+      await f.registry.closeRegistration(scope,scope.launchId!)
+      const event=await pending,current=f.registry.snapshot()
+      expect(event.value?.launches.find((row:NativeLaunchObservation)=>row.launchId===scope.launchId)).toMatchObject({owner:f.owner,lifecycle:'closed',closureEvidence:'native_not_started'})
+      expect(current.launches).toEqual(event.value?.launches)
+      expect(existsSync(join(f.ownerDirectory,scope.launchId!))).toBe(false)
+      await f.registry.closeRegistration(scope,scope.launchId!)
+      await expect(f.registry.closeRegistration(scope,randomUUID())).rejects.toMatchObject({code:'ENOENT'})
+      controller.abort();await iterator.return?.()
+    }finally{controller.abort();rmSync(f.root,{recursive:true,force:true})}
+  })
+  it('flushes valid prior closures when later inventory validation fails without promoting the corrupt row',async()=>{
+    const f=fixture(),controller=new AbortController()
+    try {
+      const baseline=f.registry.snapshot()
+      f.seedClosed();f.seedClosed()
+      const [first,second]=readdirSync(f.ownerDirectory)
+      const iterator=f.registry.changes(baseline.revision,controller.signal)[Symbol.asyncIterator](),pending=iterator.next()
+      writeRecord(join(f.ownerDirectory,second!,'closed.json'),{format:2,id:second,owner:'foreign',boot:bootIdentity(),evidence:'native_not_started'})
+      await expect(f.registry.closeOwner(f.owner)).rejects.toThrow('close evidence owner mismatch')
+      expect(existsSync(join(f.ownerDirectory,first!))).toBe(false)
+      expect(existsSync(join(f.ownerDirectory,second!))).toBe(true)
+      const event=await pending
+      expect(event.value?.launches.find((row:NativeLaunchObservation)=>row.launchId===first)?.lifecycle).toBe('closed')
+      // The prior valid snapshot remains immutable; the corrupted actual row
+      // must still reject a fresh authoritative scan rather than hiding it.
+      expect(()=>f.registry.snapshot()).toThrow('closure owner mismatch')
+      controller.abort();await iterator.return?.()
+    }finally{controller.abort();rmSync(f.root,{recursive:true,force:true})}
+  })
+  it('retains unresolved original registrations while flushing successful closures and blocks reuse',async()=>{
+    const f=fixture()
+    try {
+      const closed=f.seedClosed(),active=f.registry.reserveLaunch('other-owner')
+      // Add a genuine write-ahead reservation for this same owner as well.
+      const original=f.registry.reserveLaunch(f.owner)
+      await expect(f.registry.closeOwner(f.owner,AbortSignal.timeout(25))).rejects.toThrow('closure remains unconfirmed')
+      const snapshot=f.registry.snapshot()
+      expect(snapshot.launches.find(row=>row.launchId===closed.id)?.lifecycle).toBe('closed')
+      expect(snapshot.launches.find(row=>row.launchId===original.launchId)?.lifecycle).toBe('closure-unconfirmed')
+      expect(snapshot.launches.find(row=>row.launchId===active.launchId)?.owner).toBe('other-owner')
+      expect(existsSync(join(f.ownerDirectory,original.launchId!,'intent.json'))).toBe(true)
+      expect(()=>f.registry.reserveLaunch(f.owner)).toThrow('active or unconfirmed')
+    }finally{rmSync(f.root,{recursive:true,force:true})}
+  })
+  it('merges immediate reads and interleaved real reservations into the final synchronous batch',async()=>{
+    const f=fixture(),projection=nativeRegistryProjection(f.root),controller=new AbortController()
+    try {
+      const closed=f.seedClosed(),baseline=f.registry.snapshot()
+      const iterator=f.registry.changes(baseline.revision,controller.signal)[Symbol.asyncIterator](),pending=iterator.next()
+      let retirement:Promise<void>|undefined,scope:ReturnType<NativeProcessRegistry['reserveLaunch']>|undefined
+      projection.retirementBatch(()=>{
+        retirement=f.registry.closeRegistration(f.registry.scope(f.owner),closed.id)
+        expect(existsSync(closed.path)).toBe(false)
+        scope=f.registry.reserveLaunch('interleaved-owner')
+        const immediate=f.registry.snapshot()
+        expect(immediate.launches.find(row=>row.launchId===closed.id)?.lifecycle).toBe('closed')
+        expect(immediate.launches.find(row=>row.launchId===scope!.launchId)?.owner).toBe('interleaved-owner')
+      })
+      await retirement
+      const event=await pending,current=f.registry.snapshot()
+      expect(current.launches.find(row=>row.launchId===closed.id)?.lifecycle).toBe('closed')
+      expect(current.launches.find(row=>row.launchId===scope!.launchId)).toMatchObject({owner:'interleaved-owner',lifecycle:'closure-unconfirmed'})
+      expect(event.value?.launches).toEqual(current.launches)
+      expect(()=>f.registry.reserveLaunch('interleaved-owner')).toThrow('active or unconfirmed')
+      controller.abort();await iterator.return?.()
+    }finally{controller.abort();rmSync(f.root,{recursive:true,force:true})}
+  })
+  it.each(['closure-owner','closure-boot','birth-owner','provider-generation','missing','foreign-root'] as const)(
+    'does not publish a targeted %s observation as retirement authority',async defect=>{
+      const f=fixture(),projection=nativeRegistryProjection(f.root)
+      try {
+        const row=f.seedClosed(),before=f.registry.snapshot()
+        let path=row.path
+        if(defect==='closure-owner')writeRecord(join(path,'closed.json'),{format:2,id:row.id,owner:'foreign',boot:row.intent.boot,evidence:'native_not_started'})
+        if(defect==='closure-boot')writeRecord(join(path,'closed.json'),{format:2,id:row.id,owner:f.owner,boot:'foreign',evidence:'native_not_started'})
+        if(defect==='birth-owner')writeRecord(join(path,'birth.json'),{format:1,id:row.id,owner:'foreign',boot:row.intent.boot,guardian:processIdentity(process.pid)!})
+        if(defect==='provider-generation'){
+          const guardian=processIdentity(process.pid)!
+          writeRecord(join(path,'birth.json'),{format:1,id:row.id,owner:f.owner,boot:row.intent.boot,guardian})
+          writeRecord(join(path,'provider.json'),{format:1,id:row.id,owner:f.owner,boot:row.intent.boot,guardian:{...guardian,startTicks:'0'},provider:guardian,capture:'captured'})
+        }
+        if(defect==='missing')path=join(f.ownerDirectory,randomUUID())
+        if(defect==='foreign-root')path=join('/tmp',createHash('sha256').update(f.owner).digest('hex'),row.id)
+        expect(()=>projection.observeRetirement(path)).toThrow()
+        expect(projection.revision()).toBe(before.revision)
+        expect(existsSync(row.path)).toBe(true)
+      }finally{rmSync(f.root,{recursive:true,force:true})}
+    })
+})

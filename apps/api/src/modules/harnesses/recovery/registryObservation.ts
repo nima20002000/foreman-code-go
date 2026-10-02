@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, opendirSync } from 'node:fs'
-import { join, parse, resolve, sep } from 'node:path'
+import { basename, dirname, join, parse, resolve, sep } from 'node:path'
 import { cgroupBoundary, type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { bootIdentity, identityAlive } from './linuxIdentity.js'
 import { readRecord, recordObject } from './storage.js'
@@ -55,17 +55,74 @@ function receipt(value: unknown, launch: NativeLaunchObservation): Record<string
   return row
 }
 
+function readLaunch(root: string, ownerKey: string, id: string): NativeLaunchObservation | undefined {
+  const path = join(root, ownerKey, id)
+  if (!directory(path)) return undefined
+  const raw = readRecord(join(path, 'intent.json'))
+  if (raw === undefined) return undefined // Concurrent retirement is not closure proof.
+  const intent = recordObject(raw)
+  if (intent.format !== 1 || intent.id !== id || typeof intent.owner !== 'string' || typeof intent.boot !== 'string'
+    || createHash('sha256').update(intent.owner).digest('hex') !== ownerKey) throw new Error('Invalid native observation intent.')
+  const launch: NativeLaunchObservation = { owner: intent.owner, launchId: id, bootId: intent.boot, lifecycle: 'closure-unconfirmed' }
+  const dispatch = readRecord(join(path, 'dispatched.json'))
+  if (dispatch !== undefined) {
+    const row = recordObject(dispatch)
+    if (row.format !== 1 || row.id !== id) throw new Error('Invalid native observation dispatch.')
+    Object.assign(launch, { guardian: identity(row.guardian) })
+  }
+  const birth = readRecord(join(path, 'birth.json'))
+  if (birth !== undefined) {
+    const row = receipt(birth, launch)
+    Object.assign(launch, { guardian: identity(row.guardian), lifecycle: 'active' })
+    if (row.containment !== undefined) {
+      const boundary = cgroupBoundary(row.containment, id)
+      Object.assign(launch, { boundary: Object.freeze({ kind: boundary.kind, path: boundary.path, device: boundary.device, inode: boundary.inode }) })
+    }
+  }
+  const provider = readRecord(join(path, 'provider.json'))
+  if (provider !== undefined) {
+    const row = receipt(provider, launch)
+    const guardian = identity(row.guardian)
+    if (!launch.guardian || guardian.pid !== launch.guardian.pid || guardian.startTicks !== launch.guardian.startTicks) throw new Error('Native provider guardian mismatch.')
+    if (row.capture === 'captured') Object.assign(launch, { provider: identity(row.provider) })
+    else if (row.capture !== 'unavailable' || row.provider !== undefined) throw new Error('Invalid provider capture.')
+  }
+  const exit = readRecord(join(path, 'provider-exit.json'))
+  if (exit !== undefined) {
+    const row = receipt(exit, launch)
+    if (row.provider !== undefined) {
+      const ended = identity(row.provider)
+      if (!launch.provider || ended.pid !== launch.provider.pid || ended.startTicks !== launch.provider.startTicks) throw new Error('Native provider exit mismatch.')
+    } else if (launch.provider) throw new Error('Native provider exit identity missing.')
+    if (!((Number.isInteger(row.code) && row.signal === null) || (row.code === null && typeof row.signal === 'string'))) throw new Error('Invalid provider exit receipt.')
+    Object.assign(launch, { lifecycle: 'ended' })
+  }
+  if (launch.lifecycle === 'active' && (launch.bootId !== bootIdentity() || !launch.guardian || !identityAlive(launch.guardian))) Object.assign(launch, { lifecycle: 'closure-unconfirmed' })
+  const closed = readRecord(join(path, 'closed.json'))
+  if (closed !== undefined) {
+    const row = recordObject(closed)
+    if (row.id !== id || row.owner !== launch.owner) throw new Error('Native observation closure owner mismatch.')
+    if (row.format !== 1) {
+      if (row.format !== 2 || row.boot !== launch.bootId || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty'].includes(String(row.evidence))) throw new Error('Invalid native observation closure evidence.')
+      Object.assign(launch, { lifecycle: 'closed', closureEvidence: row.evidence })
+    }
+  }
+  return Object.freeze(launch)
+}
+
 /** Bounded, ephemeral derived projection. Durable ownership remains the registry. */
 class Projection {
   private epoch = randomUUID()
   private sequence = 0
   private rows = new Map<string, NativeLaunchObservation>()
   private readonly waiters = new Set<() => void>()
+  private retiring: { rows: Map<string, NativeLaunchObservation>; closed: Set<string>; eviction: Iterator<string>; truncated: boolean } | undefined
+
   revision(): string { return this.current.revision }
   private current: NativeRegistrySnapshot = Object.freeze({ revision: `${this.epoch}:0`, launches: Object.freeze([]) })
   constructor(private readonly root: string) {}
   snapshot(): NativeRegistrySnapshot {
-    const next = new Map(this.rows)
+    const next = new Map(this.retiring?.rows ?? this.rows)
     const seen = new Set<string>()
     let scanned = 0
     if (directory(this.root)) for (const ownerKey of entries(this.root)) {
@@ -75,74 +132,63 @@ class Projection {
       for (const id of entries(ownerDirectory)) {
         if (++scanned > 10_000) throw new Error('limit-exceeded')
         if (!/^[0-9a-f-]{36}$/.test(id)) continue
-        const path = join(ownerDirectory, id)
-        if (!directory(path)) continue
-        const raw = readRecord(join(path, 'intent.json'))
-        if (raw === undefined) continue // Concurrent retirement is not closure proof.
-        const intent = recordObject(raw)
-        if (intent.format !== 1 || intent.id !== id || typeof intent.owner !== 'string' || typeof intent.boot !== 'string'
-          || createHash('sha256').update(intent.owner).digest('hex') !== ownerKey) throw new Error('Invalid native observation intent.')
-        const launch: NativeLaunchObservation = { owner: intent.owner, launchId: id, bootId: intent.boot, lifecycle: 'closure-unconfirmed' }
-        const dispatch = readRecord(join(path, 'dispatched.json'))
-        if (dispatch !== undefined) {
-          const row = recordObject(dispatch)
-          if (row.format !== 1 || row.id !== id) throw new Error('Invalid native observation dispatch.')
-          Object.assign(launch, { guardian: identity(row.guardian) })
-        }
-        const birth = readRecord(join(path, 'birth.json'))
-        if (birth !== undefined) {
-          const row = receipt(birth, launch)
-          Object.assign(launch, { guardian: identity(row.guardian), lifecycle: 'active' })
-          if (row.containment !== undefined) {
-            const boundary = cgroupBoundary(row.containment, id)
-            Object.assign(launch, { boundary: Object.freeze({ kind: boundary.kind, path: boundary.path, device: boundary.device, inode: boundary.inode }) })
-          }
-        }
-        const provider = readRecord(join(path, 'provider.json'))
-        if (provider !== undefined) {
-          const row = receipt(provider, launch)
-          const guardian = identity(row.guardian)
-          if (!launch.guardian || guardian.pid !== launch.guardian.pid || guardian.startTicks !== launch.guardian.startTicks) throw new Error('Native provider guardian mismatch.')
-          if (row.capture === 'captured') Object.assign(launch, { provider: identity(row.provider) })
-          else if (row.capture !== 'unavailable' || row.provider !== undefined) throw new Error('Invalid provider capture.')
-        }
-        const exit = readRecord(join(path, 'provider-exit.json'))
-        if (exit !== undefined) {
-          const row = receipt(exit, launch)
-          if (row.provider !== undefined) {
-            const ended = identity(row.provider)
-            if (!launch.provider || ended.pid !== launch.provider.pid || ended.startTicks !== launch.provider.startTicks) throw new Error('Native provider exit mismatch.')
-          } else if (launch.provider) throw new Error('Native provider exit identity missing.')
-          if (!((Number.isInteger(row.code) && row.signal === null) || (row.code === null && typeof row.signal === 'string'))) throw new Error('Invalid provider exit receipt.')
-          Object.assign(launch, { lifecycle: 'ended' })
-        }
-        if (launch.lifecycle === 'active' && (launch.bootId !== bootIdentity() || !launch.guardian || !identityAlive(launch.guardian))) Object.assign(launch, { lifecycle: 'closure-unconfirmed' })
-        const closed = readRecord(join(path, 'closed.json'))
-        if (closed !== undefined) {
-          const row = recordObject(closed)
-          if (row.id !== id || row.owner !== launch.owner) throw new Error('Native observation closure owner mismatch.')
-          if (row.format !== 1) {
-            if (row.format !== 2 || row.boot !== launch.bootId || !['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty'].includes(String(row.evidence))) throw new Error('Invalid native observation closure evidence.')
-            Object.assign(launch, { lifecycle: 'closed', closureEvidence: row.evidence })
-          }
-        }
+        const launch = readLaunch(this.root, ownerKey, id)
+        if (!launch) continue
         seen.add(id)
-        next.set(id, Object.freeze(launch))
+        next.set(id, launch)
       }
     }
     // Missing registrations never turn into closed rows. Preserve observed generations.
     for (const [id, row] of next) if (!seen.has(id) && row.lifecycle === 'active') next.set(id, Object.freeze({ ...row, lifecycle: 'closure-unconfirmed' }))
-    let truncated = false
+    return this.publish(next)
+  }
+  /** Capture each exact durable close before GC. Only the derived array/revision
+   * is coalesced during synchronous inventory; ownership and receipts are not. */
+  retirementBatch<T>(work: () => T): T {
+    if (this.retiring) return work()
+    const rows = new Map(this.rows), closed = new Set([...rows].filter(([, row]) => row.lifecycle === 'closed').map(([id]) => id))
+    this.retiring = { rows, closed, eviction: closed.values(), truncated: false }
+    try { return work() }
+    finally {
+      const batch = this.retiring
+      this.retiring = undefined
+      this.publish(batch.rows, batch.truncated)
+    }
+  }
+  observeRetirement(path: string): void {
+    if (!this.retiring) return this.retirementBatch(() => this.observeRetirement(path))
+    const absolute = resolve(path), ownerKey = basename(dirname(absolute)), id = basename(absolute)
+    if (dirname(dirname(absolute)) !== this.root || !/^[0-9a-f]{64}$/.test(ownerKey) || !/^[0-9a-f-]{36}$/.test(id)) {
+      throw new Error('Invalid native retirement observation path.')
+    }
+    if (!directory(this.root) || !directory(dirname(absolute))) throw new Error('Native retirement observation directory is missing.')
+    const launch = readLaunch(this.root, ownerKey, id)
+    if (launch?.lifecycle !== 'closed') throw new Error('Native retirement observation requires exact durable closure.')
+    const batch = this.retiring
+    batch.rows.set(id, launch); batch.closed.add(id)
+    // Preserve the existing bound and evict positive closures only. A persistent
+    // iterator makes a large batch linear even when the cache starts full.
+    while (batch.rows.size > 10_000) {
+      const oldest = batch.eviction.next().value as string
+      batch.rows.delete(oldest); batch.closed.delete(oldest); batch.truncated = true
+    }
+  }
+  private publish(next: Map<string, NativeLaunchObservation>, truncated = false): NativeRegistrySnapshot {
+    truncated ||= this.retiring?.truncated ?? false
     for (const [id, row] of next) {
       if (next.size <= 10_000) break
       if (row.lifecycle === 'closed') { next.delete(id); truncated = true }
     }
     if (next.size > 10_000) throw new Error('limit-exceeded')
-    // Closed projection eviction changes the revision generation; old readers
-    // must resnapshot rather than treat cache retention as authoritative history.
+    // Reads/reserves inside a synchronous batch must retain their actual latest
+    // rows alongside captured closures, rather than being overwritten at flush.
+    if (this.retiring) {
+      const rows = new Map(next), closed = new Set([...rows].filter(([, row]) => row.lifecycle === 'closed').map(([id]) => id))
+      this.retiring = { rows, closed, eviction: closed.values(), truncated: false }
+    }
     if (truncated) { this.epoch = randomUUID(); this.sequence = 0 }
     const launches = Object.freeze([...next.values()].sort((a, b) => a.launchId.localeCompare(b.launchId)))
-    if (JSON.stringify(launches) !== JSON.stringify(this.current.launches)) {
+    if (truncated || JSON.stringify(launches) !== JSON.stringify(this.current.launches)) {
       this.rows = next
       this.current = Object.freeze({ revision: `${this.epoch}:${++this.sequence}`, launches })
       for (const wake of this.waiters) wake()
