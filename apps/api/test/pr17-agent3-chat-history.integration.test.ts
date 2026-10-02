@@ -50,7 +50,7 @@ describe.skipIf(!connectionString)('PR17 Agent3 SQL history, terminal receipts, 
     const c = await chat.create(owner)
     await repository.beginTurn(c.id, { requestId: 'no-message', content: 'Run without a final assistant row' }, owner.id)
     await repository.bind(c.id, 'no-message', manager.session.providerVersion, manager.session.nativeSessionId)
-    await repository.submitted(c.id, 'no-message', 'turn')
+    await repository.submitted(c.id, 'no-message', 'turn', { nativeSessionId: manager.session.nativeSessionId, principalId: owner.id })
     manager.nativeHistory = { correlationId: nativeCorrelation(c.id, 'no-message'), nativeTurnId: 'turn',
       events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded', output: { text: 'No provider message ID' } } }
     await chat.reconcileActive()
@@ -102,7 +102,7 @@ describe.skipIf(!connectionString)('PR17 Agent3 SQL history, terminal receipts, 
       from generate_series(1,100) n`, [c.id])
     await repository.beginTurn(c.id, { requestId: 'current', content: 'Current pending turn' }, owner.id)
     await repository.bind(c.id, 'current', manager.session.providerVersion, manager.session.nativeSessionId)
-    await repository.submitted(c.id, 'current', 'current-native')
+    await repository.submitted(c.id, 'current', 'current-native', { nativeSessionId: manager.session.nativeSessionId, principalId: owner.id })
     const pending: PendingNativeInteraction = { session: manager.session,
       turn: { nativeTurnId: 'current-native', nativeRequestId: 'ask' },
       nativeRequestType: 'item/commandExecution/requestApproval', request: {}, responseOptions: [...CODEX_APPROVAL_OPTIONS_FIXTURE] }

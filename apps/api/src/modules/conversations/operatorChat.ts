@@ -580,7 +580,8 @@ export class OperatorChatService {
           // No subsequent definite error can make this prompt safe to replay.
           submitted = true
           const cancelRequested = await this.control(id, async () => {
-            if (!await this.repository.submitted(id, input.requestId, nativeTurnId)) throw new Error('Native turn ownership was lost.')
+            if (!await this.repository.submitted(id, input.requestId, nativeTurnId,
+              { nativeSessionId: runtime.session!.nativeSessionId, principalId: row.owner_principal_id })) throw new Error('Native turn ownership was lost.')
             if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, input.requestId, nativeTurnId)
             const current = await this.repository.active(id)
             textStream?.flush()
@@ -696,7 +697,8 @@ export class OperatorChatService {
       if (!await this.repository.submittedMessage(id, requestId, receipt!)) return
       if (runtime.fileInputs) await this.managers.recordFileMessageSubmission!(id, requestId, receipt!)
     } else {
-      if (!await this.repository.submitted(id, requestId, history.nativeTurnId!)) return
+      if (!await this.repository.submitted(id, requestId, history.nativeTurnId!,
+        { nativeSessionId: runtime.session.nativeSessionId, principalId: row.owner_principal_id })) return
       if (runtime.fileInputs) await this.managers.recordFileSubmission!(id, requestId, history.nativeTurnId!)
     }
     let precedingActivityId: string | null = null
