@@ -8,6 +8,7 @@ import { RsyncWriterOwnership, rsyncArgumentDigest, type RsyncOwnerReference } f
 import { RsyncPrivateStore } from './rsyncStore.js'
 import { NodeRsyncExecutor, RsyncStagingTransport, rsyncCommand, type RsyncEndpoint, type RsyncStagingPorts } from './rsync.js'
 import { bootIdentity, processIdentity } from '../harnesses/recovery/linuxIdentity.js'
+import * as storage from '../harnesses/recovery/storage.js'
 import { readRecord, writeRecord } from '../harnesses/recovery/storage.js'
 
 // Simulate a failure BEFORE executable configuration. Real write-ahead registry,
@@ -143,13 +144,78 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
       await f.ownership.quiescent(f.intent, signal())
     } finally { await f.dispose() }
   })
+  it('bounds stop while a real admitted callback remains pending and publishes closure only after its late FD drain', async () => {
+    const f = await fixture()
+    try {
+      const access = f.ownership.access(f.intent, f.binding, 'snapshot'), fd = await open(f.pin.executable, 'r')
+      access.attach(fd)
+      let finish!: () => void
+      const running = access.run(async () => { await new Promise<void>(resolve => { finish = resolve }); return fd.readFile() })
+      await Promise.resolve()
+      const controller = new AbortController(), stopping = f.ownership.stop(f.intent, controller.signal)
+      controller.abort(new Error('stop deadline'))
+      await expect(stopping).rejects.toThrow('stop remains unconfirmed')
+      expect(access.signal.aborted).toBe(true)
+      expect(readRecord(f.ownerPath(access.reference, 'closed'))).toBeUndefined()
+      expect(await fd.stat()).toBeTruthy()
+      await expect(f.ownership.quiescent(f.intent, signal())).rejects.toThrow('active or unconfirmed')
+      await expect(access.run(async () => fd.readFile())).rejects.toThrow('access closed')
+      expect(() => f.ownership.access(f.intent, f.binding, 'receiver')).toThrow('admission is closed')
+      finish(); expect(await running).toEqual(bytes)
+      await access.close(signal()); await f.ownership.stop(f.intent, signal())
+      await expect(fd.stat()).rejects.toThrow()
+      expect(readRecord(f.ownerPath(access.reference, 'closed'))).toMatchObject({ evidence: 'access-drained' })
+      await f.ownership.quiescent(f.intent, signal())
+    } finally { await f.dispose() }
+  })
+  it('revokes every sibling before an already-cancelled drain returns and cancels deferred callbacks', async () => {
+    const f = await fixture()
+    try {
+      const first = f.ownership.access(f.intent, f.binding, 'snapshot'), second = f.ownership.access(f.intent, f.binding, 'receiver')
+      const server = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
+      const called = vi.fn(async () => true), deferred = first.run(called)
+      const controller = new AbortController(); controller.abort(new Error('shutdown deadline'))
+      await expect(f.ownership.drain(controller.signal)).rejects.toThrow('drain remains unconfirmed')
+      await expect(deferred).rejects.toThrow('access closed')
+      expect(called).not.toHaveBeenCalled(); expect(first.signal.aborted).toBe(true); expect(second.signal.aborted).toBe(true)
+      expect(readRecord(f.ownerPath(server, 'claim'))).toMatchObject({ mode: 'cancelled', ownerDigest: server.ownerDigest })
+      expect(() => f.ownership.spawnServer(server, ['--server', '.'], signal())).toThrow()
+      await f.ownership.drain(signal())
+    } finally { await f.dispose() }
+  })
+  it('retries descriptor/close-receipt failure without restoring IO admission or declaring an unclosed descriptor drained', async () => {
+    const f = await fixture()
+    try {
+      const access = f.ownership.access(f.intent, f.binding, 'snapshot'), fd = await open(f.pin.executable, 'r')
+      access.attach(fd)
+      const closing = vi.spyOn(fd, 'close').mockRejectedValueOnce(new Error('FD close EIO'))
+      await expect(access.close(signal())).rejects.toThrow('FD close EIO')
+      expect(readRecord(f.ownerPath(access.reference, 'closed'))).toBeUndefined()
+      await expect(f.ownership.quiescent(f.intent, signal())).rejects.toThrow('active or unconfirmed')
+      await expect(access.run(async () => fd.readFile())).rejects.toThrow('access closed')
+      await access.close(signal()); closing.mockRestore()
+      await f.ownership.quiescent(f.intent, signal())
+      await expect(fd.stat()).rejects.toThrow()
+      const other = f.ownership.access(f.intent, f.binding, 'receiver'), originalWrite = storage.writeRecord
+      let failed = false
+      const receipt = vi.spyOn(storage, 'writeRecord').mockImplementation((path, value, immutable) => {
+        if (path.endsWith(`${other.reference.ownerId}.closed`) && !failed) { failed = true; throw new Error('receipt EIO') }
+        return originalWrite(path, value, immutable)
+      })
+      try {
+        await expect(other.close(signal())).rejects.toThrow('receipt EIO')
+        await expect(f.ownership.quiescent(f.intent, signal())).rejects.toThrow('active or unconfirmed')
+        await other.close(signal()); await f.ownership.quiescent(f.intent, signal())
+      } finally { receipt.mockRestore() }
+    } finally { await f.dispose() }
+  })
   it('does not reinterpret a live same-process crash residue as stopped after a registry reconstruction', async () => {
     const f = await fixture()
     try {
       const access = f.ownership.access(f.intent, f.binding, 'snapshot')
       const recovered = new RsyncWriterOwnership(f.root, () => f.binding)
       await expect(recovered.quiescent(f.intent, signal())).rejects.toThrow('active or unconfirmed')
-      await expect(recovered.stop(f.intent, signal())).rejects.toThrow('active or unconfirmed')
+      await expect(recovered.stop(f.intent, signal())).rejects.toThrow('stop remains unconfirmed')
       await access.close(); await recovered.quiescent(f.intent, signal())
     } finally { await f.dispose() }
   })

@@ -11,7 +11,7 @@ import { bootIdentity, identityAlive, processIdentity } from '../harnesses/recov
 import { cgroupPopulated } from '../harnesses/recovery/cgroupBoundary.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit,
   type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
-import { privateDirectory, readRecord, writeRecord } from '../harnesses/recovery/storage.js'
+import { privateDirectory, readRecord, syncDirectory, writeRecord } from '../harnesses/recovery/storage.js'
 
 const Hash = z.string().regex(/^[a-f0-9]{64}$/)
 const Identity = z.object({ pid: z.number().int().min(2), startTicks: z.string().regex(/^\d+$/) }).strict()
@@ -26,16 +26,18 @@ const Claim = Reference.extend({ version: z.literal(1), mode: z.enum(['cancelled
 const Launch = Reference.extend({ version: z.literal(1), launchId: z.uuid() }).strict()
 const Closed = Reference.extend({ version: z.literal(1), evidence: z.enum(['access-drained', 'access-process-gone',
   'host-boot-changed', 'never-dispatched', 'rsync-process-closed']), launchId: z.uuid().optional() }).strict()
+const Revoked = Reference.extend({ version: z.literal(1) }).strict()
 const Lock = Reference.extend({ version: z.literal(1), root: Root, lock: Root }).strict()
 export type RsyncOwnerReference = z.infer<typeof Reference>
 export interface RsyncProcessLaunch extends RsyncOwnerReference { ownership: RsyncWriterOwnership }
 export interface RsyncRemoteWriter extends RsyncOwnerReference { nodeBinary: string; entryPoint: string }
 export interface RsyncAccessLease {
   readonly reference: RsyncOwnerReference
-  run<T>(work: () => Promise<T>): Promise<T>
+  readonly signal: AbortSignal
+  run<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T>
   attach(handle: FileHandle): void
   captureLock(): void
-  close(): Promise<void>
+  close(signal?: AbortSignal): Promise<void>
 }
 export interface RsyncStoreOwnership {
   access(intent: TransferIntent, role: 'snapshot' | 'receiver'): RsyncAccessLease
@@ -49,6 +51,18 @@ const self = () => {
   const found = processIdentity(process.pid)
   if (!found) throw new Error('Rsync owner process identity unavailable')
   return Identity.parse({ pid: found.pid, startTicks: found.startTicks })
+}
+/** Bounds the caller's wait only. The admitted physical work remains tracked and cannot
+ * become closure evidence until it actually settles and its descriptors are closed. */
+async function bounded<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort = () => {}
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason ?? new Error('Rsync drain interrupted'))
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+  })
+  try { return await Promise.race([work, cancelled]) }
+  finally { signal.removeEventListener('abort', abort) }
 }
 const certificate = (path: string) => {
   const stat = lstatSync(path, { bigint: true })
@@ -66,6 +80,7 @@ export class RsyncWriterOwnership {
   private readonly processes: NativeProcessRegistry
   private readonly accesses = new Map<string, RsyncAccessLease>()
   private draining = false
+  private readonly stopping = new Set<string>()
   constructor(root: string, private readonly current: (deviceId: string) => Readonly<DeviceSessionBinding> | undefined) {
     if (process.platform !== 'linux') throw new Error('Rsync writer ownership requires Linux')
     this.root = privateDirectory(resolve(root)); this.rootIdentity = certificate(this.root)
@@ -85,7 +100,7 @@ export class RsyncWriterOwnership {
     return i
   }
   private admissible(i: TransferIntent) {
-    if (this.draining || Date.now() >= Date.parse(i.expiresAt) || Date.parse(i.expiresAt) - Date.now() > POLICY.maxLifetimeMs
+    if (this.draining || this.stopping.has(i.transferId) || Date.now() >= Date.parse(i.expiresAt) || Date.parse(i.expiresAt) - Date.now() > POLICY.maxLifetimeMs
       || readRecord(join(this.directory(i), 'retiring.json')) !== undefined) throw new Error('Rsync writer admission is closed')
   }
   private binding(i: TransferIntent, input: Readonly<DeviceSessionBinding>) {
@@ -170,6 +185,7 @@ export class RsyncWriterOwnership {
     } else if (proof.evidence === 'host-boot-changed') {
       if (row.hostBootId === bootIdentity()) throw new Error('Original rsync boot-change proof unavailable')
     } else if (row.binary) throw new Error('In-process drain cannot close an rsync subprocess')
+    syncDirectory(this.directory(row.intent))
   }
   private closed(reference: RsyncOwnerReference, evidence: z.infer<typeof Closed>['evidence'], launchId?: string) {
     const { path, ref } = this.read(reference), value = { version: 1 as const, ...ref, evidence, ...(launchId ? { launchId } : {}) }
@@ -178,21 +194,44 @@ export class RsyncWriterOwnership {
       this.assertClosed(ref, old)
       return
     }
-    writeRecord(`${path}.closed`, value, true)
+    try { writeRecord(`${path}.closed`, value, true) }
+    catch (error) {
+      const persisted = readRecord(`${path}.closed`)
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || persisted === undefined) throw error
+      this.assertClosed(ref, persisted)
+    }
+  }
+  private revoked(reference: RsyncOwnerReference) {
+    const { path, ref } = this.read(reference), raw = readRecord(`${path}.revoked`)
+    if (raw === undefined) return false
+    const row = Revoked.parse(raw)
+    if (!isDeepStrictEqual(row, { version: 1, ...ref })) throw new Error('Rsync writer revocation owner conflicts')
+    return true
+  }
+  private revoke(reference: RsyncOwnerReference) {
+    const { path, ref, row } = this.read(reference)
+    if (!this.revoked(ref)) try { writeRecord(`${path}.revoked`, { version: 1, ...ref }, true) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || !this.revoked(ref)) throw error }
+    if (row.binary && readRecord(`${path}.claim`) === undefined) {
+      try { writeRecord(`${path}.claim`, { version: 1, ...ref, mode: 'cancelled', hostBootId: bootIdentity(), parent: self() }, true) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    }
   }
   /** Single-use causal handoff. Current binding, pinned binary, exact owner and write-ahead
    * native registration are all checked before sending any executable configuration. */
   spawnProcess(reference: RsyncOwnerReference, executable: string, args: string[], signal: AbortSignal): ChildProcessWithoutNullStreams {
     const { row, path, ref } = this.read(reference)
     signal.throwIfAborted(); this.admissible(row.intent); this.binding(row.intent, row.binding)
-    if (row.hostBootId !== bootIdentity() || readRecord(`${path}.closed`) !== undefined) throw new Error('Original rsync process owner is no longer dispatchable')
+    if (row.hostBootId !== bootIdentity() || this.revoked(ref) || readRecord(`${path}.closed`) !== undefined) throw new Error('Original rsync process owner is no longer dispatchable')
     if (!row.binary || executable !== row.binary.executable || digestBytes(readFileSync(executable)) !== row.binary.sha256
       || !['rsync-client', 'rsync-server'].includes(row.role)
       || (row.role === 'rsync-client' && row.binary.commandDigest !== rsyncArgumentDigest(args))) throw new Error('Pinned rsync owner binary differs')
     writeRecord(`${path}.claim`, { version: 1, ...ref, mode: 'process', hostBootId: bootIdentity(), parent: self() }, true)
     this.admissible(row.intent)
+    if (this.revoked(ref)) throw new Error('Original rsync process owner is revoked')
     const scope = this.processes.reserveLaunch(this.scope(ref).owner)
     writeRecord(`${path}.launch`, { version: 1, ...ref, launchId: scope.launchId }, true)
+    if (this.revoked(ref)) throw new Error('Original rsync process owner is revoked')
     // scope belongs to this live launching parent. It is never reconstructed for a replacement spawn.
     return spawnNativeProcess(executable, args, { cwd: this.root, env: { PATH: '/usr/bin:/bin', LANG: 'C' }, recovery: scope })
   }
@@ -219,7 +258,7 @@ export class RsyncWriterOwnership {
     if (row.hostBootId !== bootIdentity()) { this.closed(ref, 'host-boot-changed'); return }
     if (!row.binary) {
       const access = this.accesses.get(ref.ownerId)
-      if (stop && access) { await access.close(); return }
+      if (stop && access) { await access.close(signal); return }
       if (!identityAlive(row.issuer)) { this.closed(ref, 'access-process-gone'); return }
       throw new Error('Rsync byte access remains active or unconfirmed')
     }
@@ -271,21 +310,38 @@ export class RsyncWriterOwnership {
     if (readdirSync(this.root).some(name => name.startsWith(`${i.transferId}.`) && name.endsWith('.input'))) throw new Error('Rsync source-materializer residue retains its original hold')
   }
   async stopProcesses(input: TransferIntent, signal: AbortSignal) {
-    const i = this.original(input)
-    for (const ref of this.references(i)) if (this.read(ref).row.binary) await this.quiet(ref, signal, true)
+    const i = this.original(input), refs = this.references(i).filter(ref => this.read(ref).row.binary)
+    // Revoke EVERY sibling synchronously, including when the caller is already cancelled.
+    for (const ref of refs) this.revoke(ref)
+    const results = await Promise.allSettled(refs.map(ref => this.quiet(ref, signal, true)))
+    const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (failures.length) throw new AggregateError(failures, 'Rsync process stop remains unconfirmed')
     await this.processesQuiescent(i, signal)
   }
   async stop(input: TransferIntent, signal: AbortSignal) {
-    const i = this.original(input)
-    for (const ref of this.references(i)) await this.quiet(ref, signal, true)
+    const i = this.original(input), refs = this.references(i)
+    this.stopping.add(i.transferId)
+    for (const ref of refs) this.revoke(ref)
+    const results = await Promise.allSettled(refs.map(ref => {
+      const access = this.accesses.get(ref.ownerId)
+      return access ? access.close(signal) : this.quiet(ref, signal, true)
+    }))
+    const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (failures.length) throw new AggregateError(failures, 'Rsync byte ownership stop remains unconfirmed')
     await this.quiescent(i, signal)
+    this.stopping.delete(i.transferId)
   }
   async drain(signal: AbortSignal) {
     this.draining = true
-    const failures: unknown[] = []
-    for (const i of this.inventory()) { try { await this.stop(i, signal) } catch (error) { failures.push(error) } }
+    const closing = Promise.allSettled([...this.accesses.values()].map(access => access.close(signal)))
+    // Begin all transfers before awaiting, so one stuck IO cannot leave another writer admitted.
+    let transfers: Promise<void>[]
+    try { transfers = this.inventory().map(i => this.stop(i, signal)) } catch (error) { transfers = [Promise.reject(error)] }
+    const results = (await Promise.all([closing, Promise.allSettled(transfers)])).flat()
+    const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     if (failures.length) throw new AggregateError(failures, 'Rsync byte ownership drain remains unconfirmed')
   }
+
   inventory(): TransferIntent[] {
     this.pin()
     const result: TransferIntent[] = []
@@ -312,27 +368,44 @@ export class RsyncWriterOwnership {
   access(input: TransferIntent, binding: Readonly<DeviceSessionBinding>, role: 'snapshot' | 'receiver' | 'source-materializer'): RsyncAccessLease {
     const ref = this.prepare(input, binding, role), { row, path } = this.read(ref)
     const handles = new Set<FileHandle>(), pending = new Set<Promise<unknown>>()
-    let closing: Promise<void> | undefined
+    const controller = new AbortController()
+    let draining: Promise<void> | undefined
     const lease: RsyncAccessLease = {
-      reference: ref,
-      run: <T>(work: () => Promise<T>) => {
-        if (closing) return Promise.reject(new Error('Rsync byte access closed'))
+      reference: ref, signal: controller.signal,
+      run: <T>(work: (signal: AbortSignal) => Promise<T>) => {
+        if (controller.signal.aborted) return Promise.reject(new Error('Rsync byte access closed'))
         this.admissible(row.intent); this.binding(row.intent, row.binding)
-        const task = Promise.resolve().then(() => { this.admissible(row.intent); this.binding(row.intent, row.binding); return work() })
+        const task = Promise.resolve().then(() => {
+          controller.signal.throwIfAborted()
+          this.admissible(row.intent); this.binding(row.intent, row.binding)
+          return work(controller.signal)
+        })
         pending.add(task)
         void task.finally(() => pending.delete(task)).catch(() => undefined)
         return task
       },
-      attach: handle => { if (closing && !pending.size) throw new Error('Rsync byte access closed'); handles.add(handle) },
+      attach: handle => {
+        if (controller.signal.aborted && !pending.size) throw new Error('Rsync byte access closed')
+        handles.add(handle)
+      },
       captureLock: () => writeRecord(`${path}.lock`, { version: 1, ...ref, root: this.rootIdentity,
         lock: certificate(join(this.root, `${row.intent.transferId}.lock`)) }, true),
-      close: () => closing ??= (async () => {
-        await Promise.allSettled([...pending])
-        await Promise.all([...handles].map(handle => handle.close()))
-        if (row.hostBootId !== bootIdentity() || !isDeepStrictEqual(row.issuer, self())) throw new Error('Only original rsync access owner can publish drain')
-        this.closed(ref, 'access-drained'); this.accesses.delete(ref.ownerId)
-      })(),
+      close: (signal = AbortSignal.timeout(5000)) => {
+        controller.abort(new Error('Rsync byte access closed'))
+        if (!draining) {
+          const attempt = (async () => {
+            await Promise.allSettled([...pending])
+            await Promise.all([...handles].map(handle => handle.close()))
+            if (row.hostBootId !== bootIdentity() || !isDeepStrictEqual(row.issuer, self())) throw new Error('Only original rsync access owner can publish drain')
+            this.closed(ref, 'access-drained'); this.accesses.delete(ref.ownerId)
+          })()
+          draining = attempt
+          void attempt.catch(() => { if (draining === attempt) draining = undefined })
+        }
+        return bounded(draining, signal)
+      },
     }
+
     this.accesses.set(ref.ownerId, lease)
     this.admissible(row.intent)
     return lease
