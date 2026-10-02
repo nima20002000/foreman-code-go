@@ -30,7 +30,8 @@
 .settings-section-heading { display: grid; gap: var(--space-2); padding: 0; margin: 0; }
 .settings-section-heading h2 { font-size: 18px; font-weight: 600; letter-spacing: -.02em; margin: 0; }
 .settings-section-heading > p { color: var(--n-muted); font-size: 12px; line-height: 1.6; margin: 0; }
-.settings-editor-page .settings-save-actions { position: sticky; bottom: 0; z-index: 3; display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; padding: 16px 20px; margin: 0; border: 1px solid var(--n-border); border-radius: var(--radius-md); background: var(--n-surface); box-shadow: var(--shadow-popover); }
+.settings-editor-page .settings-save-actions { position: static; z-index: auto; display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; padding: 0; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.settings-editor-page .settings-save-actions > button { flex: 0 1 auto; }
 .settings-editor-page .settings-save-actions > p { margin: 0; margin-inline-end: auto; }
 .settings-editor-page .settings-footer-options { margin-inline-end: auto; }
 .settings-editor-page .settings-footer-options .n-check-field { margin: 0; }
@@ -67,7 +68,7 @@
   .settings-choice { padding: 18px; }
   .settings-editor-page { gap: var(--space-4); }
   .settings-editor-content, .settings-single-column, .access-session, .access-setup, .access-connect { padding: 18px; }
-  .settings-editor-page .settings-save-actions { padding: 14px; gap: var(--space-2); }
+  .settings-editor-page .settings-save-actions { gap: var(--space-2); }
   .settings-editor-page .settings-footer-options { flex-basis: 100%; }
   .settings-editor-page .settings-save-actions > p { flex-basis: 100%; }
   .access-command, .access-connect .settings-enrollment-form { grid-template-columns: minmax(0, 1fr); }
@@ -87,6 +88,6 @@
 .settings-editor-content :is(.n-field, .n-input-wrap, .n-select-wrap, .n-check-field, .n-switch-field, .settings-simple-row, fieldset) { min-width: 0; max-width: 100%; }
 .settings-editor-content :is(input:not([type='checkbox'], [type='radio']), select, textarea) { max-width: 100%; }
 .settings-editor-content :is(pre, code) { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 540px) { .settings-check-row > * { min-width: 0; } .settings-editor-page .settings-save-actions > button { flex: 1 1 8rem; } }
+@media (max-width: 540px) { .settings-check-row > * { min-width: 0; } }
 .settings-single-column--compact { width: 100%; max-width: 560px; min-height: 0; padding: 18px; }
 .settings-single-column--compact > .n-field { width: 100%; max-width: 360px; }
