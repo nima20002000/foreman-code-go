@@ -1,6 +1,7 @@
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
+import { changeCodexSandbox } from './harnessEditing.js';
 export * from './claude.js';
 export * from './claudeQualification.js';
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
@@ -396,9 +397,17 @@ export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = AgentDefaultsSchema.parse({
   },
   operator: {
     role: "operator", boardAddable: false, uiEnabled: true, showThinking: true,
-    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
+    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: "danger-full-access" },
   },
 });
+
+/** New Operator provider selections use full access, without changing board presets or approval routing. */
+export function operatorHarnessDefaults(base: HarnessConfiguration): HarnessConfiguration {
+  if (base.harness === "codex") return changeCodexSandbox(base, "danger-full-access");
+  if (base.harness === "claude") return { ...base, sandbox: "danger-full-access" };
+  // OpenCode has native tool permissions, not an OS filesystem sandbox.
+  return structuredClone(base);
+}
 
 /** A designated Orchestrator is selected when a workflow is created. */
 export const DEFAULT_WORKFLOW_APPROVAL_HANDLER: ApprovalHandler = "orchestrator";

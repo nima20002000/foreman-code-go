@@ -317,13 +317,15 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('operator_mcp_setup_get')
       const read = async () => ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
       const before = await read()
+      expect(before.value.operator.harness).toMatchObject({ harness: 'codex', sandbox: 'danger-full-access' })
+      expect(before.value.coder.harness).toMatchObject({ sandbox: 'read-only' })
       const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
         operator: { ...before.value.operator, showThinking: true,
-          harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'gpt-5.4', reasoningEffort: 'high', sandbox: 'workspace-write', serviceTier: 'priority' } } } }
+          harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'gpt-5.4', reasoningEffort: 'high', sandbox: 'danger-full-access', serviceTier: 'priority' } } } }
       const accepted = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
       expect(accepted.replayed).toBe(false)
       expect((await read()).value.operator).toEqual(accepted.value.value.operator)
-      expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'workspace-write' })
+      expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'danger-full-access' })
       const conversation = await chat.create(owner)
       expect((await chat.get(conversation.id, owner)).settings).toEqual({ harness: 'codex', model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority', showThinking: true })
       expect(AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent).replayed).toBe(true)

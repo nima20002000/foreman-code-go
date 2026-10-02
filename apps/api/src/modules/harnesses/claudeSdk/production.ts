@@ -120,7 +120,7 @@ export function productionClaudeManager(input: {
       if (input.mode === 'replay' && !input.files.sdk) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude file replay requires its SDK server/tool port.', 500)
       const sdk = await (input.files.sdk ? input.files.sdk() : import('@anthropic-ai/claude-agent-sdk'))
       signal.throwIfAborted()
-      const allowMutation = compiled.configuration.sandbox === 'workspace-write'
+      const allowMutation = compiled.configuration.sandbox !== 'read-only'
       fileServer = createClaudeFileMcpServer({ sdk, service: input.files.service(), allowMutation,
         calls: createClaudeFileCallResolver({ manager: () => actual, signal }),
         admission: productionClaudeFileAdmission({ pool: input.pool, binding: input.binding, manager: () => actual, allowMutation }) })

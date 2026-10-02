@@ -17,7 +17,7 @@ export type ClaudeSetupOptions = z.infer<typeof ClaudeSetupOptionsSchema>;
 export const ClaudeHarnessConfigurationSchema = z.object({
   harness: z.literal('claude'), model: z.string().trim().min(1),
   authMode: z.enum(['subscription', 'api-key']), configDirectory: AbsolutePath,
-  permissionMode: z.literal('default'), sandbox: z.enum(['read-only', 'workspace-write']),
+  permissionMode: z.literal('default'), sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
   tools: z.array(ToolName).max(100),
   permissionRules: z.array(z.object({ tool: ToolName, effect: z.enum(['allow', 'ask', 'deny']) }).strict()).max(100),
   instructions: z.string().max(200_000),

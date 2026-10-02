@@ -28,7 +28,7 @@ export function ClaudeConfigurationFields({ value, onChange, models, qualified, 
         options={[{ value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
         onChange={(event) => onChange({ ...value, authMode: event.target.value as ClaudeHarnessConfiguration['authMode'] })} />
       <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues, 'sandbox')}
-        options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }]}
+        options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Full access' }]}
         onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
     </div>
     {pending ? <span className="harness-status" role="status">Checking the selected Claude configuration…</span> : null}
