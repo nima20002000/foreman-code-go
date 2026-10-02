@@ -1,6 +1,10 @@
 import type pg from 'pg'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
-import { WorkerMcpRelayRequestSchema, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayResponseSchema } from '@graphql/contracts/worker-mcp-relay'
+import { WorkerMcpRelayRequestSchema, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema, type WorkerMcpRelayRequest } from '@graphql/contracts/worker-mcp-relay'
+import { WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from '@graphql/contracts/worker-native-output'
+import type { PostgresArtifactPublicationAuthority } from '../runs/remote/nativeArtifactAuthority.js'
+import type { AcceptedArtifactPublication } from '../files/distributed/publication.js'
+import type { FileQuery } from '../files/repository.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { PostgresAccessService } from '../access/postgres.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
@@ -16,12 +20,39 @@ export interface SelectedMainMcpForward {
    * never browser cookies, Operator secrets or another worker's loopback app. */
   request(body: unknown, token: string, protocolVersion?: string): Promise<{ statusCode: number; contentType: 'application/json' | 'text/event-stream' | 'empty'; body: string }>
 }
+export type NativeOutputRequest = Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output' }>
+export interface WorkerNativeOutputAuthorizationPort {
+  /** Must use the actual original admitted publication context, never tool scope or a replacement lease. */
+  authorize(input: NativeOutputRequest, connection: DeviceConnectionIdentity, sql: FileQuery): Promise<void>
+}
+export function createWorkerNativeOutputAuthorizationPort(
+  authority: Pick<PostgresArtifactPublicationAuthority, 'authorize'>,
+  resolveAccepted: (input: NativeOutputRequest, connection: DeviceConnectionIdentity, sql: FileQuery) => Promise<AcceptedArtifactPublication>,
+): WorkerNativeOutputAuthorizationPort {
+  return { async authorize(input, connection, sql) {
+    const accepted = await resolveAccepted(input, connection, sql)
+    const caller = await authority.authorize(accepted, sql)
+    const scope = caller.context.scope.chat
+    if (scope.kind !== 'agent' || scope.runId !== input.intent.runId || scope.executionId !== input.intent.executionId
+      || scope.agentId !== input.applicationAccess.agentId || accepted.attempt.executionId !== input.intent.executionId
+      || accepted.attempt.runId !== input.intent.runId || accepted.attempt.nodeId !== input.intent.nodeId
+      || accepted.attempt.attemptId !== input.intent.attemptId || accepted.attempt.placementHash !== input.intent.bindingHash
+      || caller.context.nativeSessionId !== input.nativeSessionId || caller.context.turnId !== input.turnId
+      || !caller.context.allowMutation || !caller.context.allowedTools.includes(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS[input.outputOperation])) {
+      throw new DomainError('WORKER_NATIVE_OUTPUT_DENIED', 'The original native file operation is not authorized.', 403)
+    }
+    requireAuthorization(caller.principal, 'agent_chat:write', {
+      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
+    })
+  } }
+}
 /** Main-only domain handler on W07's authenticated worker-mcp-v1 namespace. It
  * validates the original execution lease before the existing MCP transport
  * repeats normal role/tool/scope authorization. No new credential is minted. */
 export class MainWorkerMcpRelay {
   constructor(private readonly mainId: string, private readonly pool: pg.Pool,
-    private readonly access: Pick<PostgresAccessService, 'authenticate'>, private readonly forward: SelectedMainMcpForward) {}
+    private readonly access: Pick<PostgresAccessService, 'authenticate'>, private readonly forward: SelectedMainMcpForward,
+    private readonly nativeOutputs?: WorkerNativeOutputAuthorizationPort) {}
   async handle(raw: unknown, connection: DeviceConnectionIdentity) {
     const input = WorkerMcpRelayRequestSchema.parse(raw), app = input.applicationAccess
     const principal = await this.access.authenticate(app.token, 'worker')
@@ -70,9 +101,19 @@ export class MainWorkerMcpRelay {
       requireAuthorization(authority.principal, 'runs:start', { workspaceId: binding.workspace_id, workflowId: binding.workflow_id })
       authorization = WorkerMcpRelayAuthorizationSchema.parse({ version: 1, mainId: this.mainId, audience: 'worker', principalId: principal.id,
         executionId: app.executionId, agentId: app.agentId, operationId: app.operationId, attemptId: app.attemptId, bindingHash: app.bindingHash, expiresAt: principal.expiresAt })
+      if (input.operation === 'worker-mcp.authorize-native-output') {
+        if (binding.purpose !== 'workflow' || placement.payload.kind !== 'agent' || !placement.payload.artifactOutputs) {
+          throw new DomainError('WORKER_NATIVE_OUTPUT_DENIED', 'Native output requires the original declared workflow Agent.', 403)
+        }
+        if (!this.nativeOutputs) throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native output authorization is not mounted.', 409)
+        await this.nativeOutputs.authorize(input, connection, client)
+      }
       await client.query('commit')
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
     if (input.operation === 'worker-mcp.authorize') return authorization
+    if (input.operation === 'worker-mcp.authorize-native-output') return WorkerNativeOutputAuthorizationSchema.parse({
+      ...authorization, outputOperation: input.outputOperation, nativeSessionId: input.nativeSessionId, turnId: input.turnId,
+    })
     return WorkerMcpRelayResponseSchema.parse(await this.forward.request(input.body, app.token, input.protocolVersion))
   }
 }

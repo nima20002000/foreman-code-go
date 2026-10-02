@@ -235,6 +235,10 @@
     "./workflow-artifact-result": {
       "types": "./dist/workflowArtifactResult.d.ts",
       "import": "./dist/workflowArtifactResult.js"
+    },
+    "./worker-native-output": {
+      "types": "./dist/workerNativeOutput.d.ts",
+      "import": "./dist/workerNativeOutput.js"
     }
   },
   "scripts": {

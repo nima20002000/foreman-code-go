@@ -113,6 +113,8 @@ function hasMatchingExtension(value: { filename: string; mediaType: FileMediaTyp
   return value.filename.includes(".") && FILE_EXTENSIONS_BY_MEDIA_TYPE[value.mediaType].includes(extension);
 }
 const FileDescription = { filename: FileNameSchema, mediaType: FileMediaTypeSchema };
+export const FileDescriptionSchema = z.object(FileDescription).strict()
+  .refine(hasMatchingExtension, "Filename extension must match an allowed media type");
 /** A revision identifies one immutable set of bytes and metadata, never the current-file pointer. */
 export const FileRevisionSchema = z.object({
   fileId: IdSchema, revisionId: IdSchema, ...FileDescription,

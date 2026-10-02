@@ -13,7 +13,7 @@ vi.mock('./persistence.js', () => ({ readAcceptedPlacement: ports.placement }))
 vi.mock('../devices/hostAuthorization.js', () => ({ assertDeviceHostInstallation: ports.host }))
 vi.mock('../access/runAuthority.js', () => ({ currentOperatorAuthority: ports.owner }))
 
-function fixture() {
+function fixture(nativeOutputs?: import('./workerMcpRelay.js').WorkerNativeOutputAuthorizationPort) {
   const mainId = randomUUID(), deviceId = randomUUID(), workerInstallationId = randomUUID(), digest = 'a'.repeat(64)
   const placement = freezePlacement({ schemaVersion: 1, mainId, runId: 'run', nodeId: 'node', mainInstallationId: 'main-installation',
     hostRef: { kind: 'device', mainId, deviceId }, registration: { workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
@@ -22,7 +22,7 @@ function fixture() {
     source: { revisionId: 'source', manifestDigest: digest, materializationId: 'materialization', materializationDigest: digest },
     payload: { kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: 'codex', driverRevision: '1',
       instanceId: 'instance', instanceRevision: '1', harnessInstallationId: 'harness', installationFingerprint: digest,
-      runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [] } })
+      runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [], artifactOutputs: { version: 1, outputKeys: ['result'] } } })
   const intent = deriveDispatch(placement, { executionId: 'execution', occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1,
     attemptId: 'attempt', operationId: 'operation', inputDigest: `sha256:${digest}`, owner: { grantId: 'grant', epoch: '1' } })
   const principal: ManagementPrincipal = { id: 'worker-principal', name: 'Workflow worker', audience: 'worker', agentId: 'agent',
@@ -36,7 +36,7 @@ function fixture() {
   ports.host.mockResolvedValue({ keyRevision: 1, authorizationRevision: 1 })
   ports.owner.mockResolvedValue({ principal: { id: 'owner', name: 'Owner', audience: 'operator', grants: [{ actions: ['runs:start'], scope: { workspaceIds: ['workspace'], workflowIds: ['workflow'] } }], expiresAt: principal.expiresAt, revokedAt: null } })
   const forward = vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{"ok":true}' }))
-  const relay = new MainWorkerMcpRelay(mainId, pool, { authenticate: async () => principal }, { request: forward })
+  const relay = new MainWorkerMcpRelay(mainId, pool, { authenticate: async () => principal }, { request: forward }, nativeOutputs)
   const applicationAccess = { kind: 'scoped-worker-mcp' as const, token: 'original-worker-bearer', executionId: intent.executionId,
     agentId: 'agent', operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash }
   const request = { version: 1, operation: 'worker-mcp.authorize', intent, placement, applicationAccess }
@@ -44,6 +44,34 @@ function fixture() {
   return { relay, principal, binding, request, connection, forward, query }
 }
 describe('Main worker MCP relay with original binding doubles and real worker scope policy', () => {
+  it('does not infer native mutation permission from a valid application lease', async () => {
+    const f = fixture()
+    await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',
+      nativeSessionId: 'original-session', turnId: 'original-turn' }, f.connection)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_UNAVAILABLE' })
+    expect(f.forward).not.toHaveBeenCalled()
+  })
+  it('denies a completed reviewer even with a valid scoped application lease', async () => {
+    const authorize = vi.fn(async () => {}), f = fixture({ authorize })
+    f.binding.purpose = 'reviewer'; f.binding.execution_state = 'completed'
+    await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',
+      nativeSessionId: 'original-session', turnId: 'original-turn' }, f.connection)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_DENIED' })
+    expect(authorize).not.toHaveBeenCalled()
+  })
+  it.each(['create', 'append', 'seal', 'publish'] as const)('requires the mounted original authority for each %s operation and retry', async outputOperation => {
+    const authorize = vi.fn(async () => {})
+    const f = fixture({ authorize })
+    const request = { ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation,
+      nativeSessionId: 'original-session', turnId: 'original-turn' }
+    for (let i = 0; i < 2; i++) expect(await f.relay.handle(request, f.connection)).toMatchObject({
+      outputOperation, nativeSessionId: request.nativeSessionId, turnId: request.turnId,
+    })
+    expect(authorize).toHaveBeenCalledTimes(2)
+    authorize.mockRejectedValueOnce(new Error('permission withdrawn'))
+    await expect(f.relay.handle(request, f.connection)).rejects.toThrow('permission withdrawn')
+    expect(f.forward).not.toHaveBeenCalled()
+    expect(f.query.mock.calls.at(-1)?.[0]).toBe('rollback')
+  })
+
   it('admits a complete workflow scope without granting the worker Operator policy access', async () => {
     const f = fixture()
     expect(isAuthorized(f.principal, 'interactions:read', { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run' })).toBe(false)
