@@ -14,6 +14,8 @@ function guardianFixture(childAvailable = true, observationWriteFails = false) {
   const ipc: unknown[] = []
   const flushed: (() => void)[] = []
   const signals: unknown[] = []
+  const kills: string[] = []
+  const timers: Array<{ callback(): void; delay: number }> = []
   const process = Object.assign(new EventEmitter(), {
     pid: 501, connected: true, getuid: () => 1000, kill: (...args: unknown[]) => { signals.push(args); return true },
     exit: () => undefined, send: (value: unknown, callback?: () => void) => {
@@ -42,7 +44,11 @@ function guardianFixture(childAvailable = true, observationWriteFails = false) {
       if (value === undefined) throw new Error(`Missing fixture record ${path}`)
       return value
     },
-    writeFileSync: (file: number | string, value: string) => records.set(typeof file === 'number' ? descriptors.get(file)! : file, value),
+    writeFileSync: (file: number | string, value: string) => {
+      const path = typeof file === 'number' ? descriptors.get(file)! : file
+      if (path.endsWith('/cgroup.kill')) kills.push(value)
+      records.set(path, value)
+    },
     linkSync: (from: string, to: string) => {
       if (observationWriteFails && /\/provider(?:-exit)?\.json$/.test(to)) throw new Error('Passive storage unavailable')
       if (records.has(to)) throw new Error('EEXIST')
@@ -60,9 +66,10 @@ function guardianFixture(childAvailable = true, observationWriteFails = false) {
     if (module === 'node:path') return { join: (...parts: string[]) => parts.join('/').replaceAll('//', '/'), dirname: (path: string) => path.slice(0, path.lastIndexOf('/')) || '/', resolve: (...parts: string[]) => parts.join('/').replace('/./', '/').replaceAll('//', '/'), parse: () => ({ root: '/' }), sep: '/' }
     throw new Error(module)
   }
-  runInNewContext(NATIVE_GUARDIAN_SOURCE, { require: requireFixture, process, Buffer, setTimeout: () => undefined })
+  runInNewContext(NATIVE_GUARDIAN_SOURCE, { require: requireFixture, process, Buffer,
+    setTimeout: (callback: () => void, delay: number) => timers.push({ callback, delay }) })
   process.emit('message', { operation: 'start', directory: '/private', binary: 'actual-cli', args: ['private-argument'], cwd: '/workspace', environment: { SECRET: 'private-secret' } })
-  return { records, native, ipc, signals, flushed }
+  return { records, native, ipc, signals, flushed, kills, timers, process }
 }
 
 describe('guardian actual child observation receipts', () => {
@@ -78,8 +85,10 @@ describe('guardian actual child observation receipts', () => {
     expect(f.ipc).toHaveLength(3)
     expect(f.ipc[2]).toMatchObject({ operation: 'native_exit', guardian: { pid: 501, startTicks: '100' }, nativePid: 902, exitCode: 0, exitSignal: null })
     expect(f.signals).toEqual([])
+    expect(f.kills).toEqual([])
     f.flushed[0]!()
-    expect(f.signals).toEqual([[-501, 'SIGTERM']])
+    expect(f.kills).toEqual(['1'])
+    expect(f.timers).toEqual([])
   })
   it('keeps a disappeared-before-capture child uncertain and never substitutes the guardian PID', () => {
     const f = guardianFixture(false)
@@ -99,7 +108,23 @@ describe('guardian actual child observation receipts', () => {
     expect(f.ipc).toHaveLength(1)
     expect(f.ipc[0]).toMatchObject({ operation: 'native_exit', nativePid: 902, exitCode: 7, exitSignal: null })
     expect(f.signals).toEqual([])
+    expect(f.kills).toEqual([])
     f.flushed[0]!()
+    expect(f.kills).toEqual(['1'])
+    expect(f.timers).toEqual([])
+  })
+  it('retains the one-second grace period for cancellation while the provider is running', () => {
+    const f = guardianFixture()
+    f.process.emit('SIGTERM')
     expect(f.signals).toEqual([[-501, 'SIGTERM']])
+    expect(f.kills).toEqual([])
+    expect(f.timers).toHaveLength(1)
+    expect(f.timers[0]!.delay).toBe(1000)
+    f.native.emit('exit', null, 'SIGTERM')
+    f.flushed[0]!()
+    expect(f.kills).toEqual([])
+    expect(f.timers).toHaveLength(1)
+    f.timers[0]!.callback()
+    expect(f.kills).toEqual(['1'])
   })
 })
