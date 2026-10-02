@@ -1,0 +1,189 @@
+import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
+import { ArtifactAttemptSchema, type ArtifactAttempt, type ArtifactAuthority, type ArtifactEdgeBinding } from '@graphql/contracts/artifact-edges'
+import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
+import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
+import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt, type TransferContext } from '@graphql/contracts/byte-transfer'
+import type { ArtifactPublicationAuthority, AcceptedArtifactPublication } from '../../files/distributed/publication.js'
+import type { AcceptedArtifactAttemptFence } from '../../files/distributed/authorization.js'
+import { bindingIdentity, isMutation } from '../../files/tools/context.js'
+import type { AuthorizedFileCaller, FileToolContext } from '../../files/tools/types.js'
+import type { FileQuery } from '../../files/repository.js'
+import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
+import { requireAuthorization } from '../../access/policy.js'
+import { readDispatchIntent, readAcceptedPlacement, readNativePlacement } from '../../placement/persistence.js'
+import { readReconciledDispatchIntent } from './persistence.js'
+import type { ExecutionRunAuthorityPort } from '../../placement/executionAuthority.js'
+import type { AgentPlacementProducer } from '../../placement/agentProducer.js'
+import { assertDeviceHostInstallation } from '../../devices/hostAuthorization.js'
+import { withExclusiveGraphConnection } from '../../run-graph/connection.js'
+import { readNativeArtifactOutput } from './nativeArtifactOutputPostgres.js'
+import { fileScopeIdentity } from '../../files/requests.js'
+import { codexChatFileTools } from '../../harnesses/codexFiles/declarations.js'
+import { DomainError } from '../../errors.js'
+
+export interface NativeArtifactAuthorityPorts {
+  locations: ExecutionRunAuthorityPort
+  producer: Pick<AgentPlacementProducer, 'assertPinsCurrent'>
+}
+const denied = (): never => { throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original accepted artifact attempt or native authority is unavailable.', 403) }
+/** Shared SQL-only accepted attempt fence; consumer need not have launched a native session. */
+async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPorts, raw: ArtifactAttempt, sql: FileQuery, grant?: ArtifactAuthority) {
+  const attempt = ArtifactAttemptSchema.parse(raw)
+  const original = await readDispatchIntent(sql, attempt.executionId)
+  const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
+  const placement = intent && await readAcceptedPlacement(sql, intent.runId, intent.nodeId)
+  if (!intent || !placement || intent.mainId !== mainId || placement.mainId !== mainId || intent.runId !== attempt.runId
+    || intent.nodeId !== attempt.nodeId || intent.attemptId !== attempt.attemptId || intent.bindingHash !== attempt.placementHash
+    || placement.bindingHash !== attempt.placementHash || placement.payload.kind !== 'agent') return denied()
+  const row = (await sql.query<{ execution: unknown; configuration: unknown; workspace_id: string; workflow_id: string;
+    authorization_principal_id: string; stopped: boolean }>(`select e.record as execution,c.record as configuration,r.workspace_id,r.workflow_id,
+      r.record->>'authorizationPrincipalId' as authorization_principal_id,r.stop_requested_at is not null as stopped
+    from harness_executions e join runs r on r.id=e.run_id
+    join agent_configuration_versions c on c.id=e.record->>'agentConfigurationVersionId' and c.agent_id=e.agent_id
+    where e.id=$1 and e.run_id=$2 for share of e,r,c`, [attempt.executionId, attempt.runId])).rows[0]
+  if (!row || row.workspace_id !== attempt.workspaceId || row.workflow_id !== attempt.workflowId) return denied()
+  const execution = HarnessExecutionSchema.parse(row.execution), configuration = AgentConfigurationVersionSchema.parse(row.configuration)
+  if (execution.id !== attempt.executionId || execution.runId !== attempt.runId || execution.workflowNodeId !== attempt.nodeId
+    || execution.attempt !== intent.technicalAttempt || execution.agentConfigurationVersionId !== placement.payload.agentConfigurationVersionId
+    || execution.agentId !== placement.payload.agentId || configuration.id !== execution.agentConfigurationVersionId
+    || configuration.agentId !== execution.agentId || configuration.workspaceId !== attempt.workspaceId) return denied()
+  const principal = await readLiveManagementPrincipal(sql, row.authorization_principal_id)
+  await ports.locations.revalidateRunAuthorization(principal.id, attempt.workspaceId, attempt.workflowId, sql, true)
+  await ports.producer.assertPinsCurrent(sql, placement, principal, attempt.workspaceId)
+  const registration = await assertDeviceHostInstallation(sql, placement.hostRef, placement.registration?.workerInstallationId ?? placement.mainInstallationId)
+  if (placement.registration && (!registration || registration.keyRevision !== placement.registration.keyRevision
+    || registration.authorizationRevision !== placement.registration.authorizationRevision)) return denied()
+  if (grant && (grant.grantId !== intent.owner.grantId || grant.grantRevision !== intent.owner.epoch)) return denied()
+  const live = await sql.query(`select 1 from execution_dispatch_owner_grants
+    where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked for share`,
+  [attempt.executionId, intent.operationId, intent.owner.grantId, intent.owner.epoch])
+  if (live.rowCount !== 1) return denied()
+  return { intent, placement, execution, configuration, principal, stopped: row.stopped }
+}
+
+/** Current grants plus original DB-native evidence. No provider IO or credential issuance. */
+export class PostgresArtifactPublicationAuthority implements ArtifactPublicationAuthority {
+  constructor(private readonly mainId: string, private readonly pool: pg.Pool, private readonly ports: NativeArtifactAuthorityPorts) {}
+  authorize(accepted: AcceptedArtifactPublication, query?: FileQuery): Promise<AuthorizedFileCaller> {
+    return query ? this.locked(accepted, query) : withExclusiveGraphConnection(this.pool, connection => connection.transaction(sql => this.locked(accepted, sql)))
+  }
+  /** Resolves an already admitted workflow conversation. It never creates a chat or forks a native session. */
+  resolveWorkflowContext(attempt: ArtifactAttempt, transferContext: TransferContext, query?: FileQuery): Promise<AcceptedArtifactPublication> {
+    const resolve = async (sql: FileQuery): Promise<AcceptedArtifactPublication> => {
+      const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql)
+      if (current.configuration.harness.harness !== 'codex' || !current.execution.nativeSessionId) return denied()
+      const conversation = await sql.query<{ id: string }>(`select id from operator_conversations where kind='agent' and deleted_at is null
+        and workspace_id=$1 and workflow_id=$2 and agent_id=$3 and origin_run_id=$4 and origin_execution_id=$5
+        and native_session_id=$6 and agent_configuration_version_id=$7 and harness='codex'
+        and record #>> '{origin,sourceNativeSessionId}'=$6
+        and record->>'workingDirectory'=$8 and record->>'runtimeDirectory'=$9 for share`,
+      [attempt.workspaceId, attempt.workflowId, current.execution.agentId, attempt.runId, attempt.executionId,
+        current.execution.nativeSessionId, current.configuration.id, current.execution.workingDirectory, current.execution.runtimeDirectory])
+      if (conversation.rowCount !== 1) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE',
+        'The original workflow session has no exact admitted file conversation.', 409)
+      const row = (await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share', [current.intent.operationId])).rows[0]
+      const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
+      if (!receipt?.native?.turnId) return denied()
+      const context: FileToolContext = { ownerPrincipalId: current.principal.id,
+        scope: { kind: 'temporary', chat: { kind: 'agent', conversationId: conversation.rows[0]!.id,
+          workspaceId: attempt.workspaceId, workflowId: attempt.workflowId, agentId: current.execution.agentId,
+          runId: attempt.runId, executionId: attempt.executionId } },
+        nativeSessionId: current.execution.nativeSessionId, turnId: receipt.native.turnId,
+        allowMutation: current.configuration.harness.sandbox === 'workspace-write', allowedTools: codexChatFileTools(current.configuration.harness) }
+      const accepted = { attempt: structuredClone(attempt), transferContext: structuredClone(transferContext), context }
+      await this.locked(accepted, sql)
+      return accepted
+    }
+    return query ? resolve(query) : withExclusiveGraphConnection(this.pool, connection => connection.transaction(resolve))
+  }
+  private async locked(accepted: AcceptedArtifactPublication, sql: FileQuery): Promise<AuthorizedFileCaller> {
+    const current = await acceptedAttempt(this.mainId, this.ports, accepted.attempt, sql)
+    const { context, transferContext: transfer } = accepted, scope = context.scope.chat
+    if (current.placement.hostRef.kind !== 'device' || !current.placement.registration || scope.kind !== 'agent'
+      || scope.workspaceId !== accepted.attempt.workspaceId || scope.workflowId !== accepted.attempt.workflowId
+      || scope.runId !== accepted.attempt.runId || scope.executionId !== accepted.attempt.executionId || scope.agentId !== current.execution.agentId
+      || transfer.mainId !== this.mainId || transfer.deviceId !== current.placement.hostRef.deviceId
+      || transfer.workerInstallationId !== current.placement.registration.workerInstallationId
+      || transfer.keyRevision !== current.placement.registration.keyRevision || transfer.authorizationRevision !== current.placement.registration.authorizationRevision) return denied()
+    const principal = await readLiveManagementPrincipal(sql, context.ownerPrincipalId)
+    requireAuthorization(principal, 'agent_chat:read', { workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId })
+    // A broad reader cannot impersonate the original native publisher.
+    if (principal.id !== current.principal.id) {
+      const sender = await sql.query(`select 1 from run_authority_principals where principal_id=$1 and run_id=$2 and caller_principal_id=$3 for share`,
+        [current.principal.id, accepted.attempt.runId, principal.id])
+      if (sender.rowCount !== 1) return denied()
+    }
+    const conversation = await sql.query(`select id from operator_conversations where id=$1 and kind='agent' and deleted_at is null
+      and workspace_id=$2 and workflow_id=$3 and agent_id=$4 and origin_run_id=$5 and origin_execution_id=$6
+      and native_session_id=$7 and agent_configuration_version_id=$8 and harness=$9
+      and record #>> '{origin,sourceNativeSessionId}'=$7
+      and record->>'workingDirectory'=$10 and record->>'runtimeDirectory'=$11 for share`,
+    [scope.conversationId, scope.workspaceId, scope.workflowId, scope.agentId, scope.runId, scope.executionId,
+      context.nativeSessionId, current.configuration.id, current.configuration.harness.harness,
+      current.execution.workingDirectory, current.execution.runtimeDirectory])
+    if (conversation.rowCount !== 1) return denied()
+    const originRow = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share', [current.intent.operationId])).rows[0]
+    const origin = originRow && DeviceConnectionIdentitySchema.parse(originRow.connection)
+    if (!origin || origin.mainId !== transfer.mainId || origin.deviceId !== transfer.deviceId
+      || origin.workerInstallationId !== transfer.workerInstallationId || origin.keyRevision !== transfer.keyRevision
+      || origin.authorizationRevision !== transfer.authorizationRevision) return denied()
+    const session = (await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1 for share', [accepted.attempt.executionId])).rows[0]
+    const receiptRow = (await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share', [current.intent.operationId])).rows[0]
+    const receipt = receiptRow && RemoteOperationReceiptSchema.parse(receiptRow.receipt)
+    const reference = session && NativeSessionReferenceSchema.parse(session.reference)
+    if (!reference || !receipt || !isDeepStrictEqual(receipt.intent, current.intent) || reference.harness !== current.configuration.harness.harness
+      || !receipt.native?.turnId || receipt.native.sessionId !== reference.nativeSessionId || context.nativeSessionId !== reference.nativeSessionId
+      || current.execution.nativeSessionId !== reference.nativeSessionId || context.nativeMessageId !== undefined || context.turnId !== receipt.native.turnId
+      || receipt.connection.mainId !== transfer.mainId || receipt.connection.deviceId !== transfer.deviceId
+      || receipt.connection.workerInstallationId !== transfer.workerInstallationId || receipt.connection.keyRevision !== transfer.keyRevision
+      || receipt.connection.authorizationRevision !== transfer.authorizationRevision) return denied()
+    if (context.messageId) {
+      const message = await sql.query(`select t.message_id from operator_conversation_turns t
+        join operator_conversation_messages m on m.id=t.message_id and m.conversation_id=t.conversation_id
+        where t.conversation_id=$1 and t.message_id=$2 and t.native_turn_id=$3 and t.payload->>'ownerPrincipalId'=$4 for share of t,m`,
+      [scope.conversationId, context.messageId, context.turnId, principal.id])
+      if (message.rowCount !== 1) return denied()
+    }
+    const harness = current.configuration.harness
+    const canWrite = harness.harness === 'opencode' ? harness.nativeAgent !== 'plan' : harness.sandbox === 'workspace-write'
+    if (context.allowMutation && !canWrite || context.allowedTools.some(tool => isMutation(tool) && (!context.allowMutation || !canWrite))
+      || harness.harness === 'codex' && context.allowedTools.some(tool => !codexChatFileTools(harness).includes(tool))) return denied()
+    if (context.allowMutation) requireAuthorization(principal, 'agent_chat:write', {
+      workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId })
+    return { context: structuredClone(context), principal, binding: bindingIdentity(context) }
+  }
+  async assertSourceLive(accepted: AcceptedArtifactPublication, raw: VerifiedTransferReceipt, query: FileQuery): Promise<void> {
+    await this.locked(accepted, query)
+    const receipt = VerifiedTransferReceiptSchema.parse(raw), intent = receipt.intent
+    const current = await acceptedAttempt(this.mainId, this.ports, accepted.attempt, query)
+    const source = current.placement.source
+    if (current.stopped || !('kind' in source) || source.kind !== 'pending' || intent.mainId !== this.mainId || intent.deviceId !== accepted.transferContext.deviceId
+      || intent.workerInstallationId !== accepted.transferContext.workerInstallationId || intent.keyRevision !== accepted.transferContext.keyRevision
+      || intent.authorizationRevision !== accepted.transferContext.authorizationRevision || intent.executionId !== accepted.attempt.executionId
+      || intent.operationId !== current.intent.operationId || intent.attemptId !== accepted.attempt.attemptId || intent.placementHash !== accepted.attempt.placementHash
+      || intent.rootId !== source.rootId || intent.rootBindingRevision !== source.bindingRevision || intent.direction !== 'to-main' || intent.byteClass !== 'artifact'
+      || receipt.transferId !== intent.transferId || receipt.sha256 !== intent.sha256 || receipt.byteSize !== intent.byteSize) return denied()
+    const native = await readNativePlacement(query, accepted.attempt.executionId)
+    if (!native || native.acceptedBindingHash !== accepted.attempt.placementHash) return denied()
+  }
+}
+export class PostgresAcceptedArtifactAttemptFence implements AcceptedArtifactAttemptFence {
+  constructor(private readonly mainId: string, private readonly ports: NativeArtifactAuthorityPorts) {}
+  async assertCurrent(attempt: ArtifactAttempt, authority: ArtifactAuthority, query: FileQuery): Promise<void> {
+    const principal = await readLiveManagementPrincipal(query, authority.principalId)
+    requireAuthorization(principal, 'agent_chat:read', { workspaceId: attempt.workspaceId, workflowId: attempt.workflowId, runId: attempt.runId })
+    const current = await acceptedAttempt(this.mainId, this.ports, attempt, query, authority)
+    if (principal.id !== current.principal.id) {
+      const sender = await query.query(`select 1 from run_authority_principals where principal_id=$1 and run_id=$2 and caller_principal_id=$3 for share`,
+        [current.principal.id, attempt.runId, principal.id])
+      if (sender.rowCount !== 1) return denied()
+    }
+  }
+  async assertPublishedOutput(binding: ArtifactEdgeBinding, query: FileQuery): Promise<void> {
+    const original = await readNativeArtifactOutput(query, this.mainId, binding.producer, binding.outputKey)
+    if (!original || !isDeepStrictEqual(original.publication, binding.publication) || !isDeepStrictEqual(original.pins, binding.pins)
+      || fileScopeIdentity(original.scope) !== fileScopeIdentity(binding.scope) || original.publication.ownerPrincipalId !== binding.sender.principalId) return denied()
+  }
+}
