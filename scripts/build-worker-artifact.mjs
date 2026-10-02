@@ -69,7 +69,7 @@ for (const source of Object.keys(built.metafile.inputs)) {
 for (const entry of Object.values(built.metafile.outputs)) for (const dependency of entry.imports) {
   if (dependency.external && !isBuiltin(dependency.path) && dependency.path !== 'sharp') throw new Error(`Unbundled dependency: ${dependency.path}`);
 }
-for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs', 'setup.mjs', 'companion.mjs', 'setupInput.mjs', 'companionServer.mjs', 'companionService.mjs']) {
+for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs', 'setup.mjs', 'companion.mjs', 'setupInput.mjs', 'companionServer.mjs', 'companionService.mjs', 'harnessPath.mjs']) {
   await writeFile(join(output, 'src', name), snapshotSource(`apps/worker/src/${name}`), { mode: 0o600 });
 }
 await mkdir(join(output, 'artifacts'));

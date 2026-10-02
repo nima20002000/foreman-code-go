@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
+import { workerPath } from './harnessPath.mjs';
 import { requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
 import { createCompanionService } from './companionService.mjs';
 
@@ -11,7 +11,7 @@ function cliCommand(stateDirectory, command, input) {
   return new Promise((resolve, reject) => {
     const args = [fileURLToPath(new URL('./cli.mjs', import.meta.url)), command, '--state', stateDirectory];
     if (command === 'pair') args.push('--enrollment-stdin');
-    const child = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'], env: { HOME: process.env.HOME, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } });
+    const child = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'], env: { HOME: process.env.HOME, PATH: workerPath(process.env.HOME ?? '', process.execPath), XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } });
     let output = '', error = '', size = 0;
     const timer = setTimeout(() => child.kill('SIGTERM'), 30_000);
     const collect = (chunk, stderr) => {

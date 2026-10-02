@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +11,13 @@ test('packaged GUI serves the actual CSP page and invokes real read-only doctor 
   assert.equal((await stat(join(artifact, 'install'))).mode & 0o777, 0o700);
   const { createCompanionServer } = await import(pathToFileURL(join(artifact, 'src/companionServer.mjs')).href);
   const state = await mkdtemp(join(tmpdir(), 'packaged-companion-'));
+  const home = await mkdtemp(join(tmpdir(), 'packaged-harness-home-'));
+  const bin = join(home, '.nvm/versions/node/v22.17.1/bin');
+  await mkdir(bin, { recursive: true });
+  await writeFile(join(bin, 'codex'), '#!/usr/bin/env node\nconsole.log(process.version)', { mode: 0o700 });
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  t.after(() => { process.env.HOME = previousHome; return rm(home, { recursive: true, force: true }); });
   const gui = await createCompanionServer({ stateDirectory: state });
   t.after(() => { gui.close(); return rm(state, { recursive: true, force: true }); });
   const page = await fetch(gui.origin), html = await page.text();
@@ -25,6 +32,7 @@ test('packaged GUI serves the actual CSP page and invokes real read-only doctor 
   const status = await (await post('/api/status')).json();
   assert.equal(status.versions.commit, manifest.commit);
   assert.equal(status.pairing, 'unpaired');
+  assert.equal(status.executables.codex, true);
   assert.equal(status.service.active, false);
   assert.deepEqual(status.compatibility.required, manifest.target);
   assert.deepEqual(status.compatibility.actual, Object.fromEntries(['os', 'osRelease', 'arch', 'libc', 'node'].map((key) => [key, status.versions[key]])));

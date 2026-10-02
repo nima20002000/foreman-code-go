@@ -14,7 +14,7 @@ async function fixture(t) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   const home = join(directory, 'home'), artifact = join(directory, 'artifact');
   await mkdir(home); await mkdir(join(artifact, 'src'), { recursive: true });
-  const content = 'console.log(JSON.stringify(process.argv.slice(2)))';
+  const content = 'console.log(JSON.stringify(process.argv.includes("capture-env") ? { path: process.env.PATH, node: process.execPath, nodeOptions: process.env.NODE_OPTIONS ?? null } : process.argv.slice(2)))';
   await writeFile(join(artifact, 'src/cli.mjs'), content);
   await writeFile(join(artifact, 'src/companion.mjs'), content);
   const manifest = { format: 1, version: '1.0.0', protocolVersion: 1, identityFormat: 1, commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64), packageManager: 'pnpm@11.27.0', target: facts,
@@ -47,4 +47,19 @@ test('setup rejects checksum and nonprivate identity storage before publishing a
   await assert.rejects(readFile(join(f.home, '.local/lib/graphql-worker/graphql-companion')), { code: 'ENOENT' });
   const state = join(f.home, '.local/state/graphql-worker'); await chmod(state, 0o755);
   await assert.rejects(setupCompanion(f), /private_directory_required/);
+});
+
+test('generated launcher discovers NVM harnesses and filters the invoking environment', async (t) => {
+  const f = await fixture(t), bin = join(f.home, '.nvm/versions/node/v22.17.1/bin');
+  await mkdir(bin, { recursive: true });
+  await writeFile(join(bin, 'codex'), '#!/usr/bin/env node\nconsole.log(process.version)', { mode: 0o700 });
+  const result = await setupCompanion(f);
+  const run = spawnSync(result.launcher, ['capture-env'], { env: { PATH: ':relative:/untrusted', NODE_OPTIONS: '--invalid-option' }, encoding: 'utf8', timeout: 5000 });
+  assert.equal(run.status, 0, run.stderr);
+  const environment = JSON.parse(run.stdout);
+  assert.equal(environment.node, process.execPath);
+  assert.equal(environment.nodeOptions, null);
+  assert.ok(environment.path.split(':').includes(bin));
+  assert.ok(!environment.path.includes('relative'));
+  assert.match(await readFile(result.proposedService, 'utf8'), new RegExp(bin.replaceAll('.', '\\.')));
 });

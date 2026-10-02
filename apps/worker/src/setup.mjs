@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path';
 import { installVersion } from './installation.mjs';
 import { requirePrivateDirectory } from './diagnostics.mjs';
 import { renderUserService } from './service.mjs';
+import { workerPath } from './harnessPath.mjs';
 
 async function publish(path, content, mode) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -17,7 +18,7 @@ async function publish(path, content, mode) {
 export async function setupCompanion({ home, node, artifact, approvedManifestSha256, facts, updatePolicy, serviceTemplate }) {
   const root = join(home, '.local/lib/graphql-worker');
   const state = join(home, '.local/state/graphql-worker');
-  const path = `${dirname(node)}:/usr/bin:/bin`;
+  const path = workerPath(home, node);
   const unit = renderUserService(serviceTemplate, { node, app: root, state, home, path });
   await mkdir(state, { recursive: true, mode: 0o700 });
   await requirePrivateDirectory(state);

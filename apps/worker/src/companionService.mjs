@@ -7,6 +7,7 @@ import { userInfo } from 'node:os';
 import { readInstalledRelease } from './installation.mjs';
 import { hostFacts, WorkerError } from './diagnostics.mjs';
 import { renderUserService } from './service.mjs';
+import { workerPath } from './harnessPath.mjs';
 
 const execute = promisify(execFile);
 const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -15,7 +16,7 @@ export function createCompanionService({ home, stateDirectory, node = process.ex
   const root = join(home, '.local/lib/graphql-worker');
   const state = join(home, '.local/state/graphql-worker');
   const unitPath = join(home, '.config/systemd/user/graphql-worker.service');
-  const environment = { HOME: home, PATH: `${dirname(node)}:/usr/bin:/bin`, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS };
+  const environment = { HOME: home, PATH: workerPath(home, node), XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS };
   async function plan() {
     if (stateDirectory !== state) throw new WorkerError('installation_invalid');
     const release = await readInstalledRelease({ root, facts: await factsProvider(home, [root, state]), expected: { protocolVersion: 1, identityFormat: 1 } });
