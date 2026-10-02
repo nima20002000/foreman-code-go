@@ -29,12 +29,25 @@ stores, external Claude boundaries, live services or network settings changed.
 
 Required production inputs are the actual `AcceptedTransferAuthority`, current
 W07 binding getter, actual canonical `ByteTransferPort`, privately installed root,
-and shared external quota. Source producer supplies `ImmutableTransferSource`;
+shared external quota, and REQUIRED `ownership: RsyncWriterOwnership` and
+`writers: RsyncTransferWriters`. HRT supplies one ownership registry per installed
+root, shared with its writer and lifecycle supervisor. The factory checks that
+registry against the staging root and obtains ONE `ownership.store()` adapter
+for BOTH source and receiver stores. There is no absent-owner default.
+Source producer supplies `ImmutableTransferSource`;
 it must be bound to exact accepted snapshots/sealed outputs. The leaf writes at
 most one existing negotiated chunk at a time, fsyncs, and calls the tested private
-store to seal/verify SHA256/length. It does not guess paths inside native processes.
+store to seal/verify SHA256/length. Reservation, producer reads, writes, unlink
+and fsync run inside a `source-materializer` access lease. Its directory and
+`.input` handles are attached before bytes; stop/drain waits for physical IO and
+descriptor closure. A bounded stop cannot discard pending IO or release quota.
+It does not guess paths inside native processes.
 
-Main's selection callback returns `{backend:'rsync',check,endpoint}`. `check` is
+Main's selection callback returns
+`{backend:'rsync',check,endpoint,nodeBinary,entryPoint}`. The two wrapper paths are
+REQUIRED protected installed facts, verified/pinned by the selection provider;
+they replace any path fields returned by the writer port. They are rechecked
+through transfer authorization and never accepted through control RPC. `check` is
 fresh (at most 60s) `TrustedConnectionCheck` from existing setup; both persisted
 consent and live registration must match exact intent IDs/revisions, ready probe
 host fingerprint and OS user must match consent, and protected endpoint/binary
@@ -43,6 +56,15 @@ explicit; missing or revoked setup is an error, never a fallback attempt. This
 leaf currently supports the tested SSH port 22/hostname/user forms; unsupported
 endpoint forms fail closed. Main uses the previous backend's actual binary pin
 and >=3.5.0 security checks. Owner consent never replaces per-agent transfer grants.
+
+`writers.local(intent,command,signal)` captures the actual protected local owner
+and command pin. `writers.remote(intent,signal)` prepares the original server
+reference; `writers.activate(intent,reference,signal)` admits its actual waiting
+wrapper through W07. After preparation, executor and activation run concurrently.
+`writers.quiescent(intent,signal)` must positively join BOTH original hosts before
+receiver verification/unlock. `writers.stop(intent,signal)` must attempt BOTH
+original process scopes. An uncertain stop or closure retains source and receiver
+handles, locks and allocations; a successful local exit is insufficient.
 
 ## Shared quota interface for HRT
 
@@ -87,7 +109,8 @@ Root's shared strict request (`RsyncControlRequestSchema`):
 ```ts
 { kind: 'rsync-stage-v1', transferId: uuid,
   method: 'source-prepare' | 'source-verify' | 'source-close' |
-    'receiver-prepare' | 'receiver-verify' | 'receiver-interrupt' | 'acknowledge' }
+    'receiver-prepare' | 'receiver-verify' | 'receiver-interrupt' | 'acknowledge' |
+    'writer-prepare' | 'writer-activate' | 'writer-status' | 'writer-stop' }
 ```
 
 Response repeats exact kind/method/transferId. `receiver-verify` requires existing
@@ -96,6 +119,14 @@ and response forbids binary payload. The leaf imports Root's shared request,
 response and request type from `@graphql/contracts/byte-transfer`; it defines no
 local wire parser or compatibility default. Root owns shared schema exports and
 their consumer/discovery tests.
+
+The CONTRACTS installed W07 handler intercepts all four writer methods before
+forwarding staging controls to this leaf. `writer-prepare` returns the exact
+original `{transferId,ownerId,ownerDigest}` in the strict response envelope.
+Activation/status/stop respond only after their actual ownership operation.
+The staging-only handler rejects writer methods; they cannot fall through to
+acknowledgement. Activation revalidates original accepted authority after actual
+WAITING and before grant, without a SQL transaction spanning that wait.
 
 The existing byte-transfer-v1/version1 descriptor has no submethod capabilities;
 its presence alone cannot certify these controls. Approved discovery is a
@@ -137,6 +168,9 @@ actual persisted source/output/acknowledgement/cleanup ports, explicit selection
 HTTP/MCP authority/readback, production publication/edge flow and coordinated
 actual two-host acceptance. Missing ports remain unavailable, not test success.
 
-Final leaf verification: 16 focused tests, API `tsc --noEmit` and owned ESLint
-passed against Root's shared schemas. Contracts prerequisite build passed.
-Aggregate log: `/tmp/graphql-rsync-production-final-check.log`.
+The previous production leaf checkpoint recorded 16 focused tests, API types and
+owned lint against the shared schemas. Current writer-port verification also
+covers captured producer IO/FDs, concurrent activation, both-host closure and
+retained holds, protected wrapper selection and rejected writer-handler bypass.
+Exact fresh check counts and commits are in the WRITER orchestration checkpoint;
+no full-suite, authenticated-MCP, SSH/native or physical acceptance is implied.

@@ -644,7 +644,7 @@ describe('cross-host rsync control boundary', () => {
         bootId: f.binding.bootId, connectionEpoch: f.binding.connectionEpoch })
       await expect(transport.stage(f.intent, context)).rejects.toThrow('remote server stop unconfirmed')
       expect(receiver.verify).not.toHaveBeenCalled(); expect(receiver.interrupt).not.toHaveBeenCalled()
-      expect(snapshot.close).toHaveBeenCalledOnce()
+      expect(snapshot.close).not.toHaveBeenCalled()
     } finally { await f.dispose() }
   })
 })

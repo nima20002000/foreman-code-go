@@ -235,14 +235,13 @@ export class RsyncStagingTransport {
       } }
     } finally {
       clearTimeout(deadline); clearInterval(poll); signal?.removeEventListener('abort', abort)
-      try {
-        if (writerPrepared && !completed) {
-          const cleanup = AbortSignal.timeout(5000)
-          await this.ports.writers!.stop(intent, cleanup)
-          await this.ports.writers!.quiescent(intent, cleanup)
-        }
-        await lease?.interrupt()
-      } finally { await snapshot?.close() }
+      if (writerPrepared && !completed) {
+        const cleanup = AbortSignal.timeout(5000)
+        await this.ports.writers!.stop(intent, cleanup)
+        await this.ports.writers!.quiescent(intent, cleanup)
+      }
+      try { await lease?.interrupt() }
+      finally { await snapshot?.close() }
     }
   }
 }
