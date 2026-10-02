@@ -88,12 +88,13 @@ function fixture() {
       grants: [{ actions: ['agent_chat:read', 'agent_chat:write'], scope: {} }], expires_at: new Date('2099-01-01T00:00:00.000Z'),
       revoked_at: state.revoked ? new Date() : null, delegated_from: null }]
     else if (text.includes('from execution_dispatch_owner_grants')) rows = state.grantLive ? [{}] : []
-    else if (text.startsWith('select 1 from runs r join harness_executions')) rows = !state.stopped && ['running', 'waiting'].includes(state.runState) ? [{}] : []
+    else if (text.startsWith('select 1 from runs r join harness_executions')) rows = !state.stopped && ['running', 'waiting'].includes(state.runState)
+      && args[4] === execution.workingDirectory && args[5] === execution.runtimeDirectory ? [{}] : []
     else if (text.startsWith('insert into operator_conversations')) {
       if (!state.conversation) { state.conversation = { id: args[0] as string, key: args[1] as string, record: JSON.parse(args[12] as string) }; rowCount = 1 }
     } else if (text.includes('from operator_conversations')) {
       const c = state.conversation
-      if (c && (!text.includes('and record=$13::jsonb') || c.id === args[0] && c.key === args[1] && JSON.stringify(c.record) === args[12])) rows = [{ id: c.id }]
+      if (c && (!text.includes('and record=$13::jsonb') || c.id === args[0] && c.key === args[1] && JSON.stringify(c.record) === args[12])) rows = [{ id: c.id, record: c.record }]
     } else if (text.includes('from remote_dispatch_origins')) rows = [{ connection: remote.connection }]
     else if (text.includes('from execution_native_sessions')) rows = [{ reference: session }]
     else if (text.includes('from remote_execution_receipts')) rows = [{ receipt: remote }]
@@ -113,7 +114,7 @@ function fixture() {
   vi.mocked(readAcceptedPlacement).mockResolvedValue(placement)
   vi.mocked(assertDeviceHostInstallation).mockResolvedValue({ keyRevision: 1, authorizationRevision: 1 } as NonNullable<Awaited<ReturnType<typeof assertDeviceHostInstallation>>>)
   const source = { evidence: { sourceKind: 'native_event' as const, sourceId: proof.proofId, sourceRevision: '1' }, sourceDigest: repeatDigest(persistedProof), semanticDigest: `sha256:${hash}` }
-  const retainNativeSource = vi.fn(async () => source)
+  const retainNativeSource = vi.fn(async (owner: unknown, proofId: string) => { void owner; void proofId; return source })
   vi.mocked(currentRunGraphPublication).mockReturnValue({ retainNativeSource } as unknown as ReturnType<typeof currentRunGraphPublication>)
   const authority = new PostgresArtifactPublicationAuthority(mainId, {} as pg.Pool,
     { locations: { revalidateRunAuthorization: async () => {} }, producer: { assertPinsCurrent: async () => {} } })
@@ -130,6 +131,68 @@ function fixture() {
     freshConnection: () => new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, owner.assertOwned) }
 }
 describe('genuine original workflow file-context admission', () => {
+  it('durably reads the first admission across two starts, later events, history and a reconstructed helper', async () => {
+    const t = fixture(), original = await t.connection.transaction(sql => t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer))
+    const receipt = structuredClone(t.state.receipt), conversation = structuredClone(t.state.conversation)
+    for (const type of ['turn.started', 'item.started', 'history'] as const) {
+      const input = { ...t.captureInput, source: type === 'history'
+        ? { type: 'history' as const, history: { events: [], pendingInteractions: [], nativeTurnId: 'original-turn' } }
+        : { type: 'event' as const, event: { executionId: t.execution.id, type, sequence: 2, occurredAt: t.configuration.createdAt,
+          payload: { threadId: t.proof.session.nativeSessionId, turnId: 'original-turn' } } } } as WorkflowNativeCaptureInput
+      const evidence = t.channel.capture.capture(input), capture = t.channel.verify.read(evidence)
+      const proof = { ...t.proof, proofId: `later-${type}`, original: capture.source, observedAt: capture.observedAt, lane: capture.lane }
+      const helper = new WorkflowNativeFileContextAdmission(t.mainId, t.ports)
+      expect(await t.freshConnection().transaction(sql => helper.resolveOrAdmitLocked(sql, evidence, proof, t.transfer))).toEqual(original)
+    }
+    expect(t.state.receipt).toEqual(receipt); expect(t.state.conversation).toEqual(conversation); expect(t.state.audits).toBe(1)
+    expect(t.retainNativeSource.mock.calls.every(call => call[1] === 'original-proof')).toBe(true)
+  })
+  it('recovers lost first commit ACK from persisted admission and genuine later start', async () => {
+    const t = fixture(); t.state.loseAck = true
+    await expect(t.connection.transaction(sql => t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer))).rejects.toThrow('ACK lost')
+    const input = { ...t.captureInput, source: { type: 'event' as const, event: {
+      executionId: t.execution.id, type: 'turn.started', sequence: 2, occurredAt: t.configuration.createdAt, payload: { turnId: 'original-turn' } } } }
+    const evidence = t.channel.capture.capture(input), capture = t.channel.verify.read(evidence)
+    const proof = { ...t.proof, proofId: 'notification-start', original: capture.source, observedAt: capture.observedAt, lane: capture.lane }
+    const original = structuredClone(t.state.receipt)
+    await t.freshConnection().transaction(sql => new WorkflowNativeFileContextAdmission(t.mainId, t.ports).resolveOrAdmitLocked(sql, evidence, proof, t.transfer))
+    expect(t.state.receipt).toEqual(original); expect(t.state.audits).toBe(1)
+  })
+  it('admits missed first start only from a genuine nonterminal history capture of the original turn', async () => {
+    const t = fixture(), input = { ...t.captureInput, source: { type: 'history' as const,
+      history: { events: [], pendingInteractions: [], nativeTurnId: 'original-turn' } } } as WorkflowNativeCaptureInput
+    const evidence = t.channel.capture.capture(input), capture = t.channel.verify.read(evidence)
+    const proof = { ...t.proof, proofId: 'history-proof', original: capture.source, observedAt: capture.observedAt, lane: capture.lane }
+    Object.assign(t.persistedProof, proof); t.source.sourceDigest = repeatDigest(proof)
+    await t.connection.transaction(sql => t.helper.resolveOrAdmitLocked(sql, evidence, proof, t.transfer))
+    expect(t.state.receipt?.result).toMatchObject({ proofId: 'history-proof', sourceDigest: repeatDigest(proof) })
+    expect(t.state.audits).toBe(1)
+  })
+  it.each(['original-proof', 'receipt', 'stopped', 'lane', 'closure', 'revoked', 'physical', 'directory'] as const)(
+    'fails closed when persisted first admission loses %s on later readback', async field => {
+      const t = fixture(); await t.admit()
+      if (field === 'original-proof') t.state.proofAvailable = false
+      if (field === 'receipt') t.state.receipt!.input_hash = 'changed'
+      if (field === 'stopped') t.state.stopped = true
+      if (field === 'lane') t.state.laneLive = false
+      if (field === 'closure') t.state.closureLive = false
+      if (field === 'revoked') t.state.revoked = true
+      if (field === 'physical') t.ports.assertPhysical.mockRejectedValueOnce(new Error('physical unavailable'))
+      if (field === 'directory') t.execution.workingDirectory = '/replacement'
+      await expect(t.connection.transaction(sql => t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer))).rejects.toThrow()
+      expect(t.state.audits).toBe(1)
+    })
+  it('rechecks existing context at commit and poisons even a caught replay denial', async () => {
+    const t = fixture(); await t.admit(); const receipt = structuredClone(t.state.receipt)
+    await expect(t.connection.transaction(async sql => {
+      await t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer)
+      t.state.stopped = true
+    })).rejects.toThrow()
+    expect(t.state.receipt).toEqual(receipt); expect(t.state.audits).toBe(1)
+    await expect(t.connection.transaction(async sql => {
+      await t.helper.resolveOrAdmitLocked(sql, t.evidence, t.proof, t.transfer).catch(() => undefined)
+    })).rejects.toMatchObject({ code: 'GRAPH_TRANSACTION_FAILED' })
+  })
   it('admits one namespaced conversation and exact native context in the capture transaction, then resolves it', async () => {
     const t = fixture(), accepted = await t.admit()
     expect(accepted.attempt).toEqual(t.attempt)
