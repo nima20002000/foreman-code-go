@@ -57,6 +57,7 @@
   "apps/api/src/modules/harnesses/process.ts",
   "apps/api/src/modules/harnesses/qualification/cleanup.ts",
   "apps/api/src/modules/harnesses/qualification/gate.ts",
+  "apps/api/src/modules/harnesses/qualification/identity.ts",
   "apps/api/src/modules/harnesses/qualification/profiles.ts",
   "apps/api/src/modules/harnesses/qualification/registry.ts",
   "apps/api/src/modules/harnesses/qualification/suites/checks.ts",
