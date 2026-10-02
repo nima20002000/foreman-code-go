@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BYTE_TRANSFER_POLICY as POLICY, TransferContextSchema, TransferIntentSchema,
   type TransferContext, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { nativeProcessExit } from '../harnesses/recovery/processRegistry.js'
+import type { RsyncProcessLaunch, RsyncRemoteWriter } from './rsyncWriterOwnership.js'
 import type { TransferAuthorization, TransferOperation } from './service.js'
 
 export const RSYNC_SSH_ARGS = Object.freeze(['-F', '/dev/null', '-o', 'BatchMode=yes', '-o',
@@ -14,7 +16,7 @@ export interface RsyncEndpoint {
   localRoot: string; remoteRoot: string
   localBinarySha256: string; remoteBinarySha256: string
 }
-export interface RsyncCommand { executable: string; args: string[] }
+export interface RsyncCommand { executable: string; args: string[]; owner?: RsyncProcessLaunch }
 export interface RsyncExecutor {
   run(command: RsyncCommand, signal: AbortSignal): Promise<string>
 }
@@ -35,7 +37,18 @@ export interface RsyncReceiverLease {
   /** Release writer lock, keep a bounded partial under original immutable identity/expiry. */
   interrupt(): Promise<void>
 }
+export interface RsyncTransferWriters {
+  /** Protected full W07 binding and binary pin captured BEFORE local executable dispatch. */
+  local(intent: TransferIntent, command: RsyncCommand, signal: AbortSignal): Promise<RsyncProcessLaunch>
+  /** Existing W07 prepare response identifies the actual one-use remote server reservation.
+   * Node/entrypoint are protected installed selection, never RPC-controlled paths. */
+  remote(intent: TransferIntent, signal: AbortSignal): Promise<RsyncRemoteWriter>
+  /** Both actual process trees, independently. A local child close does not prove remote closure. */
+  quiescent(intent: TransferIntent, signal: AbortSignal): Promise<void>
+  stop(intent: TransferIntent, signal: AbortSignal): Promise<void>
+}
 export interface RsyncStagingPorts {
+  writers?: RsyncTransferWriters
   source(intent: TransferIntent, path: string, signal: AbortSignal): Promise<RsyncSnapshot>
   /** Same authority/quota supervisor as fallback. Must reserve before transfer, reject competing writers,
    * journal immutable intent, enforce private root/no symlinks and cap partial retention by expiry.
@@ -56,15 +69,20 @@ export function validateRsyncEndpoint(input: RsyncEndpoint): RsyncEndpoint {
   if (input.localRoot === '/' || input.remoteRoot === '/') throw new Error('Private staging root required')
   return Object.freeze({ ...input })
 }
-export function rsyncCommand(endpoint: RsyncEndpoint, intent: TransferIntent): RsyncCommand {
+export function rsyncCommand(endpoint: RsyncEndpoint, intent: TransferIntent, remote?: RsyncRemoteWriter): RsyncCommand {
   endpoint = validateRsyncEndpoint(endpoint); intent = TransferIntentSchema.parse(intent)
   const toWorker = intent.direction === 'to-worker'
   const source = join(toWorker ? endpoint.localRoot : endpoint.remoteRoot, `${intent.transferId}.snapshot`)
   const destination = join(toWorker ? endpoint.remoteRoot : endpoint.localRoot, `${intent.transferId}.part`)
   const peer = `${endpoint.user}@${endpoint.host}:`
+  const remoteCommand = remote ? (() => {
+    safePath(remote.nodeBinary); safePath(remote.entryPoint); hash(remote.ownerDigest)
+    if (remote.transferId !== intent.transferId || !/^[a-f0-9-]{36}$/.test(remote.ownerId)) throw new Error('Invalid remote rsync owner')
+    return `${remote.nodeBinary} ${remote.entryPoint} --rsync-transfer ${intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`
+  })() : endpoint.remoteBinary
   return { executable: endpoint.localBinary, args: ['--protect-args', '--checksum', '--partial',
     '--partial-dir=.rsync-partial', '--no-whole-file', '--no-links', '--no-devices', '--no-specials',
-    '--timeout=30', `--max-size=${intent.byteSize}`, '--chmod=F600', `--rsync-path=${endpoint.remoteBinary}`,
+    '--timeout=30', `--max-size=${intent.byteSize}`, '--chmod=F600', `--rsync-path=${remoteCommand}`,
     '-e', ['/usr/bin/ssh', ...RSYNC_SSH_ARGS].join(' '), '--',
     toWorker ? source : peer + source, toWorker ? peer + destination : destination] }
 }
@@ -72,11 +90,19 @@ export function rsyncCommand(endpoint: RsyncEndpoint, intent: TransferIntent): R
 export class NodeRsyncExecutor implements RsyncExecutor {
   run(command: RsyncCommand, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted()
+    if (!command.owner && (command.args.includes('--partial') || command.args[0] === '--server')) throw new Error('Rsync byte subprocess owner unavailable')
     return new Promise((resolve, reject) => {
-      const child = spawn(command.executable, command.args, { shell: false, detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', LANG: 'C' } })
+      const child = command.owner
+        ? command.owner.ownership.spawnProcess(command.owner, command.executable, command.args, signal)
+        : spawn(command.executable, command.args, { shell: false, detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', LANG: 'C' } })
       let output = '', overflow = false, killTimer: ReturnType<typeof setTimeout> | undefined
+      let ownershipError: unknown
       const stop = () => {
+        if (command.owner) {
+          void command.owner.ownership.completeProcess(command.owner, AbortSignal.timeout(5000)).catch(error => { ownershipError = error })
+          return
+        }
         if (!child.pid) return
         try { process.kill(-child.pid, 'SIGTERM') } catch { /* already exited */ }
         killTimer ??= setTimeout(() => { try { process.kill(-child.pid!, 'SIGKILL') } catch { /* exited */ } }, 1000)
@@ -90,12 +116,20 @@ export class NodeRsyncExecutor implements RsyncExecutor {
       if (signal.aborted) stop()
       const cleanup = () => { clearTimeout(killTimer); signal.removeEventListener('abort', stop) }
       child.once('error', error => { cleanup(); reject(error) })
-      child.once('close', code => {
-        cleanup()
-        if (signal.aborted) reject(signal.reason ?? new Error('Rsync interrupted'))
-        else if (overflow) reject(new Error('Rsync diagnostic limit exceeded'))
-        else if (code !== 0) reject(new Error(`Rsync command failed (${code})`))
-        else resolve(output)
+      child.once('close', (code, exitSignal) => {
+        void (async () => {
+          cleanup()
+          if (command.owner) {
+            const outcome = nativeProcessExit(child, { exitCode: code, exitSignal })
+            await command.owner.ownership.completeProcess(command.owner, AbortSignal.timeout(5000))
+            code = outcome.exitCode
+          }
+          if (ownershipError) throw ownershipError
+          if (signal.aborted) reject(signal.reason ?? new Error('Rsync interrupted'))
+          else if (overflow) reject(new Error('Rsync diagnostic limit exceeded'))
+          else if (code !== 0) reject(new Error(`Rsync command failed (${code})`))
+          else resolve(output)
+        })().catch(reject)
       })
     })
   }
@@ -161,22 +195,28 @@ export class RsyncStagingTransport {
       checking = true
       void check().catch(error => controller.abort(error)).finally(() => { checking = false })
     }, 1000)
-    let snapshot: RsyncSnapshot | undefined, lease: RsyncReceiverLease | undefined
+    let snapshot: RsyncSnapshot | undefined, lease: RsyncReceiverLease | undefined, writerPrepared = false, completed = false
     try {
       await check('start'); await verifyRsyncBinaries(this.endpoint, this.executor, controller.signal); await check('start')
-      const command = rsyncCommand(this.endpoint, intent)
+      const writers = this.ports.writers
+      if (!writers) throw new Error('Rsync causal writer ports unavailable')
       const toWorker = intent.direction === 'to-worker'
       snapshot = await this.ports.source(intent, join(toWorker ? this.endpoint.localRoot : this.endpoint.remoteRoot, `${intent.transferId}.snapshot`), controller.signal)
       await snapshot.verify(controller.signal); await check()
       lease = await this.ports.receiver(intent, join(toWorker ? this.endpoint.remoteRoot : this.endpoint.localRoot, `${intent.transferId}.part`), controller.signal)
+      writerPrepared = true
+      const remote = await writers.remote(intent, controller.signal)
+      const command = rsyncCommand(this.endpoint, intent, remote)
+      command.owner = await writers.local(intent, command, controller.signal)
       await this.executor.run(command, controller.signal)
+      await writers.quiescent(intent, controller.signal)
       await snapshot.verify(controller.signal); await check('finish')
       const staged = await lease.verify(controller.signal)
       try {
         if (JSON.stringify(TransferIntentSchema.parse(staged.intent)) !== JSON.stringify(intent) || staged.sha256 !== intent.sha256 || staged.byteSize !== intent.byteSize) throw new Error('Rsync staging identity or integrity mismatch')
         await check('finish')
       } catch (error) { await staged.close(); throw error }
-      lease = undefined
+      lease = undefined; completed = true
       return { ...staged, read: async (offset, length, bounded) => {
         bounded.throwIfAborted()
         const context = TransferContextSchema.parse(await current())
@@ -189,7 +229,14 @@ export class RsyncStagingTransport {
       } }
     } finally {
       clearTimeout(deadline); clearInterval(poll); signal?.removeEventListener('abort', abort)
-      try { await lease?.interrupt() } finally { await snapshot?.close() }
+      try {
+        if (writerPrepared && !completed) {
+          const cleanup = AbortSignal.timeout(5000)
+          await this.ports.writers!.stop(intent, cleanup)
+          await this.ports.writers!.quiescent(intent, cleanup)
+        }
+        await lease?.interrupt()
+      } finally { await snapshot?.close() }
     }
   }
 }
