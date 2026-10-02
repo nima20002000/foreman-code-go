@@ -33,6 +33,8 @@ export function productionClaudeManager(input: {
   binding: ClaudeDomainBinding
   role: 'workflow' | 'operator' | 'agent-chat'
   configuration: ClaudeHarnessConfiguration
+  /** Privately provisioned for this accepted profile; never inherited from host authentication. */
+  apiKey?: string
   workingDirectory: string
   ownerAgentId: string
   recovery: NativeProcessRecovery
@@ -64,7 +66,7 @@ export function productionClaudeManager(input: {
     const profileOwner: ClaudeProfileOwner = { ...input.binding, admissionSignal: signal }
     const accepted = await input.profiles.admit(profileOwner, input.selector)
     signal.throwIfAborted()
-    const compiled = compileClaudeConfiguration(input.configuration, input.workingDirectory, accepted)
+    const compiled = compileClaudeConfiguration(input.configuration, input.workingDirectory, accepted, process.env, input.apiKey)
     const installation = input.registry.pinOverride(accepted.override)
     const binary = installation.installation.launcher.resolvedLauncher
     if (!binary) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The accepted Claude launcher is unavailable.', 409)

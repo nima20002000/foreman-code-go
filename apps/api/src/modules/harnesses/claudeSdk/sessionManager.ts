@@ -72,6 +72,8 @@ interface Runtime {
   generation: string
   currentAuthorizationScope: string
   httpCredentialAcknowledgement?: NativeMcpHttpCredentialAcknowledgement
+  credentialServers?: Readonly<Record<string, unknown>>
+  replacingForResume?: boolean
   closed: boolean
   session?: NativeSessionReference
   events: NativeHarnessEvent[]
@@ -211,6 +213,33 @@ export function createClaudeNativeSessionManager(options: {
     }
     return { endpoint: endpoint.toString() }
   }
+  async function deliverCredentials(runtime: Runtime, start: NativeSessionStart, servers: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<ClaudeMcpInspection> {
+    const managedName = options.expectedMcp?.serverName ?? 'graphql'
+    const httpCredential = managedHttpCredential(start, servers, managedName)
+    delete runtime.httpCredentialAcknowledgement
+    delete runtime.credentialServers
+    if (!runtime.sdk.setMcpServers) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK scoped MCP control update is unavailable.')
+    return ownedControl(runtime, async () => {
+      runtime.currentAuthorizationScope = authorizationScope(start)
+      const raw = await runtime.sdk.setMcpServers!(servers).catch(() => {
+        throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
+      })
+      const response = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+      if (!Array.isArray(response.added) || !Array.isArray(response.removed) || !response.errors || typeof response.errors !== 'object' || Object.keys(response.errors).length
+        || httpCredential && !response.added.includes(managedName)) {
+        throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
+      }
+      signal?.throwIfAborted()
+      if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query closed before credential acknowledgment.')
+      if (httpCredential) runtime.httpCredentialAcknowledgement = { source: 'sdk_set_mcp_servers', serverName: managedName,
+        endpoint: httpCredential.endpoint, generation: runtime.generation, authorizationScope: runtime.currentAuthorizationScope }
+      if (!runtime.sdk.mcpServerStatus) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK MCP control status is unavailable')
+      const rows = await runtime.sdk.mcpServerStatus!()
+      signal?.throwIfAborted()
+      runtime.credentialServers = { ...servers, ...(servers[managedName] ? { [managedName]: structuredClone(servers[managedName]) } : {}) }
+      return decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime))
+    }, signal).catch((error: unknown) => { delete runtime.httpCredentialAcknowledgement; throw error })
+  }
   function makeRuntime(start: NativeSessionStart): Runtime {
     let resolveInit!: Runtime['resolveInit']
     let rejectInit!: Runtime['rejectInit']
@@ -238,7 +267,7 @@ export function createClaudeNativeSessionManager(options: {
         runtime.sdk = await options.runner.open({ scope: options.scope,
           options: { ...options.sdkOptions, env: { ...(options.sdkOptions.env as Record<string, string> | undefined), ...start.environment?.variables } },
           ...(signal ? { signal } : {}), onObservation: (observation) => observed(runtime, observation),
-          ...(options.cancelPendingRequests ? { cancelPendingRequests: options.cancelPendingRequests } : {}) })
+          ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}) })
         runtime.pumping = pump(runtime)
         if (!runtime.sdk.initializationResult) throw new HarnessExecutionError('CLAUDE_INIT_INSPECTION_UNAVAILABLE', 'The SDK initialization control result is unavailable.')
         await ownedControl(runtime, () => runtime.sdk.initializationResult!(), signal)
@@ -262,8 +291,24 @@ export function createClaudeNativeSessionManager(options: {
     const cwd = start.kind === 'operator' ? start.workingDirectory : start.request.workingDirectory
     if (cwd !== options.scope.cwd) throw new HarnessExecutionError('CLAUDE_SCOPE_MISMATCH', 'Claude working directory differs from the pinned scope.')
     const identity = JSON.stringify(start)
-    const runtime = !resume && prepared ? await prepared.opening : makeRuntime(start)
-    if (!resume && prepared && prepared.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Initial input differs from the exact inspected owner/configuration/environment.')
+    const inspected = prepared
+    if (inspected && inspected.identity !== identity) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Input differs from the exact inspected owner/configuration/environment.')
+    const previous = inspected ? await inspected.opening : undefined
+    if (previous?.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
+    if (previous?.closed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned SDK query is closed.')
+    if (resume && previous && (previous.session || previous.turns.size)) throw new HarnessExecutionError('CLAUDE_INSPECTION_ALREADY_STARTED', 'Resume cannot replace a query that already owns native input.')
+    const credentialServers = resume ? previous?.credentialServers : undefined
+    if (resume && previous) {
+      // Session selection is immutable in the SDK. Retire only the unused
+      // inspection query; it has no message callbacks to cancel in this owner.
+      previous.replacingForResume = true
+      previous.closed = true
+      delete previous.httpCredentialAcknowledgement
+      await previous.sdk.close()
+      await previous.pumping
+      all.delete(previous)
+    }
+    const runtime = !resume && previous ? previous : makeRuntime(start)
     if (runtime.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Model input cannot be offered while an owned SDK control operation is pending.')
     if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_SESSION_CLOSED', 'The owned SDK query is closed.')
     if (initial) {
@@ -278,12 +323,23 @@ export function createClaudeNativeSessionManager(options: {
         ...(signal ? { signal } : {}),
         ...(resume ? { resume: { ...options.scope, nativeSessionId: resume.nativeSessionId } } : {}),
         onObservation: (observation) => observed(runtime, observation),
-        ...(options.cancelPendingRequests ? { cancelPendingRequests: options.cancelPendingRequests } : {}),
+        ...(options.cancelPendingRequests ? { cancelPendingRequests: () => { if (!runtime.replacingForResume) options.cancelPendingRequests!() } } : {}),
       })
       runtime.pumping ??= pump(runtime)
       if (resume) {
         if (!runtime.sdk.initializationResult) throw new HarnessExecutionError('CLAUDE_INIT_INSPECTION_UNAVAILABLE', 'The pinned SDK must acknowledge exact-session resume initialization.')
-        await runtime.sdk.initializationResult()
+        await ownedControl(runtime, () => runtime.sdk.initializationResult!(), signal)
+        if (credentialServers) {
+          const snapshot = await deliverCredentials(runtime, start, credentialServers, signal)
+          const expected = options.expectedMcp ?? { serverName: 'graphql' }
+          const detection = claudeMcpDetection(snapshot, { ...expected,
+            ...(snapshot.httpCredentialAcknowledgement ? { url: snapshot.httpCredentialAcknowledgement.endpoint } : {}) })
+          if (detection.state !== 'connected' || detection.endpointMatches === false
+            || snapshot.httpCredentialAcknowledgement && detection.credentialArrangement?.kind !== 'scoped_http_header') {
+            throw new HarnessExecutionError('CLAUDE_RESUME_MCP_UNAVAILABLE', 'The resumed SDK query did not establish its scoped MCP connection before input.')
+          }
+        }
+        if (inspected) prepared = { identity, opening: Promise.resolve(runtime) }
         if (!runtime.session) {
           runtime.session = { ...resume }
           if (resident.has(resume.nativeSessionId)) throw new Error('Claude native session is already leased to another runtime')
@@ -525,6 +581,7 @@ export function createClaudeNativeSessionManager(options: {
       if (runtime.active || runtime.session || runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_ALREADY_STARTED', 'Pre-input credential delivery cannot mutate an active/native session.')
       if (runtime.controlPending) throw new HarnessExecutionError('CLAUDE_INSPECTION_BUSY', 'Credential refresh cannot overlap another owned SDK control operation.')
       delete runtime.httpCredentialAcknowledgement
+      delete runtime.credentialServers
       const withoutCredentials = (value: NativeSessionStart): string => {
         const variables = { ...value.environment?.variables }
         for (const key of options.credentialEnvironmentVariables ?? ['GRAPHQL_MCP_TOKEN']) delete variables[key]
@@ -547,28 +604,9 @@ export function createClaudeNativeSessionManager(options: {
       for (const [name, config] of Object.entries(configured)) if (name !== managedName && JSON.stringify(config) !== JSON.stringify(servers[name])) {
         throw new HarnessExecutionError('CLAUDE_MCP_SCOPE_CONFLICT', 'Credential delivery cannot refresh unrelated native MCP servers.')
       }
-      const httpCredential = managedHttpCredential(start, servers, managedName)
-      if (!runtime.sdk.setMcpServers) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK scoped MCP control update is unavailable.')
-      return ownedControl(runtime, async () => {
-        runtime.currentAuthorizationScope = authorizationScope(start)
-        const raw = await runtime.sdk.setMcpServers!(servers).catch(() => {
-          throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
-        })
-        const response = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-        if (!Array.isArray(response.added) || !Array.isArray(response.removed) || !response.errors || typeof response.errors !== 'object' || Object.keys(response.errors).length
-          || httpCredential && !response.added.includes(managedName)) {
-          throw new HarnessExecutionError('CLAUDE_MCP_CREDENTIAL_DELIVERY_UNCONFIRMED', 'The SDK did not confirm its owned MCP control update.')
-        }
-        signal?.throwIfAborted()
-        if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query closed before credential acknowledgment.')
-        if (httpCredential) runtime.httpCredentialAcknowledgement = { source: 'sdk_set_mcp_servers', serverName: managedName,
-          endpoint: httpCredential.endpoint, generation: runtime.generation, authorizationScope: runtime.currentAuthorizationScope }
-        inspected.identity = JSON.stringify(start) // Only after actual SDK update ACK, never by mutating spawned options/env.
-        if (!runtime.sdk.mcpServerStatus) throw new HarnessExecutionError('CLAUDE_MCP_CONTROL_UNAVAILABLE', 'The actual SDK MCP control status is unavailable')
-        const rows = await runtime.sdk.mcpServerStatus!()
-        signal?.throwIfAborted()
-        return decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime))
-      }, signal).catch((error: unknown) => { delete runtime.httpCredentialAcknowledgement; throw error })
+      const snapshot = await deliverCredentials(runtime, start, servers, signal)
+      inspected.identity = JSON.stringify(start) // Only after actual SDK update ACK, never by mutating spawned options/env.
+      return snapshot
     },
     async prepareInspection(start, signal) {
       const runtime = await prepareRuntime(start, signal)
