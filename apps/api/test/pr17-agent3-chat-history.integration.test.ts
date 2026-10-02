@@ -83,7 +83,7 @@ describe.skipIf(!connectionString)('PR17 Agent3 SQL history, terminal receipts, 
     const settled = await snapshot()
     expect(await repository.submitted(conversation.id, requestId, nativeTurnId, capturedOwner)).toBe(false)
     expect(await snapshot()).toEqual(settled)
-    expect((await chat.history(conversation.id, owner)).entries[0]?.receipt.outcome).toBe('canceled')
+    expect((await chat.history(conversation.id, owner)).entries[0]?.receipt?.outcome).toBe('canceled')
     expect(manager.turns).toBe(0)
   })
 
