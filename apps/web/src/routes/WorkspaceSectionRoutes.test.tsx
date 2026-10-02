@@ -8,7 +8,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { routeTree } from '../app/router'
 import { server } from '../mocks/server'
 import { setMockScenario } from '../shared/mocks/scenarios'
-import { mainRoot } from '../features/settings/workspaceBoundLocation.fixtures'
+import { mainRoot, rootMainId } from '../features/settings/workspaceBoundLocation.fixtures'
+import { mockRuntimeIdentity } from '../shared/mocks/handlers'
 
 function renderRoute(path: string) {
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) })
@@ -265,10 +266,14 @@ describe('workspace section routes', () => {
     expect(screen.queryByRole('link', { name: /Browsers/ })).not.toBeInTheDocument()
   })
 
-  it('opens the approved execution folder picker without navigating away from Settings', async () => {
+  it('opens the approved Main folder browser without navigating away from Settings', async () => {
+    localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${rootMainId}`)
     server.use(
+      http.get('/api/auth/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
       http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({ evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } })),
       http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),
+      http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => HttpResponse.json({ workspaceId: 'workspace-1', selection: await request.json(),
+        browse: { relativePath: '', directories: [], truncated: false } })),
     )
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
@@ -278,8 +283,11 @@ describe('workspace section routes', () => {
     expect(executionLocation).toBe(screen.getByRole('button', { name: 'Execution location' }))
     await user.click(executionLocation)
 
-    expect(await screen.findByRole('dialog', { name: 'Execution folder' })).toBeVisible()
-    expect(screen.getByRole('combobox', { name: 'Computer and approved base folder' })).toBeVisible()
+    const dialog = await screen.findByRole('dialog', { name: 'Choose folder' })
+    expect(dialog).toBeVisible()
+    expect(await within(dialog).findByRole('textbox', { name: 'Destination' })).toHaveValue(mainRoot.bases[0]!.canonicalPath)
+    expect(within(dialog).getByRole('button', { name: 'New folder' })).toBeVisible()
+    expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
   })
 
@@ -306,7 +314,7 @@ describe('workspace section routes', () => {
   it('retains the original rename command and revision when acknowledgement is lost', async () => {
     const writes: unknown[] = []
     server.use(http.patch('/api/management/workspaces/workspace-1', async ({ request }) => {
-      writes.push(await request.json())
+      writes.push(await request.clone().json())
       if (writes.length === 1) return HttpResponse.json({ error: { code: 'INTERNAL', message: 'Rename acknowledgement lost.' } }, { status: 503 })
       return undefined
     }))
