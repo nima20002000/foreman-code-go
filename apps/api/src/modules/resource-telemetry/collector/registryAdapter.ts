@@ -28,6 +28,7 @@ export function passiveRegistryOwnershipReader(registry: PassiveNativeRegistry, 
       let remaining = 4096
       return owners.slice(0, 65).map(scope => {
         let captureTruncated = false
+        let accountingIncomplete = scope.captured?.incomplete ?? false
         const launches = native.launches.filter(launch => launch.owner === scope.nativeOwner)
         const roots = new Map<string, OwnershipView['roots'][number]>()
         const handles: OwnershipView['accountingHandles'][number][] = []
@@ -49,10 +50,11 @@ export function passiveRegistryOwnershipReader(registry: PassiveNativeRegistry, 
             if (!roots.has(key)) { if (remaining > 0) { roots.set(key, identity); remaining-- } else captureTruncated = true }
           }
           if (launch.boundary) { if (handles.length < 9) handles.push(accountingHandle(launch.boundary, !scope.shared)); else captureTruncated = true }
+          else accountingIncomplete = true
         }
         return { selector: scope.selector, leaseId: scope.leaseId, launchIds: [...new Set([...launches.map(launch => launch.launchId), ...(scope.captured?.launchIds ?? [])])],
           observedDeviceId: scope.observedDeviceId, observedInstallationId: scope.observedInstallationId,
-          captureTruncated, accountingIncomplete: scope.captured?.incomplete ?? false, shared: scope.shared, lifecycle: scope.lifecycle, roots: [...roots.values()], accountingHandles: handles }
+          captureTruncated, accountingIncomplete, shared: scope.shared, lifecycle: scope.lifecycle, roots: [...roots.values()], accountingHandles: handles }
       })
     },
     changes: (afterRevision, signal) => joinedChanges(registry, scopes, afterRevision, signal),
