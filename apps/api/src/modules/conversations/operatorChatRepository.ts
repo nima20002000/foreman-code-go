@@ -706,7 +706,7 @@ export class PostgresOperatorConversationRepository {
         const prior = await client.query(`select 1 from operator_conversation_messages
           where conversation_id=$1 and (native_message_id=$2 or
             (record->>'nativeParentMessageId'=$2 and record->>'requestId'=$3)) limit 1`, [id,nativeMessageId,requestId])
-        if (content !== undefined && !prior.rowCount) {
+        if (content !== undefined && content.length > 0 && !prior.rowCount) {
           const activity = await client.query<{ sequence: string }>(
             'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [id,requestId])
           const now = new Date().toISOString()

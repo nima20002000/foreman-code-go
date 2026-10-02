@@ -509,10 +509,18 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'active')
     await chat.cancel(conversation.id, 'slow-turn', owner)
     expect((await chat.get(conversation.id, owner)).activeRequestId).toBe('slow-turn')
+    const cancellationReceipt = async () => (await pool.query(`select command_id,target_key,input_hash,result from management_command_receipts
+      where principal_id=$1 and operation='operator_chat_control' and target_key=$2 order by command_id`, [owner.id, conversation.id])).rows
+    const originalCancellation = await cancellationReceipt()
+    expect(originalCancellation).toHaveLength(1)
     await expect(chat.send(conversation.id, { requestId: 'next-turn', content: 'continue' }, owner)).rejects.toMatchObject({ code: 'CONVERSATION_TURN_ACTIVE' })
     manager.cancelAcknowledged = true
     await chat.cancel(conversation.id, 'slow-turn', owner)
-    await waitFor(async () => !(await chat.get(conversation.id, owner)).activeRequestId)
+    expect(await cancellationReceipt()).toEqual(originalCancellation)
+    // This bare service fixture has no lifecycle worker. Replaying the original
+    // control must not resend; drive its real persisted recovery until native
+    // terminal history settles the still-fenced cancellation.
+    await waitFor(async () => { await chat.reconcileActive(); return !(await chat.get(conversation.id, owner)).activeRequestId })
     await chat.send(conversation.id, { requestId: 'next-turn', content: 'continue' }, owner)
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'active')
     await chat.cancel(conversation.id, 'slow-turn', owner)

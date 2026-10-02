@@ -17,6 +17,13 @@ const signal = new AbortController().signal
 afterEach(() => vi.restoreAllMocks())
 
 describe('Operator chat installation evidence', () => {
+  it('refuses text-mode setup before native inspection when the inspector port is unbound', async () => {
+    const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', endpoint)
+    const manager = new CodexAppServerSessionManager('unused')
+    const inspect = vi.spyOn(manager, 'inspectMcpConfiguration'), create = vi.spyOn(manager, 'createSession')
+    await expect(owner.setup(manager, signal)).rejects.toMatchObject({ code: 'OPERATOR_MCP_SETUP_REQUIRED' })
+    expect(inspect).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled()
+  })
   it.each(['codex', 'opencode'] as const)('accepts a proven %s automatic launcher at any app port, while respecting disable', async (harness) => {
     for (const port of [3012, 4567]) {
       const owner = new PostgresOperatorChatAuthority({} as never, {} as never, {} as never, '/operator', `http://127.0.0.1:${port}/mcp`, inspectorFor)

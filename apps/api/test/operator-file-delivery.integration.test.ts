@@ -71,6 +71,7 @@ const { productionFileTools } = await import('../src/modules/files/tools/product
 const { NativeRollout } = await import('../src/modules/harnesses/nativeRollout.js')
 const { NativeProcessRegistry } = await import('../src/modules/harnesses/recovery/processRegistry.js')
 const { NativeResponseJournal } = await import('../src/modules/harnesses/recovery/responseJournal.js')
+const { NativeHarnessFactories } = await import('../src/modules/harnesses/runtimeFactory.js')
 const { productionOperatorManagers } = await import('../src/modules/harnesses/operatorFiles/managers.js')
 const { adoptOperatorFilePublications } = await import('../src/modules/harnesses/operatorFiles/postgres.js')
 
@@ -176,13 +177,17 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       expiresAt: new Date(Date.now() + 600000) })).principal
     operators = new PostgresOperatorRepository(pool)
     repository = new PostgresOperatorConversationRepository(pool)
-    authority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), cwd, 'http://127.0.0.1:4100/mcp')
+    const responseJournal = new NativeResponseJournal(join(f.directory, 'responses'))
+    const nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
+      appMcpEndpoint: 'http://127.0.0.1:4100/mcp', responseJournal })
+    authority = new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }), cwd,
+      'http://127.0.0.1:4100/mcp', (manager) => nativeFactories.inspector(manager))
     setup = vi.spyOn(authority, 'setup')
     prepare = vi.spyOn(authority, 'prepare')
     const resolve = productionOperatorManagers({ app: () => app, pool, config, workingDirectory: cwd,
       endpointHost: '127.0.0.1', appMcpEndpoint: 'http://127.0.0.1:4100/mcp', managers,
       processRegistry: new NativeProcessRegistry(join(f.directory, 'processes')),
-      responseJournal: new NativeResponseJournal(join(f.directory, 'responses')) })
+      responseJournal, nativeFactories })
     chat = new OperatorChatService(repository, operators, resolve, cwd, authority)
     const issue = tools.sessions.issueForAcceptedSession.bind(tools.sessions)
     vi.spyOn(tools.sessions, 'issueForAcceptedSession').mockImplementation(async (context, expiry, transport) => {
@@ -234,6 +239,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
       await chat.send(conversation.id, { requestId: randomUUID(), content: 'Remember this conversation.' }, owner)
       const first = await until(async () => {
         const row = await repository.active(conversation.id)
+        expect(row?.turn_state, `Text-first admission failed before native ACK: ${row?.last_error ?? 'no persisted error'}`).not.toBe('error')
         return row?.active_native_turn_id ? row : undefined
       }, 10000)
       const nativeSessionId = first.native_session_id!
@@ -519,7 +525,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     await until(async () => (await chat.get(conversation.id, owner)).turnState === 'error', 10000)
     expect(prepare).toHaveBeenCalledTimes(1)
     expect(setup).toHaveBeenCalledTimes(1)
-    expect(serverOptions[0]!.appMcpAccess).toBeUndefined()
+    expect(serverOptions[0]!.appMcpAccess).toBe('scoped')
     expect(serverOptions[0]!.credentialEnvironmentVariable).toBe('GRAPHQL_MCP_TOKEN')
     expect(issued).toHaveLength(0)
     expect(servers.flatMap((server) => server.calls).some((call) => call.path.includes('/prompt_async'))).toBe(false)
