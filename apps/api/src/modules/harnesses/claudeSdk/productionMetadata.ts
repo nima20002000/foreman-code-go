@@ -22,8 +22,11 @@ export function productionClaudeMetadata(input: {
   defaults(): Promise<{ claude?: Extract<HarnessConfiguration, { harness: 'claude' }> | undefined }>
   current(value: HostHarnessOverride, signal?: AbortSignal): Promise<{ pin: ClaudeQualificationPin }>
 }) {
+  type Metadata = Awaited<ReturnType<typeof discoverClaudeMetadata>>
+  const pending = new Map<string, { value: Promise<Metadata>; controller: AbortController; readers: number }>()
   return new ClaudeCheckedNativeConfigurationPort({
     async discover(workingDirectory, signal) {
+      signal.throwIfAborted()
       const configuration = (await input.defaults()).claude ?? { harness: 'claude' as const, model: 'default', authMode: 'subscription' as const,
         configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'read-only' as const,
         tools: [], permissionRules: [], instructions: '', mcpServers: {} }
@@ -32,17 +35,51 @@ export function productionClaudeMetadata(input: {
       const binding = input.registry.pinAccepted({ id: `claude-metadata:${commandInputHash(configuration)}`, agentId: 'owned-catalog', harness: configuration })
       const binary = binding.installation.launcher.resolvedLauncher
       if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The installed Claude SDK executable is unavailable.', 409)
-      const version = await input.factories.observeClaudeVersion(binding, workingDirectory, signal)
-      const recovery = input.processes.reserveLaunch(`claude-metadata:${randomUUID()}`)
-      const close = async () => {
-        await input.processes.abandonReservedLaunch(recovery)
-        if (!await input.processes.closeOwner(recovery.owner)) throw new Error('Claude metadata process closure is unconfirmed.')
+      signal.throwIfAborted()
+      input.registry.installations.assertCurrent(binding)
+      const key = commandInputHash({ configuration, workingDirectory, selection: binding.selection,
+        inventoryRevision: binding.inventoryRevision, installation: binding.installation })
+      let operation = pending.get(key)
+      if (operation?.controller.signal.aborted) operation = undefined
+      if (!operation) {
+        const controller = new AbortController()
+        const value = Promise.resolve().then(async () => {
+          const version = await input.factories.observeClaudeVersion(binding, workingDirectory, controller.signal)
+          controller.signal.throwIfAborted()
+          const recovery = input.processes.reserveLaunch(`claude-metadata:${randomUUID()}`)
+          const close = async () => {
+            await input.processes.abandonReservedLaunch(recovery)
+            if (!await input.processes.closeOwner(recovery.owner)) throw new Error('Claude metadata process closure is unconfirmed.')
+          }
+          try {
+            const result = await discoverClaudeMetadata({ binary, profilePath: configuration.configDirectory, workingDirectory, recovery, signal: controller.signal })
+            input.registry.installations.assertCurrent(binding)
+            return { ...result, providerVersion: version.version }
+          } finally { await close() }
+        }).finally(() => { if (pending.get(key) === operation) pending.delete(key) })
+        operation = { value, controller, readers: 0 }
+        pending.set(key, operation)
       }
+      operation.readers++
+      let abort!: () => void
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason)
+        signal.addEventListener('abort', abort, { once: true })
+        if (signal.aborted) abort()
+      })
       try {
-        const result = await discoverClaudeMetadata({ binary, profilePath: configuration.configDirectory, workingDirectory, recovery, signal })
+        const result = await Promise.race([operation.value, interrupted])
+        signal.throwIfAborted()
         input.registry.installations.assertCurrent(binding)
-        return { ...result, providerVersion: version.version }
-      } finally { await close() }
+        return structuredClone(result)
+      } finally {
+        signal.removeEventListener('abort', abort)
+        operation.readers--
+        if (!operation.readers && pending.get(key) === operation) {
+          operation.controller.abort(signal.reason)
+          await operation.value // The last caller retains owned cleanup/failure fencing.
+        }
+      }
     },
     async accepted(configuration, _directory, signal) {
       const binding = input.registry.pinAccepted({ id: `claude-configuration:${commandInputHash(configuration)}`, agentId: 'configuration-inspection', harness: configuration })
