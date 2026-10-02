@@ -43,9 +43,13 @@ function approvalFixture() {
   native.pendingRequests.push(approval(native.session, native.nativeTurnId, 'approval-a'), approval(native.session, native.nativeTurnId, 'approval-b'))
   current.pending_interaction = native.pendingRequests[0]!
   const writes: Array<string | undefined> = []
+  const dispatchAttempts: string[] = []
   const repository = {
     get: async () => structuredClone(current), byKey: async () => structuredClone(current),
-    state: async () => ({ row: structuredClone(current), turns: [], messages: [], hasEarlierMessages: false }),
+    state: async (): Promise<NonNullable<Awaited<ReturnType<PostgresAgentChatRepository['state']>>>> => ({
+      row: structuredClone(current), turns: [], messages: [], hasEarlierMessages: false,
+      selection: null, activeStartedAt: now, latestRequestId: 'active-f5', unfinishedActivities: [],
+      activityPage: { activities: [], nextCursor: null, itemRevisions: {} } }),
     turnContent: async () => 'Fixture turn',
     accepted: async (_id: string, _requestId: string, nativeTurnId: string) => { current.active_native_turn_id = nativeTurnId; return true },
     pending: async (_id: string, requestId: string, pending: PendingNativeInteraction | undefined) => {
@@ -59,12 +63,19 @@ function approvalFixture() {
     getCurrentSavedVersion: async () => ({ definition: { nodes: [{ id: context.workflowNodeId, agentId: context.agentId }] } }),
     getAgentConfiguration: async () => configuration,
   }
-  const service = new AgentChatService({ query: async () => ({ rows: [], rowCount: 0 }) } as unknown as pg.Pool,
+  const pool = { query: async (text: string, values: unknown[]) => {
+    assert.equal(text, 'select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1 for share')
+    const rows = values[0] === principal.id ? [{ id: principal.id, name: principal.name, audience: principal.audience,
+      grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : []
+    return { rows, rowCount: rows.length }
+  } } as unknown as pg.Pool
+  const service = new AgentChatService(pool,
     repository as unknown as PostgresAgentChatRepository, {} as ConstructorParameters<typeof AgentChatService>[2],
     workflows as unknown as ConstructorParameters<typeof AgentChatService>[3], {} as ConstructorParameters<typeof AgentChatService>[4],
     () => { throw new Error('No native creation is allowed in this unit fixture.') }, '/unused-f5')
   ;(service as unknown as { commands: { execute: (...args: unknown[]) => Promise<unknown>; drain: () => Promise<void> } }).commands = {
-    execute: async (...args: unknown[]) => (args.at(-1) as () => Promise<unknown>)(), drain: async () => undefined,
+    execute: async (...args: unknown[]) => (args[5] as (markDispatchAttempt: () => void) => Promise<unknown>)(
+      () => { dispatchAttempts.push(String(args[3])) }), drain: async () => undefined,
   }
   const internals = service as unknown as {
     runtimes: Map<string, { manager: AgentChatF5Native; session: AgentChatF5Native['session']; configuration: typeof configuration }>
@@ -76,7 +87,7 @@ function approvalFixture() {
   const read = () => service.readConversation(principal, workspaceId, current.id)
   const run = () => internals.runTurn(current.id, { requestId: 'active-f5', sequence: '1', intent: 'next_turn', delivery: 'accepted',
     messageId: 'message-active', createdAt: now.toISOString(), updatedAt: now.toISOString() })
-  return { current, native, service, writes, respond, read, run }
+  return { current, native, service, writes, dispatchAttempts, respond, read, run }
 }
 
 /** Scripted SQL boundary: verifies the real repository's decisions/query shape, not PostgreSQL execution. */
@@ -85,7 +96,8 @@ function sqlFixture(openCount: number, prior?: ReturnType<typeof receipt>, state
   const querySql = async (text: string, values: unknown[] = []) => {
     const sql = text.replace(/\s+/g, ' ').trim()
     calls.push({ sql, values })
-    if (/^(begin|commit|rollback)$/.test(sql) || sql.startsWith('select pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
+    if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql)
+      || sql.startsWith('select pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
     if (sql.startsWith('select * from operator_conversations')) return { rows: [row()], rowCount: 1 }
     if (sql.startsWith('select count(*)::text as count')) return { rows: [{ count: String(openCount) }], rowCount: 1 }
     if (sql.startsWith('select request_id,') && sql.includes('request_id=$2')) return { rows: prior ? [prior] : [], rowCount: prior ? 1 : 0 }
@@ -95,9 +107,13 @@ function sqlFixture(openCount: number, prior?: ReturnType<typeof receipt>, state
         content: (JSON.parse(String(values[2])) as { content: string }).content }, openCount + 1, values[5] as AgentChatTurn['delivery'])], rowCount: 1 }
     }
     if (sql.startsWith('update operator_conversations set revision=')) return { rows: [], rowCount: 1 }
+    if (sql.startsWith('with open as ( select principal_id,operation,command_id')) return { rows: [], rowCount: 0 }
     if (sql.startsWith('with open as (')) return { rows: stateRows, rowCount: stateRows.length }
     if (sql.startsWith('with candidates as (')) return { rows: [{ messages: [], has_earlier: false }], rowCount: 1 }
     if (sql.startsWith('select record,sequence::text')) return { rows: [], rowCount: 0 }
+    if (sql.startsWith('select (select started_at from operator_conversation_turns')) return {
+      rows: [{ started_at: null, latest_request_id: stateRows.at(-1)?.request_id ?? null }], rowCount: 1,
+    }
     throw new Error(`Unexpected SQL in F5 fixture: ${sql}`)
   }
   const pool = { query: querySql, connect: async () => ({ query: querySql, release() {} }) } as unknown as pg.Pool
@@ -121,6 +137,7 @@ describe('F5 / A-R11 pending approval handoff', () => {
     assert.equal((await f.respond('approval-b')).pendingInteraction?.turn.nativeRequestId, 'approval-c')
     assert.equal((await f.respond('approval-c')).pendingInteraction, undefined)
     assert.deepEqual(f.native.responses, ['approval-a', 'approval-b', 'approval-c'])
+    assert.deepEqual(f.dispatchAttempts, ['reply-approval-a', 'reply-approval-b', 'reply-approval-c'])
     assert.deepEqual(f.writes, ['approval-b', 'approval-c', undefined])
     assert.equal(f.native.pendingCalls, 3)
     await f.service.shutdown()
@@ -213,6 +230,7 @@ describe('F5 / A-R11 pending approval handoff', () => {
     assert.deepEqual(f.current, before)
     assert.deepEqual(f.native.responses, [])
     assert.deepEqual(f.writes, [])
+    assert.deepEqual(f.dispatchAttempts, [])
     await f.service.shutdown()
   })
 })
@@ -255,6 +273,8 @@ describe('F5 / A-R15 bounded open receipts', () => {
       (['queued', 'submitting', 'accepted', 'unknown'] as const)[index % 4]!))
     const f = sqlFixture(100, undefined, rows)
     const state = await f.repository.state('chat-f5')
+    assert.equal(f.calls[0]?.sql, 'begin isolation level repeatable read read only')
+    assert.equal(f.calls.at(-1)?.sql, 'commit')
     assert.deepEqual(state?.turns.map((turn) => turn.requestId), rows.map((turn) => turn.request_id))
     const selection = f.calls.find((call) => call.sql.startsWith('with open as ('))!
     assert.deepEqual(selection.values, ['chat-f5', ['queued', 'submitting', 'accepted', 'unknown'], 100])
