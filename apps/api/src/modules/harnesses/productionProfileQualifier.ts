@@ -9,6 +9,7 @@ import type { ProductionHarnessRegistry } from './productionRegistry.js'
 import type { NativeHarnessFactories } from './runtimeFactory.js'
 import { harnessProfile } from './qualification/profiles.js'
 import { qualificationError } from './qualificationErrors.js'
+import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
 
 /** Explicit profile checks enter through real role-isolated adapters. A saved
  * config, filesystem inventory, worker heartbeat or fixture never grants trust. */
@@ -20,6 +21,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
     if (commandInputHash(withAdvancedDefaults(value.configuration)) !== value.configurationFingerprint) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The saved configuration fingerprint is invalid.', 409)
     }
+    requireClaudeProductionCredentialDelivery(value.configuration)
     if (value.target.hostRef.kind === 'device') {
       const endpoint = this.endpoint()
       if (!endpoint.capabilities(value.target.hostRef.deviceId).some((item) => item.namespace === 'host-harness-check-v1' && item.mainCanRequest)) {
