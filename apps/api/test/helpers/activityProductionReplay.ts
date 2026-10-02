@@ -196,6 +196,13 @@ export class ActivityProductionReplay {
     const unavailable = async (): Promise<never> => { throw new Error('Unrecorded auxiliary replay operation.') }
     return { mode: 'replay', codex, openCodeServer: () => { throw new Error('Unexpected OpenCode replay allocation.') },
       openCodeClient: () => { throw new Error('Unexpected OpenCode replay client.') },
+      // Protocol replay has no installed provider inventory or passive filesystem probe.
+      inventoryDiscovery: { launcher: async (requested, environment, _payloadPaths, signal) => {
+        signal?.throwIfAborted()
+        return { requested, environment, resolvedLauncher: null, fingerprint: null, status: 'missing',
+          interpreter: null, diagnostics: ['Activity protocol replay does not inspect installed providers.'],
+          checkedAt: '2026-10-01T00:00:00.000Z' }
+      }, payloads: unavailable },
       auxiliary: { command, recovery: { scope: (owner) => ({ root: '/recorded-no-process-registry', owner }),
         reserveLaunch: (owner) => { const launchId = randomUUID(); this.auxiliary.add(launchId); return { root: '/recorded-no-process-registry', owner, launchId } },
         abandonReservedLaunch: async (scope) => { if (!scope.launchId) return false; return this.auxiliary.delete(scope.launchId) },
