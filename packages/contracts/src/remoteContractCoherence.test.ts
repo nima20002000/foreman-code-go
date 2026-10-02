@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { RemoteJobConnectionIdentitySchema, RemoteJobDispatchIntentSchema, RemoteJobTerminalEvidenceSchema } from './remoteJobExecution.js'
+import { RemoteJobConnectionIdentitySchema, RemoteJobDispatchIntentSchema, RemoteJobTerminalEvidenceSchema, RemoteJobMainRpcRequestSchema } from './remoteJobExecution.js'
 import { ArtifactEdgeReadSchema } from './artifactEdges.js'
 import { MAX_FILE_READ_BYTES } from './files.js'
 
@@ -15,6 +15,8 @@ describe('current remote Job contract boundaries', () => {
     expect(RemoteJobDispatchIntentSchema.safeParse(intent).success).toBe(true)
     expect(RemoteJobDispatchIntentSchema.safeParse({ ...intent, executionId: 'other-job' }).success).toBe(false)
     expect(RemoteJobDispatchIntentSchema.safeParse({ ...intent, subject: { ...intent.subject, runId: 'invented-run' } }).success).toBe(false)
+    expect(RemoteJobMainRpcRequestSchema.safeParse({ method: 'job-source', intent }).success).toBe(true)
+    expect(RemoteJobMainRpcRequestSchema.safeParse({ method: 'job-source', intent, action: 'start' }).success).toBe(false)
   })
   it('admits actual main installation evidence without inventing worker registration', () => {
     const connection = { kind: 'main', mainId: uuid, mainInstallationId: 'installation', bootId: uuid }

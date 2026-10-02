@@ -55,6 +55,7 @@ export class JobApplicationBridge {
   async handle(raw: unknown, binding: Readonly<DeviceSessionBinding>) {
     const frame = RemoteJobMainRpcRequestSchema.parse(raw)
     const intent = frame.method === 'job-report' ? frame.receipt.intent : frame.intent
+    if (frame.method === 'job-source') return this.resolveAcceptedSource(intent, binding)
     const execution = await this.authorize(intent, binding, frame.method === 'job-authorize' ? frame.action : 'read')
     if (frame.method === 'job-authorize') return { authorized: true, operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash, owner: intent.owner }
     if (frame.method === 'job-log') return this.workers.appendLog(execution.workspaceId, execution.id, { attemptId: intent.attemptId, owner: intent.owner }, frame.chunk)

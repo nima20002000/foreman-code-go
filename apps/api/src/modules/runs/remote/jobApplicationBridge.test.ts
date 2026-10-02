@@ -18,6 +18,13 @@ function fixture() {
   return {bridge,intent,binding,dispatch,sql}
 }
 describe('job application action-sensitive authority routing with memory ports',()=>{
+  it('routes source metadata through its original read transaction before report handling', async () => {
+    const f = fixture(), resolve = vi.spyOn(f.bridge, 'resolveAcceptedSource').mockRejectedValue(new Error('original source unavailable'))
+    await expect(f.bridge.handle({ method: 'job-source', intent: f.intent }, f.binding)).rejects.toThrow('original source unavailable')
+    expect(resolve).toHaveBeenCalledWith(f.intent, f.binding)
+    expect(f.dispatch.observeReceipt).not.toHaveBeenCalled()
+    expect(f.dispatch.require).not.toHaveBeenCalled()
+  })
   it.each(['read','control'] as const)('uses %s cleanup fence without authenticating the revoked starter',async action=>{
     const f=fixture();expect(await f.bridge.handle({method:'job-authorize',intent:f.intent,action},f.binding)).toMatchObject({authorized:true})
     expect(action==='control'?f.dispatch.requireControl:f.dispatch.requireEvidence).toHaveBeenCalledOnce()
