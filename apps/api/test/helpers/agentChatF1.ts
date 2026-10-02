@@ -40,15 +40,15 @@ interface Receipt {
   request_id: string; turn_sequence: string; intent: AgentChatTurn['intent']; delivery: AgentChatTurn['delivery']
   message_id: string; native_turn_id: string | null; target_native_turn_id: string | null
   delivery_error: { code: string; message: string } | null; input_hash: string
-  payload: { content: string; interruptRequestId?: string }; result?: ExecutionResult
+  payload: { content: string; interruptRequestId?: string; ownerPrincipalId?: string; nativeSubmission?: { kind: string; nativeSessionId: string; nativeMessageId: string; clientCorrelationId: string } }; result?: ExecutionResult
   created_at: Date; updated_at: Date; started_at?: Date | null
 }
 
 /** Executes the production repository against a strict scripted SQL store. This is NOT PostgreSQL:
  * it checks query fences/order and durable-state transitions, not SQL validity or lock isolation. */
 export class F1Store {
-  readonly row: AgentConversationRow = {
-    id: 'conversation', agent_key: agentChatKey(context), workspace_id: context.workspaceId, workflow_id: context.workflowId,
+  readonly row: AgentConversationRow & { deleted_at: Date | null } = {
+    deleted_at: null, id: 'conversation', agent_key: agentChatKey(context), workspace_id: context.workspaceId, workflow_id: context.workflowId,
     workflow_node_id: context.workflowNodeId, agent_id: context.agentId, agent_configuration_version_id: configuration.id,
     origin_run_id: null, origin_execution_id: null, harness: 'codex', provider_version: 'fixture', native_session_id: 'session',
     active_request_id: null, active_native_turn_id: null, cancel_requested: false, turn_state: 'idle', last_error: null,
@@ -58,6 +58,9 @@ export class F1Store {
   }
   readonly turns = new Map<string, Receipt>()
   readonly messages = new Map<string, Message>()
+  readonly publications: Array<{ binding: string; owner_principal_id: string; request_id: string; file_id: string; revision_id: string }> = []
+  readonly allocations: Array<{ owner_principal_id: string; request_id: string; file_id: string; revision_id: string; state: string }> = []
+  readonly files = new Map<string, { owner_principal_id: string; activity_record_revision: string; state: string }>()
   readonly activityRows: Array<{ record: OperatorActivityChange; sequence: string; revision: string }> = []
   readonly statements: Array<{ sql: string; values: unknown[]; connection: number }> = []
   private connections = 0
@@ -95,6 +98,39 @@ export class F1Store {
       && sql.includes("where c.id=$1 and c.kind in ('agent','operator') and c.harness='codex'")
       && sql.includes("to_regclass('file_tool_publications') is not null")
       && sql.includes("to_regclass('file_allocations') is not null") && values[0] === this.row.id) return result()
+    // Model the Claude reader's admitted-message and finalized-ledger joins.
+    // Codex-only text fixtures have no Claude candidates, not synthetic publications.
+    if (sql.startsWith('select t.message_id, case when c.kind=')
+      && sql.includes("where c.id=$1 and c.harness='claude' and c.deleted_at is null")
+      && sql.includes("m.client_request_id=t.request_id and m.role='user'")
+      && sql.includes("t.payload->'nativeSubmission'->>'kind'='message'")) {
+      if (values[0] !== this.row.id || this.row.harness !== 'claude' || this.row.deleted_at != null) return result()
+      return result([...this.turns.values()].flatMap(turn => {
+        const message = this.messages.get(turn.message_id), native = turn.payload.nativeSubmission
+        return turn.intent !== 'steer' && (values[1] as string[]).includes(turn.message_id)
+          && message?.conversationId === this.row.id && message.role === 'user' && message.requestId === turn.request_id
+          && native?.kind === 'message' && native.nativeSessionId && native.nativeMessageId && native.clientCorrelationId
+          && turn.payload.ownerPrincipalId != null && this.row.workspace_id != null && this.row.workflow_id != null && this.row.agent_id != null
+          ? [{ message_id: turn.message_id, owner_principal_id: turn.payload.ownerPrincipalId,
+            native_session_id: native.nativeSessionId, native_message_id: native.nativeMessageId,
+            kind: 'agent', operator_id: null, workspace_id: this.row.workspace_id, workflow_id: this.row.workflow_id,
+            agent_id: this.row.agent_id, origin_run_id: this.row.origin_run_id, origin_execution_id: this.row.origin_execution_id }] : []
+      }))
+    }
+    if (sql.startsWith('select p.binding,p.owner_principal_id,p.file_id,p.revision_id,p.request_id,')
+      && sql.includes('from file_tool_publications p') && sql.includes('join files f')
+      && sql.includes('a.request_id=p.request_id') && sql.includes('a.revision_id=p.revision_id')
+      && sql.includes("a.state='finalized'") && sql.includes('where p.binding=any($1::text[])')) {
+      return result(this.publications.filter(publication => (values[0] as string[]).includes(publication.binding))
+        .sort((a, b) => a.request_id.localeCompare(b.request_id)).flatMap(publication => {
+          const file = this.files.get(publication.file_id)
+          const allocated = this.allocations.some(allocation => allocation.owner_principal_id === publication.owner_principal_id
+            && allocation.request_id === publication.request_id && allocation.file_id === publication.file_id
+            && allocation.revision_id === publication.revision_id && allocation.state === 'finalized')
+          return allocated && file?.owner_principal_id === publication.owner_principal_id
+            ? [{ ...publication, file_activity_revision: file.activity_record_revision, file_state: file.state }] : []
+        }))
+    }
     if (sql.startsWith('select (select started_at from operator_conversation_turns')) {
       const latest = [...this.turns.values()].sort((a, b) => Number(a.turn_sequence) - Number(b.turn_sequence)).at(-1)
       return result([{ started_at: receipt?.started_at ?? null, latest_request_id: latest?.request_id ?? null }])
