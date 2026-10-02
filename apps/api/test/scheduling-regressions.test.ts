@@ -69,7 +69,13 @@ for (const join of [{ mode: 'threshold', required: 2 }, { mode: 'any' }]) {
         nodes: version.definition.nodes.map((node) => node.id === targetId ? { ...node, join } : node),
       } })
       assert.equal(result.success, false)
-      if (!result.success) assert.ok(result.error.issues.some((issue) => issue.path.includes('join')))
+      if (!result.success) {
+        const nodeIssue = result.error.issues.find((issue) => issue.code === 'invalid_union'
+          && JSON.stringify(issue.path) === JSON.stringify(['definition', 'nodes', version.definition.nodes.length - 1]))
+        assert.ok(nodeIssue?.code === 'invalid_union')
+        assert.ok(nodeIssue.errors[0]?.some((issue) => issue.code === 'invalid_value'
+          && issue.path.slice(-2).join('.') === 'join.mode' && issue.values.length === 1 && issue.values[0] === 'all'))
+      }
     })
   }
 }
