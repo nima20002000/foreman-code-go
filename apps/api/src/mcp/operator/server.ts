@@ -7,7 +7,6 @@ import { registerResourceTelemetrySelectorTools } from './resourceTelemetrySelec
 import { registerJobTools } from './tools/jobs.js'
 import { registerJobRuntimeTools } from './tools/jobRuntimeProfiles.js'
 import { registerDeviceOperatorTools } from './tools/devices.js'
-import { registerOperatorControlTools } from './tools/operatorControls.js'
 import { registerSourceTools } from '../../modules/sources/mcp.js'
 import { registerFileReferenceTools } from './tools/fileReferences.js'
 import { McpServer } from '@modelcontextprotocol/server'
@@ -50,7 +49,6 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerJobTools(server, context)
   registerJobRuntimeTools(server, context)
   registerDeviceOperatorTools(server, context)
-  registerOperatorControlTools(server, context)
   registerFileReferenceTools(server, context)
   registerContextTools(server, context)
   registerHarnessTools(server, context)
