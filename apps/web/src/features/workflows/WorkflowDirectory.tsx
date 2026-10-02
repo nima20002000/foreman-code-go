@@ -80,11 +80,11 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
   )
 }
 
-export function WorkflowDirectory({ workspaceId, headingLevel = 1 }: { workspaceId: string; headingLevel?: 1 | 2 }) {
-  return <WorkflowDirectoryContent key={workspaceId} workspaceId={workspaceId} headingLevel={headingLevel} />
+export function WorkflowDirectory({ workspaceId, headingLevel = 1, hideHeading = false }: { workspaceId: string; headingLevel?: 1 | 2; hideHeading?: boolean }) {
+  return <WorkflowDirectoryContent key={workspaceId} workspaceId={workspaceId} headingLevel={headingLevel} hideHeading={hideHeading} />
 }
 
-function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: string; headingLevel: 1 | 2 }) {
+function WorkflowDirectoryContent({ workspaceId, headingLevel, hideHeading }: { workspaceId: string; headingLevel: 1 | 2; hideHeading: boolean }) {
   const queryClient = useQueryClient()
   const managedQuery = useWorkflowPages(workspaceId, true, 'directory')
   const updateWorkflow = useUpdateManagedWorkflowMutation()
@@ -135,26 +135,27 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
   const allShownSelected = selectable.length > 0 && selectable.every((item) => item.id in selection.selected)
   const managedById = new Map(managed.map((item) => [item.workflow.id, item]))
   const workflows = managed.map((item) => item.workflow)
+  const actions = workflows.length > 0 ? <div className="resource-directory-actions">
+    {!selection.selecting ? <>
+      <Button ref={selectRef} onClick={selection.start}>Select workflows</Button>
+      <NewWorkflowAction workspaceId={workspaceId} />
+    </> : <>
+      <span role="status">{count} selected</span>
+      <Button disabled={locked} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
+        {allShownSelected ? 'Clear selection' : managed.length > 100 ? 'Select first 100 shown' : 'Select all shown'}
+      </Button>
+      <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
+      <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
+    </>}
+  </div> : undefined
 
   return (
-    <section className="workflow-directory resource-directory" aria-label="Workflows">
-      <PageHeader
+    <section className={`workflow-directory resource-directory${hideHeading ? ' workflow-directory--embedded' : ''}`} aria-label="Workflows">
+      {hideHeading ? actions && <div className="workflow-directory-toolbar">{actions}</div> : <PageHeader
         title="Workflows"
         headingLevel={headingLevel}
-        actions={workflows.length > 0 ? <div className="resource-directory-actions">
-          {!selection.selecting ? <>
-            <Button ref={selectRef} onClick={selection.start}>Select workflows</Button>
-            <NewWorkflowAction workspaceId={workspaceId} />
-          </> : <>
-            <span role="status">{count} selected</span>
-            <Button disabled={locked} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
-              {allShownSelected ? 'Clear selection' : managed.length > 100 ? 'Select first 100 shown' : 'Select all shown'}
-            </Button>
-            <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
-            <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
-          </>}
-        </div> : undefined}
-      />
+        actions={actions}
+      />}
 
       {selection.notice ? <p role="status">{selection.notice}</p> : null}
       {selection.selecting ? <p className="resource-selection-hint">Select workflows to delete. You can show more and keep your selection. Up to 100 at a time.</p> : null}
@@ -201,7 +202,7 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
       ) : managedQuery.isError ? (
         <ErrorState title="Workflows unavailable" description="The workflow list could not be loaded." onRetry={() => void managedQuery.refetch()} />
       ) : (
-        <div data-testid="workflow-directory-empty">
+        <div className="workflow-directory-empty" data-testid="workflow-directory-empty">
           <EmptyState
             icon="workflow"
             title="No workflows yet"

@@ -12,6 +12,31 @@ afterEach(() => {
 })
 
 describe('WorkflowDirectory', () => {
+  it('keeps populated management actions when its containing page supplies the heading', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" hideHeading />)
+
+    await screen.findByTestId('workflow-card-workflow-content-pipeline')
+    expect(screen.queryByRole('heading', { name: 'Workflows' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Select workflows' }))
+    expect(screen.getByRole('checkbox', { name: 'Select Research to review' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Cancel selection' }))
+    await user.click(screen.getByRole('button', { name: 'New workflow' }))
+    expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
+  })
+
+  it('groups the empty start treatment and creation action below the containing page heading', async () => {
+    const user = userEvent.setup()
+    server.use(http.get('/api/management/workspaces/workspace-1/workflows', () => HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })))
+    renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" hideHeading />)
+
+    const empty = within(await screen.findByTestId('workflow-directory-empty'))
+    expect(empty.getByRole('heading', { name: 'No workflows yet' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Workflows' })).not.toBeInTheDocument()
+    await user.click(empty.getByRole('button', { name: 'New workflow' }))
+    expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
+  })
+
   it('offers creation alongside existing workflows', async () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" />)

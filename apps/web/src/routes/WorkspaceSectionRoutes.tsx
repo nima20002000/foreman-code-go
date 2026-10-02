@@ -68,7 +68,7 @@ export function WorkflowsRouteEntry() {
     <WorkspaceShell
       workspaceId={workspaceId}
       activeSection="workflows"
-      slots={{ main: <WorkspaceDetailPage workspaceId={workspaceId} section="workflows"><WorkflowDirectory workspaceId={workspaceId} headingLevel={2} /></WorkspaceDetailPage> }}
+      slots={{ main: <WorkspaceDetailPage workspaceId={workspaceId} section="workflows"><WorkflowDirectory workspaceId={workspaceId} hideHeading /></WorkspaceDetailPage> }}
     />
   )
 }

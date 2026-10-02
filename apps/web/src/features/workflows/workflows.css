@@ -118,6 +118,11 @@
   padding: clamp(1.5rem, 4vw, 3rem);
 }
 
+.workflow-directory.workflow-directory--embedded.resource-directory { width: 100%; margin: 0; padding: 0; }
+.workflow-directory-toolbar { display: flex; justify-content: flex-end; }
+.workflow-directory--embedded .workflow-directory-empty { display: grid; place-items: center; min-height: 280px; }
+.workflow-directory--embedded .workflow-directory-empty > .n-empty { width: 100%; }
+
 .workspace-board {
   display: flex;
   min-height: 0;
