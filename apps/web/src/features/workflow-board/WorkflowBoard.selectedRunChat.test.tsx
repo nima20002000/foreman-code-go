@@ -86,7 +86,8 @@ it('opens saved Agent chat for a selected past Run and returns to Current chat',
   expect(source.current.calls.filter((call) => call.method === 'POST')).toHaveLength(0)
 
   await userEvent.click(screen.getByRole('button', { name: 'Runs' }))
-  await userEvent.click(within(await screen.findByRole('menu', { name: 'Runs' })).getByRole('menuitemradio', { name: 'Current workflow' }))
+  await screen.findByRole('menu', { name: 'Runs' })
+  await userEvent.click(screen.getByRole('button', { name: 'Return to workflow' }))
   await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument())
   expect(screen.getByTestId('agent-conversation')).toHaveAttribute('data-chat-key', agentChatContextKey(context()))
   expect(screen.queryByText('To saved Agent')).not.toBeInTheDocument()
