@@ -67,22 +67,27 @@ export class PostgresOperatorActivityRepository {
       const nativeSequence = fence.source?.nativeSequence ?? (connectionId === undefined ? fence.source?.sequence : undefined)
       const legacyTransport = connectionId !== undefined && fence.source?.sequence !== undefined ? Number(fence.source.sequence) : undefined
       const transportSequence = fence.source?.transportSequence ?? (Number.isSafeInteger(legacyTransport) ? legacyTransport : undefined)
+      const previousNative = stored.nativeSequence ?? (stored.connectionId === undefined ? stored.sequence : undefined)
+      const previousTransport = stored.transportSequence ?? (stored.connectionId !== undefined && stored.sequence !== undefined ? Number(stored.sequence) : undefined)
+      const sameConnection = connectionId !== undefined && connectionId === stored.connectionId
+      const retainTransport = fence.authoritativeReconciliation && (connectionId === undefined || sameConnection)
       const source = { ...(fence.authoritativeReconciliation ? stored : {}), ...(fence.nativeSubmission ? { nativeSubmission: fence.nativeSubmission } : {}), schemaVersion: 1, system: 'conversation_activity', ...fence.source,
-        connectionId, nativeSequence, transportSequence,
+        connectionId: connectionId ?? (fence.authoritativeReconciliation ? stored.connectionId : undefined),
+        sequence: fence.source?.sequence ?? (retainTransport ? stored.sequence : undefined),
+        nativeSequence: nativeSequence ?? (fence.authoritativeReconciliation ? previousNative : undefined),
+        transportSequence: transportSequence ?? (retainTransport ? previousTransport : undefined),
         ...(native ? { native: ActivityNativeIdentitySchema.parse(native) } : {}),
         ...(fence.native ? { ownerNative: ActivityNativeIdentitySchema.parse(fence.native), ownerInputHash } : {}),
         ...(fence.parent ? { parent: WorkRefSchema.parse(fence.parent) } : {}) }
-      const previousNative = stored.nativeSequence ?? (stored.connectionId === undefined ? stored.sequence : undefined)
-      const previousTransport = stored.transportSequence ?? (stored.connectionId !== undefined && stored.sequence !== undefined ? Number(stored.sequence) : undefined)
-      const orderedNative = source.nativeSequence !== undefined && previousNative !== undefined
-      const sameConnection = source.connectionId !== undefined && source.connectionId === stored.connectionId
-      const orderedTransport = sameConnection && source.transportSequence !== undefined && previousTransport !== undefined
+      // Retained history watermarks are not newly observed ordering evidence.
+      const orderedNative = nativeSequence !== undefined && previousNative !== undefined
+      const orderedTransport = sameConnection && transportSequence !== undefined && previousTransport !== undefined
       const merged = prior ? { ...prior.record, ...value } : value
       // Compare parsed allowlisted facts, independent of JSONB key order.
       const changed = !prior || JSON.stringify(changeSchema.parse(prior.record)) !== JSON.stringify(changeSchema.parse(merged))
       const stale = fence.source?.eventId !== undefined && fence.source.eventId === stored.eventId
-        || orderedNative && BigInt(source.nativeSequence!) <= BigInt(previousNative!)
-        || orderedTransport && source.transportSequence! <= previousTransport!
+        || orderedNative && BigInt(nativeSequence!) <= BigInt(previousNative!)
+        || orderedTransport && transportSequence! <= previousTransport!
       const terminal = prior && ['completed', 'failed', 'canceled'].includes(prior.record.status)
       const ambiguous = prior && changed && (stored.connectionId !== undefined && !sameConnection
         || prior.record.status === value.status && !orderedNative && !orderedTransport)
