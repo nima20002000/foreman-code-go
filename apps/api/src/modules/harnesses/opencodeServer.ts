@@ -377,6 +377,9 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
         if (turn.terminalResult) return
         if (turn.submitted) {
           initialHistory = await this.reconcileReady(session, correlationId, signal)
+          // Exact persisted submission precedes this observer's new subscription.
+          // The original pre-submission stream still requires its live root event.
+          if (root?.info.role === 'user') turn.activityObserved = true
           // An observer can yield saved history before its next pull. Subscribe
           // now so native completion in that interval is not missed.
           if (turn.files && !initialHistory.terminalResult) {
@@ -613,6 +616,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (!current()) return unavailable('callback_lost', true)
       if (this.responseReceipts.has(JSON.stringify([session.nativeSessionId, query.nativeRequestId]))) return unavailable('request_consumed')
       if (state.responsesInFlight.has(query.nativeRequestId)) return unavailable('response_in_flight')
+      if (state.responsesUncertain.has(query.nativeRequestId)) return unavailable('callback_lost', true)
       return { nativeSessionId: session.nativeSessionId, nativeRequestId: query.nativeRequestId,
         nativeRequestType: query.nativeRequestType, nativeTurnId, generation: `${state.connectionId}:${generation}`,
         qualified: true, state: 'available', path: 'qualified_recovery', reason: 'qualified_recovery' }
