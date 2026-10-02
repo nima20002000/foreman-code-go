@@ -112,13 +112,19 @@ describe('PR17 Operator interaction regressions', () => {
     renderChat()
     await screen.findByRole('textbox', { name: 'Message' })
     const listeners = vi.mocked(subscribeOperatorChat).mock.calls.at(-1)![1]
-    act(() => listeners.event({ id: 1, type: 'delta', conversationId: 'conversation-one', data: { requestId: 'request-one', partId: 'answer', mode: 'append', text: 'Streaming reply' } }))
+    act(() => listeners.event({ id: 1, type: 'delta', conversationId: 'conversation-one', data: { activityChange: {
+      schemaVersion: 1, owner: { kind: 'chat_request', conversationId: 'conversation-one', requestId: 'request-one' },
+      native: { harness: 'codex', sessionId: 'native-session', turnId: 'native-turn', itemId: 'answer' },
+      source: { schemaVersion: 1, system: 'codex', eventId: 'streaming-answer', observedAt: '2026-10-01T00:00:00Z' },
+      change: { kind: 'text.append', itemId: 'answer', text: 'Streaming reply', finality: 'provisional' },
+    } } }))
     expect(screen.getByText('Streaming reply')).toBeInTheDocument()
     vi.mocked(getOperatorConversation).mockImplementation(() => new Promise(() => {}))
     act(() => listeners.event({ id: 2, type: 'message', conversationId: 'conversation-one', data: { requestId: 'request-one' } }))
     expect(screen.getByText('Streaming reply')).toBeInTheDocument()
     act(() => listeners.snapshot(operatorState({ revision: 2, turnState: 'idle', activeRequestId: null,
-      messages: [{ id: 'final', conversationId: 'conversation-one', role: 'assistant', content: 'Streaming reply' }] })))
+      messages: [{ id: 'final', conversationId: 'conversation-one', requestId: 'request-one', role: 'assistant',
+        nativeMessageId: 'answer', nativeMessageComplete: true, content: 'Streaming reply' }] })))
     expect(screen.getAllByText('Streaming reply')).toHaveLength(1)
     expect(screen.queryByLabelText('Operator is typing')).not.toBeInTheDocument()
   })

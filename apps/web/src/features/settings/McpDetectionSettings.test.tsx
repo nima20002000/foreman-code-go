@@ -3,6 +3,10 @@ import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../mocks/server'
+import { boundLocationKeys } from '../../shared/api/workspaceBoundLocation'
+import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
 import { ScopedMcpDetectionSchema, type AgentHarness, type McpDetection } from '@graphql/contracts'
 import { ManagedWorkspaceSchema } from '@graphql/contracts/management'
 
@@ -70,6 +74,10 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  useBoundLocationDraftStore.getState().reset()
+  server.use(http.get('/api/management/workspaces/:workspaceId/root-policies', ({ params }) => HttpResponse.json({
+    workspaceId: params.workspaceId, readiness: 'metadata-only', policies: [], allowlists: [],
+  })))
   getDetection.mockImplementation(async (_id, harness) => detection(harness))
   getWorkspace.mockImplementation(async (id) => workspace(id))
   listWorkspaces.mockResolvedValue({ items: [workspace()], pageInfo: { nextCursor: null } })
@@ -219,9 +227,10 @@ describe('Workspace App MCP scope and access', () => {
     value.setQueryData(queryKeys.managedWorkspace('workspace-1'), {
       ...workspace(), executionLocation: null, locationValidation: { status: 'unconfigured' },
     })
+    value.setQueryData(boundLocationKeys.read('workspace-1'), { evidence: 'unconfigured', workspaceId: 'workspace-1', locationRevision: 1, executionLocation: null })
     mount(value)
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Choose workspace folder' }))
-    expect(await screen.findByRole('dialog', { name: 'Choose folder' })).toBeVisible()
+    expect(await screen.findByRole('dialog', { name: 'Execution folder' })).toBeVisible()
     expect(getDetection).not.toHaveBeenCalled()
   })
 
@@ -239,12 +248,16 @@ describe('Workspace App MCP scope and access', () => {
   it('keeps unavailable-folder diagnosis accessible without treating it as an unconfigured workspace', async () => {
     const value = client()
     value.setQueryData(queryKeys.managedWorkspace('workspace-1'), {
-      ...workspace(), locationValidation: { status: 'unavailable', error: { message: 'The folder was removed.' } },
+      ...workspace(), locationValidation: { status: 'unavailable', checkedAt, error: { code: 'FOLDER_MISSING', message: 'The folder was removed.' } },
     })
+    value.setQueryData(boundLocationKeys.read('workspace-1'), { evidence: 'legacy_missing', workspaceId: 'workspace-1',
+      locationRevision: 1, executionLocation: workspace().executionLocation })
     mount(value)
     expect(await screen.findByRole('button', { name: 'Choose workspace folder' })).toBeVisible()
     expect(await screen.findByText('The folder was removed.')).toBeVisible()
     expect(screen.getAllByText('The folder was removed.')).toHaveLength(1)
+    expect(screen.getByText('/srv/project')).toBeVisible()
+    expect(screen.queryByText('No execution folder has been configured.')).not.toBeInTheDocument()
     expect(getDetection).not.toHaveBeenCalled()
   })
 

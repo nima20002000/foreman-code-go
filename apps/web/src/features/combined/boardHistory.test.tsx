@@ -97,7 +97,15 @@ beforeEach(() => {
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation(); useGraphDraftStore.getState().clearAllDrafts()
   installFlowLayout(320, 480); installChatSource()
-  server.use(selectedChatUnavailable)
+  server.use(selectedChatUnavailable,
+    http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({
+      evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 1,
+      executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+    })),
+    http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
+      workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [],
+    })),
+  )
 })
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear())

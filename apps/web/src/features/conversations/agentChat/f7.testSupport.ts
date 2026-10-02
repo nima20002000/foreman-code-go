@@ -63,6 +63,10 @@ export function approvalFixture(state: AgentChatState): AgentChatState {
     nativeRequestType: harness === 'codex' ? 'item/commandExecution/requestApproval' : 'permission.asked',
     request: { command: ['read', 'README.md'] },
     responseOptions: structuredClone(harness === 'codex' ? CODEX_APPROVAL_OPTIONS_FIXTURE : OPENCODE_APPROVAL_OPTIONS_FIXTURE) }
+  // This controlled wire scenario explicitly represents an available native callback.
+  next.responseAvailability = { nativeSessionId: session.nativeSessionId, nativeRequestId: `${harness}-approval`,
+    nativeTurnId: next.activeTurn.nativeTurnId, nativeRequestType: next.pendingInteraction.nativeRequestType,
+    available: true, status: 'available', path: 'live_callback', reason: 'live_callback', message: 'Native reply callback is available.' }
   return next
 }
 

@@ -62,6 +62,13 @@ beforeEach(() => {
   installFlowLayout(1000, 720)
   const fixture = getMockFixture(scope.workspaceId)!
   server.use(
+    http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({
+      evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 1,
+      executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
+    })),
+    http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
+      workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [],
+    })),
     http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({
       workspace: fixture.workspace, revision: 1, archivedAt: null,
       executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' }, locationRevision: 1,

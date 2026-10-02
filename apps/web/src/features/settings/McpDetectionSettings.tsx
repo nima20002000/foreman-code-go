@@ -32,6 +32,9 @@ function WorkspaceEvidence({ workspaceId, harness, returnTo }: Props & { workspa
     {query.isError ? <Alert tone="warning" title="Workspace details couldn't update" action={retry}>
       Showing the last saved location.
     </Alert> : null}
+    {current.locationValidation.status === 'unavailable' ? <Alert tone="warning" title="Workspace folder is unavailable" action={retry}>
+      {current.locationValidation.error.message}
+    </Alert> : null}
     {ready && location ? <div className="mcp-connection-grid">
       {(harness ? [harness] : ['codex', 'opencode'] as const).map((provider) => <McpConnectionCard
         key={JSON.stringify([workspaceId, provider, location.runnerId, location.rootPath])}

@@ -34,7 +34,9 @@ beforeEach(() => {
   useConversationDraftStore.getState().clearAllDrafts()
   useOperatorChatStore.setState({ open: true, historyOpen: true, selectedConversationId: 'conversation-one' })
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  api.get.mockResolvedValue(operatorState({ turnState: 'idle', activeRequestId: null }))
+  api.get.mockImplementation(async (id) => operatorState({ conversation: { ...operatorState().conversation, id },
+    messages: id === 'new-chat' ? [] : operatorState().messages.map((message) => ({ ...message, conversationId: id })),
+    turnState: 'idle', activeRequestId: null }))
   api.list.mockResolvedValue({ conversations: [summarizeOperatorConversation(operatorState())] })
   api.remove.mockResolvedValue({ conversationId: 'conversation-one' })
   api.restore.mockResolvedValue({ conversationId: 'conversation-one' })
@@ -151,7 +153,7 @@ describe('Operator chat UX', () => {
       advanced: { approvalPolicy: 'never' } }))
     fireEvent.click(within(screen.getByRole('form', { name: 'Conversation composer' })).getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
-    expect(screen.getByRole('button', { name: 'Operator access: Workspace write' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Operator access: Workspace write' })).toBeVisible()
   })
 
   it('saves OpenCode permission rules from the composer to future Operator chats', async () => {
@@ -167,7 +169,7 @@ describe('Operator chat UX', () => {
       advanced: { permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }] } }))
     fireEvent.click(within(screen.getByRole('form', { name: 'Conversation composer' })).getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
-    expect(screen.getByRole('button', { name: 'Operator access: 1 OpenCode rule' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Operator access: 1 OpenCode rule' })).toBeVisible()
   })
 
   it('starts a linked child on the first send after changing harness', async () => {
