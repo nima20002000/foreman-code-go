@@ -2,9 +2,14 @@
 .workspace-settings-identity { display: grid; gap: var(--space-2); min-width: 0; flex: 1; }
 .workspace-settings-name { width: fit-content; max-width: 100%; margin: 0; padding: 0; border: 0; background: transparent; text-align: start; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-settings-name:hover { color: var(--n-text); }
-.workspace-settings-name-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; width: fit-content; max-width: 100%; }
-.workspace-settings-name-row .resource-trash-control { opacity: 0; transition: opacity var(--n-fast); }
-.workspace-settings-name-row:is(:hover, :focus-within) .resource-trash-control { opacity: 1; }
+.workspace-settings-name-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.workspace-settings-name-actions { display: flex; align-items: center; gap: var(--space-2); flex: 0 1 auto; min-width: 0; max-width: 45%; }
+.workspace-settings-name-actions > .resource-trash-control { flex: 0 0 auto; }
+.workspace-settings-name-row > .workspace-location-form--compact { flex: 0 1 auto; min-width: 0; }
+.workspace-settings-name-row:has(.workspace-settings-name-editor) { flex-wrap: wrap; }
+.workspace-settings-name-actions:has(.workspace-settings-name-editor) { max-width: 100%; }
+.workspace-settings-name-actions .resource-trash-control { opacity: 0; transition: opacity var(--n-fast); }
+.workspace-settings-name-actions:is(:hover, :focus-within) .resource-trash-control { opacity: 1; }
 .workspace-settings-name-editor { display: flex; flex-wrap: wrap; align-items: start; gap: var(--space-2); min-width: 0; }
 .workspace-settings-name-editor > .n-field { min-width: 0; flex: 1 1 12rem; }
 .workspace-settings-name-editor > .n-field > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

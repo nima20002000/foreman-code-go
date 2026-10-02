@@ -12,8 +12,9 @@ import { UnsavedChangesProvider } from '../../shared/ui/UnsavedChangesProvider'
 import { HarnessComputerSearchSchema } from './harnessComputerSearch'
 import { clearRevisionedFormPersistence } from './revisionedForm'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'
+import { AppNavigationTrail } from '../../shared/ui/AppNavigationTrail'
 
-vi.mock('../../shared/ui/WorkspaceShell', () => ({ WorkspaceShell: ({ slots }: { slots: { main: unknown } }) => slots.main }))
+vi.mock('../../shared/ui/WorkspaceShell', () => ({ WorkspaceShell: ({ slots }: { slots: { main: unknown } }) => <><AppNavigationTrail />{slots.main}</> }))
 const mainId = '11111111-1111-4111-8111-111111111111'
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clearRevisionedFormPersistence(); clients.splice(0).forEach(client => client.clear()) })
@@ -49,20 +50,20 @@ function setup(pending = false) {
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   return { router, requests: () => requests, acknowledge, held }
 }
-it('returns to the Harnesses overview from the top back link after an acknowledged computer-profile save', async () => {
+it('returns to the Harnesses overview from the breadcrumb after an acknowledged computer-profile save', async () => {
   const f = setup()
   const user = userEvent.setup()
   const model = await screen.findByRole('textbox', { name: 'Model' })
   await user.clear(model); await user.type(model, 'saved-host-model')
   await user.click(screen.getByRole('button', { name: 'Save host override' }))
   expect(await screen.findByText('Changes saved to the server')).toBeVisible()
-  await user.click(screen.getByRole('link', { name: 'Back to harnesses' }))
+  await user.click(screen.getByRole('link', { name: 'Go to Harnesses' }))
   expect(await screen.findByRole('heading', { name: 'Harnesses' })).toBeVisible()
   expect(f.router.state.location.search).toEqual({})
   expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   expect(f.requests()).toBe(1)
 })
-it('keeps pending saves and newer edits protected when the top back link is clicked', async () => {
+it('keeps pending saves and newer edits protected when the Harnesses breadcrumb is clicked', async () => {
   const f = setup(true)
   const user = userEvent.setup()
   const model = await screen.findByRole('textbox', { name: 'Model' })
@@ -70,7 +71,7 @@ it('keeps pending saves and newer edits protected when the top back link is clic
   await user.click(screen.getByRole('button', { name: 'Save host override' }))
   await waitFor(() => expect(f.requests()).toBe(1))
   await user.clear(model); await user.type(model, 'newer-unsaved-host-model')
-  await user.click(screen.getByRole('link', { name: 'Back to harnesses' }))
+  await user.click(screen.getByRole('link', { name: 'Go to Harnesses' }))
   const dialog = await screen.findByRole('alertdialog', { name: 'Save changes before leaving?' })
   expect(within(dialog).getByRole('button', { name: 'Discard' })).toBeDisabled()
   expect(f.router.state.location.search.computer).toBe('main')

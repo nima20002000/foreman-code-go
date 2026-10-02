@@ -30,7 +30,6 @@ export function WorkspaceDetailPage({ workspaceId, section, children }: {
       </div>
     </div>
   return <div className="settings-page settings-experience workspace-detail-page">
-    <Link to="/workspaces" className="settings-back-link" aria-label="Back to workspaces"><span aria-hidden="true">←</span> Workspaces</Link>
     {current ? <WorkspaceSettingsHeader key={workspaceId} workspaceId={workspaceId} name={current.workspace.name} revision={current.revision} title={title} renderContent={content} />
       : <><PageHeader eyebrow="Workspace" title={title} />{unavailable}</>}
   </div>

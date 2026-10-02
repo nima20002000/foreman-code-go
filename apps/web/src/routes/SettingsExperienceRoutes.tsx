@@ -1,4 +1,4 @@
-import { Link, Navigate, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { Navigate, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
 import { ComputerSettings } from '../features/settings/ComputerSettings'
@@ -13,10 +13,9 @@ import { SkillsLibrary } from '../features/skills/SkillsLibrary'
 import { NewSkillPage, SkillDetailPage } from '../features/skills/SkillPages'
 import '../features/settings/settingsExperience.css'
 
-function SettingsShell({ children, back }: { children: ReactNode; back?: ReactNode }) {
+function SettingsShell({ children }: { children: ReactNode }) {
   return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="settings" slots={{ main:
     <div className="settings-page settings-experience">
-      {back ?? <Link to="/settings" className="settings-back-link" aria-label="Back to settings"><span aria-hidden="true">←</span> Settings</Link>}
       {children}
     </div>,
   }} />
@@ -24,7 +23,7 @@ function SettingsShell({ children, back }: { children: ReactNode; back?: ReactNo
 export function AgentSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/agents' })
   const navigate = useNavigate({ from: '/settings/agents' })
-  return <SettingsShell back={search.role ? <Link to="/settings/agents" search={{}} className="settings-back-link" aria-label="Back to agents"><span aria-hidden="true">←</span> Agents</Link> : undefined}><AgentDefaultsSettings selectedRole={search.role} section={search.section ?? 'model'}
+  return <SettingsShell><AgentDefaultsSettings selectedRole={search.role} section={search.section ?? 'model'}
     onSelectRole={(role) => void navigate({ search: role ? { role, section: 'model' } : {} })}
     onSectionChange={(section) => {
       if (section === 'connections' || section === 'workspace' || section === 'plugins') return
@@ -37,11 +36,10 @@ export function HarnessSettingsRouteEntry() {
   useEffect(() => {
     if (search.harness === 'opencode' && search.section === 'plugins') void navigate({ search: { ...search, harness: 'opencode', section: 'model' }, replace: true })
   }, [search, navigate])
-  return <SettingsShell back={search.harness ? <Link to="/settings/harnesses" search={{}} className="settings-back-link" aria-label="Back to harnesses"><span aria-hidden="true">←</span> Harnesses</Link> : undefined}><HarnessComputerScope selectedComputer={search.computer} onSelectComputer={(computer) => void navigate({ search: { ...search, computer } })}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.harness === 'opencode' && search.section === 'plugins' ? 'model' : search.section ?? 'model'}
+  return <SettingsShell><HarnessComputerScope selectedComputer={search.computer} onSelectComputer={(computer) => void navigate({ search: { ...search, computer } })}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.harness === 'opencode' && search.section === 'plugins' ? 'model' : search.section ?? 'model'}
     onSelectHarness={(harness) => void navigate({ search: harness ? { ...search, harness, section: 'model' } : { computer: search.computer } })}
     onSectionChange={(section) => void navigate({ search: { ...search, section } })} /></HarnessComputerScope></SettingsShell>
 }
-const skillsBack = <Link to="/settings/skills" className="settings-back-link" aria-label="Back to skills"><span aria-hidden="true">←</span> Skills</Link>
 export function SkillsSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/skills' })
   const navigate = useNavigate({ from: '/settings/skills' })
@@ -50,14 +48,14 @@ export function SkillsSettingsRouteEntry() {
 export function NewSkillRouteEntry() {
   const search = useSearch({ from: '/settings/skills/new' })
   const navigate = useNavigate()
-  return <SettingsShell back={skillsBack}><NewSkillPage workspaceId={search.workspace}
+  return <SettingsShell><NewSkillPage workspaceId={search.workspace}
     onSaved={(result) => void navigate({ to: '/settings/skills/$workspaceId/$skillId', params: { workspaceId: result.skill.workspaceId, skillId: result.skill.skillId }, replace: true })}
     onCancel={() => void navigate({ to: '/settings/skills', search: search.workspace ? { workspace: search.workspace } : {} })} /></SettingsShell>
 }
 export function SkillDetailRouteEntry() {
   const params = useParams({ from: '/settings/skills/$workspaceId/$skillId' })
   const navigate = useNavigate()
-  return <SettingsShell back={skillsBack}><SkillDetailPage key={`${params.workspaceId}:${params.skillId}`} workspaceId={params.workspaceId} skillId={params.skillId}
+  return <SettingsShell><SkillDetailPage key={`${params.workspaceId}:${params.skillId}`} workspaceId={params.workspaceId} skillId={params.skillId}
     onCancel={() => void navigate({ to: '/settings/skills' })} /></SettingsShell>
 }
 export function WorkspaceDefaultsSettingsRouteEntry() {
@@ -80,7 +78,7 @@ export function ComputersSettingsRouteEntry() {
 export function ComputerDetailsSettingsRouteEntry() {
   const params = useParams({ strict: false })
   const device = DeviceRegistrationSchema.shape.deviceId.safeParse(params.deviceId)
-  return <SettingsShell back={<Link to="/settings/computers" className="settings-back-link"><span aria-hidden="true">←</span> Computers</Link>}>
+  return <SettingsShell>
     {device.success ? <ComputerSettings key={device.data} deviceId={device.data} /> : <Alert tone="danger" title="The computer address is invalid." />}
   </SettingsShell>
 }

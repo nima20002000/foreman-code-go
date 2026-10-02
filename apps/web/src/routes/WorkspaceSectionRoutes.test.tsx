@@ -150,7 +150,7 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Settings', level: 1 })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('link', { name: 'Back to settings' }))
+    await user.click(screen.getByRole('button', { name: 'Back' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
   })
@@ -238,7 +238,8 @@ describe('workspace section routes', () => {
     await waitFor(() => expect(section.getByTestId('workflow-card-workflow-content-pipeline')).toHaveTextContent('Settings workflow'))
     await user.click(section.getByRole('button', { name: 'Select workflows' }))
     expect(section.getByRole('checkbox', { name: 'Select Settings workflow' })).toBeVisible()
-    await user.click(section.getByRole('button', { name: 'Cancel selection' }))
+    await user.click(section.getByRole('button', { name: 'Selection options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Cancel selection' }))
     await user.click(section.getByRole('button', { name: 'New workflow' }))
     expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
   })
@@ -260,7 +261,7 @@ describe('workspace section routes', () => {
     expect(screen.queryByRole('link', { name: 'Workspace settings' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
 
-    await user.click(screen.getByRole('link', { name: 'Back to settings' }))
+    await user.click(screen.getByRole('button', { name: 'Back' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
     expect(screen.queryByRole('link', { name: /Browsers/ })).not.toBeInTheDocument()
@@ -281,6 +282,7 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
     const executionLocation = await screen.findByLabelText('Execution location', { selector: 'button' })
     expect(executionLocation).toBe(screen.getByRole('button', { name: 'Execution location' }))
+    expect(executionLocation.closest('.workspace-settings-name-row')).toContainElement(screen.getByRole('button', { name: 'Rename workspace Website' }))
     await user.click(executionLocation)
 
     const dialog = await screen.findByRole('dialog', { name: 'Choose folder' })
@@ -302,6 +304,7 @@ describe('workspace section routes', () => {
     await user.type(screen.getByRole('textbox', { name: 'Workspace name' }), 'Workspace header rename')
     await user.click(screen.getByRole('button', { name: 'Save name' }))
     expect(await screen.findByRole('button', { name: 'Rename workspace Workspace header rename' })).toBeVisible()
+    expect(within(screen.getByRole('navigation', { name: 'Breadcrumbs' })).getByRole('link', { name: 'Go to Workspace header rename' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Rename workspace' }))
     expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Workspace header rename')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))

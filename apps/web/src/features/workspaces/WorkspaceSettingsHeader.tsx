@@ -75,6 +75,7 @@ export function WorkspaceSettingsHeader({ workspaceId, name, revision, title = '
       <header className="workspace-settings-header">
       <div className="workspace-settings-identity">
         <div className="workspace-settings-name-row">
+          <div className="workspace-settings-name-actions">
           {open ? <div className="workspace-settings-name-editor">
             <TextField ref={input} label="Workspace name" value={value} maxLength={200} disabled={locked} error={error}
               onChange={(event) => { setValue(event.target.value); setError(undefined) }}
@@ -91,9 +92,10 @@ export function WorkspaceSettingsHeader({ workspaceId, name, revision, title = '
               aria-label={`Rename workspace ${name}`} disabled={locked} onClick={rename}>{name}</button>
             <TrashIconButton target="workspace" action="Remove" className="workspace-settings-trash" disabled={locked} onClick={remove} />
           </>}
+          </div>
+          <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="compact" triggerRef={locationTrigger} />
         </div>
         {attempt.current.unresolved && !mutation.isPending ? <Alert tone="warning" title="The rename may have succeeded. Retry to confirm its outcome." /> : null}
-        <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="compact" triggerRef={locationTrigger} />
         <h1>{title}</h1>
       </div>
       </header>

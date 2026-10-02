@@ -1,6 +1,5 @@
 import { useCallback, useEffect, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
 
 import '../shared/ui/resourceDirectory.css'
 
@@ -166,24 +165,14 @@ function SettingsCardBody({ icon, title, description }: {
   )
 }
 
-function SettingsBackLink() {
-  return (
-    <Link to="/settings" className="settings-back-link" aria-label="Back to settings">
-      <ArrowLeft aria-hidden="true" size={14} />Settings
-    </Link>
-  )
-}
-
-function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, backLink, children }: {
+function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, children }: {
   eyebrow?: string
   title: string
   description: string
-  backLink: ReactNode
   children: ReactNode
 }) {
   return (
     <div className="settings-page workspace-detail">
-      {backLink}
       <PageHeader eyebrow={eyebrow} title={title} description={description} />
       {children}
     </div>
@@ -273,7 +262,6 @@ export function WorkflowSettingsRouteEntry() {
           <SettingsDetailPage
             title="Workflows"
             description="New workflows copy this handler. Existing and in-flight approvals do not change."
-            backLink={<SettingsBackLink />}
           >
             <WorkflowDefaultsSettings />
           </SettingsDetailPage>
@@ -303,10 +291,7 @@ export function BrowsersSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/browsers' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
     <SettingsDetailPage eyebrow={`Workspace · ${workspaceId}`} title="Browsers"
-      description="Browser profiles this workspace's agents are allowed to drive."
-      backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
-        <ArrowLeft aria-hidden="true" size={14} />Settings
-      </Link>}>
+      description="Browser profiles this workspace's agents are allowed to drive.">
       <SettingsSection title="Browsers" description="Coming soon">
         <p>Browser profile management is planned but is not implemented yet.</p>
       </SettingsSection>
@@ -317,9 +302,6 @@ export function WorkspaceLocationSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings/location' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
     <div className="settings-page workspace-detail">
-      <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
-        <ArrowLeft aria-hidden="true" size={14} />Settings
-      </Link>
       <WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} presentation="card" />
     </div> }} />
 }

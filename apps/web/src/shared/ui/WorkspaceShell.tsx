@@ -14,6 +14,7 @@ import { ThemeToggle } from '../../features/theme'
 import { HarnessStatusMenu } from '../../features/settings/HarnessStatusMenu'
 import { useWorkspacePages } from '../api/query'
 import { EmptyState } from './nocturne'
+import { AppNavigationTrail } from './AppNavigationTrail'
 import { COLLAPSED_NAVIGATION_WIDTH } from '../../features/workspaces/navigationUiStore'
 import {
   DEFAULT_NAVIGATION_WIDTH,
@@ -276,6 +277,7 @@ export function WorkspaceShell({
       </aside>
 
       <main className="shell-main">
+        <AppNavigationTrail activeWorkflowId={activeWorkflowId} />
         {slots.main ? (
           <section className="shell-content" data-slot="main" aria-label="Workspace content">
             {slots.main}
