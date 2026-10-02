@@ -53,7 +53,7 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
 
 // Only supplied, actual domain registrations enter the authenticated transport.
 // The package never manufactures dispatch handlers or another workflow authority.
-export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains }) {
+export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync }) {
   const manifest = await prepareWorkerState(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
   let installed, connection;
@@ -86,6 +86,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         configuration: selection ? { path: configurationPath, ownerUid: process.getuid() } : null,
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
+        ...(rsync ? { rsync } : {}),
         codexSuiteRevision: codexQualificationSuite.revision });
     }
     connection = createWorkerConnection({ pairing, bootId, appVersion: manifest.version,

@@ -1,5 +1,5 @@
 import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
-import { createProductionRsyncComposition, type ProductionRsyncProviders } from '../byte-transfer/productionComposition.js'
+import { createInstalledRsyncComposition, type InstalledRsyncProviders } from '../byte-transfer/productionComposition.js'
 import { randomUUID } from 'node:crypto'
 import { RemoteJobExecutionRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
 import { createInstalledJobExecutionHost } from '../jobs/executorInstalled.js'
@@ -10,6 +10,7 @@ import { createWorkerJobInputPort } from '../files/jobInputs/workerFactory.js'
 import { JOB_INPUT_NAMESPACE } from '../files/jobInputs/protocol.js'
 import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.js'
 import { createInstalledJobOutputRsync } from '../runs/remote/installedJobOutputRsync.js'
+import { createInstalledJobInputRsync } from '../runs/remote/installedJobInputRsync.js'
 import { DeviceConnectionError } from './deviceWire.js'
 import type { RemoteJobExecutionHost } from '../runs/remote/jobExecutionHost.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -43,7 +44,7 @@ export async function createInstalledWorkerDomains(input: {
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
   codexSuiteRevision: string
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
-  rsync?: ProductionRsyncProviders
+  rsync?: InstalledRsyncProviders
 }) {
   const lifetime = new AbortController(), active = new Set<Promise<unknown>>()
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
@@ -75,7 +76,8 @@ export async function createInstalledWorkerDomains(input: {
     return ApprovedRootAllowlistSchema.parse(value)
   }
   const approved = await input.approvedRoots()
-  const jobOutputRsync=input.rsync&&input.jobConfiguration&&approved?await createInstalledJobOutputRsync({providers:input.rsync,journal:await jobJournal(),current,request}):undefined
+  let jobOutputRsync: Awaited<ReturnType<typeof createInstalledJobOutputRsync>> | undefined
+  let jobInputRsync: ReturnType<typeof createInstalledJobInputRsync> | undefined
   const sourceAcknowledgement = input.rsync && createWorkerSourceRsyncAcknowledgement({
     authenticate: async (intent, context, signal) => {
       if (!isDeepStrictEqual(transferContextForBinding(current()), context)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source acknowledgement requires the original current channel.', 409)
@@ -92,15 +94,22 @@ export async function createInstalledWorkerDomains(input: {
     },
     approvedRoots: roots,
   })
-  const rsyncProviders: ProductionRsyncProviders | undefined = input.rsync ? { ...input.rsync,
+  const rsyncProviders: InstalledRsyncProviders | undefined = input.rsync ? { ...input.rsync,
     resolveSource:async(intent,signal)=>jobOutputRsync&&await jobOutputRsync.owns(intent)?jobOutputRsync.resolveSource(intent,signal):input.rsync!.resolveSource(intent,signal),
     acknowledged: async (intent, context) => {
     if (intent.byteClass === 'source' && intent.direction === 'to-worker') await sourceAcknowledgement!.acknowledged(intent, context)
     else if(jobOutputRsync&&await jobOutputRsync.owns(intent))await jobOutputRsync.acknowledged(intent,context)
+    else if(jobInputRsync&&await jobInputRsync.owns(intent))await jobInputRsync.acknowledged(intent,context)
     else await input.rsync!.acknowledged(intent, context)
   } } : undefined
-  const rsync = createProductionRsyncComposition({ side: 'worker', providers: approved ? rsyncProviders : undefined,
+  const rsync = createInstalledRsyncComposition({ side: 'worker', providers: approved ? rsyncProviders : undefined,
     current: deviceId => deviceId === input.pairing.deviceId ? current() : undefined })
+  if (rsync.kind === 'configured' && input.rsync && input.jobConfiguration && approved) jobOutputRsync = await createInstalledJobOutputRsync({
+    providers: { ...input.rsync, quiescent: async (intent, signal) => { await rsync.writers.quiescent(intent, signal); await input.rsync!.quiescent(intent, signal) } },
+    journal: await jobJournal(), current, request })
+  if (rsync.kind === 'configured' && input.rsync && input.jobConfiguration && approved) jobInputRsync = createInstalledJobInputRsync({
+    receiver: input.rsync.receiver, journal: await jobJournal(), channel: { request, currentBinding: current },
+    receiptRoot: join(input.stateDirectory, 'job-input-receipts'), admissionRoot: join(input.stateDirectory, 'job-input-rsync-admissions') })
   const extensions: DeviceExtensionRegistration[] = [...rsync.extensions]
   let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
   let native: Awaited<ReturnType<typeof createInstalledWorkflowHost>> | undefined
@@ -144,11 +153,11 @@ export async function createInstalledWorkerDomains(input: {
     },
   })
   let jobs: RemoteJobExecutionHost | undefined, jobOpening: Promise<RemoteJobExecutionHost> | undefined
-  let jobInputs: ReturnType<typeof createWorkerJobInputPort> | undefined
+  let jobInputs: ReturnType<typeof createWorkerJobInputPort> | ReturnType<typeof createInstalledJobInputRsync> | undefined
   const openJobs = () => jobOpening ??= (async () => {
     const connection = current(), retained = await jobJournal()
     const application = new WorkerJobApplicationSink({ request })
-    jobInputs = createWorkerJobInputPort({ channel: { request, currentBinding: current },
+    jobInputs = jobInputRsync ?? createWorkerJobInputPort({ channel: { request, currentBinding: current },
       stagingRoot: join(input.stateDirectory, 'job-input-transfer-staging'), receiptRoot: join(input.stateDirectory, 'job-input-receipts') })
     const host = createInstalledJobExecutionHost({ configuration: input.jobConfiguration ?? null, registry: jobRegistry,
       connection, incarnationId: randomUUID(), journal: retained, currentBinding: current,
@@ -192,10 +201,11 @@ export async function createInstalledWorkerDomains(input: {
   } } : {}) }))
   let shutdown: Promise<void> | undefined
   return { extensions: tracked, rsyncAvailable: rsync.kind === 'configured', rsyncMissing: rsync.missing,
-    ...(rsync.kind === 'configured' ? { rsync: rsync.backend } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
+    ...(rsync.kind === 'configured' ? { rsync: rsync.backend, rsyncWriters: rsync.rsyncWriters } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
+      try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }
       try { if (jobOpening) await (await jobOpening).shutdown() } catch (error) { failures.push(error) }
       try { await jobInputs?.close() } catch (error) { failures.push(error) }
       try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }

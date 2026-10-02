@@ -15,6 +15,7 @@ import { PodmanJobSupervisor, type PodmanCommandRunner } from './executorPodman.
 import type { OCIContainerOwnership } from './executorContainerOwner.js'
 import { assertJobRuntimeEntryContext } from './qualification.js'
 import type { QualifiedJobProfile } from './executor.js'
+import { requireJobGitMounts, verifyJobGitMounts } from './privateGitMounts.js'
 
 export type InstalledJobExecutionHostInput = Omit<RemoteJobExecutionHostPorts, 'supervisor'> & {
   configuration: InstalledRuntimeConfigurationLocation | null
@@ -26,30 +27,57 @@ export type InstalledJobExecutionHostInput = Omit<RemoteJobExecutionHostPorts, '
  * The caller opens the ORIGINAL journal without initializeNewInstallation.
  */
 export function createInstalledJobExecutionHost(input: InstalledJobExecutionHostInput): RemoteJobExecutionHost {
-  const filesystems = new Map<string, { device: string; mountId: string }>()
+  const admissions = new Map<string, { execution: JobExecution; filesystem: { device: string; mountId: string } }>()
   const supervisors = new Map<string, Promise<PodmanJobSupervisor>>()
   const supervisor = (execution: JobExecution) => {
     let value = supervisors.get(execution.operationId)
     if (!value) {
-      value = installedSupervisor(input, execution, filesystem => filesystems.set(execution.acceptedSpec.specDigest, filesystem))
+      const original = structuredClone(execution)
+      value = installedSupervisor(input, original, filesystem => admissions.set(original.operationId, {
+        execution: original, filesystem: structuredClone(filesystem),
+      }))
       supervisors.set(execution.operationId, value)
     }
     return value
   }
   return new RemoteJobExecutionHost({ ...input, supervisor, source: { async verify(spec, signal) {
-    const source = await input.source.verify(spec, signal)
-    const filesystem = filesystems.get(spec.specDigest)
-    if (!filesystem) throw new Error('Original installed Job admission missing')
-    const root = await open(source.privateRepositoryRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
-    try {
+    const matches = [...admissions.values()].filter(value => same(value.execution.acceptedSpec, spec))
+    if (matches.length !== 1) throw new Error('Unique original installed Job admission missing')
+    const { execution, filesystem } = matches[0]!
+    const binding = 'deviceId' in input.connection ? structuredClone(input.currentBinding?.()) : null
+    const assertCurrent = async () => {
       signal.throwIfAborted()
-      if (await realpath(source.privateRepositoryRoot) !== source.privateRepositoryRoot) throw new Error('Private Job source retargeted')
-      const observed = await identity(root)
-      // W09 remains the source authority. This physical check prevents a nested
-      // mount from escaping the qualified bounded filesystem.
-      if (observed.device !== filesystem.device || observed.mountId !== filesystem.mountId) throw new Error('Private Job source escapes qualified filesystem')
-      return source
-    } finally { await root.close() }
+      if ('deviceId' in input.connection && (!binding || !same(input.currentBinding?.(), binding))) throw new Error('Actual Job channel changed')
+      const status = await input.journal.jobStatus(execution.operationId)
+      signal.throwIfAborted()
+      if (status.status !== 'known' || !same(status.receipt.execution, execution) || !same(status.receipt.connection, input.connection) ||
+        status.receipt.stopFence || status.receipt.terminal) throw new Error('Original Job source owner changed')
+      await input.authorize(status.receipt.intent, execution, 'start')
+      signal.throwIfAborted()
+      if ('deviceId' in input.connection && (!binding || !same(input.currentBinding?.(), binding))) throw new Error('Actual Job channel changed')
+    }
+    await assertCurrent()
+    const source = await input.source.verify(spec, signal)
+    await assertCurrent()
+    const mounts = requireJobGitMounts(execution, source)
+    await verifyJobGitMounts(execution, source)
+    await assertCurrent()
+    for (const mount of [{ directory: source.privateRepositoryRoot, filesystem: undefined }, mounts.git, mounts.scheduler]) {
+      const root = await open(mount.directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      try {
+        await assertCurrent()
+        if (await realpath(mount.directory) !== mount.directory) throw new Error('Private Job mount retargeted')
+        await assertCurrent()
+        const observed = await identity(root)
+        await assertCurrent()
+        // Leaf receipts pin each inode; common admission independently bounds
+        // every mount to the originally qualified filesystem.
+        if ((mount.filesystem && !same(observed, mount.filesystem)) ||
+          observed.device !== filesystem.device || observed.mountId !== filesystem.mountId) throw new Error('Private Job mount escapes qualified filesystem or identity')
+      } finally { await root.close() }
+      await assertCurrent()
+    }
+    return source
   } } })
 }
 

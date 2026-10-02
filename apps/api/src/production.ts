@@ -1,5 +1,5 @@
-import { createProductionRsyncComposition } from './modules/byte-transfer/productionComposition.js'
-import { RSYNC_STAGE_EXTENSION } from '@graphql/contracts/byte-transfer'
+import { createInstalledRsyncComposition } from './modules/byte-transfer/productionComposition.js'
+import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import { transferContextForBinding } from './modules/byte-transfer/carrier.js'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@graphql/contracts/job-runtime'
 import { interactionConnection } from './modules/interactions/connection.js'
@@ -210,6 +210,7 @@ export function buildProductionApp(
   let workflowPhysicalArtifacts: PostgresWorkflowPhysicalArtifacts | undefined
   let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
+  const inputAcknowledgements = new Map<string, TransferIntent>()
   const rsyncProviders=infrastructure?.rsync?{...infrastructure.rsync,acknowledged:async(...args:Parameters<NonNullable<typeof infrastructure.rsync.acknowledged>>)=>{
     const [intent,context]=args
     const binding=deviceRuntime.endpointForDomains().captureRequest(intent.deviceId,RSYNC_STAGE_EXTENSION.namespace)?.binding
@@ -220,9 +221,12 @@ export function buildProductionApp(
     }else if(intent.byteClass==='artifact'&&intent.direction==='to-main'&&jobRuntime&&await jobRuntime.outputs.ownsTransfer(intent.transferId)){
       await jobRuntime.outputs.admission.authorizeTransfer(intent,context)
       await jobRuntime.outputs.lifecycle.acknowledged(intent)
+    }else if(isDeepStrictEqual(inputAcknowledgements.get(intent.transferId),intent)){
+      if(!jobRuntime)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The original input delivery authority is unavailable.',503)
+      await jobRuntime.inputs.main.acknowledged(intent.transferId,binding)
     }else await infrastructure.rsync!.acknowledged(...args)
   }}:undefined
-  const rsync = createProductionRsyncComposition({ side: 'main', providers: rsyncProviders,
+  const rsync = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
     current: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding })
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
@@ -271,6 +275,13 @@ export function buildProductionApp(
         } },
       ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE].includes(value.namespace)) ?? []),
     ],
+    async bindingLost(binding) {
+      const tasks: Promise<unknown>[] = []
+      try { if (rsync.kind === 'configured') tasks.push(rsync.rsyncWriters.bindingLost(binding)) } catch (error) { tasks.push(Promise.reject(error)) }
+      try { const task = infrastructure?.deviceDomains?.bindingLost?.(binding); if (task) tasks.push(task) } catch (error) { tasks.push(Promise.reject(error)) }
+      const results = await Promise.allSettled(tasks), failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      if (failures.length) throw new AggregateError(failures, 'Original device domain binding cleanup remains incomplete')
+    },
     async reconcile(binding, signal, endpoint) {
       if (endpoint.capabilities(binding.deviceId).some((item) => item.namespace === 'harness-discovery-v1' && item.mainCanRequest)) {
         const result = await endpoint.request(binding.deviceId, 'harness-discovery-v1',
@@ -911,6 +922,7 @@ export function buildProductionApp(
   const lifecycle = new RuntimeShutdown({
     stop: [
       { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
+      { name: 'original rsync byte ownership', run: () => rsync.kind === 'configured' ? rsync.rsyncWriters.close() : undefined },
       { name: 'device admission and channels', run: async () => { deviceRuntime.stop() } },
       { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
@@ -1037,6 +1049,15 @@ export function buildProductionApp(
             if(rsync.kind!=='configured')throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE','The selected original rsync lifecycle is unavailable.',409)
             await rsync.backend.acknowledge(intent,signal)
           }},
+          inputRsync: { stage: async (intent, source, signal) => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
+            return rsync.backend.send(intent, source, signal)
+          }, acknowledge: async (intent, signal) => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
+            if (inputAcknowledgements.has(intent.transferId)) throw new DomainError('JOB_INPUT_ACK_BUSY', 'Original input delivery ACK is already coordinating.', 409)
+            inputAcknowledgements.set(intent.transferId, structuredClone(intent))
+            try { await rsync.backend.acknowledge(intent, signal) } finally { inputAcknowledgements.delete(intent.transferId) }
+          } },
           transferAcknowledged: async intent => {
             if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
             await rsync.backend.acknowledge(intent)
