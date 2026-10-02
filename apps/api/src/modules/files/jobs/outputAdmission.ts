@@ -187,6 +187,14 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
       if(!isDeepStrictEqual(record.intent,intent) || !isDeepStrictEqual(outputTransferContext(facts.binding),context))throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Transfer identity or current connection differs from main admission.',403)
     })
   }
+  async admissionForTransfer(transferId:string):Promise<JobOutputAdmission> {
+    const result=await this.pool.query<{result:unknown}>(`select result from management_command_receipts where operation=$1 and result #>> '{intent,transferId}'=$2`,[OPERATION,transferId])
+    if(result.rows.length!==1)throw new DomainError('JOB_OUTPUT_ADMISSION_MISSING','Exactly one original output admission is required.',403)
+    const original=JobOutputAdmissionSchema.parse(result.rows[0]!.result)
+    const current=await this.requireAdmission(original.input)
+    if(!isDeepStrictEqual(current,original))throw new DomainError('JOB_OUTPUT_ADMISSION_CONFLICT','Original output admission changed.',409)
+    return current
+  }
   async intentForTransfer(transferId: string): Promise<TransferIntent> {
     const result=await this.pool.query<{result:unknown}>(`select result from management_command_receipts where operation=$1 and result #>> '{intent,transferId}'=$2`,[OPERATION,transferId])
     if(result.rows.length!==1)throw new DomainError('JOB_OUTPUT_ADMISSION_MISSING','This transfer identity was not issued by main.',403)
