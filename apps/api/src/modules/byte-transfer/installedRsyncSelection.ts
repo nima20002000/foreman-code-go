@@ -16,12 +16,17 @@ import { NodeRsyncExecutor, RSYNC_SSH_ARGS, validateRsyncEndpoint, verifyRsyncBi
 
 const Hash = z.string().regex(/^[a-f0-9]{64}$/)
 const PrivateBinary = z.object({ path: z.string().min(1).max(4096), sha256: Hash, version: z.literal('3.5.1') }).strict()
+const WriterInstallationFile = z.object({ path: z.string().min(1).max(4096)
+  .regex(/^\/[A-Za-z0-9_./-]+$/).refine(path => !path.split('/').some(part => part === '.' || part === '..')),
+sha256: Hash }).strict()
 /** Installer-owned local configuration, never a transfer request, UI default or historical evidence import. */
 export const InstalledRsyncSelectionSchema = z.object({
   formatVersion: z.literal(1), backend: z.literal('rsync'),
   registration: DeviceRegistrationSchema, consentRevision: z.number().int().positive(),
   endpoint: z.object({ user: z.string(), host: z.string(), localRoot: z.string(), remoteRoot: z.string() }).strict(),
   localBinary: PrivateBinary, remoteBinary: PrivateBinary,
+  /** Remote installer/approved package facts. Never supplied by control requests. */
+  nodeBinary: WriterInstallationFile, entryPoint: WriterInstallationFile,
   sourceProvenance: z.object({ sourceSha256: Hash, releaseSignerFingerprint: z.string().regex(/^[A-F0-9]{40}$/) }).strict(),
 }).strict()
 export type InstalledRsyncSelection = z.infer<typeof InstalledRsyncSelectionSchema>
@@ -118,13 +123,19 @@ export function createInstalledRsyncSelectionProvider(ports: InstalledRsyncSelec
     if (!selected.localBinary.path.endsWith(suffix) || !selected.remoteBinary.path.endsWith(suffix)) unavailable('Only explicitly pinned app-private rsync3.5.1 binaries are supported.')
     const endpoint = validateRsyncEndpoint({ ...selected.endpoint, localBinary: selected.localBinary.path, remoteBinary: selected.remoteBinary.path,
       localBinarySha256: selected.localBinary.sha256, remoteBinarySha256: selected.remoteBinary.sha256 })
-    const result: RsyncBackendSelection = { backend: selected.backend, check: checked, endpoint }
+    const result = { backend: selected.backend, check: checked, endpoint,
+      nodeBinary: selected.nodeBinary.path, entryPoint: selected.entryPoint.path }
     assertRsyncBackendSelection(result, intent)
     await precheckLocalBinary(selected, signal)
     const remoteHash = await qualifiedExecutor.run({ executable: '/usr/bin/ssh', args: [...RSYNC_SSH_ARGS, `${endpoint.user}@${endpoint.host}`, `/usr/bin/sha256sum -- ${endpoint.remoteBinary}`] }, signal)
     if (remoteHash !== `${endpoint.remoteBinarySha256}  ${endpoint.remoteBinary}\n`) unavailable('Selected remote app-private binary changed before version verification.')
     signal.throwIfAborted()
     if (!isDeepStrictEqual(ports.capture(intent.deviceId), pinned)) unavailable('Authenticated capture changed during remote binary digest check.')
+    const writerHash = await qualifiedExecutor.run({ executable: '/usr/bin/ssh', args: [...RSYNC_SSH_ARGS, `${endpoint.user}@${endpoint.host}`,
+      `/usr/bin/sha256sum -- ${selected.nodeBinary.path} ${selected.entryPoint.path}`] }, signal)
+    if (writerHash !== `${selected.nodeBinary.sha256}  ${selected.nodeBinary.path}\n${selected.entryPoint.sha256}  ${selected.entryPoint.path}\n`) {
+      unavailable('Selected remote writer installation changed before admission.')
+    }
     const versions = await verifyRsyncBinaries(endpoint, qualifiedExecutor, signal)
     if (![versions.local, versions.remote].every(value => /^rsync\s+version\s+3\.5\.1(?:\s|$)/m.test(value))) unavailable('Current selected binaries differ from the approved rsync3.5.1 package pins.')
     await precheckLocalBinary(selected, signal)
