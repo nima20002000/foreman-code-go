@@ -1,7 +1,7 @@
 import { agentChatHandlers, resetAgentChatFixtures } from './agentChatHandlers'
 import { createCurrentBoardMock } from './currentBoard'
 import { http, HttpResponse, type RequestHandler } from 'msw'
-import { settingsExperienceHandlers, resetSettingsExperienceFixtures } from './settingsExperienceHandlers'
+import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
 import { ApiErrorResponseSchema, CreateMessageRequestSchema, SaveHarnessDefaultsRequestSchema, type HarnessQualificationListSchema } from '@graphql/contracts'
 import type { z } from 'zod'
@@ -380,17 +380,29 @@ export const handlers: RequestHandler[] = [
   }),
   http.post('/api/management/workspaces', async ({ request }) => {
     const body = await readJson(request) as { name?: string; description?: string; parentPath?: string }
-    if (!body?.name?.trim()) return apiError('INVALID_REQUEST', 'A workspace name is required.', 400)
+    if (body?.name !== undefined && !body.name.trim()) return apiError('INVALID_REQUEST', 'A workspace name is required.', 400)
+    const defaults = getMockWorkspaceCreationDefaults()
+    const baseName = body.name?.trim() ?? defaults.suggestedName
+    let name = baseName
+    if (body.name === undefined) {
+      const names = new Set([visibleManagedWorkspace('workspace-1'), ...managedWorkspaces.values()]
+        .filter((item) => item && !item.archivedAt).map((item) => item!.workspace.name))
+      for (let suffix = 1; names.has(name); suffix++) {
+        const ending = ` (${suffix})`
+        name = baseName.slice(0, 200 - ending.length).trimEnd() + ending
+      }
+    }
+    const description = body.description ?? defaults.description
     const id = `workspace-${crypto.randomUUID()}`
     const now = new Date().toISOString()
     const value = {
       workspace: {
-        id, name: body.name.trim(), ...(body.description ? { description: body.description } : {}),
+        id, name, ...(description ? { description } : {}),
         agentIds: [], workflowIds: [], createdAt: now, updatedAt: now,
       },
       revision: 1,
       archivedAt: null,
-      executionLocation: body.parentPath ? { runnerId: 'runner-local', rootPath: body.parentPath.replace(/\/$/, '') + '/' + body.name.trim() } : null,
+      executionLocation: body.parentPath ? { runnerId: 'runner-local', rootPath: body.parentPath.replace(/\/$/, '') + '/' + name } : null,
       locationRevision: body.parentPath ? 1 : 0,
       locationValidation: body.parentPath ? { status: 'ready' as const, checkedAt: now } : { status: 'unconfigured' as const },
     }

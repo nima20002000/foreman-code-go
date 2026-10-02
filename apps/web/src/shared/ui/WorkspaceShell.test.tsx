@@ -15,6 +15,32 @@ describe('WorkspaceShell', () => {
     sessionStorage.clear()
   })
 
+  it.each([false, true])('submits automatic naming only when the suggested name is untouched (edited: %s)', async (edited) => {
+    let submitted: Record<string, unknown> | undefined
+    server.use(http.post('/api/management/workspaces', async ({ request }) => {
+      submitted = await request.json() as Record<string, unknown>
+      return HttpResponse.json({ value: {
+        workspace: { id: 'workspace-created', name: edited ? 'New workspace' : 'New workspace (1)' },
+        revision: 1, archivedAt: null, executionLocation: null, locationRevision: 0,
+        locationValidation: { status: 'restricted' },
+      }, replayed: false })
+    }))
+    const user = userEvent.setup()
+    const { router } = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    await user.click(await screen.findByRole('button', { name: 'New workspace' }))
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    await waitFor(() => expect(name).toHaveValue('New workspace'))
+    if (edited) {
+      await user.clear(name)
+      await user.type(name, 'New workspace')
+    }
+    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-created/settings'))
+    expect(submitted).toMatchObject({ commandId: expect.any(String), parentPath: '/home/test/.local/share/graphql/workspaces' })
+    if (edited) expect(submitted).toHaveProperty('name', 'New workspace')
+    else expect(submitted).not.toHaveProperty('name')
+  })
+
   it('selects the suggested name for replacement and keeps creation fields minimal', async () => {
     server.use(http.get('/api/management/harnesses/directories', () => HttpResponse.json({
       roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: '/projects',

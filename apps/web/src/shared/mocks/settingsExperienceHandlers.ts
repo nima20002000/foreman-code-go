@@ -6,6 +6,7 @@ import { getMockScenarioState } from './scenarios'
 // Development/test fixtures only. These handlers do not create or authenticate real credentials.
 let defaults = ManagedWorkspaceDefaultsSchema.parse({ value: { ...DEFAULT_WORKSPACE_DEFAULTS, parentPath: '/home/test/.local/share/graphql/workspaces' }, revision: 0, versionId: null })
 const receipts = new Map<string, { input: string; result: typeof defaults }>()
+export function getMockWorkspaceCreationDefaults() { return defaults.value }
 export function resetSettingsExperienceFixtures() {
   defaults = ManagedWorkspaceDefaultsSchema.parse({ value: { ...DEFAULT_WORKSPACE_DEFAULTS, parentPath: '/home/test/.local/share/graphql/workspaces' }, revision: 0, versionId: null })
   receipts.clear()

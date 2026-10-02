@@ -87,17 +87,33 @@ export class WorkspaceManagementService {
       targetKey: 'workspaces:new', payload: input,
       perform: async (client) => {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
-        const defaults = input.description === undefined ? await this.defaults.getWorkspaceDefaults(client) : undefined
+        const defaults = input.name === undefined || input.description === undefined
+          ? await this.defaults.getWorkspaceDefaults(client) : undefined
         const description = input.description ?? defaults?.value.description ?? ''
         const now = new Date().toISOString()
         const workspace = WorkspaceSchema.parse({
-          id: `workspace-${randomUUID()}`, name: input.name,
+          id: `workspace-${randomUUID()}`, name: input.name ?? defaults!.value.suggestedName,
           ...(description ? { description } : {}),
           createdAt: now, updatedAt: now,
         })
-        const folder = input.parentPath
-          ? await this.locations.createProjectFolder(principal, workspace.id, input.parentPath, workspace.name)
-          : undefined
+        const baseName = workspace.name
+        const existingNames = input.name === undefined
+          ? new Set((await client.query<{ name: string }>("select record->>'name' as name from workspaces where archived_at is null")).rows.map((row) => row.name))
+          : new Set<string>()
+        let folder: Awaited<ReturnType<WorkspaceLocationService['createProjectFolder']>> | undefined
+        for (let suffix = 0; ; suffix++) {
+          const ending = suffix ? ` (${suffix})` : ''
+          workspace.name = baseName.slice(0, 200 - ending.length).trimEnd() + ending
+          if (existingNames.has(workspace.name)) continue
+          try {
+            folder = input.parentPath
+              ? await this.locations.createProjectFolder(principal, workspace.id, input.parentPath, workspace.name)
+              : undefined
+            break
+          } catch (error) {
+            if (input.name !== undefined || !(error instanceof DomainError) || error.code !== 'WORKSPACE_FOLDER_EXISTS') throw error
+          }
+        }
         try {
           const result = await client.query<WorkspaceRow>(
             `insert into workspaces (id, record, execution_location, execution_location_identity, location_revision, created_project_folder)

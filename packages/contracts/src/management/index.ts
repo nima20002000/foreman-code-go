@@ -224,7 +224,7 @@ export const WorkspaceGetInputSchema = WorkspaceScopeSchema;
 export const WorkspaceCreateInputSchema = z.object({
   parentPath: z.string().trim().min(1).max(4096).refine((value) => !value.includes("\0"), "Invalid folder path").optional().describe("Existing parent folder on Local Runner. Pass workspace_defaults_get.value.parentPath to use the configured default; creates a new child named after the workspace. Omit only to leave execution location unconfigured."),
   ...MutationFields,
-  name: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(200).optional().describe("Omit to use the configured suggested name, adding (1), (2), etc. when a workspace name or project folder is already taken. An explicit name is used exactly and existing folders are rejected."),
   description: z.string().max(10_000).optional(),
 }).strict();
 export const WorkspaceUpdateInputSchema = z.object({
