@@ -161,7 +161,7 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Prop
       <div><dt>Saved execution computer</dt><dd>{hostLabel(saved.data.binding.hostRef)}</dd></div>
       <div><dt>Application installation</dt><dd>{saved.data.binding.applicationInstallationId}</dd></div>
       <div><dt>Location / root policy revision</dt><dd>{saved.data.locationRevision} / {saved.data.binding.rootPolicyRevision}</dd></div>
-    </dl> : saved.data.evidence === 'legacy_missing' ? <p>Saved folder history has no computer binding. Select an approved computer before changing it.</p> : <p>No execution folder has been configured.</p>}
+    </dl> : saved.data.evidence === 'legacy_missing' ? null : <p>No execution folder has been configured.</p>}
     {picker.notice ? <p role="status">{picker.notice}</p> : null}
     <Dialog open={picker.open} onOpenChange={open => { if (open || !locked) update(scope, previous => ({ ...previous, open })) }} title="Execution folder" busy={locked}
       description="Browsing and validation run on the selected computer. The workspace changes only when the save is confirmed." footer={<>
