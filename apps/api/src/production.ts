@@ -72,6 +72,8 @@ import { resolve } from 'node:path'
 import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
 import { registerProductionFileStorage } from './modules/files/production.js'
+import { createProductionWorkflowFileContexts } from './modules/runs/remote/workflowNativeFilesProduction.js'
+import { PostgresArtifactPublicationAuthority } from './modules/runs/remote/nativeArtifactAuthority.js'
 import type { TemporaryFileService } from './modules/files/service.js'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
 import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmission.js'
@@ -261,9 +263,13 @@ export function buildProductionApp(
   // MCP nor a caller-supplied JSON observation can manufacture these captures.
   const workflowCapture = createWorkflowNativeCaptureChannel()
   const reviewCapture = createReviewNativeCaptureChannel()
+  let admitWorkflowFileContext: ReturnType<typeof createProductionWorkflowFileContexts> | undefined
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
     if (!remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
     return remoteWorkflow.assertPhysical(sql, owner, capture)
+  }, async (sql, evidence, proof) => {
+    if (!admitWorkflowFileContext) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'The original Main file-context composition is unavailable.', 503)
+    await admitWorkflowFileContext(sql, evidence, proof)
   })
   const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
     async admitPlacementExecutionLocked(sql, owner, run, execution, ref, inputDigest) {
@@ -972,6 +978,13 @@ export function buildProductionApp(
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
       }
       mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app))
+      const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, { locations,
+        producer: { assertPinsCurrent: (...args) => {
+          if (!agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual artifact placement producer is unavailable.', 503)
+          return agentPlacement.assertPinsCurrent(...args)
+        } } })
+      admitWorkflowFileContext = createProductionWorkflowFileContexts(machine.installationId, { captures: workflowCapture.verify,
+        assertPhysical: remoteWorkflow.assertPhysical, authority: artifactAuthority, transferContext: remoteWorkflow.fileTransferContext })
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources

@@ -26,6 +26,14 @@ import type { FileReferenceResolver } from './tools/types.js'
 import { ManagedFileCleanupBytes } from './cleanup/bytes.js'
 import { PostgresFileCleanupRepository } from './cleanup/postgres.js'
 import { TemporaryFileCleanupSweeper } from './cleanup/sweeper.js'
+import { DomainError } from '../errors.js'
+import { ArtifactEdgeService } from './distributed/edges.js'
+import { PostgresArtifactEdgeRepository } from './distributed/postgres.js'
+import { PostgresArtifactEdgeAuthorization, type AcceptedArtifactAttemptFence } from './distributed/authorization.js'
+import { NativeArtifactOutputs } from '../runs/remote/nativeArtifactOutputs.js'
+import { PostgresNativeArtifactOutputRepository } from '../runs/remote/nativeArtifactOutputPostgres.js'
+
+const productionStores = new WeakSet<TemporaryFileService>()
 
 // referenceResolver is FIL-37's agent read seam; FIL-36's human reference service is composed below.
 export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Pool, config: ApiConfig,
@@ -34,6 +42,7 @@ export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Poo
   const bytes = new FileByteStorage(config.fileStorageRoot ?? defaultFileStorageRoot(), MAX_FILE_BYTES,
     [config.harnesses.workspaceRoot, config.workspaceStorageRoot ?? workspaceStorageRoot()])
   const service = new TemporaryFileService(repository, bytes, new PostgresFileConversationAuthorization(pool))
+  productionStores.add(service)
   const references = new FileReferenceService(repository, bytes, new PostgresFileReferenceAuthorization(pool),
     new PostgresCommandCoordinator(pool))
   // The MCP endpoint is composed before this helper. Its onReady hook binds this same service.
@@ -58,10 +67,15 @@ export function registerProductionFileStorage(app: FastifyInstance, pool: pg.Poo
 /** Publication and recovery share the original canonical store, ledger and
  * accepted-attempt authority. Callers supply genuine W08 authority/transfer ports. */
 export function createProductionDistributedArtifacts(input: { pool: pg.Pool; files: TemporaryFileService;
-  authority: ArtifactPublicationAuthority; transfers: VerifiedArtifactReader }) {
+  mainId: string; attempts: AcceptedArtifactAttemptFence; authority: ArtifactPublicationAuthority; transfers: VerifiedArtifactReader }) {
+  if (!productionStores.has(input.files)) throw new DomainError('NATIVE_ARTIFACT_STORE_UNAVAILABLE', 'The original production file store is required.', 503)
   const ledger = new PostgresDistributedPublicationLedger(input.pool)
+  const results = new CanonicalNativeArtifactResults(input.files, ledger, input.authority)
+  const edges = new ArtifactEdgeService(new PostgresArtifactEdgeRepository(input.pool), input.files.repository, input.files.bytes,
+    new PostgresArtifactEdgeAuthorization(input.attempts))
   return {
     publications: new DistributedArtifactPublicationService(input.files, ledger, input.transfers, input.authority),
-    results: new CanonicalNativeArtifactResults(input.files, ledger, input.authority),
+    results, edges,
+    outputs: new NativeArtifactOutputs(results, new PostgresNativeArtifactOutputRepository(input.pool, input.mainId), input.authority, edges),
   }
 }

@@ -66,7 +66,8 @@ function sourceIdentity(record: WorkflowNativeProofRecord): unknown {
  * no-submission/close evidence occurs inside these methods. */
 export class WorkflowNativeProofServices {
   constructor(private readonly captures: WorkflowNativeVerificationPort,
-    private readonly assertAdditionalPhysical?: (sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture) => Promise<void>) {}
+    private readonly assertAdditionalPhysical?: (sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture) => Promise<void>,
+    private readonly afterPersistOriginalLocked?: (sql: GraphTransactionSql, evidence: RepeatNativeEvidence, proof: WorkflowNativeProofRecord) => Promise<void>) {}
 
   private async current(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, executionId: string,
     owner: RunOwnership): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope }> {
@@ -253,6 +254,7 @@ export class WorkflowNativeProofServices {
           await this.physical(sql, scope, stored, capture, owner)
         } catch (error) { poisonGraphTransaction(sql); throw error }
       })
+      await this.afterPersistOriginalLocked?.(sql, evidence, structuredClone(record))
       return structuredClone(record)
     } catch (error) { poisonGraphTransaction(sql); throw error }
   }
