@@ -69,6 +69,11 @@ it('does not resolve the SDK permission without an existing exact response recei
   const f = fixture(), offer = await offered(f)
   await expect(f.interactionPort.respond(session, identity.nativeRequestId, offer.descriptor.responseOptions[0]!)).rejects.toThrow('no longer matches')
   expect(f.bridge.inspectCallbackAvailability({ ...identity, nativeRequestId: identity.nativeRequestId, nativeRequestType: identity.nativeRequestType })).toMatchObject({ state: 'available' })
+  expect(f.bridge.inspectCallbackAvailability({ ...identity, expectedNativeMessageId: identity.nativeMessageId,
+    expectedGeneration: identity.generation })).toMatchObject({ state: 'available', nativeMessageId: identity.nativeMessageId, generation: identity.generation })
+  expect(f.bridge.inspectCallbackAvailability({ ...identity, expectedNativeMessageId: 'older-message' })).toMatchObject({ state: 'unavailable', reason: 'identity_mismatch' })
+  expect(f.bridge.inspectCallbackAvailability({ ...identity, expectedGeneration: 'older-generation' })).toMatchObject({ state: 'unavailable', reason: 'identity_mismatch' })
+
   f.bridge.close(); expect((await offer.pending).behavior).toBe('deny')
 })
 it('denies an admitted sender with revoked or removed write grants and never issues Operator credentials to Agent chat', async () => {

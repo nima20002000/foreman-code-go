@@ -1,13 +1,21 @@
 import type { NativeResponseAvailability, NativeResponseAvailabilityQuery } from '../responseAvailability.js'
 
+/** Optional fields mirror the common inspector seam; supplied expectations must match resident evidence. */
+export interface ClaudeResponseAvailabilityQuery extends NativeResponseAvailabilityQuery {
+  expectedNativeMessageId?: string
+  expectedGeneration?: string
+}
+export interface ClaudeResponseAvailability extends NativeResponseAvailability {
+  nativeMessageId?: string
+}
 /** Lookup in the actual SDK callback map, not a database interaction/pending-row lookup. */
-export interface ClaudeLiveCallbackQuery extends NativeResponseAvailabilityQuery {
+export interface ClaudeLiveCallbackQuery extends ClaudeResponseAvailabilityQuery {
   nativeSessionId: string
   nativeMessageId: string
   generation: string
 }
 export interface ClaudeLiveCallbackReader {
-  inspectCallbackAvailability(query: ClaudeLiveCallbackQuery): NativeResponseAvailability | Promise<NativeResponseAvailability>
+  inspectCallbackAvailability(query: ClaudeLiveCallbackQuery): ClaudeResponseAvailability | Promise<ClaudeResponseAvailability>
 }
 export interface ClaudeNativeCallbackContext {
   nativeSessionId: string
