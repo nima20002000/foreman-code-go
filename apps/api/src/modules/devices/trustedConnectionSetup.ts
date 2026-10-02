@@ -1,5 +1,9 @@
 import type pg from 'pg'
 import { z } from 'zod'
+import { isDeepStrictEqual } from 'node:util'
+import { TransferIntentSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { transferContextForBinding, type AcceptedTransferAuthority } from '../byte-transfer/carrier.js'
 import { DeviceRegistrationSchema, type DeviceRegistration } from '@graphql/contracts/device-identity'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -18,6 +22,12 @@ export interface TrustedConnectionSetupPorts {
    * A caller boolean, an Operator grant or SSH login is never owner approval. */
   verifyOwnerApproval(client: pg.PoolClient, principal: ManagementPrincipal, input: TrustedConnectionConfigure, registration: DeviceRegistration): Promise<{ ownerId: string }>
   probe?: typeof probeTrustedConnection
+}
+export interface AcceptedTrustedConnectionTransfer {
+  accepted: AcceptedTransferAuthority
+  binding: Readonly<DeviceSessionBinding>
+  /** Actual current Main client capture for rsync-stage-v1, not incoming-only namespace lookup. */
+  current(): Readonly<DeviceSessionBinding> | undefined
 }
 function blocked(read: TrustedConnectionRead): TrustedConnectionCheck['state'] | null {
   if (read.registration.status === 'revoked') return 'revoked'
@@ -42,6 +52,9 @@ export class PostgresTrustedConnectionSetup {
     requireAuthorization(principal, write ? 'settings:update' : 'settings:read')
     requireAuthorization(await readLiveManagementPrincipal(client, principal.id), write ? 'settings:update' : 'settings:read')
     if (write) await client.query('select pg_advisory_xact_lock(hashtext($1))', [`trusted-connection:${this.mainId}:${deviceId}`])
+    return this.readRecord(client, deviceId)
+  }
+  private async readRecord(client: pg.PoolClient, deviceId: string): Promise<TrustedConnectionRead> {
     const row = (await client.query<{ record: unknown }>('select record from device_registrations where id=$1 and main_id=$2 for share', [deviceId, this.mainId])).rows[0]
     if (!row) throw new DomainError('DEVICE_NOT_FOUND', 'The device is not registered on this Main.', 404)
     const registration = DeviceRegistrationSchema.parse(row.record)
@@ -95,6 +108,46 @@ export class PostgresTrustedConnectionSetup {
       throw new DomainError('DEVICE_CONNECTION_CONFLICT', 'The paired identity changed during the connection test.', 409)
     }
     return probe
+  }
+  /** Server-internal accepted-transfer capability only. Does not lend settings grants,
+   * expose a new management route or authorize bytes independently of the original domain. */
+  async checkAcceptedTransfer(raw: TransferIntent, authority: AcceptedTrustedConnectionTransfer, signal: AbortSignal): Promise<TrustedConnectionCheck> {
+    const intent = TransferIntentSchema.parse(raw), binding = DeviceSessionBindingSchema.parse(authority.binding)
+    const authorize = async () => {
+      signal.throwIfAborted()
+      const current = authority.current()
+      if (!current || !isDeepStrictEqual(current, binding)) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'The actual authenticated transfer connection changed.', 409)
+      const original = TransferIntentSchema.parse(await authority.accepted.intent(intent.transferId, binding))
+      if (!isDeepStrictEqual(original, intent) || intent.mainId !== this.mainId
+        || ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'].some(key => intent[key as keyof TransferIntent] !== binding[key as keyof DeviceSessionBinding])) {
+        throw new DomainError('DEVICE_TRANSFER_INTENT_CHANGED', 'The original accepted transfer identity does not match this device.', 409)
+      }
+      await authority.accepted.authorize(intent, transferContextForBinding(binding), 'start')
+      signal.throwIfAborted()
+      if (!isDeepStrictEqual(authority.current(), binding)) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'The authenticated connection changed during original transfer authorization.', 409)
+      if (Date.parse(intent.expiresAt) <= Date.now()) throw new DomainError('DEVICE_TRANSFER_EXPIRED', 'The original accepted transfer expired.', 409)
+    }
+    await authorize()
+    const before = await this.transaction(client => this.readRecord(client, intent.deviceId)), initial = blocked(before)
+    signal.throwIfAborted()
+    if (!isDeepStrictEqual(authority.current(), binding)) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'The authenticated capture changed during the setup read.', 409)
+    if (before.registration.mainId !== binding.mainId || before.registration.deviceId !== binding.deviceId || before.registration.workerInstallationId !== binding.workerInstallationId
+      || before.registration.keyRevision !== binding.keyRevision || before.registration.authorizationRevision !== binding.authorizationRevision) throw new DomainError('DEVICE_TRANSFER_IDENTITY_CHANGED', 'The registered identity changed before the setup probe.', 409)
+    if (initial) return TrustedConnectionCheckSchema.parse({ ...before, state: initial, probe: null, checkedAt: new Date().toISOString() })
+    const probe = ConnectionProbeSchema.parse(await (this.ports.probe ?? probeTrustedConnection)(before.consent!.endpoint))
+    await authorize()
+    const after = await this.transaction(client => this.readRecord(client, intent.deviceId))
+    if (after.registration.mainId !== binding.mainId || after.registration.deviceId !== binding.deviceId
+      || after.registration.workerInstallationId !== binding.workerInstallationId || after.registration.keyRevision !== binding.keyRevision
+      || after.registration.authorizationRevision !== binding.authorizationRevision) throw new DomainError('DEVICE_TRANSFER_IDENTITY_CHANGED', 'The current registered identity differs from the accepted transfer.', 409)
+    const fence = blocked(after), changed = !isDeepStrictEqual(after.consent, before.consent)
+    const state = fence ?? (changed ? 'consent-required' : probe.state !== 'connected' ? probe.state
+      : probe.hostKeyFingerprint !== after.consent!.hostKeyFingerprint ? 'host-key-mismatch'
+      : probe.osUser !== after.consent!.endpoint.osUser ? 'permission-denied'
+      : !probe.sshVersion || !probe.rsyncVersion || after.consent!.endpoint.transport === 'tailscale' && !probe.tailscaleVersion ? 'tools-missing' : 'ready')
+    signal.throwIfAborted()
+    if (!isDeepStrictEqual(authority.current(), binding) || Date.parse(intent.expiresAt) <= Date.now()) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'Accepted transfer authority changed during final setup read.', 409)
+    return TrustedConnectionCheckSchema.parse({ ...after, state, probe: fence || changed ? null : probe, checkedAt: new Date().toISOString() })
   }
   async check(principal: ManagementPrincipal, deviceId: string): Promise<TrustedConnectionCheck> {
     const before = await this.read(principal, deviceId)
