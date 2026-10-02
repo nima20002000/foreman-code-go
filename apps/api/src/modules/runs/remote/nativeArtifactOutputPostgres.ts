@@ -15,23 +15,26 @@ const operation = 'remote.native-artifact.output'
 const conflict = (): never => { throw new DomainError('NATIVE_ARTIFACT_OUTPUT_CONFLICT', 'The original native output slot identifies different canonical facts.', 409) }
 const unavailable = (): never => { throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The exact finalized canonical publication is unavailable.', 410) }
 
+function outputTarget(mainId: string, producer: ArtifactAttempt, outputKey: string): string {
+  producer = ArtifactAttemptSchema.parse(producer)
+  outputKey = ArtifactEdgeBindingSchema.shape.outputKey.parse(outputKey)
+  return JSON.stringify([mainId, producer.executionId, producer.attemptId, outputKey])
+}
+function validateOutput(mainId: string, record: NativeArtifactOutput): void {
+  const { producer, transferReceipt: receipt, scope } = record, intent = receipt.intent
+  if (intent.mainId !== mainId || intent.executionId !== producer.executionId || intent.attemptId !== producer.attemptId
+    || intent.placementHash !== producer.placementHash || intent.direction !== 'to-main' || intent.byteClass !== 'artifact'
+    || receipt.sha256 !== record.pins.sha256 || receipt.byteSize !== record.pins.byteSize
+    || scope.kind !== 'temporary' || scope.chat.kind !== 'agent' || scope.chat.workspaceId !== producer.workspaceId
+    || scope.chat.workflowId !== producer.workflowId || scope.chat.runId !== producer.runId || scope.chat.executionId !== producer.executionId) conflict()
+}
+
 /** Existing command/publication ledgers only. mainId is captured from the installed Main identity. */
 export class PostgresNativeArtifactOutputRepository implements NativeArtifactOutputRepository {
   private readonly mainId: string
   constructor(private readonly pool: pg.Pool, mainId: string) { this.mainId = z.uuid().parse(mainId) }
-  private target(producer: ArtifactAttempt, outputKey: string): string {
-    producer = ArtifactAttemptSchema.parse(producer)
-    outputKey = ArtifactEdgeBindingSchema.shape.outputKey.parse(outputKey)
-    return JSON.stringify([this.mainId, producer.executionId, producer.attemptId, outputKey])
-  }
-  private validate(record: NativeArtifactOutput): void {
-    const { producer, transferReceipt: receipt, scope } = record, intent = receipt.intent
-    if (intent.mainId !== this.mainId || intent.executionId !== producer.executionId || intent.attemptId !== producer.attemptId
-      || intent.placementHash !== producer.placementHash || intent.direction !== 'to-main' || intent.byteClass !== 'artifact'
-      || receipt.sha256 !== record.pins.sha256 || receipt.byteSize !== record.pins.byteSize
-      || scope.kind !== 'temporary' || scope.chat.kind !== 'agent' || scope.chat.workspaceId !== producer.workspaceId
-      || scope.chat.workflowId !== producer.workflowId || scope.chat.runId !== producer.runId || scope.chat.executionId !== producer.executionId) conflict()
-  }
+  private target(producer: ArtifactAttempt, outputKey: string): string { return outputTarget(this.mainId, producer, outputKey) }
+  private validate(record: NativeArtifactOutput): void { validateOutput(this.mainId, record) }
   private async live(query: FileQuery, record: NativeArtifactOutput): Promise<void> {
     const result = await query.query<{ record: DistributedPublicationLink }>(`select p.record from file_tool_publications p
       join file_revisions r on r.file_id=p.file_id and r.revision_id=p.revision_id
@@ -43,7 +46,7 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
     [record.publication.ownerPrincipalId, record.publication.requestId, record.publication.binding,
       record.pins.fileId, record.pins.revisionId, record.pins.sha256, record.pins.byteSize])
     const link = result.rows[0]?.record
-    if (result.rowCount !== 1 || !link) unavailable()
+    if (result.rowCount !== 1 || !link) return unavailable()
     const native = { nativeSessionId: link.context.nativeSessionId, ...(link.context.turnId ? { turnId: link.context.turnId } : {}),
       ...(link.context.nativeMessageId ? { nativeMessageId: link.context.nativeMessageId } : {}), ...(link.context.messageId ? { messageId: link.context.messageId } : {}) }
     if (link.ownerPrincipalId !== record.publication.ownerPrincipalId || link.requestId !== record.publication.requestId
@@ -64,25 +67,36 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
       await client.query("set local lock_timeout='5s'; set local statement_timeout='10s'")
       await authorize(client)
       await this.live(client, record)
-      await client.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
+      const inserted = await client.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
         values ($1,$2,$3,$4,$5,$6::jsonb) on conflict do nothing`, [record.publication.ownerPrincipalId, operation, commandId, target, inputHash, serialized])
       const stored = await client.query<{ principal_id: string; input_hash: string; result: unknown }>(`select principal_id,input_hash,result from management_command_receipts
         where operation=$1 and target_key=$2`, [operation, target])
       const original = stored.rows[0]
       if (stored.rowCount !== 1 || !original || original.principal_id !== record.publication.ownerPrincipalId
         || original.input_hash !== inputHash || !same(NativeArtifactOutputSchema.parse(original.result), record)) conflict()
+      // Revalidate after all canonical/receipt row waits, including an idempotent readback.
+      await authorize(client)
+      await this.live(client, record)
+      if (inserted.rowCount === 1) await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+        values($1,'device',$2,$3,'succeeded',$4::jsonb)`,
+      [record.publication.ownerPrincipalId, operation, target, JSON.stringify({ commandId: record.commandId })])
       await client.query('commit')
       return structuredClone(record)
     } catch (error) { await client.query('rollback').catch(() => {}); throw error }
     finally { client.release() }
   }
-  async read(producer: ArtifactAttempt, outputKey: string): Promise<NativeArtifactOutput | undefined> {
-    const result = await this.pool.query<{ result: unknown }>('select result from management_command_receipts where operation=$1 and target_key=$2',
-      [operation, this.target(producer, outputKey)])
-    if (!result.rows[0]) return undefined
-    const original = NativeArtifactOutputSchema.parse(result.rows[0].result)
-    this.validate(original)
-    if (result.rowCount !== 1 || !same(original.producer, producer) || original.outputKey !== outputKey) conflict()
-    return original
+  read(producer: ArtifactAttempt, outputKey: string): Promise<NativeArtifactOutput | undefined> {
+    return readNativeArtifactOutput(this.pool, this.mainId, producer, outputKey)
   }
+}
+/** Reuses the caller's authority transaction; does not open a second pool connection. */
+export async function readNativeArtifactOutput(query: FileQuery, mainId: string, producer: ArtifactAttempt,
+  outputKey: string): Promise<NativeArtifactOutput | undefined> {
+  const result = await query.query<{ result: unknown }>('select result from management_command_receipts where operation=$1 and target_key=$2',
+    [operation, outputTarget(mainId, producer, outputKey)])
+  if (!result.rows[0]) return undefined
+  const original = NativeArtifactOutputSchema.parse(result.rows[0].result)
+  validateOutput(mainId, original)
+  if (result.rowCount !== 1 || !same(original.producer, producer) || original.outputKey !== outputKey) conflict()
+  return original
 }
