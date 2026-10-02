@@ -46,6 +46,47 @@ afterEach(async () => {
 })
 
 describe.skipIf(!connectionString)('PR17 Agent3 SQL history, terminal receipts, and owner recovery', () => {
+  it('retains exact ACK retries without mutations and refuses a changed or settled owner', async () => {
+    const conversation = await chat.create(owner), requestId = 'original-ack', nativeTurnId = 'original-turn'
+    const capturedOwner = { nativeSessionId: manager.session.nativeSessionId, principalId: owner.id }
+    await repository.beginTurn(conversation.id, { requestId, content: 'Original accepted turn' }, owner.id)
+    await repository.bind(conversation.id, requestId, manager.session.providerVersion, capturedOwner.nativeSessionId)
+    const snapshot = async () => (await pool.query(`select to_jsonb(c) as conversation,to_jsonb(t) as receipt
+      from operator_conversations c join operator_conversation_turns t on t.conversation_id=c.id
+      where c.id=$1 and t.request_id=$2`, [conversation.id, requestId])).rows[0]
+    const before = await snapshot()
+    expect(await repository.submitted(conversation.id, requestId, nativeTurnId, capturedOwner)).toBe(true)
+    const accepted = await snapshot()
+    expect(Number(accepted.conversation.revision)).toBe(Number(before.conversation.revision) + 1)
+    expect(accepted.receipt.native_turn_id).toBe(nativeTurnId)
+    expect(accepted.conversation).toMatchObject({ active_native_turn_id: nativeTurnId, active_phase: 'submitted', turn_state: 'active' })
+    for (let retry = 0; retry < 2; retry++) {
+      expect(await repository.submitted(conversation.id, requestId, nativeTurnId, capturedOwner)).toBe(true)
+      expect(await snapshot()).toEqual(accepted)
+    }
+    for (const [id, request, turn, identity] of [
+      [randomUUID(), requestId, nativeTurnId, capturedOwner],
+      [conversation.id, 'later-request', nativeTurnId, capturedOwner],
+      [conversation.id, requestId, 'different-turn', capturedOwner],
+      [conversation.id, requestId, nativeTurnId, { ...capturedOwner, nativeSessionId: 'different-session' }],
+      [conversation.id, requestId, nativeTurnId, { ...capturedOwner, principalId: randomUUID() }],
+    ] as const) {
+      expect(await repository.submitted(id, request, turn, identity)).toBe(false)
+      expect(await snapshot()).toEqual(accepted)
+    }
+    expect(await repository.requestCancel(conversation.id, requestId)).toBe(true)
+    const canceling = await snapshot()
+    expect(canceling.conversation).toMatchObject({ cancel_requested: true, turn_state: 'canceling' })
+    expect(await repository.submitted(conversation.id, requestId, nativeTurnId, capturedOwner)).toBe(true)
+    expect(await snapshot()).toEqual(canceling)
+    expect(await repository.finish(conversation.id, requestId, { outcome: 'canceled' })).toBe(true)
+    const settled = await snapshot()
+    expect(await repository.submitted(conversation.id, requestId, nativeTurnId, capturedOwner)).toBe(false)
+    expect(await snapshot()).toEqual(settled)
+    expect((await chat.history(conversation.id, owner)).entries[0]?.receipt.outcome).toBe('canceled')
+    expect(manager.turns).toBe(0)
+  })
+
   it('F7 terminal success without nativeMessageId clears the request exactly once without an assistant row', async () => {
     const c = await chat.create(owner)
     await repository.beginTurn(c.id, { requestId: 'no-message', content: 'Run without a final assistant row' }, owner.id)
