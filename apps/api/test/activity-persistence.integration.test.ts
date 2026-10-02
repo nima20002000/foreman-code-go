@@ -149,7 +149,10 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
       const stored = (await pool.query("select record,revision::text,source_provenance from operator_conversation_activity where activity_id='mounted-tool'")).rows[0]
       expect(stored.record.output).toBe('authoritative correction'); expect(stored.revision).toBe(ordered ? '2' : '1')
       expect(stored.source_provenance.system).toBe('codex_history')
-      expect(stored.source_provenance.sequence).toBe(ordered ? '2' : undefined)
+      expect(stored.source_provenance.transportSequence).toBe(ordered ? 2 : undefined)
+      expect(stored.source_provenance.connectionId).toBe(ordered ? 'mounted-connection' : undefined)
+      expect(stored.source_provenance.nativeSequence).toBeUndefined()
+      expect(stored.source_provenance.sequence).toBeUndefined()
     } finally { unsubscribe(); await f.service.shutdown() }
   })
 

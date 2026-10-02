@@ -164,7 +164,7 @@ async function fixture(items: HarnessExecution[], cold = false) {
     revokeForExecution: async (id: string) => { calls.push(`revoke:${id}`) },
   }
   const rawResolver = new ExecutionScopedNativeSessionManagerResolver((context) => managers.get(context.executionId)!)
-  const contextFor = (item: HarnessExecution) => ({ executionId: item.id, agentId: item.agentId,
+  const contextFor = (item: HarnessExecution) => ({ executionId: item.id, runId: item.runId, attempt: item.attempt, agentId: item.agentId,
     harness: 'codex' as const, workingDirectory: '/project', configuration: configuration(item.id) })
   const resolver: NativeSessionManagerResolver = {
     resolve: (context) => rawResolver.resolve(context),
@@ -480,7 +480,7 @@ it('shutdown preserves waiting Run facts while draining the captured restart bou
 })
 
 it('shutdown captures original restart closure before abort and drains it before returning', async () => {
-  const task = deferred<void>(), closure = deferred<void>(), controller = new AbortController()
+  const task = deferred<void>(), closure = deferred<void>(), aborted = deferred<void>(), controller = new AbortController()
   const events: string[] = []
   const cancelRun = vi.fn(async () => undefined)
   const f = engineFixture({ cancelRun } as unknown as ApprovalExecutionCoordinator)
@@ -493,11 +493,12 @@ it('shutdown captures original restart closure before abort and drains it before
     events.push('closed')
     task.resolve()
   }
-  controller.signal.addEventListener('abort', () => { events.push('abort') }, { once: true })
+  controller.signal.addEventListener('abort', () => { events.push('abort'); aborted.resolve() }, { once: true })
   f.internals.activeRuns.set('run-1', controller); f.internals.activeTasks.set('run-1', task.promise)
   let settled = false
   const shutdown = f.engine.shutdown().finally(() => { settled = true })
   try {
+    await aborted.promise
     assert.deepEqual(events, ['capture', 'abort'])
     assert.equal(controller.signal.reason.code, 'ENGINE_RESTART')
     await Promise.resolve()
