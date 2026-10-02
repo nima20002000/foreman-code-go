@@ -81,13 +81,15 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
   it('keeps an old unfinished child in active after parent settlement and 101 newer completed entries', async () => {
     await pool.query(`alter table operator_conversations add column workspace_id text default 'workspace',
       add column workflow_id text default 'workflow', add column workflow_node_id text default 'node', add column agent_id text default 'agent',
-      add column harness text default 'codex', add column origin_run_id text, add column origin_execution_id text;
+      add column origin_run_id text, add column origin_execution_id text;
       alter table operator_conversation_turns add column turn_sequence bigint generated always as identity,
       add column message_id text default 'message', add column native_turn_id text, add column target_native_turn_id text,
       add column delivery_error jsonb, add column result jsonb, add column input_hash text default 'fixture',
       add column payload jsonb default '{}'::jsonb, add column created_at timestamptz default now();
       create table operator_conversation_messages (conversation_id text not null references operator_conversations(id),
-        record jsonb not null, sequence bigint generated always as identity);
+        record jsonb not null, sequence bigint generated always as identity, activity_record_revision bigint not null default 0);
+      create table management_command_receipts (principal_id text, operation text, command_id text, target_key text,
+        result jsonb, activity_record_revision bigint not null default 0, created_at timestamptz not null default now());
       insert into operator_conversation_turns (conversation_id,request_id,intent,delivery,updated_at)
         values ('conversation','A','next_turn','accepted',now())`)
     await repository.append('conversation', 'A', { ...value('running'), id: 'old-child', kind: 'subagent' }, fence('1'))
@@ -100,7 +102,7 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
     expect(loaded.activityPage.activities).toHaveLength(100)
     expect(loaded.activityPage.activities.some((entry) => entry.id === 'old-child')).toBe(false)
     expect(agentActivitySnapshot(loaded).active).toMatchObject([
-      { ref: { kind: 'subagent', itemId: 'old-child' }, outcome: null, evidence: 'unknown' },
+      { ref: { kind: 'subagent', itemId: JSON.stringify(['conversation-activity', 'conversation', 'A', 'old-child']) }, outcome: null, evidence: 'unknown' },
     ])
   })
   it('reports a bounded unfinished-roster recovery window without blocking state readback', async () => {
