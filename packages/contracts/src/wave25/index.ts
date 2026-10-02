@@ -36,3 +36,5 @@ export {
 } from './currentRead.js'
 
 export * from './workflowSaveIssues.js'
+
+export * from '../workflowArtifactResult.js'

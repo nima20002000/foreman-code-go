@@ -56,6 +56,16 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
   const reviewers = new Set<string>()
   for (const edge of graph.edges) {
     if (!nodes.has(edge.source) || !nodes.has(edge.target) || edge.source === edge.target) issue('relationships require distinct existing endpoints')
+    if (edge.artifactInputs) {
+      const source = nodes.get(edge.source), target = nodes.get(edge.target)
+      if (edge.kind !== 'execution' || source?.kind === 'job' || target?.kind === 'job' || edge.workRequestDirection === 'both') {
+        issue('ARTIFACT_INPUTS_REQUIRE_FORWARD_AGENT_EXECUTION_EDGE', ['definition', 'edges', graph.edges.indexOf(edge), 'artifactInputs'])
+      }
+      if (!source || source.kind === 'job' || !source.artifactOutputs
+        || edge.artifactInputs.outputKeys.some(key => !source.artifactOutputs!.outputKeys.includes(key))) {
+        issue('ARTIFACT_INPUT_KEY_UNDECLARED', ['definition', 'edges', graph.edges.indexOf(edge), 'artifactInputs'])
+      }
+    }
     if (edge.kind === 'execution') {
       if (edge.target === version.entryNodeId) issue('entry cannot have an incoming execution dependency')
       outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target])

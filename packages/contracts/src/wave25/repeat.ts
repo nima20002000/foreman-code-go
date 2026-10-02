@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, TimestampSchema } from '../index.js'
+import type { WorkflowArtifactOutputsV1 } from '../workflowArtifactDeclarations.js'
 import { canonicalGraphJson } from './json.js'
 import {
   GraphDigestSchema, extendGraphExecutionIdentitySchema, GraphIdSchema,
@@ -110,13 +111,13 @@ export type RepeatExitDataV1 = z.infer<typeof RepeatExitDataV1Schema>
  * and bound the ORIGINAL result first; acceptance, digests, carries and history
  * retain that original value. Mixed carriers, prose and Markdown stay invalid.
  */
-export function parseRepeatExitResultV1(result: unknown, choice: WorkflowChoice) {
+export function parseRepeatExitResultV1(result: unknown, choice: WorkflowChoice, artifactOutputs?: WorkflowArtifactOutputsV1) {
   canonicalGraphJson(result, 64 * 1024)
   const accepted = AcceptedCurrentNodeResultSchema.parse(result)
   const output = accepted.outcome === 'succeeded' ? accepted.output : undefined
   const textCarrier = output !== null && typeof output === 'object' && !Array.isArray(output)
     && Object.keys(output).length === 1 && 'text' in output && typeof output.text === 'string'
-  const envelope = parseChoiceResultEnvelope(textCarrier ? { ...accepted, output: output.text } : accepted, choice)
+  const envelope = parseChoiceResultEnvelope(!artifactOutputs && textCarrier ? { ...accepted, output: output.text } : accepted, choice, artifactOutputs)
   return { ...envelope, data: RepeatExitDataV1Schema.parse(envelope.data) }
 }
 

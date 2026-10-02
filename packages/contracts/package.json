@@ -227,6 +227,10 @@
     "./remote-workflow-physical": {
       "types": "./dist/remoteWorkflowPhysical.d.ts",
       "import": "./dist/remoteWorkflowPhysical.js"
+    },
+    "./workflow-artifact-result": {
+      "types": "./dist/workflowArtifactResult.d.ts",
+      "import": "./dist/workflowArtifactResult.js"
     }
   },
   "scripts": {

@@ -1675,3 +1675,4 @@ export * from "./workflowArtifactTransfer.js";
 export * from "./jobRuntime.js";
 
 export * from "./resourceTelemetry.js";
+export * from './workflowArtifactDeclarations.js'
