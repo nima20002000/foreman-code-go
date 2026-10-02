@@ -5,13 +5,14 @@ import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import type { PostgresAccessService } from '../access/postgres.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { requireAuthorization } from '../access/policy.js'
+import { workerScopesForAction } from '../access/appPolicy.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { readAcceptedPlacement } from './persistence.js'
 import { DomainError } from '../errors.js'
 
 export interface SelectedMainMcpForward {
-  /** Existing selected main's /mcp transport, with this exact worker bearer;
+  /** Existing selected main's MCP transports, with this exact worker bearer;
    * never browser cookies, Operator secrets or another worker's loopback app. */
   request(body: unknown, token: string, protocolVersion?: string): Promise<{ statusCode: number; contentType: 'application/json' | 'text/event-stream' | 'empty'; body: string }>
 }
@@ -49,7 +50,7 @@ export class MainWorkerMcpRelay {
       }
       const rows = await client.query<{ execution_id: string; run_id: string; workspace_id: string; workflow_id: string; agent_id: string; purpose: string; revoked_at: Date | null;
         execution_state: string; run_state: string; authorization_principal_id: string; stopped: boolean; cleanup: boolean }>(`select b.execution_id,b.run_id,b.workspace_id,b.workflow_id,b.agent_id,b.purpose,b.revoked_at,
-        he.state as execution_state,r.execution_state as run_state,r.record->>'authorizationPrincipalId' as authorization_principal_id,
+        he.record->>'state' as execution_state,r.execution_state as run_state,r.record->>'authorizationPrincipalId' as authorization_principal_id,
         r.stop_requested_at is not null as stopped,
         exists(select 1 from run_cleanup_intents i where i.run_id=r.id and i.pending) as cleanup
         from worker_credential_bindings b join harness_executions he on he.id=b.execution_id join runs r on r.id=b.run_id
@@ -61,7 +62,10 @@ export class MainWorkerMcpRelay {
           : binding.purpose !== 'reviewer' || binding.execution_state !== 'completed')) {
         throw new DomainError('WORKER_MCP_LEASE_UNAVAILABLE', 'The original application lease no longer permits native tool access.', 403)
       }
-      requireAuthorization(principal, 'interactions:read', { workspaceId: binding.workspace_id, workflowId: binding.workflow_id, runId: binding.run_id })
+      if (!workerScopesForAction(principal, 'interactions:read').some(scope => scope.workspaceIds?.includes(binding.workspace_id)
+        && scope.workflowIds?.includes(binding.workflow_id) && scope.runIds?.includes(binding.run_id))) {
+        throw new DomainError('WORKER_MCP_SCOPE_CONFLICT', 'The worker grant must cover the complete original execution scope.', 403)
+      }
       const authority = await currentOperatorAuthority(client, binding.authorization_principal_id)
       requireAuthorization(authority.principal, 'runs:start', { workspaceId: binding.workspace_id, workflowId: binding.workflow_id })
       authorization = WorkerMcpRelayAuthorizationSchema.parse({ version: 1, mainId: this.mainId, audience: 'worker', principalId: principal.id,
@@ -73,11 +77,22 @@ export class MainWorkerMcpRelay {
   }
 }
 
+const artifactToolPaths = new Map([
+  ['files.admit_transferred_result', '/mcp/artifact-transfers'],
+  ['files.publish_transferred_result', '/mcp/artifact-publications'],
+  ['files.read_edge_input', '/mcp/artifact-inputs'],
+])
+
 /** Uses the existing selected main app instance and authentication path. It
  * exposes no new listener and never forwards cookies or an Operator bearer. */
 export function selectedMainMcpForward(app: import('fastify').FastifyInstance): SelectedMainMcpForward {
   return { async request(body, token, protocolVersion) {
-    const response = await app.inject({ method: 'POST', url: '/mcp', payload: body as Record<string, unknown>, headers: {
+    const request = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined
+    const params = request?.params && typeof request.params === 'object' && !Array.isArray(request.params)
+      ? request.params as Record<string, unknown> : undefined
+    const url = request?.method === 'tools/call' && typeof params?.name === 'string'
+      ? artifactToolPaths.get(params.name) ?? '/mcp' : '/mcp'
+    const response = await app.inject({ method: 'POST', url, payload: body as Record<string, unknown>, headers: {
       host: '127.0.0.1', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json',
       ...(protocolVersion ? { 'mcp-protocol-version': protocolVersion } : {}),
     } })
