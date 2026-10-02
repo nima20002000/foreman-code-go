@@ -96,7 +96,10 @@ function cleanQueue() {
   for (const name of readdirSync(queue)) {
     const path = join(queue, name)
     const record = readJson(path)
-    if (record?.common === common && !alive(record) && !groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)) rmSync(path, { force: true })
+    // A queued coordinator has not acquired a slot or spawned token-bearing work.
+    // The durable phase changes before acquisition, including its crash windows.
+    const neverLaunched = record?.phase === 'queued' && record.pgid === null
+    if (record?.common === common && !alive(record) && (neverLaunched || (!groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)))) rmSync(path, { force: true })
   }
 }
 function register(token) {
@@ -110,7 +113,7 @@ if (process.argv[2] === '__ticket') {
   mkdirSync(queue, { recursive: true })
   const existing = readdirSync(queue).map((name) => Number(name.split('-')[0])).filter(Number.isFinite)
   const ticket = `${String(Math.max(0, ...existing) + 1).padStart(12, '0')}-${randomUUID()}`
-  writeFileSync(join(queue, ticket), JSON.stringify({ common, pid: Number(process.argv[3]), start: process.argv[4], worktree: process.argv[5], pgid: null, namespace: process.argv[6] ? JSON.parse(process.argv[6]) : undefined, token: process.argv[7] }))
+  writeFileSync(join(queue, ticket), JSON.stringify({ common, pid: Number(process.argv[3]), start: process.argv[4], worktree: process.argv[5], pgid: null, phase: 'queued', namespace: process.argv[6] ? JSON.parse(process.argv[6]) : undefined, token: process.argv[7] }))
   process.stdout.write(ticket)
   process.exit(0)
 }
@@ -235,6 +238,9 @@ async function main() {
       cleanQueue()
       const first = readdirSync(queue).sort()[0]
       if (first === ticket && !existsSync(active)) {
+        const record = readJson(ticketPath)
+        if (record?.token !== token) throw new Error('Queue ownership changed before admission')
+        writeFileSync(ticketPath, JSON.stringify({ ...record, phase: 'acquiring' }))
         try { mkdirSync(active) } catch { await sleep(200); continue }
         break
       }
@@ -242,17 +248,17 @@ async function main() {
       await sleep(300)
     }
     if (interrupted) { exitCode = 130; return }
-    writeFileSync(join(active, 'owner.json'), JSON.stringify({ common, pid: process.pid, start: procStart(process.pid), pgid: null, namespace, token }))
+    writeFileSync(join(active, 'owner.json'), JSON.stringify({ common, pid: process.pid, start: procStart(process.pid), pgid: null, phase: 'acquiring', namespace, token }))
     const freshness = buildKind ? freshBuild(buildKind) : null
     if (freshness?.fresh) { console.log(`[heavy-job] running ${ticket}`); console.log(`[heavy-job] ${buildKind} build is current in this worktree`); exitCode = 0; return }
     tempPath = join(tempRoot, randomUUID())
     mkdirSync(tempPath)
-    writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, namespace, token }))
+    writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, phase: 'acquiring', namespace, token }))
     const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })
     const pgid = child.pid
     for (const path of [join(active, 'owner.json'), join(ticketPath), join(tempPath, 'owner.json')]) {
-      const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, ...(path === join(active, 'owner.json') ? { tempPath } : {}) }))
+      const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, phase: 'running', ...(path === join(active, 'owner.json') ? { tempPath } : {}) }))
     }
     console.log(`[heavy-job] running ${ticket}`)
     if (interrupted) stop('SIGTERM')
