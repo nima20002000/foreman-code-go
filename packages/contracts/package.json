@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
+    "./subagents": { "types": "./dist/subagents.d.ts", "import": "./dist/subagents.js" },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

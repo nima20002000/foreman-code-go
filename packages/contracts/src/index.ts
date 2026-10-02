@@ -1700,3 +1700,5 @@ export * from './byteTransfer.js'
 export * from './jobInputs.js'
 
 export * from './deviceProvisioning.js'
+
+export * from './subagents.js';
