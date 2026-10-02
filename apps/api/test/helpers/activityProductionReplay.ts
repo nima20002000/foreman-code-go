@@ -181,28 +181,43 @@ export class ActivityProductionReplay {
       if (args[0] === 'debug' && args[1] === 'models') return outcome(JSON.stringify({ models: [{ slug: 'test-model', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }], additional_speed_tiers: ['fast'] }] }))
       throw new Error(`Unexpected replay CLI operation: ${args.join(' ')}`)
     }
-    const qualify: Extract<CodexSessionDependencies, { mode: 'replay' }>['qualify'] = async (binary) => ({ binary,
-      identity: 'recorded-launcher', protocol: fixtureProtocol, providerVersion: QUALIFIED_CODEX_VERSION,
-      schemaManifestSha256: 'synthetic-recorded-schema', stableSchemaGitBlob: 'synthetic-stable', referenceSchemaManifestSha256: 'synthetic-reference' })
+    const qualify: Extract<CodexSessionDependencies, { mode: 'replay' }>['qualify'] = async (binary) => {
+      if (binary !== '/recorded-no-native-codex') throw new Error('Unrecorded replay qualification binary.')
+      return { binary,
+        identity: 'recorded-launcher', protocol: fixtureProtocol, providerVersion: QUALIFIED_CODEX_VERSION,
+        schemaManifestSha256: 'synthetic-recorded-schema', stableSchemaGitBlob: 'synthetic-stable', referenceSchemaManifestSha256: 'synthetic-reference' }
+    }
     const environment: Extract<CodexSessionDependencies, { mode: 'replay' }>['environment'] = (input, stripped = []) => {
       const values: NodeJS.ProcessEnv = {}
       for (const [key, value] of Object.entries(input?.variables ?? {})) if (!stripped.includes(key)) values[key] = value
       return values
     }
-    const operations = { qualify, assertUnchanged: async () => {}, environment, runCommand: command, qualifyModel: async () => {} }
+    const operations = { qualify, assertUnchanged: async () => {}, environment, runCommand: command,
+      qualifyModel: async (configuration: Parameters<NonNullable<CodexSessionDependencies['qualifyModel']>>[0]) => {
+        if (configuration.model !== 'test-model') throw new Error('Unrecorded replay model qualification.')
+      } }
     const codex: Extract<CodexSessionDependencies, { mode: 'replay' }> = { mode: 'replay', ...operations,
       transport: this.transport, id: randomUUID, now: () => new Date('2026-10-01T00:00:00Z'), schedule: setTimeout,
       cancelTimer: clearTimeout, withDiagnostics: async (_pin, run) => run(operations) }
     const unavailable = async (): Promise<never> => { throw new Error('Unrecorded auxiliary replay operation.') }
     return { mode: 'replay', codex, openCodeServer: () => { throw new Error('Unexpected OpenCode replay allocation.') },
       openCodeClient: () => { throw new Error('Unexpected OpenCode replay client.') },
-      // Protocol replay has no installed provider inventory or passive filesystem probe.
+      // Synthetic inventory enables the real defaults gate against recorded ports only.
+      // These facts are protocol-fixture data, never installed/native qualification evidence.
       inventoryDiscovery: { launcher: async (requested, environment, _payloadPaths, signal) => {
         signal?.throwIfAborted()
+        if (requested === '/recorded-no-native-codex') return { requested, environment,
+          resolvedLauncher: requested, fingerprint: createHash('sha256').update('activity-protocol-replay-v1').digest('hex'),
+          status: 'installed', interpreter: null,
+          diagnostics: ['Synthetic activity protocol replay inventory; no installed provider was inspected or qualified.'],
+          checkedAt: '2026-10-01T00:00:00.000Z' }
         return { requested, environment, resolvedLauncher: null, fingerprint: null, status: 'missing',
           interpreter: null, diagnostics: ['Activity protocol replay does not inspect installed providers.'],
           checkedAt: '2026-10-01T00:00:00.000Z' }
-      }, payloads: unavailable },
+      }, payloads: async (driver, launcher) => {
+        if (driver !== 'codex' || launcher !== '/recorded-no-native-codex') throw new Error('Unrecorded auxiliary replay operation.')
+        return { complete: true, paths: [] }
+      } },
       auxiliary: { command, recovery: { scope: (owner) => ({ root: '/recorded-no-process-registry', owner }),
         reserveLaunch: (owner) => { const launchId = randomUUID(); this.auxiliary.add(launchId); return { root: '/recorded-no-process-registry', owner, launchId } },
         abandonReservedLaunch: async (scope) => { if (!scope.launchId) return false; return this.auxiliary.delete(scope.launchId) },
