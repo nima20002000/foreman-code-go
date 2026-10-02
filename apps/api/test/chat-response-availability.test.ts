@@ -24,3 +24,15 @@ it('requires exact qualified live identity and response permission independently
   expect((await nativeInteractionAvailability({ ...pending, turn: { nativeTurnId: 'turn' } }, true, runtime,
     { isCurrent: () => true })).reason).toBe('missing_request_identity')
 })
+it('does not offer a successor Claude callback generation for a persisted pending message', async () => {
+  const pendingMessage: PendingNativeInteraction = { ...pending, session: { ...pending.session, harness: 'claude' },
+    turn: { nativeMessageId: 'message-A', nativeRequestId: 'request' }, nativeRequestType: 'can_use_tool', request: { generation: 'generation-A' } }
+  let generation = 'generation-A'
+  const inspect = vi.fn(async () => ({ nativeSessionId: pendingMessage.session.nativeSessionId, nativeRequestId: 'request',
+    nativeRequestType: 'can_use_tool', generation, qualified: true, state: 'available' as const, path: 'live_callback' as const, reason: 'live_callback' as const }))
+  const runtime = { manager: { inspectResponseAvailability: inspect } as unknown as NativeHarnessSessionManager, session: pendingMessage.session }
+  expect((await nativeInteractionAvailability(pendingMessage, true, runtime, { isCurrent: () => true })).available).toBe(true)
+  generation = 'generation-B'
+  expect((await nativeInteractionAvailability(pendingMessage, true, runtime, { isCurrent: () => true }))).toMatchObject({ available: false, reason: 'identity_mismatch' })
+  expect((await nativeInteractionAvailability({ ...pendingMessage, request: {} }, true, runtime, { isCurrent: () => true }))).toMatchObject({ available: false, reason: 'unqualified' })
+})

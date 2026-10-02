@@ -7,6 +7,7 @@ export function qualifyChatActivity(snapshot: ActivitySnapshotV1,
   const qualify = (interaction: InteractionSummary): InteractionSummary => {
     const exact = response && response.nativeRequestId && interaction.native?.requestId === response.nativeRequestId
       && interaction.native.sessionId === response.nativeSessionId && interaction.native.turnId === response.nativeTurnId
+      && (interaction.native.harness !== 'claude' || Boolean(interaction.native.generation && interaction.native.generation === response.generation))
     return { ...interaction, responseAvailability: exact && response.available ? 'available'
       : exact && response.status === 'recovery_required' ? 'recovery_required' : 'unavailable' }
   }

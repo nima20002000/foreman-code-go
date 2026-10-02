@@ -1,4 +1,5 @@
-import { AcceptedChatResponseControlSchema, type ChatResponseAcknowledgment } from '@graphql/contracts/interaction-activity'
+import type { ChatResponseAcknowledgment } from '@graphql/contracts/interaction-activity'
+import { acceptedOperatorResponseControl } from './acceptedResponseControl.js'
 import type { OperatorChatCommands } from './operatorChatCommands.js'
 import { pendingInteractionAfterHistory } from './pendingInteractionReadback.js'
 import { qualifyChatActivity } from './qualifiedActivity.js'
@@ -787,16 +788,7 @@ export class OperatorChatService {
     this.assertOpen()
     await this.assertAccess(id, principal, 'operator_chat:respond')
     let providerAcknowledgment: ChatResponseAcknowledgment | undefined
-    const observed = await this.get(id, principal), pending = observed.pendingInteraction
-    const option = pending?.responseOptions.find((choice) => choice.optionId === input.optionId)
-    const acceptedControl = pending && option && observed.activeRequestId === input.requestId
-      && pending.turn.nativeRequestId === input.nativeRequestId && observed.activitySnapshot
-      ? AcceptedChatResponseControlSchema.parse({ schemaVersion: 1, kind: 'respond', conversationId: id,
-        modelRequestId: input.requestId, scope: observed.activitySnapshot.scope,
-        native: { harness: pending.session.harness, providerVersion: pending.session.providerVersion,
-          sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId,
-          requestId: input.nativeRequestId, requestType: pending.nativeRequestType },
-        choice: { optionId: option.optionId, semantic: option.semantic } }) : undefined
+    const acceptedControl = acceptedOperatorResponseControl(await this.get(id, principal), input.requestId, input.nativeRequestId, input.optionId)
     const key = input.commandId ?? `operator-respond:${commandInputHash([id, input.requestId, input.nativeRequestId]).slice(7)}`
     return this.receipts().execute(principal, source, id, key,
       { kind: 'respond', requestId: input.requestId, nativeRequestId: input.nativeRequestId, optionId: input.optionId },

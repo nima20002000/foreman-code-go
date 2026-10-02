@@ -33,6 +33,12 @@ export async function nativeInteractionAvailability(pending: PendingNativeIntera
   if (runtime.session.nativeSessionId !== pending.session.nativeSessionId || runtime.session.harness !== pending.session.harness
     || runtime.session.providerVersion !== pending.session.providerVersion) return unavailable('identity_mismatch')
   const response = await inspectNativeResponse(runtime.manager, runtime.session, query, input)
+  if (pending.session.harness === 'claude' && response.state === 'available') {
+    const request = pending.request
+    const generation = request && typeof request === 'object' && !Array.isArray(request) && typeof request.generation === 'string' ? request.generation : undefined
+    if (!pending.turn.nativeMessageId || !generation) return unavailable('unqualified')
+    if (response.generation !== generation) return unavailable('identity_mismatch')
+  }
   return NativeInteractionResponseAvailabilitySchema.parse({ ...base, available: response.state === 'available', status: response.state,
     path: response.state === 'available' ? response.path : null, ...(response.generation ? { generation: response.generation } : {}),
     reason: response.reason, message: messages[response.reason] })

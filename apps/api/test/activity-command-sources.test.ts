@@ -7,6 +7,13 @@ const control = { schemaVersion: 1, kind: 'respond', conversationId: 'conversati
   choice: { optionId: 'approve', semantic: 'approve_once' } }
 const receipt = (status: string, metadata: unknown = control) => ({ principal_id: 'principal', operation: 'agent_chat_control', command_id: 'command', revision: '9007199254740993', status, control: metadata })
 describe('existing control receipt activity', () => {
+  it('preserves Claude observed message and callback generation without inventing a turn', () => {
+    const accepted = { ...control, native: { harness: 'claude', sessionId: 'session', messageId: 'message', generation: 'generation-A',
+      requestId: 'question', requestType: 'can_use_tool' } }
+    const summary = projectActivityCommands('conversation', scope, [receipt('uncertain', accepted)], '7').summaries[0]
+    expect(summary?.native).toEqual({ harness: 'claude', sessionId: 'session', messageId: 'message', generation: 'generation-A', requestId: 'question' })
+    expect(summary?.delivery).toBe('uncertain')
+  })
   it.each(['pending', 'completed'])('projects %s as recorded answer without inferring native delivery', (status) => {
     const result = projectActivityCommands('conversation', scope, [receipt(status)], '7')
     expect(result.summaries[0]).toMatchObject({ delivery: 'answer_recorded', answerRecorded: true, providerAcknowledged: false, workerAcknowledged: false,
