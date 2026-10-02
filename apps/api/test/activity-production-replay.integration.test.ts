@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { AgentConfigurationVersionSchema, OperatorConversationStateSchema } from '@graphql/contracts'
+import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, OperatorConversationStateSchema } from '@graphql/contracts'
 import { AgentChatHistoryPageSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema } from '@graphql/contracts/agent-chat'
 import { ManagementActionSchema, ManagedAgentDefaultsSchema, WorkspaceLocationSetResultSchema } from '@graphql/contracts/management'
 import { ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
@@ -471,12 +471,29 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     const user = await f.access.issue({ name: 'Exact qualified User response', audience: 'user', expiresAt: new Date(Date.now() + 600000),
       grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { workspaceIds: [workspaceId],
         workflowIds: [started.run.workflowId], runIds: [started.run.id] } }] })
-    const view = await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token)
-    expect(view.statusCode, view.body).toBe(200)
-    const current = view.json().interaction
-    expect(view.json()).toMatchObject({ canRespond: true, activity: { phase: 'needs_answer', answerRecorded: false,
+    // Request publication precedes the checkpoint binding, which advances its public revision.
+    const view = await eventually(async () => {
+      const response = await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token)
+      expect(response.statusCode, response.body).toBe(200)
+      return GetInteractionResponseSchema.parse(response.json())
+    }, (value) => !!value.interaction.graphInterruptId)
+    const current = view.interaction
+    expect(current.revision).toBeGreaterThan(0)
+    expect(view).toMatchObject({ canRespond: true, activity: { phase: 'needs_answer', answerRecorded: false,
       nativeDelivery: 'not_started', workerAcknowledgment: 'unknown', response: { available: true, path: 'live_callback' } } })
-    const choice = current.responseOptions.find((option: { semantic: string }) => option.semantic === 'approve_once')
+    const choice = current.responseOptions.find((option) => option.semantic === 'approve_once')!
+    const stale = await f.http('POST', `/api/user/interactions/${interaction.id}/respond`, {
+      interactionId: interaction.id, expectedRevision: current.revision - 1, optionId: choice.optionId,
+    }, user.token)
+    expect(stale.statusCode, stale.body).toBe(409)
+    expect(stale.json().error.code).toBe('REVISION_CONFLICT')
+    expect(f.replay.responses).toHaveLength(0)
+    const unchanged = GetInteractionResponseSchema.parse((await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, user.token)).json())
+    expect(unchanged.interaction).toMatchObject({ revision: current.revision, status: 'pending',
+      graphInterruptId: current.graphInterruptId, nativeSessionId: current.nativeSessionId, nativeRequestId: current.nativeRequestId })
+    const authoritative = (await f.db.pool.query<{ revision: string; graph_interrupt_id: string }>(`
+      select revision::text,record->>'graphInterruptId' as graph_interrupt_id from durable_interactions where id=$1`, [interaction.id])).rows[0]!
+    expect(authoritative).toEqual({ revision: String(current.revision), graph_interrupt_id: current.graphInterruptId })
     const answer = await f.http('POST', `/api/user/interactions/${interaction.id}/respond`, {
       interactionId: interaction.id, expectedRevision: current.revision, optionId: choice.optionId,
     }, user.token)
