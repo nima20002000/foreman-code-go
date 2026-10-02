@@ -1,8 +1,9 @@
+import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
 import { createAdmittedNativeManager } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
 import { createAdmittedClaudeManager } from './claudeSdk/admittedManager.js'
 import { allocateClaudeNativeHarness, type ClaudeNativeAllocation, type ClaudeNativeAllocationResult } from './claudeSdk/composition.js'
-import type { HarnessConfiguration, OpenCodeAdvancedConfiguration } from '@graphql/contracts'
+import type { HarnessConfiguration, OpenCodeAdvancedConfiguration, NativeSessionReference } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
 import { HarnessInstanceRegistry, localHarnessDrivers, type ConfiguredHarnessInstance } from './instanceRegistry.js'
 import type { HarnessInstallationRegistry, RegistryHarnessSelection } from './installationRegistry.js'
@@ -20,7 +21,7 @@ import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from './opencodeS
 import type { ManagedOpenCodeServerOptions, OpenCodeServerController } from './opencodeTransport.js'
 import type { OpenCodeChatFiles } from './opencodeFiles/chat.js'
 import { openCodeMcpInspectorAdapter } from './opencodeMcpInspectorAdapter.js'
-import type { NativeHarnessSessionManager } from './port.js'
+import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
 
@@ -71,6 +72,7 @@ export class NativeHarnessFactories {
   private readonly closedAuxiliaries = new WeakSet<NativeHarnessSessionManager>()
   private readonly codexDiagnostics = new Set<CodexDiagnosticLifetime>()
   private readonly versionDiagnostics = new Set<CodexDiagnosticLifetime>()
+  private readonly originalCodexManagers = new WeakMap<NativeHarnessSessionManager, () => CodexAppServerSessionManager | undefined>()
   private readonly inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
   constructor(private readonly config: {
     codexBinary: string
@@ -105,6 +107,10 @@ export class NativeHarnessFactories {
       return this.allocate(accepted)
     })
     this.inspectors.set(result.manager, result.inspector)
+    if (harness === 'codex') this.originalCodexManagers.set(result.manager, () => {
+      const current = result.peek()
+      return current ? this.originalCodexManagers.get(current)?.() : undefined
+    })
     return { manager: result.manager, inspector: result.inspector }
   }
 
@@ -228,6 +234,7 @@ export class NativeHarnessFactories {
       }
       const manager = new CodexAppServerSessionManager(input.selection?.installation.launcher.resolvedLauncher ?? this.config.codexBinary, undefined, undefined,
         recovery, input.appMcpAccess, input.chatFiles, dependencies)
+      this.originalCodexManagers.set(manager, () => manager)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
     } else if (input.harness === 'opencode') {
       const options: ManagedOpenCodeServerOptions = {
@@ -262,6 +269,20 @@ export class NativeHarnessFactories {
     }
     this.inspectors.set(result.manager, result.inspector)
     return result
+  }
+
+  /** Passive capture on this factory's actual retained adapter. The caller supplies
+   * its original role/lease/writer/process fence; no allocation or cold attach. */
+  originalCodexSession(manager: NativeHarnessSessionManager, session: NativeSessionReference,
+    source: NativeSessionStart, assertOwnerCurrent: () => void): OriginalCodexSession | undefined {
+    assertOwnerCurrent()
+    const current = this.originalCodexManagers.get(manager)?.()
+    if (!current) return undefined
+    return captureOriginalCodexSession(current, session, source, () => {
+      assertOwnerCurrent()
+      if (this.originalCodexManagers.get(manager)?.() !== current) throw new DomainError(
+        'NATIVE_ORIGINAL_RESIDENCY_UNAVAILABLE', 'The original admitted adapter is no longer current.', 409)
+    })
   }
 
   async assertInstallationUnchanged(binding: RegistryHarnessSelection, signal?: AbortSignal): Promise<void> {

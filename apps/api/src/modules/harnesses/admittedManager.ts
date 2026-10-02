@@ -91,5 +91,5 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     if (!allocation?.inspector) throw new DomainError('HARNESS_INSPECTOR_UNAVAILABLE', 'The admitted driver has no MCP inspector.', 503)
     return allocation.inspector.inspect(request)
   } }
-  return { manager, inspector, actual }
+  return { manager, inspector, actual, peek: () => lifetime.signal.aborted ? undefined : allocation?.manager }
 }

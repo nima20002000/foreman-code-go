@@ -1,3 +1,4 @@
+import { input } from './fixtures/codex-test-helpers.js'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { NativeHarnessFactories, type NativeFactoryInfrastructure } from '../src/modules/harnesses/runtimeFactory.js'
@@ -130,5 +131,58 @@ describe('native runtime construction', () => {
     expect(closeRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
     await factories.disposeAuxiliary(allocation.manager)
     expect(closeRecovery).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('original Codex lifetime factory capability', () => {
+  it('never admits an unopened wrapper or an unowned manager through passive lookup', async () => {
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const prepare = vi.fn()
+    const wrapped = factories.allocateAdmitted('codex', prepare)
+    const source = input('/recorded')
+    const session = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: 'original' }
+    expect(factories.originalCodexSession(wrapped.manager, session, source, () => {})).toBeUndefined()
+    expect(prepare).not.toHaveBeenCalled()
+    const foreign = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+      .allocate({ harness: 'codex', role: 'workflow', workingDirectory: '/recorded', ownerAgentId: 'owner', appMcpAccess: 'scoped' })
+    expect(factories.originalCodexSession(foreign.manager, session, source, () => {})).toBeUndefined()
+  })
+
+  it('composes the actual adapter pin with the caller fence before and after awaits', async () => {
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const allocation = factories.allocate({ harness: 'codex', role: 'workflow', workingDirectory: '/recorded', ownerAgentId: 'owner', appMcpAccess: 'scoped' })
+    if (allocation.harness !== 'codex') throw new Error('Wrong test allocation')
+    const source = input('/recorded'), session = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: 'original' }
+    const providerFence = vi.fn(), ownerFence = vi.fn()
+    const lookup = vi.spyOn(allocation.manager, 'originalSessionLifetime').mockReturnValue({
+      residency: { session, connectionId: 'original-channel', runtimeGeneration: 0, nativeTurnId: 'original-turn' }, assertCurrent: providerFence })
+    const reattach = vi.spyOn(allocation.manager, 'reattachOriginalSession').mockResolvedValue(session)
+    const original = factories.originalCodexSession(allocation.manager, session, source, ownerFence)!
+    Object.assign(original.residency, { connectionId: 'mutated-readback' })
+    expect(await original.reattach()).toEqual(session)
+    expect(lookup).toHaveBeenCalledExactlyOnceWith(session, source)
+    expect(reattach.mock.calls[0]![2].connectionId).toBe('original-channel')
+    reattach.mockImplementation(async () => { ownerFence.mockImplementation(() => { throw new Error('Original lease lost') }); return session })
+    await expect(original.reattach()).rejects.toThrow('Original lease lost')
+    expect(providerFence).toHaveBeenCalled()
+    expect(() => original.assertCurrent()).toThrow('Original lease lost')
+  })
+
+  it('withdraws an admitted wrapper capability on disposal without reallocation', async () => {
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused', openCodeBinary: 'unused' })
+    const allocation = factories.allocate({ harness: 'codex', role: 'workflow', workingDirectory: '/recorded', ownerAgentId: 'owner', appMcpAccess: 'scoped' })
+    if (allocation.harness !== 'codex') throw new Error('Wrong test allocation')
+    const source = input('/recorded'), session = { harness: 'codex' as const, providerVersion: '0.154.0', nativeSessionId: 'original' }
+    vi.spyOn(allocation.manager, 'originalSessionLifetime').mockReturnValue({
+      residency: { session, connectionId: 'original-channel', runtimeGeneration: 0, nativeTurnId: 'original-turn' }, assertCurrent: () => {} })
+    vi.spyOn(allocation.manager, 'capabilities').mockResolvedValue({} as Awaited<ReturnType<typeof allocation.manager.capabilities>>)
+    vi.spyOn(factories, 'allocate').mockReturnValue(allocation)
+    const wrapped = factories.allocateAdmitted('codex', async () => ({ harness: 'codex', role: 'workflow', workingDirectory: '/recorded', ownerAgentId: 'owner', appMcpAccess: 'scoped' }))
+    await wrapped.manager.capabilities()
+    const original = factories.originalCodexSession(wrapped.manager, session, source, () => {})!
+    expect(original).toBeDefined()
+    await wrapped.manager.dispose?.()
+    expect(() => original.assertCurrent()).toThrow('no longer current')
+    expect(factories.originalCodexSession(wrapped.manager, session, source, () => {})).toBeUndefined()
   })
 })

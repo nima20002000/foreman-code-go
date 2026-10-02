@@ -6,12 +6,15 @@ export interface NativeResponseAvailabilityQuery {
   nativeRequestId: string
   nativeRequestType: string
   expectedNativeTurnId?: string
+  expectedNativeMessageId?: string
+  expectedGeneration?: string
 }
 export interface NativeResponseAvailability {
   nativeSessionId: string
   nativeRequestId: string
   nativeRequestType: string
   nativeTurnId?: string
+  nativeMessageId?: string
   /** Current owned provider runtime/callback generation; never an arrival counter. */
   generation?: string
   qualified: boolean
@@ -43,7 +46,9 @@ export async function inspectNativeResponse(manager: NativeHarnessSessionManager
   if (!input.isCurrent() || input.signal?.aborted) return unavailableNativeResponse(session, query, 'session_closed')
   if (result.nativeSessionId !== session.nativeSessionId || result.nativeRequestId !== query.nativeRequestId
     || result.nativeRequestType !== query.nativeRequestType
-    || query.expectedNativeTurnId !== undefined && result.nativeTurnId !== query.expectedNativeTurnId) {
+    || query.expectedNativeTurnId !== undefined && result.nativeTurnId !== query.expectedNativeTurnId
+    || query.expectedNativeMessageId !== undefined && result.nativeMessageId !== query.expectedNativeMessageId
+    || query.expectedGeneration !== undefined && result.generation !== query.expectedGeneration) {
     return unavailableNativeResponse(session, query, 'identity_mismatch')
   }
   if (result.state === 'available' && (!result.qualified || !result.generation || !result.path
@@ -55,6 +60,11 @@ export async function inspectNativeResponse(manager: NativeHarnessSessionManager
 
 export function pendingResponseQuery(pending: PendingNativeInteraction): NativeResponseAvailabilityQuery | undefined {
   if (!pending.turn.nativeRequestId) return undefined
+  const generation = pending.session.harness === 'claude' && pending.request && typeof pending.request === 'object'
+    && !Array.isArray(pending.request) && typeof pending.request.generation === 'string' && pending.request.generation.length
+    ? pending.request.generation : undefined
   return { nativeRequestId: pending.turn.nativeRequestId, nativeRequestType: pending.nativeRequestType,
-    ...(pending.turn.nativeTurnId ? { expectedNativeTurnId: pending.turn.nativeTurnId } : {}) }
+    ...(pending.turn.nativeTurnId ? { expectedNativeTurnId: pending.turn.nativeTurnId } : {}),
+    ...(pending.turn.nativeMessageId ? { expectedNativeMessageId: pending.turn.nativeMessageId } : {}),
+    ...(generation ? { expectedGeneration: generation } : {}) }
 }

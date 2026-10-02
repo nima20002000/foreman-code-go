@@ -16,7 +16,8 @@ import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@graphq
 import { SourceMaterializationRecordSchema, type SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { SourceOperationResponseSchema } from '@graphql/contracts/source-operations'
 import { DomainError } from '../../errors.js'
-import type { NativeHarnessSessionManager, NativeHistory } from '../../harnesses/port.js'
+import { captureOriginalCodexSession } from '../../harnesses/originalCodexSession.js'
+import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../../harnesses/port.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../../harnesses/instanceRegistry.js'
 import { HarnessInstallationRegistry } from '../../harnesses/installationRegistry.js'
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
@@ -190,6 +191,7 @@ interface InstalledOperation {
   native?:InstalledWorkflowNativeOwner
   session?:NativeSessionReference
   nativeSignal?:AbortSignal
+  nativeStart?:NativeSessionStart
   applicationAccess?:RemoteApplicationAccess
   mcp?:Awaited<ReturnType<typeof createWorkerMcpEndpoint>>
   leaseExpiresAt?:string
@@ -318,6 +320,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           const relay=await prepareWorkerApplicationAccess({request},actual.intent,actual.placement,access,signal)
           actual.applicationAccess=structuredClone(access)
           actual.leaseExpiresAt=relay.expiresAt
+          const nativeStart:NativeSessionStart={request:structuredClone(nativeRequest),correlationId:`execution:${actual.intent.executionId}`,environment:relay.environment}
+          if(actual.nativeStart&&!isDeepStrictEqual(actual.nativeStart,nativeStart))unavailable('original_native_start_changed')
+          actual.nativeStart??=nativeStart
           if(!actual.mcp)actual.mcp=await createWorkerMcpEndpoint({relay,launcher:configuration.appMcpLauncher,signal})
           return relay.environment
         },
@@ -328,6 +333,17 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           resident.native=captureInstalledWorkflowNativeOwner(registry,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
             workerInstallationId:context.binding.workerInstallationId,bootId:context.binding.bootId,keyRevision:context.binding.keyRevision,
             authorizationRevision:context.binding.authorizationRevision,connectionGeneration:context.binding.connectionGeneration}),intent,session)
+          if(!resident.nativeStart)unavailable('original_native_start_missing')
+          const captured=resident.native
+          const lifetime=captureOriginalCodexSession(resident.manager,session,resident.nativeStart!,()=>{
+            nativeContext.signal.throwIfAborted();current(context.binding)
+            if(operations.get(intent.executionId)!==resident||resident.launchDisabled)unavailable('original_native_owner_closed')
+            const observed=matchingOriginalRegistryLaunch(registry,captured.launch)
+            if(observed.lifecycle!=='active'||!isDeepStrictEqual(observed.guardian,captured.launch.guardian)
+              ||!isDeepStrictEqual(observed.provider,captured.launch.provider)||!isDeepStrictEqual(observed.boundary,captured.launch.boundary))unavailable('original_native_process_changed')
+          })
+          if(!lifetime)unavailable('original_native_residency_unavailable')
+          lifetime!.assertCurrent()
           return resident.native.native
         },
         settle:async(intent,history,owner)=>{
