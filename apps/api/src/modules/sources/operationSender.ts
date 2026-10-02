@@ -14,7 +14,7 @@ export interface SourcePackageTransferAdmission {
   /** Actual persisted source intent/receiver/expiry uses the original Main
    * source reservation and actual authenticated connection; no new fake IDs. */
   allocate(input: { root: SourceRootRecord; attempt: MaterializationAttempt; identity: z.infer<typeof SourcePreparationIdentitySchema>; sha256: string; byteSize: number }): Promise<TransferIntent>
-  sender(source: ImmutableTransferSource, root: SourceRootRecord): ResumableByteTransferSender
+  sender(source: ImmutableTransferSource, root: SourceRootRecord): Pick<ResumableByteTransferSender, 'send'>
   revalidate(root: SourceRootRecord, attempt: MaterializationAttempt, identity: z.infer<typeof SourcePreparationIdentitySchema>): Promise<void>
 }
 export class ExistingByteTransferSourcePackageSender implements AcceptedSourcePackageSender {

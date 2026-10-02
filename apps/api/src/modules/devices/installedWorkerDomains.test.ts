@@ -12,6 +12,8 @@ describe('actual installed worker mount availability, no physical acceptance', (
       configuration: null, approvedRoots: async () => null, connection: () => undefined, codexSuiteRevision: 'source-test-current-suite' })
     expect(mounted.workflowAvailable).toBe(false)
     expect(mounted.sourceAvailable).toBe(false)
+    expect(mounted.rsyncAvailable).toBe(false)
+    expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
     expect(mounted.extensions.map(extension => extension.namespace)).toEqual(['harness-discovery-v1'])
     await mounted.close(); await mounted.close()
   })

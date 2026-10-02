@@ -20,7 +20,8 @@ type Allocation = { root: SourceRootRecord; attempt: MaterializationAttempt; ide
 /** Original Main command ledger is reused, never a new worker DB/resource registry. */
 export class PostgresSourcePackageTransfers implements SourcePackageTransferAdmission, AcceptedTransferAuthority {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly owners: PostgresSourceOperationAuthority, private readonly endpoint: () => DeviceEndpoint) {}
+    private readonly owners: PostgresSourceOperationAuthority, private readonly endpoint: () => DeviceEndpoint,
+    private readonly selectedSender?: SourcePackageTransferAdmission['sender']) {}
   private binding(root: SourceRootRecord) {
     const registration = root.registration, binding = this.endpoint().currentBinding(root.binding.deviceId!)
     if (!binding || !registration || binding.mainId !== root.binding.mainId || binding.deviceId !== root.binding.deviceId
@@ -56,7 +57,7 @@ export class PostgresSourcePackageTransfers implements SourcePackageTransferAdmi
   }
   sender(source: ImmutableTransferSource, root: SourceRootRecord) {
     this.binding(root)
-    return createEndpointTransferClient(this.endpoint(), root.binding.deviceId!).sender(source)
+    return this.selectedSender ? this.selectedSender(source, root) : createEndpointTransferClient(this.endpoint(), root.binding.deviceId!).sender(source)
   }
   private async allocation(id: string): Promise<Allocation> {
     const row = (await this.pool.query<{ result: unknown }>(`select result from management_command_receipts where operation='source.package.admit' and result->'intent'->>'transferId'=$1`, [id])).rows

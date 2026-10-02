@@ -1,3 +1,4 @@
+import { createProductionRsyncComposition, type ProductionRsyncProviders } from '../byte-transfer/productionComposition.js'
 import { randomUUID } from 'node:crypto'
 import { RemoteJobExecutionRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
 import { createInstalledJobExecutionHost } from '../jobs/executorInstalled.js'
@@ -37,6 +38,8 @@ export async function createInstalledWorkerDomains(input: {
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
   codexSuiteRevision: string
+  /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
+  rsync?: ProductionRsyncProviders
 }) {
   const lifetime = new AbortController(), active = new Set<Promise<unknown>>()
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
@@ -68,13 +71,16 @@ export async function createInstalledWorkerDomains(input: {
     return ApprovedRootAllowlistSchema.parse(value)
   }
   const approved = await input.approvedRoots()
-  const extensions: DeviceExtensionRegistration[] = []
+  const rsync = createProductionRsyncComposition({ side: 'worker', providers: approved ? input.rsync : undefined,
+    current: deviceId => deviceId === input.pairing.deviceId ? current() : undefined })
+  const extensions: DeviceExtensionRegistration[] = [...rsync.extensions]
   let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
   let native: Awaited<ReturnType<typeof createInstalledWorkflowHost>> | undefined
   if (approved) {
     receiver = createAuthenticatedTransferReceiver({ stagingRoot: join(input.stateDirectory, 'source-transfer-staging'),
       current: deviceId => { const binding = input.connection()?.currentBinding(); return binding?.deviceId === deviceId ? binding : undefined },
-      accepted: sourceTransfersOnMain(request, current) })
+      accepted: rsync.kind === 'configured' ? input.rsync!.accepted : sourceTransfersOnMain(request, current),
+      ...(rsync.kind === 'configured' ? { receiver: input.rsync!.receiver } : {}) })
     const sources = new SourceOperationWorkerService({
       authenticate: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not on the actual original worker generation.', 409) },
       approvedRoots: roots,
@@ -155,7 +161,8 @@ export async function createInstalledWorkerDomains(input: {
     return task
   } } : {}) }))
   let shutdown: Promise<void> | undefined
-  return { extensions: tracked, workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
+  return { extensions: tracked, rsyncAvailable: rsync.kind === 'configured', rsyncMissing: rsync.missing,
+    ...(rsync.kind === 'configured' ? { rsync: rsync.backend } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
