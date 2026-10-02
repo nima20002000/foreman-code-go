@@ -69,6 +69,11 @@ async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPor
 export class PostgresArtifactPublicationAuthority implements ArtifactPublicationAuthority {
   constructor(private readonly mainId: string, private readonly pool: pg.Pool, private readonly ports: NativeArtifactAuthorityPorts) {}
   private async nativeOutputAttempt(input: WorkerMcpRelayRequest, connection: DeviceConnectionIdentity, sql: FileQuery) {
+    // W07 owns and fences the authenticated epoch. Dispatch SQL stores the
+    // original seven-field identity, so compare that exact projection here.
+    const identity = DeviceConnectionIdentitySchema.parse({ mainId: connection.mainId, deviceId: connection.deviceId,
+      workerInstallationId: connection.workerInstallationId, keyRevision: connection.keyRevision,
+      authorizationRevision: connection.authorizationRevision, bootId: connection.bootId, connectionGeneration: connection.connectionGeneration })
     const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(`select r.workspace_id,r.workflow_id
       from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2 for share of r,e`,
     [input.intent.runId, input.intent.executionId])).rows[0]
@@ -85,19 +90,19 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
     if (cleanup.rowCount !== 0) return denied()
     const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share',
       [input.intent.operationId])).rows[0]
-    if (!origin || !isDeepStrictEqual(DeviceConnectionIdentitySchema.parse(origin.connection), DeviceConnectionIdentitySchema.parse(connection))) return denied()
-    return { ...current, attempt }
+    if (!origin || !isDeepStrictEqual(DeviceConnectionIdentitySchema.parse(origin.connection), identity)) return denied()
+    return { ...current, attempt, identity }
   }
   /** Original connection and durable native ACK are required for every mutation; reconnect is not a replacement turn. */
   async assertNativeOutputConnection(raw: Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output' }>,
     connection: DeviceConnectionIdentity, sql: FileQuery): Promise<void> {
     const input = WorkerMcpRelayRequestSchema.parse(raw)
     if (input.operation !== 'worker-mcp.authorize-native-output') return denied()
-    await this.nativeOutputAttempt(input, connection, sql)
+    const current = await this.nativeOutputAttempt(input, connection, sql)
     const row = (await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share',
       [input.intent.operationId])).rows[0]
     const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
-    if (!receipt || !isDeepStrictEqual(receipt.intent, input.intent) || !isDeepStrictEqual(receipt.connection, connection)
+    if (!receipt || !isDeepStrictEqual(receipt.intent, input.intent) || !isDeepStrictEqual(receipt.connection, current.identity)
       || receipt.stopFence || !['start_acknowledged', 'running'].includes(receipt.phase)
       || receipt.native?.sessionId !== input.nativeSessionId || receipt.native.turnId !== input.turnId) return denied()
   }

@@ -88,6 +88,12 @@ function fixture() {
   return { mainId, placement, intent, execution, attempt, accepted, state, sql, ports, authority, fence, declarationsRequest }
 }
 describe('original accepted artifact authority', () => {
+  it('accepts the actual authenticated W07 frame while preserving original connection identity', async () => {
+    const t = fixture(), frame = { ...t.state.receipt.connection, connectionEpoch: randomUUID() }
+    expect(await t.authority.authorizeNativeOutputDeclarations(t.declarationsRequest, frame, t.sql)).toMatchObject({ agentConfigurationVersionId: 'configuration' })
+    await t.authority.assertNativeOutputConnection({ ...t.declarationsRequest, operation: 'worker-mcp.authorize-native-output',
+      outputOperation: 'create', nativeSessionId: 'original-session', turnId: 'original-turn' }, frame, t.sql)
+  })
   it('checks saved declaration permissions before a native turn exists without inventing scope or qualification', async () => {
     const t = fixture(); delete t.state.execution.nativeSessionId; t.state.execution.state = 'starting'; t.state.conversationAvailable = false
     expect(await t.authority.authorizeNativeOutputDeclarations(t.declarationsRequest, t.state.receipt.connection, t.sql)).toEqual({
