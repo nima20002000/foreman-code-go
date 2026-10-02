@@ -27,10 +27,13 @@ export function chatInteractionSummary(input: { conversationId: string; requestI
   pending: PendingNativeInteraction | null; responseDelivery?: 'offered' | 'submitted' | 'uncertain' | null }): InteractionSummary[] {
   const { pending, requestId } = input
   if (!pending?.turn.nativeRequestId || !requestId) return []
+  const generation = pending.session.harness === 'claude' && pending.request && typeof pending.request === 'object' && !Array.isArray(pending.request)
+    && typeof pending.request.generation === 'string' && pending.request.generation.length ? pending.request.generation : undefined
   return [InteractionSummarySchema.parse({ id: JSON.stringify(['chat-interaction', input.conversationId, requestId, pending.turn.nativeRequestId]), revision: input.revision,
     sourceRevisions: [{ source: 'scope', id: input.conversationId, revision: input.revision }],
     owner: { kind: 'chat_request', conversationId: input.conversationId, requestId },
-    native: { harness: pending.session.harness, sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId, requestId: pending.turn.nativeRequestId },
+    native: { harness: pending.session.harness, sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId,
+      ...(pending.turn.nativeMessageId ? { messageId: pending.turn.nativeMessageId } : {}), ...(generation ? { generation } : {}), requestId: pending.turn.nativeRequestId },
     delivery: input.responseDelivery === 'uncertain' ? 'uncertain' : input.responseDelivery === 'submitted' ? 'delivery_pending' : 'pending',
     // submitted is an effect fence, not recorded answer/acceptance evidence.
     answerRecorded: false, providerAcknowledged: false, workerAcknowledged: false, responseAvailability: 'unknown' })]

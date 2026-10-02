@@ -26,7 +26,9 @@ export function projectActivityCommands(conversationId: string, scope: ActivityS
       : previous?.delivery === 'answer_recorded' || delivery === 'answer_recorded' ? 'answer_recorded' : 'failed'
     summaries.set(id, { id, revision: scopeRevision,
       sourceRevisions: previous ? [...(previous.sourceRevisions ?? []), commandRevision] : [{ source: 'scope', id: conversationId, revision: scopeRevision }, commandRevision], owner: { kind: 'chat_request', conversationId, requestId: control.modelRequestId },
-      native: { harness: control.native.harness, sessionId: control.native.sessionId, turnId: control.native.turnId, requestId: control.native.requestId },
+      native: { harness: control.native.harness, sessionId: control.native.sessionId, turnId: control.native.turnId,
+        ...(control.native.messageId ? { messageId: control.native.messageId } : {}),
+        ...(control.native.generation ? { generation: control.native.generation } : {}), requestId: control.native.requestId },
       delivery: combinedDelivery,
       answerRecorded: true, providerAcknowledged: Boolean(previous?.providerAcknowledged || acknowledged), workerAcknowledged: false, responseAvailability: 'unknown' })
   }

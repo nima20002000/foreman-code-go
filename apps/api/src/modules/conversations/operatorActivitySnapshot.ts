@@ -64,7 +64,7 @@ export async function readOperatorActivitySnapshot(pool: pg.Pool, query: Queryab
     activities: [...commandActivity.summaries.map((summary) => ({ kind: 'interaction', id: summary.id, revision: summary.revision, order: '0',
       owner: summary.owner, source: { schemaVersion: 1, system: 'management_command_receipt', observedAt: null },
       evidence: summary.delivery === 'uncertain' ? 'reconciling' : 'confirmed', interaction: summary })), ...conversationPublicationItems(id, messages, publicationReceipts), ...conversationTextItems(id, messages, { harness: row.harness, sessionId: row.native_session_id,
-      turnIdFor: (requestId) => receipts.find((receipt) => receipt.request_id === requestId)?.native_turn_id ?? undefined }),
+      turnIdFor: (requestId) => (requestId === row.active_request_id ? activeReceipt : receipts.find((receipt) => receipt.request_id === requestId))?.native_turn_id ?? undefined }),
       ...activityPage.activities.map((activity) => ({ id: conversationActivityId(id, activity.requestId, activity.id), ...publicActivityProvenance(activityPage.itemProvenance[conversationActivityKey(activity.requestId, activity.id)]), revision: activityPage.itemRevisions[conversationActivityKey(activity.requestId, activity.id)], order: activity.sequence,
         orderSource: 'conversation_activity', owner: ref(activity.requestId), source: { schemaVersion: 1, system: 'conversation_record', observedAt: null },
         evidence: activity.status === 'unknown' ? 'unknown' : 'confirmed',
