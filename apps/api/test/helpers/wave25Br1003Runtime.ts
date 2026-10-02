@@ -116,7 +116,8 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
         workflowCapture.capture, reviewCapture.capture, options.recoverNativeProcesses)
       const engine = new LangGraphWorkflowEngine(runs, workflows, native, checkpointer, db.directory,
         locations, launchCredentials, repository, undefined, { workerParallelism: 2 })
-      const service = new InteractionService(repository, budgets, native, (interaction) => engine.resumeInteraction(interaction))
+      const service = new InteractionService(repository, budgets, native, (interaction) => engine.resumeInteraction(interaction),
+        undefined, (interaction) => native.inspectInteractionActivity(interaction))
       registerApprovalCheckpointResume(service, engine)
       engines.push(engine)
       return { engine, service, repository, runs, native, locations, workflows, checkpointer }

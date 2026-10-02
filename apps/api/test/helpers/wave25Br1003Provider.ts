@@ -5,6 +5,7 @@ import {
 } from '@graphql/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../../src/modules/harnesses/port.js'
 import type { NativeResponseDeliveryEvidence } from '../../src/modules/interactions/delivery.js'
+import { unavailableNativeResponse, type NativeResponseAvailabilityQuery, type NativeResponseAvailability } from '../../src/modules/harnesses/responseAvailability.js'
 
 /** A deterministic external-provider port, NOT a replacement coordinator. State
  * survives construction of another API engine in this fixture. No native binary,
@@ -33,6 +34,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     return { harness: this.harness, capabilities: this.capabilities.bind(this), inspectMcp: this.inspectMcp.bind(this),
       createSession: this.createSession.bind(this), attachSession: this.attachSession.bind(this),
       startTurn: this.startTurn.bind(this), pending: this.pending.bind(this), respond: this.respond.bind(this),
+      inspectResponseAvailability: this.inspectResponseAvailability.bind(this),
       history: this.history.bind(this), reconcile: this.reconcile.bind(this),
       cancel: this.cancel.bind(this), close: this.close.bind(this), closeForRestart: this.close.bind(this) }
   }
@@ -95,6 +97,26 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     yield terminal
   }
   async pending(session: NativeSessionReference) { return this.waits.get(session.nativeSessionId)?.[0] }
+  /** Synthetic callback state only; no SQL, permission, attachment or native qualification. */
+  async inspectResponseAvailability(session: NativeSessionReference, query: NativeResponseAvailabilityQuery): Promise<NativeResponseAvailability> {
+    const request = this.requests.get(session.nativeSessionId)
+    if (!request || session.harness !== this.harness || session.providerVersion !== '0.154.0') {
+      return unavailableNativeResponse(session, query, 'identity_mismatch')
+    }
+    if (this.closedSessions.has(session.nativeSessionId)) return unavailableNativeResponse(session, query, 'session_closed')
+    const pending = this.waits.get(session.nativeSessionId)?.find(item => item.turn.nativeRequestId === query.nativeRequestId)
+    if (!pending) return unavailableNativeResponse(session, query, 'request_consumed')
+    const generation = `checkpoint-callback:${session.nativeSessionId}:${pending.turn.nativeTurnId}`
+    if (pending.nativeRequestType !== query.nativeRequestType
+      || query.expectedNativeTurnId !== undefined && query.expectedNativeTurnId !== pending.turn.nativeTurnId
+      || query.expectedNativeMessageId !== undefined && query.expectedNativeMessageId !== pending.turn.nativeMessageId
+      || query.expectedGeneration !== undefined && query.expectedGeneration !== generation) {
+      return unavailableNativeResponse(session, query, 'identity_mismatch')
+    }
+    return { nativeSessionId: session.nativeSessionId, nativeRequestId: query.nativeRequestId,
+      nativeRequestType: query.nativeRequestType, ...(pending.turn.nativeTurnId ? { nativeTurnId: pending.turn.nativeTurnId } : {}), generation,
+      qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }
+  }
   async respond(session: NativeSessionReference, requestId: string,
     option: Parameters<NativeHarnessSessionManager['respond']>[2]): Promise<void> {
     const pendingSet = this.waits.get(session.nativeSessionId) ?? []

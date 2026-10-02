@@ -5,6 +5,7 @@ import { nativeCorrelation } from '../src/modules/conversations/operatorChatRepo
 import { OperatorConversationStateSchema } from '@graphql/contracts'
 import { OperatorChatCommands } from '../src/modules/conversations/operatorChatCommands.js'
 import type pg from 'pg'
+import { ActivitySnapshotV1Schema } from '@graphql/contracts/activity'
 
 function fixture() {
   const principal = { id: 'owner', name: 'Owner', audience: 'operator', revokedAt: null, expiresAt: new Date(Date.now() + 600_000).toISOString(),
@@ -39,8 +40,14 @@ function fixture() {
     setup: vi.fn(async () => { throw new Error('native configuration removed or inspection unavailable') }),
     prepare: vi.fn(async () => { throw new Error('new launch must be blocked') }), release: vi.fn(async () => {}) }
   const chat = new OperatorChatService(repository as never, {} as never, (() => manager) as never, '/tmp/pr18-operator', authority as never)
-  vi.spyOn(chat, 'get').mockResolvedValue(OperatorConversationStateSchema.parse({ conversation: { id: 'chat', agentId: 'application-operator',
-    scope: 'application', operatorConfigurationVersionId: configuration.id }, messages: [], turnState: 'active', revision: 1, activeRequestId: 'request' }))
+  const activitySnapshot = ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope: { kind: 'operator_chat', conversationId: 'chat' },
+    revision: '1', sourceRevisions: [], active: [{ ref: { kind: 'chat_request', conversationId: 'chat', requestId: 'request' },
+      phase: 'active', outcome: null, delivery: 'accepted', evidence: 'confirmed', startedAt: null }], queued: [],
+    latest: { kind: 'chat_request', conversationId: 'chat', requestId: 'request' }, pendingInteractions: [], activities: [],
+    page: { before: null, nextCursor: null, hasMore: false } })
+  vi.spyOn(chat, 'get').mockResolvedValue({ ...OperatorConversationStateSchema.parse({ conversation: { id: 'chat', agentId: 'application-operator',
+    scope: 'application', operatorConfigurationVersionId: configuration.id }, messages: [], turnState: 'active', revision: 1, activeRequestId: 'request' }),
+  activitySnapshot, qualificationKey: 'a'.repeat(64) })
   return { chat, repository, manager, authority, principal, option }
 }
 it('delivers an owner rejection after MCP removal without setup or issuing new credentials', async () => {

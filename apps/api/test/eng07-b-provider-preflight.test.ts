@@ -6,6 +6,10 @@ import { DomainError } from '../src/modules/errors.js'
 import { providerAppEndpoint, providerLaunchCredentials } from './helpers/wave25Br1003Runtime.js'
 import { ExecutionScopedNativeSessionManagerResolver, type NativeManagerResolutionContext } from '../src/modules/interactions/runtimePorts.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
+import { HarnessExecutionRequestSchema } from '@graphql/contracts'
+import { makeCurrentWorkflowFixture } from '@graphql/contracts/wave25'
+import { inspectNativeResponse, pendingResponseQuery } from '../src/modules/harnesses/responseAvailability.js'
+import { CheckpointTestProvider } from './helpers/wave25Br1003Provider.js'
 
 const { validate } = vi.hoisted(() => ({ validate: vi.fn() }))
 vi.mock('../src/modules/runs/continuation.js', () => ({ continuationValidator: () => validate }))
@@ -141,5 +145,56 @@ describe('ENG07-B provider preflight keeps the strict seeded-runner boundary', (
     await expect(f.provider.prepare(f.input)).rejects.toBe(error)
     expect(f.runs.getExecution).not.toHaveBeenCalled()
     noPreflightEffects(f)
+  })
+})
+
+describe('ENG07-B synthetic provider response availability (no DB or native binary)', () => {
+  async function pendingFixture() {
+    const f = makeCurrentWorkflowFixture('eng07-response-availability', 'single')
+    const request = HarnessExecutionRequestSchema.parse({ executionId: 'eng07-availability-execution',
+      runId: f.run.id, workspaceId: f.scope.workspaceId, workflowNodeId: f.version.entryNodeId,
+      workingDirectory: '/synthetic/eng07-availability', runtimeDirectory: '/synthetic/eng07-availability/runtime',
+      input: {}, configuration: f.configurations[0] })
+    const provider = new CheckpointTestProvider(new Set([request.workflowNodeId])), manager = provider.connection()
+    const session = await manager.createSession({ request })
+    for await (const event of manager.startTurn(session, { prompt: 'Fixture protocol only', clientCorrelationId: `execution:${request.executionId}` })) {
+      expect(event.type).toMatch(/turn.started|interaction.pending/)
+    }
+    const pending = (await manager.pending(session))!, query = pendingResponseQuery(pending)!
+    const inspect = (changed = query, reference = session) => inspectNativeResponse(manager, reference, changed, { isCurrent: () => true })
+    return { provider, manager, session, pending, query, inspect }
+  }
+
+  it('reads only the exact pending callback and rejects changed identity without provider effects', async () => {
+    const f = await pendingFixture(), before = structuredClone(f.provider.counts)
+    try {
+      const available = await f.inspect()
+      expect(available).toMatchObject({ state: 'available', qualified: true, path: 'live_callback',
+        nativeSessionId: f.session.nativeSessionId, nativeRequestId: f.pending.turn.nativeRequestId,
+        nativeTurnId: f.pending.turn.nativeTurnId })
+      expect(available.generation).toBeDefined()
+      for (const changed of [{ ...f.query, nativeRequestId: 'another-request' }, { ...f.query, nativeRequestType: 'another-type' },
+        { ...f.query, expectedNativeTurnId: 'another-turn' }, { ...f.query, expectedNativeMessageId: 'another-message' },
+        { ...f.query, expectedGeneration: 'another-generation' }]) {
+        expect(await f.inspect(changed)).toMatchObject({ state: 'unavailable', qualified: false, path: null })
+      }
+      expect(await f.inspect(f.query, { ...f.session, nativeSessionId: 'another-session' })).toMatchObject({ state: 'unavailable', qualified: false })
+      expect(await f.inspect(f.query, { ...f.session, providerVersion: 'another-version' })).toMatchObject({ state: 'unavailable', qualified: false })
+      expect(f.provider.counts).toEqual(before)
+    } finally { await f.manager.close(f.session) }
+  })
+
+  it('does not expose consumed or closed callbacks and retains the exact original response receipt', async () => {
+    const f = await pendingFixture()
+    await f.manager.respond(f.session, f.query.nativeRequestId, f.pending.responseOptions[0]!)
+    const history = await f.manager.history(f.session), before = structuredClone(f.provider.counts)
+    expect(history.responseDeliveries).toHaveLength(1)
+    expect(await f.inspect()).toMatchObject({ state: 'unavailable', reason: 'request_consumed', qualified: false })
+    expect(await f.manager.history(f.session)).toEqual(history)
+    expect(f.provider.counts).toEqual(before)
+    await f.manager.close(f.session)
+    expect(await f.inspect()).toMatchObject({ state: 'unavailable', reason: 'session_closed', qualified: false })
+    expect(await f.manager.history(f.session)).toEqual(history)
+    expect(f.provider.counts.responses).toBe(1)
   })
 })
