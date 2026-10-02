@@ -14,6 +14,7 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
 KillMode=control-group
+Delegate=cpu memory pids
 UMask=0077
 NoNewPrivileges=yes
 
