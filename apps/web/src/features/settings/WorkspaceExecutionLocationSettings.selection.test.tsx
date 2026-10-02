@@ -63,7 +63,7 @@ describe('destination confirmation owns persistence', () => {
     mount()
     const field = await screen.findByRole('button', { name: 'Project folder' })
     expect(field.parentElement).toHaveTextContent('/projects')
-    expect(screen.getByText(/no computer binding/)).toBeVisible()
+    expect(screen.queryByText('Saved folder history has no computer binding. Select an approved computer before changing it.')).not.toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: 'Copy folder path' }))
     expect(await navigator.clipboard.readText()).toBe('/projects')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
