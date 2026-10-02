@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createHash, webcrypto } from 'node:crypto'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HttpResponse, http } from 'msw'
@@ -178,6 +178,31 @@ afterEach(async () => {
 })
 
 describe('Board workflow reference files (real client + MSW)', () => {
+  it('drops into workflow scope through allocation, bytes and finalization while keeping inherited files read-only', async () => {
+    const view = mount(); await open(view)
+    const file = new File(['# dropped'], 'dropped.md', { type: 'text/markdown' })
+    const dataTransfer = { types: ['Files'], files: [file] }
+    fireEvent.drop(workspaceGroup(), { dataTransfer })
+    expect(calls.filter((call) => call.step === 'allocate')).toHaveLength(0)
+    fireEvent.drop(workflowGroup(), { dataTransfer })
+    await within(workflowGroup()).findByText('dropped.md')
+    await waitFor(() => expect(calls.filter((call) => call.step === 'finalize')).toHaveLength(1))
+    expect(calls.filter((call) => ['allocate', 'put', 'finalize'].includes(call.step)).map((call) => call.scope)).toEqual(
+      [workflowReferenceScope(A), workflowReferenceScope(A), workflowReferenceScope(A)])
+    expect(contents.get([...receipts.values()][0])).toBe('# dropped')
+  })
+
+  it('rejects multi-file drops rather than losing files and blocks read-only writes', async () => {
+    const view = mount(); await open(view)
+    const file = new File(['# one'], 'one.md', { type: 'text/markdown' })
+    fireEvent.drop(workflowGroup(), { dataTransfer: { types: ['Files'], files: [file, file] } })
+    expect(screen.getByRole('alert')).toHaveTextContent('one file at a time')
+    expect(calls.filter((call) => call.step === 'allocate')).toHaveLength(0)
+    cleanup()
+    const readOnly = mount(A, createWorkflowFilesHttpClient(), true); await open(readOnly)
+    fireEvent.drop(workflowGroup(), { dataTransfer: { types: ['Files'], files: [file] } })
+    expect(calls.filter((call) => call.step === 'allocate')).toHaveLength(0)
+  })
   it('is compact, labelled, lazy, and keyboard dismissible with focus return', async () => {
     const view = mount()
     expect(screen.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-expanded', 'false')

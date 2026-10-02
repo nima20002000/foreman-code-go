@@ -6,6 +6,7 @@ import { prepareChatAttachments } from '../chatAttachmentAttempt'
 import { Alert, Button, CodeBlock, Dialog, LoadingState } from '../../../shared/ui/nocturne'
 import { createFileCardHttpClient, MessageFileCards } from '../../file-cards'
 import { ApiError } from '../../../shared/api/client'
+import { useFileDrop } from '../../../shared/ui/useFileDrop'
 import { ConversationComposer } from '../ConversationComposer'
 import { ConversationViewport } from '../ConversationViewport'
 import { useConversationDraftStore } from '../conversationDraftStore'
@@ -43,6 +44,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     workspaceId: conversation.workspaceId, workflowId: conversation.workflowId,
     ...(conversation.origin.kind === 'run_execution' ? { runId: conversation.origin.runId, executionId: conversation.origin.executionId } : {}),
   } } : null)
+  const writeReason = chat.blocked('agent_chat:write')
+  const drop = useFileDrop({ disabled: !!writeReason || !attachments.canAdd, onFiles: attachments.addFiles })
   const draft = useConversationDraftStore((store) => store.drafts[chat.draftKey] ?? '')
   const composer = useRef<HTMLTextAreaElement>(null), focused = useRef(false)
   const [sendAgain, setSendAgain] = useState<Pick<SendAgentChatMessageRequest, 'content' | 'attachments'>>()
@@ -72,7 +75,6 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     <Button size="sm" onClick={() => { void chat.access.refetch(); chat.refresh() }}>Refresh access</Button>
   </Alert></>}</ConversationViewport>
 
-  const writeReason = chat.blocked('agent_chat:write')
   const nextReason = writeReason ?? (state ? intentUnavailable(state, 'next_turn') : 'Loading this conversation…')
   const steerReason = writeReason ?? (state ? intentUnavailable(state, 'steer') : 'Loading this conversation…')
   const interruptReason = writeReason ?? (state ? intentUnavailable(state, 'interrupt_and_send') : 'Loading this conversation…')
@@ -176,11 +178,11 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       notices={notices} cancelReason={cancelReason} responseReason={responseReason} resendReason={nextReason}
       onRefresh={chat.refresh} refreshing={chat.query.isFetching} onCancel={chat.cancelQueued} onRespond={chat.respond} onSendAgain={(content, pins) => setSendAgain({ content, attachments: pins })} />
       : <ConversationViewport revision="loading">{() => notices}</ConversationViewport>}
-    {showComposer || canStop ? <div className="agent-chat-composer-controls" role="group" aria-label="Chat actions" aria-describedby={reasonId}>
+    {showComposer || canStop ? <div className="agent-chat-composer-controls" role="group" aria-label="Chat actions" aria-describedby={reasonId} {...drop.dropTargetProps}>
       {showComposer ? <ConversationComposer conversationId={chat.draftKey} inputRef={composer} maxLength={32_000}
         allowEditingWhileSending isSending={chat.pending} sendDisabled={!!nextReason || attachments.hasBlockingAttachments}
         hasAttachments={attachments.hasAttachments}
-        attachmentControl={<ChatAttachmentControl draft={attachments} disabled={!!writeReason} />} error={chat.localError}
+        attachmentControl={<ChatAttachmentControl draft={attachments} disabled={!!writeReason} composerDrop={drop} />} error={chat.localError}
         sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content) => submit('next_turn', content)} /> : null}
       {(!selected || !sessionMissing) && (state?.activeTurn || canStop) ? <div className="agent-chat-controls" role="group" aria-label="Active turn controls">
         {state?.activeTurn && (state.capabilities.steer !== 'unavailable' || state.capabilities.unavailable.steer) ? <Button size="sm" disabled={!!steerReason || empty}

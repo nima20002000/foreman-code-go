@@ -1,10 +1,12 @@
 import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Icon, IconButton } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from '../conversations'
+import type { useFileDrop } from '../../shared/ui/useFileDrop'
 import '../conversations/chatAttachments.css'
 
-export function OperatorComposer({ conversationId, context, attachmentControl, hasAttachments = false, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
+export function OperatorComposer({ conversationId, context, attachmentControl, fileDropProps, hasAttachments = false, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
   conversationId: string; context?: ReactNode; attachmentControl?: ReactNode; hasAttachments?: boolean; sendDisabled?: boolean; isSending?: boolean;
+  fileDropProps?: ReturnType<typeof useFileDrop>['dropTargetProps'];
   onSubmit(content: string): void; onNewChat(): void; onCancel?: () => void;
 }) {
   const value = useConversationDraftStore((state) => state.drafts[conversationId] ?? '')
@@ -26,7 +28,7 @@ export function OperatorComposer({ conversationId, context, attachmentControl, h
     if (isNew) onNewChat()
     else onSubmit(value.trim())
   }
-  return <form className="operator-composer" aria-label="Conversation composer" onSubmit={(event) => { event.preventDefault(); send() }}>
+  return <form className="operator-composer" aria-label="Conversation composer" {...fileDropProps} onSubmit={(event) => { event.preventDefault(); send() }}>
     {commandsOpen ? <div className="operator-slash-menu" role="listbox" aria-label="Chat commands" id={`${id}-commands`}>
       <button id={`${id}-new`} type="button" role="option" aria-selected tabIndex={-1} onMouseDown={(event) => event.preventDefault()}
         onClick={onNewChat}><code>/new</code><span>Start a new chat</span><kbd>↵</kbd></button>

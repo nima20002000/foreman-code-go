@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from 'react'
 import { createHash, webcrypto } from 'node:crypto'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HttpResponse, http } from 'msw'
@@ -156,6 +156,28 @@ afterEach(async () => {
 })
 
 describe('shared attachment picker and real HTTP boundary', () => {
+  it('drops files through the existing upload/finalization and exact send pin pipeline', async () => {
+    const view = mount()
+    const selected = file('dropped.md')
+    fireEvent.drop(view.container.querySelector('.attachment-control')!, { dataTransfer: { types: ['Files'], files: [selected] } })
+    await ready(view)
+    expect(uploads).toHaveLength(1); expect(uploads[0].filename).toBe('dropped.md')
+    expect(byteUploads).toEqual([uploads[0].requestId])
+    expect(finalizations).toEqual([{ requestId: uploads[0].requestId, scope: scopeA }])
+    expect(view.draft.prepareSend()?.attachments).toEqual(view.draft.readyRefs)
+  })
+
+  it('rejects dropped unsupported files and folders and unavailable conversation writes', async () => {
+    const view = mount()
+    const target = () => view.container.querySelector('.attachment-control')!
+    fireEvent.drop(target(), { dataTransfer: { types: ['Files'], files: [file('bad.exe')] } })
+    expect(await screen.findByText('Unsupported')).toBeVisible(); expect(uploads).toHaveLength(0)
+    fireEvent.drop(target(), { dataTransfer: { types: ['Files'], files: [], items: [{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) }] } })
+    expect(screen.getByRole('alert')).toHaveTextContent('Folders are not supported')
+    view.switchTo(null)
+    fireEvent.drop(target(), { dataTransfer: { types: ['Files'], files: [file()] } })
+    expect(uploads).toHaveLength(0)
+  })
   it.each([
     ['photo.png', 'image/png'], ['photo.jpg', 'image/jpeg'], ['photo.jpeg', 'image/jpeg'],
     ['photo.webp', 'image/webp'], ['photo.gif', 'image/gif'], ['paper.pdf', 'application/pdf'],

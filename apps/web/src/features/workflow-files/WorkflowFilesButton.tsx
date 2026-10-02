@@ -7,6 +7,7 @@ import { Dialog, Tooltip } from '../../shared/ui/nocturne/Overlays'
 import { Icon } from '../../shared/ui/nocturne/Icon'
 import { TextField } from '../../shared/ui/nocturne/Fields'
 import { useFloatingSurface } from '../../shared/ui/nocturne/useFloatingSurface'
+import { useFileDrop } from '../../shared/ui/useFileDrop'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { ATTACHMENT_ACCEPT, inspectAttachment } from '../attachments/attachmentFiles'
 import { createWorkflowFilesHttpClient, type WorkflowFilesClient } from './workflowFilesClient'
@@ -70,6 +71,8 @@ function ScopedWorkflowFilesButton({ workspaceId, workflowId, readOnly = false, 
     setSelectionIssue(inspected.ok ? null : inspected.issue)
     if (inspected.ok) files.upload.mutate({ file, requestId: crypto.randomUUID() })
   }
+  const drop = useFileDrop({ disabled: readOnly || files.upload.isPending || Boolean(removal), maxFiles: 1,
+    onFiles: (selected) => selectFile(selected[0]) })
   const uploadError = files.upload.isError && !selectionIssue
   return <div className={['workflow-files-control', className].filter(Boolean).join(' ')}
     onBlur={(event) => {
@@ -89,16 +92,18 @@ function ScopedWorkflowFilesButton({ workspaceId, workflowId, readOnly = false, 
       <header className="workflow-files-heading"><strong>Files</strong>
         <IconButton size="sm" variant="ghost" label="Close files" onClick={close}><Icon name="close" size={16} /></IconButton>
       </header>
-      <section role="group" aria-label="Workflow files" className="workflow-files-group">
+      <section role="group" aria-label="Workflow files" className="workflow-files-group" {...drop.dropTargetProps}>
         <div className="workflow-files-heading"><h3>Workflow</h3>
           {!readOnly && <Tooltip content="Upload file"><IconButton size="sm" variant="ghost" label="Upload workflow file"
             disabled={files.upload.isPending} onClick={() => picker.current?.click()}>
             <Upload size={16} aria-hidden="true" focusable="false" /></IconButton></Tooltip>}
         </div>
         {!readOnly && <TextField ref={picker} type="file" label="Choose workflow file" className="workflow-files-picker"
-          accept={ATTACHMENT_ACCEPT} tabIndex={-1}
-          onChange={(event) => { selectFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />}
+          accept={ATTACHMENT_ACCEPT} tabIndex={-1} disabled={files.upload.isPending}
+          onChange={(event) => { drop.clearDropError(); selectFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />}
         {files.upload.isPending && <p className="workflow-files-status" role="status">Uploading…</p>}
+        {!readOnly && <p className="workflow-files-status">{drop.isDragging ? 'Drop to upload' : 'Drop a file here or use Upload.'}</p>}
+        {drop.dropError && <p className="workflow-files-error" role="alert">{drop.dropError}</p>}
         {selectionIssue && <p className="workflow-files-error" role="alert" title={selectionIssue.message}>{selectionIssue.label}</p>}
         {uploadError && <div className="workflow-files-status"><p role="alert" title={errorDetail(files.upload.error)}>Upload failed</p>
           {!readOnly && <IconButton size="sm" variant="ghost" label="Retry upload" onClick={() => {

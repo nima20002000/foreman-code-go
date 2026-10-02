@@ -12,6 +12,29 @@ import { ProjectFilesSection } from './ProjectFilesSection'
 import { projectFilesClient } from './projectFilesClient'
 import { projectFilesKeys } from './projectFilesQueries'
 
+it('drops a project file through the workspace upload and persisted list readback', async () => {
+  const view = mount()
+  const selected = file('dropped-project.md', '# exact dropped bytes')
+  fireEvent.drop(view.container.querySelector('.project-files')!, { dataTransfer: { types: ['Files'], files: [selected] } })
+  await screen.findByText('dropped-project.md')
+  await waitFor(() => expect(calls.filter((call) => call.phase === 'finalize')).toHaveLength(1))
+  expect(calls.filter((call) => ['allocate', 'bytes', 'finalize'].includes(call.phase)).map((call) => call.workspaceId)).toEqual([A, A, A])
+  const stored = rows.get(A)!.find((row) => row.revision.filename === 'dropped-project.md')!
+  expect(stored.file.state).toBe('ready')
+  expect(stored.revision.sha256).toBe(hash(new TextEncoder().encode('# exact dropped bytes')))
+})
+
+it('reports unsupported multi-file/directory drops and keeps existing file validation', async () => {
+  const view = mount(), target = view.container.querySelector('.project-files')!
+  fireEvent.drop(target, { dataTransfer: { types: ['Files'], files: [file(), file()] } })
+  expect(screen.getByRole('alert')).toHaveTextContent('one file at a time')
+  fireEvent.drop(target, { dataTransfer: { types: ['Files'], files: [], items: [{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) }] } })
+  expect(screen.getByRole('alert')).toHaveTextContent('Folders are not supported')
+  fireEvent.drop(target, { dataTransfer: { types: ['Files'], files: [file('unsupported.exe')] } })
+  expect(screen.getByRole('alert')).toHaveTextContent('Unsupported')
+  expect(calls.filter((call) => call.phase === 'allocate')).toHaveLength(0)
+})
+
 const A = 'workspace-a'
 const B = 'workspace-b'
 const root = '*/api/workspaces/:workspaceId/reference-files'

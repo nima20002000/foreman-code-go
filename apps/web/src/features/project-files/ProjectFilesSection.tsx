@@ -6,6 +6,7 @@ import type { FileRow } from '@graphql/contracts/files'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Button, Dialog, IconButton, TextField } from '../../shared/ui/nocturne'
+import { useFileDrop } from '../../shared/ui/useFileDrop'
 import { ATTACHMENT_ACCEPT, inspectAttachment } from '../attachments/attachmentFiles'
 import { projectFilesClient, type ProjectFileRemoveInput } from './projectFilesClient'
 import { useProjectFileRemove, useProjectFilesQuery, useProjectFileUpload } from './projectFilesQueries'
@@ -28,27 +29,34 @@ function WorkspaceProjectFiles({ workspaceId }: ProjectFilesSectionProps) {
   const heading = useId()
   const query = useProjectFilesQuery(workspaceId)
   const upload = useProjectFileUpload(workspaceId)
+  function selectFile(file: File | undefined) {
+    if (!file || upload.isPending || ui.removing) return
+    const result = inspectAttachment(file)
+    uiStore.setState({ selectionIssue: result.ok ? null : `${result.issue.label}. ${result.issue.message}` })
+    // Picker and drop both retain this workspace's upload and validation flow.
+    if (result.ok) upload.start(file)
+  }
+  const drop = useFileDrop({ disabled: upload.isPending || Boolean(ui.removing), maxFiles: 1,
+    onFiles: (files) => selectFile(files[0]) })
   const rows = new Map<string, FileRow>()
   for (const page of query.data?.pages ?? []) for (const row of page.items) rows.set(row.file.fileId, row)
   const visibleRows = Array.from(rows.values()).filter((row) => row.file.state !== 'removed')
 
-  return <section className="project-files" aria-labelledby={heading}>
+  return <section className="project-files" aria-labelledby={heading} {...drop.dropTargetProps}>
     <header className="project-files-header">
       <h2 id={heading}>Project files</h2>
       <TextField ref={input} type="file" label="Choose project file" className="project-files-picker"
-        accept={ATTACHMENT_ACCEPT} tabIndex={-1} disabled={upload.isPending}
+        accept={ATTACHMENT_ACCEPT} tabIndex={-1} disabled={upload.isPending || Boolean(ui.removing)}
         onChange={(event) => {
           const file = event.currentTarget.files?.[0]
           event.currentTarget.value = ''
-          if (!file) return
-          const result = inspectAttachment(file)
-          uiStore.setState({ selectionIssue: result.ok ? null : `${result.issue.label}. ${result.issue.message}` })
-          // This input and closure belong to the workspace that opened the native picker.
-          if (result.ok) upload.start(file)
+          drop.clearDropError(); selectFile(file)
         }} />
-      <Button ref={uploadButton} size="sm" disabled={upload.isPending} onClick={() => input.current?.click()}
+      <Button ref={uploadButton} size="sm" disabled={upload.isPending || Boolean(ui.removing)} onClick={() => input.current?.click()}
         leading={<Upload size={16} aria-hidden="true" />}>Upload</Button>
     </header>
+    <p className="project-files-message">{drop.isDragging ? 'Drop to upload' : 'Drop a file here or use Upload.'}</p>
+    {drop.dropError && <p className="project-files-message" role="alert">{drop.dropError}</p>}
     {ui.selectionIssue && <p className="project-files-message" role="alert">{ui.selectionIssue}</p>}
     {upload.isPending && <p className="project-files-message" role="status" aria-label={`Uploading ${upload.filename ?? 'file'}`}>Uploading…</p>}
     {upload.isError && <div className="project-files-notice">

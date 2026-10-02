@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HttpResponse, delay, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -233,6 +233,21 @@ describe('Skill editor', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Use this text' }))
     expect(screen.getByRole('textbox', { name: /^Instructions/ })).toHaveValue('# Imported\n\nUse care.')
     expect(screen.getByRole('textbox', { name: /^Name/ })).toHaveValue('code-review')
+    expect(posts).toHaveLength(0)
+  })
+
+  it('drops Markdown through the import preview without overwriting or saving the draft', async () => {
+    const user = userEvent.setup(), posts = requests('POST', '/skills')
+    const { container } = wrap(<SkillEditor workspaceOptions={workspaces} onSaved={vi.fn()} onCancel={vi.fn()} />)
+    await user.type(screen.getByRole('textbox', { name: /^Instructions/ }), 'Keep my draft')
+    fireEvent.drop(container.querySelector('.skill-instructions')!, { dataTransfer: {
+      types: ['Files'], files: [new File(['# Drop instructions'], 'dropped.md', { type: 'text/markdown' })],
+    } })
+    const dialog = await screen.findByRole('dialog', { name: 'Use imported instructions?' })
+    expect(screen.getByRole('textbox', { name: /^Instructions/ })).toHaveValue('Keep my draft')
+    expect(within(dialog).getByLabelText('Instructions preview')).toHaveTextContent('# Drop instructions')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('textbox', { name: /^Instructions/ })).toHaveValue('Keep my draft')
     expect(posts).toHaveLength(0)
   })
 

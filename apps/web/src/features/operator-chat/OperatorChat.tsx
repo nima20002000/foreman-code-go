@@ -7,6 +7,7 @@ import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
 import { newerOperatorConversationState as newer } from './operatorConversationReadback'
 import { useConversationDraftStore } from '../conversations'
 import { ChatAttachmentControl, useConversationAttachments } from '../attachments'
+import { useFileDrop } from '../../shared/ui/useFileDrop'
 import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
 import { containsAttachmentRefs, messageAttachmentRefs, prepareChatAttachments } from '../conversations/chatAttachmentAttempt'
 import { settingsExperienceKeys } from '../../shared/api/settingsExperience'
@@ -349,16 +350,18 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     return () => { disposed = true; readback.dispose(); close() }
   }, [acceptState, accessDenied, enabled, open, queryClient, selectedId])
 
-  if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
+  const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
+  const archived = conversation?.conversation.status === 'archived'
+  const attachmentsDisabled = Boolean(archived || active || pending.command) || preparingId === selectedId
+  const fileDrop = useFileDrop({ disabled: attachmentsDisabled || !attachments.canAdd, onFiles: attachments.addFiles })
+  if (!enabled || sessionIsSwitching()) return null
   const settings = preferencesDenied ? undefined : preferences.settings
   const pendingHandoff = Boolean(settings && conversation?.settings && settings.harness !== conversation.settings.harness
     && (conversation.messages.length > 0 || conversation.hasEarlierMessages))
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
     && Boolean(setup.data.configurationVersionId)
   const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
-  const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
-  const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
   const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
     && send.error instanceof Error ? send.error.message : undefined
@@ -560,7 +563,8 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
                   saving={preferences.form.isSaving} saveError={preferences.form.error}
                   onChange={preferences.changeAccess} /> : undefined} /> : undefined}
                 hasAttachments={attachments.hasAttachments}
-                attachmentControl={<ChatAttachmentControl draft={attachments} disabled={Boolean(archived || active || pending.command) || preparingId === selectedId} />}
+                fileDropProps={fileDrop.dropTargetProps}
+                attachmentControl={<ChatAttachmentControl draft={attachments} disabled={attachmentsDisabled} composerDrop={fileDrop} />}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
                 sendDisabled={attachmentReceiptPending || attachments.hasBlockingAttachments || (attachments.hasAttachments && pendingHandoff) || !setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}
