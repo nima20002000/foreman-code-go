@@ -25,6 +25,10 @@ test('both CLIs provide static model-free help before argument, filesystem and r
       assert.match(result.stdout, /rollback --root \/private\/app --state \/private\/state --approve-stopped-update yes/);
       assert.match(result.stdout, /drain\/stop policy and stop the worker service/);
       assert.match(result.stdout, /active worker blocks replacement/i);
+      if (entry === 'cli.mjs') {
+        assert.match(result.stdout, /capture-job-runtime --state .* --input/);
+        assert.match(result.stdout, /never qualifies or launches a Job/);
+      }
     }
   }
   assert.deepEqual(await readdir(directory), before);
