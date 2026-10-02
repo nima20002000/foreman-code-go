@@ -1,5 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { definition } from '../../jobs/fixtures'
 import { GraphPresentationProvider } from '../GraphPresentation'
@@ -37,18 +36,18 @@ function mount() {
 
 it('connects Job to Agent with one selection per click', async () => {
   const { job, agent, edges, change } = mount()
-  await userEvent.click(job())
-  await userEvent.click(agent(1))
+  fireEvent.click(job())
+  fireEvent.click(agent(1))
   expect(change).toHaveBeenCalledOnce()
   expect(edges()).toEqual(['job-node>node-1'])
 })
 
 it('connects Agent to Job and does not rearm the Job', async () => {
   const { job, agent, edges, change } = mount()
-  await userEvent.click(agent(0))
-  await userEvent.click(job())
+  fireEvent.click(agent(0))
+  fireEvent.click(job())
   expect(change).toHaveBeenCalledOnce()
   expect(edges()).toEqual(['node-0>job-node'])
-  await userEvent.click(agent(1))
+  fireEvent.click(agent(1))
   expect(change).toHaveBeenCalledOnce()
 })
