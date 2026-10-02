@@ -79,14 +79,14 @@ describe('current LangGraph topology validation', () => {
     expect(WorkflowVersionV3Schema.safeParse(makeCurrentWorkflowFixture('named-choice', 'conditional').version).success).toBe(true)
   })
 
-  it('rejects duplicate Agents and a mismatched declared topology count', () => {
+  it('accepts repeated Agents with exact pins and rejects a mismatched distinct Agent count', () => {
     const f = fixture()
     expect(() => WorkflowVersionV3Schema.parse(f.version)).not.toThrow()
     const replacedAgentId = f.join.agentId
     f.join.agentId = f.right.agentId
     delete f.version.agentConfigurationVersionIds[replacedAgentId]
     f.version.definition.requiredAgentCount = new Set(f.version.definition.nodes.map((node) => node.agentId)).size
-    expect(() => WorkflowVersionV3Schema.parse(f.version)).toThrow('an Agent may occur only once in this topology')
+    expect(() => WorkflowVersionV3Schema.parse(f.version)).not.toThrow()
     const other = fixture()
     other.version.definition.requiredAgentCount = other.version.definition.nodes.length - 1
     expect(() => WorkflowVersionV3Schema.parse(other.version)).toThrow('requiredAgentCount does not match the topology')

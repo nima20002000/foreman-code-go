@@ -49,7 +49,7 @@ describe('current workflow approval authority', () => {
     repeated.version.definition.nodes[2]!.agentId = worker!.agentId
     delete repeated.version.agentConfigurationVersionIds[bridge.agentId]
     repeated.configurations = repeated.configurations.filter((configuration) => configuration.agentId !== bridge.agentId)
-    expect(() => validate(repeated)).toThrow('an Agent may occur only once')
+    expect(() => validate(repeated)).not.toThrow()
   })
 
   it('keeps explicit native Codex self-review local while another Worker routes directly', () => {
