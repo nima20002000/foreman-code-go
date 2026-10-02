@@ -83,27 +83,28 @@ async function fixture(body = Buffer.from('# tool-created workflow output\n'), c
     }),
     publish: vi.fn(async input => publisher.publishAccepted(accepted, input.transferId, input.publication, 'mcp')),
   }
-  const callback = { assertCurrent: vi.fn(async () => {}) }, protectedStorage = vi.fn(async () => {})
+  const callback = { assertCurrent: vi.fn(async () => {}) }, call = { assertCurrent: vi.fn(async () => {}) }, protectedStorage = vi.fn(async () => {})
   // Existing private root is a test stand-in. No native process is launched or
   // claimed to be fenced by this permissive qualification callback.
   const registry = await WorkerNativeOutputRegistry.open({ configuration: { harness: 'codex', model: 'unit-only', reasoningEffort: 'low',
     sandbox: 'workspace-write', serviceTier: 'standard' }, scope: f.scope, callback, authority: { assertCurrent: async () => { await authority.authorize() } },
     storage: { rootDirectory: root, assertProtected: protectedStorage,
       reserve: async () => ({ assertCurrent: async () => {}, release: async () => {} }) },
-    publisher: { publish: (input, signal) => sender.publish(input, signal) } })
+    publisher: { publish: (input, originalCall, signal) => sender.publish(input, originalCall, signal) } })
   cleanups.push(() => registry.withdraw())
   const connection = { current: vi.fn(async () => context), retryable: (error: unknown) => error instanceof Error && error.message === 'carrier lost' }
   const sender = new WorkerNativeArtifactSender({ intent, placement, root: rootBinding }, registry, main, receiver, connection)
-  const created = await registry.dispatch({ operation: 'create', commandId: randomUUID(), filename: 'result.md', mediaType: 'text/markdown' })
+  const dispatch = (command: Parameters<WorkerNativeOutputRegistry['dispatch']>[0]) => registry.dispatch(command, call)
+  const created = await dispatch({ operation: 'create', commandId: randomUUID(), filename: 'result.md', mediaType: 'text/markdown' })
   if (created.operation !== 'create') throw new Error('fixture')
   const artifactId = created.artifactId
-  for (let offset = 0; offset < body.length; offset += 64 * 1024) await registry.dispatch({ operation: 'append', commandId: randomUUID(),
+  for (let offset = 0; offset < body.length; offset += 64 * 1024) await dispatch({ operation: 'append', commandId: randomUUID(),
     artifactId, offset, contentBase64: body.subarray(offset, offset + 64 * 1024).toString('base64') })
-  await registry.dispatch({ operation: 'seal', commandId: randomUUID(), artifactId })
+  await dispatch({ operation: 'seal', commandId: randomUUID(), artifactId })
   const descriptor = { commandId: randomUUID(), artifactId, filename: 'result.md', mediaType: 'text/markdown' as const }
   const publication: AgentFilePublishInput = { ...descriptor, scope: f.scope }
-  const publish = () => registry.dispatch({ operation: 'publish', publication: descriptor })
-  return { f, root, intent, placement, rootBinding, context, body, registry, callback, protectedStorage, sender, main, receiver, connection,
+  const publish = () => dispatch({ operation: 'publish', publication: descriptor })
+  return { f, root, intent, placement, rootBinding, context, body, registry, callback, call, protectedStorage, sender, main, receiver, connection,
     files, authority, publication, publish, admissions, links }
 }
 
@@ -196,21 +197,41 @@ describe('original worker-native artifact sender', () => {
     await expect(t.publish()).rejects.toThrow('original turn withdrawn')
     expect(t.main.publish).not.toHaveBeenCalled()
   })
+  it('checks this publication callback after Main admission before transfer effects', async () => {
+    const t = await fixture(), admit = vi.mocked(t.main.admit).getMockImplementation()!
+    vi.mocked(t.main.admit).mockImplementationOnce(async (...args) => {
+      const transfer = await admit(...args)
+      t.call.assertCurrent.mockRejectedValue(new Error('publication callback withdrawn'))
+      return transfer
+    })
+    const start = vi.spyOn(t.receiver, 'start')
+    await expect(t.publish()).rejects.toThrow('publication callback withdrawn')
+    expect(start).not.toHaveBeenCalled(); expect(t.main.publish).not.toHaveBeenCalled()
+  })
+  it('checks this original callback after carrier connection awaits before start', async () => {
+    const t = await fixture(), start = vi.spyOn(t.receiver, 'start')
+    t.connection.current.mockImplementationOnce(async () => {
+      t.call.assertCurrent.mockRejectedValue(new Error('original carrier callback withdrawn'))
+      return t.context
+    })
+    await expect(t.publish()).rejects.toThrow('original carrier callback withdrawn')
+    expect(start).not.toHaveBeenCalled(); expect(t.main.publish).not.toHaveBeenCalled()
+  })
   it('rejects changed frozen source before admission', async () => {
     const t = await fixture()
     const sender = new WorkerNativeArtifactSender({ intent: t.intent, placement: t.placement, root: t.rootBinding }, {
       sealed: async () => ({ sha256: hash(t.body), byteSize: t.body.length, assertCurrent: async () => {},
         read: async () => Buffer.alloc(t.body.length) }),
     }, t.main, t.receiver, t.connection)
-    await expect(sender.publish(t.publication)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
+    await expect(sender.publish(t.publication, t.call)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
     expect(t.main.admit).not.toHaveBeenCalled()
   })
   it('rejects foreign run scope and cancellation before opening source', async () => {
     const t = await fixture(), source = { sealed: vi.fn(async () => { throw new Error('must not open') }) }
     const sender = new WorkerNativeArtifactSender({ intent: t.intent, placement: t.placement, root: t.rootBinding }, source, t.main, t.receiver, t.connection)
-    await expect(sender.publish({ ...t.publication, scope: t.f.foreign })).rejects.toThrow()
+    await expect(sender.publish({ ...t.publication, scope: t.f.foreign }, t.call)).rejects.toThrow()
     const abort = new AbortController(); abort.abort(new Error('cancelled'))
-    await expect(sender.publish(t.publication, abort.signal)).rejects.toThrow('cancelled')
+    await expect(sender.publish(t.publication, t.call, abort.signal)).rejects.toThrow('cancelled')
     expect(source.sealed).not.toHaveBeenCalled()
   })
 })

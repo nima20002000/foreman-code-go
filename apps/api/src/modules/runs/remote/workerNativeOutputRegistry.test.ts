@@ -26,21 +26,23 @@ async function fixture() {
     publisher: { publish: vi.fn(async () => { throw new Error('No Main publisher in registry-only fixture') }) },
   }
   const registry = await WorkerNativeOutputRegistry.open(ports)
+  const call = { assertCurrent: vi.fn(async () => {}) }
+  const dispatch = (command: Parameters<WorkerNativeOutputRegistry['dispatch']>[0], signal?: AbortSignal) => registry.dispatch(command, call, signal)
   // Tamper cases remove their extra entries before close; registry withdrawal
   // intentionally reports unexpected cleanup failures rather than hiding them.
   cleanups.push(() => registry.withdraw())
   const createCommand = { operation: 'create' as const, commandId: randomUUID(), filename: 'result.md', mediaType: 'text/markdown' as const }
   const create = async () => {
-    const reply = await registry.dispatch(createCommand)
+    const reply = await dispatch(createCommand)
     if (reply.operation !== 'create') throw new Error('fixture')
     return reply.artifactId
   }
   const append = (artifactId: string, bytes = Buffer.from('# real output\n'), offset = 0, commandId: string = randomUUID()) =>
-    registry.dispatch({ operation: 'append', commandId, artifactId, offset, contentBase64: bytes.toString('base64') })
-  const seal = (artifactId: string, commandId: string = randomUUID()) => registry.dispatch({ operation: 'seal', artifactId, commandId })
+    dispatch({ operation: 'append', commandId, artifactId, offset, contentBase64: bytes.toString('base64') })
+  const seal = (artifactId: string, commandId: string = randomUUID()) => dispatch({ operation: 'seal', artifactId, commandId })
   const publication = async (artifactId: string): Promise<WorkerNativeOutputPublicationInput> => ({ artifactId, commandId: randomUUID(),
     filename: 'result.md', mediaType: 'text/markdown' })
-  return { root, scope: f.scope, ports, reservation, registry, createCommand, create, append, seal, publication }
+  return { root, scope: f.scope, ports, reservation, registry, call, dispatch, createCommand, create, append, seal, publication }
 }
 
 describe('closed worker-native output registry', () => {
@@ -83,12 +85,12 @@ describe('closed worker-native output registry', () => {
     await f.append(artifactId, Buffer.from('a'), 0, commandId)
     await expect(f.append(artifactId, Buffer.from('b'), 0, commandId)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
     await expect(f.append(randomUUID())).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
-    await expect(f.registry.dispatch({ ...f.createCommand, path: '/etc/passwd' } as typeof f.createCommand)).rejects.toThrow()
-    await expect(f.registry.dispatch({ ...f.createCommand, commandId: randomUUID(), filename: '../result.md' })).rejects.toThrow()
+    await expect(f.dispatch({ ...f.createCommand, path: '/etc/passwd' } as typeof f.createCommand)).rejects.toThrow()
+    await expect(f.dispatch({ ...f.createCommand, commandId: randomUUID(), filename: '../result.md' })).rejects.toThrow()
   })
   it.each(['noncanonical', 'oversized', 'offset'] as const)('rejects %s append without changing bytes', async kind => {
     const f = await fixture(), artifactId = await f.create()
-    await expect(f.registry.dispatch({ operation: 'append', commandId: randomUUID(), artifactId,
+    await expect(f.dispatch({ operation: 'append', commandId: randomUUID(), artifactId,
       offset: kind === 'offset' ? 1 : 0, contentBase64: kind === 'noncanonical' ? 'Zh==' : kind === 'oversized'
         ? Buffer.alloc(64 * 1024 + 1).toString('base64') : 'YQ==' })).rejects.toThrow()
     expect((await readFile(join(f.root, artifactId))).length).toBe(0)
@@ -137,11 +139,11 @@ describe('closed worker-native output registry', () => {
   it('injects only original host scope and rejects native scope arguments', async () => {
     const f = await fixture(), artifactId = await f.create(); await f.append(artifactId); await f.seal(artifactId)
     const publication = await f.publication(artifactId)
-    await expect(f.registry.dispatch({ operation: 'publish', publication: { ...publication, scope: f.scope } } as
+    await expect(f.dispatch({ operation: 'publish', publication: { ...publication, scope: f.scope } } as
       Parameters<WorkerNativeOutputRegistry['dispatch']>[0])).rejects.toThrow()
     expect(f.ports.publisher.publish).not.toHaveBeenCalled()
-    await expect(f.registry.dispatch({ operation: 'publish', publication })).rejects.toThrow('No Main publisher')
-    expect(f.ports.publisher.publish).toHaveBeenCalledWith({ ...publication, scope: f.scope }, expect.any(AbortSignal))
+    await expect(f.dispatch({ operation: 'publish', publication })).rejects.toThrow('No Main publisher')
+    expect(f.ports.publisher.publish).toHaveBeenCalledWith({ ...publication, scope: f.scope }, expect.objectContaining({ assertCurrent: expect.any(Function) }), expect.any(AbortSignal))
   })
   it('serializes append and seal, fences writes, and returns independent snapshot slices', async () => {
     const f = await fixture(), artifactId = await f.create()
@@ -150,8 +152,8 @@ describe('closed worker-native output registry', () => {
     await expect(f.append(artifactId, Buffer.from('b'), bytes.length)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
     const publication = await f.publication(artifactId)
     let captured: Awaited<ReturnType<WorkerNativeOutputRegistry['sealed']>> | undefined
-    vi.mocked(f.ports.publisher.publish).mockImplementation(async () => { captured = await f.registry.sealed({ ...publication, scope: f.scope }); throw new Error('lost carrier') })
-    await expect(f.registry.dispatch({ operation: 'publish', publication })).rejects.toThrow('lost carrier')
+    vi.mocked(f.ports.publisher.publish).mockImplementation(async () => { captured = await f.registry.sealed({ ...publication, scope: f.scope }, f.call); throw new Error('lost carrier') })
+    await expect(f.dispatch({ operation: 'publish', publication })).rejects.toThrow('lost carrier')
     const copy = await captured!.read(0, bytes.length); copy[0] = 0
     await writeFile(join(f.root, artifactId), '# later path bytes\n')
     expect(Buffer.from(await captured!.read(0, bytes.length))).toEqual(bytes)
@@ -161,10 +163,10 @@ describe('closed worker-native output registry', () => {
     const f = await fixture(), artifactId = await f.create(); await f.append(artifactId); await f.seal(artifactId)
     const publication = await f.publication(artifactId)
     vi.mocked(f.ports.publisher.publish).mockRejectedValue(new Error('carrier lost'))
-    await expect(f.registry.dispatch({ operation: 'publish', publication })).rejects.toThrow('carrier lost')
-    await expect(f.registry.dispatch({ operation: 'publish', publication })).rejects.toThrow('carrier lost')
+    await expect(f.dispatch({ operation: 'publish', publication })).rejects.toThrow('carrier lost')
+    await expect(f.dispatch({ operation: 'publish', publication })).rejects.toThrow('carrier lost')
     expect(f.ports.publisher.publish).toHaveBeenCalledTimes(2)
-    await expect(f.registry.dispatch({ operation: 'publish', publication: { ...publication, commandId: randomUUID() } })).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
+    await expect(f.dispatch({ operation: 'publish', publication: { ...publication, commandId: randomUUID() } })).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_CONFLICT' })
   })
   it('rechecks source authority after actual write and refuses a partial success', async () => {
     const f = await fixture(), artifactId = await f.create()
@@ -185,7 +187,7 @@ describe('closed worker-native output registry', () => {
   })
   it('rejects an already aborted command before admission and withdraws idempotently', async () => {
     const f = await fixture(), abort = new AbortController(); abort.abort(new Error('native cancelled'))
-    await expect(f.registry.dispatch(f.createCommand, abort.signal)).rejects.toThrow('native cancelled')
+    await expect(f.dispatch(f.createCommand, abort.signal)).rejects.toThrow('native cancelled')
     await f.create(); await f.registry.withdraw(); await f.registry.withdraw()
     expect(await readdir(f.root)).toEqual([]); expect(f.reservation.release).toHaveBeenCalledTimes(1)
     await expect(f.create()).rejects.toThrow()
@@ -195,9 +197,105 @@ describe('closed worker-native output registry', () => {
     await unlink(path); await mkdir(path, { mode: 0o700 })
     await expect(f.registry.withdraw()).rejects.toThrow('Worker output cleanup failed')
     expect(f.reservation.release).not.toHaveBeenCalled()
-    // Withdrawal was asserted above and closed its root FD. Remove only the
-    // repeated-withdraw cleanup callback; the owned root cleanup still runs.
-    cleanups.pop()
+    await rm(path, { recursive: true })
+    await f.registry.withdraw(); await f.registry.withdraw()
+    expect(f.reservation.release).toHaveBeenCalledTimes(1)
+  })
+  it('preserves an unacknowledged create for retryable positive cleanup', async () => {
+    const f = await fixture()
+    let allocated: string | undefined
+    vi.mocked(f.ports.storage.assertProtected).mockImplementation(async () => {
+      const files = await readdir(f.root)
+      if (!allocated && files.length) {
+        allocated = files[0]!
+        const path = join(f.root, allocated)
+        await unlink(path); await mkdir(path, { mode: 0o700 })
+        throw new Error('original protection withdrawn')
+      }
+    })
+    await expect(f.create()).rejects.toThrow('creation cleanup failed')
+    expect(f.reservation.release).not.toHaveBeenCalled()
+    await rm(join(f.root, allocated!), { recursive: true })
+    await f.registry.withdraw()
+    expect(f.reservation.release).toHaveBeenCalledTimes(1)
+    expect(await readdir(f.root)).toEqual([])
+  })
+  it('retries only an unconfirmed reservation release without unlinking again', async () => {
+    const f = await fixture(), artifactId = await f.create(), path = join(f.root, artifactId)
+    f.reservation.release.mockRejectedValueOnce(new Error('release ACK unavailable'))
+    await expect(f.registry.withdraw()).rejects.toThrow('cleanup failed')
+    expect(await readdir(f.root)).toEqual([])
+    await writeFile(path, '# another owner\n', { mode: 0o600 })
+    await f.registry.withdraw(); await f.registry.withdraw()
+    expect(f.reservation.release).toHaveBeenCalledTimes(2)
+    expect(await readFile(path, 'utf8')).toBe('# another owner\n')
+  })
+  it('keeps each overlapping call original across awaits and checker replacement', async () => {
+    const f = await fixture()
+    let entered!: () => void, release!: () => void, firstLive = true
+    const waiting = new Promise<void>(resolve => { entered = resolve }), resumed = new Promise<void>(resolve => { release = resolve })
+    vi.mocked(f.ports.authority.assertCurrent).mockImplementationOnce(async () => { entered(); await resumed })
+    const first = { assertCurrent: () => { if (!firstLive) throw new Error('first callback withdrawn') } }
+    const second = { assertCurrent: () => {} }
+    const original = f.registry.dispatch(f.createCommand, first)
+    const rejected = expect(original).rejects.toThrow('first callback withdrawn')
+    await waiting
+    firstLive = false; first.assertCurrent = second.assertCurrent
+    const next = f.registry.dispatch({ ...f.createCommand, commandId: randomUUID() }, second)
+    release(); await rejected
+    const reply = await next
+    expect(reply.operation).toBe('create')
+    expect((await readdir(f.root)).length).toBe(1)
+  })
+  it('checks the replay caller rather than the callback which created the cached receipt', async () => {
+    const f = await fixture(), artifactId = await f.create()
+    const another = { assertCurrent: vi.fn(() => {}) }
+    expect(await f.registry.dispatch(f.createCommand, another)).toMatchObject({ artifactId })
+    another.assertCurrent.mockImplementation(() => { throw new Error('replay callback withdrawn') })
+    await expect(f.registry.dispatch(f.createCommand, another)).rejects.toThrow('replay callback withdrawn')
+    expect(await f.create()).toBe(artifactId)
+  })
+  it('fences an original callback lost during a real write despite another live callback', async () => {
+    const f = await fixture(), artifactId = await f.create()
+    let live = true
+    const original = { assertCurrent: () => { if (!live) throw new Error('original write callback withdrawn') } }
+    vi.mocked(f.ports.storage.assertProtected).mockImplementation(async () => {
+      if ((await readFile(join(f.root, artifactId))).length) live = false
+    })
+    await expect(f.registry.dispatch({ operation: 'append', commandId: randomUUID(), artifactId,
+      offset: 0, contentBase64: Buffer.from('a').toString('base64') }, original)).rejects.toThrow('original write callback withdrawn')
+    vi.mocked(f.ports.storage.assertProtected).mockResolvedValue(undefined)
+    await expect(f.registry.dispatch({ operation: 'seal', commandId: randomUUID(), artifactId }, { assertCurrent: () => {} })).rejects.toThrow()
+    expect(f.ports.publisher.publish).not.toHaveBeenCalled()
+  })
+  it('checks a pending duplicate caller before returning another call receipt', async () => {
+    const f = await fixture()
+    let entered!: () => void, release!: () => void
+    const waiting = new Promise<void>(resolve => { entered = resolve }), resumed = new Promise<void>(resolve => { release = resolve })
+    vi.mocked(f.ports.authority.assertCurrent).mockImplementationOnce(async () => { entered(); await resumed })
+    const first = f.create(); await waiting
+    const duplicate = f.registry.dispatch(f.createCommand, { assertCurrent: () => { throw new Error('duplicate callback withdrawn') } })
+    const rejected = expect(duplicate).rejects.toThrow('duplicate callback withdrawn')
+    release(); await first; await rejected
+    expect((await readdir(f.root)).length).toBe(1)
+  })
+  it('drains an original sealed read before releasing resources and fences later reads', async () => {
+    const f = await fixture(), artifactId = await f.create(); await f.append(artifactId); await f.seal(artifactId)
+    const publication = await f.publication(artifactId)
+    let captured!: Awaited<ReturnType<WorkerNativeOutputRegistry['sealed']>>
+    vi.mocked(f.ports.publisher.publish).mockImplementation(async (input, call) => {
+      captured = await f.registry.sealed(input, call); throw new Error('carrier lost')
+    })
+    await expect(f.dispatch({ operation: 'publish', publication })).rejects.toThrow('carrier lost')
+    let entered!: () => void, release!: () => void
+    const waiting = new Promise<void>(resolve => { entered = resolve }), resumed = new Promise<void>(resolve => { release = resolve })
+    f.call.assertCurrent.mockImplementationOnce(async () => { entered(); await resumed })
+    const reading = captured.read(0, 1), rejected = expect(reading).rejects.toThrow()
+    await waiting; const closing = f.registry.withdraw()
+    expect(f.reservation.release).not.toHaveBeenCalled()
+    release(); await rejected; await closing
+    expect(f.reservation.release).toHaveBeenCalledTimes(1)
+    await expect(captured.read(0, 1)).rejects.toThrow()
   })
   it('fences an awaited create and drains cleanup when withdrawn', async () => {
     const f = await fixture()
