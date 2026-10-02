@@ -75,10 +75,35 @@ describe("executable workflow graph integrity", () => {
     const duplicateAgent = structuredClone(version);
     if(duplicateAgent.definition.nodes[1]!.kind==='job')throw new Error('Agent fixture expected')
     duplicateAgent.definition.nodes[1]!.agentId = "agent-1";
-    expect(WorkflowVersionV3Schema.safeParse(duplicateAgent).success).toBe(false);
+    delete duplicateAgent.agentConfigurationVersionIds["agent-2"];
+    const duplicate = WorkflowVersionV3Schema.safeParse(duplicateAgent);
+    expect(duplicate.success).toBe(false);
+    expect(duplicate.error?.issues).toEqual([
+      expect.objectContaining({ message: "an Agent may occur only once in this topology" }),
+    ]);
     const cyclic = structuredClone(version);
     cyclic.definition.edges.push({ id: "loop", source: "node-2", target: "node-1", kind: "execution" });
     expect(WorkflowVersionV3Schema.safeParse(cyclic).success).toBe(false);
+  });
+
+  it("preserves multiple Job nodes while rejecting duplicate Agents with exact pins", () => {
+    const mixed = structuredClone(version);
+    mixed.definition.nodes.push(...["job-1", "job-2"].map((id) => ({
+      kind: "job" as const, id, name: id, jobDefinitionId: "definition-1",
+      jobDefinitionRevision: 1, jobDefinitionVersionId: "job-version-1",
+    })));
+    mixed.definition.requiredAgentCount = 2;
+    expect(WorkflowVersionV3Schema.safeParse(mixed).success).toBe(true);
+    const agent = mixed.definition.nodes[1]!;
+    if (agent.kind === "job") throw new Error("Agent fixture expected");
+    agent.agentId = "agent-1";
+    mixed.definition.requiredAgentCount = 1;
+    delete mixed.agentConfigurationVersionIds["agent-2"];
+    const duplicate = WorkflowVersionV3Schema.safeParse(mixed);
+    expect(duplicate.success).toBe(false);
+    expect(duplicate.error?.issues).toEqual([
+      expect.objectContaining({ message: "an Agent may occur only once in this topology" }),
+    ]);
   });
 
   it("represents finite business repetition through the optional explicit plan", () => {

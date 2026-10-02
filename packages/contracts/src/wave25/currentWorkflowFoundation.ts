@@ -50,6 +50,8 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
   const edges = new Map(graph.edges.map((edge) => [edge.id, edge]))
   if (nodes.size !== graph.nodes.length || edges.size !== graph.edges.length) issue('node and relationship IDs must be unique')
   if (!nodes.has(version.entryNodeId)) issue('entry must reference an existing node', ['entryNodeId'])
+  const agentIds = graph.nodes.filter(node => node.kind !== 'job').map(node => node.agentId)
+  if (new Set(agentIds).size !== agentIds.length) issue('an Agent may occur only once in this topology')
   const execution = graph.edges.filter((edge) => edge.kind === 'execution')
   const outgoing = new Map<string, string[]>()
   const indegree = new Map(graph.nodes.map((node) => [node.id, 0]))
