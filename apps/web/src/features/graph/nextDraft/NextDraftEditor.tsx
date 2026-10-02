@@ -36,7 +36,7 @@ import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
 import { AgentPickerPanel } from '../../workflow-board/AgentPickerPanel'
 import { WorkflowName, type WorkflowNameHandle } from '../../workflow-board/WorkflowName'
-import { BoardAlerts } from '../../workflow-board/BoardAlerts'
+import { BoardAlerts, type BoardUpdateFailure } from '../../workflow-board/BoardAlerts'
 import { RemoveWorkflowButton } from '../../workflows/RemoveWorkflowButton'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
 import { useApprovalInboxStore } from '../../approvals'
@@ -49,17 +49,17 @@ import '../graph.css'
 import './nextDraft.css'
 
 /** Authoring adapter within the workspace board. Selected Run is NOT an editor key. */
-export function NextDraftEditor({ workspaceId, workflowId, initialContext }: {
-  workspaceId: string; workflowId: string; initialContext?: AuthoringContext
+export function NextDraftEditor({ workspaceId, workflowId, initialContext, updateFailures }: {
+  workspaceId: string; workflowId: string; initialContext?: AuthoringContext; updateFailures?: readonly BoardUpdateFailure[]
 }) {
   const key = nextDraftKey(workspaceId, workflowId)
-  return <GraphPresentationProvider key={key}><DraftLoader draftKey={key} workspaceId={workspaceId} workflowId={workflowId} initialContext={initialContext} /></GraphPresentationProvider>
+  return <GraphPresentationProvider key={key}><DraftLoader draftKey={key} workspaceId={workspaceId} workflowId={workflowId} initialContext={initialContext} updateFailures={updateFailures} /></GraphPresentationProvider>
 }
 
 const kindName = (kind: 'execution' | 'approval') => kind === 'approval' ? 'Approval' : 'Handoff'
 
-function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
-  draftKey: string; workspaceId: string; workflowId: string; initialContext?: AuthoringContext
+function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, updateFailures }: {
+  draftKey: string; workspaceId: string; workflowId: string; initialContext?: AuthoringContext; updateFailures?: readonly BoardUpdateFailure[]
 }) {
   const edit = useGraphDraftStore((state) => state.nextDrafts[draftKey])
   const [storageError, setStorageError] = useState<string>()
@@ -91,7 +91,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
       }
     } catch (error) { setStorageError(error instanceof Error ? error.message : 'Retained edits are unavailable.') }
   }, [draftKey, source.data, source.isError])
-  if (edit) return <EditorForm draftKey={draftKey} edit={edit} />
+  if (edit) return <EditorForm draftKey={draftKey} edit={edit} updateFailures={updateFailures} />
   if (storageError || source.isError) return <section className="workflow-graph-state" role="alert">
     <h2>Authoring unavailable</h2><p>{storageError ?? source.error?.message}</p>
     <p>No retained command was deleted, retagged or replaced.</p>
@@ -101,7 +101,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
 }
 
 type Panel = 'workflow' | 'agents' | 'repeat' | null
-function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit }) {
+function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit: NextDraftEdit; updateFailures?: readonly BoardUpdateFailure[] }) {
   const graph = edit.graph, context = edit.context, board = useWorkflowBoard()
   const editIntent = useGraphEditIntent(draftKey, edit)
   const guard = useContext(UnsavedChangesContext)
@@ -493,7 +493,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         </Toolbar>
         </div>
       </header>
-      <BoardAlerts scope={draftKey} hints={hints} validation={edit.validation} error={editIntent.mutation.error ?? undefined}
+      <BoardAlerts scope={draftKey} hints={hints} validation={edit.validation} error={editIntent.mutation.error ?? undefined} updateFailures={updateFailures}
         pending={editIntent.mutation.isPending} openField={openSaveField} openIssue={(issue) => {
           if (issue.nodeId) openAgent(issue.nodeId)
           else if (issue.relationshipId) inspect(() => presentation.getState().setFocusedEdgeId(issue.relationshipId))

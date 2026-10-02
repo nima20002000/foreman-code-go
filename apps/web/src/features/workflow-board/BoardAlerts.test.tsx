@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
+import { createRef } from 'react'
 import { ApiError } from '../../shared/api/client'
+import { Dialog } from '../../shared/ui/nocturne'
 import { BoardAlerts } from './BoardAlerts'
 import { useInspectionPresentation } from './inspect/presentation'
 
@@ -72,6 +74,31 @@ it('shows an error even when local hints and validation contain no warnings', as
   expect(within(dialog).getByText('The workflow could not be saved.')).toBeVisible()
 })
 
+it('counts update failures as compact recovery rows and retains their retry/loading behavior', async () => {
+  const workspaceRetry = vi.fn(), draftRetry = vi.fn()
+  const failures = [
+    { id: 'WORKSPACE_UPDATES_UNAVAILABLE', message: 'Workspace updates unavailable. Local edits are kept.', pending: false, retry: workspaceRetry },
+    { id: 'DRAFT_UPDATES_UNAVAILABLE', message: 'Draft updates unavailable. Running requires a fresh saved read.', pending: false, retry: draftRetry },
+  ]
+  const view = render(<BoardAlerts {...props} hints={[]} updateFailures={failures} />)
+  expect(screen.getByRole('status')).toHaveTextContent(failures[0]!.message)
+  expect(screen.getByRole('status')).toHaveTextContent(failures[1]!.message)
+  await userEvent.click(screen.getByRole('button', { name: 'Workflow alerts, 2' }))
+  const dialog = screen.getByRole('dialog', { name: 'Workflow alerts' })
+  expect(within(dialog).getAllByRole('listitem')).toHaveLength(2)
+  expect(within(dialog).queryByRole('button', { name: 'Review setting' })).not.toBeInTheDocument()
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Retry workspace updates' }))
+  expect(workspaceRetry).toHaveBeenCalledOnce()
+  view.rerender(<BoardAlerts {...props} hints={[]} updateFailures={[{ ...failures[0]!, pending: true }, failures[1]!]} />)
+  expect(within(dialog).getByRole('button', { name: 'Retry workspace updates' })).toBeDisabled()
+  expect(within(dialog).getByRole('button', { name: 'Retry workspace updates' })).toHaveTextContent('Retrying…')
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Retry draft updates' }))
+  expect(draftRetry).toHaveBeenCalledOnce()
+  view.rerender(<BoardAlerts {...props} hints={[]} updateFailures={[]} />)
+  expect(screen.queryByRole('button', { name: /Workflow alerts/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog', { name: 'Workflow alerts' })).not.toBeInTheDocument()
+})
+
 it('retains the modal and shows check status while Save is pending', async () => {
   render(<BoardAlerts {...props} pending />)
   await userEvent.click(screen.getByRole('button', { name: 'Workflow alerts, 1' }))
@@ -87,16 +114,30 @@ it('opens above its bottom-left trigger and clamps the shared dialog inside a re
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
     const dialog = this instanceof HTMLDialogElement
     const width = dialog ? Math.min(360, window.innerWidth - 24) : 50
-    const left = dialog ? 0 : 16, top = dialog ? 0 : window.innerHeight - 52, height = dialog ? 180 : 36
+    const left = dialog ? 0 : 280, top = dialog ? 0 : window.innerHeight - 52, height = dialog ? 180 : 36
     return { x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, toJSON: () => ({}) }
   })
   render(<BoardAlerts {...props} />)
   await userEvent.click(screen.getByRole('button', { name: 'Workflow alerts, 1' }))
   const dialog = screen.getByRole('dialog', { name: 'Workflow alerts' })
-  expect(dialog.style.left).toBe('12px'); expect(dialog.style.top).toBe('528px')
+  expect(dialog.style.left).toBe('280px'); expect(dialog.style.top).toBe('528px')
   vi.stubGlobal('innerWidth', 320)
   vi.stubGlobal('innerHeight', 240)
   fireEvent(window, new Event('resize'))
   expect(dialog.style.left).toBe('12px'); expect(dialog.style.top).toBe('12px')
   expect(dialog.style.maxHeight).toBe('216px')
+})
+
+it('preserves end alignment for existing shared dialog callers that do not request start alignment', () => {
+  vi.stubGlobal('innerWidth', 1024); vi.stubGlobal('innerHeight', 768)
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const dialog = this instanceof HTMLDialogElement
+    const width = dialog ? 360 : 50, left = dialog ? 0 : 700, top = dialog ? 0 : 20, height = dialog ? 180 : 36
+    return { x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, toJSON: () => ({}) }
+  })
+  const trigger = createRef<HTMLButtonElement>()
+  render(<><button ref={trigger}>Anchor</button><Dialog open title="Existing anchored dialog" onOpenChange={vi.fn()} anchorRef={trigger}>Content</Dialog></>)
+  const dialog = screen.getByRole('dialog', { name: 'Existing anchored dialog' })
+  expect(dialog.style.left).toBe('390px')
+  expect(dialog.style.top).toBe('64px')
 })

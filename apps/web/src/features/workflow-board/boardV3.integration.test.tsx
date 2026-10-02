@@ -17,6 +17,7 @@ import { readBoardStart } from './startOutbox'
 import { readBoardStop } from './stopOutbox'
 import { readEditOutbox } from '../graph/nextDraft/editIntentStorage'
 import { queryKeys } from '../../shared/api/query'
+import { boardDraftContextKey } from './keys'
 
 // The route tree, RootShell, sidebar, creation dialog, persisted boundary, Board,
 // canvas, form, Query hooks, Zustand store, HTTP clients and schemas are REAL.
@@ -145,6 +146,49 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
+  it('puts unavailable update reads in recovery rows without losing local edits or relaxing fresh Start reads', async () => {
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
+    const mounted = await mount(mock)
+    const { id, key } = await create(mock, user)
+    stageShape(key, 'single', mock)
+    const saved = await save(mock, user, 1)
+    await waitFor(() => expect(control('Start saved version')).toBeEnabled())
+    let workspaceAvailable = false, draftAvailable = false
+    const unavailable = () => HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Updates unavailable.' } }, { status: 503 })
+    server.use(
+      http.get(`/api/workspaces/${mock.workspaceId}`, () => workspaceAvailable ? HttpResponse.json(mock.details()) : unavailable()),
+      http.get(`/api/management/workspaces/${mock.workspaceId}/workflows/${id}`, () => draftAvailable ? HttpResponse.json(mock.managed(id)) : unavailable()),
+    )
+    await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
+    await mounted.query.invalidateQueries({ queryKey: boardDraftContextKey(mock.workspaceId, id) })
+    await mounted.query.invalidateQueries({ queryKey: ['workbench', 'board-start-preflight'] })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Workflow alerts, 2' })).toBeVisible())
+    expect(control('Start saved version')).toBeDisabled()
+    expect(readBoardStart(key)).toBeUndefined()
+    expect(mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))).toEqual([])
+    expect(screen.queryByText('Workspace updates are unavailable. The local draft is retained.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Draft updates are unavailable. Start requires a fresh verified saved read.')).not.toBeInTheDocument()
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, name: 'Retained through unavailable updates' })))
+    const local = useGraphDraftStore.getState().nextDrafts[key]!
+    await user.click(screen.getByRole('button', { name: 'Workflow alerts, 2' }))
+    const dialog = screen.getByRole('dialog', { name: 'Workflow alerts' })
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(dialog).getByText('Workspace updates unavailable. Local edits are kept.')).toBeVisible()
+    expect(within(dialog).getByText('Draft updates unavailable. Running requires a fresh saved read.')).toBeVisible()
+    workspaceAvailable = true
+    await user.click(within(dialog).getByRole('button', { name: 'Retry workspace updates' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Workflow alerts, 1' })).toBeVisible())
+    draftAvailable = true
+    await user.click(within(dialog).getByRole('button', { name: 'Retry draft updates' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Workflow alerts/ })).not.toBeInTheDocument())
+    expect(screen.queryByRole('dialog', { name: 'Workflow alerts' })).not.toBeInTheDocument()
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(local.graph)
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.context.draft.baseWorkflowVersionId).toBe(saved.id)
+    expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(true)
+    expect(mock.versions.size).toBe(1)
+    expect(mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))).toEqual([])
+  }, 20_000)
+
   it('keeps real alerts outside the top toolbar and opens workflow history from an accessible Activities icon', async () => {
     const mock = newBoardMock(), user = userEvent.setup()
     const mounted = await mount(mock)
