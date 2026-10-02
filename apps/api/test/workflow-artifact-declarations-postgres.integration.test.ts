@@ -4,6 +4,7 @@ import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it } from 'vitest'
+import { AgentSchema, AgentConfigurationVersionSchema } from '@graphql/contracts'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema, CurrentWorkflowReadResultSchema } from '@graphql/contracts/wave25'
 import { currentRunHistory } from './helpers/currentRunHistory.js'
 import { registerOperatorHttpSecurity, requireLocalRequest } from '../src/modules/access/http.js'
@@ -42,15 +43,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('saved workflow artifact declara
       }
       const owner = await connect(f.owner.token), source = f.saved.value.version.definition.nodes[0]!
       if (source.kind === 'job') throw new Error('Agent fixture required')
+      const peerConfiguration = AgentConfigurationVersionSchema.parse({ ...f.f.configurations[0]!, id: randomUUID(), agentId: randomUUID() })
+      const peer = AgentSchema.parse({ id: peerConfiguration.agentId, name: 'Artifact consumer fixture', productRole: peerConfiguration.productRole,
+        configurationVersionId: peerConfiguration.id, harnessConfiguration: peerConfiguration.harness })
+      await f.db.pool.query('insert into agents(id,workspace_id,record) values($1,$2,$3::jsonb)', [peer.id, peerConfiguration.workspaceId, JSON.stringify(peer)])
+      await f.db.pool.query('insert into agent_configuration_versions(id,workspace_id,agent_id,version,record) values($1,$2,$3,1,$4::jsonb)',
+        [peerConfiguration.id, peerConfiguration.workspaceId, peer.id, JSON.stringify(peerConfiguration)])
+      await f.db.pool.query('update agents set current_configuration_version_id=$2 where id=$1', [peer.id, peerConfiguration.id])
       const artifact = { version: 1 as const, outputKeys: ['report'] }
       const scope = { workspaceId: f.f.scope.workspaceId, workflowId: managed.workflow.id }
       const path = `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/definition`
       const graph = { ...managed.workflow, entryNodeId: 'producer', approval: f.saved.value.version.approval,
-        nodes: [{ ...source, id: 'producer', artifactOutputs: artifact }, { ...source, id: 'consumer' }],
+        nodes: [{ ...source, id: 'producer', artifactOutputs: artifact }, { ...source, id: 'consumer', agentId: peer.id }],
         edges: [{ id: 'forward', kind: 'execution' as const, source: 'producer', target: 'consumer', artifactInputs: artifact }],
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 2 } }
       const input = { ...scope, commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: managed.revision,
-        expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: f.saved.value.version.agentConfigurationVersionIds,
+        expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: { ...f.saved.value.version.agentConfigurationVersionIds, [peer.id]: peerConfiguration.id },
         expectedLocationRevision: 1, graph }
       const tools = await owner.listTools()
       const saveTool = tools.tools.find(tool => tool.name === CURRENT_WORKFLOW_TOOLS.save)!
