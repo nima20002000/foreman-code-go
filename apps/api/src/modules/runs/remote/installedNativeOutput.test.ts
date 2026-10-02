@@ -1,0 +1,126 @@
+import { randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AcceptedNodePlacement, DispatchIntent } from '@graphql/contracts/node-placement'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { TemporaryFileScope } from '@graphql/contracts/files'
+import { MAX_FILE_BYTES } from '@graphql/contracts/files'
+import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
+import type { CodexNativeOutputCallback, CodexNativeOutputTurnPin,
+  CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
+import { ResumableByteTransferService } from '../../byte-transfer/service.js'
+import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
+
+const cleanups: Array<() => Promise<void>> = []
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
+async function fixture() {
+  const directory = await mkdtemp('/tmp/installed-native-output-'); cleanups.push(() => rm(directory, { recursive: true, force: true }))
+  const root = join(directory, 'private'); await mkdir(root, { mode: 0o700 })
+  const binding: DeviceSessionBinding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+    keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
+  const intent: DispatchIntent = { schemaVersion: 1, protocolVersion: 1, mainId: binding.mainId, runId: 'run', nodeId: 'node',
+    executionId: 'execution', occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1, attemptId: 'attempt',
+    operationId: 'operation', bindingHash: 'a'.repeat(64), inputDigest: `sha256:${'b'.repeat(64)}`, owner: { grantId: 'grant', epoch: '1' } }
+  const placement: AcceptedNodePlacement = { schemaVersion: 1, mainId: binding.mainId, runId: intent.runId, nodeId: intent.nodeId,
+    hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+    registration: { workerInstallationId: binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    mainInstallationId: 'installation', destination: { canonicalProjectRoot: '/workspace', canonicalCwd: '/workspace',
+      managedRuntimeRoot: '/runtime', directoryIdentityHash: 'c'.repeat(64), rootPolicyId: 'policy', rootPolicyRevision: '1',
+      locationRevision: '1', attestationId: 'attestation', attestationHash: 'd'.repeat(64) },
+    source: { revisionId: 'source', manifestDigest: 'e'.repeat(64), materializationId: 'materialization', materializationDigest: 'f'.repeat(64) },
+    payload: { kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: 'driver', driverRevision: '1',
+      instanceId: 'instance', instanceRevision: '1', harnessInstallationId: 'installation', installationFingerprint: 'fingerprint',
+      runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [], artifactOutputs: { version: 1, outputKeys: ['report'] } },
+    bindingHash: intent.bindingHash }
+  const scope: TemporaryFileScope = { kind: 'temporary', chat: { kind: 'agent', conversationId: 'conversation', workspaceId: 'workspace',
+    workflowId: 'workflow', agentId: 'agent', runId: intent.runId, executionId: intent.executionId } }
+  const qualification: CodexNativeOutputQualificationInput = {
+    configuration: { harness: 'codex', model: 'unit-only', reasoningEffort: 'low', sandbox: 'workspace-write', serviceTier: 'standard' },
+    binary: '/unit/codex', binaryIdentity: 'unit-binary', providerVersion: 'codex-cli 0.154.0', schemaIdentity: 'unit-schema',
+    expectedSandbox: { cwd: '/workspace', writableRoots: ['/workspace'], networkAccess: false,
+      excludeTmpdirEnvVar: true, excludeSlashTmp: true, tmpdir: undefined },
+  }
+  const pin: CodexNativeOutputTurnPin = { session: { harness: 'codex', providerVersion: qualification.providerVersion, nativeSessionId: 'native' },
+    connectionId: 'connection', runtimeGeneration: 1, nativeTurnId: 'turn', assertCurrent: vi.fn(() => {}) }
+  const release = vi.fn(async () => {}), reserve = vi.fn(async () => ({ assertCurrent: vi.fn(async () => {}), release }))
+  const receiver = new ResumableByteTransferService(join(directory, 'receiver'), { authorize: async () => {} })
+  cleanups.push(() => receiver.close())
+  // Fixture authority/protection/budget ports only. Real anchored store and W09
+  // registry are exercised; no native or authenticated Main proof is produced.
+  const ports: InstalledNativeOutputProviders = {
+    assertQualified: vi.fn(async () => {}), assertCurrent: vi.fn(async () => {}), authorize: vi.fn(async () => scope),
+    storage: (_prepared, original) => ({ rootDirectory: root,
+      owner: { intent, binding, session: original.session, nativeTurnId: original.nativeTurnId, runtimeGeneration: original.runtimeGeneration },
+      limits: { maxDiskBytes: MAX_FILE_BYTES, maxSnapshotBytes: MAX_FILE_BYTES, maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords },
+      budget: { reserve }, protection: { assertProtected: async () => {}, assertQuiescent: async () => {} }, assertCurrent: async () => {} }),
+    artifacts: { binding: { intent, placement, root: { rootId: randomUUID(), rootBindingRevision: 1 } }, receiver,
+      main: { admit: async () => { throw new Error('No Main admission in composition fixture') },
+        publish: async () => { throw new Error('No Main publication in composition fixture') } },
+      connection: { current: async () => binding, retryable: () => false } },
+  }
+  const native = createInstalledNativeOutputs(ports), signal = new AbortController().signal
+  const prepare = () => native.prepare({ ...qualification, session: pin.session, clientCorrelationId: 'correlation',
+    connectionId: pin.connectionId, runtimeGeneration: pin.runtimeGeneration, effectiveSandbox: qualification.expectedSandbox }, signal)
+  const callback = (check = () => {}) => ({ ...pin, rpcId: 'rpc', callId: randomUUID(), assertCurrent: check } satisfies CodexNativeOutputCallback)
+  const command = () => ({ operation: 'create' as const, commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' as const })
+  return { root, ports, scope, qualification, pin, release, reserve, native, signal, prepare, callback, command }
+}
+
+describe('installed native common composition, no native qualification', () => {
+  it('requires genuine provider qualification and opens nothing until durable activation', async () => {
+    const f = await fixture()
+    vi.mocked(f.ports.assertQualified).mockRejectedValueOnce(new Error('No actual qualification'))
+    await expect(f.native.assertQualified(f.qualification, f.signal)).rejects.toThrow('No actual qualification')
+    const bridge = await f.prepare(); cleanups.push(() => bridge.close())
+    expect(await readdir(f.root)).toEqual([]); expect(f.reserve).not.toHaveBeenCalled()
+    await expect(bridge.dispatch(f.command(), f.callback(), f.signal)).rejects.toThrow()
+    await bridge.activate(f.pin, f.signal)
+    await expect(bridge.activate(f.pin, f.signal)).rejects.toThrow()
+    const reply = await bridge.dispatch(f.command(), f.callback(), f.signal)
+    expect(reply.operation).toBe('create'); expect(f.reserve).toHaveBeenCalledTimes(1)
+  })
+  it('denies a Main scope from another execution before opening the registry', async () => {
+    const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
+    if (f.scope.chat.kind !== 'agent') throw new Error('fixture')
+    vi.mocked(f.ports.authorize).mockResolvedValue({ ...f.scope, chat: { ...f.scope.chat, executionId: 'foreign' } })
+    await expect(bridge.activate(f.pin, f.signal)).rejects.toThrow()
+    expect(f.reserve).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([])
+  })
+  it('carries each original callback through authority awaits without a latest-call slot', async () => {
+    const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
+    await bridge.activate(f.pin, f.signal)
+    let active = true
+    const withdrawn = f.callback(() => { if (!active) throw new Error('Original callback withdrawn') })
+    vi.mocked(f.ports.authorize).mockImplementationOnce(async () => { active = false; return await f.ports.authorize(f.pin, 'create') })
+    await expect(bridge.dispatch(f.command(), withdrawn, f.signal)).rejects.toThrow('Original callback withdrawn')
+    expect(await readdir(f.root)).toEqual([])
+    expect((await bridge.dispatch(f.command(), f.callback(), f.signal)).operation).toBe('create')
+  })
+  it('drains an in-flight activation after withdrawal before completing close', async () => {
+    const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    vi.mocked(f.ports.authorize).mockImplementationOnce(async () => { entered(); await gate; return f.scope })
+    const opening = bridge.activate(f.pin, f.signal)
+    const rejected = expect(opening).rejects.toThrow()
+    await started
+    let closed = false
+    const closing = bridge.close().then(() => { closed = true })
+    await Promise.resolve()
+    expect(closed).toBe(false)
+    release(); await rejected; await closing
+    expect(f.reserve).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([])
+  })
+  it('fences dispatch immediately and retries cleanup without releasing uncertain bytes', async () => {
+    const f = await fixture(), bridge = await f.prepare(); cleanups.push(() => bridge.close())
+    await bridge.activate(f.pin, f.signal)
+    await bridge.dispatch(f.command(), f.callback(), f.signal)
+    f.release.mockRejectedValueOnce(new Error('Original budget ledger unavailable'))
+    await expect(bridge.close()).rejects.toThrow()
+    await expect(bridge.dispatch(f.command(), f.callback(), f.signal)).rejects.toThrow()
+    await bridge.close()
+    expect(f.release).toHaveBeenCalledTimes(2); expect(await readdir(f.root)).toEqual([])
+  })
+})

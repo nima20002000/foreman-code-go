@@ -22,7 +22,9 @@ import { CanonicalJobPreparationSources, CanonicalJobPreparationService, Canonic
 import type { JobPreparationPort } from './ports.js'
 import { JobPublicationAuthority } from './authority.js'
 import { createCanonicalJobInputPorts } from '../files/jobInputs/factory.js'
-import { createCanonicalJobArtifactPort } from '../files/jobs/factory.js'
+import { createAdmittedJobOutputs } from '../files/jobs/admittedFactory.js'
+import type { ResumableByteTransferService } from '../byte-transfer/service.js'
+import type { MainJobOutputRsyncPorts } from '../files/jobs/rsyncProduction.js'
 import type { TrustedJobOutputReader } from '../files/jobs/port.js'
 import { JobService } from './service.js'
 import { JobWorkerService } from './worker.js'
@@ -50,7 +52,9 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure;
   activeNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['activeNativeSession']>;
   captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']>; nativeRegistry?: NativeProcessRegistry;
-  transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']> }) {
+  transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']>;
+  transferAcknowledged?: NonNullable<Parameters<typeof createProductionSources>[0]['transferAcknowledged']>;
+  outputRsync?:MainJobOutputRsyncPorts; transferReceiver?:ResumableByteTransferService }) {
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
   const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
@@ -121,13 +125,16 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const preparation = new CanonicalJobPreparationService(new CanonicalJobPreparationSources(source.sources, profiles, privateRepositories,
     { validateDeclaredJobInputs: inputs.validateDeclaredJobInputs }, source.policies))
   const publication = new JobPublicationAuthority(dispatch, preparation)
-  const artifacts = createCanonicalJobArtifactPort({ pool: input.pool, storageRoot: input.storageRoot, authority: publication,
-    reader: input.infrastructure?.outputReader ?? { async open() { throw new DomainError('JOB_OUTPUT_HOST_UNAVAILABLE', 'The original verified Job output byte source is unavailable.', 409) } } })
+  const outputs = createAdmittedJobOutputs({pool:input.pool,storageRoot:input.storageRoot,stagingRoot:join(input.runtimeRoot,'job-output-transfer-staging'),
+    endpoint:{currentBinding:(...args)=>input.endpoint().currentBinding(...args)},authority:publication,
+    ...(input.infrastructure?.outputReader?{reader:input.infrastructure.outputReader}:{}),
+    ...(input.transferReceiver?{receiver:input.transferReceiver}:{}),...(input.outputRsync?{rsync:input.outputRsync}:{})})
+  const artifacts = outputs.artifacts
   const jobs = new JobService(input.pool, input.commands, { preparation, dispatch, artifacts })
   const workers = new JobWorkerService(input.pool, { require: dispatch.require.bind(dispatch),
     verifyPublication: (sql, execution) => artifacts.verifyRequiredOutputs(sql, execution) })
   const application = new JobApplicationBridge(input.pool, dispatch, workers, publication)
   const workflow = createWorkflowJobComposition({ jobs, dispatch, outputs: artifacts })
-  return { ...source, jobs, profiles, dispatch, artifacts, inputs, application, workflow, host, qualificationExtension: qualification.extension,
-    async close() { await dispatch.close(); if (qualificationJournal) await (await qualificationJournal).close() } }
+  return { ...source, jobs, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
+    async close() { await dispatch.close(); await outputs.close(); if (qualificationJournal) await (await qualificationJournal).close() } }
 }

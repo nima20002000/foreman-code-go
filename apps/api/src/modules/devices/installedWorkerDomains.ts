@@ -1,3 +1,4 @@
+import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
 import { createProductionRsyncComposition, type ProductionRsyncProviders } from '../byte-transfer/productionComposition.js'
 import { randomUUID } from 'node:crypto'
 import { RemoteJobExecutionRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
@@ -6,7 +7,9 @@ import { WorkerJobApplicationSink } from '../runs/remote/workerJobApplicationSin
 import { createInstalledJobSource } from '../runs/remote/installedJobSource.js'
 import { createRemoteExecutionHandler } from '../runs/remote/executionRouter.js'
 import { createWorkerJobInputPort } from '../files/jobInputs/workerFactory.js'
+import { JOB_INPUT_NAMESPACE } from '../files/jobInputs/protocol.js'
 import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.js'
+import { createInstalledJobOutputRsync } from '../runs/remote/installedJobOutputRsync.js'
 import { DeviceConnectionError } from './deviceWire.js'
 import type { RemoteJobExecutionHost } from '../runs/remote/jobExecutionHost.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -18,13 +21,13 @@ import { isDeepStrictEqual } from 'node:util'
 import type { WorkerPairingConfiguration } from '@graphql/contracts/device-identity'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
 import { HarnessDiscoveryRequestSchema } from '@graphql/contracts/harness-registry'
-import { SOURCE_OPERATION_EXTENSION, SourceOperationResponseSchema } from '@graphql/contracts/source-operations'
+import { SOURCE_OPERATION_EXTENSION, SourceOperationResponseSchema, SourceTransferStatusResponseSchema } from '@graphql/contracts/source-operations'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from './deviceApplicationChannel.js'
 import type { DeviceConnectionSupervisor } from './connectionSupervisor.js'
 import { createAuthenticatedTransferReceiver, transferContextForBinding } from '../byte-transfer/carrier.js'
 import { sourceTransfersOnMain } from '../sources/operationCarrier.js'
 import { SourceOperationWorkerService } from '../sources/operationWorker.js'
-import { createInstalledWorkflowHost } from '../runs/remote/installedWorkflowHost.js'
+import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '../runs/remote/installedWorkflowHost.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { DomainError } from '../errors.js'
@@ -34,6 +37,7 @@ import { DomainError } from '../errors.js'
 export async function createInstalledWorkerDomains(input: {
   stateDirectory: string; pairing: WorkerPairingConfiguration; bootId: string
   configuration: InstalledWorkflowConfigurationLocation | null
+  nativeOutputs?: InstalledWorkflowHostOptions['nativeOutputs']
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
@@ -71,7 +75,31 @@ export async function createInstalledWorkerDomains(input: {
     return ApprovedRootAllowlistSchema.parse(value)
   }
   const approved = await input.approvedRoots()
-  const rsync = createProductionRsyncComposition({ side: 'worker', providers: approved ? input.rsync : undefined,
+  const jobOutputRsync=input.rsync&&input.jobConfiguration&&approved?await createInstalledJobOutputRsync({providers:input.rsync,journal:await jobJournal(),current,request}):undefined
+  const sourceAcknowledgement = input.rsync && createWorkerSourceRsyncAcknowledgement({
+    authenticate: async (intent, context, signal) => {
+      if (!isDeepStrictEqual(transferContextForBinding(current()), context)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source acknowledgement requires the original current channel.', 409)
+      signal.throwIfAborted(); await input.rsync!.accepted.authorize(intent, context, 'read'); signal.throwIfAborted()
+      if (!isDeepStrictEqual(transferContextForBinding(current()), context)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source acknowledgement generation changed.', 409)
+    },
+    currentCommitted: async (id, context, signal) => {
+      if (!isDeepStrictEqual(transferContextForBinding(current()), context)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source status requires the actual current Main capture.', 409)
+      const reply = await request(SOURCE_OPERATION_EXTENSION.namespace, { version: 1, operation: 'sources.transfer-status', transferId: id }, { signal })
+      const response = SourceTransferStatusResponseSchema.parse(reply.payload)
+      if (reply.bytes !== undefined || response.operation !== 'sources.transfer-status' || response.intent.transferId !== id)
+        throw new DomainError('SOURCE_TRANSFER_CONFLICT', 'Main did not return the original committed source record.', 403)
+      return { intent: response.intent, record: response.record }
+    },
+    approvedRoots: roots,
+  })
+  const rsyncProviders: ProductionRsyncProviders | undefined = input.rsync ? { ...input.rsync,
+    resolveSource:async(intent,signal)=>jobOutputRsync&&await jobOutputRsync.owns(intent)?jobOutputRsync.resolveSource(intent,signal):input.rsync!.resolveSource(intent,signal),
+    acknowledged: async (intent, context) => {
+    if (intent.byteClass === 'source' && intent.direction === 'to-worker') await sourceAcknowledgement!.acknowledged(intent, context)
+    else if(jobOutputRsync&&await jobOutputRsync.owns(intent))await jobOutputRsync.acknowledged(intent,context)
+    else await input.rsync!.acknowledged(intent, context)
+  } } : undefined
+  const rsync = createProductionRsyncComposition({ side: 'worker', providers: approved ? rsyncProviders : undefined,
     current: deviceId => deviceId === input.pairing.deviceId ? current() : undefined })
   const extensions: DeviceExtensionRegistration[] = [...rsync.extensions]
   let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
@@ -97,6 +125,7 @@ export async function createInstalledWorkerDomains(input: {
     native = await createInstalledWorkflowHost({ stateDirectory: input.stateDirectory, pairing: input.pairing, bootId: input.bootId,
       configuration: input.configuration, currentBinding: () => input.connection()?.currentBinding(),
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
+      ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
       codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal, registry, journal })
     extensions.push(receiver.extension, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
@@ -132,7 +161,7 @@ export async function createInstalledWorkerDomains(input: {
         await application.appendLog(owners[0]!.intent, chunk)
       },
       collectOutputs: createWorkerJobOutputCollector({ request }, { current: async signal => { signal?.throwIfAborted(); return transferContextForBinding(current()) },
-        retryable: error => error instanceof DeviceConnectionError && ['transport', 'timeout'].includes(error.code) }, retained),
+        retryable: error => error instanceof DeviceConnectionError && ['transport', 'timeout'].includes(error.code) }, retained,jobOutputRsync?.collector),
     })
     await host.recover()
     jobs = host
@@ -140,6 +169,7 @@ export async function createInstalledWorkerDomains(input: {
   })()
   const execution = extensions.find(extension => extension.namespace === 'execution-v1')
   if (input.jobConfiguration && approved) {
+    extensions.push({namespace:JOB_INPUT_NAMESPACE,version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192})
     const workflow = execution?.handle
     const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
       async handle(payload, context) {

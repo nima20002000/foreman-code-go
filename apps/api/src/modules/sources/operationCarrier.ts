@@ -1,7 +1,8 @@
+import type { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
-import { SOURCE_OPERATION_EXTENSION, SourceOperationRequestSchema, SourceOperationResponseSchema,
+import { SOURCE_OPERATION_EXTENSION, SourceOperationRequestSchema, SourceOperationResponseSchema, SourceTransferStatusRequestSchema, SourceTransferStatusResponseSchema,
   type SourceFilesystemOperation, type SourceOperationOwner, type SourcePreparationIdentitySchema } from '@graphql/contracts/source-operations'
 import type { z } from 'zod'
 import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
@@ -99,11 +100,19 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
   }
 }
 /** Main accepts only owner lookup from the authenticated worker. */
-export function createMainSourceOperationExtension(owners: Pick<PostgresSourceOperationAuthority, 'resolve'>, transfers: Pick<PostgresSourcePackageTransfers, 'intent'>): DeviceExtensionRegistration {
+export function createMainSourceOperationExtension(owners: Pick<PostgresSourceOperationAuthority, 'resolve'>, transfers: Pick<PostgresSourcePackageTransfers, 'intent'>,
+  lifecycle?: Pick<PostgresSourceRsyncLifecycle, 'status'>): DeviceExtensionRegistration {
   return { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(raw, context) {
-    const request = SourceOperationRequestSchema.parse(raw)
+    const request = raw && typeof raw === 'object' && 'operation' in raw && raw.operation === 'sources.transfer-status'
+      ? SourceTransferStatusRequestSchema.parse(raw) : SourceOperationRequestSchema.parse(raw)
     if ((context.bytes?.byteLength ?? 0) !== 0) throw new DomainError('SOURCE_ROLE_DENIED', 'Workers cannot invoke Main filesystem source operations.', 403)
     context.signal.throwIfAborted()
+    if (request.operation === 'sources.transfer-status') {
+      if (!lifecycle) throw new DomainError('SOURCE_TRANSFER_STATUS_UNAVAILABLE', 'Original committed source status is unavailable.', 409)
+      const result = await lifecycle.status(request.transferId, context.binding)
+      context.signal.throwIfAborted()
+      return { payload: SourceTransferStatusResponseSchema.parse({ version: 1, operation: request.operation, ...result }) }
+    }
     if (request.operation === 'sources.transfer-authorize') {
       const intent = await transfers.intent(request.transferId, context.binding)
       context.signal.throwIfAborted(); return { payload: SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, intent }) }
