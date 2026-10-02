@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { TransferIntent } from '@graphql/contracts/byte-transfer'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import { RsyncWriterOwnership, rsyncArgumentDigest, type RsyncOwnerReference } from './rsyncWriterOwnership.js'
+import { parseRsyncWriterArguments, runRsyncWriterCli } from './rsyncWriterCli.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
 import { NodeRsyncExecutor, RsyncStagingTransport, rsyncCommand, type RsyncEndpoint, type RsyncStagingPorts } from './rsync.js'
 import { bootIdentity, processIdentity } from '../harnesses/recovery/linuxIdentity.js'
@@ -95,8 +96,9 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
       expect(() => f.ownership.spawnProcess(client, f.pin.executable, [...args, 'changed'], signal())).toThrow('binary differs')
       await writeFile(f.pin.executable, 'changed binary')
       expect(() => f.ownership.spawnProcess(client, f.pin.executable, args, signal())).toThrow('binary differs')
-      f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
-      expect(() => f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)).toThrow('active or unconfirmed')
+      const server = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
+      expect(f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)).toEqual(server)
+      expect(() => f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', { ...f.pin, sha256: 'f'.repeat(64) })).toThrow('active or unconfirmed')
     } finally { await f.dispose() }
   })
   it('refuses a changed transfer pin, caller digest and unrelated owner instead of replacing ownership', async () => {
@@ -348,6 +350,126 @@ describe.skipIf(process.platform !== 'linux')('rsync store causal lock and quota
     } finally { await f.dispose() }
   })
 })
+describe.skipIf(process.platform !== 'linux')('actual wrapper admission through the existing live control channel', () => {
+  it('grants only the actual waiting wrapper after accepted-authority readback and never duplicates a claimed launch', async () => {
+    const f = await fixture()
+    try {
+      const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
+      const wrapper = new RsyncWriterOwnership(f.root, () => undefined)
+      expect(() => wrapper.spawnServer(ref, ['--server', '.'], signal())).toThrow('binding is not current')
+      const waiting = wrapper.waitForServerGrant(ref, signal())
+      const actual = processIdentity(process.pid)!
+      expect(readRecord(f.ownerPath(ref, 'waiting'))).toMatchObject({ hostBootId: bootIdentity(), process: { pid: actual.pid, startTicks: actual.startTicks } })
+      const authorize = vi.fn(async () => {})
+      expect(f.ownership.serverAdmission(f.intent, f.binding)).toMatchObject({ ownerId: ref.ownerId, ownerDigest: ref.ownerDigest })
+      await f.ownership.activateServer(ref, f.binding, signal(), authorize)
+      await waiting
+      expect(authorize).toHaveBeenCalledWith(f.intent, f.binding, expect.any(AbortSignal))
+      const granted = readRecord(f.ownerPath(ref, 'grant'))
+      await f.ownership.activateServer(ref, f.binding, signal(), authorize)
+      expect(readRecord(f.ownerPath(ref, 'grant'))).toEqual(granted)
+      expect(() => wrapper.spawnGrantedServer(ref, ['--server', '.'], signal())).toThrow('before executable dispatch')
+      expect(readRecord(f.ownerPath(ref, 'claim'))).toMatchObject({ mode: 'process', parent: { pid: actual.pid, startTicks: actual.startTicks } })
+      expect(() => f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)).toThrow('active or unconfirmed')
+      expect(() => wrapper.spawnGrantedServer(ref, ['--server', '.'], signal())).toThrow()
+      await wrapper.stopServer(ref, signal()); await f.ownership.processesQuiescent(f.intent, signal())
+    } finally { await f.dispose() }
+  })
+  it('does not grant or invoke authority when no actual wrapper has appeared before caller cancellation', async () => {
+    const f = await fixture()
+    try {
+      const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin), controller = new AbortController()
+      const authorize = vi.fn(async () => {})
+      const activated = f.ownership.activateServer(ref, f.binding, controller.signal, authorize)
+      controller.abort(new Error('admission deadline'))
+      await expect(activated).rejects.toThrow()
+      expect(authorize).not.toHaveBeenCalled(); expect(readRecord(f.ownerPath(ref, 'grant'))).toBeUndefined()
+      await f.ownership.stopProcesses(f.intent, signal())
+    } finally { await f.dispose() }
+  })
+  it.each(['denied', 'epoch', 'generation', 'offline'] as const)('revalidates %s after the wrapper appears, before publishing any grant', async defect => {
+    const f = await fixture()
+    try {
+      const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin), controller = new AbortController()
+      const waiting = f.ownership.waitForServerGrant(ref, controller.signal)
+      const observed = waiting.catch(() => undefined)
+      await expect(f.ownership.activateServer(ref, f.binding, signal(), async () => {
+        if (defect === 'denied') throw new Error('accepted transfer denied')
+        f.change(defect === 'offline' ? undefined : { ...f.binding,
+          ...(defect === 'epoch' ? { connectionEpoch: randomUUID() } : { connectionGeneration: 2 }) })
+      })).rejects.toThrow(defect === 'denied' ? 'accepted transfer denied' : 'binding is not current')
+      expect(readRecord(f.ownerPath(ref, 'grant'))).toBeUndefined()
+      expect(readRecord(f.ownerPath(ref, 'claim'))).toBeUndefined()
+      controller.abort(); await observed; await f.ownership.stopProcesses(f.intent, signal())
+    } finally { await f.dispose() }
+  })
+  it('bounds a slow accepted-authority read and never grants after its cancelled callback later finishes', async () => {
+    const f = await fixture()
+    try {
+      const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin), controller = new AbortController()
+      const waiting = f.ownership.waitForServerGrant(ref, controller.signal).catch(() => undefined)
+      let finish!: () => void
+      const activated = f.ownership.activateServer(ref, f.binding, controller.signal,
+        async () => new Promise<void>(resolve => { finish = resolve }))
+      await Promise.resolve(); controller.abort(new Error('authority deadline'))
+      await expect(activated).rejects.toThrow('authority deadline')
+      finish(); await waiting; await Promise.resolve()
+      expect(readRecord(f.ownerPath(ref, 'grant'))).toBeUndefined()
+      await f.ownership.stopProcesses(f.intent, signal())
+    } finally { await f.dispose() }
+  })
+  it.each(['stale', 'nonce', 'waiting', 'stopped'] as const)('rejects a %s grant before any executable claim', async defect => {
+    const f = await fixture()
+    let clock: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
+      const waiting = f.ownership.waitForServerGrant(ref, signal())
+      await f.ownership.activateServer(ref, f.binding, signal(), async () => {}); await waiting
+      const grant = readRecord(f.ownerPath(ref, 'grant')) as Record<string, unknown>
+      if (defect === 'stale') clock = vi.spyOn(Date, 'now').mockReturnValue(Number(grant.expiresAt) + 1)
+      if (defect === 'nonce') writeRecord(f.ownerPath(ref, 'grant'), { ...grant, nonce: randomUUID() })
+      if (defect === 'waiting') writeRecord(f.ownerPath(ref, 'waiting'), { ...readRecord(f.ownerPath(ref, 'waiting')) as object, process: { pid: process.pid, startTicks: '0' } })
+      if (defect === 'stopped') await f.ownership.stopProcesses(f.intent, signal())
+      expect(() => f.ownership.spawnGrantedServer(ref, ['--server', '.'], signal())).toThrow()
+      if (defect !== 'stopped') expect(readRecord(f.ownerPath(ref, 'claim'))).toBeUndefined()
+      else expect(readRecord(f.ownerPath(ref, 'claim'))).toMatchObject({ mode: 'cancelled' })
+    } finally { clock?.mockRestore(); await f.dispose() }
+  })
+  it('retains the same original grant after publication failure and permits idempotent accepted readback', async () => {
+    const f = await fixture()
+    let fault: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
+      const waiting = f.ownership.waitForServerGrant(ref, signal())
+      const write = storage.writeRecord
+      fault = vi.spyOn(storage, 'writeRecord').mockImplementation((path, value, exclusive) => {
+        write(path, value, exclusive)
+        if (path === f.ownerPath(ref, 'grant')) throw new Error('grant publication interrupted')
+      })
+      await expect(f.ownership.activateServer(ref, f.binding, signal(), async () => {})).rejects.toThrow('publication interrupted')
+      fault.mockRestore(); await waiting
+      const grant = readRecord(f.ownerPath(ref, 'grant'))
+      await f.ownership.activateServer(ref, f.binding, signal(), async () => {})
+      expect(readRecord(f.ownerPath(ref, 'grant'))).toEqual(grant)
+      await f.ownership.stopProcesses(f.intent, signal())
+    } finally { fault?.mockRestore(); await f.dispose() }
+  })
+  it('strictly parses only protected root plus original owner identifiers, without creating an unknown root', async () => {
+    const f = await fixture()
+    try {
+      const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
+      const args = ['--rsync-root', f.root, '--rsync-transfer', ref.transferId, '--rsync-owner', ref.ownerId,
+        '--rsync-owner-digest', ref.ownerDigest, '--server', '.']
+      expect(parseRsyncWriterArguments(args)).toEqual({ root: f.root, reference: { transferId: ref.transferId, ownerId: ref.ownerId, ownerDigest: ref.ownerDigest }, args: ['--server', '.'] })
+      expect(() => parseRsyncWriterArguments([...args.slice(0, 8), '--daemon'])).toThrow('invocation')
+      expect(() => parseRsyncWriterArguments(['--rsync-root', '/tmp/../unknown', ...args.slice(2)])).toThrow('root')
+      expect(() => parseRsyncWriterArguments(['--rsync-root', f.root, '--rsync-binary', '/bin/sh', ...args.slice(4)])).toThrow('invocation')
+      const missing = `${f.root}/missing`
+      await expect(runRsyncWriterCli(['--rsync-root', missing, ...args.slice(2)], signal())).rejects.toThrow()
+      await expect(readFile(join(missing, '.rsync-writers', ref.transferId, 'intent.json'))).rejects.toThrow()
+    } finally { await f.dispose() }
+  })
+})
 describe('cross-host rsync control boundary', () => {
   it('cannot verify or unlock on local success when remote writer closure is unavailable', async () => {
     const f = await fixture()
@@ -359,13 +481,13 @@ describe('cross-host rsync control boundary', () => {
       const remote = { ...reference, nodeBinary: '/usr/bin/node', entryPoint: '/opt/app/rsync-wrapper.js' }
       const command = rsyncCommand(endpoint, f.intent, remote)
       expect(() => new NodeRsyncExecutor().run(command, signal())).toThrow('subprocess owner unavailable')
-      expect(command.args).toContain(`--rsync-path=/usr/bin/node /opt/app/rsync-wrapper.js --rsync-transfer ${f.intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`)
+      expect(command.args).toContain(`--rsync-path=/usr/bin/node /opt/app/rsync-wrapper.js --rsync-root ${endpoint.remoteRoot} --rsync-transfer ${f.intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`)
       expect(() => rsyncCommand(endpoint, f.intent, { ...remote, entryPoint: '/tmp/$(id)' })).toThrow('Unsafe')
       expect(() => rsyncCommand(endpoint, f.intent, { ...remote, transferId: randomUUID() })).toThrow('remote rsync owner')
       const snapshot = { verify: vi.fn(async () => {}), close: vi.fn(async () => {}) }
       const receiver = { verify: vi.fn(), interrupt: vi.fn(async () => {}) }
       const ports: RsyncStagingPorts = { source: async () => snapshot, receiver: async () => receiver,
-        writers: { remote: async () => remote, local: async () => reference,
+        writers: { remote: async () => remote, local: async () => reference, activate: vi.fn(async () => {}),
           quiescent: vi.fn(async () => { throw new Error('remote server closure unconfirmed') }),
           stop: vi.fn(async () => { throw new Error('remote server stop unconfirmed') }) } }
       const executor = { run: vi.fn(async (c: { executable: string; args: string[] }) => c.args[0] === '--version'
