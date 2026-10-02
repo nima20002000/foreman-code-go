@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { lstat, open, unlink, type FileHandle } from 'node:fs/promises'
+import { lstat, open, unlink } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { join, parse, sep } from 'node:path'
@@ -13,9 +13,10 @@ import type { DeviceApplicationResult } from '@graphql/contracts/device-applicat
 import { authenticatedTransferAuthority, transferContextForBinding, type AcceptedTransferAuthority } from './carrier.js'
 import type { ImmutableTransferSource } from './sender.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
+import type { RsyncWriterOwnership } from './rsyncWriterOwnership.js'
 import { importRsyncStagedBytes } from './rsyncAdapter.js'
 import { RsyncStagingTransport, validateRsyncEndpoint, type RsyncEndpoint, type RsyncExecutor,
-  type RsyncSnapshot, type RsyncReceiverLease, type RsyncStagedBytes } from './rsync.js'
+  type RsyncSnapshot, type RsyncReceiverLease, type RsyncStagedBytes, type RsyncTransferWriters } from './rsync.js'
 
 export type RsyncQuotaKind = 'rsync-source' | 'rsync-receiver'
 /** Implemented by the SAME durable byte-transfer allocation supervisor as the canonical receiver.
@@ -28,6 +29,9 @@ export interface RsyncBackendSelection {
   backend: 'rsync'
   check: TrustedConnectionCheck
   endpoint: RsyncEndpoint
+  /** Protected installed remote wrapper paths; never accepted through control RPC. */
+  nodeBinary: string
+  entryPoint: string
 }
 export type { RsyncControlRequest } from '@graphql/contracts/byte-transfer'
 export interface RsyncControlChannel {
@@ -42,6 +46,10 @@ export interface RsyncProductionInput {
   current(deviceId: string): Readonly<DeviceSessionBinding> | undefined
   accepted: AcceptedTransferAuthority
   receiver: ByteTransferPort
+  /** SAME root/binding registry as the existing writer and shutdown/expiry supervisor. */
+  ownership: RsyncWriterOwnership
+  /** Captures actual local/remote owners; closure/stop must join BOTH original hosts. */
+  writers: RsyncTransferWriters
   quota?: RsyncExternalStagingQuota
   /** Existing authorized immutable package/sealed output reader. No provider/native output path guessing. */
   resolveSource?(intent: TransferIntent, signal: AbortSignal): Promise<ImmutableTransferSource>
@@ -69,6 +77,10 @@ export function assertRsyncBackendSelection(raw: RsyncBackendSelection, intent: 
   if (raw.backend !== 'rsync') throw new Error('Rsync backend is not explicitly selected')
   const check = TrustedConnectionCheckSchema.parse(raw.check), { registration: r, consent: c, probe: p } = check
   const endpoint = validateRsyncEndpoint(raw.endpoint)
+  for (const path of [raw.nodeBinary, raw.entryPoint]) {
+    if (!/^\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/.test(path)
+      || path.split('/').some(part => part === '.' || part === '..')) throw new Error('Unsafe rsync selected writer path')
+  }
   if (check.state !== 'ready' || r.status !== 'paired' || !c?.allowOwnerCommands || !p || p.state !== 'connected'
     || Date.now() - Date.parse(check.checkedAt) > 60000 || Date.parse(check.checkedAt) > Date.now() + 1000
     || c.mainId !== r.mainId || c.deviceId !== r.deviceId || c.workerInstallationId !== r.workerInstallationId
@@ -101,6 +113,8 @@ async function privateDirectory(root: string) {
 /** Worker-safe leaf. HRT mounts handle into the approved metadata namespace; Root owns shared
  * discovery/schema composition and actual source/acknowledgement/quota producers. No listener or loop. */
 export function createRsyncProductionBackend(input: RsyncProductionInput) {
+  if (!input.ownership || !input.writers) throw new Error('Rsync causal writer production ports unavailable')
+  input.ownership.assertRoot(input.stagingRoot)
   const authority = authenticatedTransferAuthority(input.current, input.accepted)
   const sources = new Map<string, RsyncSnapshot>(), leases = new Map<string, RsyncReceiverLease>()
   const verified = new Map<string, { bytes: RsyncStagedBytes; receipt?: VerifiedTransferReceipt }>()
@@ -127,8 +141,9 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
       await input.quota.release(i, kind)
     },
   })
-  const sourceStore = new RsyncPrivateStore(input.stagingRoot, quota('rsync-source'))
-  const receiverStore = new RsyncPrivateStore(input.stagingRoot, quota('rsync-receiver'))
+  const storeOwnership = input.ownership.store()
+  const sourceStore = new RsyncPrivateStore(input.stagingRoot, quota('rsync-source'), storeOwnership)
+  const receiverStore = new RsyncPrivateStore(input.stagingRoot, quota('rsync-receiver'), storeOwnership)
   const capacity = () => {
     if (sources.size + leases.size + verified.size >= POLICY.maxActiveGlobal) throw new Error('Rsync staging handle capacity exceeded')
   }
@@ -137,37 +152,50 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
     await authorize(i, 'read', signal)
     if (sources.has(i.transferId)) return sources.get(i.transferId)!
     capacity()
-    const reader = supplied ?? await input.resolveSource?.(i, signal)
-    if (!reader) throw new Error('Original immutable rsync source unavailable')
-    // Reserve BOTH copies before materializing any bytes, then let the existing private store seal/hash.
-    await quota('rsync-source').reserve(i)
-    const directory = await privateDirectory(input.stagingRoot)
-    const temporary = `/proc/self/fd/${directory.fd}/${i.transferId}.${randomUUID()}.input`
-    let handle: FileHandle | undefined
+    const binding = input.current(i.deviceId)
+    if (!binding) throw new Error('Rsync authenticated connection is unavailable')
+    const access = input.ownership.access(i, binding, 'source-materializer')
     try {
-      handle = await open(temporary, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-      for (let offset = 0; offset < i.byteSize;) {
-        await authorize(i, 'read', signal)
-        const length = Math.min(i.chunkBytes, i.byteSize - offset), bytes = await reader.read(i, offset, length, signal)
-        if (bytes.byteLength !== length) throw new Error('Immutable rsync source extent changed')
-        let written = 0
-        while (written < length) {
-          signal.throwIfAborted()
-          const result = await handle.write(bytes, written, length - written, offset + written)
-          if (!result.bytesWritten) throw new Error('Rsync input write stalled')
-          written += result.bytesWritten
+      const snapshot = await access.run(async ownerSignal => {
+        const bounded = AbortSignal.any([signal, ownerSignal])
+        const reader = supplied ?? await input.resolveSource?.(i, bounded)
+        if (!reader) throw new Error('Original immutable rsync source unavailable')
+        // Capture reservation, producer IO and descriptors before reading or writing any bytes.
+        await quota('rsync-source').reserve(i)
+        bounded.throwIfAborted()
+        const directory = await privateDirectory(input.stagingRoot)
+        access.attach(directory)
+        const temporary = `/proc/self/fd/${directory.fd}/${i.transferId}.${randomUUID()}.input`
+        try {
+          const handle = await open(temporary, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+          access.attach(handle)
+          for (let offset = 0; offset < i.byteSize;) {
+            await authorize(i, 'read', bounded)
+            const length = Math.min(i.chunkBytes, i.byteSize - offset), bytes = await reader.read(i, offset, length, bounded)
+            if (bytes.byteLength !== length) throw new Error('Immutable rsync source extent changed')
+            let written = 0
+            while (written < length) {
+              bounded.throwIfAborted()
+              const result = await handle.write(bytes, written, length - written, offset + written)
+              if (!result.bytesWritten) throw new Error('Rsync input write stalled')
+              written += result.bytesWritten
+            }
+            offset += length
+          }
+          await handle.sync()
+          const frozen = await sourceStore.freeze(i, handle, bounded)
+          try { await authorize(i, 'read', bounded) }
+          catch (error) { await frozen.close(); throw error }
+          return frozen
+        } finally {
+          await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error })
+          await directory.sync()
         }
-        offset += length
-      }
-      await handle.sync()
-      const snapshot = await sourceStore.freeze(i, handle, signal)
-      try { await authorize(i, 'read', signal) }
-      catch (error) { await snapshot.close(); throw error }
+      })
       sources.set(i.transferId, snapshot)
       return snapshot
     } finally {
-      try { await handle?.close(); await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error }) }
-      finally { await directory.close() }
+      await access.close()
       // Snapshot/reservation persist on failure for the existing stopped-owner/expiry supervisor.
     }
   }
@@ -247,7 +275,8 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
       else if (request.method === 'receiver-prepare') await prepareReceiver(i, frame.signal)
       else if (request.method === 'receiver-verify') receipt = await verifyReceiver(i, frame.signal)
       else if (request.method === 'receiver-interrupt') { await leases.get(i.transferId)?.interrupt(); leases.delete(i.transferId) }
-      else await acknowledge(i, frame.signal)
+      else if (request.method === 'acknowledge') await acknowledge(i, frame.signal)
+      else throw new Error('Rsync writer control requires the installed W07 handler')
       await authorize(i, 'read', frame.signal); assertFrame()
       return { payload: { kind: 'rsync-stage-v1', method: request.method, transferId: i.transferId, ...(receipt ? { receipt } : {}) } }
     })
@@ -271,19 +300,34 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
     return locked(i.transferId, async () => {
       await authorize(i, 'start', signal)
       const selection = await input.selection!(i, signal), endpoint = assertRsyncBackendSelection(selection, i)
+      const { nodeBinary, entryPoint } = selection
       if (endpoint.localRoot !== input.stagingRoot) throw new Error('Rsync selected root differs from installed staging root')
       let receipt: VerifiedTransferReceipt | undefined
       const selectedAuthority = { authorize: async (...args: Parameters<typeof authority.authorize>) => {
         const next = await input.selection!(i, signal)
         assertRsyncBackendSelection(next, i)
-        if (!isDeepStrictEqual(next.check.consent, selection.check.consent) || !isDeepStrictEqual(next.endpoint, endpoint)) throw new Error('Rsync owner selection changed')
+        if (!isDeepStrictEqual(next.check.consent, selection.check.consent) || !isDeepStrictEqual(next.endpoint, endpoint)
+          || next.nodeBinary !== nodeBinary || next.entryPoint !== entryPoint) throw new Error('Rsync owner selection changed')
         await authority.authorize(...args)
       } }
       const transport = new RsyncStagingTransport(endpoint, selectedAuthority, {
+        writers: {
+          local: (...args) => input.writers.local(...args),
+          remote: async (...args) => {
+            const reference = await input.writers.remote(...args)
+            return { ...reference, nodeBinary, entryPoint }
+          },
+          activate: (...args) => input.writers.activate(...args),
+          quiescent: (...args) => input.writers.quiescent(...args),
+          stop: (...args) => input.writers.stop(...args),
+        },
         source: async (_intent, path, bounded) => {
           const expected = join(i.direction === 'to-worker' ? endpoint.localRoot : endpoint.remoteRoot, `${i.transferId}.snapshot`)
           if (path !== expected) throw new Error('Rsync source path differs')
-          if (i.direction === 'to-worker') return prepareSource(i, bounded, source)
+          if (i.direction === 'to-worker') {
+            const own = await prepareSource(i, bounded, source)
+            return { verify: check => own.verify(check), close: async () => { await own.close(); sources.delete(i.transferId) } }
+          }
           await remote(i, 'source-prepare', bounded)
           return { verify: async check => { await remote(i, 'source-verify', check) }, close: async () => { await remote(i, 'source-close', signal) } }
         },
@@ -303,8 +347,7 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
           } }
         },
       }, input.executor)
-      try { await transport.stage(i, () => current(i), signal) }
-      finally { const own = sources.get(i.transferId); if (own) { await own.close(); sources.delete(i.transferId) } }
+      await transport.stage(i, () => current(i), signal)
       if (!receipt) throw new Error('Rsync canonical byte receipt unavailable')
       return sameReceipt(receipt, i)
     })

@@ -105,6 +105,10 @@ export class RsyncWriterOwnership {
     if (!isDeepStrictEqual(certificate(this.root), this.rootIdentity)) throw new Error('Rsync ownership root changed')
     privateDirectory(this.root); privateDirectory(this.journal)
   }
+  assertRoot(root: string) {
+    this.pin()
+    if (resolve(root) !== this.root) throw new Error('Rsync ownership differs from the installed staging root')
+  }
   private original(input: TransferIntent): TransferIntent {
     this.pin()
     const i = TransferIntentSchema.parse(input), raw = readRecord(join(this.directory(i), 'intent.json'))
