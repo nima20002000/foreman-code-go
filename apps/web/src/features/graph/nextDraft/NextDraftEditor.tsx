@@ -10,7 +10,7 @@ import { flushSync } from 'react-dom'
 import { Inbox, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV3Schema, staysOnWorkflowBoard, sameExecutableWorkflow, type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
-import { AgentFacts, Alert, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
+import { ActionMenu, AgentFacts, Alert, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentationStore } from '../useGraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
@@ -25,7 +25,7 @@ import { useGraphEditIntent } from './useGraphEditIntent'
 import { WorkflowSaveError } from './WorkflowSaveError'
 import { EditIntentStatus } from './EditIntentStatus'
 import { draftFailure } from './writer'
-import { useInteractionsQuery, useManagedWorkspaceQuery } from '../../../shared/api/query'
+import { useInteractionsQuery, useManagedWorkspaceQuery, useManagedWorkflowQuery } from '../../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { ApprovalFields, AttachAgentField, EntryFields, NodeConnections, NodeWorkflowFields } from './AuthoringFields'
 import { DraftCanvas, type AgentPanels, type DraftCanvasHandle, type OpenAgentPanel } from './DraftCanvas'
@@ -36,6 +36,7 @@ import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
 import { AgentPickerPanel } from '../../workflow-board/AgentPickerPanel'
 import { WorkflowName } from '../../workflow-board/WorkflowName'
+import { RemoveWorkflowButton } from '../../workflows/RemoveWorkflowButton'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
 import { useApprovalInboxStore } from '../../approvals'
 import { RepeatEditor } from '../../repeats/RepeatEditor'
@@ -140,6 +141,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     return () => window.clearTimeout(timer)
   }, [message])
   const workspace = useManagedWorkspaceQuery(graph.workspaceId)
+  const managedWorkflow = useManagedWorkflowQuery(graph.workspaceId, graph.id)
   const approvals = useInteractionsQuery({ workspaceId: graph.workspaceId, workflowId: graph.id, status: 'pending', limit: 100 })
   const pendingApprovals = approvals.data?.items.filter((item) => item.approval.handler === 'user').length
   const queryClient = useQueryClient()
@@ -453,7 +455,15 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
       <header className="board-topbar">
         <div className="board-title">
           <WorkflowName name={graph.name} disabled={saveBusy || starting || editIntent.locked}
-            onRename={(name) => change((current) => ({ ...current, name }))} />
+            onRename={(name) => change((current) => ({ ...current, name }))}
+            renderActions={(rename) => <RemoveWorkflowButton workspaceId={graph.workspaceId} workflowId={graph.id} name={graph.name}
+              revision={managedWorkflow.data?.revision ?? context.draft.publishedRevision}
+              renderTrigger={(remove) => <ActionMenu label="Workflow actions" width={220} disabled={saveBusy || starting || editIntent.locked} items={[
+                { id: 'rename', label: 'Rename', onSelect: rename },
+                { id: 'remove', label: 'Remove workflow', icon: 'trash', danger: true, disabled: !managedWorkflow.isSuccess || dirty,
+                  description: dirty ? 'Save or discard draft changes first.' : undefined,
+                  onSelect: () => void prepare(remove) },
+              ]} />} />} />
           {hints.length ? <Button size="sm" variant="ghost" leading={<Icon name="warning" size={14} />} onClick={() => openPanel('readiness')}>
             {hints.length} {hints.length === 1 ? 'thing' : 'things'} to fix</Button> : null}
         </div>

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { TextField } from '../../shared/ui/nocturne'
 
-export function WorkflowName({ name, disabled, onRename }: { name: string; disabled: boolean; onRename(name: string): void }) {
+export function WorkflowName({ name, disabled, onRename, renderActions }: { name: string; disabled: boolean; onRename(name: string): void;
+  renderActions?: (rename: () => void) => ReactNode }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(name)
   const input = useRef<HTMLInputElement>(null)
@@ -14,12 +15,13 @@ export function WorkflowName({ name, disabled, onRename }: { name: string; disab
     if (save && !disabled && next && next !== name) onRename(next)
     setEditing(false)
   }
-  return editing ? <TextField ref={input} className="board-name-field" label="Workflow name" aria-label="Workflow name" value={value} disabled={disabled}
+  const begin = () => { setValue(name); active.current = true; setEditing(true) }
+  return <>{editing ? <TextField ref={input} className="board-name-field" label="Workflow name" aria-label="Workflow name" value={value} disabled={disabled}
     onChange={(event) => setValue(event.target.value)} onBlur={() => finish(true)}
     onKeyDown={(event) => {
       if (event.key === 'Enter' || event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation(); finish(event.key === 'Enter')
       }
     }} /> : <h2><button className="board-name-button" title="Rename workflow" disabled={disabled}
-      onClick={() => { setValue(name); active.current = true; setEditing(true) }}>{name}</button></h2>
+      onClick={begin}>{name}</button></h2>}{renderActions?.(begin)}</>
 }
