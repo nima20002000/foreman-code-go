@@ -460,7 +460,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
             onRename={(name) => change((current) => ({ ...current, name }))} />
         </div>
         <div className="board-control-cluster">
-          {dirty || edit.pending || editIntent.locked ? <Toolbar label="Draft actions">
+          {needsSave || edit.pending || editIntent.locked ? <Toolbar label="Draft actions">
             {dirty ? <>
               <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || !edit.history.length}
                 onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton>

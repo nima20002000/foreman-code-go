@@ -145,6 +145,63 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
+  it('keeps saved Board actions hidden for inspection and no-ops, and hides them again after Undo', async () => {
+    const mock = newBoardMock(), user = userEvent.setup()
+    await mount(mock)
+    const { key } = await create(mock, user)
+    stageShape(key, 'single', mock)
+    await save(mock, user, 1)
+    const initial = useGraphDraftStore.getState().nextDrafts[key]!
+    const assertClean = () => {
+      expect(screen.queryByRole('group', { name: 'Draft actions' })).not.toBeInTheDocument()
+      expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
+      expect(useGraphDraftStore.getState().nextDrafts[key]!.history).toHaveLength(initial.history.length)
+    }
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('Canceled title{Escape}')
+    assertClean()
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('{Enter}')
+    assertClean()
+    await user.click(control('Workflow actions'))
+    await user.keyboard('{Escape}')
+    assertClean()
+    await user.click(control('Workflow settings'))
+    await user.click(screen.getByRole('button', { name: 'Close panel' }))
+    assertClean()
+    const canvas = within(screen.getByLabelText('Editable workflow graph'))
+    fireEvent.click(canvas.getByRole('button', { name: new RegExp(`^${mock.agents[0]!.name},`) }))
+    await waitFor(() => expect(canvas.getByRole('button', { name: new RegExp(`^${mock.agents[0]!.name},`) })).toHaveAttribute('aria-pressed', 'true'))
+    assertClean()
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...structuredClone(graph), updatedAt: '2026-10-02T00:00:00Z' })))
+    assertClean()
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('Meaningful name{Enter}')
+    expect(screen.getByRole('group', { name: 'Draft actions' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Undo' }))
+    assertClean()
+    expect(screen.getByRole('button', { name: 'S3 mounted workflow' })).toBeVisible()
+    expect(mock.versions.size).toBe(1)
+  }, 20_000)
+
+  it('offers Save for an unpublished initial definition even without local edits', async () => {
+    const mock = newBoardMock(), user = userEvent.setup()
+    const workflowId = 'unpublished-initial'
+    const graph = shapeGraph({ id: workflowId, workspaceId: mock.workspaceId, name: 'Unpublished initial',
+      executionSemanticsVersion: 3, version: 1, nodes: [], edges: [], entryNodeId: null, executionCondition: { kind: 'manual' } }, 'single', mock)
+    mock.install(graph, false)
+    await mount(mock, `/workspaces/${mock.workspaceId}?workflowId=${workflowId}`)
+    const key = nextDraftKey(mock.workspaceId, workflowId)
+    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]).toBeDefined())
+    expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
+    expect(screen.getByRole('group', { name: 'Draft actions' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    const version = await save(mock, user, 1)
+    expect(version.definition.name).toBe(graph.name)
+    expect(version.definition.nodes).toEqual(graph.nodes)
+  }, 15_000)
+
   it('renames from the board title, cancels with Escape, and persists through Save beside Discard', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
     await mount(mock)
