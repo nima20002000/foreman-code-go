@@ -156,6 +156,14 @@
       "types": "./dist/jobOutputTransfer.d.ts",
       "import": "./dist/jobOutputTransfer.js"
     },
+    "./workflow-artifact-transfer": {
+      "types": "./dist/workflowArtifactTransfer.d.ts",
+      "import": "./dist/workflowArtifactTransfer.js"
+    },
+    "./workflow-artifact-transfer-node": {
+      "types": "./dist/workflowArtifactTransferNode.d.ts",
+      "import": "./dist/workflowArtifactTransferNode.js"
+    },
     "./job-runtime": {
       "types": "./dist/jobRuntime.d.ts",
       "import": "./dist/jobRuntime.js"
