@@ -45,6 +45,8 @@ import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories } from './workflowPhysicalReadout.js'
+import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
+import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
@@ -161,6 +163,15 @@ export interface CapturedWorkflowMainRequest {
   readonly binding:Readonly<DeviceSessionBinding>
   request(payload:unknown,options?:{signal?:AbortSignal}):Promise<DeviceApplicationResult>
 }
+export interface InstalledWorkflowNativeOutputContext {
+  intent: DispatchIntent
+  placement: AcceptedNodePlacement
+  binding: Readonly<DeviceSessionBinding>
+  materialization: SourceMaterializationRecord
+  /** Real original registry/ACK evidence; deliberately does not inspect passive
+   * originalSessionLifetime while the producer's starting gate is active. */
+  assertCurrent(pin?: CodexNativeOutputTurnPin, signal?: AbortSignal): Promise<void>
+}
 export interface InstalledWorkflowHostOptions {
   stateDirectory:string
   pairing:WorkerPairingConfiguration
@@ -172,6 +183,7 @@ export interface InstalledWorkflowHostOptions {
   sources:SourceOperationWorkerService
   approvedRoots():Promise<ApprovedRootAllowlist>
   codexSuiteRevision:string
+  nativeOutputs?(context: InstalledWorkflowNativeOutputContext): InstalledNativeOutputProviders
   signal:AbortSignal
   /** Explicit installation initialization; absence of an established journal is otherwise recovery-required. */
   initializeNewInstallation?:true
@@ -282,6 +294,50 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           harnessInstallationId:override.target.harnessInstallationId,connectionGeneration:installation.connectionGeneration,environmentGeneration:installation.environmentGeneration})
         const dependencies=createInstalledCodexDependencies({reader:actual.reader,codexSuiteRevision:input.codexSuiteRevision})
         const before=async()=>{if(actual.launchDisabled||closing)unavailable('original_native_owner_closed');await authorize(actual.intent,actual.placement,'start');installations.assertCurrent(selection)}
+        const outputContext: InstalledWorkflowNativeOutputContext = {
+          intent: structuredClone(actual.intent), placement: structuredClone(actual.placement),
+          binding: Object.freeze(structuredClone(actual.context.binding)),
+          materialization: structuredClone(actual.capture.facts.executionPlacement.materialization),
+          assertCurrent: async (pin, effectSignal) => {
+            effectSignal?.throwIfAborted(); current(actual.context.binding)
+            await before(); effectSignal?.throwIfAborted(); current(actual.context.binding)
+            if (operations.get(actual.intent.executionId) !== actual) unavailable('original_native_owner_closed')
+            if (pin) {
+              pin.assertCurrent()
+              const native = actual.native
+              if (!native || !actual.session || !isDeepStrictEqual(actual.session, pin.session)) unavailable('original_native_owner_missing')
+              const observed = matchingOriginalRegistryLaunch(registry, native!.launch)
+              if (observed.lifecycle !== 'active' || !isDeepStrictEqual(observed.guardian, native!.launch.guardian)
+                || !isDeepStrictEqual(observed.provider, native!.launch.provider)
+                || !isDeepStrictEqual(observed.boundary, native!.launch.boundary)) unavailable('original_native_process_changed')
+              const status = await log.status(actual.intent.operationId)
+              if (status.status !== 'known' || status.receipt.stopFence || status.receipt.terminal
+                || status.receipt.native?.sessionId !== pin.session.nativeSessionId
+                || status.receipt.native?.turnId !== pin.nativeTurnId
+                || status.receipt.native?.processIdentityDigest !== native!.native.processIdentityDigest) unavailable('original_native_ack_missing')
+              pin.assertCurrent(); effectSignal?.throwIfAborted(); current(actual.context.binding)
+            }
+          },
+        }
+        const outputPorts = input.nativeOutputs?.(outputContext)
+        if (outputPorts && (!isDeepStrictEqual(outputPorts.artifacts.binding.intent, actual.intent)
+          || !isDeepStrictEqual(outputPorts.artifacts.binding.placement, actual.placement)
+          || outputPorts.artifacts.binding.root.rootId !== outputContext.materialization.receipt.binding.rootId
+          || outputPorts.artifacts.binding.root.rootBindingRevision !== outputContext.materialization.receipt.binding.bindingRevision)) unavailable('original_native_output_binding_conflict')
+        const nativeOutputs = outputPorts && createInstalledNativeOutputs({ ...outputPorts,
+          assertCurrent: async effectSignal => { await outputContext.assertCurrent(undefined, effectSignal); await outputPorts.assertCurrent(effectSignal) },
+          storage: (prepared, pin) => {
+            const storage = outputPorts.storage(prepared, pin)
+            if (!isDeepStrictEqual(storage.owner.binding, actual.context.binding)) unavailable('original_native_output_connection_conflict')
+            return storage
+          },
+          authorize: async (pin, operation, effectSignal) => {
+            await outputContext.assertCurrent(pin, effectSignal)
+            const scope = await outputPorts.authorize(pin, operation, effectSignal)
+            await outputContext.assertCurrent(pin, effectSignal)
+            return scope
+          },
+        })
         const manager=new CodexAppServerSessionManager(binary,undefined,undefined,actual.scope,'scoped',undefined,{...dependencies,
           qualify:async(binary,version,cwd,environment,authenticated,effectSignal)=>{
             await before()
@@ -292,7 +348,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           assertUnchanged:async value=>{await before();await dependencies.assertUnchanged(value)},
           runCommand:async(binary,args,cwd,effectSignal,environment,options)=>{await before();return dependencies.runCommand(binary,args,cwd,effectSignal,environment,{...options,recovery:actual.scope})},
           qualifyModel:async(configuration,binary,cwd,environment,effectSignal)=>{await before();return dependencies.qualifyModel(configuration,binary,cwd,environment,effectSignal,actual.scope)},
-        },{workingDirectory:configurationContext.workingDirectory})
+        },{workingDirectory:configurationContext.workingDirectory},nativeOutputs)
         actual.manager=manager
         return manager
       })

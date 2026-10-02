@@ -53,11 +53,28 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
 
 // Only supplied, actual domain registrations enter the authenticated transport.
 // The package never manufactures dispatch handlers or another workflow authority.
-export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains }) {
+export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync }) {
   const manifest = await prepareWorkerState(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
   let installed, connection;
-  const runtime = await startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, createConnection: async ({ bootId }) => {
+  const bindingDrains = new Set();
+  const bindingFailures = [];
+  const bindingLost = binding => {
+    let task;
+    try { task = Promise.allSettled([installed?.rsyncWriters?.bindingLost(binding)]).then(results => {
+      const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, 'Worker binding loss remains incomplete.');
+    }); }
+    catch (error) { task = Promise.reject(error); }
+    bindingDrains.add(task);
+    void task.then(() => bindingDrains.delete(task), error => { bindingDrains.delete(task); bindingFailures.push(error); });
+  };
+  const runtime = await startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, beforeUnlock: async () => {
+    const results = await Promise.allSettled([execution?.close(), installed?.close(), installed?.rsyncWriters?.close()]);
+    while (bindingDrains.size) await Promise.allSettled([...bindingDrains]);
+    const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []).concat(bindingFailures);
+    if (failures.length) throw new AggregateError(failures, 'Worker shutdown remains incomplete.');
+  }, createConnection: async ({ bootId }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
     const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
     if (!executionDomains) {
@@ -69,17 +86,13 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         configuration: selection ? { path: configurationPath, ownerUid: process.getuid() } : null,
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
+        ...(rsync ? { rsync } : {}),
         codexSuiteRevision: codexQualificationSuite.revision });
     }
     connection = createWorkerConnection({ pairing, bootId, appVersion: manifest.version,
+      onBindingLost: bindingLost,
       extensions: [...extensions, ...(execution?.extensions ?? []), ...(installed?.extensions ?? []), ...rootExtensions] });
     return connection;
   } });
-  let stopping;
-  return { ...runtime, stop() { return stopping ??= (async () => {
-    const results = await Promise.allSettled([execution?.close(), installed?.close()]);
-    const transport = await Promise.allSettled([runtime.stop()]);
-    const failures = [...results, ...transport].flatMap(result => result.status === 'rejected' ? [result.reason] : []);
-    if (failures.length) throw new AggregateError(failures, 'Worker shutdown remains incomplete.');
-  })(); } };
+  return runtime;
 }

@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rename, rm, writeFile, unlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, rename, rm, writeFile, unlink, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DispatchIntentSchema } from '@graphql/contracts/node-placement'
 import { DeviceSessionBindingSchema } from '@graphql/contracts/device-connection'
 import { MAX_FILE_BYTES } from '@graphql/contracts/files'
 import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
-import { createInstalledNativeOutputStorage, assertNativeOutputRootExcluded,
+import { createInstalledNativeOutputStorage, assertNativeOutputRootExcluded, createNativeOutputBudgetLedger,
   type InstalledNativeOutputStorageInput } from './installedNativeOutputStorage.js'
 
 const roots: string[] = []
@@ -88,5 +88,41 @@ describe('explicit qualified native storage adapter, no native acceptance', () =
       expect(() => assertNativeOutputRootExcluded('/private/output', roots)).toThrow()
     }
     expect(() => assertNativeOutputRootExcluded('/private/output', ['/workspace', '/tmp'])).not.toThrow()
+  })
+})
+
+describe('durable native output installation budget, no qualification grants', () => {
+  it('recovers exact reservations and enforces aggregate caps across turns and ledger instances', async () => {
+    const f = await fixture(), owner = f.input.owner, binding = owner.binding
+    const rootDirectory = join(f.root, 'budget'); await mkdir(rootDirectory, { mode: 0o700 })
+    const installation = { mainId: binding.mainId, deviceId: binding.deviceId, workerInstallationId: binding.workerInstallationId }
+    const limits = { maxDiskBytes: 8, maxSnapshotBytes: 8, maxCommandRecords: 2 }
+    const requested = { maxDiskBytes: 6, maxSnapshotBytes: 6, maxCommandRecords: 1 }
+    const ledger = await createNativeOutputBudgetLedger({ rootDirectory, installation, limits, initializeNewStore: true })
+    const original = { artifactId: randomUUID(), owner, limits, requested }
+    const reservation = await ledger.reserve(original)
+    const before = await readFile(join(rootDirectory, '.native-output-budget.json'), 'utf8')
+    const recovered = await createNativeOutputBudgetLedger({ rootDirectory, installation, limits })
+    await (await recovered.reserve(original)).assertCurrent()
+    expect(await readFile(join(rootDirectory, '.native-output-budget.json'), 'utf8')).toBe(before)
+    await expect(recovered.reserve({ ...original, artifactId: randomUUID(), owner: { ...owner, nativeTurnId: 'another-turn' } })).rejects.toThrow()
+    await expect(recovered.reserve({ ...original, owner: { ...owner, nativeTurnId: 'foreign-turn' } })).rejects.toThrow()
+    await reservation.release(); await reservation.release()
+    await expect(reservation.assertCurrent()).rejects.toThrow()
+    await recovered.reserve({ ...original, artifactId: randomUUID() })
+  })
+  it('never initializes over pre-existing residue or steals a crash-left lock', async () => {
+    const f = await fixture(), binding = f.input.owner.binding, rootDirectory = join(f.root, 'budget')
+    await mkdir(rootDirectory, { mode: 0o700 })
+    const input = { rootDirectory, installation: { mainId: binding.mainId, deviceId: binding.deviceId, workerInstallationId: binding.workerInstallationId },
+      limits: { maxDiskBytes: 8, maxSnapshotBytes: 8, maxCommandRecords: 2 } }
+    await expect(createNativeOutputBudgetLedger(input)).rejects.toMatchObject({ code: 'ENOENT' })
+    const residue = join(rootDirectory, 'unreconciled'); await writeFile(residue, 'original bytes', { mode: 0o600 })
+    await expect(createNativeOutputBudgetLedger({ ...input, initializeNewStore: true })).rejects.toThrow()
+    await unlink(residue)
+    const ledger = await createNativeOutputBudgetLedger({ ...input, initializeNewStore: true })
+    await mkdir(join(rootDirectory, '.native-output-budget.lock'), { mode: 0o700 })
+    await expect(ledger.reserve({ owner: f.input.owner, artifactId: randomUUID(), limits: input.limits,
+      requested: { maxDiskBytes: 1, maxSnapshotBytes: 1, maxCommandRecords: 1 } })).rejects.toMatchObject({ code: 'EEXIST' })
   })
 })

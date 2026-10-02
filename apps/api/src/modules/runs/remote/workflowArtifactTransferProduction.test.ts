@@ -42,3 +42,24 @@ it('keeps absent runtime or absent original source ownership unavailable', async
   f.receiver.ownsTransfer.mockResolvedValue(false)
   await expect(createMainWorkflowArtifactTransferExtension(() => f.receiver).handle!(f.request, f.frame)).rejects.toThrow('No original source-package receiver')
 })
+it('routes original Job metadata and durable transfer membership without duplicate byte namespaces',async()=>{
+  const f=fixture(),jobHandle=vi.fn(async()=>({payload:'job'})),job={ownsTransfer:vi.fn(async()=>true),extension:{handle:jobHandle} as unknown as DeviceExtensionRegistration}
+  const mounted=createMainWorkflowArtifactTransferExtension(()=>f.receiver,{handle:f.source} as unknown as DeviceExtensionRegistration,()=>job)
+  const admission={method:'job-output-admit',input:{original:true}}
+  await expect(mounted.handle!(admission,f.frame)).resolves.toEqual({payload:'job'})
+  expect(jobHandle).toHaveBeenCalledWith(admission,f.frame);expect(job.ownsTransfer).not.toHaveBeenCalled()
+  f.receiver.ownsTransfer.mockResolvedValue(false)
+  await expect(mounted.handle!(f.request,f.frame)).resolves.toEqual({payload:'job'})
+  expect(job.ownsTransfer).toHaveBeenCalledExactlyOnceWith(f.request.transferId)
+  expect(f.source).not.toHaveBeenCalled()
+  jobHandle.mockRejectedValueOnce(new Error('Original Job grant revoked'))
+  await expect(mounted.handle!(f.request,f.frame)).rejects.toThrow('Original Job grant revoked')
+  expect(f.source).not.toHaveBeenCalled()
+})
+it('keeps missing Job ownership and membership failures unavailable',async()=>{
+  const f=fixture();f.receiver.ownsTransfer.mockResolvedValue(false)
+  await expect(createMainWorkflowArtifactTransferExtension(()=>f.receiver,{handle:f.source} as unknown as DeviceExtensionRegistration,()=>undefined).handle!(f.request,f.frame)).rejects.toMatchObject({code:'JOB_OUTPUT_RECEIVER_UNAVAILABLE'})
+  const job={ownsTransfer:vi.fn(async()=>{throw new Error('Original Job membership unavailable')}),extension:{handle:vi.fn()} as unknown as DeviceExtensionRegistration}
+  await expect(createMainWorkflowArtifactTransferExtension(()=>f.receiver,{handle:f.source} as unknown as DeviceExtensionRegistration,()=>job).handle!(f.request,f.frame)).rejects.toThrow('Original Job membership unavailable')
+  expect(f.source).not.toHaveBeenCalled();expect(job.extension.handle).not.toHaveBeenCalled()
+})

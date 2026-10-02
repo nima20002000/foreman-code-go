@@ -1,12 +1,15 @@
+import { inflateSync } from 'node:zlib'
+import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { JobRuntimeProfile } from '@graphql/contracts/job-runtime'
 import { CI_QUALIFICATION_SUITE, JobQualificationCandidateSchema, fingerprintQualificationPath, jobQualificationFingerprint,
   validateBoundedVolumeGeometry, qualificationMountId, qualifyJobRuntime, validateIsolationMeasurement, verifyJobQualification,
-  type JobQualificationCandidate, type JobQualificationRecord } from './qualification.js'
+  validateJobQualificationMounts, prepareQualificationPrivateGit, createPhysicalJobRuntimeProducer, type JobQualificationCandidate, type JobQualificationRecord } from './qualification.js'
 import { ensureEmptyPodmanHooks } from './executorPodman.js'
 
 const id = '00000000-0000-4000-8000-000000000001'
@@ -14,7 +17,7 @@ const digest = 'a'.repeat(64)
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 function candidate(): JobQualificationCandidate {
   return JobQualificationCandidateSchema.parse({ qualificationId: id, operationId: id, approvalId: id,
-    fingerprint: { schemaVersion: 1, profileId: id, profileRevision: 1, specDigest: digest,
+    fingerprint: { workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,schemaVersion: 1, profileId: id, profileRevision: 1, specDigest: digest,
       hostRef: { kind: 'main', mainId: id }, registration: null, mainInstallationId: id, bootId: id,
       runtimeExecutable: '/usr/bin/podman', runtimeBinarySha256: digest, ociExecutable: '/usr/bin/crun', ociBinarySha256: digest,
       imageDigest: `sha256:${digest}`, toolchainDigest: digest, configurationDigest: digest,
@@ -88,11 +91,11 @@ describe('qualification metadata and measured observation verification (no nativ
     const request = candidate()
     const probe = { toolchain: { node: 'v26.5.1', pnpm: '11.27.0', corepack: '0.34.6', git: 'git version 2.45.0', flock: 'flock from util-linux 2.39.3' },
       rootfsWriteError: 'EROFS', sourceWrite: true, proc: true, pidNamespace: 'pid:[300]', networkNamespace: 'net:[301]', interfaces: ['lo'],
-      memoryMax: '67108864', swapMax: '0', pidsMax: '64', cpuRatio: 1, detachedChild: true, environment: ['CI', 'GRAPHQL_JOB_INPUT_MANIFEST', 'HOME', 'LANG', 'PATH'], inputRead: true, inputWriteError: 'EROFS', capabilities: '0000000000000000', noNewPrivileges: '1' }
+      memoryMax: '67108864', swapMax: '0', pidsMax: '64', cpuRatio: 1, detachedChild: true, environment: ['CI', 'GRAPHQL_JOB_INPUT_MANIFEST', 'HOME', 'LANG', 'PATH',...Object.keys(JOB_GIT_ENVIRONMENT)].sort(),gitCommon:'/graphql-job-git',gitRead:true,gitConfigWriteError:'EROFS',gitIndexWriteError:'EROFS',gitHeadWriteError:'EROFS',gitObjectWriteError:'EROFS',schedulerWrite:true, inputRead: true, inputWriteError: 'EROFS', capabilities: '0000000000000000', noNewPrivileges: '1' }
     const host = { hostPidNamespace: 'pid:[100]', hostNetworkNamespace: 'net:[101]' }
     expect(() => validateIsolationMeasurement(probe, request, host)).not.toThrow()
     for (const weaker of [{ pidNamespace: undefined }, { pidNamespace: host.hostPidNamespace }, { networkNamespace: host.hostNetworkNamespace },
-      { interfaces: ['eth0', 'lo'] }, { memoryMax: 'max' }, { swapMax: 'max' }, { pidsMax: 'max' }, { cpuRatio: 2 }, { detachedChild: false }, { environment: ['API_TOKEN'] }]) {
+      { interfaces: ['eth0', 'lo'] }, { memoryMax: 'max' }, { swapMax: 'max' }, { pidsMax: 'max' }, { cpuRatio: 2 }, { detachedChild: false }, { environment: ['API_TOKEN'] },{gitRead:false},{gitConfigWriteError:null},{gitIndexWriteError:null},{gitHeadWriteError:null},{gitObjectWriteError:null},{schedulerWrite:false}]) {
       expect(() => validateIsolationMeasurement({ ...probe, ...weaker }, request, host)).toThrow()
     }
   })
@@ -118,4 +121,67 @@ describe('qualification metadata and measured observation verification (no nativ
       expect(hash({ path: hooks })).toMatch(/^[a-f0-9]{64}$/)
     } finally { await rm(root, { recursive: true, force: true }) }
   })
+})
+
+it('requires exactly four original binds with measured RO/RW modes and rejects old two-mount layout',()=>{
+  const paths={sourceRoot:'/owned/tree',inputRoot:'/owned/tree/.graphql-job-inputs',gitDirectory:'/owned/repository',schedulerDirectory:'/owned/job-heavy-jobs'}
+  const mounts=[{Type:'bind',Source:paths.sourceRoot,Destination:'/workspace',RW:true},
+    {Type:'bind',Source:paths.inputRoot,Destination:'/workspace/.graphql-job-inputs',RW:false},
+    {Type:'bind',Source:paths.gitDirectory,Destination:'/graphql-job-git',RW:false},
+    {Type:'bind',Source:paths.schedulerDirectory,Destination:'/graphql-job-git/graphql-heavy-jobs',RW:true},
+    {Type:'tmpfs',Source:'tmpfs',Destination:'/tmp',RW:true}]
+  expect(()=>validateJobQualificationMounts(mounts,paths)).not.toThrow()
+  expect(()=>validateJobQualificationMounts([mounts[0]!,mounts[1]!,mounts[4]!],paths)).toThrow()
+  expect(()=>validateJobQualificationMounts(mounts.map((item,index)=>index===2?{...item,RW:true}:item),paths)).toThrow()
+  expect(()=>validateJobQualificationMounts(mounts.map((item,index)=>index===3?{...item,Source:'/arbitrary/state'}:item),paths)).toThrow()
+})
+it('invalidates historical two-mount qualification for the new layout without granting new capability',()=>{
+  const request=candidate(),record={suite:'rootless-podman-ext4-volume-v1',candidate:request,fingerprint:jobQualificationFingerprint(request),outcome:'qualified',expiresAt:'2100-01-01T00:00:00Z'} as unknown as JobQualificationRecord
+  expect(verifyJobQualification(record,request).reason).toBe('context_changed')
+})
+
+it('builds only qualifier-owned diagnostic Git objects, references and empty scheduler mountpoint without native entry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ci-qualification-private-git-'))
+  try {
+    const tree = join(root, 'tree'), git = join(root, 'repository')
+    await mkdir(tree, { mode: 0o700 })
+    await prepareQualificationPrivateGit(git, tree)
+    expect(await readdir(join(git, 'refs'))).toEqual([])
+    expect(await readdir(join(git, 'graphql-heavy-jobs'))).toEqual([])
+    const head = (await readFile(join(git, 'HEAD'), 'utf8')).trim()
+    const commit = inflateSync(await readFile(join(git, 'objects', head.slice(0, 2), head.slice(2))))
+    expect(createHash('sha1').update(commit).digest('hex')).toBe(head)
+    expect(commit.toString()).toContain('Private Git mount qualification')
+    const index = await readFile(join(git, 'index'))
+    expect(index.subarray(0, 4).toString()).toBe('DIRC')
+    expect(index.readUInt32BE(4)).toBe(2)
+    expect(index.readUInt32BE(8)).toBe(0)
+    expect(index.subarray(12)).toEqual(createHash('sha1').update(index.subarray(0, 12)).digest())
+    expect(await readFile(join(tree, 'qualification.txt'), 'utf8')).toBe('original qualification snapshot')
+    expect(await readFile(join(git, 'config'), 'utf8')).toContain(`worktree = ${tree}`)
+    await expect(prepareQualificationPrivateGit(git, tree)).rejects.toMatchObject({ code: 'EEXIST' })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('keeps a historical fingerprint readable but denies new qualification before admission or probes', async () => {
+  const request = candidate()
+  delete request.fingerprint.workspaceLayout
+  const authority = { readApproval: vi.fn(async () => ({ status: 'approved' as const,
+    fingerprint: jobQualificationFingerprint(request), expiresAt: '2100-01-01T00:00:00Z' })),
+    assertCurrent: vi.fn(), reserve: vi.fn() }
+  expect((await qualifyJobRuntime(request, authority, new AbortController().signal)).reasons).toEqual(['workspace_layout_unqualified'])
+  expect(authority.assertCurrent).not.toHaveBeenCalled()
+  expect(authority.reserve).not.toHaveBeenCalled()
+})
+it('denies historical readiness without probing or silently upgrading immutable facts', async () => {
+  const request = candidate(), runtime = { workspaceLayout: JOB_PRIVATE_GIT_LAYOUT }
+  delete request.fingerprint.workspaceLayout
+  const measurement = { origin: 'real-runtime', expiresAt: '2100-01-01T00:00:00Z', runtime, fingerprint: request.fingerprint }
+  const profile = { status: 'qualified', measurement } as unknown as JobRuntimeProfile
+  const dependencies = { descriptor: vi.fn(), immutableProfile: vi.fn(), admission: vi.fn(), currentMetadata: vi.fn() }
+  const producer = createPhysicalJobRuntimeProducer(dependencies)
+  expect(await producer.revalidate({ query: vi.fn() }, profile)).toEqual({ ready: false, reasons: ['unsupported_workspace_layout'] })
+  expect(dependencies.currentMetadata).not.toHaveBeenCalled()
+  expect(profile.status).toBe('qualified')
+  expect('workspaceLayout' in measurement.fingerprint).toBe(false)
 })

@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { open, readFile, realpath } from 'node:fs/promises'
 import { z } from 'zod'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import { JobRuntimeFingerprintSchema, InstalledJobRuntimeDescriptorSchema, type JobRuntimeFingerprint, type JobRuntimeNativeAdmission, type JobRuntimeProfile, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
+import { JOB_RUNTIME_WORKSPACE_LAYOUT, CurrentJobRuntimeFingerprintSchema, JobRuntimeFingerprintSchema, InstalledJobRuntimeDescriptorSchema, type CurrentJobRuntimeFingerprint, type JobRuntimeFingerprint, type JobRuntimeNativeAdmission, type JobRuntimeProfile, type JobQualificationCandidate } from '@graphql/contracts/job-runtime'
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
 import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
@@ -142,7 +142,7 @@ async function inspectConfiguration(configuration: InstalledJobRuntimeConfigurat
         backingFile: configuration.backingFile, backingBytes: configuration.pins.diskBytes,
       }))
       if (configurationDigest !== configuration.pins.configurationDigest) unavailable('configuration_fingerprint_changed')
-      const fingerprint = JobRuntimeFingerprintSchema.parse({ schemaVersion: 1, profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest,
+      const fingerprint = CurrentJobRuntimeFingerprintSchema.parse({ schemaVersion: 1, workspaceLayout: JOB_RUNTIME_WORKSPACE_LAYOUT, profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest,
         ...configuration.target, root: profile.root, bootId, runtimeExecutable: runtime.path, runtimeBinarySha256: runtime.sha256,
         ociExecutable: oci.path, ociBinarySha256: oci.sha256, configurationDigest, imageDigest: configuration.pins.imageDigest,
         toolchainDigest: configuration.pins.toolchainDigest, limits: profile.limits })
@@ -169,7 +169,7 @@ export async function inspectInstalledJobRuntime(input: {
   configuration: InstalledRuntimeConfigurationLocation | null
   profile: JobRuntimeProfile
   host: InstalledRuntimeObservedHost
-}): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: JobRuntimeFingerprint }> {
+}): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }> {
   const configuration = await readInstalledRuntimeConfiguration(input.configuration)
   assertInstalledHost(configuration, input.host)
   const { descriptor, fingerprint } = await inspectConfiguration(configuration, input.profile)
@@ -181,9 +181,10 @@ export async function inspectInstalledJobRuntime(input: {
 export async function inspectInstalledJobRuntimeCandidate(input: {
   configuration: InstalledRuntimeConfigurationLocation | null; candidate: JobQualificationCandidate; host: InstalledRuntimeObservedHost
 }): Promise<void> {
+  const candidate = input.candidate, original = candidate.fingerprint
+  if (original.workspaceLayout !== JOB_RUNTIME_WORKSPACE_LAYOUT) unavailable('unsupported_workspace_layout')
   const configuration = await readInstalledRuntimeConfiguration(input.configuration)
   assertInstalledHost(configuration, input.host)
-  const candidate = input.candidate, original = candidate.fingerprint
   const { descriptor, fingerprint } = await inspectConfiguration(configuration, { id: original.profileId, revision: original.profileRevision,
     specDigest: original.specDigest, root: original.root, limits: original.limits, policy: { imageDigest: original.imageDigest, toolchainDigest: original.toolchainDigest } })
   if (hash(fingerprint) !== hash(original) || candidate.findmntBinary !== descriptor.findmntExecutable ||
@@ -193,9 +194,9 @@ export async function inspectInstalledJobRuntimeCandidate(input: {
 }
 
 export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHostDependencies): InstalledJobRuntimeHost & {
-  inspect(profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: JobRuntimeFingerprint }>
+  inspect(profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]): Promise<{ descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }>
 } {
-  const snapshots = new Map<string, { configuration: InstalledJobRuntimeConfiguration; descriptor: InstalledJobRuntimeDescriptor; fingerprint: JobRuntimeFingerprint }>()
+  const snapshots = new Map<string, { configuration: InstalledJobRuntimeConfiguration; descriptor: InstalledJobRuntimeDescriptor; fingerprint: CurrentJobRuntimeFingerprint }>()
   async function current(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]) {
     const configuration = await readInstalledRuntimeConfiguration(dependencies.configuration)
     await installedIdentity(sql, configuration)
@@ -224,12 +225,13 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
       if (!snapshot || snapshot.fingerprint.profileRevision !== profile.revision || snapshot.fingerprint.specDigest !== profile.specDigest ||
         hash(snapshot.configuration.root) !== hash(profile.root) || snapshot.fingerprint.imageDigest !== profile.policy.imageDigest ||
         snapshot.fingerprint.toolchainDigest !== profile.policy.toolchainDigest || hash(snapshot.fingerprint.limits) !== hash(profile.limits)) return null
-      try { await installedIdentity(sql, snapshot.configuration); return JobRuntimeFingerprintSchema.parse(snapshot.fingerprint) }
+      try { await installedIdentity(sql, snapshot.configuration); return CurrentJobRuntimeFingerprintSchema.parse(snapshot.fingerprint) }
       catch (error) { if (error instanceof DomainError && error.status < 500) return null; throw error }
     },
     async reserveQualification(input) {
       input.signal.throwIfAborted()
       await input.assertAdmission()
+      if (input.candidate.fingerprint.workspaceLayout !== JOB_RUNTIME_WORKSPACE_LAYOUT || input.approval.fingerprint.workspaceLayout !== JOB_RUNTIME_WORKSPACE_LAYOUT) unavailable('unsupported_workspace_layout')
       const { fingerprint } = await current(dependencies.identity, input.profile)
       if (input.operationId !== input.approval.qualificationId || input.candidate.operationId !== input.operationId || input.candidate.approvalId !== input.approval.id ||
         hash(fingerprint) !== input.approval.fingerprintDigest || hash(input.candidate.fingerprint) !== hash(fingerprint)) unavailable('original_approval_context_changed')

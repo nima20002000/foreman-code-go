@@ -1,6 +1,8 @@
+import type { JobExecution } from '@graphql/contracts/jobs'
+import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { mkdtemp, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { constants, readFileSync as requireRead } from 'node:fs'
 import { identity } from '../sources/privateFilesystem.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -19,7 +21,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'ci-job-owner-')); roots.push(root)
   const path = join(root, 'job-runtime-operations.json'), journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal)
   const execution = jobExecution(); execution.acceptedSpec.target.mainInstallationId = execution.acceptedSpec.target.mainId
-  const sourceRoot = join(root, 'source'), runtimeRoot = join(root, 'runtime'); await mkdir(sourceRoot, { mode: 0o700 }); await mkdir(runtimeRoot, { mode: 0o700 })
+  const sourceRoot = join(root, execution.acceptedSpec.source.materializationId,'tree'), runtimeRoot = join(root, 'runtime'); await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot, { mode: 0o700 }); await mkdir(runtimeRoot, { mode: 0o700 })
   const handle = await open(sourceRoot, constants.O_RDONLY | constants.O_DIRECTORY), filesystem = await identity(handle); await handle.close()
   Object.assign(execution.acceptedSpec.target.destination, { canonicalProjectRoot: sourceRoot, canonicalCwd: sourceRoot, managedRuntimeRoot: runtimeRoot, directoryIdentityHash: createHash('sha256').update(JSON.stringify(filesystem)).digest('hex') })
   Object.assign(execution.acceptedSpec, jobSpecDigests(execution.acceptedSpec, null))
@@ -97,7 +99,7 @@ async function qualifiedFixture() {
       locationRevision: 1, canonicalPath: f.root, filesystem, accessMode: 'exclusive-write' as const, snapshotId: id, manifestDigest: digest },
     ownerPrincipalId: id, authorizedByPrincipalId: id, registration: null, attestationId: id, attestationDigest: digest, boundAt: new Date().toISOString() }
   const candidate = { qualificationId: id, operationId: id, approvalId: id,
-    fingerprint: { schemaVersion: 1 as const, profileId: f.execution.acceptedSpec.policy.isolationPolicyId, profileRevision: 1, specDigest: digest,
+    fingerprint: {workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,schemaVersion: 1 as const, profileId: f.execution.acceptedSpec.policy.isolationPolicyId, profileRevision: 1, specDigest: digest,
       hostRef: f.execution.acceptedSpec.target.hostRef, registration: null, mainInstallationId: f.connection.mainInstallationId, bootId, root,
       runtimeExecutable: '/usr/bin/podman', runtimeBinarySha256: digest, ociExecutable: '/usr/bin/crun', ociBinarySha256: digest, configurationDigest: digest,
       imageDigest: f.execution.acceptedSpec.policy.imageDigest, toolchainDigest: f.execution.acceptedSpec.policy.toolchainDigest,
@@ -113,7 +115,7 @@ async function qualifiedFixture() {
     hostRef: candidate.fingerprint.hostRef, registration: null, mainInstallationId: f.connection.mainInstallationId, bootId, connection: null,
     admittedAt: new Date().toISOString(), expiresAt: '2100-01-01T00:00:00Z' }
   const runtime = { ...candidate.fingerprint.limits, policyId: candidate.fingerprint.profileId, policyRevision: 1,
-    imageDigest: candidate.fingerprint.imageDigest, toolchainDigest: candidate.fingerprint.toolchainDigest, runtimeVersion: 'unit-double',
+    workspaceLayout:JOB_PRIVATE_GIT_LAYOUT,imageDigest: candidate.fingerprint.imageDigest, toolchainDigest: candidate.fingerprint.toolchainDigest, runtimeVersion: 'unit-double',
     ociRuntimeVersion: 'unit-double', kernelVersion: 'unit-double', qualificationId: id, rootless: true as const, cgroupV2: true as const,
     filesystemBounded: true as const, descendantContainment: true as const, network: 'none' as const }
   const measurement = { schemaVersion: 1 as const, qualificationId: id, profileId: runtime.policyId, profileRevision: 1, specDigest: digest,
@@ -191,7 +193,7 @@ describe('installed actual Job factory with native/process doubles', () => {
       return child as unknown as ReturnType<typeof processes.spawnNativeProcess>
     })
     const host = createInstalledJobExecutionHost({ journal: f.journal, connection: f.connection, incarnationId: randomUUID(), configuration: { path: join(f.root, 'protected-unit-config'), ownerUid: process.getuid!() }, registry,
-      source: { verify: async () => ({ privateRepositoryRoot: f.execution.acceptedSpec.target.destination.canonicalProjectRoot, directoryIdentityHash: f.execution.acceptedSpec.target.destination.directoryIdentityHash, privateGit: true, diskQuotaBytes: 1048576 }) },
+      source: { verify: async () => ({ privateRepositoryRoot: f.execution.acceptedSpec.target.destination.canonicalProjectRoot, directoryIdentityHash: f.execution.acceptedSpec.target.destination.directoryIdentityHash, privateGit: true, diskQuotaBytes: 1048576,gitMounts:mountFixture(f.execution,f.candidate.fingerprint.root.binding.filesystem) }) },
       inputs: { prepare: async execution => {
         const path = join(execution.acceptedSpec.target.destination.canonicalProjectRoot, JOB_INPUT_DIRECTORY); await mkdir(path)
         const inputSnapshotDigest = jobInputSnapshotDigest(execution), manifest = Buffer.from(JSON.stringify({ version: 1, inputSnapshotDigest, workflowInput: null, files: [] })), workflow = Buffer.from('null')
@@ -212,3 +214,13 @@ describe('installed actual Job factory with native/process doubles', () => {
     } finally { vi.restoreAllMocks() }
   })
 })
+
+// Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
+function mountFixture(execution:JobExecution,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
+  const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
+  return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
+    git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}
+}
+
+// This suite models OCI/native boundaries; original filesystem receipts are independently tested.
+vi.mock('./privateGitMounts.js',async original=>{const actual=await original<typeof import('./privateGitMounts.js')>();return {...actual,verifyJobGitMounts:vi.fn(async()=>{})}})

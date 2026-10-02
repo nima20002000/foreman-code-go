@@ -14,6 +14,7 @@ import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { runCommand } from './process.js'
 import { inheritedAgentEnvironment } from './secrets.js'
+import type { CodexNativeOutputs } from './codexNativeOutput.js'
 import type { CodexChatFiles } from './codexFiles/runtime.js'
 import { codexMcpInspectorAdapter } from './codexMcpInspectorAdapter.js'
 import type { NativeMcpInspector } from './mcpDetection.js'
@@ -38,7 +39,7 @@ interface AllocationContext {
   revalidateSelection?: (signal?: AbortSignal) => Promise<void>
 }
 export type NativeHarnessAllocation = AllocationContext & (
-  | { harness: 'codex'; chatFiles?: CodexChatFiles }
+  | { harness: 'codex'; chatFiles?: CodexChatFiles; nativeOutputs?: CodexNativeOutputs }
   | { harness: 'opencode'; advancedConfiguration?: OpenCodeAdvancedConfiguration
     chatFiles?: (server: OpenCodeServerController) => OpenCodeChatFiles }
 )
@@ -232,8 +233,11 @@ export class NativeHarnessFactories {
           },
         }
       }
+      if (input.nativeOutputs && (input.role !== 'workflow' || input.appMcpAccess !== 'scoped')) {
+        throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native output requires the original scoped workflow allocation.', 403)
+      }
       const manager = new CodexAppServerSessionManager(input.selection?.installation.launcher.resolvedLauncher ?? this.config.codexBinary, undefined, undefined,
-        recovery, input.appMcpAccess, input.chatFiles, dependencies)
+        recovery, input.appMcpAccess, input.chatFiles, dependencies, undefined, input.nativeOutputs)
       this.originalCodexManagers.set(manager, () => manager)
       result = { harness: 'codex', manager, inspector: codexMcpInspectorAdapter(manager) }
     } else if (input.harness === 'opencode') {
@@ -296,8 +300,8 @@ export class NativeHarnessFactories {
     const current = await (this.config.installationDiscovery ?? discoverLauncher)(launcher, prior.environment,
       (prior.payloadFingerprints ?? []).filter((item) => item.path !== launcher).map((item) => item.path), signal)
     signal?.throwIfAborted()
-    if (current.fingerprint !== binding.installation.installationFingerprint) throw new DomainError(
-      'HARNESS_INSTALLATION_CHANGED', 'The selected launcher or native payload changed after admission.', 409)
+    if (current.fingerprint !== binding.installation.installationFingerprint || current.interpreter !== prior.interpreter) throw new DomainError(
+      'HARNESS_INSTALLATION_CHANGED', 'The selected launcher, interpreter or native payload changed after admission.', 409)
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {

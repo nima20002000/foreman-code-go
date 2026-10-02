@@ -9,7 +9,8 @@ import type { DeviceRegistration } from '@graphql/contracts/device-identity'
 import type { TrustedConnectionConsent } from '@graphql/contracts/trusted-device-connection'
 import { PostgresTrustedConnectionSetup } from '../devices/trustedConnectionSetup.js'
 import { transferContextForBinding } from './carrier.js'
-import { InstalledRsyncSelectionSchema, createInstalledRsyncSelectionProvider, readProtectedInstalledRsyncSelection, type InstalledRsyncSelection } from './installedRsyncSelection.js'
+import { InstalledRsyncSelectionSchema, createInstalledRsyncSelectionProvider, readProtectedInstalledRsyncSelection,
+  readProtectedInstalledRsyncWriterSelection, type InstalledRsyncSelection } from './installedRsyncSelection.js'
 import type { RsyncCommand } from './rsync.js'
 
 const roots: string[] = []
@@ -96,6 +97,22 @@ describe('protected explicit installed rsync selection', () => {
       }
       expect(InstalledRsyncSelectionSchema.safeParse({ ...f.selected, [field]: { ...f.selected[field], sha256: undefined } }).success).toBe(false)
     }
+  })
+  it('reads worker rsync and writer package pins only from protected original installation facts', async () => {
+    const f = await fixture(), signal = new AbortController().signal
+    const node = join(f.root, 'node'), script = join(f.root, 'rsync-writer.mjs')
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex')
+    await writeFile(node, 'node bytes', { mode: 0o500 }); await writeFile(script, 'script bytes', { mode: 0o400 })
+    f.updateSelection({ remoteBinary: f.selected.localBinary, nodeBinary: { path: node, sha256: digest('node bytes') },
+      entryPoint: { path: script, sha256: digest('script bytes') } })
+    await writeFile(f.file, JSON.stringify(f.selected))
+    expect(await readProtectedInstalledRsyncWriterSelection(f.file, f.selected.registration, signal)).toEqual({
+      stagingRoot: f.selected.endpoint.remoteRoot, binary: { executable: f.localBinary, sha256: f.selected.localBinary.sha256 },
+      nodeBinary: node, entryPoint: script })
+    expect(await readProtectedInstalledRsyncWriterSelection(join(f.root, 'absent.json'), f.selected.registration, signal)).toBeUndefined()
+    await expect(readProtectedInstalledRsyncWriterSelection(f.file, { ...f.selected.registration, keyRevision: 2 }, signal)).rejects.toThrow('paired identity')
+    await chmod(script, 0o600); await writeFile(script, 'changed script')
+    await expect(readProtectedInstalledRsyncWriterSelection(f.file, f.selected.registration, signal)).rejects.toThrow('changed before verification')
   })
   it('denies changed remote writer bytes and changed installation pins during verification', async () => {
     const f = await fixture()
