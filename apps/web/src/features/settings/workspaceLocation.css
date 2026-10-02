@@ -107,3 +107,10 @@
 .workspace-location-card > .n-icon-button { position: absolute; top: 8px; right: 8px; z-index: 1; }
 
 .workspace-folder-actions { display: flex; align-items: center; gap: var(--space-2); }
+.workspace-location-form--compact { gap: var(--space-2); max-width: 100%; }
+.workspace-location-compact { display: flex; align-items: center; gap: var(--space-2); max-width: 100%; min-width: 0; padding: 2px 0; border: 0; background: transparent; color: var(--n-muted); font: 400 12px/1.5 var(--n-font); text-align: start; cursor: pointer; }
+.workspace-location-compact > svg { flex-shrink: 0; }
+.workspace-location-compact > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-location-compact:hover { color: var(--n-text); }
+.workspace-location-compact:focus-visible { outline: 2px solid var(--n-accent); outline-offset: 4px; }
+.workspace-location-compact:disabled { cursor: default; opacity: .6; }

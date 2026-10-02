@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef } from 'react'
+import { useContext, useEffect, useRef, type RefObject } from 'react'
 import { useIsMutating } from '@tanstack/react-query'
 import { WorkspaceRootSelectionSchema, type ApprovedRootAllowlist, type WorkspaceRootSelection } from '@graphql/contracts/workspace-root-policies'
 import { useManagedWorkspaceQuery } from '../../shared/api/query'
@@ -19,7 +19,7 @@ import { WorkspaceLocationCard } from './WorkspaceLocationCard'
 import { ComputerPresenceReadback } from './ComputerPresence'
 import './computerSettings.css'
 
-type Props = { workspaceId: string; presentation?: 'field' | 'card' | 'tile'; onSaved?: () => void }
+type Props = { workspaceId: string; presentation?: 'field' | 'card' | 'tile' | 'compact'; onSaved?: () => void; triggerRef?: RefObject<HTMLButtonElement | null> }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'The folder operation failed.' }
 function hostLabel(host: WorkspaceRootSelection['hostRef']) { return host.kind === 'main' ? `Main · ${host.mainId}` : `Worker · ${host.deviceId}` }
 function sameHost(left: WorkspaceRootSelection['hostRef'], right: WorkspaceRootSelection['hostRef']) {
@@ -30,7 +30,7 @@ function revision(value: string | undefined) {
   if (!Number.isSafeInteger(result) || result < 0) throw new Error('This root policy revision cannot be represented by the location API.')
   return result
 }
-function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Props) {
+function LocationSettings({ workspaceId, presentation = 'field', onSaved, triggerRef }: Props) {
   const epoch = useHarnessSessionEpoch(), scope = `${epoch}:${workspaceId}`
   const toasts = useContext(ToastContext)
   const workspace = useManagedWorkspaceQuery(workspaceId)
@@ -148,20 +148,23 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Prop
   const savedPath = saved.data.executionLocation?.rootPath ?? ''
   const browsingCurrent = sameRootSelection(browse.data?.selection, selection)
   const validationCurrent = sameRootSelection(validate.data?.selection, selection)
-  return <section className="workspace-location-form" aria-label="Project folder">
+  const savedFacts = saved.data.evidence === 'bound' ? <dl className="computer-facts">
+    <div><dt>Saved execution computer</dt><dd>{hostLabel(saved.data.binding.hostRef)}</dd></div>
+    <div><dt>Application installation</dt><dd>{saved.data.binding.applicationInstallationId}</dd></div>
+    <div><dt>Location / root policy revision</dt><dd>{saved.data.locationRevision} / {saved.data.binding.rootPolicyRevision}</dd></div>
+  </dl> : saved.data.evidence === 'legacy_missing' ? null : <p>No execution folder has been configured.</p>
+  return <section className={`workspace-location-form${presentation === 'compact' ? ' workspace-location-form--compact' : ''}`} aria-label="Project folder">
     {guard}
     {archived ? <Alert tone="warning" title="This workspace is archived. Its execution location cannot be edited." /> : null}
-    <WorkspaceLocationCard label={presentation === 'tile' ? 'Execution location' : presentation === 'card' ? 'Choose workspace folder' : 'Project folder'} path={savedPath}
+    <WorkspaceLocationCard label={presentation === 'compact' || presentation === 'tile' ? 'Execution location' : presentation === 'card' ? 'Choose workspace folder' : 'Project folder'} path={savedPath}
+      presentation={presentation === 'compact' ? 'compact' : 'card'}
+      triggerRef={triggerRef}
       disabled={archived || busy} description="Choose an approved computer and validate its folder." onChoose={() => update(scope, previous => ({ ...previous, open: true }))}
       onCopy={savedPath ? async () => {
         try { await navigator.clipboard.writeText(savedPath); toasts?.notify({ tone: 'success', title: 'Folder path copied' }) }
         catch { toasts?.notify({ tone: 'danger', title: 'Could not copy the folder path' }) }
       } : undefined} />
-    {saved.data.evidence === 'bound' ? <dl className="computer-facts">
-      <div><dt>Saved execution computer</dt><dd>{hostLabel(saved.data.binding.hostRef)}</dd></div>
-      <div><dt>Application installation</dt><dd>{saved.data.binding.applicationInstallationId}</dd></div>
-      <div><dt>Location / root policy revision</dt><dd>{saved.data.locationRevision} / {saved.data.binding.rootPolicyRevision}</dd></div>
-    </dl> : saved.data.evidence === 'legacy_missing' ? null : <p>No execution folder has been configured.</p>}
+    {presentation !== 'compact' ? savedFacts : null}
     {picker.notice ? <p role="status">{picker.notice}</p> : null}
     <Dialog open={picker.open} onOpenChange={open => { if (open || !locked) update(scope, previous => ({ ...previous, open })) }} title="Execution folder" busy={locked}
       description="Browsing and validation run on the selected computer. The workspace changes only when the save is confirmed." footer={<>
@@ -169,6 +172,7 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved }: Prop
         <Button disabled={archived || busy || (!operation.attempt.unresolved && (!selection || conflict))} onClick={() => void submit()}>
           {busy ? 'Saving…' : operation.attempt.unresolved ? 'Reconcile original selection' : 'Select location'}
         </Button></>}>
+      {presentation === 'compact' ? savedFacts : null}
       <Select label="Computer and approved base folder" value={picker.selected ?? ''} disabled={locked || archived}
         options={[{ value: '', label: 'Choose a computer and approved root' }, ...records.map(record => ({ value: record.key, label: `${hostLabel(record.host.hostRef)} · ${record.base.canonicalPath}` }))]}
         onChange={event => choose(event.target.value)} />

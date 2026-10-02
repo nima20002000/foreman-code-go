@@ -1,16 +1,23 @@
+import type { RefObject } from 'react'
 import { Icon, IconButton } from '../../shared/ui/nocturne'
 import './mcpConnections.css'
 import './workspaceLocation.css'
 
 /** Reuse the supplied App connections folder notice across location controls. */
-export function WorkspaceLocationCard({ label, path, description, disabled, onChoose, onCopy }: {
+export function WorkspaceLocationCard({ label, path, description, disabled, onChoose, onCopy, presentation = 'card', triggerRef }: {
   label: string
   path: string
   description?: string
   disabled?: boolean
   onChoose(): void
   onCopy?: () => void
+  presentation?: 'card' | 'compact'
+  triggerRef?: RefObject<HTMLButtonElement | null>
 }) {
+  if (presentation === 'compact') return <button ref={triggerRef} type="button" className="workspace-location-compact" aria-label={label}
+    title={path || 'Choose execution location'} disabled={disabled} onClick={onChoose}>
+    <Icon name="folder" size={14} /><span dir={path ? 'ltr' : undefined}>{path || 'Choose execution location'}</span>
+  </button>
   return <div className="mcp-folder-notice workspace-location-card" data-copy={Boolean(onCopy && path)}>
     <button type="button" className="workspace-location-choose"
       aria-label={label} disabled={disabled} onClick={onChoose} />

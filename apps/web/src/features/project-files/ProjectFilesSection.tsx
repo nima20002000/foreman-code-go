@@ -66,6 +66,7 @@ function WorkspaceProjectFiles({ workspaceId }: ProjectFilesSectionProps) {
       </IconButton>
     </div>}
     {visibleRows.length > 0 && <ul className="project-files-list" aria-label="Project files">
+      <li className="project-files-columns" aria-hidden="true"><span>Name</span><span>Type</span><span>Size</span><span>Actions</span></li>
       {visibleRows.map((row) => <ProjectFileItem key={`${row.file.fileId}:${row.revision.revisionId}`}
         workspaceId={workspaceId} row={row} onRemove={() => uiStore.setState({ removing: row })} />)}
     </ul>}
@@ -123,8 +124,9 @@ function ProjectFileItem({ workspaceId, row, onRemove }: ProjectFilesSectionProp
     <FileIcon size={18} aria-hidden="true" className="project-file-icon" />
     <span className="project-file-details">
       <span className="project-file-name" title={name}>{name}</span>
-      <span className="project-file-size" title={`${row.revision.byteSize} bytes`}>{fileSize(row.revision.byteSize)}</span>
     </span>
+    <span className="project-file-type" title={row.revision.mediaType}>{row.revision.filename.split('.').at(-1)?.toUpperCase()}</span>
+    <span className="project-file-size" title={`${row.revision.byteSize} bytes`}>{fileSize(row.revision.byteSize)}</span>
     {row.file.state === 'ready' ? <IconButton label={`Download ${name}`} size="sm" variant="ghost"
       disabled={download.isPending} onClick={() => {
         const signal = controller.current?.signal

@@ -104,7 +104,7 @@ describe('workspace section routes', () => {
     const { router } = renderRoute('/workspaces/workspace-1/settings')
     await user.click(await screen.findByTitle('Workflows'))
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows')
-    expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
+    expect(within(screen.getByRole('navigation', { name: 'Workspace sections' })).getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
     expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
   })
 
@@ -124,11 +124,12 @@ describe('workspace section routes', () => {
     expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
   })
 
-  it('deep-links the Files placeholder under the workspaces menu', async () => {
+  it('deep-links the supported Project files section under the workspaces menu', async () => {
     renderRoute('/workspaces/workspace-1/files')
 
-    expect(await screen.findByRole('heading', { name: 'Files' })).toBeVisible()
-    expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
+    expect(await screen.findByRole('heading', { name: 'Project files', level: 1 })).toBeVisible()
+    expect(screen.queryByTestId('coming-soon')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Workspace sections' })).getByRole('link', { name: 'Project files' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
   })
@@ -182,19 +183,23 @@ describe('workspace section routes', () => {
   it('omits the approvals shortcut from workspace settings', async () => {
     renderRoute('/workspaces/workspace-1/settings')
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
-    expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
+    expect(screen.queryByTestId('workflow-card-workflow-content-pipeline')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Workspace sections' })).getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('button', { name: /Approvals Review requests in this workspace/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'App connections' })).not.toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Harness availability' })).toBeVisible()
   })
 
-  it('mounts project files in the selected workspace settings', async () => {
+  it('opens project files through the selected workspace section navigation', async () => {
     const requestedWorkspaces: string[] = []
     server.use(http.get('*/api/workspaces/:workspaceId/reference-files', ({ params }) => {
       requestedWorkspaces.push(String(params.workspaceId))
       return HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })
     }))
-    renderRoute('/workspaces/workspace-1/settings')
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/settings')
+    await user.click(await within(await screen.findByRole('navigation', { name: 'Workspace sections' })).findByRole('link', { name: 'Project files' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/files'))
     const files = await screen.findByRole('region', { name: 'Project files' })
     expect(await within(files).findByText('No files.')).toBeVisible()
     expect(requestedWorkspaces).toEqual(['workspace-1'])
@@ -203,13 +208,13 @@ describe('workspace section routes', () => {
   it('confirms workspace removal in settings and returns to the workspace list', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
-    await user.click(await screen.findByRole('button', { name: 'Remove workspace' }))
+    await user.click((await screen.findAllByRole('button', { name: 'Remove workspace' }))[0]!)
     let dialog = screen.getByRole('dialog', { name: 'Remove Website?' })
     expect(dialog).toHaveTextContent('App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained.')
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
     expect(screen.queryByRole('dialog', { name: 'Remove Website?' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Remove workspace' }))
+    await user.click(screen.getAllByRole('button', { name: 'Remove workspace' })[0]!)
     dialog = screen.getByRole('dialog', { name: 'Remove Website?' })
     await user.click(within(dialog).getByRole('button', { name: 'Remove workspace' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces'))
@@ -220,6 +225,7 @@ describe('workspace section routes', () => {
   it('offers workflow management within the selected workspace settings', async () => {
     const user = userEvent.setup()
     renderRoute('/workspaces/workspace-1/settings')
+    await user.click(await within(await screen.findByRole('navigation', { name: 'Workspace sections' })).findByRole('link', { name: 'Workflows' }))
     expect(await screen.findByRole('heading', { name: 'Workflows', level: 2 })).toBeVisible()
     const section = within(screen.getByRole('region', { name: 'Workflows' }))
     expect(await section.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
@@ -242,7 +248,7 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
   })
 
-  it('places Browsers under Settings and preserves its deep link', async () => {
+  it('hides the Browsers entry point and preserves its deep link', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/browsers')
 
@@ -255,7 +261,7 @@ describe('workspace section routes', () => {
     await user.click(screen.getByRole('link', { name: 'Back to settings' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings'))
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
-    expect(screen.getByRole('link', { name: /Browsers/ })).toBeVisible()
+    expect(screen.queryByRole('link', { name: /Browsers/ })).not.toBeInTheDocument()
   })
 
   it('opens the approved execution folder picker without navigating away from Settings', async () => {
@@ -274,5 +280,49 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('dialog', { name: 'Execution folder' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Computer and approved base folder' })).toBeVisible()
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
+  })
+
+  it('uses the same inline rename from the workspace name and settings, with a nearby removal control', async () => {
+    const user = userEvent.setup()
+    renderRoute('/workspaces/workspace-1/settings')
+    await user.click(await screen.findByRole('button', { name: 'Rename workspace Website' }))
+    expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'Rename workspace', exact: true }))
+    await user.clear(screen.getByRole('textbox', { name: 'Workspace name' }))
+    await user.type(screen.getByRole('textbox', { name: 'Workspace name' }), 'Workspace header rename')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+    expect(await screen.findByRole('button', { name: 'Rename workspace Workspace header rename' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Rename workspace', exact: true }))
+    expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Workspace header rename')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getAllByRole('button', { name: 'Remove workspace' })[0]!)
+    expect(screen.getByRole('dialog', { name: 'Remove Workspace header rename?' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Rename workspace Workspace header rename' })).toBeVisible()
+  })
+
+  it('retains the original rename command and revision when acknowledgement is lost', async () => {
+    const writes: unknown[] = []
+    server.use(http.patch('/api/management/workspaces/workspace-1', async ({ request }) => {
+      writes.push(await request.json())
+      if (writes.length === 1) return HttpResponse.json({ error: { code: 'INTERNAL', message: 'Rename acknowledgement lost.' } }, { status: 503 })
+      return undefined
+    }))
+    const user = userEvent.setup()
+    renderRoute('/workspaces/workspace-1/settings')
+    await user.click(await screen.findByRole('button', { name: 'Rename workspace Website' }))
+    const input = screen.getByRole('textbox', { name: 'Workspace name' })
+    await user.clear(input)
+    await user.type(input, 'Confirmed retry rename')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+    expect(await screen.findByText('Rename acknowledgement lost.')).toBeVisible()
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Retry rename' }))
+    expect(await screen.findByRole('button', { name: 'Rename workspace Confirmed retry rename' })).toBeVisible()
+    expect(writes).toHaveLength(2)
+    expect(writes[1]).toEqual(writes[0])
+    expect(writes[0]).toMatchObject({ workspaceId: 'workspace-1', name: 'Confirmed retry rename', expectedRevision: 1 })
   })
 })
