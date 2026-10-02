@@ -13,8 +13,19 @@ export interface TransferAuthorization {
   /** Check current device key/revocation/connection epoch AND accepted attempt/root/placement/expiry. */
   authorize(intent: TransferIntent, context: TransferContext, operation: TransferOperation): Promise<void>
 }
+export type ExternalStagingKind = 'rsync-source' | 'rsync-receiver'
+/** Trusted local composition only. Release follows physical cleanup and stopped-writer/readers proof.
+ * Reservation retries are idempotent; the existing transport runner owns POLICY.maxRetries. */
+export interface ExternalStagingQuota {
+  reserve(intent: TransferIntent, context: TransferContext, allocation: { kind: ExternalStagingKind; byteSize: number }): Promise<void>
+  release(intent: TransferIntent, kind: ExternalStagingKind): Promise<void>
+}
+const ExternalKindSchema = z.enum(['rsync-source', 'rsync-receiver'])
+const ExternalHoldSchema = z.object({ byteSize: z.number().int().nonnegative().max(POLICY.maxStagingBytes), released: z.boolean() }).strict()
 const JournalSchema = z.object({ intent: TransferIntentSchema, progress: TransferProgressSchema,
-  prefixHash: z.string().regex(/^[a-f0-9]{64}$/), receipt: VerifiedTransferReceiptSchema.optional() }).strict()
+  prefixHash: z.string().regex(/^[a-f0-9]{64}$/), receipt: VerifiedTransferReceiptSchema.optional(),
+  canonical: z.boolean().optional(), canonicalReclaimed: z.boolean().optional(),
+  external: z.object({ 'rsync-source': ExternalHoldSchema.optional(), 'rsync-receiver': ExternalHoldSchema.optional() }).strict().optional() }).strict()
 type Journal = z.infer<typeof JournalSchema>
 const digest = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')
 const emptyHash = digest(new Uint8Array())
@@ -24,7 +35,7 @@ function key(id: string) { return z.uuid().parse(id) }
  * Root directory FD anchors all operations on Linux, so renamed/swapped ancestors cannot redirect writes.
  * Crash-left writer locks fail closed; supervisor must confirm the old owner stopped before removing them.
  */
-export class ResumableByteTransferService implements ByteTransferPort {
+export class ResumableByteTransferService implements ByteTransferPort, ExternalStagingQuota {
   private directory: FileHandle | undefined
   private initializing: Promise<void> | undefined
   private busy = new Set<string>()
@@ -118,6 +129,81 @@ export class ResumableByteTransferService implements ByteTransferPort {
       finally { this.busy.delete(id) }
     }
   }
+  private async allocated<T>(action: () => Promise<T>): Promise<T> {
+    if (this.allocationBusy) throw new Error('Transfer allocation busy')
+    this.allocationBusy = true
+    let acquired = false
+    try {
+      await mkdir(`/proc/self/fd/${this.directory!.fd}/allocation.lock`, { mode: 0o700 }); acquired = true
+      return await action()
+    } finally {
+      try { if (acquired) await rm(`/proc/self/fd/${this.directory!.fd}/allocation.lock`, { recursive: true }) }
+      finally { this.allocationBusy = false }
+    }
+  }
+  private journal(intent: TransferIntent): Journal {
+    return { intent, prefixHash: emptyHash, progress: { version: 1, transferId: intent.transferId,
+      state: 'allocated', receivedInMemoryBytes: 0, durableOffset: 0, verifiedBytes: 0, updatedAt: new Date(this.now()).toISOString() } }
+  }
+  private sameIntent(j: Journal, intent: TransferIntent) {
+    if (JSON.stringify(j.intent) !== JSON.stringify(intent)) throw new Error('Transfer immutable identity conflicts')
+  }
+  private async capacity(candidate: Journal, creating: boolean) {
+    const names = await readdir(`/proc/self/fd/${this.directory!.fd}`)
+    if (creating && (names.length >= POLICY.maxRecords * 3 || names.filter(n => n.endsWith('.json')).length >= POLICY.maxRecords)) throw new Error('Transfer record quota exceeded')
+    let bytes = 0, deviceBytes = 0, active = 0, deviceActive = 0
+    const count = (j: Journal) => {
+      const holds = Object.values(j.external ?? {}).filter((hold): hold is z.infer<typeof ExternalHoldSchema> => hold !== undefined && !hold.released)
+      const canonical = j.canonical !== false && !j.canonicalReclaimed
+      const charge = (canonical ? j.intent.byteSize : 0) + holds.reduce((sum, hold) => sum + hold.byteSize, 0)
+      const pending = holds.length > 0 || canonical && !['verified', 'cancelled'].includes(j.progress.state)
+      bytes += charge; if (pending) active++
+      if (j.intent.deviceId === candidate.intent.deviceId) { deviceBytes += charge; if (pending) deviceActive++ }
+    }
+    for (const name of names.filter(n => /^[a-f0-9-]{36}\.json$/.test(n))) {
+      if (name !== `${candidate.intent.transferId}.json`) count(await this.load(name.slice(0, -5)))
+    }
+    count(candidate)
+    if (active > POLICY.maxActiveGlobal || deviceActive > POLICY.maxActivePerDevice
+      || bytes > POLICY.maxStagingBytes || deviceBytes > POLICY.maxStagingPerDeviceBytes) throw new Error('Transfer staging quota exceeded')
+  }
+  private async hasReaders(id: string) {
+    return (await readdir(`/proc/self/fd/${this.directory!.fd}`)).some(name => name.startsWith(`${id}.reader-`))
+  }
+  private canonical(j: Journal) {
+    if (j.canonical === false) throw new Error('Canonical transfer not started')
+  }
+  async reserve(input: TransferIntent, context: TransferContext, allocation: { kind: ExternalStagingKind; byteSize: number }): Promise<void> {
+    const intent = TransferIntentSchema.parse(input), kind = ExternalKindSchema.parse(allocation.kind)
+    if (!Number.isSafeInteger(allocation.byteSize) || allocation.byteSize !== intent.byteSize * (kind === 'rsync-source' ? 2 : 3)) throw new Error('External staging footprint differs')
+    return this.locked(intent.transferId, () => this.allocated(async () => {
+      const existing = await this.load(intent.transferId).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
+      const j = existing ?? { ...this.journal(intent), canonical: false }
+      this.sameIntent(j, intent); await this.authorize(j, context, 'start')
+      if (Date.parse(intent.expiresAt) - this.now() > POLICY.maxLifetimeMs) throw new Error('Transfer lifetime exceeds policy')
+      if (this.now() - Date.parse(j.progress.updatedAt) >= POLICY.maxIdleMs) throw new Error('Transfer idle deadline exceeded')
+      const prior = j.external?.[kind]
+      if (prior) {
+        if (prior.byteSize !== allocation.byteSize) throw new Error('External staging immutable footprint conflicts')
+        if (prior.released) throw new Error('External staging reservation released')
+        await this.authorize(j, context, 'start'); await this.syncDirectory(); await this.authorize(j, context, 'start'); return
+      }
+      j.external = { ...j.external, [kind]: { byteSize: allocation.byteSize, released: false } }
+      await this.capacity(j, !existing); await this.authorize(j, context, 'start')
+      await this.save(j); await this.authorize(j, context, 'start')
+    }))
+  }
+  /** Supervisor-only: caller has deleted the exact private bytes and confirmed original writer/readers stopped. */
+  async release(input: TransferIntent, inputKind: ExternalStagingKind): Promise<void> {
+    const intent = TransferIntentSchema.parse(input), kind = ExternalKindSchema.parse(inputKind)
+    return this.locked(intent.transferId, () => this.allocated(async () => {
+      const j = await this.load(intent.transferId); this.sameIntent(j, intent)
+      const hold = j.external?.[kind]
+      if (!hold) throw new Error('External staging reservation missing')
+      if (hold.released) { await this.syncDirectory(); return }
+      hold.released = true; await this.save(j)
+    }))
+  }
   private async hash(handle: FileHandle, size: number) {
     const hash = createHash('sha256'), buffer = Buffer.alloc(Math.min(POLICY.maxChunkBytes, Math.max(size, 1)))
     let offset = 0
@@ -143,55 +229,28 @@ export class ResumableByteTransferService implements ByteTransferPort {
     }
     await this.authority.authorize(intent, context, 'start')
     if (this.now() >= Date.parse(intent.expiresAt) || Date.parse(intent.expiresAt) - this.now() > POLICY.maxLifetimeMs) throw new Error('Transfer expiry exceeds policy')
-    return this.locked(intent.transferId, async () => {
-      if (this.allocationBusy) throw new Error('Transfer allocation busy')
-      this.allocationBusy = true
-      let allocated = false
-      try {
-        await mkdir(`/proc/self/fd/${this.directory!.fd}/allocation.lock`, { mode: 0o700 }); allocated = true
-        const j: Journal = { intent, prefixHash: emptyHash, progress: { version: 1, transferId: intent.transferId,
-          state: 'allocated', receivedInMemoryBytes: 0, durableOffset: 0, verifiedBytes: 0, updatedAt: new Date(this.now()).toISOString() } }
-        await this.authorize(j, context, 'start')
-        if (Date.parse(intent.expiresAt) - this.now() > POLICY.maxLifetimeMs) throw new Error('Transfer lifetime exceeds policy')
-        const existing = await this.load(intent.transferId).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
-        if (existing) {
-          if (JSON.stringify(existing.intent) !== JSON.stringify(intent)) throw new Error('Transfer immutable identity conflicts')
-          await this.authorize(existing, context, 'start')
-          const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR)
-          try { await this.reconcile(existing, data) } finally { await data.close() }
-          await this.authorize(existing, context, 'start')
-          return existing.progress
-        }
-        const names = await readdir(`/proc/self/fd/${this.directory!.fd}`)
-        if (names.length >= POLICY.maxRecords * 3 || names.filter(n => n.endsWith('.json')).length >= POLICY.maxRecords) throw new Error('Transfer record quota exceeded')
-        let bytes = 0, deviceBytes = 0, active = 0, deviceActive = 0
-        for (const name of names.filter(n => /^[a-f0-9-]{36}\.json$/.test(n))) {
-          const old = await this.load(name.slice(0, -5))
-          if (old.progress.state === 'cancelled') continue
-          bytes += old.intent.byteSize
-          if (old.intent.deviceId === intent.deviceId) deviceBytes += old.intent.byteSize
-          if (old.progress.state !== 'verified') { active++; if (old.intent.deviceId === intent.deviceId) deviceActive++ }
-        }
-        if (active >= POLICY.maxActiveGlobal || deviceActive >= POLICY.maxActivePerDevice
-          || bytes + intent.byteSize > POLICY.maxStagingBytes
-          || deviceBytes + intent.byteSize > POLICY.maxStagingPerDeviceBytes) throw new Error('Transfer staging quota exceeded')
-        // With both original transfer/allocation locks held, a missing journal has
-        // committed no bytes. Recover its crash-left private part under the same
-        // freshly authorized main intent; regular() rejects links/unsafe files.
-        const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_CREAT | constants.O_EXCL | constants.O_RDWR)
-          .catch(error => { if (error.code === 'EEXIST') return this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR); throw error })
-        try { await this.reconcile(j, data); await data.sync() } finally { await data.close() }
-        await this.authorize(j, context, 'start')
-        await this.save(j); return j.progress
-      } finally {
-        if (allocated) await rm(`/proc/self/fd/${this.directory!.fd}/allocation.lock`, { recursive: true })
-        this.allocationBusy = false
+    return this.locked(intent.transferId, () => this.allocated(async () => {
+      const existing = await this.load(intent.transferId).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
+      const j = existing ?? this.journal(intent)
+      this.sameIntent(j, intent); await this.authorize(j, context, 'start')
+      if (Date.parse(intent.expiresAt) - this.now() > POLICY.maxLifetimeMs) throw new Error('Transfer lifetime exceeds policy')
+      if (existing && existing.canonical !== false) {
+        const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR)
+        try { await this.reconcile(existing, data) } finally { await data.close() }
+        await this.authorize(existing, context, 'start'); return existing.progress
       }
-    })
+      j.canonical = true; delete j.canonicalReclaimed
+      await this.capacity(j, !existing)
+      // A missing canonical journal has committed no bytes. Recover only this private part.
+      const data = await this.regular(this.path(intent.transferId, 'part'), constants.O_CREAT | constants.O_EXCL | constants.O_RDWR)
+        .catch(error => { if (error.code === 'EEXIST') return this.regular(this.path(intent.transferId, 'part'), constants.O_RDWR); throw error })
+      try { await this.reconcile(j, data); await data.sync() } finally { await data.close() }
+      await this.authorize(j, context, 'start'); await this.save(j); return j.progress
+    }))
   }
   async status(id: string, context: TransferContext) {
     return this.locked(id, async () => {
-      const j = await this.load(id); await this.authorize(j, context, 'status')
+      const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'status')
       const handle = await this.regular(this.path(id, 'part'), constants.O_RDWR)
       try { await this.reconcile(j, handle) } finally { await handle.close() }
       await this.authorize(j, context, 'status')
@@ -203,7 +262,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
     if (!Number.isSafeInteger(chunk.offset) || chunk.offset < 0 || !chunk.bytes.byteLength
       || chunk.bytes.byteLength > POLICY.maxChunkBytes || digest(chunk.bytes) !== chunk.sha256) throw new Error('Invalid transfer chunk')
     return this.locked(id, async () => {
-      const j = await this.load(id); await this.authorize(j, context, 'append')
+      const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'append')
       if (chunk.bytes.byteLength > j.intent.chunkBytes || chunk.offset + chunk.bytes.byteLength > j.intent.byteSize) throw new Error('Chunk exceeds allocation')
       const bytes = Buffer.from(chunk.bytes)
       if (digest(bytes) !== chunk.sha256) throw new Error('Chunk changed during authorization')
@@ -237,7 +296,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
   }
   async finish(id: string, context: TransferContext): Promise<VerifiedTransferReceipt> {
     return this.locked(id, async () => {
-      const j = await this.load(id); await this.authorize(j, context, 'finish')
+      const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'finish')
       const handle = await this.regular(this.path(id, 'part'), constants.O_RDWR)
       try {
         await this.reconcile(j, handle)
@@ -256,19 +315,30 @@ export class ResumableByteTransferService implements ByteTransferPort {
       const j = await this.load(id); await this.authorize(j, context, 'cancel')
       j.progress.state = 'cancelled'; delete j.receipt; await this.save(j)
       await unlink(this.path(id, 'part')).catch(error => { if (error.code !== 'ENOENT') throw error })
-      await this.syncDirectory(); return j.progress
+      await this.syncDirectory()
+      if (!await this.hasReaders(id)) { j.canonicalReclaimed = true; await this.save(j) }
+      return j.progress
     })
   }
   /** Trusted composition only: authoritative lookup and freshly reauthorized immutable read. */
   async openVerified(receipt: VerifiedTransferReceipt, context: TransferContext): Promise<Readable> {
     return this.locked(receipt.transferId, async () => {
       if (this.readers.size >= POLICY.maxActiveGlobal) throw new Error('Transfer reader capacity exceeded')
-      const j = await this.load(receipt.transferId); await this.authorize(j, context, 'read')
+      const j = await this.load(receipt.transferId); this.canonical(j); await this.authorize(j, context, 'read')
       if (j.progress.state !== 'verified' || JSON.stringify(j.receipt) !== JSON.stringify(receipt)) throw new Error('Unrecognized verified receipt')
       const handle = await this.regular(this.path(receipt.transferId, 'part'), constants.O_RDONLY)
       try {
         if ((await handle.stat()).size !== receipt.byteSize || await this.hash(handle, receipt.byteSize) !== receipt.sha256) throw new Error('Verified staging corrupted')
         await this.authorize(j, context, 'read')
+        // A durable pin keeps unlinked inodes charged across service instances and crashes.
+        // Crash-left pins require the supervisor's original stopped-reader proof before removal.
+        const pin = this.path(receipt.transferId, `reader-${randomUUID()}`)
+        await mkdir(pin, { mode: 0o700 }); await this.syncDirectory()
+        let closing: Promise<void> | undefined
+        const closeReader = () => closing ??= (async () => {
+          await handle.close(); await rm(pin, { recursive: true }); await this.syncDirectory()
+          this.readers.delete(stream)
+        })()
         const load = () => this.load(receipt.transferId)
         const authorize = (current: Journal) => this.authorize(current, context, 'read')
         const stream = Readable.from((async function* () {
@@ -282,12 +352,11 @@ export class ResumableByteTransferService implements ByteTransferPort {
               if (!bytesRead) throw new Error('Verified staging truncated')
               offset += bytesRead; yield bytes.subarray(0, bytesRead)
             }
-          } finally { await handle.close() }
+          } finally { await closeReader() }
         })(), { objectMode: false, highWaterMark: POLICY.maxChunkBytes })
         this.readers.add(stream)
         stream.once('close', () => {
-          this.readers.delete(stream)
-          void handle.close().catch(() => {})
+          void closeReader().catch(() => {})
         })
         return stream
       } catch (error) { await handle.close(); throw error }
@@ -295,7 +364,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
   }
   async resolveVerifiedReceipt(id: string, context: TransferContext) {
     return this.locked(id, async () => {
-      const j = await this.load(id); await this.authorize(j, context, 'read')
+      const j = await this.load(id); this.canonical(j); await this.authorize(j, context, 'read')
       if (j.progress.state !== 'verified' || !j.receipt) throw new Error('Transfer is not verified')
       return j.receipt
     })
@@ -307,6 +376,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
       j.progress.state = 'cancelled'; delete j.receipt; await this.save(j)
       await unlink(this.path(id, 'part')).catch(error => { if (error.code !== 'ENOENT') throw error })
       await this.syncDirectory()
+      if (!await this.hasReaders(id)) { j.canonicalReclaimed = true; await this.save(j) }
     })
   }
   async cleanupExpired(limit = 64): Promise<number> {
@@ -318,7 +388,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
       if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue
       const j = await this.load(name.slice(0, -5))
       const part = await lstat(this.path(j.intent.transferId, 'part')).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
-      if (!part) continue
+      if (!part && (j.canonical === false || j.canonicalReclaimed)) continue
       if (j.progress.state === 'cancelled' || this.now() >= Date.parse(j.intent.expiresAt)
         || (j.progress.state !== 'verified' && this.now() - Date.parse(j.progress.updatedAt) >= POLICY.maxIdleMs)) {
         await this.retire(j.intent.transferId); count++

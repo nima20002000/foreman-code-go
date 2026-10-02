@@ -1,15 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm, appendFile, writeFile, readFile, symlink, mkdir, rename, link } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { BYTE_TRANSFER_POLICY, type TransferContext, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import { ResumableByteTransferService } from './service.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
+const fixtureRoot = fileURLToPath(new URL('../../../../../../../../', import.meta.url))
 const roots: string[] = [], services: ResumableByteTransferService[] = []
 afterEach(async () => { for (const service of services.splice(0)) await service.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture(bytes = Buffer.from('abcdefgh')) {
-  const root = await mkdtemp(join(homedir(), '.graphql-transfer-test-')); roots.push(root)
+  const root = await mkdtemp(join(fixtureRoot, '.graphql-transfer-test-')); roots.push(root)
   let epoch = randomUUID(), revoked = false, now = Date.now(), failure: string | undefined
   const context: TransferContext = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
     keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: epoch }
@@ -142,7 +143,7 @@ describe('bounded authenticated transfer staging', () => {
     const f = await fixture(); await f.service.start(f.intent, f.context)
     const moved = f.root + '-moved'; roots.push(moved)
     await rename(f.root, moved)
-    const outside = await mkdtemp(join(homedir(), '.graphql-outside-test-')); roots.push(outside)
+    const outside = await mkdtemp(join(fixtureRoot, '.graphql-outside-test-')); roots.push(outside)
     await symlink(outside, f.root)
     await f.service.append(f.intent.transferId, f.context, f.chunk(0))
     expect(await readFile(join(moved, `${f.intent.transferId}.part`))).toEqual(f.bytes.subarray(0, 4))
@@ -164,5 +165,152 @@ describe('bounded authenticated transfer staging', () => {
     await f.service.start(f.intent, f.context); await rm(join(f.root, `${f.intent.transferId}.part`))
     await symlink('/etc/passwd', join(f.root, `${f.intent.transferId}.part`))
     await expect(f.service.status(f.intent.transferId, f.context)).rejects.toThrow()
+  })
+})
+
+describe('external staging on the shared durable quota', () => {
+  it('keeps canonical bytes charged after deletion while a verified reader still owns them', async () => {
+    const f = await fixture(); await f.service.start(f.intent, f.context)
+    await f.service.append(f.intent.transferId, f.context, f.chunk(0)); await f.service.append(f.intent.transferId, f.context, f.chunk(4))
+    const receipt = await f.service.finish(f.intent.transferId, f.context), reader = await f.service.openVerified(receipt, f.context)
+    try {
+      await f.create().cancel(f.intent.transferId, f.context)
+      const source = { ...f.intent, transferId: randomUUID(), byteSize: BYTE_TRANSFER_POLICY.maxSourceBytes }
+      const allocation = { kind: 'rsync-source' as const, byteSize: source.byteSize * 2 }
+      await expect(f.service.reserve(source, f.context, allocation)).rejects.toThrow('quota')
+      await expect(reader.toArray()).rejects.toThrow('cancelled')
+      await f.service.retire(f.intent.transferId)
+      await f.service.reserve(source, f.context, allocation)
+    } finally {
+      if (!reader.closed) {
+        const closed = new Promise<void>(resolve => { reader.once('close', resolve) })
+        reader.destroy(); await closed
+      }
+    }
+  })
+  it('keeps cancelled canonical bytes charged when durable deletion is unconfirmed', async () => {
+    const f = await fixture(), intent = { ...f.intent, byteSize: BYTE_TRANSFER_POLICY.maxSourceBytes }
+    await f.service.start(intent, f.context); f.fail('directory-sync')
+    await expect(f.service.cancel(intent.transferId, f.context)).rejects.toThrow('Injected')
+    f.fail()
+    const source = { ...intent, transferId: randomUUID() }, allocation = { kind: 'rsync-source' as const, byteSize: intent.byteSize * 2 }
+    await expect(f.service.reserve(source, f.context, allocation)).rejects.toThrow('quota')
+    await f.service.retire(intent.transferId)
+    await f.service.reserve(source, f.context, allocation)
+  })
+  it('shares the existing persistent record cap with external-only journals', async () => {
+    const f = await fixture()
+    for (let index = 0; index < BYTE_TRANSFER_POLICY.maxRecords; index++) {
+      await writeFile(join(f.root, `${randomUUID()}.json`), '', { mode: 0o600 })
+    }
+    await expect(f.service.reserve(f.intent, f.context, { kind: 'rsync-receiver', byteSize: f.intent.byteSize * 3 })).rejects.toThrow('record quota')
+  })
+
+  it('reserves source-only bytes without a canonical part and keeps exact retries immutable across restart', async () => {
+    const f = await fixture(), allocation = { kind: 'rsync-source' as const, byteSize: f.intent.byteSize * 2 }
+    await f.service.reserve(f.intent, f.context, allocation)
+    const initial = await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')
+    await expect(readFile(join(f.root, `${f.intent.transferId}.part`))).rejects.toThrow()
+    await expect(f.service.status(f.intent.transferId, f.context)).rejects.toThrow('not started')
+    f.time(1000); await f.service.reserve(f.intent, f.context, allocation)
+    expect(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).toBe(initial)
+    await f.service.close(); const resumed = f.create(), current = f.reconnect()
+    await expect(resumed.reserve(f.intent, f.context, allocation)).rejects.toThrow('Denied')
+    await resumed.reserve(f.intent, current, allocation)
+    expect(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).toBe(initial)
+    await expect(resumed.reserve({ ...f.intent, sha256: '0'.repeat(64) }, current, allocation)).rejects.toThrow('immutable')
+    await expect(resumed.reserve(f.intent, current, { ...allocation, byteSize: 1 })).rejects.toThrow('footprint')
+  })
+  it('adds canonical and receiver bytes to the same device budget and never drops holds on cancellation', async () => {
+    const f = await fixture(), intent = { ...f.intent, byteSize: BYTE_TRANSFER_POLICY.maxStagingPerDeviceBytes / 4 }
+    await f.service.reserve(intent, f.context, { kind: 'rsync-receiver', byteSize: intent.byteSize * 3 })
+    await f.service.start(intent, f.context)
+    const other = { ...intent, transferId: randomUUID(), byteSize: 1 }
+    await expect(f.service.start(other, f.context)).rejects.toThrow('quota')
+    await f.service.cancel(intent.transferId, f.context)
+    await f.service.start({ ...other, byteSize: intent.byteSize }, f.context)
+    await expect(f.service.reserve({ ...intent, transferId: randomUUID(), byteSize: 1 }, f.context,
+      { kind: 'rsync-receiver', byteSize: 3 })).rejects.toThrow('quota')
+    await f.service.release(intent, 'rsync-receiver')
+    await f.service.release(intent, 'rsync-receiver')
+    await f.service.reserve({ ...intent, transferId: randomUUID(), byteSize: 1 }, f.context, { kind: 'rsync-receiver', byteSize: 3 })
+    await expect(f.service.reserve(intent, f.context, { kind: 'rsync-receiver', byteSize: intent.byteSize * 3 })).rejects.toThrow()
+  })
+  it('admits canonical bytes for the same logical transfer at the device active limit', async () => {
+    const f = await fixture(), second = { ...f.intent, transferId: randomUUID() }
+    await f.service.reserve(f.intent, f.context, { kind: 'rsync-receiver', byteSize: f.intent.byteSize * 3 })
+    await f.service.reserve(second, f.context, { kind: 'rsync-source', byteSize: second.byteSize * 2 })
+    await f.service.start(f.intent, f.context)
+    await expect(f.service.start({ ...second, transferId: randomUUID() }, f.context)).rejects.toThrow('quota')
+    await f.service.cancel(f.intent.transferId, f.context)
+    await expect(f.service.start({ ...second, transferId: randomUUID() }, f.context)).rejects.toThrow('quota')
+    await f.service.release(f.intent, 'rsync-receiver')
+    await f.service.start({ ...second, transferId: randomUUID() }, f.context)
+  })
+  it('shares global bytes and active limits across devices and service instances', async () => {
+    const f = await fixture()
+    const source = { ...f.intent, byteSize: BYTE_TRANSFER_POLICY.maxSourceBytes }
+    await f.service.reserve(source, f.context, { kind: 'rsync-source', byteSize: source.byteSize * 2 })
+    const context = { ...f.context, deviceId: randomUUID() }, second = { ...source, transferId: randomUUID(), deviceId: context.deviceId }
+    await f.create().reserve(second, context, { kind: 'rsync-source', byteSize: second.byteSize * 2 })
+    const thirdContext = { ...context, deviceId: randomUUID() }, third = { ...second, transferId: randomUUID(), deviceId: thirdContext.deviceId, byteSize: 1 }
+    await expect(f.service.start(third, thirdContext)).rejects.toThrow('quota')
+    await f.service.release(source, 'rsync-source'); await f.service.release(second, 'rsync-source')
+    for (let index = 0; index < BYTE_TRANSFER_POLICY.maxActiveGlobal; index++) {
+      const current = { ...f.context, deviceId: randomUUID() }, intent = { ...f.intent, transferId: randomUUID(), deviceId: current.deviceId }
+      await f.service.reserve(intent, current, { kind: 'rsync-receiver', byteSize: intent.byteSize * 3 })
+    }
+    await expect(f.service.start({ ...f.intent, transferId: randomUUID() }, f.context)).rejects.toThrow('quota')
+  })
+  it('does not renew original TTL or idle deadline and retains expired holds until trusted cleanup', async () => {
+    const f = await fixture(), intent = { ...f.intent, byteSize: BYTE_TRANSFER_POLICY.maxSourceBytes }
+    const allocation = { kind: 'rsync-source' as const, byteSize: intent.byteSize * 2 }
+    await f.service.reserve(intent, f.context, allocation); f.time(60_001)
+    await expect(f.service.reserve(intent, f.context, allocation)).rejects.toThrow('expired')
+    await expect(f.service.reserve({ ...intent, expiresAt: new Date(Date.parse(intent.expiresAt) + 60_000).toISOString() }, f.context, allocation))
+      .rejects.toThrow('immutable')
+    const fresh = { ...intent, transferId: randomUUID(), byteSize: 1, expiresAt: new Date(Date.parse(intent.expiresAt) + 60_000).toISOString() }
+    await expect(f.service.start(fresh, f.context)).rejects.toThrow('quota')
+    f.revoke(); await f.service.release(intent, 'rsync-source')
+    await expect(f.service.reserve(fresh, f.context, { kind: 'rsync-receiver', byteSize: 3 })).rejects.toThrow('Denied')
+    const g = await fixture(), long = { ...g.intent, expiresAt: new Date(Date.parse(g.intent.expiresAt) + 10 * 60_000).toISOString() }
+    await g.service.reserve(long, g.context, { kind: 'rsync-receiver', byteSize: long.byteSize * 3 })
+    g.time(BYTE_TRANSFER_POLICY.maxIdleMs)
+    await expect(g.service.reserve(long, g.context, { kind: 'rsync-receiver', byteSize: long.byteSize * 3 })).rejects.toThrow('expired')
+  })
+  it('keeps both kinds charged independently and retains release conflict identity', async () => {
+    const f = await fixture()
+    await f.service.reserve(f.intent, f.context, { kind: 'rsync-source', byteSize: f.intent.byteSize * 2 })
+    await f.service.reserve(f.intent, f.context, { kind: 'rsync-receiver', byteSize: f.intent.byteSize * 3 })
+    await expect(f.service.release({ ...f.intent, placementHash: '0'.repeat(64) }, 'rsync-source')).rejects.toThrow('immutable')
+    await f.service.release(f.intent, 'rsync-source')
+    const payload = JSON.parse(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).payload
+    expect(payload.external['rsync-source']).toEqual({ byteSize: f.intent.byteSize * 2, released: true })
+    expect(payload.external['rsync-receiver'].released).toBe(false)
+    await expect(f.service.reserve(f.intent, f.context, { kind: 'rsync-source', byteSize: f.intent.byteSize * 2 })).rejects.toThrow('released')
+  })
+  it('rechecks current authority after durable retry synchronization before ACK', async () => {
+    const f = await fixture(), allocation = { kind: 'rsync-source' as const, byteSize: f.intent.byteSize * 2 }
+    await f.service.reserve(f.intent, f.context, allocation)
+    const retained = await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')
+    let revoked = false
+    const retry = new ResumableByteTransferService(f.root, { authorize: async () => {
+      if (revoked) throw new Error('Denied current authority')
+    } }, Date.now, async point => { if (point === 'directory-sync') revoked = true })
+    services.push(retry)
+    await expect(retry.reserve(f.intent, f.context, allocation)).rejects.toThrow('Denied')
+    expect(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).toBe(retained)
+  })
+  it('commits holds before ACK and fails closed on the shared allocation lock', async () => {
+    const f = await fixture(), allocation = { kind: 'rsync-receiver' as const, byteSize: f.intent.byteSize * 3 }
+    f.fail('journal-sync'); await expect(f.service.reserve(f.intent, f.context, allocation)).rejects.toThrow('Injected')
+    await expect(readFile(join(f.root, `${f.intent.transferId}.json`))).rejects.toThrow()
+    f.fail('directory-sync'); await expect(f.service.reserve(f.intent, f.context, allocation)).rejects.toThrow('Injected')
+    f.fail(); const retained = await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')
+    await f.service.reserve(f.intent, f.context, allocation)
+    expect(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).toBe(retained)
+    await mkdir(join(f.root, 'allocation.lock'), { mode: 0o700 })
+    await expect(f.create().reserve(f.intent, f.context, allocation)).rejects.toThrow()
+    await rm(join(f.root, 'allocation.lock'), { recursive: true })
   })
 })
