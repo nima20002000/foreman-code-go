@@ -13,6 +13,7 @@ import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 import { locationMutationKey } from './workspaceLocationCache'
 import { queryKeys } from './query'
+import { HarnessDirectoryBrowseResultSchema } from '@graphql/contracts/management'
 
 export const boundLocationKeys = {
   root: ['workbench', 'bound-workspace-location'] as const,
@@ -53,6 +54,7 @@ export function useBoundWorkspaceLocation(workspaceId: string, enabled = true) {
 }
 /** Expected host metadata is a client acknowledgement fence, never sent as authority. */
 type ReadRequest = { input: WorkspaceRootSelection; expectedHost: ApprovedRootAllowlist }
+export type BoundFolderBrowser = ReadRequest
 function checkRequestHost(input: WorkspaceRootSelection, host: ApprovedRootAllowlist, workspaceId: string) {
   if (input.workspaceId !== workspaceId || !checkHost(input.hostRef, host.hostRef) || input.configurationRevision !== host.configurationRevision
     || !host.bases.some(base => base.baseId === input.allowedBaseId && base.accessModes.includes(input.accessMode)))
@@ -66,6 +68,34 @@ export function useBrowseBoundWorkspaceLocation(workspaceId: string) {
     if (result.workspaceId !== workspaceId || !sameRootSelection(result.selection, input) || !checkHost(input.hostRef, expectedHost.hostRef)) invalid('Directory readback belongs to another root selection.')
     return result
   } })
+}
+/** Present the familiar folder browser using the native, approved Main root transport. */
+export function useBoundFolderDirectories(binding: BoundFolderBrowser | undefined, location: { rootId?: string; path?: string; cursor?: string }, enabled: boolean) {
+  useHarnessSessionEpoch()
+  return useQuery({ queryKey: [...boundLocationKeys.scope(binding?.input.workspaceId ?? ''), 'folders', binding, location],
+    enabled: enabled && Boolean(binding) && !sessionIsSwitching(), retry: false,
+    queryFn: async ({ signal }) => {
+      if (!binding || binding.input.hostRef.kind !== 'main') throw new ApiError({ code: 'INVALID_REQUEST', message: 'The folder browser requires an approved Main location.' })
+      const base = binding.expectedHost.bases.find(base => base.baseId === binding.input.allowedBaseId)
+      if (!base) throw new ApiError({ code: 'INVALID_REQUEST', message: 'The approved folder is no longer available.' })
+      const rootPath = base.canonicalPath.replace(/\/$/, '') || '/'
+      const selectedPath = location.path ?? rootPath
+      const prefix = rootPath === '/' ? '/' : `${rootPath}/`
+      if (selectedPath !== rootPath && !selectedPath.startsWith(prefix)) throw new ApiError({ code: 'INVALID_REQUEST', message: 'Choose a folder inside the approved Main location.' })
+      const input = WorkspaceRootSelectionSchema.parse({ ...binding.input, relativePath: selectedPath === rootPath ? '' : selectedPath.slice(prefix.length) })
+      checkRequestHost(input, binding.expectedHost, input.workspaceId)
+      const result = await apiClient.request(`${path(input.workspaceId)}/root-location/browse`, WorkspaceBoundLocationBrowseResultSchema,
+        { method: 'POST', body: input, signal })
+      if (result.workspaceId !== input.workspaceId || !sameRootSelection(result.selection, input)) invalid('Folder browsing returned another approved root selection.')
+      const fullPath = (relativePath: string) => relativePath ? `${prefix}${relativePath}` : rootPath
+      const parentRelative = result.browse.relativePath.split('/').slice(0, -1).join('/')
+      const directories = result.browse.directories.filter(directory => !location.cursor || directory.name > location.cursor)
+      const page = directories.slice(0, 100)
+      return { ...HarnessDirectoryBrowseResultSchema.parse({ roots: [{ id: base.baseId, label: 'Workspaces', path: rootPath }],
+        rootId: base.baseId, path: fullPath(result.browse.relativePath), parent: result.browse.relativePath ? fullPath(parentRelative) : null,
+        directories: page.map(directory => ({ name: directory.name, path: fullPath(directory.relativePath) })),
+        nextCursor: directories.length > page.length ? page.at(-1)?.name ?? null : null }), truncated: result.browse.truncated }
+    } })
 }
 export function useValidateBoundWorkspaceLocation(workspaceId: string) {
   return useMutation({ mutationKey: [...boundLocationKeys.scope(workspaceId), 'validate'], mutationFn: async ({ input, expectedHost }: ReadRequest) => {

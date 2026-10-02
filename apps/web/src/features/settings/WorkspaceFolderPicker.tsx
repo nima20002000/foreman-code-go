@@ -1,4 +1,5 @@
-import { useContext, useEffect, useId, useRef, useState } from 'react'
+import { useContext, useEffect, useId, useRef, useState, type RefObject } from 'react'
+import { useBoundFolderDirectories, type BoundFolderBrowser } from '../../shared/api/workspaceBoundLocation'
 import { useCreateWorkspaceFolder, useRenameWorkspaceFolder, useUndoWorkspaceFolder, useDeleteWorkspaceFolders, useHarnessDirectories, useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { WorkspaceFolderNameSchema, type WorkspaceFolderRenameInput } from '@graphql/contracts/management'
 import { WorkspaceLocationCard } from './WorkspaceLocationCard'
@@ -7,11 +8,12 @@ import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { ActionMenu, Alert, Button, Dialog, Icon, LoadingState, TextField } from '../../shared/ui/nocturne'
 import './workspaceLocation.css'
 
-type Props = { disabled: boolean; onSelect(path: string): void | Promise<void>; value?: string; label?: string; selectionUnconfirmed?: boolean; copyValue?: string; description?: string }
+type Props = { disabled: boolean; onSelect(path: string): void | Promise<void>; value?: string; label?: string; selectionUnconfirmed?: boolean; copyValue?: string; description?: string;
+  directoryBinding?: BoundFolderBrowser; presentation?: 'card' | 'compact'; triggerRef?: RefObject<HTMLButtonElement | null> }
 type Location = Parameters<typeof useHarnessDirectories>[0]
 type HistoryEntry = { location: Location; selectedPath?: string; locationsOpen: boolean }
 
-function FolderPicker({ disabled, onSelect, value, label = 'Project folder', selectionUnconfirmed = false, copyValue, description }: Props) {
+function FolderPicker({ disabled, onSelect, value, label = 'Project folder', selectionUnconfirmed = false, copyValue, description, directoryBinding, presentation, triggerRef }: Props) {
   const [open, setOpen] = useState(false)
   const toasts = useContext(ToastContext)
   const id = useId()
@@ -43,7 +45,10 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
   const pathRef = useRef<HTMLInputElement>(null)
   const pendingFocus = useRef<'path' | 'new-folder' | null>(null)
   const locked = remove.isPending || deleteAttempt.current.unresolved || undo.isPending || undoAttempt.current.unresolved || selecting || create.isPending || rename.isPending || attempt.current.unresolved || renameAttempt.current.unresolved || selectionUnconfirmed
-  const query = useHarnessDirectories(location, open && !disabled)
+  const localQuery = useHarnessDirectories(location, open && !disabled && !directoryBinding)
+  const boundQuery = useBoundFolderDirectories(directoryBinding, location, open && !disabled)
+  const query = directoryBinding ? boundQuery : localQuery
+  const refreshFolders = () => { if (directoryBinding) void boundQuery.refetch() }
   const data = query.data
   const currentPath = data?.path ?? location.path
   const namingFolder = editingFolder ?? newFolder
@@ -114,6 +119,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
       const input = attempt.current.input({ parentPath: creationParent })
       const result = await create.mutateAsync(input)
       attempt.current.succeeded()
+      refreshFolders()
       if (locationsOpen && creationRoot) navigateFolder({ rootId: creationRoot.id, path: creationRoot.path })
       setNewFolder({ ...result.value, parentPath: input.parentPath, creationCommandId: input.commandId })
       setEditingFolder(undefined); setMarkedPaths([])
@@ -135,6 +141,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
           ? { creationCommandId: namingFolder.creationCommandId } : { path: namingFolder.path }), name: name.trim() })
         const result = await rename.mutateAsync(input)
         renameAttempt.current.succeeded()
+        refreshFolders()
         path = result.value.path
         if (newFolder?.path === namingFolder.path) setNewFolder({ ...newFolder, ...result.value })
       }
@@ -155,6 +162,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
     try {
       const result = await remove.mutateAsync(deleteAttempt.current.input({ paths }))
       deleteAttempt.current.succeeded()
+      refreshFolders()
       setMarkedPaths(result.value.failed.map((item) => item.path))
       if (newFolder && result.value.deleted.includes(newFolder.path)) setNewFolder(undefined)
       if (selectedPath && result.value.deleted.includes(selectedPath)) setSelectedPath(undefined)
@@ -173,6 +181,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
     try {
       await undo.mutateAsync(undoAttempt.current.input({ creationCommandId: newFolder.creationCommandId }))
       undoAttempt.current.succeeded()
+      refreshFolders()
       if (currentPath === newFolder.path || currentPath?.startsWith(newFolder.path + '/')) {
         setLocation({ rootId: data?.rootId ?? location.rootId, path: newFolder.parentPath })
         setHistory([])
@@ -197,7 +206,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
 
 
   return <>
-    {value !== undefined ? <WorkspaceLocationCard label={label} path={value} description={description}
+    {value !== undefined ? <WorkspaceLocationCard label={label} path={value} description={description} presentation={presentation} triggerRef={triggerRef}
       disabled={disabled} onChoose={openPicker} onCopy={copyValue ? async () => {
         try { await navigator.clipboard.writeText(copyValue); toasts?.notify({ tone: 'success', title: 'Folder path copied' }) }
         catch { toasts?.notify({ tone: 'danger', title: 'Could not copy the folder path' }) }
@@ -206,7 +215,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
     <Dialog closeOnOutsideClick open={open} onOpenChange={(next) => {
       if (!next && creating) { closeAfterName.current = true; if (!inFlight.current) void finishName(false); return }
       if (!locked) setOpen(next)
-    }} busy={locked} title="Choose folder"
+    }} busy={locked} title="Choose folder" description={directoryBinding ? 'Main' : undefined}
       className="workspace-folder-dialog" onKeyDownCapture={(event) => {
         if (event.key === 'Delete' && !creating && !(event.target instanceof HTMLInputElement)) {
           if (markedPaths.length && !locked) { event.preventDefault(); void deleteFolders(markedPaths) }
@@ -305,6 +314,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
           disabled={!canBrowse} onClick={() => navigateFolder({ rootId: data.rootId ?? undefined, path: data.path ?? undefined, cursor: data.nextCursor! })}>
           Next folders
         </Button> : null}
+        {directoryBinding && boundQuery.data?.truncated && !data?.nextCursor ? <p role="status">This folder has more entries than can be shown. Browse a more specific folder.</p> : null}
       </div>
     </Dialog>
   </>

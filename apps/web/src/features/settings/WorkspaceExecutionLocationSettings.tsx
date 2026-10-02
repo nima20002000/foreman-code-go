@@ -17,6 +17,9 @@ import { emptyRootPicker as empty, useBoundLocationDraftStore as usePickers, typ
 import { sessionGeneration, sessionSignal } from '../../shared/api/sessionBoundary'
 import { WorkspaceLocationCard } from './WorkspaceLocationCard'
 import { ComputerPresenceReadback } from './ComputerPresence'
+import { WorkspaceFolderPicker } from './WorkspaceFolderPicker'
+import { useRuntimeIdentityQuery } from '../../shared/api/runtimeIdentity'
+import { useWorkspaceCreationDefaultsQuery } from '../../shared/api/settingsExperience'
 import './computerSettings.css'
 
 type Props = { workspaceId: string; presentation?: 'field' | 'card' | 'tile' | 'compact'; onSaved?: () => void; triggerRef?: RefObject<HTMLButtonElement | null> }
@@ -34,6 +37,8 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
   const epoch = useHarnessSessionEpoch(), scope = `${epoch}:${workspaceId}`
   const toasts = useContext(ToastContext)
   const workspace = useManagedWorkspaceQuery(workspaceId)
+  const identity = useRuntimeIdentityQuery()
+  const defaults = useWorkspaceCreationDefaultsQuery(presentation === 'compact')
   const current = workspace.isSuccess && workspace.data.workspace.id === workspaceId ? workspace.data : undefined
   const allowed = Boolean(current && current.locationValidation.status !== 'restricted')
   const saved = useBoundWorkspaceLocation(workspaceId, allowed)
@@ -71,11 +76,25 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
     const previousPolicy = choices.data.policies.find(policy => sameHost(policy.hostRef, record.host.hostRef))
     change(previous => ({ ...previous, selected: key, candidates: { ...previous.candidates, [key]: previous.candidates[key] ?? {
       relativePath: previousPolicy?.allowedBaseId === record.base.baseId ? previousPolicy.relativePath : '',
-      accessMode: previousPolicy?.allowedBaseId === record.base.baseId && record.base.accessModes.includes(previousPolicy.accessMode) ? previousPolicy.accessMode : record.base.accessModes[0]!,
+      accessMode: previousPolicy?.allowedBaseId === record.base.baseId && record.base.accessModes.includes(previousPolicy.accessMode) ? previousPolicy.accessMode
+        : presentation === 'compact' && record.base.accessModes.includes('read-write') ? 'read-write' : record.base.accessModes[0]!,
       locationRevision: saved.data.locationRevision, rootPolicyRevision: revision(previousPolicy?.rootPolicyRevision),
     } } }))
     browse.reset(); validate.reset()
   }
+  const mainRecords = records.filter(record => record.host.hostRef.kind === 'main'
+    && record.host.hostRef.mainId === identity.data?.installationId && record.host.applicationInstallationId === identity.data?.installationId)
+  const savedBinding = saved.data?.evidence === 'bound' ? saved.data.binding : undefined
+  const mainRecord = mainRecords.find(record => savedBinding?.hostRef.kind === 'main' && savedBinding.allowedBaseId === record.base.baseId)
+    ?? mainRecords.filter(record => saved.data?.executionLocation?.rootPath === record.base.canonicalPath
+      || saved.data?.executionLocation?.rootPath.startsWith(`${record.base.canonicalPath.replace(/\/$/, '')}/`))
+      .sort((left, right) => right.base.canonicalPath.length - left.base.canonicalPath.length)[0]
+    ?? mainRecords.find(record => record.base.canonicalPath === defaults.data?.parentPath)
+    ?? (mainRecords.length === 1 ? mainRecords[0] : undefined)
+  useEffect(() => {
+    // Auto-select only the server's actual Main installation and an approved known base.
+    if (presentation === 'compact' && mainRecord && picker.selected !== mainRecord.key && !locked && saved.isSuccess) choose(mainRecord.key)
+  })
   const changeCandidate = (fields: Partial<Candidate>) => {
     if (!chosen || !candidate) return
     change(previous => ({ ...previous, candidates: { ...previous.candidates, [chosen.key]: { ...candidate, ...fields } } }))
@@ -91,7 +110,7 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
       return { ...empty(), open: previous.open, editVersion: previous.editVersion + 1, notice: 'Saved location and root policies reloaded. Select the intended computer again.' }
     })
   }
-  const submit = async () => {
+  const submit = async (throwFailure = false) => {
     if (busy || (!operation.attempt.unresolved && (archived || !selection || !chosen || conflict || !WorkspaceRootSelectionSchema.safeParse(selection).success))) return
     const hadUnknownOutcome = operation.uncertain
     const latest = usePickers.getState().pickers[scope] ?? picker
@@ -133,6 +152,7 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
       operation.uncertain = operation.attempt.unresolved
       if (!operation.attempt.unresolved) operation.original = undefined
       update(scope, previous => ({ ...previous, conflict: error instanceof ApiError && error.status === 409 ? true : previous.conflict, notice: errorMessage(error) }))
+      if (throwFailure) throw error
     }
   }
   const runBrowse = async () => { if (selection && chosen) try { await browse.mutateAsync({ input: selection, expectedHost: chosen.host }) } catch { /* Mutation exposes the scoped error. */ } }
@@ -148,23 +168,53 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
   const savedPath = saved.data.executionLocation?.rootPath ?? ''
   const browsingCurrent = sameRootSelection(browse.data?.selection, selection)
   const validationCurrent = sameRootSelection(validate.data?.selection, selection)
+  if (presentation === 'compact') {
+    if (identity.isPending || mainRecord && (chosen?.key !== mainRecord.key || !selection)) return <section className="workspace-location-form workspace-location-form--compact" aria-label="Project folder">
+      {guard}{recovery}<LoadingState label="Reading Main folder settings…" />
+    </section>
+    if (identity.isSuccess && mainRecord && chosen?.key === mainRecord.key && selection) return <section className="workspace-location-form workspace-location-form--compact" aria-label="Project folder">
+      {guard}{recovery}
+      <WorkspaceFolderPicker value={savedPath} label="Execution location" presentation="compact" triggerRef={triggerRef}
+        directoryBinding={{ input: selection, expectedHost: chosen.host }} disabled={archived || busy}
+        selectionUnconfirmed={operation.attempt.unresolved} onSelect={async (path) => {
+          const basePath = chosen.base.canonicalPath.replace(/\/$/, '') || '/'
+          const prefix = basePath === '/' ? '/' : `${basePath}/`
+          if (path !== basePath && !path.startsWith(prefix)) throw new Error('Choose a folder inside the approved Main location.')
+          if (conflict && !operation.attempt.unresolved) throw new Error('The saved location changed. Reload it before selecting another folder.')
+          if (!operation.attempt.unresolved) changeCandidate({ relativePath: path === basePath ? '' : path.slice(prefix.length) })
+          await submit(true)
+        }} />
+      {picker.notice ? <p role="status">{picker.notice}</p> : null}
+    </section>
+    return <section className="workspace-location-form workspace-location-form--compact" aria-label="Project folder">
+      {guard}{recovery}
+      <WorkspaceLocationCard label="Execution location" path={savedPath} presentation="compact" triggerRef={triggerRef} disabled={archived || busy}
+        onChoose={() => update(scope, previous => ({ ...previous, open: true }))} />
+      <Dialog open={picker.open} title="Choose folder" size="sm" busy={locked}
+        onOpenChange={open => { if (!locked) update(scope, previous => ({ ...previous, open })) }}>
+        {identity.isPending || defaults.isPending ? <LoadingState label="Reading Main folder settings…" /> : <>
+          <Alert tone="warning" title="Main folder access is unavailable." />
+          <Button disabled={locked} onClick={() => { void identity.refetch(); void defaults.refetch(); void reload() }}>Retry folder settings</Button>
+        </>}
+      </Dialog>
+    </section>
+  }
   const savedFacts = saved.data.evidence === 'bound' ? <dl className="computer-facts">
     <div><dt>Saved execution computer</dt><dd>{hostLabel(saved.data.binding.hostRef)}</dd></div>
     <div><dt>Application installation</dt><dd>{saved.data.binding.applicationInstallationId}</dd></div>
     <div><dt>Location / root policy revision</dt><dd>{saved.data.locationRevision} / {saved.data.binding.rootPolicyRevision}</dd></div>
   </dl> : saved.data.evidence === 'legacy_missing' ? null : <p>No execution folder has been configured.</p>
-  return <section className={`workspace-location-form${presentation === 'compact' ? ' workspace-location-form--compact' : ''}`} aria-label="Project folder">
+  return <section className="workspace-location-form" aria-label="Project folder">
     {guard}
     {archived ? <Alert tone="warning" title="This workspace is archived. Its execution location cannot be edited." /> : null}
-    <WorkspaceLocationCard label={presentation === 'compact' || presentation === 'tile' ? 'Execution location' : presentation === 'card' ? 'Choose workspace folder' : 'Project folder'} path={savedPath}
-      presentation={presentation === 'compact' ? 'compact' : 'card'}
+    <WorkspaceLocationCard label={presentation === 'tile' ? 'Execution location' : presentation === 'card' ? 'Choose workspace folder' : 'Project folder'} path={savedPath}
       triggerRef={triggerRef}
       disabled={archived || busy} description="Choose an approved computer and validate its folder." onChoose={() => update(scope, previous => ({ ...previous, open: true }))}
       onCopy={savedPath ? async () => {
         try { await navigator.clipboard.writeText(savedPath); toasts?.notify({ tone: 'success', title: 'Folder path copied' }) }
         catch { toasts?.notify({ tone: 'danger', title: 'Could not copy the folder path' }) }
       } : undefined} />
-    {presentation !== 'compact' ? savedFacts : null}
+    {savedFacts}
     {picker.notice ? <p role="status">{picker.notice}</p> : null}
     <Dialog open={picker.open} onOpenChange={open => { if (open || !locked) update(scope, previous => ({ ...previous, open })) }} title="Execution folder" busy={locked}
       description="Browsing and validation run on the selected computer. The workspace changes only when the save is confirmed." footer={<>
@@ -172,7 +222,6 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
         <Button disabled={archived || busy || (!operation.attempt.unresolved && (!selection || conflict))} onClick={() => void submit()}>
           {busy ? 'Saving…' : operation.attempt.unresolved ? 'Reconcile original selection' : 'Select location'}
         </Button></>}>
-      {presentation === 'compact' ? savedFacts : null}
       <Select label="Computer and approved base folder" value={picker.selected ?? ''} disabled={locked || archived}
         options={[{ value: '', label: 'Choose a computer and approved root' }, ...records.map(record => ({ value: record.key, label: `${hostLabel(record.host.hostRef)} · ${record.base.canonicalPath}` }))]}
         onChange={event => choose(event.target.value)} />
