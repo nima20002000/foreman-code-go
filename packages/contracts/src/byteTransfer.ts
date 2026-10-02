@@ -40,6 +40,28 @@ export const VerifiedTransferReceiptSchema = z.object({
   sha256: Hash, byteSize: z.number().int().nonnegative(), verifiedAt: z.string().datetime(),
 }).strict()
 export type VerifiedTransferReceipt = z.infer<typeof VerifiedTransferReceiptSchema>
+
+/** Metadata only on the existing authenticated W07 connection. Advertise only
+ * when genuine authorized staging ports are configured; this grants no authority. */
+export const RSYNC_STAGE_EXTENSION = Object.freeze({
+  namespace: 'rsync-stage-v1', version: 1 as const, maxJsonBytes: 16384, maxBinaryBytes: 0,
+})
+export const RsyncControlRequestSchema = z.object({
+  kind: z.literal('rsync-stage-v1'),
+  method: z.enum(['source-prepare', 'source-verify', 'source-close', 'receiver-prepare',
+    'receiver-verify', 'receiver-interrupt', 'acknowledge']),
+  transferId: z.uuid(),
+}).strict()
+export type RsyncControlRequest = z.infer<typeof RsyncControlRequestSchema>
+export const RsyncControlResponseSchema = z.discriminatedUnion('method', [
+  RsyncControlRequestSchema.extend({ method: z.literal('receiver-verify'), receipt: VerifiedTransferReceiptSchema }),
+  RsyncControlRequestSchema.extend({ method: z.enum(['source-prepare', 'source-verify', 'source-close',
+    'receiver-prepare', 'receiver-interrupt', 'acknowledge']) }),
+]).refine(value => value.method !== 'receiver-verify'
+  || (value.receipt.transferId === value.transferId && value.receipt.intent.transferId === value.transferId),
+{ message: 'Verified receipt must identify the same admitted transfer' })
+export type RsyncControlResponse = z.infer<typeof RsyncControlResponseSchema>
+
 export interface ByteTransferPort {
   start(intent: TransferIntent, context: TransferContext): Promise<TransferProgress>
   status(id: string, context: TransferContext): Promise<TransferProgress>
