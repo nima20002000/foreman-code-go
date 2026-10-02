@@ -22,12 +22,14 @@ import { AgentSkillsField } from '../skills/AgentSkillsField'
 import './agentSettingsPanel.css'
 
 export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose, onRemove, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
-  nodePlacement, placementOptions, placementOptionsState, placementStage, executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
+  nodePlacement, placementOptions, placementHidden, placementOptionsState, placementStage, executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 }, workspaceId, workflowApprovalHandler, designatedOrchestrator = false, embedded = false,
 }: {
   /** Inside an agent popover: the popover owns the title and close button. */
   embedded?: boolean
   nodePlacement?: SavedNodePlacement
   placementOptions?: readonly NodePlacementOption[]
+  /** Placement access was denied: hide its details but keep the retained draft base and edits. */
+  placementHidden?: boolean
   placementOptionsState?: 'ready' | 'loading' | 'unavailable'
   placementStage?: 'draft' | 'saved'
   retainedForm?: AgentForm
@@ -159,7 +161,7 @@ export function AgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, crea
       <div className={`agent-settings-row agent-settings-row-runtime agent-settings-row-${configuration.harness}`}>
         <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration} />
       </div>
-      {(nodePlacement || placementOptions) ? <NodePlacementField value={placement} options={placementOptions ?? []} optionsState={placementOptionsState} stage={!sameWorkflowValue(placement, nodePlacement) ? 'editing' : placementStage} onChange={(next) => { if (onFormChange) changeForm({ placement: next }); else setLocalPlacement(next); clearErrors() }} /> : null}
+      {!placementHidden && (nodePlacement || placementOptions) ? <NodePlacementField value={placement} options={placementOptions ?? []} optionsState={placementOptionsState} stage={!sameWorkflowValue(placement, nodePlacement) ? 'editing' : placementStage} onChange={(next) => { if (onFormChange) changeForm({ placement: next }); else setLocalPlacement(next); clearErrors() }} /> : null}
       {workspaceId ? <AgentSkillsField workspaceId={workspaceId} value={skills} onChange={(next) => { setSkills(next); clearErrors() }} /> : null}
     </div> : <div className="agent-settings-advanced-view">
       <Textarea label="Agent instructions" className="agent-settings-prompt" rows={4} value={instructions}
