@@ -1,0 +1,6 @@
+.resource-card .resource-card-copy .workspace-disk-folder-note {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

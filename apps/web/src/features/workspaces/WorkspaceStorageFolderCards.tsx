@@ -7,6 +7,7 @@ import { queryKeys, useWorkspaceStorageFolderPages } from '../../shared/api/quer
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Alert, Button, Card, Dialog, ErrorState, Icon, LoadingState } from '../../shared/ui/nocturne'
 import { LoadMore } from '../../shared/ui/LoadMore'
+import './workspaceStorageFolders.css'
 
 function FolderCard({ folder }: { folder: WorkspaceStorageFolder }) {
   const [confirming, setConfirming] = useState(false)
@@ -36,14 +37,14 @@ function FolderCard({ folder }: { folder: WorkspaceStorageFolder }) {
     } catch (error) { attempt.current.failed(error) }
     finally { inFlight.current = false }
   }
-  return <Card className="workspace-card resource-card">
+  return <Card className="workspace-card resource-card workspace-disk-folder">
     <div className="workspace-card-open resource-card-open">
       <Icon name="folder" size={16} />
       <span className="resource-card-copy">
         <span className="resource-card-name">{folder.name}</span>
         <small dir="ltr">{folder.path}</small>
-        <small>Folder on disk · Not in the active workspace list</small>
-        {folder.deletion.status === 'protected' ? <small>{folder.deletion.message}</small> : null}
+        <small className="workspace-disk-folder-note">Folder on disk · Not in the active workspace list</small>
+        {folder.deletion.status === 'protected' ? <small className="workspace-disk-folder-note">{folder.deletion.message}</small> : null}
       </span>
     </div>
     <Button variant="danger" size="sm" disabled={folder.deletion.status === 'protected'}
