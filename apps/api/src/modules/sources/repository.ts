@@ -1,5 +1,6 @@
+import { isDeepStrictEqual } from 'node:util'
 import { constants } from 'node:fs'
-import { mkdir, open } from 'node:fs/promises'
+import { mkdir, open, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { MaterializationReceipt, SourceManifest } from '@graphql/contracts/source-materialization'
 import { qualifiedGit } from './capture.js'
@@ -31,26 +32,7 @@ export async function createPrivateSourceRepository(input: {
         throw error
       })
       if (prior) {
-        try {
-          const stat = await prior.stat()
-          if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Invalid private repository receipt.')
-          const saved = JSON.parse(await prior.readFile('utf8')) as { materializationId: string; manifestDigest: string; receiptDigest: string; generatedCommit: string; configDigest: string }
-          const repository = await openChildDirectory(reservation, 'repository')
-          try {
-            const config = await open(anchored(repository, 'config'), constants.O_RDONLY | constants.O_NOFOLLOW)
-            try {
-              const stat = await config.stat()
-              if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384 || sourceSha256(await config.readFile()) !== saved.configDigest)
-                throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Private repository configuration changed.')
-            } finally { await config.close() }
-          } finally { await repository.close() }
-          const gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
-          if (saved.materializationId !== receipt.materializationId || saved.manifestDigest !== manifest.manifestDigest
-            || saved.receiptDigest !== sourceSha256(Buffer.from(JSON.stringify(receipt))) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(saved.generatedCommit)
-            || (await qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'])).toString().trim() !== saved.generatedCommit)
-            throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Private repository no longer matches the original materialization.')
-          return { workTree, gitDirectory, generatedCommit: saved.generatedCommit, sourceCommit: manifest.git?.commit ?? null }
-        } finally { await prior.close() }
+        return await readPrivateRepository(prior, reservation, receipt, manifest, workTree)
       }
       await mkdir(anchored(reservation, 'repository'), { mode: 0o700 })
     }
@@ -89,4 +71,56 @@ export async function createPrivateSourceRepository(input: {
     } finally { await reservation.close() }
   } finally { await owner.close() }
   return { workTree, gitDirectory, generatedCommit, sourceCommit: manifest.git?.commit ?? null }
+}
+
+/** Verify only the retained original repository. Missing receipts fail closed;
+ * this path cannot initialize Git, write objects or replace source state. */
+export async function verifyPrivateSourceRepository(input: {
+  receipt: MaterializationReceipt; materializer: SourceMaterializationPort; attempt: MaterializationAttempt;
+}) {
+  const receipt = input.receipt
+  const workTree = await input.materializer.resolve(receipt, { binding: receipt.binding, attempt: input.attempt })
+  const root = await openPrivateRoot(receipt.binding.canonicalPath)
+  try {
+    if (JSON.stringify(await identity(root)) !== JSON.stringify(receipt.binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
+    const reservation = await openChildDirectory(root, receipt.materializationId)
+    try {
+      const record = await open(anchored(reservation, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+      let manifest: SourceManifest
+      try {
+        const stat = await record.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid original source receipt.')
+        const stored = JSON.parse(await record.readFile('utf8')) as { receipt: MaterializationReceipt; manifest: SourceManifest }
+        manifest = verifySourceManifest(stored.manifest)
+        if (!isDeepStrictEqual(stored.receipt, receipt) || manifest.snapshotId !== receipt.binding.snapshotId
+          || manifest.manifestDigest !== receipt.verifiedManifestDigest || manifest.totalEntries !== receipt.verifiedEntries || manifest.totalBytes !== receipt.verifiedBytes)
+          throw new SourceError('SOURCE_RECEIPT_INVALID', 'Stored source receipt changed.')
+      } finally { await record.close() }
+      const prior = await open(anchored(reservation, 'repository-receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+      return await readPrivateRepository(prior, reservation, receipt, manifest, workTree)
+    } finally { await reservation.close() }
+  } finally { await root.close() }
+}
+
+async function readPrivateRepository(prior: FileHandle, reservation: FileHandle, receipt: MaterializationReceipt, manifest: SourceManifest, workTree: string) {
+  try {
+    const stat = await prior.stat()
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Invalid private repository receipt.')
+    const saved = JSON.parse(await prior.readFile('utf8')) as { materializationId: string; manifestDigest: string; receiptDigest: string; generatedCommit: string; configDigest: string }
+    const repository = await openChildDirectory(reservation, 'repository')
+    try {
+      const config = await open(anchored(repository, 'config'), constants.O_RDONLY | constants.O_NOFOLLOW)
+      try {
+        const stat = await config.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384 || sourceSha256(await config.readFile()) !== saved.configDigest)
+          throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Private repository configuration changed.')
+      } finally { await config.close() }
+    } finally { await repository.close() }
+    const gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
+    if (saved.materializationId !== receipt.materializationId || saved.manifestDigest !== manifest.manifestDigest
+      || saved.receiptDigest !== sourceSha256(Buffer.from(JSON.stringify(receipt))) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(saved.generatedCommit)
+      || (await qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'])).toString().trim() !== saved.generatedCommit)
+      throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Private repository no longer matches the original materialization.')
+    return { workTree, gitDirectory, generatedCommit: saved.generatedCommit, sourceCommit: manifest.git?.commit ?? null }
+  } finally { await prior.close() }
 }

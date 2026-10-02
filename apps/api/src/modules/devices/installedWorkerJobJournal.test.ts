@@ -2,12 +2,17 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
 import { WorkerPairingConfigurationSchema } from '@graphql/contracts/device-identity'
+import { DeviceSessionBindingSchema } from '@graphql/contracts/device-connection'
+import { RemoteJobExecutionRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 
-const ports = vi.hoisted(() => ({ qualification: vi.fn(), open: vi.fn(), close: vi.fn() }))
+const ports = vi.hoisted(() => ({ qualification: vi.fn(), open: vi.fn(), close: vi.fn(), jobs: vi.fn(), recover: vi.fn(), handle: vi.fn(), shutdown: vi.fn(), inputs: vi.fn() }))
 vi.mock('../jobs/workerQualificationCarrier.js', () => ({ createWorkerQualificationExtension: ports.qualification }))
 vi.mock('../runs/remote/operationJournal.js', () => ({ RemoteOperationJournal: { open: ports.open } }))
 vi.mock('../runs/remote/installedWorkflowHost.js', () => ({ createInstalledWorkflowHost: async () => ({ kind: 'unavailable' }) }))
+vi.mock('../jobs/executorInstalled.js', () => ({ createInstalledJobExecutionHost: ports.jobs }))
+vi.mock('../files/jobInputs/factory.js', () => ({ createWorkerJobInputPort: () => ({ prepare: ports.inputs, close: async () => {} }) }))
+vi.mock('../runs/remote/jobCanonicalOutputs.js', () => ({ createWorkerJobOutputCollector: () => async () => {} }))
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 
 describe('original installed Job qualification composition, no native entry', () => {
@@ -29,4 +34,36 @@ describe('original installed Job qualification composition, no native entry', ()
     await mounted.close(); await mounted.close()
     expect(ports.close).toHaveBeenCalledTimes(1)
   })
+})
+
+it('recovers the original Job host before routing an authenticated Job frame, with no native entry', async () => {
+  vi.clearAllMocks()
+  const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
+    endpoint: 'wss://unconnected.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString() })
+  const binding = DeviceSessionBindingSchema.parse({ mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
+    keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionGeneration: 3, connectionEpoch: randomUUID() })
+  const calls: string[] = []
+  ports.recover.mockImplementation(async () => { calls.push('recover') })
+  ports.handle.mockImplementation(async () => { calls.push('handle'); return { status: 'unit-routed' } })
+  ports.jobs.mockReturnValue({ recover: ports.recover, handle: ports.handle, shutdown: ports.shutdown })
+  ports.open.mockResolvedValue({ close: ports.close } as unknown as RemoteOperationJournal)
+  ports.qualification.mockReturnValue({ namespace: 'job-runtime-qualification-v1', version: 1, role: 'duplex', maxJsonBytes: 1, maxBinaryBytes: 0 })
+  const mounted = await createInstalledWorkerDomains({ stateDirectory: '/original-worker-state', pairing, bootId: binding.bootId, configuration: null,
+    jobConfiguration: { path: '/original-worker-state/job-runtime.json', ownerUid: 1000 }, approvedRoots: async () => ({} as ApprovedRootAllowlist),
+    connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined }), codexSuiteRevision: 'unit-suite' })
+  expect(ports.jobs).not.toHaveBeenCalled()
+  // Only routing is exercised: parsed Job frame classification is a schema port double.
+  vi.spyOn(RemoteJobExecutionRpcRequestSchema, 'safeParse').mockReturnValue({ success: true, data: {} } as ReturnType<typeof RemoteJobExecutionRpcRequestSchema.safeParse>)
+  const execution = mounted.extensions.find(extension => extension.namespace === 'execution-v1')!
+  const context = { binding, signal: new AbortController().signal }
+  await expect(execution.handle!({}, context)).resolves.toEqual({ payload: { status: 'unit-routed' } })
+  await execution.handle!({}, context)
+  expect(calls).toEqual(['recover', 'handle', 'handle'])
+  expect(ports.jobs).toHaveBeenCalledTimes(1)
+  expect(ports.jobs.mock.calls[0]![0]).toMatchObject({ connection: binding, journal: await ports.open.mock.results[0]!.value })
+  expect(ports.open).toHaveBeenCalledExactlyOnceWith('/original-worker-state/job-runtime-operations.json')
+  await expect(execution.handle!({}, { ...context, binding: { ...binding, connectionGeneration: 4 } })).rejects.toThrow('actual authenticated')
+  await mounted.close()
+  expect(ports.shutdown).toHaveBeenCalledOnce()
+  vi.restoreAllMocks()
 })

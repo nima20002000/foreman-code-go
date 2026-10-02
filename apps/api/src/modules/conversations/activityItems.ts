@@ -46,7 +46,9 @@ export function conversationPublicationItems(conversationId: string, messages: r
     if (!message?.requestId || message.sequence === undefined) return []
     return [ActivityItemSchema.parse({ kind: 'file_publication', id: `publication:${receipt.receiptId}`, revision: receipt.fileActivityRevision,
       order: message.sequence, orderSource: 'file_publication', owner: { kind: 'chat_request', conversationId, requestId: message.requestId },
-      native: { harness: 'codex', sessionId: receipt.nativeSessionId, turnId: receipt.nativeTurnId },
+      native: 'nativeMessageId' in receipt
+        ? { harness: 'claude', sessionId: receipt.nativeSessionId, messageId: receipt.nativeMessageId }
+        : { harness: 'codex', sessionId: receipt.nativeSessionId, turnId: receipt.nativeTurnId },
       source: { schemaVersion: 1, system: 'file_tool_publication', observedAt: null }, evidence: 'confirmed',
       receiptId: receipt.receiptId, fileId: receipt.fileId, fileRevisionId: receipt.fileRevisionId, status: receipt.fileState === 'ready' ? 'ready' : 'unknown' })]
   })

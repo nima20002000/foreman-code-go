@@ -1,3 +1,4 @@
+import { readClaudeMessagePublicationReceipts, type ClaudeMessagePublicationReceipt } from '../harnesses/claudeSdk/publications.js'
 import type pg from 'pg'
 import { MessageAttachmentRefSchema, type MessageAttachmentRef } from '@graphql/contracts/files'
 import { DomainError } from '../errors.js'
@@ -25,7 +26,7 @@ export function mergeMessagePins(...groups: readonly (readonly MessageAttachment
  * a live token, mutable host path, current selection, or caller-provided context.
  * This projects already-finalized facts; it cannot authorize another write. */
 export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'query'>,
-  conversationId: string, messageIds: string[], onReceipt?: (receipt: ConversationPublicationReceipt) => void): Promise<Map<string, MessageAttachmentRef[]>> {
+  conversationId: string, messageIds: string[], onReceipt?: (receipt: CodexMessagePublicationReceipt) => void): Promise<Map<string, MessageAttachmentRef[]>> {
   const result = new Map<string, MessageAttachmentRef[]>()
   if (!messageIds.length) return result
   const turns = (await query.query<{
@@ -80,12 +81,14 @@ export async function readCodexMessagePublications(query: Pick<pg.PoolClient, 'q
   return result
 }
 
-export interface ConversationPublicationReceipt {
+export interface CodexMessagePublicationReceipt {
   receiptId: string; messageId: string; fileId: string; fileRevisionId: string; nativeSessionId: string; nativeTurnId: string; fileActivityRevision: string; fileState: string
 }
+export type ConversationPublicationReceipt = CodexMessagePublicationReceipt | ClaudeMessagePublicationReceipt
 /** Reuse the same exact receipt/binding/owner checks as attachment hydration. */
 export async function readConversationPublicationReceipts(query: Pick<pg.PoolClient, 'query'>, conversationId: string, messageIds: string[]) {
   const receipts: ConversationPublicationReceipt[] = []
   await readCodexMessagePublications(query, conversationId, messageIds, (receipt) => receipts.push(receipt))
+  receipts.push(...await readClaudeMessagePublicationReceipts(query, conversationId, messageIds))
   return receipts
 }
