@@ -5,6 +5,9 @@ import { NativeMessageSubmissionSchema } from './claude.js'
 import { PlacementDigestSchema } from './nodePlacement.js'
 import { RemoteOperationReceiptSchema } from './remoteExecution.js'
 import { SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
+import { WorkflowArtifactResultV1Schema } from './workflowArtifactDeclarations.js'
+import { WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema } from './workflowArtifactResult.js'
+import { canonicalGraphJson } from './wave25/json.js'
 
 const ProcessIdentitySchema = z.object({ pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/) }).strict()
 /** Internal original registry identities only; never a public process DTO. */
@@ -29,16 +32,37 @@ export const RemoteNativeHistorySchema = z.object({ nativeSubmission: z.lazy(() 
     providerVersion: z.string(), nativeSessionId: z.string(), nativeRequestId: z.string(), nativeRequestType: z.string(), optionId: z.string(),
     semantic: z.lazy(() => ApprovalResponseSemanticSchema) }).strict()).max(128).optional(), canceledRequestIds: z.array(z.string()).max(128).optional(),
 }).strict()
+/** Original terminal result and its declared command association only. Canonical
+ * publication receipts, saved declarations and original lifetime ownership must
+ * still be verified by the receiver before accepting any artifact digest. */
+export const RemoteWorkflowPhysicalOutputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('text-only'), result: z.lazy(() => ExecutionResultSchema).superRefine((value,context) => {
+    if (value.output !== undefined && !z.object({ text: z.string() }).strict().safeParse(value.output).success)
+      context.addIssue({ code: 'custom', message: 'Only the actual provider text-only result can attest zero result artifacts.' })
+  }) }).strict(),
+  z.object({ kind: z.literal('published-artifacts'), result: z.lazy(() => ExecutionResultSchema),
+    artifactOutputs: WorkflowArtifactResultV1Schema }).strict().superRefine((value, context) => {
+    try {
+      canonicalGraphJson(value.result, 64 * 1024)
+      if (value.result.outcome !== 'succeeded') throw new Error('successful original terminal result required')
+      const output = z.object({ text: z.string() }).strict().parse(value.result.output)
+      const envelope = z.union([WorkflowArtifactResultEnvelopeV1Schema, WorkflowChoiceArtifactResultEnvelopeV1Schema]).parse(JSON.parse(output.text))
+      if (canonicalGraphJson(envelope.artifactOutputs) !== canonicalGraphJson(value.artifactOutputs))
+        throw new Error('artifact association differs from original terminal text')
+    } catch {
+      context.addIssue({ code: 'custom', message: 'Published artifacts require the exact bounded association in original successful native text.' })
+    }
+  }),
+])
+export type RemoteWorkflowPhysicalOutput = z.infer<typeof RemoteWorkflowPhysicalOutputSchema>
+
 export const RemoteWorkflowPhysicalReadoutSchema = z.object({ version: z.literal(1), expiresAt: z.string().datetime(), receipt: RemoteOperationReceiptSchema,
   session: z.lazy(() => NativeSessionReferenceSchema), launch: RemoteNativeLaunchObservationSchema,
   observation: RemoteNativeLaunchObservationSchema, runtimeLeaf: RemoteRuntimeLeafAttestationSchema,
   source: z.object({ record: SourceMaterializationRecordSchema, workingTree: VerifiedSourceWorkingTreeSchema.extend({ cwdAttestation: SourceCwdAttestationSchema }) }).strict(),
   history: RemoteNativeHistorySchema.optional(),
   closure: z.object({ ownerClosed: z.literal(true), launch: RemoteNativeLaunchObservationSchema }).strict().optional(),
-  output: z.object({ kind: z.literal('text-only'), result: z.lazy(() => ExecutionResultSchema).superRefine((value,context) => {
-    if (value.output !== undefined && !z.object({ text: z.string() }).strict().safeParse(value.output).success)
-      context.addIssue({ code: 'custom', message: 'Only the actual provider text-only result can attest zero result artifacts.' })
-  }) }).strict().optional(),
+  output: RemoteWorkflowPhysicalOutputSchema.optional(),
 }).strict()
 export type RemoteWorkflowPhysicalReadout = z.infer<typeof RemoteWorkflowPhysicalReadoutSchema>
 /** Cleanup acknowledgment, never evidence of native execution or success. */
