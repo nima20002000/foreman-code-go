@@ -289,8 +289,11 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     if (uncertain) expect(settled.responseAvailability?.available).toBe(false)
     await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [f.writer.principal.id,
       JSON.stringify([{ actions: ['agent_chat:read'], scope: {} }])])
-    const denied = await f.call('agent_chat_respond', { workspaceId, conversationId: id, ...request })
-    expect(denied.isError).toBe(true)
+    // A fresh MCP session omits actions removed from the principal's live grants.
+    await expect(f.call('agent_chat_respond', { workspaceId, conversationId: id, ...request }))
+      .rejects.toThrow('Tool agent_chat_respond not found')
+    const denied = await f.http('POST', `${base}/conversations/${id}/responses`, request)
+    expect(denied.statusCode, denied.body).toBe(403)
     expect(f.replay.responses).toHaveLength(1)
   })
 
@@ -475,7 +478,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
       nativeDelivery: 'not_started', workerAcknowledgment: 'unknown', response: { available: true, path: 'live_callback' } } })
     const choice = current.responseOptions.find((option: { semantic: string }) => option.semantic === 'approve_once')
     const answer = await f.http('POST', `/api/user/interactions/${interaction.id}/respond`, {
-      interactionId: interaction.id, expectedRevision: current.revision, optionId: choice.optionId, commandId: randomUUID(),
+      interactionId: interaction.id, expectedRevision: current.revision, optionId: choice.optionId,
     }, user.token)
     expect(answer.statusCode, answer.body).toBe(200)
     expect(answer.json().interaction.deliveryState).not.toBe('delivered')

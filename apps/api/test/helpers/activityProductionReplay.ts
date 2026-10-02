@@ -22,6 +22,7 @@ export class ActivityProductionReplay {
   readonly calls: Array<{ method: string; sessionId?: string }> = []
   readonly closes: string[] = []
   readonly requests = new Map<string | number, string>()
+  private readonly fileReplyWaiters = new Map<string | number, (response: JsonObject) => void>()
   private counter = 0
   private readonly inFlight = new Set<Promise<void>>()
   private readonly auxiliary = new Set<string>()
@@ -106,6 +107,8 @@ export class ActivityProductionReplay {
           this.nextResponse = 'acknowledged'
           throw new CodexRpcError('native/respond', rpcId, true, 'CODEX_RESPONSE_UNCERTAIN')
         }
+        const fileReply = this.toolReplies.get(rpcId)
+        if (fileReply) this.fileReplyWaiters.get(rpcId)?.(fileReply)
         // Recorded provider confirmation is distinct from writing the transport reply.
         channel.notify('serverRequest/resolved', { threadId: sessionId, requestId: rpcId })
       },
@@ -141,14 +144,20 @@ export class ActivityProductionReplay {
     turn.items = [...turn.items.filter((entry) => entry.id !== itemId), item]
     this.channels.get(sessionId)!.notify('item/completed', { threadId: sessionId, turnId: nativeTurnId, item })
   }
-  async fileTool(sessionId: string, nativeTurnId: string, tool: string, arguments_: Record<string, unknown>, callId = randomUUID()) {
+  async fileTool(sessionId: string, nativeTurnId: string, tool: string, arguments_: Record<string, unknown>, callId: string = randomUUID()) {
     const rpcId = `recorded-file-rpc-${++this.counter}`
     this.requests.set(rpcId, sessionId)
-    await this.channels.get(sessionId)!.request({ id: rpcId, method: 'item/tool/call',
-      params: { threadId: sessionId, turnId: nativeTurnId, callId, tool, arguments: arguments_ } })
-    const response = this.toolReplies.get(rpcId)
-    if (!response) throw new Error('Native file tool returned no qualified response.')
-    return { response, callId }
+    let reject!: (error: Error) => void
+    const pending = new Promise<JsonObject>((resolve, fail) => {
+      this.fileReplyWaiters.set(rpcId, resolve); reject = fail
+    })
+    const timer = setTimeout(() => reject(new Error('Native file tool returned no qualified response.')), 30_000)
+    try {
+      // Production dispatch returns before async file I/O and the exact transport reply.
+      const [, response] = await Promise.all([this.channels.get(sessionId)!.request({ id: rpcId, method: 'item/tool/call',
+        params: { threadId: sessionId, turnId: nativeTurnId, callId, tool, arguments: arguments_ } }), pending])
+      return { response, callId }
+    } finally { clearTimeout(timer); this.fileReplyWaiters.delete(rpcId) }
   }
   commandRunning(sessionId: string, nativeTurnId: string) {
     const thread = this.threads.get(sessionId)!, turn = thread.turns.find((entry) => entry.id === nativeTurnId)!

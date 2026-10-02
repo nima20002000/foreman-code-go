@@ -18,6 +18,23 @@ it('the replay Codex port records the third respond argument as its native resul
   await port.close()
 })
 
+for (const success of [true, false]) it(`awaits the exact asynchronous ${success ? 'successful' : 'denied'} native file reply`, async () => {
+  const replay = new ActivityProductionReplay(), infrastructure = replay.infrastructure()
+  if (infrastructure.mode !== 'replay') throw new Error('Expected recorded replay infrastructure.')
+  const result = { success, contentItems: [{ type: 'inputText', text: 'exact recorded file result' }] }
+  const pending: Promise<void>[] = []
+  const port = infrastructure.codex.transport!('/unused-fixture-binary', '/unused', {}, fixtureProtocol,
+    async (request) => {
+      pending.push(new Promise<void>((resolve) => setImmediate(resolve)).then(() => port.respond(request.id, request.method, result)))
+    }, () => {}, () => {})
+  try {
+    const started = await port.request('thread/start', {}) as { thread: { id: string } }
+    const reply = await replay.fileTool(started.thread.id, 'original-turn', 'files_list', {}, 'original-call')
+    expect(reply).toEqual({ response: result, callId: 'original-call' })
+    expect(replay.responses).toEqual([{ sessionId: started.thread.id, rpcId: 'recorded-file-rpc-2' }])
+  } finally { await Promise.all(pending); await port.close() }
+})
+
 for (const uncertain of [false, true]) it(`the real adapter keeps recorded ${uncertain ? 'uncertain' : 'acknowledged'} approval delivery distinct`, async () => {
   const replay = new ActivityProductionReplay(), infrastructure = replay.infrastructure()
   if (infrastructure.mode !== 'replay') throw new Error('Expected recorded replay infrastructure.')
