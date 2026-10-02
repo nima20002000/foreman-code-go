@@ -35,3 +35,11 @@ Terminal process evidence is persisted before Main acknowledgment or artifact co
 Focused tests use actual local filesystem/journal IO with explicit native, OCI, authority and measurement doubles. They establish code sequencing and recovery contracts, not installed-runtime qualification, authenticated MCP/DB integration, selected-computer builds, native descendants, or physical artifact transfer.
 
 The integration executor owns authenticated HTTP/MCP denied-caller/readback checks, DB/integration/native suites, packaging, common mounts and two-computer acceptance. Real rootless OCI configuration/cgroup/filesystem/image/toolchain qualification, a real private Git materialization, success/failure/child cancellation, offline timeout, one launch/publication across reconnect and actual artifact readback remain required physical gates.
+
+## Accepted-source bridge follow-up
+
+`JobApplicationBridge.resolveAcceptedSource(intent, binding)` returns `AcceptedJobSourceReadout` from `runs/remote/jobAcceptedSource.ts`: `{ execution, materialization, root, diskQuotaBytes }`. Device readback uses the existing exact authenticated installation and Job evidence fence, with all metadata reads in one transaction. Main-local composition may call `readAcceptedJobSource(sql, execution)` only after its equivalent current Job read fence in the same transaction.
+
+The producer verifies the original materialization operation/attempt/source digest/final dispatch binding, effective state column, root namespace/attestation/registration, exact retained Git manifest and immutable runtime-policy version. Quota comes from that saved policy version, not a worker request or current defaults. It returns neither physical verification nor qualification. HRT must pass the actual record through W09's source verifier/private repository verification before returning `JobSourcePort.verify` facts.
+
+Root owns the shared `job-source` RPC request/readout schema; HRT owns routing it to this public producer on the existing channel. No transport/migration/common factory changes are included in this producer follow-up.
