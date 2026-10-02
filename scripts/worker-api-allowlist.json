@@ -32,6 +32,7 @@
   "apps/api/src/modules/harnesses/codexFiles/runtime.ts",
   "apps/api/src/modules/harnesses/codexFiles/turn.ts",
   "apps/api/src/modules/harnesses/codexInteractions.ts",
+  "apps/api/src/modules/harnesses/codexNativeOutput.ts",
   "apps/api/src/modules/harnesses/codexNormalization.ts",
   "apps/api/src/modules/harnesses/codexProtocol.ts",
   "apps/api/src/modules/harnesses/codexQualification.ts",
