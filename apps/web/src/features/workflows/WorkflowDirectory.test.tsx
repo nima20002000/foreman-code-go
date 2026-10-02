@@ -20,9 +20,37 @@ describe('WorkflowDirectory', () => {
     expect(screen.queryByRole('heading', { name: 'Workflows' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Select workflows' }))
     expect(screen.getByRole('checkbox', { name: 'Select Research to review' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Cancel selection' }))
+    await user.click(screen.getByRole('button', { name: 'Selection options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Cancel selection' }))
     await user.click(screen.getByRole('button', { name: 'New workflow' }))
     expect(screen.getByRole('dialog', { name: 'New workflow' })).toBeVisible()
+  })
+
+  it('keeps selection controls compact and accessible without losing selected workflows', async () => {
+    const user = userEvent.setup()
+    renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" hideHeading />)
+    const actions = within(await screen.findByRole('group', { name: 'Workflow actions' }))
+    const select = actions.getByRole('button', { name: 'Select workflows' })
+    await user.click(select)
+
+    expect(actions.getByRole('button', { name: 'Delete selected' })).toBeDisabled()
+    expect(screen.queryByText(/Select workflows to delete/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select all shown' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel selection' })).not.toBeInTheDocument()
+    const options = actions.getByRole('button', { name: 'Selection options' })
+    options.focus()
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByRole('menuitem', { name: 'Select all shown' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(options).toHaveFocus()
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select Research to review' }))
+    expect(actions.getByRole('button', { name: 'Delete selected (1)' })).toBeEnabled()
+    await user.click(options)
+    await user.click(screen.getByRole('menuitem', { name: 'Cancel selection' }))
+    expect(actions.getByRole('button', { name: 'Select workflows' })).toHaveFocus()
+    expect(screen.getByRole('link', { name: 'Research to review' })).toBeVisible()
+    expect(actions.getByRole('button', { name: 'New workflow' })).toBeVisible()
   })
 
   it('groups the empty start treatment and creation action below the containing page heading', async () => {

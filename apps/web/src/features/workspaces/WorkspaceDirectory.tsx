@@ -19,7 +19,7 @@ import { ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconBu
 import { ResourceCard } from '../../shared/ui/ResourceCard'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import '../../shared/ui/resourceDirectory.css'
-import { WorkspaceStorageFolderCards } from './WorkspaceStorageFolderCards'
+import { WorkspaceStorageFolderCard } from './WorkspaceStorageFolderCards'
 import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
 interface CardCommand { type: 'rename' | 'archive'; workspaceId: string; expectedRevision: number; name?: string }
 
@@ -194,6 +194,11 @@ export function WorkspaceDirectory() {
     [items],
   )
   const folders = [...new Map((folderQuery.data?.pages.flatMap((page) => page.items) ?? []).map((folder) => [folder.path, folder])).values()]
+  // Workspace-scoped readers cannot browse unrelated folders on the runner.
+  const foldersDenied = folderQuery.isError && ApiError.is(folderQuery.error) && folderQuery.error.status === 403
+  const foldersFailed = folderQuery.isError && !folderQuery.isFetchNextPageError
+  const showFolders = !loading && !failed && !foldersDenied
+  const visibleFolders = showFolders && !folderQuery.isPending && !foldersFailed ? folders : []
   const selectable = [
     ...items.map((item) => ({ id: item.workspace.id, revision: { kind: 'workspace' as const, workspaceId: item.workspace.id, name: item.workspace.name, expectedRevision: item.revision } })),
     ...folders.filter((folder) => folder.deletion.status === 'available').map((folder) => ({ id: folderSelectionId(folder.path),
@@ -248,7 +253,7 @@ export function WorkspaceDirectory() {
         description="App access is required to load workspaces."
         action={<Link to="/settings/operator-access" className="n-button n-button--primary">Open App access</Link>} />
         : failed ? <ErrorState title="Workspaces unavailable" description="The workspace list could not be loaded."
-          onRetry={() => void managedQuery.refetch()} /> : workspaces.length > 0 ? (
+          onRetry={() => void managedQuery.refetch()} /> : workspaces.length + visibleFolders.length > 0 ? (
         <ul className="workspace-card-list resource-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
             <ResourceCard name={workspace.name} icon="folder" data-testid={`workspace-card-${workspace.id}`}
@@ -264,6 +269,9 @@ export function WorkspaceDirectory() {
                 revision={managedById.get(workspace.id)?.revision} disabled={locked} onCommand={execute} />}
               protection={managedById.get(workspace.id)?.locationValidation.status === 'restricted' ? { label: 'Location restricted' } : undefined} />
           </li>)}
+          {visibleFolders.map((folder) => <li key={folderSelectionId(folder.path)}>
+            <WorkspaceStorageFolderCard folder={folder} selection={{ ...selection, toggle: toggleSelection, locked, count }} />
+          </li>)}
         </ul>
       ) : loading ? <LoadingState label="Loading workspaces…" />
         : failed ? <Alert live tone="danger" title="Workspaces unavailable" />
@@ -271,7 +279,9 @@ export function WorkspaceDirectory() {
             <EmptyState icon="folder" title="No workspaces yet" description="Use New workspace in the navigation to create one." />
           </div> : null}
       <LoadMore loadAll label="workspaces" query={managedQuery} />
-      <WorkspaceStorageFolderCards enabled={!loading && !failed} folders={folderQuery} selection={{ ...selection, toggle: toggleSelection, locked, count }} />
+      {showFolders ? folderQuery.isPending ? <LoadingState label="Checking workspace folders…" />
+        : foldersFailed ? <ErrorState title="Workspace folders unavailable" description="Folders on disk could not be checked."
+          onRetry={() => void folderQuery.refetch()} /> : <LoadMore loadAll label="workspace folders" query={folderQuery} /> : null}
       <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
         title={`Delete ${confirmationLabel}?`}
         description="App-created project folders and selected disk folders will be permanently deleted with all files and subfolders. Existing folders selected as workspace destinations are kept. Workflow and run history is retained. Active runs block workspace deletion. Folder deletions run one at a time; earlier confirmed deletions remain if a later target fails."

@@ -26,8 +26,13 @@ it('shows unregistered workspace folders, confirms the exact path, retries safel
     }),
   )
   renderWithRouter(<WorkspaceDirectory />)
-  const folders = await screen.findByRole('region', { name: 'Workspace folders on disk' })
+  await screen.findByRole('button', { name: 'Delete folder Missing project' })
+  const folders = screen.getByTestId('workspace-card-list')
   expect(within(folders).getByText('Missing project', { selector: '.resource-card-name' })).toBeVisible()
+  expect(within(folders).getByRole('link', { name: 'Website' })).toBeVisible()
+  expect(within(folders).queryByRole('link', { name: folder.name })).not.toBeInTheDocument()
+  expect(within(folders).getAllByRole('listitem')).toHaveLength(2)
+  expect(screen.getAllByRole('list')).toEqual([folders])
   expect(within(folders).queryByText(folder.path)).not.toBeInTheDocument()
   expect(within(folders).queryByText(/Folder on disk/)).not.toBeInTheDocument()
   await user.click(within(folders).getByRole('button', { name: 'Delete folder Missing project' }))
@@ -53,10 +58,23 @@ it('keeps protected folders visible with a reason and unavailable deletion', asy
     pageInfo: { nextCursor: null },
   })))
   renderWithRouter(<WorkspaceDirectory />)
-  const folders = await screen.findByRole('region', { name: 'Workspace folders on disk' })
+  await screen.findByRole('button', { name: 'Delete folder Missing project' })
+  const folders = screen.getByTestId('workspace-card-list')
   expect(within(folders).getByText(folder.name, { selector: '.resource-card-name' })).toBeVisible()
   expect(within(folders).getByRole('img', { name: `Protected folder. ${message}` })).toHaveAttribute('title', message)
   expect(within(folders).getByRole('button', { name: 'Delete folder Missing project' })).toBeDisabled()
+})
+
+it('keeps registered workspaces available when the caller cannot browse runner folders', async () => {
+  server.use(http.get('/api/management/workspace-storage/folders', () => HttpResponse.json({
+    error: { code: 'SCOPE_DENIED', message: 'This caller cannot browse runner folders.' },
+  }, { status: 403 })))
+  renderWithRouter(<WorkspaceDirectory />)
+  expect(await screen.findByRole('link', { name: 'Website' })).toBeVisible()
+  await waitFor(() => expect(screen.queryByText('Checking workspace folders…')).not.toBeInTheDocument())
+  expect(within(screen.getByTestId('workspace-card-list')).getAllByRole('listitem')).toHaveLength(1)
+  expect(screen.queryByText('Workspace folders unavailable')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Delete folder/ })).not.toBeInTheDocument()
 })
 
 it('loads more disk folders on request and shows a recoverable discovery error', async () => {

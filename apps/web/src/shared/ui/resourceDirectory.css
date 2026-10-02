@@ -26,6 +26,7 @@
   list-style: none;
 }
 .resource-card-list > li { display: flex; min-width: 0; }
+.workspace-detail-content:has(> .workflow-directory--embedded) { min-height: 0; padding: 0; border: 0; background: transparent; }
 .workspace-overview { display: grid; align-content: start; gap: var(--space-6); }
 .workspace-remove-button.n-button { color: var(--n-danger); }
 .workspace-overview > .workflow-directory { width: 100%; margin: 0; padding: var(--space-4) 0 0; border-top: 1px solid var(--n-border); }
@@ -45,6 +46,5 @@
 }
 
 .resource-directory-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem; }
-.resource-selection-hint { color: var(--text-muted); font-size: 0.875rem; }
 .resource-load-more { padding-block: 0.5rem; }
 .resource-load-more p { font-size: 0.8rem; }

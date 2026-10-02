@@ -119,7 +119,11 @@
 }
 
 .workflow-directory.workflow-directory--embedded.resource-directory { width: 100%; margin: 0; padding: 0; }
-.workflow-directory-toolbar { display: flex; justify-content: flex-end; }
+.workflow-directory-toolbar { display: flex; justify-content: flex-start; min-width: 0; }
+.workflow-directory-controls .n-action-menu > .n-button { min-height: 32px; width: 32px; height: 32px; }
+@media (pointer: coarse) {
+  .workflow-directory-controls .n-action-menu > .n-button { min-height: 44px; width: 44px; height: 44px; }
+}
 .workflow-directory--embedded .workflow-directory-empty { display: grid; place-items: center; min-height: 280px; }
 .workflow-directory--embedded .workflow-directory-empty > .n-empty { width: 100%; }
 

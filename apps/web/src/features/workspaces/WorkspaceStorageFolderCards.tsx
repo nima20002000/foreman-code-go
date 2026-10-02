@@ -1,13 +1,12 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import type { WorkspaceStorageFolder, WorkspaceStorageFolderDeleteInput } from '@graphql/contracts/management'
-import { ApiError, apiClient } from '../../shared/api/client'
+import { apiClient } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
-import { queryKeys, useWorkspaceStorageFolderPages } from '../../shared/api/query'
+import { queryKeys } from '../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
-import { Alert, Button, Dialog, ErrorState, LoadingState } from '../../shared/ui/nocturne'
+import { Alert, Button, Dialog } from '../../shared/ui/nocturne'
 import { ResourceCard, TrashIconButton } from '../../shared/ui/ResourceCard'
-import { LoadMore } from '../../shared/ui/LoadMore'
 import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
 
 interface FolderSelection {
@@ -18,7 +17,7 @@ interface FolderSelection {
   toggle: (id: string, value: WorkspaceSelectionTarget) => void
 }
 
-function FolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; selection: FolderSelection }) {
+export function WorkspaceStorageFolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; selection: FolderSelection }) {
   const [confirming, setConfirming] = useState(false)
   const queryClient = useQueryClient()
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -73,22 +72,4 @@ function FolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; sel
       {attempt.current.unresolved && !removal.isPending ? <p role="status">The request may have succeeded. Retry deletion to check its outcome safely.</p> : null}
     </Dialog>
   </ResourceCard>
-}
-
-export function WorkspaceStorageFolderCards({ enabled, folders, selection }: {
-  enabled: boolean; folders: ReturnType<typeof useWorkspaceStorageFolderPages>; selection: FolderSelection
-}) {
-  // Workspace-scoped readers cannot browse unrelated folders on the runner.
-  if (!enabled || (folders.isError && ApiError.is(folders.error) && folders.error.status === 403)) return null
-  const items = [...new Map((folders.data?.pages.flatMap((page) => page.items) ?? []).map((folder) => [folder.path, folder])).values()]
-  if (folders.isPending) return <LoadingState label="Checking workspace folders…" />
-  if (folders.isError && !folders.isFetchNextPageError) return <ErrorState title="Workspace folders unavailable"
-    description="Folders on disk could not be checked." onRetry={() => void folders.refetch()} />
-  if (!items.length) return null
-  return <section aria-label="Workspace folders on disk">
-    <ul className="workspace-card-list resource-card-list">
-      {items.map((folder) => <li key={folder.path}><FolderCard folder={folder} selection={selection} /></li>)}
-    </ul>
-    <LoadMore loadAll label="workspace folders" query={folders} />
-  </section>
 }

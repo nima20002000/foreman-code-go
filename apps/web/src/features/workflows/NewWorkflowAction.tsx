@@ -4,10 +4,11 @@ import { useNavigate } from '@tanstack/react-router'
 import { Button, Icon, type ButtonProps } from '../../shared/ui/nocturne'
 import { NewWorkflowDialog } from './NewWorkflowDialog'
 
-export function NewWorkflowAction({ workspaceId, navigation = false, variant = 'primary' }: {
+export function NewWorkflowAction({ workspaceId, navigation = false, variant = 'primary', size = 'md' }: {
   workspaceId: string
   navigation?: boolean
   variant?: ButtonProps['variant']
+  size?: ButtonProps['size']
 }) {
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
@@ -16,7 +17,7 @@ export function NewWorkflowAction({ workspaceId, navigation = false, variant = '
     <Button
       className={navigation ? 'workflow-navigation-add' : undefined}
       variant={navigation ? 'secondary' : variant}
-      size={navigation ? 'sm' : 'md'}
+      size={navigation ? 'sm' : size}
       title="New workflow"
       aria-label="New workflow"
       aria-haspopup="dialog"

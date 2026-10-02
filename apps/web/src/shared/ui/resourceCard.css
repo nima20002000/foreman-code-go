@@ -1,7 +1,7 @@
 .resource-card.n-card {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   flex: 1;
   min-width: 0;
   padding: .375rem;
@@ -42,8 +42,8 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.resource-card-actions { position: absolute; top: .25rem; right: .25rem; }
-.resource-card-actions .n-icon-button,
+.resource-card-actions { position: absolute; inset-block: 0; right: .25rem; display: flex; align-items: center; }
+.resource-card .resource-card-actions .n-icon-button,
 .resource-trash-button.n-icon-button { min-width: 28px; min-height: 28px; width: 28px; height: 28px; }
 .resource-card-menu {
   position: absolute;
@@ -65,14 +65,14 @@
 .resource-card-menu .n-button { min-height: 44px; font-size: 13px; }
 .resource-card-menu .n-input { min-height: 44px; font-size: 15px; }
 .resource-trash-control { display: inline-flex; }
-.resource-card-protection { position: absolute; top: .625rem; right: 2.25rem; color: var(--n-muted); }
+.resource-card-protection { position: absolute; top: 50%; right: 2.25rem; display: flex; transform: translateY(-50%); color: var(--n-muted); }
 .resource-card.is-selecting .resource-card-protection { right: .5rem; }
 .resource-card .resource-card-select { width: 100%; min-width: 0; }
 .resource-card .resource-card-select > label { cursor: pointer; min-height: 2.75rem; padding: .375rem; box-sizing: border-box; }
 .resource-card.is-selecting:has(.resource-card-protection) .resource-card-select > label { padding-right: 1.5rem; }
 .resource-card .resource-card-select input { width: 1.125rem; height: 1.125rem; flex-shrink: 0; accent-color: var(--accent); }
 .resource-card.has-compact-selection .resource-card-open { padding-left: 2rem; }
-.resource-card-selection-slot { position: absolute; top: .25rem; left: .25rem; }
+.resource-card-selection-slot { position: absolute; inset-block: 0; left: .25rem; display: flex; align-items: center; }
 .resource-card-selection-slot.is-hover-selection { opacity: 0; }
 .resource-card:hover .resource-card-selection-slot,
 .resource-card:focus-within .resource-card-selection-slot { opacity: 1; }
@@ -84,6 +84,14 @@
 .resource-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (hover: none) {
   .resource-card-selection-slot.is-hover-selection { opacity: 1; }
+}
+@media (pointer: coarse) {
+  .resource-card .resource-card-actions .n-icon-button { min-width: 44px; min-height: 44px; width: 44px; height: 44px; }
+  .resource-card-compact-select .n-check { width: 44px; height: 44px; padding: 13px; }
+  .resource-card.has-compact-selection .resource-card-open { padding-left: 3rem; }
+  .resource-card:has(.resource-card-actions) .resource-card-open { padding-right: 3rem; }
+  .resource-card:has(.resource-card-protection) .resource-card-open { padding-right: 4.25rem; }
+  .resource-card .resource-card-protection { right: 3.25rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .resource-card.n-card { transition: none; }

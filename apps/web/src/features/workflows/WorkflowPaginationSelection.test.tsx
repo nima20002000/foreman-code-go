@@ -132,7 +132,8 @@ it('cancels selection without deleting and reports a definitive batch rejection'
   await user.click(screen.getByRole('button', { name: 'Delete 1 workflow' }))
   expect(await screen.findByText('A selected workflow changed. Nothing was deleted.')).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Cancel' }))
-  await user.click(screen.getByRole('button', { name: 'Cancel selection' }))
+  await user.click(screen.getByRole('button', { name: 'Selection options' }))
+  await user.click(screen.getByRole('menuitem', { name: 'Cancel selection' }))
   expect(screen.getByRole('link', { name: 'Alpha' })).toBeVisible()
 })
 

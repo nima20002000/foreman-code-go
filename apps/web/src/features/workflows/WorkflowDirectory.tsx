@@ -14,7 +14,7 @@ import {
   useUpdateManagedWorkflowMutation,
 } from '../../shared/api/query'
 import {
-  Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
+  ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
 } from '../../shared/ui/nocturne'
 import { ResourceCard } from '../../shared/ui/ResourceCard'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
@@ -135,17 +135,17 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel, hideHeading }: { 
   const allShownSelected = selectable.length > 0 && selectable.every((item) => item.id in selection.selected)
   const managedById = new Map(managed.map((item) => [item.workflow.id, item]))
   const workflows = managed.map((item) => item.workflow)
-  const actions = workflows.length > 0 ? <div className="resource-directory-actions">
+  const actions = workflows.length > 0 ? <div className="resource-directory-actions workflow-directory-controls" role="group" aria-label="Workflow actions">
     {!selection.selecting ? <>
-      <Button ref={selectRef} onClick={selection.start}>Select workflows</Button>
-      <NewWorkflowAction workspaceId={workspaceId} />
+      <NewWorkflowAction workspaceId={workspaceId} size="sm" />
+      <Button ref={selectRef} variant="ghost" size="sm" onClick={selection.start}>Select workflows</Button>
     </> : <>
-      <span role="status">{count} selected</span>
-      <Button disabled={locked} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
-        {allShownSelected ? 'Clear selection' : managed.length > 100 ? 'Select first 100 shown' : 'Select all shown'}
-      </Button>
-      <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
-      <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
+      <Button variant="danger" size="sm" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
+      <ActionMenu label="Selection options" width={200} disabled={locked} items={[
+        { id: 'select-shown', label: allShownSelected ? 'Clear selection' : managed.length > 100 ? 'Select first 100 shown' : 'Select all shown',
+          disabled: !selectable.length, onSelect: () => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable) },
+        { id: 'cancel-selection', label: 'Cancel selection', onSelect: () => selection.clear() },
+      ]} />
     </>}
   </div> : undefined
 
@@ -158,7 +158,6 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel, hideHeading }: { 
       />}
 
       {selection.notice ? <p role="status">{selection.notice}</p> : null}
-      {selection.selecting ? <p className="resource-selection-hint">Select workflows to delete. You can show more and keep your selection. Up to 100 at a time.</p> : null}
       {workflows.length > 0 ? (
         <ul className="workflow-card-list resource-card-list" data-testid="workflow-card-list">
           {workflows.map((workflow) => (
