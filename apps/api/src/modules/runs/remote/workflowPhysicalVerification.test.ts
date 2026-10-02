@@ -35,6 +35,7 @@ import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import type { WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
 import type { WorkflowPhysicalArtifactsPort } from './workflowPhysicalArtifacts.js'
+import { workflowNativeReservation } from '../workflowNativeEntry.js'
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
 async function directory() {const root=await mkdtemp('/tmp/installed-workflow-');roots.push(root);return root}
@@ -112,8 +113,10 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
     input:{},createdAt:new Date().toISOString(),workingDirectory:f.request.workingDirectory,runtimeDirectory:f.request.runtimeDirectory}
   const lifetime:RemoteWorkflowMainLifetime={execution,session:n.session,lifetimeGeneration:1,closureGeneration:'1',
     lane:{id:'original-main-lane',token:'unit-original-private-lane-token',connectionGeneration:2,providerId:'original-turn'},assertCurrent:vi.fn()}
-  const reservation={execution:repeatExecutionIdentity(execution),scope:{runId:execution.runId}}
-  const entry={phase:'entered',reservation,transition:{phase:'entered',reservation,launchDigest:`sha256:${'e'.repeat(64)}`},source_id:'actual-unit-entry',source_digest:`sha256:${'f'.repeat(64)}`}
+  const reservation=workflowNativeReservation({workspaceId:'workspace',workflowId:'workflow',runId:execution.runId,workflowVersionId:'version',executionSemanticsVersion:3},
+    {nodeId:execution.workflowNodeId,occurrence:null},execution,repeatDigest(execution.input))
+  const transition={phase:'entered' as const,reservation,ownerId:'original-owner',ownerFence:'1',launchDigest:`sha256:${'e'.repeat(64)}`}
+  const entry={phase:'entered',reservation,reservation_digest:repeatDigest(reservation),transition,source_id:'actual-unit-entry',source_digest:repeatDigest(transition,8*1024*1024)}
   const lane={owner_agent_id:execution.agentId,harness:n.session.harness,native_session_id:n.session.nativeSessionId,generation:'2',token:lifetime.lane!.token as string|null,
     correlation:`execution:${execution.id}`,provider_id:'original-turn',held:true}
   const request=vi.fn(async(payload:unknown):Promise<DeviceApplicationResult>=>{void payload;return {payload:readout}}),currentBinding=vi.fn(()=>f.context.binding)
@@ -122,8 +125,9 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
   // The real source materialization/runtime directory above exercises FD/CWD receipts; no native or signed connection is produced.
   const producer=createRemoteWorkflowPhysicalVerification({...artifacts?{artifacts}:{},endpoint:()=>({currentBinding,captureRequest:()=>({binding:f.context.binding,request})})})
   const closure={generation:'1',expected_reference:n.session,closed_reference:null as NativeSessionReference|null,closed:false,detached:false,closed_without_session:false,execution_identity:null as unknown}
-  const retained={proof:undefined as WorkflowNativeProofRecord|undefined,canonical:true,receipt:readout.receipt}
-  const query=vi.fn(async(text:string)=>{
+  const retained={proof:undefined as WorkflowNativeProofRecord|undefined,canonical:true,receipt:readout.receipt,accepted:false,
+    inputBound:true,inputCanonical:true,entryCanonical:true,inputEffectDigest:repeatDigest('original input.bind')}
+  const query=vi.fn(async(text:string,args:unknown[]=[])=>{
     if(['begin isolation level read committed','commit','rollback'].includes(text))return {rows:[],rowCount:0}
     if(text.includes('from execution_dispatch_intents'))return {rows:[{...f.intent,operation_id:f.intent.operationId,execution_id:f.intent.executionId,run_id:f.intent.runId,
       node_id:f.intent.nodeId,binding_hash:f.intent.bindingHash,attempt_id:f.intent.attemptId,record:f.intent}],rowCount:1}
@@ -132,14 +136,21 @@ async function physicalFixture(artifacts?:WorkflowPhysicalArtifactsPort) {
     if(text.includes('execution_native_placements'))return {rows:[{record:f.nativePlacement}],rowCount:1}
     if(text.includes('source_execution_materializations'))return {rows:[{record:f.nativePlacement.materialization,state:f.nativePlacement.materialization.state}],rowCount:1}
     if(text.includes('remote_dispatch_origins'))return {rows:[{connection}],rowCount:1}
-    if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:true}],rowCount:1}
+    if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:retained.accepted}],rowCount:1}
     if(text.includes('workflow_native_entries'))return {rows:[entry],rowCount:1}
     if(text.includes('source_digest from workflow_native_proofs'))return {rows:retained.proof?[{record:retained.proof,source_digest:repeatDigest(retained.proof,4*1024*1024)}]:[],rowCount:retained.proof?1:0}
     if(text.includes('workflow_native_proofs'))return {rows:canonicalProofs.map(row=>({...row,original:row.record.original})),rowCount:canonicalProofs.length}
     if(text.includes('execution_native_sessions'))return {rows:[{reference:n.session}],rowCount:1}
     if(text.includes('execution_native_closures'))return {rows:[closure],rowCount:1}
     if(text.includes('remote_execution_receipts'))return {rows:[{receipt:retained.receipt}],rowCount:1}
-    if(text.includes('join run_graph_sources'))return {rows:retained.canonical&&retained.proof?[{workspace_id:'workspace',workflow_id:'workflow',workflow_version_id:'version',execution_semantics_version:3,protocol_version:1,head_sequence:'2',source_digest:repeatDigest(retained.proof,4*1024*1024),source_semantic_digest:repeatDigest('semantic'),source_sequence:'2'}]:[],rowCount:retained.canonical?1:0}
+    if(text.includes('from run_repeat_effects'))return {rows:retained.inputBound?[{payload_digest:retained.inputEffectDigest}]:[],rowCount:retained.inputBound?1:0}
+    if(text.includes('join run_graph_sources')){
+      const valid=args[1]==='execution'?retained.entryCanonical:args[1]==='input_binding'?retained.inputCanonical:retained.canonical&&!!retained.proof
+      const digest=args[1]==='execution'?entry.source_digest:args[1]==='input_binding'?retained.inputEffectDigest:repeatDigest(retained.proof,4*1024*1024)
+      return {rows:valid?[{workspace_id:'workspace',workflow_id:'workflow',workflow_version_id:'version',execution_semantics_version:3,protocol_version:1,
+        head_sequence:'2',source_digest:digest,source_semantic_digest:repeatDigest('semantic'),source_sequence:'2',
+        effect_digest:args[4]?digest:null,effect_semantic_digest:args[4]?repeatDigest('semantic'):null,effect_sequence:args[4]?'2':null}]:[],rowCount:valid?1:0}
+    }
     if(text.includes('native_session_lanes'))return {rows:[lane],rowCount:1}
     throw new Error(`Unexpected physical SQL: ${text}`)
   })
@@ -201,19 +212,65 @@ async function terminalFixture() {
   return {...f,artifacts,result,original,capture,proof,retain,complete}
 }
 describe('original published-artifact terminal physical companion',()=>{
-  it('retains running-SQL proof before adoption, then verifies completed SQL after original lifetime and lane release',async()=>{
+  it('verifies the first original running physical capture before any terminal result exists',async()=>{
+    const f=await physicalFixture()
+    try {
+      expect(f.retained.accepted).toBe(false);expect(f.execution.result).toBeUndefined()
+      const original=await f.bind()
+      await f.sqlConnection.transaction(sql=>f.producer.assertOriginal(sql,f.owner,original))
+      expect(f.request).toHaveBeenCalledOnce()
+    }finally{await f.sqlConnection.close()}
+  })
+  it('retains running and unaccepted SQL proof without requiring an adopted mapping or result acceptance',async()=>{
     const f=await terminalFixture()
     try {
       expect(f.execution.state).toBe('running')
+      expect(f.retained.accepted).toBe(false)
       expect(await f.retain()).toMatchObject({mainId:f.context.binding.mainId,deviceId:f.context.binding.deviceId})
       expect(f.artifacts.assertAdopted).not.toHaveBeenCalled()
+      expect(f.request).toHaveBeenCalledOnce()
+    }finally{await f.sqlConnection.close()}
+  })
+  it('verifies committed completed but unaccepted SQL before adoption after original lifetime and lane release',async()=>{
+    const f=await terminalFixture()
+    try {
+      await f.retain()
       f.complete()
+      expect(f.execution.state).toBe('completed');expect(f.retained.accepted).toBe(false)
       await f.sqlConnection.transaction(sql=>f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof))
       await f.sqlConnection.transaction(sql=>f.producer.assertAdoptedArtifacts(sql,f.owner,f.original))
       expect(f.artifacts.assertAdopted).toHaveBeenCalledTimes(2)
       expect(f.request).toHaveBeenCalledOnce()
     }finally{await f.sqlConnection.close()}
   })
+  it('replays the same original proof and durable output gate after terminal result acceptance',async()=>{
+    const f=await terminalFixture()
+    try {
+      await f.retain();f.complete()
+      await f.sqlConnection.transaction(sql=>f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof))
+      f.retained.accepted=true
+      await f.sqlConnection.transaction(sql=>f.producer.assertArtifactTerminal(sql,f.owner,f.capture,f.proof))
+      await f.sqlConnection.transaction(sql=>f.producer.assertAdoptedArtifacts(sql,f.owner,f.original))
+      expect(f.execution.result).toEqual(f.result);expect(f.request).toHaveBeenCalledOnce()
+    }finally{await f.sqlConnection.close()}
+  })
+  it.each(['input-bind','input-canonical','entry-canonical','reservation','input-digest','occurrence'] as const)(
+    'requires genuine original %s admission before physical proof even when result accepted is true',async defect=>{
+      const f=await terminalFixture()
+      try {
+        f.retained.accepted=true
+        if(defect==='input-bind')f.retained.inputBound=false
+        if(defect==='input-canonical')f.retained.inputCanonical=false
+        if(defect==='entry-canonical')f.retained.entryCanonical=false
+        if(defect==='reservation')f.entry.reservation_digest=repeatDigest('foreign reservation')
+        if(defect==='input-digest')f.entry.reservation.inputDigest=repeatDigest('replacement input')
+        if(defect==='occurrence'){
+          f.entry.reservation.ref.occurrence={scope:f.entry.reservation.scope,blockId:'foreign',occurrenceId:'foreign',occurrenceIndex:1}
+          f.entry.reservation_digest=repeatDigest(f.entry.reservation);f.entry.source_digest=repeatDigest(f.entry.transition,8*1024*1024)
+        }
+        await expect(f.retain()).rejects.toThrow();expect(f.request).toHaveBeenCalledOnce()
+      }finally{await f.sqlConnection.close()}
+    })
   it('requires a committed first witness and rejects rollback even if the original failure was caught',async()=>{
     const f=await terminalFixture()
     try {
