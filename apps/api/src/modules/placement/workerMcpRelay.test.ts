@@ -13,6 +13,9 @@ vi.mock('./persistence.js', () => ({ readAcceptedPlacement: ports.placement }))
 vi.mock('../devices/hostAuthorization.js', () => ({ assertDeviceHostInstallation: ports.host }))
 vi.mock('../access/runAuthority.js', () => ({ currentOperatorAuthority: ports.owner }))
 
+const originalScope = { kind: 'temporary' as const, chat: { kind: 'agent' as const, conversationId: 'conversation',
+  workspaceId: 'workspace', workflowId: 'workflow', runId: 'run', executionId: 'execution', agentId: 'agent' } }
+const declarationsPolicy = { agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'] as ['create', 'append', 'seal', 'publish'] }
 function fixture(nativeOutputs?: import('./workerMcpRelay.js').WorkerNativeOutputAuthorizationPort) {
   const mainId = randomUUID(), deviceId = randomUUID(), workerInstallationId = randomUUID(), digest = 'a'.repeat(64)
   const placement = freezePlacement({ schemaVersion: 1, mainId, runId: 'run', nodeId: 'node', mainInstallationId: 'main-installation',
@@ -51,24 +54,46 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
     expect(f.forward).not.toHaveBeenCalled()
   })
   it('denies a completed reviewer even with a valid scoped application lease', async () => {
-    const authorize = vi.fn(async () => {}), f = fixture({ authorize })
+    const authorize = vi.fn(async () => structuredClone(originalScope)), f = fixture({ authorize, authorizeDeclarations: async () => declarationsPolicy })
     f.binding.purpose = 'reviewer'; f.binding.execution_state = 'completed'
     await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',
       nativeSessionId: 'original-session', turnId: 'original-turn' }, f.connection)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_DENIED' })
     expect(authorize).not.toHaveBeenCalled()
   })
   it.each(['create', 'append', 'seal', 'publish'] as const)('requires the mounted original authority for each %s operation and retry', async outputOperation => {
-    const authorize = vi.fn(async () => {})
-    const f = fixture({ authorize })
+    const authorize = vi.fn(async () => structuredClone(originalScope))
+    const f = fixture({ authorize, authorizeDeclarations: async () => declarationsPolicy })
     const request = { ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation,
       nativeSessionId: 'original-session', turnId: 'original-turn' }
     for (let i = 0; i < 2; i++) expect(await f.relay.handle(request, f.connection)).toMatchObject({
-      outputOperation, nativeSessionId: request.nativeSessionId, turnId: request.turnId,
+      outputOperation, nativeSessionId: request.nativeSessionId, turnId: request.turnId, scope: originalScope,
     })
     expect(authorize).toHaveBeenCalledTimes(2)
     authorize.mockRejectedValueOnce(new Error('permission withdrawn'))
     await expect(f.relay.handle(request, f.connection)).rejects.toThrow('permission withdrawn')
     expect(f.forward).not.toHaveBeenCalled()
+    expect(f.query.mock.calls.at(-1)?.[0]).toBe('rollback')
+  })
+
+  it('checks declaration permission without native session or turn facts', async () => {
+    const authorize = vi.fn(async () => structuredClone(originalScope))
+    const authorizeDeclarations = vi.fn(async () => declarationsPolicy)
+    const f = fixture({ authorize, authorizeDeclarations })
+    const request = { ...f.request, operation: 'worker-mcp.authorize-native-output-declarations' }
+    expect(await f.relay.handle(request, f.connection)).toMatchObject(declarationsPolicy)
+    expect(authorizeDeclarations).toHaveBeenCalledWith(request, f.connection, expect.objectContaining({ query: f.query }))
+    expect(authorize).not.toHaveBeenCalled()
+    expect(f.forward).not.toHaveBeenCalled()
+    await expect(f.relay.handle({ ...request, nativeSessionId: 'fabricated', turnId: 'fabricated' }, f.connection)).rejects.toThrow()
+    authorizeDeclarations.mockResolvedValueOnce({ ...declarationsPolicy, agentConfigurationVersionId: 'foreign' })
+    await expect(f.relay.handle(request, f.connection)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_DENIED' })
+    expect(f.query.mock.calls.at(-1)?.[0]).toBe('rollback')
+  })
+  it('rejects a foreign provider scope before committing authorization', async () => {
+    const f = fixture({ authorize: async () => ({ ...originalScope, chat: { ...originalScope.chat, workspaceId: 'foreign' } }),
+      authorizeDeclarations: async () => declarationsPolicy })
+    await expect(f.relay.handle({ ...f.request, operation: 'worker-mcp.authorize-native-output', outputOperation: 'create',
+      nativeSessionId: 'original-session', turnId: 'original-turn' }, f.connection)).rejects.toMatchObject({ code: 'WORKER_NATIVE_OUTPUT_DENIED' })
     expect(f.query.mock.calls.at(-1)?.[0]).toBe('rollback')
   })
 

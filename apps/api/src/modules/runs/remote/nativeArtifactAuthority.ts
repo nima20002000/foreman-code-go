@@ -2,7 +2,9 @@ import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema } from '@graphql/contracts'
 import { ArtifactAttemptSchema, type ArtifactAttempt, type ArtifactAuthority, type ArtifactEdgeBinding } from '@graphql/contracts/artifact-edges'
-import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
+import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
+import { WorkerMcpRelayRequestSchema, type WorkerMcpRelayRequest, type WorkerNativeOutputDeclarationsPolicy } from '@graphql/contracts/worker-mcp-relay'
+import { WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from '@graphql/contracts/worker-native-output'
 import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
 import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt, type TransferContext } from '@graphql/contracts/byte-transfer'
 import type { ArtifactPublicationAuthority, AcceptedArtifactPublication } from '../../files/distributed/publication.js'
@@ -66,6 +68,57 @@ async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPor
 /** Current grants plus original DB-native evidence. No provider IO or credential issuance. */
 export class PostgresArtifactPublicationAuthority implements ArtifactPublicationAuthority {
   constructor(private readonly mainId: string, private readonly pool: pg.Pool, private readonly ports: NativeArtifactAuthorityPorts) {}
+  private async nativeOutputAttempt(input: WorkerMcpRelayRequest, connection: DeviceConnectionIdentity, sql: FileQuery) {
+    const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(`select r.workspace_id,r.workflow_id
+      from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2 for share of r,e`,
+    [input.intent.runId, input.intent.executionId])).rows[0]
+    if (!row) return denied()
+    const attempt: ArtifactAttempt = { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId: input.intent.runId,
+      nodeId: input.intent.nodeId, executionId: input.intent.executionId, attemptId: input.intent.attemptId,
+      placementHash: input.intent.bindingHash }
+    const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql)
+    if (!isDeepStrictEqual(current.intent, input.intent) || !isDeepStrictEqual(current.placement, input.placement)
+      || current.placement.payload.kind !== 'agent' || !current.placement.payload.artifactOutputs
+      || current.placement.payload.agentId !== input.applicationAccess.agentId
+      || current.stopped || !['starting', 'running', 'waiting'].includes(current.execution.state)) return denied()
+    const cleanup = await sql.query('select 1 from run_cleanup_intents where run_id=$1 and pending for share', [input.intent.runId])
+    if (cleanup.rowCount !== 0) return denied()
+    const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share',
+      [input.intent.operationId])).rows[0]
+    if (!origin || !isDeepStrictEqual(DeviceConnectionIdentitySchema.parse(origin.connection), DeviceConnectionIdentitySchema.parse(connection))) return denied()
+    return { ...current, attempt }
+  }
+  /** Original connection and durable native ACK are required for every mutation; reconnect is not a replacement turn. */
+  async assertNativeOutputConnection(raw: Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output' }>,
+    connection: DeviceConnectionIdentity, sql: FileQuery): Promise<void> {
+    const input = WorkerMcpRelayRequestSchema.parse(raw)
+    if (input.operation !== 'worker-mcp.authorize-native-output') return denied()
+    await this.nativeOutputAttempt(input, connection, sql)
+    const row = (await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share',
+      [input.intent.operationId])).rows[0]
+    const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
+    if (!receipt || !isDeepStrictEqual(receipt.intent, input.intent) || !isDeepStrictEqual(receipt.connection, connection)
+      || receipt.stopFence || !['start_acknowledged', 'running'].includes(receipt.phase)
+      || receipt.native?.sessionId !== input.nativeSessionId || receipt.native.turnId !== input.turnId) return denied()
+  }
+  /** Saved configuration and original owner permissions only. No native session/turn, scope, lease or qualification is invented. */
+  async authorizeNativeOutputDeclarations(raw: Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output-declarations' }>,
+    connection: DeviceConnectionIdentity, sql: FileQuery): Promise<WorkerNativeOutputDeclarationsPolicy> {
+    const input = WorkerMcpRelayRequestSchema.parse(raw)
+    if (input.operation !== 'worker-mcp.authorize-native-output-declarations') return denied()
+    const current = await this.nativeOutputAttempt(input, connection, sql)
+    const harness = current.configuration.harness
+    const outputOperations = ['create', 'append', 'seal', 'publish'] as const
+    if (harness.harness !== 'codex' || harness.sandbox !== 'workspace-write'
+      || outputOperations.some(operation => !codexChatFileTools(harness).includes(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS[operation]))) return denied()
+    requireAuthorization(current.principal, 'agent_chat:write', { workspaceId: current.configuration.workspaceId,
+      workflowId: current.attempt.workflowId, runId: input.intent.runId })
+    await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+      values($1,'device','native_output.authorize_declarations',$2,'succeeded',$3::jsonb)`, [current.principal.id,
+      `execution:${input.intent.executionId}`, JSON.stringify({ operationId: input.intent.operationId, attemptId: input.intent.attemptId,
+        bindingHash: input.intent.bindingHash, agentConfigurationVersionId: current.configuration.id, outputOperations })])
+    return { agentConfigurationVersionId: current.configuration.id, outputOperations: [...outputOperations] }
+  }
   authorize(accepted: AcceptedArtifactPublication, query?: FileQuery): Promise<AuthorizedFileCaller> {
     return query ? this.locked(accepted, query) : withExclusiveGraphConnection(this.pool, connection => connection.transaction(sql => this.locked(accepted, sql)))
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { WorkerNativeOutputCommandSchema, WorkerNativeOutputBytesSchema, WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from './workerNativeOutput.js'
-import { WorkerMcpRelayRequestSchema } from './workerMcpRelay.js'
+import { WorkerMcpRelayRequestSchema, WorkerNativeOutputAuthorizationSchema, WorkerNativeOutputDeclarationsAuthorizationSchema } from './workerMcpRelay.js'
 
 describe('closed worker native output commands', () => {
   const create = { operation: 'create', commandId: 'create-command', filename: 'result.md', mediaType: 'text/markdown' }
@@ -29,6 +29,22 @@ describe('closed worker native output commands', () => {
     expect(WorkerNativeOutputCommandSchema.parse(command)).toEqual(command)
     expect(WorkerNativeOutputCommandSchema.safeParse({ ...command, publication: { ...publication, scope: { kind: 'temporary' } } }).success).toBe(false)
     expect(WorkerNativeOutputCommandSchema.safeParse({ ...publication, operation: 'publish' }).success).toBe(false)
+  })
+  it('requires original Main scope on mutation responses and keeps declarations free of fabricated native facts', () => {
+    const base = { version: 1, mainId: '00000000-0000-4000-8000-000000000001', audience: 'worker', principalId: 'principal',
+      executionId: 'execution', agentId: 'agent', operationId: 'operation', attemptId: 'attempt', bindingHash: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' }
+    const native = { ...base, outputOperation: 'create', nativeSessionId: 'native', turnId: 'turn' }
+    expect(WorkerNativeOutputAuthorizationSchema.safeParse(native).success).toBe(false)
+    const scope = { kind: 'temporary', chat: { kind: 'agent', conversationId: 'conversation', workspaceId: 'workspace',
+      workflowId: 'workflow', agentId: 'agent', runId: 'run', executionId: 'execution' } }
+    expect(WorkerNativeOutputAuthorizationSchema.parse({ ...native, scope }).scope).toEqual(scope)
+    expect(WorkerNativeOutputAuthorizationSchema.safeParse({ ...native, scope: { ...scope, chat: { ...scope.chat, executionId: 'foreign' } } }).success).toBe(false)
+    const declarations = { ...base, agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'] }
+    expect(WorkerNativeOutputDeclarationsAuthorizationSchema.parse(declarations)).toEqual(declarations)
+    for (const key of ['scope', 'nativeSessionId', 'turnId', 'qualified']) {
+      expect(WorkerNativeOutputDeclarationsAuthorizationSchema.safeParse({ ...declarations, [key]: 'fabricated' }).success).toBe(false)
+    }
+    expect(WorkerNativeOutputDeclarationsAuthorizationSchema.safeParse({ ...declarations, outputOperations: ['create', 'create', 'seal', 'publish'] }).success).toBe(false)
   })
   it('maps mutation and publication to existing file permissions without expanding relay lease authorization', () => {
     expect(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS).toEqual({ create: 'files.write_working_copy', append: 'files.write_working_copy', seal: 'files.write_working_copy', publish: 'files.publish_result' })

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { DispatchIntentSchema, AcceptedNodePlacementSchema } from './nodePlacement.js'
 import { WorkerNativeOutputOperationSchema } from './workerNativeOutput.js'
 import { RemoteApplicationAccessSchema } from './remoteExecution.js'
+import { TemporaryFileScopeSchema } from './files.js'
 export const WorkerMcpRelayRequestSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(1), operation: z.literal('worker-mcp.authorize'), intent: DispatchIntentSchema,
     placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema }).strict(),
@@ -9,6 +10,8 @@ export const WorkerMcpRelayRequestSchema = z.discriminatedUnion('operation', [
     placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema,
     outputOperation: WorkerNativeOutputOperationSchema, nativeSessionId: z.string().min(1).max(500),
     turnId: z.string().min(1).max(500) }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('worker-mcp.authorize-native-output-declarations'),
+    intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('worker-mcp.request'), intent: DispatchIntentSchema,
     placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema,
     body: z.json(), protocolVersion: z.string().max(64).optional() }).strict(),
@@ -23,5 +26,15 @@ export const WORKER_MCP_EXTENSION = { namespace: 'worker-mcp-v1', version: 1, ma
 
 export const WorkerNativeOutputAuthorizationSchema = WorkerMcpRelayAuthorizationSchema.extend({
   outputOperation: WorkerNativeOutputOperationSchema, nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500),
-}).strict()
+  scope: TemporaryFileScopeSchema,
+}).strict().refine(value => value.scope.chat.kind === 'agent' && value.scope.chat.agentId === value.agentId
+  && value.scope.chat.executionId === value.executionId && value.scope.chat.runId !== undefined,
+  'Native output requires the original workflow Agent file scope')
 export type WorkerNativeOutputAuthorization = z.infer<typeof WorkerNativeOutputAuthorizationSchema>
+/** Permission to declare tools, before a native turn exists. This is not host qualification or mutation authority. */
+export const WorkerNativeOutputDeclarationsPolicySchema = z.object({ agentConfigurationVersionId: z.string().min(1),
+  outputOperations: z.tuple([z.literal('create'), z.literal('append'), z.literal('seal'), z.literal('publish')]) }).strict()
+export const WorkerNativeOutputDeclarationsAuthorizationSchema = WorkerMcpRelayAuthorizationSchema
+  .extend(WorkerNativeOutputDeclarationsPolicySchema.shape).strict()
+export type WorkerNativeOutputDeclarationsPolicy = z.infer<typeof WorkerNativeOutputDeclarationsPolicySchema>
+export type WorkerNativeOutputDeclarationsAuthorization = z.infer<typeof WorkerNativeOutputDeclarationsAuthorizationSchema>
