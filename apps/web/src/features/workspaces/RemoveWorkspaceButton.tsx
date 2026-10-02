@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceArchiveInput } from '@graphql/contracts/management'
@@ -16,6 +16,8 @@ export function RemoveWorkspaceButton({ workspaceId, name, revision, renderTrigg
 }) {
   const [open, setOpen] = useState(false)
   const [baseRevision, setBaseRevision] = useState(revision)
+  const latestRevision = useRef(revision)
+  useLayoutEffect(() => { latestRevision.current = revision }, [revision])
   const mutation = useArchiveManagedWorkspaceMutation()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -43,7 +45,8 @@ export function RemoveWorkspaceButton({ workspaceId, name, revision, renderTrigg
   }
 
   const show = () => {
-      setBaseRevision(revision); mutation.reset(); setOpen(true)
+      // A preceding unsaved-name Save may have advanced the revision before this action opens.
+      setBaseRevision(latestRevision.current); mutation.reset(); setOpen(true)
   }
   return <>
     {renderTrigger ? renderTrigger(show) : <IconButton label="Remove workspace" variant="ghost" className="workspace-remove-button" onClick={show}><Icon name="trash" size={16} /></IconButton>}

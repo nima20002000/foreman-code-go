@@ -334,4 +334,24 @@ describe('workspace section routes', () => {
     expect(writes[1]).toEqual(writes[0])
     expect(writes[0]).toMatchObject({ workspaceId: 'workspace-1', name: 'Confirmed retry rename', expectedRevision: 1 })
   })
+
+  it('opens removal at the confirmed revision after saving an inline rename through the unsaved guard', async () => {
+    const removals: unknown[] = []
+    server.use(http.delete('/api/management/workspaces/workspace-1', async ({ request }) => {
+      removals.push(await request.clone().json())
+      return undefined
+    }))
+    const user = userEvent.setup()
+    renderRoute('/workspaces/workspace-1/settings')
+    await user.click(await screen.findByRole('button', { name: 'Rename workspace Website' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Workspace name' }))
+    await user.type(screen.getByRole('textbox', { name: 'Workspace name' }), 'Name saved before removal')
+    await user.click(screen.getByRole('button', { name: 'Remove workspace' }))
+    const guard = await screen.findByRole('alertdialog', { name: 'Save changes before leaving?' })
+    await user.click(within(guard).getByRole('button', { name: 'Save' }))
+    const confirmation = await screen.findByRole('dialog', { name: 'Remove Name saved before removal?' })
+    await user.click(within(confirmation).getByRole('button', { name: 'Remove workspace' }))
+    await waitFor(() => expect(removals).toHaveLength(1))
+    expect(removals[0]).toMatchObject({ workspaceId: 'workspace-1', expectedRevision: 2 })
+  })
 })
