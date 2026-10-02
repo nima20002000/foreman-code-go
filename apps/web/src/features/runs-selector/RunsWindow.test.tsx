@@ -42,6 +42,7 @@ function mount(scope = 'workflow-one') {
 it('moves and resizes by pointer, cancels gestures, and never makes Close a drag handle', () => {
   const { close } = mount()
   const panel = screen.getByRole('dialog', { name: 'Runs' })
+  expect(screen.getByRole('heading', { name: 'Runs' })).toBeInTheDocument()
   const move = screen.getByRole('button', { name: 'Move Runs window' })
   Object.defineProperty(move, 'setPointerCapture', { value: vi.fn() })
   fireEvent.pointerDown(move, { button: 0, clientX: 100, clientY: 100 })

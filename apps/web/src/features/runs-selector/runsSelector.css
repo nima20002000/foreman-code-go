@@ -8,7 +8,7 @@
 }
 .runs-selector-trigger { flex: 0 0 auto; gap: 4px; }
 .runs-selector-selection-status { font-size: 12px; overflow-wrap: anywhere; }
-.runs-selector-menu {
+.runs-window .runs-selector-menu {
   position: static;
   inset: auto;
   box-sizing: border-box;

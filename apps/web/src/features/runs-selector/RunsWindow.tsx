@@ -70,13 +70,13 @@ export function RunsWindow({ id, scope, anchor, close, children }: {
     update(edge ? resizeRunsWindow(rect, edge, dx, dy, viewportBounds()) : { ...rect, left: rect.left + dx, top: rect.top + dy })
   }
   const stop = () => { gesture.current = null }
-  return createPortal(<section id={id} ref={surface} role="dialog" aria-modal="false" aria-labelledby={`${id}-title`}
+  return createPortal(<section id={id} ref={surface} role="dialog" aria-modal="false" aria-label="Runs"
     className="n-theme runs-window nodrag nopan nowheel" style={rect} onPointerDown={(event) => event.stopPropagation()}
     onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
       if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); close() }
     }}>
     <header className="runs-window-header">
-      <h2 id={`${id}-title`}><button type="button" aria-label="Move Runs window"
+      <h2 aria-label="Runs"><button type="button" aria-label="Move Runs window"
         title="Drag to move; use arrow keys to move with the keyboard" onPointerDown={start} onPointerMove={move}
         onPointerUp={stop} onPointerCancel={stop} onLostPointerCapture={stop} onKeyDown={(event) => keyboard(event)}>
         <Icon name="history" size={16} />Runs
