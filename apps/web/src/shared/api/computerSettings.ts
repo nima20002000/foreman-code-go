@@ -113,7 +113,10 @@ export function useSaveHostHarnessOverride() {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Saved host settings belong to another installation or instance.' })
       return result
     },
-    onSuccess: () => client.invalidateQueries({ queryKey: computerSettingsKeys.root }),
+    onSuccess: async () => { await Promise.all([
+      client.invalidateQueries({ queryKey: computerSettingsKeys.root }),
+      client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }),
+    ]) },
     onError: error => { if (error instanceof ApiError && error.status === 409) void client.invalidateQueries({ queryKey: computerSettingsKeys.root }) },
   })
 }
@@ -143,7 +146,10 @@ export function useCheckHostHarnessInstance() {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Profile check evidence does not match the submitted installation and saved instance.' })
       return result
     },
-    onSuccess: () => client.invalidateQueries({ queryKey: computerSettingsKeys.root }),
+    onSuccess: async () => { await Promise.all([
+      client.invalidateQueries({ queryKey: computerSettingsKeys.root }),
+      client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }),
+    ]) },
     onError: error => { if (error instanceof ApiError && error.status === 409) void client.invalidateQueries({ queryKey: computerSettingsKeys.root }) },
   })
 }

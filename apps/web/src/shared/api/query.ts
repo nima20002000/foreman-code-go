@@ -261,6 +261,7 @@ export function useUpdateManagedHarnessDefaultsMutation() {
     onSuccess: (response) => {
       client.setQueryData(queryKeys.harnessDefaults, { defaults: response.value.defaults })
       void client.invalidateQueries({ queryKey: queryKeys.managedHarnessCatalog }).catch(() => undefined)
+      void client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }).catch(() => undefined)
     },
   })
 }

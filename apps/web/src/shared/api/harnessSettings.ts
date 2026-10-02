@@ -204,6 +204,7 @@ export function useRefreshNativeHarness(harness: Harness, refresh: 'catalog' | '
       await Promise.all([
         client.invalidateQueries({ queryKey: [...harnessSettingsKeys.root, 'check', epoch] }),
         client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
+        client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }),
       ])
     },
   })
@@ -242,6 +243,7 @@ export function useDecideNativeMcpChange() {
       await Promise.all([
         client.invalidateQueries({ queryKey: harnessSettingsKeys.root }),
         client.invalidateQueries({ queryKey: ['workbench', 'management', 'harnesses'] }),
+        client.invalidateQueries({ queryKey: ['operator-chat', 'setup'] }),
       ])
     },
   })

@@ -10,7 +10,7 @@ export function OperatorSetupNotice({ data, checking, failed, onRetry }: {
     action={<Button size="sm" disabled={checking} onClick={onRetry}>Check again</Button>}>Chat is unavailable until the installation is verified.</Alert>
   if (!data) return null
   if (data.status === 'configured') return <ExecutionReadinessNotice harness={data.harness} />
-  const name = data.harness === 'opencode' ? 'OpenCode' : 'Codex'
+  const name = data.harness === 'opencode' ? 'OpenCode' : data.harness === 'claude' ? 'Claude' : 'Codex'
   return <Alert tone="warning" title={`Install GraphQL MCP in ${name} first`}
     action={<><a className="n-button n-button--secondary n-button--sm"
       href={`/settings/harnesses?harness=${data.harness}&section=connections`}>Open Harness Settings</a>

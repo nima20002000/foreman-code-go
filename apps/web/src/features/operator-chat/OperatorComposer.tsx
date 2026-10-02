@@ -3,8 +3,8 @@ import { Icon, IconButton } from '../../shared/ui/nocturne'
 import { useConversationDraftStore } from '../conversations'
 import '../conversations/chatAttachments.css'
 
-export function OperatorComposer({ conversationId, context, access, attachmentControl, hasAttachments = false, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
-  conversationId: string; context?: ReactNode; access?: ReactNode; attachmentControl?: ReactNode; hasAttachments?: boolean; sendDisabled?: boolean; isSending?: boolean;
+export function OperatorComposer({ conversationId, context, attachmentControl, hasAttachments = false, sendDisabled = false, isSending = false, onSubmit, onNewChat, onCancel }: {
+  conversationId: string; context?: ReactNode; attachmentControl?: ReactNode; hasAttachments?: boolean; sendDisabled?: boolean; isSending?: boolean;
   onSubmit(content: string): void; onNewChat(): void; onCancel?: () => void;
 }) {
   const value = useConversationDraftStore((state) => state.drafts[conversationId] ?? '')
@@ -47,10 +47,8 @@ export function OperatorComposer({ conversationId, context, access, attachmentCo
           else send()
         }
       }} />
-    {attachmentControl}
     <div className="operator-composer-toolbar">
-      <IconButton label="New chat" variant="ghost" onClick={onNewChat}><Icon name="plus" size={17} /></IconButton>
-      {access}
+      {attachmentControl}
       <div className="operator-composer-model">{context}</div>
       {onCancel ? <IconButton label="Stop response" onClick={onCancel} className="operator-composer-send"><Icon name="stop" size={15} /></IconButton>
         : <IconButton label="Send message" type="submit" disabled={cannotSend} className="operator-composer-send" loading={isSending}><Icon name="arrow" className="operator-send-arrow" size={17} /></IconButton>}

@@ -49,7 +49,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
   const settings = context.services.settings
   if (!settings) return
   if (operatorToolAvailable(context, 'agent_defaults_get')) server.registerTool('agent_defaults_get', {
-    description: 'Read saved role defaults, including the Operator chat model, harness, Codex sandbox or OpenCode permission rules, effort, and thinking preferences. New Operator conversations inherit these settings. Operator UI enablement does not disable management MCP.',
+    description: 'Read saved role defaults, including the Operator chat model, harness, Codex or Claude sandbox, OpenCode native permission rules, effort, and thinking preferences. Unsaved Operator defaults use full access; existing saved settings remain authoritative. New Operator conversations inherit these settings. Operator UI enablement does not disable management MCP.',
     inputSchema: z.object({}).strict(), outputSchema: ManagedAgentDefaultsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'agent_defaults_get', () => settings.getAgentDefaults(context.principal)))
@@ -59,7 +59,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'workflow_defaults_get', () => settings.getWorkflowDefaults(context.principal)))
   if (operatorToolAvailable(context, 'agent_defaults_update')) server.registerTool('agent_defaults_update', {
-    description: 'Revision-check and replace role defaults, including the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update; changing Operator skills, harness or thinking settings also requires skills:read in every assigned skill workspace.',
+    description: 'Revision-check and replace role defaults, including the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. Codex and Claude support explicit danger-full-access; OpenCode permissions are not a filesystem sandbox. Access choices do not grant app authority or bypass native qualification and approval routing. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update; changing Operator skills, harness or thinking settings also requires skills:read in every assigned skill workspace. First local Claude preparation additionally requires harnesses:read and harnesses:update, and runs finite subscription diagnostics for the exact submitted configuration.',
     inputSchema: AgentDefaultsUpdateInputSchema, outputSchema: AgentDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'agent_defaults_update', () => settings.updateAgentDefaults(context.principal, 'mcp', input)))

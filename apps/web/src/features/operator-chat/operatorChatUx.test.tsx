@@ -45,6 +45,48 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks() })
 function chat() { render(<QueryClientProvider client={client}><OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider></QueryClientProvider>) }
 describe('Operator chat UX', () => {
+  it('reuses its verified MCP installation when starting another chat', async () => {
+    let checks = 0
+    server.use(http.get('/api/operator/setup', ({ request }) => {
+      expect(new URL(request.url).searchParams.has('conversationId')).toBe(false)
+      checks++
+      return HttpResponse.json(configuredOperatorSetup('codex'))
+    }))
+    chat()
+    await screen.findByRole('textbox', { name: 'Message' })
+    await waitFor(() => expect(checks).toBe(1))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+    await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toBeVisible()
+    expect(screen.queryByText('Checking GraphQL MCP installation…')).not.toBeInTheDocument()
+    expect(checks).toBe(1)
+  })
+
+  it('resolves the first accepted configuration when chat creation races an initial installation check', async () => {
+    useOperatorChatStore.getState().select(undefined)
+    let finishInitial!: () => void
+    const initial = new Promise<void>((resolve) => { finishInitial = resolve })
+    let checks = 0
+    server.use(http.get('/api/operator/setup', async () => {
+      checks++
+      if (checks === 1) {
+        await initial
+        return HttpResponse.json({ ...configuredOperatorSetup('codex'), configurationVersionId: undefined })
+      }
+      return HttpResponse.json(configuredOperatorSetup('codex'))
+    }))
+    chat()
+    await waitFor(() => expect(checks).toBe(1))
+    fireEvent.click(await screen.findByRole('button', { name: 'Start chat' }))
+    const input = await screen.findByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: 'Draft only' } })
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    finishInitial()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(checks).toBe(2)
+    expect(api.send).not.toHaveBeenCalled()
+  })
+
   it('recovers a stale selected chat without showing an MCP failure', async () => {
     api.get.mockRejectedValue(new ApiError({ code: 'CONVERSATION_NOT_FOUND', message: 'Missing conversation' }, 404))
     const setupTargets: Array<string | null> = []
@@ -140,20 +182,20 @@ describe('Operator chat UX', () => {
 
   it('saves the Codex sandbox to Operator defaults and keeps it for a new chat', async () => {
     chat()
-    const trigger = await screen.findByRole('button', { name: 'Operator access: Read only' })
-    fireEvent.click(trigger)
-    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: 'Codex sandbox' }))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Codex sandbox' })).getByRole('menuitemradio', { name: 'Workspace write' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('danger-full-access')
+    expect(screen.queryByText('Saved to Operator defaults for your next message and future chats.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Operator access:/ })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: 'workspace-write' } })
     await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness).toMatchObject({ harness: 'codex', sandbox: 'workspace-write' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Operator access: Workspace write' })).toBeEnabled())
-    fireEvent.click(screen.getByRole('button', { name: 'Operator access: Workspace write' }))
-    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: 'Approval requests' }))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Approval requests' })).getByRole('menuitemradio', { name: 'Never request escalation' }))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Approval requests' })).toBeEnabled())
+    fireEvent.change(screen.getByRole('combobox', { name: 'Approval requests' }), { target: { value: 'never' } })
     await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness).toMatchObject({ sandbox: 'workspace-write',
       advanced: { approvalPolicy: 'never' } }))
-    fireEvent.click(within(screen.getByRole('form', { name: 'Conversation composer' })).getByRole('button', { name: 'New chat' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
-    expect(await screen.findByRole('button', { name: 'Operator access: Workspace write' })).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('workspace-write')
   })
 
   it('saves OpenCode permission rules from the composer to future Operator chats', async () => {
@@ -161,15 +203,16 @@ describe('Operator chat UX', () => {
     await updateManagedAgentDefaults({ commandId: 'choose-opencode-for-access-test', expectedRevision: before.revision,
       value: { ...before.value, operator: { ...before.value.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })
     chat()
-    fireEvent.click(await screen.findByRole('button', { name: 'Operator access: 0 OpenCode rules' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Add rule' }))
     fireEvent.change(screen.getByRole('combobox', { name: 'Action 1' }), { target: { value: 'deny' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save access rules' }))
     await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness).toMatchObject({ harness: 'opencode',
       advanced: { permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }] } }))
-    fireEvent.click(within(screen.getByRole('form', { name: 'Conversation composer' })).getByRole('button', { name: 'New chat' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
-    expect(await screen.findByRole('button', { name: 'Operator access: 1 OpenCode rule' })).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    expect(screen.getByRole('combobox', { name: 'Action 1' })).toHaveValue('deny')
   })
 
   it('starts a linked child on the first send after changing harness', async () => {
@@ -390,7 +433,7 @@ describe('PR19 receipt recovery and navigation fencing', () => {
     chat()
     const retry = await screen.findByRole('button', { name: 'Retry pending message' })
     expect(retry).toBeEnabled()
-    expect(await screen.findByRole('button', { name: /Operator access:/ })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: /Agent settings:/ })).toBeDisabled()
     fireEvent.click(retry)
     await waitFor(() => expect(api.send).toHaveBeenCalledWith('conversation-one', { ...command, recovery: 'receipt' }))
     await waitFor(() => expect(outbox.readPendingOperatorMessage('conversation-one').command).toBeUndefined())
@@ -420,7 +463,7 @@ describe('PR19 receipt recovery and navigation fencing', () => {
     expect(command.configurationVersionId).toBe('source-config')
     expect(command.defaultsRevision).toBe(before.revision + 1)
     if (destination === 'new chat') {
-      fireEvent.click(composer.getByRole('button', { name: 'New chat' }))
+      fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
       await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
     } else act(() => {
       useOperatorChatStore.getState().select('another-chat')

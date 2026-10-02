@@ -1,4 +1,4 @@
-import { applyOperatorChatSettings, operatorChatSettings, type AgentDefaults, type HarnessConfiguration, type OperatorChatSettings } from '@graphql/contracts'
+import { applyOperatorChatSettings, operatorChatSettings, operatorHarnessDefaults, type AgentDefaults, type HarnessConfiguration, type OperatorChatSettings } from '@graphql/contracts'
 import { useAgentDefaultsQuery, useHarnessDefaultsQuery, useUpdateAgentDefaultsMutation } from '../../shared/api/query'
 import { useRevisionedForm } from '../settings/revisionedForm'
 
@@ -15,10 +15,12 @@ export function useOperatorSettings(enabled: boolean) {
   })
   function change(settings: OperatorChatSettings) {
     if (!form.draft || !operator || form.isSaving || form.uncertain) return
-    const base = operator.harness.harness === settings.harness ? operator.harness : harnesses.data?.defaults[settings.harness]
+    const preset = harnesses.data?.defaults[settings.harness]
+    const base = operator.harness.harness === settings.harness ? operator.harness : preset ? operatorHarnessDefaults(preset) : undefined
     if (!base) return
-    form.setDraft({ ...form.draft, operator: { ...operator,
-      harness: applyOperatorChatSettings(base, settings), showThinking: settings.showThinking } })
+    const next = { ...operator, harness: applyOperatorChatSettings(base, settings), showThinking: settings.showThinking }
+    if (operator.harness.harness !== settings.harness) delete next.harnessProfileSelection
+    form.setDraft({ ...form.draft, operator: next })
     void save()
   }
   function changeAccess(harness: HarnessConfiguration): Promise<boolean> {
