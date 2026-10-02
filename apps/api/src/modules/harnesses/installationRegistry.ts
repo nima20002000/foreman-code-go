@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type { CanonicalMachineReference } from '@graphql/contracts/device-identity'
 import type { HarnessInstanceProjection, HarnessInstanceRegistry } from './instanceRegistry.js'
 import type { LauncherEvidence } from './hostDiscovery.js'
@@ -28,17 +29,21 @@ export interface PinnedHarnessSelection {
   readonly installationFingerprint: string
 }
 export interface RegistryHarnessSelection {
+  /** Revision of the selected host installation, not the entire inventory. */
   readonly inventoryRevision: number
   readonly selection: PinnedHarnessSelection
   readonly instance: HarnessInstanceProjection
   readonly installation: HarnessInstallationRecord
 }
 const hostKey = (host: CanonicalMachineReference) => host.kind === 'main' ? `main:${host.mainId}` : `device:${host.mainId}:${host.deviceId}`
+const installationIdentity = (record: HarnessInstallationRecord) => ({ ...record,
+  launcher: { ...record.launcher, checkedAt: undefined, diagnostics: undefined } })
 
 /** A projection of canonical authorized-host inventory; no native managers or IO. */
 export class HarnessInstallationRegistry {
   private readonly installations = new Map<string, HarnessInstallationRecord>()
-  private readonly cache = new Map<string, { epoch: number; value: Promise<unknown> }>()
+  private readonly revisions = new Map<string, number>()
+  private readonly cache = new Map<string, { value: Promise<unknown> }>()
   private epoch = 0
   constructor(private readonly instances: HarnessInstanceRegistry) {}
   refresh(records: readonly HarnessInstallationRecord[]): void {
@@ -48,25 +53,36 @@ export class HarnessInstallationRegistry {
       if (next.has(key)) throw new Error('Duplicate host harness installation.')
       next.set(key, structuredClone(record))
     }
+    for (const [key, record] of next) {
+      const prior = this.installations.get(key)
+      if (!prior || !isDeepStrictEqual(installationIdentity(prior), installationIdentity(record))) this.revisions.set(key, ++this.epoch)
+    }
+    for (const key of this.revisions.keys()) if (!next.has(key)) this.revisions.delete(key)
     this.installations.clear()
     for (const [key, record] of next) this.installations.set(key, record)
-    this.invalidate()
+    this.cache.clear()
   }
   list(): readonly HarnessInstallationRecord[] { return [...this.installations.values()].map((record) => structuredClone(record)) }
-  invalidate(): void { this.epoch++; this.cache.clear() }
+  invalidate(): void {
+    this.epoch++
+    for (const key of this.revisions.keys()) this.revisions.set(key, this.epoch)
+    this.cache.clear()
+  }
   pin(input: { instanceId: string; hostRef: CanonicalMachineReference; harnessInstallationId: string; connectionGeneration: string; environmentGeneration: string }): RegistryHarnessSelection {
     const instance = this.instances.select(input.instanceId)
-    const record = this.installations.get(`${hostKey(input.hostRef)}:${input.harnessInstallationId}`)
+    const key = `${hostKey(input.hostRef)}:${input.harnessInstallationId}`
+    const record = this.installations.get(key)
     if (!record || !record.installationFingerprint || !record.installed || record.launcher.status !== 'installed' || record.launcher.fingerprint !== record.installationFingerprint
       || record.driverId !== instance.driverId || record.driverRevision !== instance.driverRevision
       || record.connectionGeneration !== input.connectionGeneration || record.environmentGeneration !== input.environmentGeneration) {
       throw new Error('Harness installation unavailable or stale on selected host.')
     }
     // Return independent serializable snapshots; no process/session/token state is shared.
-    return { inventoryRevision: this.epoch, instance, installation: structuredClone(record), selection: Object.freeze({ driverId: instance.driverId, instanceId: instance.instanceId, instanceRevision: instance.instanceRevision, hostRef: Object.freeze({ ...input.hostRef }), harnessInstallationId: record.harnessInstallationId, installationFingerprint: record.installationFingerprint }) }
+    return { inventoryRevision: this.revisions.get(key)!, instance, installation: structuredClone(record), selection: Object.freeze({ driverId: instance.driverId, instanceId: instance.instanceId, instanceRevision: instance.instanceRevision, hostRef: Object.freeze({ ...input.hostRef }), harnessInstallationId: record.harnessInstallationId, installationFingerprint: record.installationFingerprint }) }
   }
   assertCurrent(binding: RegistryHarnessSelection): void {
-    if (binding.inventoryRevision !== this.epoch || this.instances.select(binding.instance.instanceId).instanceRevision !== binding.instance.instanceRevision) throw new Error('Harness metadata binding is stale.')
+    const key = `${hostKey(binding.selection.hostRef)}:${binding.selection.harnessInstallationId}`
+    if (binding.inventoryRevision !== this.revisions.get(key) || this.instances.select(binding.instance.instanceId).instanceRevision !== binding.instance.instanceRevision) throw new Error('Harness metadata binding is stale.')
   }
   async metadata<T>(binding: RegistryHarnessSelection, suiteRevision: string, load: () => Promise<T>): Promise<T> {
     this.assertCurrent(binding)
@@ -76,13 +92,12 @@ export class HarnessInstallationRegistry {
     let entry = this.cache.get(key)
     if (!entry) {
       if (this.cache.size >= 128) throw new Error('Harness metadata cache is full; refresh inventory.')
-      entry = { epoch: this.epoch, value: Promise.resolve().then(load) }
+      entry = { value: Promise.resolve().then(load) }
       this.cache.set(key, entry)
       const selected = entry
       void entry.value.catch(() => { if (this.cache.get(key) === selected) this.cache.delete(key) })
     }
     const value = await entry.value
-    if (entry.epoch !== this.epoch) throw new Error('Harness metadata result is stale.')
     this.assertCurrent(binding)
     return structuredClone(value) as T
   }
