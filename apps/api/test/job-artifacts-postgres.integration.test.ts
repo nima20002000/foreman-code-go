@@ -54,7 +54,7 @@ describe.skipIf(!databaseUrl)('CI canonical artifact authenticated persistence',
     const authority=new JobPublicationAuthority({require:async(sql,job,fence)=>{
       const r=(await sql.query<{epoch:string;revoked:boolean}>('select epoch,revoked from job_fixture_owner where grant_id=$1 for share',[fence.owner.grantId])).rows[0]
       if(!r||r.revoked||r.epoch!==fence.owner.epoch||job.attemptId!==fence.attemptId)throw new DomainError('JOB_OWNER_REVOKED','Owner denied.',403)
-    }},{validate:async (sql:import('../src/modules/jobs/repository.js').JobSql)=>{const r=(await sql.query<{root_valid:boolean}>('select root_valid from job_fixture_owner for share')).rows[0];return {valid:r?.root_valid===true,reasons:[],sideEffects:false}}} as never)
+    }},{revalidateAccepted:async sql=>{const r=(await sql.query<{root_valid:boolean}>('select root_valid from job_fixture_owner for share')).rows[0];if(r?.root_valid!==true)throw new DomainError('JOB_AUTHORITY_CHANGED','Accepted fixture root is unavailable.',409)}})
     artifacts=createCanonicalJobArtifactPort({pool,storageRoot:root,authority,reader:{open:async()=>Readable.from([data])}})
     const commands=new PostgresCommandCoordinator(pool)
     const jobs=new JobService(pool,commands,{preparation:{} as never,dispatch:{} as never,artifacts})

@@ -12,7 +12,7 @@ export interface JobRuntimeAuthority {
 }
 export class JobPublicationAuthority {
   private readonly repository=new JobRepository()
-  constructor(private readonly runtime:JobRuntimeAuthority,private readonly preparation:JobPreparationPort) {}
+  constructor(private readonly runtime:JobRuntimeAuthority,private readonly preparation:Pick<JobPreparationPort,'revalidateAccepted'>) {}
   async authorizePublication(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;owner:JobExecution['owner']}):Promise<{execution:JobExecution;principal:ManagementPrincipal}> {
     const execution=await this.repository.execution(sql,input.workspaceId,input.executionId,true)
     if(execution.attemptId!==input.attemptId||execution.owner.grantId!==input.owner.grantId||execution.owner.epoch!==input.owner.epoch) throw new DomainError('JOB_STALE_ATTEMPT','Artifact publication belongs to a stale attempt or owner.',409)

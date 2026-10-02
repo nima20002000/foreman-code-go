@@ -92,7 +92,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     await pool.query('insert into source_snapshots values($1,$2,$3,$4,$5::jsonb,$6)',[job.workspaceId,root.snapshotId,job.acceptedSpec.source.approvedSourceId,root.manifestDigest,JSON.stringify(approved),'retained'])
     const sourceChecks=async(sql:JobSql)=>{const r=(await sql.query<{availability:string}>('select availability from source_snapshots for share')).rows[0];if(r?.availability!=='retained')throw new DomainError('SOURCE_UNAVAILABLE','Pinned fixture source unavailable.',410)}
     const dispatch=new PostgresJobDispatch(pool,{} as never,{revalidate:sourceChecks,authorizeControl:sourceChecks,observe:async()=>{throw new Error('Receipt mutation is outside this fixture')}})
-    const authority=new JobPublicationAuthority(dispatch,{validate:async(sql:JobSql)=>{await sourceChecks(sql);return {valid:true,reasons:[],sideEffects:false}}} as never)
+    const authority=new JobPublicationAuthority(dispatch,{revalidateAccepted:sourceChecks})
     storage=await mkdtemp(join(process.cwd(),'.job-admission-canonical-'));staging=await mkdtemp(join(process.env.GRAPHQL_HEAVY_BASE_TMPDIR ?? tmpdir(),'job-admission-staging-'))
     endpoint=new DeviceEndpoint({mainId,appVersion:'fixture',auth:access,signMainIdentityProof:async request=>signMainIdentityProof(identity,request,'fixture'),reconcile:async()=>{},presence:()=>{},extensions:[]})
     actual=createAdmittedJobOutputs({pool,storageRoot:storage,stagingRoot:staging,endpoint,authority})
