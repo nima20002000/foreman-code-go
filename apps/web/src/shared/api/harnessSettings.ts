@@ -161,9 +161,9 @@ export function useChangeCodexPlugin() {
     reconciliation, busy: saved.data.operation?.phase === 'sending' || reconciliation.isPending }
 }
 
-export function useNativeHarnessOptions(harness: Harness) {
+export function useNativeHarnessOptions(harness: Harness, enabled = true) {
   useHarnessSessionEpoch()
-  return useQuery({ queryKey: harnessSettingsKeys.options(harness), enabled: !sessionIsSwitching(), staleTime: 300_000, retry: false,
+  return useQuery({ queryKey: harnessSettingsKeys.options(harness), enabled: enabled && !sessionIsSwitching(), staleTime: 300_000, retry: false,
     refetchOnWindowFocus: true,
     queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/${harness}/options`, HarnessOptionsResultSchema, { signal }),
   })

@@ -188,7 +188,14 @@ export class PostgresOperatorConversationRepository {
         then (select sequence::text from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 99 limit 1) end as activity_cursor,
       coalesce((select jsonb_agg(retained.record order by retained.sequence) from (
         select recent.*,sum(octet_length(recent.record::text)) over (order by recent.sequence desc) as bytes
-        from (select m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text) || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end as record,m.sequence from operator_conversation_messages m
+        from (select m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text)
+            || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end
+            || case when accepted.id is null then '{}'::jsonb else jsonb_build_object('acceptedModel',
+              jsonb_build_object('harness',accepted.record->'harness'->>'harness','model',accepted.record->'harness'->>'model')) end as record,m.sequence
+          from operator_conversation_messages m
+          left join operator_conversation_turns turn on turn.conversation_id=m.conversation_id
+            and turn.request_id=coalesce(m.client_request_id,m.record->>'requestId')
+          left join operator_configuration_versions accepted on accepted.id=coalesce(turn.operator_configuration_version_id,turn.payload->>'acceptedConfigurationVersionId')
           where m.conversation_id=c.id order by m.sequence desc limit $2) recent
         ) retained where retained.bytes<=$3),'[]'::jsonb) as messages
       from operator_conversations c where c.id=$1`, [id, OPERATOR_SNAPSHOT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])
@@ -226,9 +233,16 @@ export class PostgresOperatorConversationRepository {
     }>(`with candidates as (
         select m.*,row_number() over (order by m.sequence desc) as ordinal,
           sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-        from (select sequence,record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) || case when client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',client_request_id) end as record,client_request_id from operator_conversation_messages
-          where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
-          order by sequence desc limit ($3::integer+1)) m
+        from (select m.sequence,m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text)
+            || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end
+            || case when accepted.id is null then '{}'::jsonb else jsonb_build_object('acceptedModel',
+              jsonb_build_object('harness',accepted.record->'harness'->>'harness','model',accepted.record->'harness'->>'model')) end as record,m.client_request_id
+          from operator_conversation_messages m
+          left join operator_conversation_turns turn on turn.conversation_id=m.conversation_id
+            and turn.request_id=coalesce(m.client_request_id,m.record->>'requestId')
+          left join operator_configuration_versions accepted on accepted.id=coalesce(turn.operator_configuration_version_id,turn.payload->>'acceptedConfigurationVersionId')
+          where m.conversation_id=$1 and ($2::bigint is null or m.sequence<$2::bigint)
+          order by m.sequence desc limit ($3::integer+1)) m
       ), selected as (
         select * from candidates where ordinal<=$3 and (bytes<=$4 or ordinal=1)
       )

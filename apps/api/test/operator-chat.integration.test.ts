@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@graphql/contracts/management'
 import {
-  operatorChatSettings, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
+  applyOperatorChatSettings, operatorChatSettings, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, NativeHarnessEventSchema,
   type ExecutionResult, type NativeSessionReference, type OperatorConversationState,
 } from '@graphql/contracts'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
@@ -145,6 +145,107 @@ afterEach(async () => {
 })
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
+  it('projects accepted models through authenticated MCP and history without changing immutable turn or message facts', async () => {
+    const writer = await access.issue({ name: 'Accepted model reader', audience: 'operator',
+      grants: [{ actions: ['operator_chat:read', 'operator_chat:write'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+    const source = await chat.create(writer.principal)
+    const first = { requestId: 'accepted-sol', content: 'First model fixture',
+      settings: { ...operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex), harness: 'codex' as const,
+        model: 'gpt-6.1-sol', reasoningEffort: 'medium' as const, serviceTier: 'standard' as const } }
+    const second = { ...first, requestId: 'accepted-luna', content: 'Second model fixture',
+      settings: { ...first.settings, model: 'gpt-6-luna' } }
+    await chat.send(source.id, first, writer.principal)
+    await waitFor(async () => (await chat.get(source.id, writer.principal)).turnState === 'idle')
+    await chat.send(source.id, second, writer.principal)
+    await waitFor(async () => (await chat.get(source.id, writer.principal)).turnState === 'idle')
+    const current = await operators.ensure()
+    await operators.update({ ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'different-future-default' }, current.configuration.id)
+    const facts = async () => (await pool.query(`select record::text from operator_conversation_messages where conversation_id=$1 order by sequence`, [source.id])).rows
+    const before = await facts()
+    const acceptedFirst = await repository.acceptedConfiguration(source.id, first.requestId)
+    const acceptedSecond = await repository.acceptedConfiguration(source.id, second.requestId)
+    const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { operatorChat: chat, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    const clients: Client[] = []
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      const connect = async (token: string) => {
+        const client = new Client({ name: 'accepted-model-parity', version: '1' }); clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
+        return client
+      }
+      const client = await connect(writer.token)
+      const read = await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: source.id } })
+      expect(read.isError, JSON.stringify(read)).not.toBe(true)
+      const state = read.structuredContent as OperatorConversationState
+      expect(state.messages.map(message => [message.requestId, message.acceptedModel])).toEqual([
+        [first.requestId, { harness: 'codex', model: first.settings.model }],
+        [first.requestId, { harness: 'codex', model: first.settings.model }],
+        [second.requestId, { harness: 'codex', model: second.settings.model }],
+        [second.requestId, { harness: 'codex', model: second.settings.model }],
+      ])
+      const history = await chat.history(source.id, writer.principal, { limit: 2 })
+      expect(history.entries.map(entry => entry.message.acceptedModel)).toEqual([
+        { harness: 'codex', model: second.settings.model }, { harness: 'codex', model: second.settings.model },
+      ])
+      const older = await chat.history(source.id, writer.principal, { before: history.nextCursor!, limit: 2 })
+      expect(older.entries.map(entry => entry.message.acceptedModel)).toEqual([
+        { harness: 'codex', model: first.settings.model }, { harness: 'codex', model: first.settings.model },
+      ])
+      const denied = await access.issue({ name: 'No conversation read grant', audience: 'operator',
+        grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+      const deniedClient = await connect(denied.token)
+      expect((await deniedClient.listTools()).tools.map(tool => tool.name)).not.toContain('operator_chat_get')
+      await expect(deniedClient.callTool({ name: 'operator_chat_get', arguments: { conversationId: source.id } })).rejects.toThrow('not found')
+      await expect(chat.get(source.id, denied.principal)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+      expect(await facts()).toEqual(before)
+      expect(await repository.acceptedConfiguration(source.id, first.requestId)).toEqual(acceptedFirst)
+      expect(await repository.acceptedConfiguration(source.id, second.requestId)).toEqual(acceptedSecond)
+    } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close() }
+  })
+
+  it('persists explicit Claude native-default effort through authenticated MCP and denies an ungranted writer', async () => {
+    const defaults = new PostgresFoundationSettingsRepository(pool)
+    const commands = new PostgresCommandCoordinator(pool)
+    const mainId = '11111111-1111-4111-8111-111111111111'
+    const selection = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef: { kind: 'main' as const, mainId },
+      applicationInstallationId: mainId, harnessInstallationId: 'synthetic-haiku-installation', installationFingerprint: 'synthetic-payload' } }
+    const base = { harness: 'claude' as const, model: 'claude-sonnet-5-5', effort: 'medium' as const, authMode: 'subscription' as const,
+      configDirectory: '/synthetic/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
+      tools: ['Read'], permissionRules: [], instructions: 'Keep the saved read-only policy.', mcpServers: {} }
+    const configuration = applyOperatorChatSettings(base, { harness: 'claude', model: 'claude-haiku-4-5-20251001', showThinking: false })
+    const validated: unknown[] = []
+    const service = new FoundationSettingsManagementService(defaults, commands, undefined, operators, {
+      validateSelection: async (_principal, selected, harness) => { expect(selected).toEqual(selection); validated.push(harness) },
+    })
+    const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { settings: service, operatorChat: chat, commands } as unknown as OperatorServices } })
+    const clients: Client[] = []
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      const connect = async (actions: ManagementPrincipal['grants'][number]['actions']) => {
+        const issued = await access.issue({ name: 'Claude effort settings', audience: 'operator', grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
+        const client = new Client({ name: 'claude-effort-parity', version: '1' }); clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => issued.token } }))
+        return client
+      }
+      const client = await connect(['settings:read', 'settings:update', 'harnesses:read'])
+      const read = async () => ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+      const before = await read()
+      const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
+        operator: { ...before.value.operator, harness: configuration, harnessProfileSelection: selection } } }
+      const accepted = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
+      expect((await read()).value.operator.harness).toEqual(configuration)
+      expect((await read()).value.operator.harness).not.toHaveProperty('effort')
+      expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'read-only', tools: ['Read'] })
+      expect(validated).toEqual([configuration])
+      const denied = await connect(['settings:read'])
+      await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+      expect((await read()).revision).toBe(accepted.value.revision)
+      expect(validated).toHaveLength(1)
+    } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close() }
+  })
+
   it('changes harness in an empty conversation without a fork or inherited context', async () => {
     const openCode = new ChatManager('opencode')
     chat = new OperatorChatService(repository, operators,

@@ -53,6 +53,26 @@ it('rejects an unavailable accepted effort before offering any model input', asy
   expect(f.offered).not.toHaveBeenCalled()
 })
 
+it('accepts the exact resolved Haiku model with native-default effort without claiming qualification', async () => {
+  const f = await fixture([{ value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', supportedEffortLevels: [] }])
+  if (f.value.configuration.harness !== 'claude') throw new Error('Expected Claude fixture')
+  f.value.configuration.model = 'claude-haiku-4-5-20251001'
+  delete f.value.configuration.effort
+  const result = await qualifyClaudeNativeProfile(f.input)
+  expect(result).toMatchObject({ qualified: false, failure: { code: 'CLAUDE_NATIVE_RECEIPT_UNQUALIFIED' } })
+  expect(result.claudeProof?.checks.sdkInitialization?.state).toBe('passed')
+  expect(f.offered).toHaveBeenCalledOnce()
+})
+
+it('rejects an explicit Haiku effort absent from its native catalog before offering model input', async () => {
+  const f = await fixture([{ value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', supportedEffortLevels: [] }])
+  if (f.value.configuration.harness !== 'claude') throw new Error('Expected Claude fixture')
+  f.value.configuration.model = 'claude-haiku-4-5-20251001'
+  const result = await qualifyClaudeNativeProfile(f.input)
+  expect(result).toMatchObject({ qualified: false, failure: { code: 'CLAUDE_MODEL_UNAVAILABLE' } })
+  expect(f.offered).not.toHaveBeenCalled()
+})
+
 it('does not accept a receipt whose actual answer failed the recorded marker scenario', async () => {
   const f = await fixture([{ value: 'unit-model', supportedEffortLevels: ['medium'] }], true)
   const result = await qualifyClaudeNativeProfile(f.input)

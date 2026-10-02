@@ -811,6 +811,8 @@ export const MessageSchema = z
     id: IdSchema,
     conversationId: IdSchema,
     requestId: IdSchema.optional(),
+    /** Read projection of this message's immutable accepted turn configuration. */
+    acceptedModel: z.object({ harness: AgentHarnessSchema, model: z.string().trim().min(1) }).strict().optional(),
     activityChannel: z.enum(["assistant", "user", "reasoning"]).optional(),
     activityNative: ActivityNativeIdentitySchema.optional(),
     revision: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
@@ -1437,8 +1439,12 @@ export function operatorChatSettings(harness: HarnessConfiguration, showThinking
 /** Apply chat controls without replacing the accepted execution permissions. */
 export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
   if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
-  if (settings.harness === "claude") return HarnessConfigurationSchema.parse({ ...base, model: settings.model,
-    ...(settings.effort ? { effort: settings.effort } : {}) });
+  if (settings.harness === "claude") {
+    const configuration = ClaudeHarnessConfigurationSchema.parse({ ...base, model: settings.model });
+    delete configuration.effort;
+    if (settings.effort) configuration.effort = settings.effort;
+    return configuration;
+  }
   return HarnessConfigurationSchema.parse(settings.harness === "codex"
     ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
     : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking });

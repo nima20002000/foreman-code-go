@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import type { Message, OperatorActivity } from '@graphql/contracts'
+import type { HarnessOptions } from '@graphql/contracts/management'
 import { OperatorMessages } from './OperatorMessages'
 import { projectOperatorActivity, projectOperatorText } from './operatorTextProjection'
 
@@ -9,6 +10,30 @@ const thinking: OperatorActivity = { id: 'native-thought', requestId: 'turn', se
 const tool: OperatorActivity = { ...thinking, id: 'native-read', sequence: '2', kind: 'file_read', title: 'Read file', input: 'note.txt', output: 'file content' }
 
 describe('Operator message ownership', () => {
+  it('labels each assistant with its accepted turn model, including live output and unavailable catalog entries', () => {
+    const modelCatalogs: Partial<Record<HarnessOptions['harness'], HarnessOptions['models']>> = {
+      codex: [{ id: 'gpt-6.1-sol', name: 'Sol 6.1', reasoningEfforts: ['medium'], variants: [], serviceTiers: [] }],
+      claude: [{ id: 'claude-opus-5-5', name: 'Opus 5.5', reasoningEfforts: ['medium'], variants: [], serviceTiers: [] },
+        { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', reasoningEfforts: ['medium'], variants: [], serviceTiers: [] }],
+    }
+    const messages: Message[] = [
+      { ...user, acceptedModel: { harness: 'claude', model: 'claude-opus-5-5' } },
+      { id: 'opus', conversationId: 'chat', requestId: 'turn', role: 'assistant', content: 'Earlier answer', acceptedModel: { harness: 'claude', model: 'claude-opus-5-5' } },
+      { ...user, id: 'sol-user', requestId: 'sol', acceptedModel: { harness: 'codex', model: 'gpt-6.1-sol' } },
+      { id: 'sol-answer', conversationId: 'chat', requestId: 'sol', role: 'assistant', content: 'Later answer', acceptedModel: { harness: 'codex', model: 'gpt-6.1-sol' } },
+      { id: 'unknown', conversationId: 'chat', requestId: 'unknown', role: 'assistant', content: 'Catalog entry removed', acceptedModel: { harness: 'opencode', model: 'provider/recorded-model' } },
+      { id: 'legacy', conversationId: 'chat', requestId: 'legacy', role: 'assistant', content: 'No accepted configuration was recorded' },
+      { ...user, id: 'live-user', requestId: 'live', acceptedModel: { harness: 'claude', model: 'claude-opus-5-5' } },
+    ]
+    render(<OperatorMessages messages={messages} activities={[]} modelCatalogs={modelCatalogs}
+      activeRequestId="live" partialText="Live answer" working onBrowse={() => {}} />)
+    expect(screen.getAllByRole('article', { name: 'Message from Opus 5.5' })).toHaveLength(2)
+    expect(screen.getByRole('article', { name: 'Message from Sol 6.1' })).toHaveTextContent('Later answer')
+    expect(screen.getByRole('article', { name: 'Message from provider/recorded-model' })).toHaveTextContent('Catalog entry removed')
+    expect(screen.getByRole('article', { name: 'Message from Assistant' })).toHaveTextContent('No accepted configuration was recorded')
+    expect(screen.queryByRole('article', { name: 'Message from Sonnet 5.5' })).not.toBeInTheDocument()
+  })
+
   it('keeps saved reasoning beside its original turn when reading multiple loaded turns', () => {
     const reasoning = (id: string, requestId: string, content: string): Message => ({ id, conversationId: 'chat', requestId, role: 'assistant', activityChannel: 'reasoning', content })
     render(<OperatorMessages messages={[
