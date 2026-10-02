@@ -2,28 +2,37 @@ import { useInternalNode, type InternalNode, type Node } from '@xyflow/react'
 import type { Agent } from '@graphql/contracts'
 import type { IconName } from '../../shared/ui/nocturne'
 
-/** Rendered agent diameter (canvas.css `--agent-size`). Saved card sizes are ignored on the canvas. */
+/** Default worker diameter; authored dimensions and role defaults determine each actual rim. */
 export const AGENT_NODE_SIZE = 212
 const RIM_GAP = 7
 
 type Point = { x: number; y: number }
+type RimSize = { width: number; height: number }
 /** task: a handoff; return: a repeat carry; approval: a request for review; grant: its answer; error: a failed receiver. */
 export type EdgeSignal = 'task' | 'return' | 'approval' | 'grant' | 'error'
 export type FloatingCurve = { path: string; mid: Point & { angle: number } }
 
+function dimensions(node: InternalNode<Node>): RimSize {
+  return { width: node.measured.width ?? node.width ?? AGENT_NODE_SIZE,
+    height: node.measured.height ?? node.height ?? AGENT_NODE_SIZE }
+}
 function center(node: InternalNode<Node>): Point {
-  const width = node.measured.width ?? AGENT_NODE_SIZE, height = node.measured.height ?? AGENT_NODE_SIZE
+  const { width, height } = dimensions(node)
   return { x: node.internals.positionAbsolute.x + width / 2, y: node.internals.positionAbsolute.y + height / 2 }
 }
 const unit = (x: number, y: number) => { const length = Math.hypot(x, y) || 1; return { x: x / length, y: y / length } }
 
 /** A gently bent curve that leaves and enters each agent anywhere on its rim. */
-export function floatingCurve(source: Point, target: Point, bend: number, radius = AGENT_NODE_SIZE / 2 + RIM_GAP): FloatingCurve {
+export function floatingCurve(source: Point, target: Point, bend: number, radius = AGENT_NODE_SIZE / 2 + RIM_GAP,
+  sourceSize?: RimSize, targetSize?: RimSize): FloatingCurve {
   const dx = target.x - source.x, dy = target.y - source.y, length = Math.hypot(dx, dy) || 1
   const control = { x: (source.x + target.x) / 2 - dy / length * bend, y: (source.y + target.y) / 2 + dx / length * bend }
   const leave = unit(control.x - source.x, control.y - source.y), enter = unit(target.x - control.x, target.y - control.y)
-  const start = { x: source.x + leave.x * radius, y: source.y + leave.y * radius }
-  const end = { x: target.x - enter.x * radius, y: target.y - enter.y * radius }
+  const rim = (direction: Point, size?: RimSize) => size
+    ? 1 / Math.hypot(direction.x / (size.width / 2), direction.y / (size.height / 2)) + RIM_GAP : radius
+  const sourceRadius = rim(leave, sourceSize), targetRadius = rim(enter, targetSize)
+  const start = { x: source.x + leave.x * sourceRadius, y: source.y + leave.y * sourceRadius }
+  const end = { x: target.x - enter.x * targetRadius, y: target.y - enter.y * targetRadius }
   const mid = { x: (start.x + 2 * control.x + end.x) / 4, y: (start.y + 2 * control.y + end.y) / 4 }
   const angle = Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI
   const round = (value: number) => Math.round(value * 10) / 10
@@ -39,7 +48,7 @@ export function edgeBend(index: number, forward: boolean) {
 export function useFloatingCurve(source: string, target: string, bend: number): FloatingCurve | undefined {
   const from = useInternalNode(source), to = useInternalNode(target)
   if (!from || !to) return undefined
-  return floatingCurve(center(from), center(to), bend)
+  return floatingCurve(center(from), center(to), bend, undefined, dimensions(from), dimensions(to))
 }
 
 const cap = (value: string) => value ? value[0]!.toUpperCase() + value.slice(1) : value

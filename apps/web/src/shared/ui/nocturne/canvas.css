@@ -453,8 +453,28 @@
 .n-signal-edge-badge text { fill: var(--text-muted); font: var(--type-eyebrow); letter-spacing: var(--type-eyebrow-tracking); text-transform: uppercase; }
 .n-signal-edge[data-signal] .n-signal-edge-badge text { fill: var(--edge-signal); }
 
-/* xyflow adapter: fixed-size circles, connection port on the rim, a whole-circle drop target. */
-.react-flow__node.react-flow__node-agent { width: var(--agent-size, 212px) !important; height: var(--agent-size, 212px) !important; padding: 0; border: 0; background: transparent; box-shadow: none; }
+/* xyflow owns authored geometry; the view, rim actions and drop target follow its bounds. */
+.react-flow__node.react-flow__node-agent { padding: 0; border: 0; background: transparent; box-shadow: none; }
+.react-flow__node-agent .workflow-agent-node, .react-flow__node-agent .n-agent { width: 100%; height: 100%; }
+.react-flow__node-agent .n-agent-core { justify-content: center; padding: 20px 0; }
+.react-flow__node-agent .n-agent-status { max-width: calc(100% - 40px); }
+.react-flow__node-agent .n-agent-name { max-width: calc(100% - 56px); }
+.react-flow__node-agent .n-agent-model { max-width: calc(100% - 72px); }
+.react-flow__node-agent .n-agent-actions::before { left: 62%; width: 62%; height: 71%; }
+.react-flow__node-agent .n-agent[data-selected] .n-agent-actions::before { pointer-events: none; }
+.react-flow__node-agent .n-agent-action--chat { left: 69%; }
+.react-flow__node-agent .n-agent-action--settings { left: 92%; top: 5%; }
+.react-flow__node-agent .n-agent-action--info { left: calc(100% + 6px); top: 31%; }
+.board-agent-resize-handle.react-flow__resize-control.handle { z-index: 5; width: 12px; height: 12px; border: 2px solid var(--surface-raised); border-radius: var(--radius-sm); background: var(--focus); }
+.board-agent-resize-line.react-flow__resize-control.line { z-index: 2; border: 0; }
+.board-agent-resize-line.line.left, .board-agent-resize-line.line.right { width: var(--resize-hit-size); }
+.board-agent-resize-line.line.top, .board-agent-resize-line.line.bottom { height: var(--resize-hit-size); }
+.board-agent-resize-line::after { content: ''; position: absolute; background: color-mix(in srgb, var(--focus) 45%, transparent); pointer-events: none; }
+.board-agent-resize-line.line.left::after, .board-agent-resize-line.line.right::after { inset: 0 auto 0 50%; width: 1px; }
+.board-agent-resize-line.line.top::after, .board-agent-resize-line.line.bottom::after { inset: 50% 0 auto; height: 1px; }
+.board-agent-resize:focus-visible { outline: none; }
+.board-agent-resize:focus-visible .board-agent-resize-handle { outline: 2px solid var(--focus); outline-offset: 3px; }
+.is-connecting .board-agent-resize { visibility: hidden; }
 .react-flow__node.react-flow__node-agent.selected, .react-flow__node.react-flow__node-agent:focus-visible { outline: none; box-shadow: none; }
 .react-flow__node-agent:focus-visible .n-agent-core { outline: 2px solid var(--focus); outline-offset: 4px; }
 .is-connecting .n-agent .n-agent-target.react-flow__handle { z-index: 6; pointer-events: auto; }

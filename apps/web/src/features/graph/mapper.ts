@@ -19,13 +19,14 @@ export const AGENT_HANDOFF_EDGE_TYPE = 'agentHandoff'
 
 export const GRAPH_NODE_MIN_WIDTH = 208
 export const GRAPH_NODE_MAX_WIDTH = 520
-export const GRAPH_NODE_MIN_HEIGHT = 112
+export const GRAPH_NODE_MIN_HEIGHT = 208
 export const GRAPH_NODE_MAX_HEIGHT = 320
-const DEFAULT_NODE_WIDTH = GRAPH_NODE_MIN_WIDTH
-const DEFAULT_NODE_HEIGHT = GRAPH_NODE_MIN_HEIGHT
+const DEFAULT_NODE_WIDTH = 212
+const DEFAULT_NODE_HEIGHT = 212
+export const ORCHESTRATOR_NODE_SIZE = 272
 const DEFAULT_NODE_GAP = 92
 const DEFAULT_NODE_Y = 120
-// Agents render as fixed circles; placement reserves the circle plus room for rim actions and connections.
+// Placement reserves the default circle plus room for rim actions and connections.
 const PLACEMENT_SIZE = 212
 const PLACEMENT_GAP = 88
 
@@ -75,7 +76,9 @@ export function findOpenNodePosition(
   height = PLACEMENT_SIZE,
 ): XYPosition {
   const occupied = nodes.map((node, index) => ({
-    position: workflowNodePosition(node, index), width: PLACEMENT_SIZE, height: PLACEMENT_SIZE,
+    position: workflowNodePosition(node, index),
+    width: Math.max(PLACEMENT_SIZE, node.width ?? PLACEMENT_SIZE),
+    height: Math.max(PLACEMENT_SIZE, node.height ?? PLACEMENT_SIZE),
   }))
   const stepX = width + PLACEMENT_GAP
   const stepY = height + PLACEMENT_GAP
@@ -211,10 +214,8 @@ export function workflowToGraph(
     const liveActivity = options.runActive ? options.liveActivitiesByNodeId?.get(workflowNode.id) : undefined
     const runState = options.runStatesByNodeId?.get(workflowNode.id)
     const runOutcome = options.runOutcomesByNodeId?.get(workflowNode.id)
-    const size = clampNodeSize(
-      workflowNode.width ?? DEFAULT_NODE_WIDTH,
-      workflowNode.height ?? DEFAULT_NODE_HEIGHT,
-    )
+    const defaultSize = agent.productRole === 'orchestrator' ? ORCHESTRATOR_NODE_SIZE : DEFAULT_NODE_WIDTH
+    const size = clampNodeSize(workflowNode.width ?? defaultSize, workflowNode.height ?? defaultSize)
     return {
       id: workflowNode.id,
       type: 'agent',
