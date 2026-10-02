@@ -87,6 +87,7 @@ export function WorkspaceShell({
   const setNavigationWidth = useNavigationUiStore((state) => state.setWidth)
   const setResizeWidth = useNavigationUiStore((state) => state.setResizeWidth)
   const stopResizeRef = useRef<(() => void) | null>(null)
+  const resizeCollapsedRef = useRef<boolean | null>(null)
 
   const navigationWorkspaceId = activeGlobalSection
     ? rememberedWorkspaceId ?? workspaceId
@@ -95,7 +96,7 @@ export function WorkspaceShell({
   useEffect(() => () => stopResizeRef.current?.(), [])
 
   useEffect(() => {
-    if (navigationCollapsed) stopResizeRef.current?.()
+    if (stopResizeRef.current && navigationCollapsed !== resizeCollapsedRef.current) stopResizeRef.current()
   }, [navigationCollapsed])
 
   useEffect(() => {
@@ -130,9 +131,10 @@ export function WorkspaceShell({
     const startX = event.clientX
     const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width
       || (navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : navigationWidth)
+    const rememberedWidth = navigationCollapsed ? navigationWidth : startWidth
     let finalWidth = navigationWidth
     let moved = false
-    let opened = !navigationCollapsed
+    let collapsed = navigationCollapsed
 
     const stop = () => {
       window.removeEventListener('pointermove', resize)
@@ -140,20 +142,22 @@ export function WorkspaceShell({
       window.removeEventListener('pointercancel', finish)
       window.removeEventListener('blur', stop)
       stopResizeRef.current = null
-      if (moved) setNavigationWidth(finalWidth, useNavigationUiStore.getState().motion)
+      resizeCollapsedRef.current = null
+      if (moved) setNavigationWidth(collapsed ? rememberedWidth : finalWidth, useNavigationUiStore.getState().motion)
     }
     const resize = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return
       const rawWidth = startWidth + moveEvent.clientX - startX
-      if (!opened) {
-        if (rawWidth <= startWidth) return
-        opened = true
+      if (collapsed) {
+        if (navigationCollapsed ? rawWidth <= startWidth : rawWidth < startWidth / 2) return
+        collapsed = false
+        resizeCollapsedRef.current = false
         setCollapsed(false, 'manual')
       }
-      if (!navigationCollapsed && rawWidth < startWidth / 2) {
-        finalWidth = startWidth
+      if (rawWidth < startWidth / 2) {
+        collapsed = true
+        resizeCollapsedRef.current = true
         moved = true
-        stop()
         setCollapsed(true, 'manual')
         return
       }
@@ -167,6 +171,7 @@ export function WorkspaceShell({
     }
 
     stopResizeRef.current = stop
+    resizeCollapsedRef.current = collapsed
     window.addEventListener('pointermove', resize)
     window.addEventListener('pointerup', finish)
     window.addEventListener('pointercancel', finish)

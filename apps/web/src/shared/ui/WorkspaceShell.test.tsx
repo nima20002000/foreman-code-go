@@ -296,8 +296,7 @@ describe('WorkspaceShell', () => {
     expect(shell).toHaveAttribute('data-navigation-motion', 'manual')
     expect(shell).toHaveStyle(`--navigation-width: ${startWidth}px`)
 
-    fireEvent.pointerMove(window, { pointerId: 7, clientX: 350 })
-    expect(shell).toHaveStyle(`--navigation-width: ${startWidth}px`)
+    fireEvent.pointerUp(window, { pointerId: 7 })
     resize.focus()
     await user.keyboard('{Enter}')
     expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
@@ -313,7 +312,44 @@ describe('WorkspaceShell', () => {
     expect(screen.getByTestId('workspace-shell')).not.toHaveClass('workspace-shell-navigation-collapsed')
     fireEvent.pointerMove(window, { pointerId: 7, clientX: 119 })
     expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
+    fireEvent.pointerUp(window, { pointerId: 7 })
     expect(useNavigationUiStore.getState().width).toBe(240)
+  })
+
+  it('closes and reopens repeatedly in one held pointer gesture using its original half-width threshold', async () => {
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    const shell = screen.getByTestId('workspace-shell')
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 264 })
+    for (const width of [132, 131, 264, 132, 131, 264, 340, 150, 132, 131, 132, 280]) {
+      fireEvent.pointerMove(window, { pointerId: 7, clientX: width })
+      expect(shell.classList.contains('workspace-shell-navigation-collapsed')).toBe(width < 132)
+      expect(resize).toHaveAttribute('aria-valuenow', String(width < 132 ? 60 : width))
+      expect(shell).toHaveStyle(`--navigation-width: ${width < 132 ? 264 : width}px`)
+      expect(useNavigationUiStore.getState().width).toBe(264)
+      expect(sessionStorage.getItem('graphql-navigation-width')).toBeNull()
+    }
+    fireEvent.pointerUp(window, { pointerId: 7 })
+    expect(useNavigationUiStore.getState()).toMatchObject({ collapsed: false, width: 280, resizeWidth: null })
+    expect(sessionStorage.getItem('graphql-navigation-width')).toBe('280')
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 131 })
+    expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
+  })
+
+  it.each(['pointerUp', 'pointerCancel', 'blur', 'unmount'])('finishes an auto-collapsed held gesture on %s and retains its remembered width', async (ending) => {
+    const view = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
+    fireEvent.pointerDown(resize, { button: 0, pointerId: 7, clientX: 264 })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 131 })
+    fireEvent.pointerMove(window, { pointerId: 8, clientX: 300 })
+    fireEvent.pointerUp(window, { pointerId: 8 })
+    expect(useNavigationUiStore.getState().collapsed).toBe(true)
+    if (ending === 'unmount') view.unmount()
+    else if (ending === 'blur') fireEvent.blur(window)
+    else fireEvent[ending as 'pointerUp' | 'pointerCancel'](window, { pointerId: 7 })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 300 })
+    expect(useNavigationUiStore.getState()).toMatchObject({ collapsed: true, width: 264, resizeWidth: null })
+    expect(sessionStorage.getItem('graphql-navigation-width')).toBe('264')
   })
 
   it('ignores other pointers and stops resizing on matching cancellation, external collapse, or unmount', async () => {
@@ -357,7 +393,7 @@ describe('WorkspaceShell', () => {
     expect(screen.getByTestId('workspace-shell')).toHaveAttribute('data-navigation-motion', 'instant')
   })
 
-  it('reopens and enlarges the collapsed rail by dragging outward without recollapsing in the same drag', async () => {
+  it('reopens the rail gradually and can close and reopen again without releasing the pointer', async () => {
     useNavigationUiStore.getState().setCollapsed(true)
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
     const resize = await screen.findByRole('separator', { name: 'Resize navigation' })
@@ -376,6 +412,14 @@ describe('WorkspaceShell', () => {
     fireEvent.pointerMove(window, { pointerId: 7, clientX: 61 })
     expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
     expect(shell).toHaveStyle('--navigation-width: 61px')
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 30 })
+    expect(shell).not.toHaveClass('workspace-shell-navigation-collapsed')
+    expect(shell).toHaveStyle('--navigation-width: 60px')
+    for (const width of [29, 60, 61, 264, 29, 61]) {
+      fireEvent.pointerMove(window, { pointerId: 7, clientX: width })
+      expect(shell.classList.contains('workspace-shell-navigation-collapsed')).toBe(width <= 60)
+      expect(resize).toHaveAttribute('aria-valuenow', String(width <= 60 ? 60 : width))
+    }
     fireEvent.pointerUp(window, { pointerId: 7 })
     fireEvent.pointerMove(window, { pointerId: 7, clientX: 350 })
     expect(shell).toHaveStyle('--navigation-width: 192px')
