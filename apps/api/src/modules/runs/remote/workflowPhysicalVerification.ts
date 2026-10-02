@@ -1,3 +1,5 @@
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { RemoteNativeIdentity } from '@graphql/contracts/remote-execution'
 import { isDeepStrictEqual } from 'node:util'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@graphql/contracts'
@@ -30,7 +32,11 @@ export interface RemoteWorkflowMainLifetime {
 }
 /** Descriptor only: the producer's private WeakMap is the authority. */
 export interface PreparedRemoteWorkflowPhysical { readonly kind: 'original-remote-physical' }
+export interface PassiveRemoteNativeOwner {
+  nativeOwner: string; native: RemoteNativeIdentity; binding: Readonly<DeviceSessionBinding>; assertCurrent(): void
+}
 interface Prepared {
+  binding: Readonly<DeviceSessionBinding>
   readout: RemoteWorkflowPhysicalReadout
   placement: AcceptedNodePlacement
   source: WorkflowOriginalNativeSource
@@ -76,6 +82,7 @@ function assertSource(readout: RemoteWorkflowPhysicalReadout, source: WorkflowOr
 export function createRemoteWorkflowPhysicalVerification(input: {
   endpoint(): Pick<DeviceEndpoint, 'captureRequest' | 'currentBinding'>
 }): RemoteNativePhysicalVerification & {
+  passiveNativeOwner(original: VerifiedRemoteOriginalSource): PassiveRemoteNativeOwner | undefined
   prefetch(receipt: RemoteOperationReceipt, placement: AcceptedNodePlacement, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<PreparedRemoteWorkflowPhysical>
   bind(original: VerifiedRemoteOriginalSource, prepared: PreparedRemoteWorkflowPhysical, owner: RunOwnership, lifetime: RemoteWorkflowMainLifetime): void
   /** Caller invokes only after durable canonical publication, outside G1. */
@@ -109,7 +116,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       if (!same(readout.receipt, receipt)) return unavailable()
       assertSource(readout, source)
       const result = Object.freeze({ kind: 'original-remote-physical' as const })
-      prepared.set(result, { readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
+      prepared.set(result, { binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent,
         acknowledge:async(sourceDigest)=>{
           assertCurrent()
           const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest},signal?{signal}:{})
@@ -138,6 +145,19 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         previous.lifetime.assertCurrent();return
       }
       bound.set(original, { ...capture, owner, lifetime,publications:new Set(),replyPublications:new Set() })
+    },
+    passiveNativeOwner(original) {
+      const capture = bound.get(original)
+      if (!capture || !capture.lifetime.lane || !capture.readout.receipt.native || capture.readout.receipt.terminal
+        || capture.readout.observation.lifecycle !== 'active' || capture.readout.closure) return undefined
+      const assertCurrent = () => {
+        if (bound.get(original) !== capture) return unavailable()
+        capture.owner.assertOwned(); original.assertCurrent(); capture.assertCurrent(); capture.lifetime.assertCurrent()
+        assertSource(capture.readout, original.source)
+      }
+      try { assertCurrent() } catch { return undefined }
+      return { nativeOwner: capture.readout.launch.owner, native: structuredClone(capture.readout.receipt.native),
+        binding: Object.freeze(structuredClone(capture.binding)), assertCurrent }
     },
     async acknowledge(original) {
       const capture=bound.get(original)

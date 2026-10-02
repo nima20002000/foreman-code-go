@@ -1,3 +1,4 @@
+import { withOriginalInteractionDeliveryClaim } from '../originalDeliveryClaim.js'
 import { randomUUID } from 'node:crypto'
 import type { DurableInteraction } from '@graphql/contracts'
 import type { NativeResponseJournal } from '../../harnesses/recovery/responseJournal.js'
@@ -72,7 +73,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
   }
   const writer = attached.manager
   const dispatchSignal = attached.signal ? AbortSignal.any([signal, attached.signal]) : signal
-  return deps.repository.delivery.finish(claim, async (interaction, writeSignal) => {
+  return deps.repository.delivery.finish(claim, (interaction, writeSignal) => withOriginalInteractionDeliveryClaim<NativeDeliveryOutcome>({ ...claim, interaction }, async () => {
     try {
       // Revalidate permission/location AFTER the writer's control queue, using
       // its owned cancellation signal. The final SQL fence check commits before
@@ -90,7 +91,7 @@ export async function deliverApproval(deps: ApprovalRuntimeDependencies, id: str
       const proof = matchingDeliveryEvidence(interaction, attached.session, history)
       return proof ? { state: 'delivered', evidence: proof } : { state: 'uncertain', error: 'APPROVAL_DELIVERY_RECEIPT_MISSING' }
     } catch { return { state: 'uncertain', error: 'APPROVAL_NATIVE_DELIVERY_UNCERTAIN' } }
-  }, dispatchSignal)
+  }), dispatchSignal)
 }
 
 export async function resumeApproval(deps: ApprovalRuntimeDependencies, interaction: DurableInteraction): Promise<void> {

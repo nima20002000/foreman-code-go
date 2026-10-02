@@ -506,3 +506,32 @@ it('retains proof when the owning canonical transaction rolls back instead of se
   expect(f.request).toHaveBeenCalledOnce()
   await f.sqlConnection.close()
 })
+
+
+describe('passive original remote telemetry precision, no native or database IO', () => {
+  it('returns only the privately bound original owner and authenticated binding without IO', async () => {
+    const f = await physicalFixture(), original = await f.bind()
+    const passive = f.producer.passiveNativeOwner(original)!
+    expect(passive.nativeOwner).toBe(f.readout.launch.owner)
+    expect(passive.native).toEqual(f.readout.receipt.native)
+    expect(passive.binding).toEqual(f.context.binding)
+    passive.native.sessionId = 'mutated-readback'
+    expect(f.producer.passiveNativeOwner(original)!.native.sessionId).toBe(f.session.nativeSessionId)
+    passive.assertCurrent()
+    expect(f.request).toHaveBeenCalledOnce()
+    expect(f.query).not.toHaveBeenCalled()
+    expect(f.producer.passiveNativeOwner({ ...original })).toBeUndefined()
+    await f.sqlConnection.close()
+  })
+  it.each(['expired', 'revoked', 'original-binding'] as const)('withdraws %s precision and invalidates captured fences', async defect => {
+    const f = await physicalFixture(), original = await f.bind(), passive = f.producer.passiveNativeOwner(original)!
+    if (defect === 'expired') vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.readout.expiresAt) + 1)
+    if (defect === 'revoked') vi.mocked(f.lifetime.assertCurrent).mockImplementation(() => { throw new Error('Original writer revoked') })
+    if (defect === 'original-binding') f.currentBinding.mockReturnValue({ ...f.context.binding, connectionEpoch: randomUUID() })
+    expect(f.producer.passiveNativeOwner(original)).toBeUndefined()
+    expect(() => passive.assertCurrent()).toThrow()
+    expect(f.request).toHaveBeenCalledOnce()
+    expect(f.query).not.toHaveBeenCalled()
+    await f.sqlConnection.close()
+  })
+})
