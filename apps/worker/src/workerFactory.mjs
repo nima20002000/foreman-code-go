@@ -3,6 +3,7 @@ import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInstalledWorkerDomains } from '../../../apps/api/src/modules/devices/installedWorkerDomains.ts';
 import { codexQualificationSuite } from '../../../apps/api/src/modules/harnesses/qualification/suites/codex.ts';
+import { qualificationRevisionWithIdentity } from '../../../apps/api/src/modules/harnesses/qualification/identity.ts';
 import { loadApprovedRoots } from './approvedRoots.mjs';
 import { createWorkerExecutionDomains } from '../../../apps/api/src/modules/runs/remote/workerComposition.ts';
 import { mkdir, readFile } from 'node:fs/promises';
@@ -87,7 +88,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
         ...(rsync ? { rsync } : {}),
-        codexSuiteRevision: codexQualificationSuite.revision });
+        codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision) });
     }
     connection = createWorkerConnection({ pairing, bootId, appVersion: manifest.version,
       onBindingLost: bindingLost,

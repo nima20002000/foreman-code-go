@@ -18,11 +18,10 @@ import { harnessInstanceProfileEvidenceMigration } from '../src/modules/harnesse
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
 
 it('persists host overrides through actual buildApp authenticated MCP and HTTP with denial, CAS, replay, cold readback and canonical revocation', async () => {
-  if (!process.env.TEST_DATABASE_URL) throw new Error('Requires explicit owned TEST_DATABASE_URL.')
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL })
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
   const schema = `harness_instances_${randomUUID().replaceAll('-', '')}`
   await admin.query(`create schema "${schema}"`)
-  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path=${schema}` })
+  const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
   let app: ReturnType<typeof buildApp> | undefined
   const clients: Client[] = []
   try {
@@ -73,7 +72,12 @@ it('persists host overrides through actual buildApp authenticated MCP and HTTP w
     const writer = await connect(owner.token), denied = await connect(reader.token)
     expect((await writer.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['harness_instances_list', 'harness_instance_save', 'harness_instance_check']))
     expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('harness_instance_save')
-    await expect(denied.callTool({ name: 'harness_instance_save', arguments: {} })).rejects.toThrow('not found')
+    const deniedSave = await denied.callTool({ name: 'harness_instance_save', arguments: {} })
+    expect(deniedSave.isError).toBe(true)
+    expect(JSON.stringify(deniedSave.content)).toContain('ACCESS_DENIED')
+    expect((await pool.query("select principal_id,action from management_audit where outcome='denied' and source='mcp' and action='harness_instance_save'")).rows)
+      .toEqual([{ principal_id: reader.principal.id, action: 'harness_instance_save' }])
+    expect((await pool.query('select count(*)::int as count from harness_instance_settings')).rows[0].count).toBe(0)
     const hostRef = { kind: 'device', mainId, deviceId }
     const args = { commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0, target: { hostRef, applicationInstallationId: workerInstallationId, harnessInstallationId: 'codex-native', installationFingerprint: 'sha' }, presetId: 'local-default:codex', enabled: true,
       configuration: { harness: 'codex', model: 'test', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' } }

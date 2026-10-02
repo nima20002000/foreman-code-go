@@ -1,19 +1,54 @@
 import { randomUUID } from 'node:crypto'
+import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
-import type { Client } from '@modelcontextprotocol/client'
-import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
-import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { buildApp } from '../src/app.js'
+import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { createClaudeNativeSessionManager } from '../src/modules/harnesses/claudeSdk/sessionManager.js'
 import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 
+async function claudeMcpFixture() {
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+  const schema = `claude_resume_${randomUUID().replaceAll('-', '')}`
+  await admin.query(`create schema "${schema}"`)
+  const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
+  let app: ReturnType<typeof buildApp> | undefined
+  const clients: Client[] = []
+  const close = async () => {
+    await Promise.allSettled(clients.map(client => client.close())); await app?.close(); await pool.end()
+    try { await admin.query(`drop schema "${schema}" cascade`) } finally { await admin.end() }
+  }
+  try {
+    await applyApplicationMigrations(pool)
+    const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
+    const locations = new WorkspaceLocationService(pool, commands)
+    const services = { commands, locations, workspaces: new WorkspaceManagementService(pool, commands, locations) } as OperatorServices
+    app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const writer = await access.issue({ name: 'Claude resumed writer', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['workspaces:create', 'workspaces:read'], scope: {} }] })
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'claude-resume-test', version: '1' }); clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
+      return client
+    }
+    return { db: { pool }, access, address, writer, connect, close }
+  } catch (error) { await close(); throw error }
+}
+
 // Provider frames are synthetic; authentication, MCP dispatch, grants, audits
 // and persisted workspace readback use the real endpoint and PostgreSQL.
-describe.skipIf(!postgresEnabled)('NEW-CLAUDE F-13 authenticated resumed query', () => {
+describe('NEW-CLAUDE F-13 authenticated resumed query', () => {
   it('uses the resumed scoped credential for an allowed write/readback and denies a read-only caller', async () => {
-    const f = await currentOperatorIntegration()
+    const f = await claudeMcpFixture()
     const managers: ReturnType<typeof createClaudeNativeSessionManager>[] = []
     const url = new URL('/mcp', f.address).toString()
     const servers = { graphql: { type: 'http', url } }

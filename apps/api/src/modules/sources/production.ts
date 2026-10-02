@@ -8,6 +8,8 @@ import { sourceMaterializationDigest } from './bindingHash.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
 import type { GraphSqlClient } from '../run-graph/connection.js'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { SourceRootRecordSchema, type SourceRootRecord } from '@graphql/contracts/source-admission'
 import { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
 import { ExistingByteTransferSourcePackageSender, type SourcePackageTransferAdmission } from './operationSender.js'
@@ -21,7 +23,8 @@ import type { WorkspaceRootHostPort } from './rootPolicyPorts.js'
 import { PostgresWorkspaceRootPolicies, workspaceRootHostScope } from './rootPolicies.js'
 import { InstalledWorkspaceRootHosts } from './rootHosts.js'
 import { RegisteredWorkspaceSourceRoots } from './registeredSourceRoots.js'
-import { InstalledSourceExecutionHosts, type RemoteSourceMaterializationHost, type SourceActiveNativeSessionReader, type SourceNativeSessionCaptureReader } from './executionHosts.js'
+import type { RegisteredSourceRootPort } from './admissionPorts.js'
+import { InstalledSourceExecutionHosts, type SourceAttemptAuthority, type RemoteSourceMaterializationHost, type SourceActiveNativeSessionReader, type SourceNativeSessionCaptureReader } from './executionHosts.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { PostgresSourceService } from './service.js'
 import { JobSourceAttemptAuthority } from '../jobs/sourceAuthority.js'
@@ -73,7 +76,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     } })
   }
   const policies = new PostgresWorkspaceRootPolicies(input.mainId, hosts)
-  const roots = new RegisteredWorkspaceSourceRoots(policies, hosts)
+  const roots: RegisteredSourceRootPort = new RegisteredWorkspaceSourceRoots(policies, hosts)
   const root = join(input.runtimeRoot, 'source-snapshots')
   await mkdir(root, { recursive: true, mode: 0o700 })
   const snapshots = new PrivateSourceSnapshotStore(root)
@@ -83,7 +86,31 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   }
   const jobs = new JobSourceAttemptAuthority(input.pool, installationFence)
   const agents = new AgentSourceAttemptAuthority(input.pool, installationFence)
-  const attempts = installedSourceAttemptAuthority(input.pool, agents, jobs)
+  const originalAttempts = installedSourceAttemptAuthority(input.pool, agents, jobs)
+  const assertRootPolicy = async (sql: GraphSqlClient, principal: ManagementPrincipal, root: SourceRootRecord) => {
+    const current = await roots.authorize(sql, principal, { workspaceId: root.binding.workspaceId, selection: root.selection, accessMode: root.binding.accessMode })
+    if (current.ownerPrincipalId !== root.ownerPrincipalId || current.mainId !== root.binding.mainId || current.deviceId !== root.binding.deviceId
+      || current.workerInstallationId !== root.binding.workerInstallationId || current.keyRevision !== (root.registration?.keyRevision ?? null)
+      || current.authorizationRevision !== (root.registration?.authorizationRevision ?? null)
+      || current.canonicalPath !== root.binding.canonicalPath) throw new DomainError('SOURCE_ROOT_CONFLICT', 'Current root authority differs from the exact accepted source namespace.', 409)
+  }
+  const readRoot = async (sql: GraphSqlClient, record: Parameters<SourceAttemptAuthority['revalidateMaterialization']>[0]) => {
+    const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share',
+      [record.receipt.binding.rootId, record.receipt.binding.bindingRevision])).rows[0]
+    return SourceRootRecordSchema.parse(row?.record)
+  }
+  const attempts: SourceAttemptAuthority = {
+    async authorize(sql, principal, value) { await originalAttempts.authorize(sql, principal, value); await assertRootPolicy(sql, principal, value.root) },
+    async authorizeFinal(sql, principal, record, hash) { await originalAttempts.authorizeFinal(sql, principal, record, hash); await assertRootPolicy(sql, principal, await readRoot(sql, record)) },
+    async revalidate(root, attempt) { await owners.prepareIdentity(root, attempt) },
+    async revalidateMaterialization(record) {
+      const sql = await input.pool.connect()
+      let root: SourceRootRecord
+      try { root = await readRoot(sql, record) } finally { sql.release() }
+      await originalAttempts.revalidateMaterialization(record)
+      await owners.prepareIdentity(root, record.receipt)
+    },
+  }
   const confirmedClosed = async (sql: GraphSqlClient, record: import('@graphql/contracts/source-admission').SourceMaterializationRecord) => {
     const original = await readDispatchIntent(sql, record.receipt.executionId)
     if (original) {

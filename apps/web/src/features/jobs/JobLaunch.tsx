@@ -1,9 +1,10 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { JobDefinition, JobExecution, JobStart } from '@graphql/contracts/jobs'
 import { Alert, Button, Dialog } from '../../shared/ui/nocturne'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { jobsClient } from './client'
-import { jobError, jobReadRetry, jobWriteUncertain } from './model'
+import { jobAccessLost, jobError, jobReadRetry, jobWriteUncertain } from './model'
 import { jobKeys } from './query'
 import { JobSpecFacts } from './JobSpecFacts'
 
@@ -11,11 +12,13 @@ export function JobLaunch({ definition, workspaceId, rerun, onClose, onAccepted 
   const cache = useQueryClient()
   const validation = useQuery({ queryKey: ['jobs', workspaceId, 'validation', definition.id, definition.revision], queryFn: () => jobsClient.validate(workspaceId, definition.spec), retry: jobReadRetry, staleTime: 0 })
   const readiness = validation.isSuccess && !validation.isFetching ? validation.data : undefined
+  const [unresolved, setUnresolved] = useState(false)
   const start = useMutation({ mutationKey: ['jobs', workspaceId, 'start', definition.id], gcTime: Infinity, retry: false,
     mutationFn: (input: JobStart) => jobsClient.start(workspaceId, input),
-    onSuccess: execution => { cache.setQueryData(jobKeys.execution(workspaceId, execution.id), execution); void cache.invalidateQueries({ queryKey: jobKeys.history(workspaceId) }); onAccepted(execution) },
+    onSuccess: execution => { cache.setQueryData(jobKeys.execution(workspaceId, execution.id), execution); void cache.invalidateQueries({ queryKey: jobKeys.history(workspaceId) }); onAccepted(execution); setUnresolved(false) },
+    onError: error => { if (jobWriteUncertain(error)) setUnresolved(true); else if (!jobAccessLost(error)) setUnresolved(false) },
   })
-  const uncertain = jobWriteUncertain(start.error)
+  const uncertain = unresolved || jobWriteUncertain(start.error)
   const submit = () => start.mutateAsync(start.variables ?? { commandId: crypto.randomUUID(), definitionId: definition.id, expectedRevision: definition.revision })
   const close = useUnsavedChanges({ label: 'job launch', scope: 'surface', dirty: false, busy: start.isPending, uncertain, saveDisabled: !start.variables && !readiness?.valid,
     save: submit, discard: onClose, ...(start.error ? { error: jobError(start.error) } : {}) })

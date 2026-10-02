@@ -55,7 +55,8 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
         evidence.interpreter = interpreter
         try {
           await access(interpreter, constants.X_OK)
-          if (interpreter === '/usr/bin/env' || interpreter === '/bin/env') {
+          evidence.interpreter = await realpath(interpreter)
+          if (interpreter === '/usr/bin/env' || interpreter === '/bin/env' || evidence.interpreter === '/usr/bin/env' || evidence.interpreter === '/bin/env') {
             // env -S and other option-bearing shebangs need explicit diagnostics, not guessed support.
             const command = words[1]
             if (!command || command.startsWith('-')) throw new Error('Unsupported env shebang options')

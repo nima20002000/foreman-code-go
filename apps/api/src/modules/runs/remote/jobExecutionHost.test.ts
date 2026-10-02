@@ -39,14 +39,17 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
   const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true }
+  let started = false, released = false
+  const waiting: Array<() => void> = []
   const cid='c'.repeat(64),policy=execution.acceptedSpec.policy
   const profile: QualifiedJobProfile = {workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, policyId:policy.isolationPolicyId,policyRevision:policy.isolationPolicyRevision,imageDigest:policy.imageDigest,toolchainDigest:policy.toolchainDigest,
     runtimeVersion:'unit',ociRuntimeVersion:'unit',kernelVersion:'unit',qualificationId:'unit-qualified',rootless:true,cgroupV2:true,filesystemBounded:true,descendantContainment:true,network:'none',cpuLimit:1,memoryBytes:1048576,pidsLimit:64,diskBytes:1048576 }
   const runner: PodmanCommandRunner = { run:async argv => {
     if(argv.includes('create')){state.creates++;return{exitCode:0,stdout:cid}}
-    if(argv[0]==='wait')return{exitCode:0,stdout:'7'}
-    return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:false,Pid:0,ExitCode:7,Status:'exited'}}])}
-  },attach:()=>{const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough()});queueMicrotask(()=>{child.stdout.end('build exit7');child.stderr.end();child.emit('close',7)});return child as unknown as ReturnType<PodmanCommandRunner['attach']>} }
+    if(argv[0]==='wait')return new Promise(resolve => { waiting.push(() => resolve({exitCode:0,stdout:'7'})) })
+    if(argv[0]==='exec'){released=true;for(const finish of waiting.splice(0))finish();return{exitCode:0,stdout:''}}
+    return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:started&&!released,Pid:started&&!released?100:0,ExitCode:7,Status:released?'exited':started?'running':'created'}}])}
+  },attach:async()=>{started=true;const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough()});waiting.push(()=>{child.stdout.end('build exit7');child.stderr.end();child.emit('close',7)});return child as unknown as Awaited<ReturnType<PodmanCommandRunner['attach']>>} }
   // OCI boundary authority is a unit double; this suite proves journal/input sequencing, not physical qualification.
   const ownership={reserveContainerIntent:vi.fn(),assertCurrent:vi.fn(),bindContainer:vi.fn(),launchHelpers:vi.fn(),readCertificate:vi.fn(),publish:vi.fn()} as unknown as OCIContainerOwnership
   vi.spyOn(OwnedOCIContainer.prototype,'entered').mockResolvedValue(undefined as never)

@@ -300,8 +300,8 @@ export class NativeHarnessFactories {
     const current = await (this.config.installationDiscovery ?? discoverLauncher)(launcher, prior.environment,
       (prior.payloadFingerprints ?? []).filter((item) => item.path !== launcher).map((item) => item.path), signal)
     signal?.throwIfAborted()
-    if (current.fingerprint !== binding.installation.installationFingerprint) throw new DomainError(
-      'HARNESS_INSTALLATION_CHANGED', 'The selected launcher or native payload changed after admission.', 409)
+    if (current.fingerprint !== binding.installation.installationFingerprint || current.interpreter !== prior.interpreter) throw new DomainError(
+      'HARNESS_INSTALLATION_CHANGED', 'The selected launcher, interpreter or native payload changed after admission.', 409)
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {

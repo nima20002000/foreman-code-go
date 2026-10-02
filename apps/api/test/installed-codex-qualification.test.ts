@@ -1,15 +1,44 @@
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults } from '@graphql/contracts'
 import { commandInputHash } from '@graphql/contracts/command-identity-node'
 import { ExecutionFactsResultSchema } from '@graphql/contracts/execution-authority'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { loadOrCreateWorkerIdentity, persistWorkerPairing } from '@graphql/contracts/device-identity-node'
 import { createInstalledCodexQualificationReader } from '../src/modules/harnesses/installedCodexQualification.js'
 import type { InstalledCodexInspection } from '../src/modules/harnesses/installedCodexInspection.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
+import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 
-function fixture() {
-  const binding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
-    keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4, connectionEpoch: randomUUID() }
+const mount = vi.hoisted(() => ({ revision: '', manifest: {} as unknown,
+  bootId: '44444444-4444-4444-8444-444444444444',
+}))
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...actual, readFile: async (...args: Parameters<typeof actual.readFile>) =>
+    args[0] instanceof URL && args[0].pathname.endsWith('/apps/worker/manifest.json')
+      ? JSON.stringify(mount.manifest) : actual.readFile(...args) }
+})
+vi.mock('../src/modules/devices/installedWorkerDomains.ts', () => ({
+  createInstalledWorkerDomains: async (input: { codexSuiteRevision: string }) => {
+    mount.revision = input.codexSuiteRevision
+    return { extensions: [], close: async () => {} }
+  },
+}))
+vi.mock('../src/modules/devices/workerConnection.ts', () => ({ createWorkerConnection: () => ({}) }))
+vi.mock('../../worker/src/runtime.mjs', () => ({
+  acquireWorkerLock: async () => async () => {},
+  startWorker: async (input: { createConnection(input: { bootId: string }): Promise<unknown>; beforeUnlock(): Promise<void> }) => {
+    await input.createConnection({ bootId: mount.bootId })
+    return { stop: input.beforeUnlock }
+  },
+}))
+
+function fixture(suiteRevision = 'codex-live-4', binding: DeviceSessionBinding = {
+  mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
+  keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4, connectionEpoch: randomUUID(),
+}) {
   const hostRef = { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId }
   const target = { hostRef, applicationInstallationId: binding.workerInstallationId, harnessInstallationId: 'actual-codex-installation', installationFingerprint: 'actual-whole-launcher-fingerprint' }
   const sha = 'a'.repeat(64), hash = 'b'.repeat(64), timestamp = '2026-10-01T00:00:00.000Z'
@@ -62,11 +91,44 @@ function fixture() {
   const inspect = vi.fn(async () => structuredClone(inspection)), readFacts = vi.fn(async () => structuredClone(facts))
   const controller = new AbortController()
   const reader = createInstalledCodexQualificationReader({ intent: facts.intent, placement: facts.placement, trustedCurrentBinding: () => live,
-    inspect, readFacts, suiteRevision: 'codex-live-4', signal: controller.signal })
+    inspect, readFacts, suiteRevision, signal: controller.signal })
   return { facts, inspection, reader, inspect, readFacts, controller, binding, setLive: (value: typeof live) => { live = value } }
 }
 
 describe('actual Main and installed Codex qualification read capability', () => {
+  it('accepts producer-shaped identity-qualified proof through the shipped worker mount and keeps exact revision checks', async () => {
+    const stateDirectory = await mkdtemp('/var/tmp/graphql-codex-revision-')
+    try {
+      const diagnosticsPath = new URL('../../worker/src/diagnostics.mjs', import.meta.url).href
+      const { hostFacts } = await import(diagnosticsPath)
+      const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory])
+      mount.manifest = { format: 1, version: '0.1.0', commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
+        protocolVersion: 1, identityFormat: 1, packageManager: 'pnpm@11.27.0',
+        target: { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node },
+        files: [{ path: 'src/cli.mjs', sha256: 'c'.repeat(64), size: 0 }] }
+      const factoryPath = new URL('../../worker/src/workerFactory.mjs', import.meta.url).href
+      const { startConfiguredWorker } = await import(factoryPath)
+      const identity = await loadOrCreateWorkerIdentity(stateDirectory)
+      const original = { ...fixture().binding, workerInstallationId: identity.workerInstallationId, keyRevision: identity.keyRevision }
+      await persistWorkerPairing(stateDirectory, { formatVersion: 1, mainId: original.mainId, deviceId: original.deviceId,
+        workerInstallationId: original.workerInstallationId, keyRevision: original.keyRevision, authorizationRevision: original.authorizationRevision,
+        endpoint: 'wss://main.example/device/connect', mainPublicKeyFingerprint: 'd'.repeat(64), credential: 'e'.repeat(64),
+        expiresAt: '2099-01-01T00:00:00Z' })
+      mount.bootId = original.bootId
+      const worker = await startConfiguredWorker({ stateDirectory })
+      try {
+        expect(mount.revision).toBeTruthy()
+        const f = fixture(mount.revision, original)
+        f.facts.harness.qualification.suiteRevision = 'codex-live-4+identity-v1'
+        expect((await f.reader.capture()).qualification).toEqual(f.facts.harness.qualification)
+        expect(await f.reader.repository.find('codex', '0.132.0', 'a'.repeat(64), 'codex-live-4+identity-v1')).toEqual(f.facts.harness.qualification)
+        const gate = new HarnessQualificationRegistry(f.reader.repository, { codex: mount.revision })
+        expect(await gate.trustedExact('codex', '0.132.0', 'a'.repeat(64))).toBe(true)
+        f.facts.harness.qualification.suiteRevision = 'codex-live-4'
+        await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+      } finally { await worker.stop() }
+    } finally { await rm(stateDirectory, { recursive: true, force: true }) }
+  })
   it('reads the exact persisted record afresh for every allocation and readonly repository lookup', async () => {
     const f = fixture()
     expect((await f.reader.capture()).qualification).toEqual(f.facts.harness.qualification)

@@ -1,6 +1,7 @@
 import type { JobExecution } from '@graphql/contracts/jobs'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { chmod, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -14,13 +15,15 @@ import { jobSpecDigests } from '@graphql/contracts/jobs-node'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { identity } from '../sources/privateFilesystem.js'
 import { jobSupervisorIdentity, type JobLaunchPlan, type QualifiedJobProfile } from './executor.js'
-import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
+import { OwnedOCIContainer, type OCIContainerOwnership, type OCIHostCertificate } from './executorContainerOwner.js'
+import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { PodmanJobSupervisor, podmanCreateArgv, type PodmanCommandRunner } from './executorPodman.js'
 
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const roots: string[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture() {
+async function fixture(exitCode=7) {
   const root = await mkdtemp(join(tmpdir(), 'ci-oci-input-')); roots.push(root)
   const sourceRoot = join(root, '11111111-1111-4111-8111-111111111111','tree'), runtimeRoot = join(root, 'runtime')
   await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot, { mode: 0o700 }); await mkdir(runtimeRoot, { mode: 0o700 }); const inputRoot = join(sourceRoot, JOB_INPUT_DIRECTORY); await mkdir(inputRoot)
@@ -42,8 +45,8 @@ async function fixture() {
   let stopped = false; let resolveWait: ((value: { exitCode: number; stdout: string }) => void) | undefined
   const run = vi.fn(async (argv: string[]) => {
     if (argv.includes('create')) return { exitCode: 0, stdout: digest }
-    if (argv[0] === 'wait') return new Promise<{ exitCode: number; stdout: string }>(resolve => { resolveWait = resolve; if (stopped) resolve({ exitCode: 0, stdout: '7' }) })
-    return { exitCode: 0, stdout: JSON.stringify([{ Id: digest, Config: { Labels: { 'graphql.job.identity': plan.identity, 'graphql.job.spec': spec.specDigest, 'graphql.job.attempt': execution.attemptId } }, State: { Running: !stopped, Pid: stopped ? 0 : 100, ExitCode: 7, Status: stopped ? 'exited' : 'running' } }]) }
+    if (argv[0] === 'wait') return new Promise<{ exitCode: number; stdout: string }>(resolve => { resolveWait = resolve; if (stopped) resolve({ exitCode: 0, stdout: String(exitCode) }) })
+    return { exitCode: 0, stdout: JSON.stringify([{ Id: digest, Config: { Labels: { 'graphql.job.identity': plan.identity, 'graphql.job.spec': spec.specDigest, 'graphql.job.attempt': execution.attemptId } }, State: { Running: !stopped, Pid: stopped ? 0 : 100, ExitCode: exitCode, Status: stopped ? 'exited' : 'running' } }]) }
   })
   const commands: PodmanCommandRunner = { run, attach: vi.fn(async () => child as unknown as Awaited<ReturnType<PodmanCommandRunner['attach']>>) }
   const ownership = { reserveContainerIntent: vi.fn(), assertCurrent: vi.fn(), bindContainer: vi.fn(), launchHelpers: vi.fn(), readCertificate: vi.fn(), publish: vi.fn() } as unknown as OCIContainerOwnership
@@ -51,7 +54,7 @@ async function fixture() {
   vi.spyOn(OwnedOCIContainer.prototype, 'entered').mockImplementation(async () => { throw new Error('unit boundary marker') })
   vi.spyOn(OwnedOCIContainer.prototype, 'close').mockResolvedValue(false)
   const supervisor = new PodmanJobSupervisor(profile, commands, async () => ownership)
-  return { root, inputRoot, execution, receipt, plan, supervisor, run, ownership, commands, child, stop: () => { stopped = true; resolveWait?.({ exitCode: 0, stdout: '7' }) } }
+  return { root, inputRoot, execution, receipt, plan, supervisor, run, ownership, commands, child, stop: () => { stopped = true; resolveWait?.({ exitCode: 0, stdout: String(exitCode) }) } }
 }
 describe('OCI immutable input consumer with command/boundary doubles, no live qualification', () => {
   it('emits the exact retained input RO submount and fixed manifest environment', async () => {
@@ -78,6 +81,7 @@ describe('OCI immutable input consumer with command/boundary doubles, no live qu
     const f = await fixture()
     await expect(f.supervisor.launch(f.plan)).rejects.toThrow('unit boundary marker')
     expect(f.ownership.bindContainer).toHaveBeenCalledWith(f.plan.identity, 'a'.repeat(64))
+    expect(f.run.mock.calls.some(([argv])=>argv[0]==='exec')).toBe(false)
     f.stop()
   })
   it('rearms the persisted deadline on recovery and stops locally without a launch', async () => {
@@ -94,6 +98,53 @@ describe('OCI immutable input consumer with command/boundary doubles, no live qu
     } finally { vi.useRealTimers() }
   })
 
+})
+
+describe('original command release after durable entry proof, OCI boundary observations doubled',()=>{
+  it.each([0,7])('retains immediate exit %i and reconciles from the reopened original journal',async exitCode=>{
+    const f=await fixture(exitCode),path=join(f.root,'operations.json'),bootId=bootIdentity(),containerId='a'.repeat(64)
+    let journal=await RemoteOperationJournal.open(path,{initializeNewInstallation:true})
+    const execution=f.execution,intent={schemaVersion:1 as const,protocolVersion:1 as const,mainId:execution.acceptedSpec.target.mainId,subject:{kind:'manual-job' as const,workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner}
+    await journal.jobAccept(intent,execution,{kind:'main',mainId:intent.mainId,mainInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId},randomUUID());await journal.jobReserveEntry(execution.operationId)
+    const certificate:OCIHostCertificate={scope:{subject:{kind:'job',executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:intent.bindingHash},leaseId:execution.operationId,owner:execution.owner,observedDeviceId:null,observedInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId},containerId,process:{pid:100,startTicks:'123',bootId},boundary:{kind:'cgroup-v2',path:`/sys/fs/cgroup/graphql-test-absent-${randomUUID()}-libpod-${containerId}.scope`,device:'1',inode:'2'},helpers:[],lifecycle:'active'}
+    Object.assign(f.ownership,{scope:certificate.scope,reserveContainerIntent:(identity:string,fingerprint:string)=>journal.jobContainerIntent(execution.operationId,identity,fingerprint),bindContainer:(identity:string,id:string)=>journal.jobBindContainer(execution.operationId,identity,id),readCertificate:async()=> (await journal.jobNativeOwner(execution.operationId))?.container?.certificate??null,publish:(value:OCIHostCertificate)=>journal.jobCertificate(execution.operationId,value),closeHelpers:async()=>true})
+    vi.mocked(OwnedOCIContainer.prototype.entered).mockImplementation(async()=>{
+      const observed=JSON.parse((await f.commands.run(['container','inspect',containerId])).stdout)[0]
+      if(!observed.State.Running||observed.State.Pid<=0)throw new Error('Original entry already exited before its certificate.')
+      await f.ownership.publish(certificate);return certificate
+    })
+    vi.mocked(OwnedOCIContainer.prototype.close).mockRestore()
+    const original=f.run.getMockImplementation()!
+    let gated=false
+    vi.mocked(f.commands.attach).mockImplementation(async()=>{if(!gated)f.stop();return f.child as unknown as Awaited<ReturnType<PodmanCommandRunner['attach']>>})
+    f.run.mockImplementation(async argv=>{
+      if(argv.includes('create'))gated=argv.includes('/tmp/graphql-job-start')
+      if(argv[0]==='exec'){
+        expect((await journal.jobNativeOwner(execution.operationId))?.container?.certificate).toEqual(certificate)
+        f.stop();return {exitCode:0,stdout:''}
+      }
+      return original(argv)
+    })
+    try{
+      const launched=await f.supervisor.launch(f.plan)
+      expect(f.run.mock.calls.some(([argv])=>argv[0]==='exec')).toBe(true)
+      expect(await launched.exited).toMatchObject({exitCode,signal:null})
+      await journal.close();journal=await RemoteOperationJournal.open(path)
+      const recovered=new PodmanJobSupervisor(f.plan.profile,f.commands,async()=>f.ownership)
+      expect(await recovered.reconcile(execution)).toMatchObject({stopped:true,exitCode})
+      expect((await journal.jobNativeOwner(execution.operationId))?.container?.certificate?.lifecycle).toBe('closed')
+    }finally{f.stop();await journal.close()}
+  })
+  it.each([0,7])('runs the emitted Node bootstrap only after release and preserves exit %i',async exitCode=>{
+    const f=await fixture(),argv=podmanCreateArgv(f.plan),entry=argv.indexOf('--entrypoint'),args=argv.slice(entry+3),gate=join(f.root,'release')
+    expect(args[0]).toBe('-e');expect(args[2]).toBe('--');expect(args[3]).toBe('/tmp/graphql-job-start')
+    const child=spawn(process.execPath,['-e',args[1]!,'--',gate,process.execPath,'-e',`process.exit(${exitCode})`],{stdio:['ignore','pipe','pipe']})
+    const exited=new Promise<number|null>((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)})
+    try{
+      await new Promise(resolve=>setTimeout(resolve,50));expect(child.exitCode).toBeNull()
+      await writeFile(gate,'');expect(await exited).toBe(exitCode)
+    }finally{if(child.exitCode===null&&!child.killed)child.kill('SIGTERM');await exited}
+  })
 })
 
 // Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.

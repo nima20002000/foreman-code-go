@@ -1,6 +1,10 @@
 import type { HarnessInstallationRegistry, RegistryHarnessSelection } from '../installationRegistry.js'
 import type { QualificationSuite, QualificationSuiteInput } from './types.js'
 
+export function qualificationRevisionWithIdentity(revision: string): string {
+  return `${revision}+identity-v1`
+}
+
 /** The same selection and inventory evidence used for admission, never provider
  * session provenance or a filesystem observation mislabeled as qualification. */
 export function qualificationIdentity(binding: RegistryHarnessSelection, suiteRevision: string) {
@@ -21,7 +25,7 @@ export function qualificationIdentity(binding: RegistryHarnessSelection, suiteRe
  * Forced live runs execute every time; only their evidence is generation-fenced. */
 export function withQualificationIdentity(suite: QualificationSuite, registry: HarnessInstallationRegistry,
   pin: (input: QualificationSuiteInput) => RegistryHarnessSelection): QualificationSuite {
-  const revision = `${suite.revision}+identity-v1`
+  const revision = qualificationRevisionWithIdentity(suite.revision)
   return { harness: suite.harness, revision,
     async run(input) {
       const binding = pin(input)
