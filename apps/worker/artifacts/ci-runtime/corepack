@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+export COREPACK_HOME=/opt/graphql-ci/corepack-cache
+export COREPACK_ENABLE_NETWORK=0
+export COREPACK_DEFAULT_TO_LATEST=0
+export COREPACK_ENABLE_AUTO_PIN=0
+exec /usr/local/bin/node /usr/local/lib/node_modules/corepack/dist/corepack.js "$@"
