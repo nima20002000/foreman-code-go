@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
-import { applyOperatorChatSettings, OperatorConfigurationVersionSchema,
+import { AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, applyOperatorChatSettings, OperatorConfigurationVersionSchema, withAdvancedDefaults,
   type HarnessConfiguration, type OperatorConfigurationVersion, type SendOperatorMessageRequest } from '@graphql/contracts'
 import { DomainError } from '../errors.js'
 
@@ -15,17 +15,24 @@ async function version(query: Queryable, id: string): Promise<OperatorConfigurat
 /** Full saved template, never generic per-provider defaults. This method does no writes. */
 export async function operatorMessageBase(query: Queryable, current: OperatorConfigurationVersion,
   input: SendOperatorMessageRequest): Promise<OperatorConfigurationVersion> {
-  let selected = current
-  if (input.configurationVersionId) selected = await version(query, input.configurationVersionId)
-  else if (input.settings) {
-    const found = await query.query<{ record: unknown }>(`select c.record from application_operators o
-      join operator_configuration_versions c on c.id=o.current_configuration_version_id where o.id=$1`, [current.operatorId])
-    if (!found.rows[0]) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Saved Operator defaults are unavailable. Refresh Settings before sending.', 409)
-    selected = OperatorConfigurationVersionSchema.parse(found.rows[0].record)
-    // Pre-upgrade outbox commands have no explicit pin. Preserve their original
-    // same-harness conversation template when newer global defaults switched away.
-    if (selected.harness.harness !== input.settings.harness && current.harness.harness === input.settings.harness) selected = current
-  }
+  if (input.configurationVersionId && input.configurationVersionId !== current.id) throw new DomainError('CONVERSATION_REVISION_CONFLICT',
+    'The source conversation configuration changed before admission.', 409)
+  if (!input.settings || input.settings.harness === current.harness.harness) return current
+  await query.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
+  const defaults = (await query.query<{ record: unknown; revision: number }>(
+    'select record,revision from application_settings where key=$1 for share', ['agent-defaults-v1'])).rows[0]
+  const preset = AgentDefaultsSchema.parse(defaults?.record ?? DEFAULT_AGENT_DEFAULTS).operator
+  if (input.defaultsRevision === undefined || input.defaultsRevision !== Number(defaults?.revision ?? 0)
+    || preset.harness.harness !== input.settings.harness) throw new DomainError('CONVERSATION_REVISION_CONFLICT',
+    'Operator defaults changed before this handoff. Review the current defaults before sending a new command.', 409)
+  const found = await query.query<{ record: unknown }>(`select c.record from application_operators o
+    join operator_configuration_versions c on c.id=o.current_configuration_version_id where o.id=$1 for share of o`, [current.operatorId])
+  if (!found.rows[0]) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Saved Operator defaults are unavailable. Refresh Settings before sending.', 409)
+  const selected = OperatorConfigurationVersionSchema.parse(found.rows[0].record)
+  if (!isDeepStrictEqual(withAdvancedDefaults(selected.harness), withAdvancedDefaults(preset.harness))
+    || !isDeepStrictEqual(selected.harnessProfileSelection, preset.harnessProfileSelection)
+    || !isDeepStrictEqual(selected.assignedSkills ?? [], preset.assignedSkills ?? [])) throw new DomainError('OPERATOR_DEFAULTS_CHANGED',
+    'The saved Operator configuration does not match the reviewed defaults. Refresh Settings before sending.', 409)
   if (selected.operatorId !== current.operatorId) throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'The configuration belongs to a different Operator.', 409)
   if (input.settings && input.settings.harness !== selected.harness.harness) {
     throw new DomainError('OPERATOR_DEFAULTS_CHANGED', 'The saved Operator harness changed. Refresh its settings before reserving a new message; an existing command will not be rewritten.', 409)
@@ -47,7 +54,8 @@ export async function acceptOperatorConfiguration(query: Queryable, current: Ope
     return accepted
   }
   const base = await operatorMessageBase(query, current, input)
-  const harness = suppliedHarness ?? (input.settings ? applyOperatorChatSettings(base.harness, input.settings) : base.harness)
+  const requested = suppliedHarness ?? (input.settings ? applyOperatorChatSettings(base.harness, input.settings) : base.harness)
+  const harness = isDeepStrictEqual(withAdvancedDefaults(base.harness), withAdvancedDefaults(requested)) ? base.harness : requested
   if (base.harnessProfileSelection && !isDeepStrictEqual(base.harness, harness)) {
     throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'Per-message settings cannot rewrite the configuration of an explicitly selected host profile. Save and select that configured profile first.', 409)
   }

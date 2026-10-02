@@ -155,6 +155,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const defaults = await settings.getAgentDefaults()
     await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator,
       harness: DEFAULT_HARNESS_DEFAULTS.opencode } }, defaults.revision)
+    await operators.update(DEFAULT_HARNESS_DEFAULTS.opencode, (await operators.ensure()).configuration.id)
     const first = await chat.send(source.id, { requestId: 'empty-switch', content: 'First message.',
       settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.opencode), defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }, owner)
     expect(first.state.conversation.id).toBe(source.id)
@@ -202,6 +203,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const target = { ...DEFAULT_HARNESS_DEFAULTS.opencode, advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!,
       permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' as const }] } }
     await settings.updateAgentDefaults({ ...defaults.value, operator: { ...defaults.value.operator, harness: target } }, defaults.revision)
+    await operators.update(target, (await operators.ensure()).configuration.id)
     const input = { requestId: 'fork-turn', content: 'Continue with OpenCode.',
       settings: operatorChatSettings(target), forkExpectedRevision: before.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.operatorConfigurationVersionId }
     const first = await chat.send(source.id, input, owner)
@@ -505,6 +507,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await chat.send(conversation.id, first, owner)
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
     const before = await repository.active(conversation.id)
+    const originalHarness = (await repository.configuration(before!.operator_configuration_version_id))!.harness
     const settings = { ...first.settings, harness: 'codex' as const, model: 'gpt-5.4', reasoningEffort: 'high' as const, serviceTier: 'priority' as const, showThinking: true }
     const next = { requestId: 'settings-second', content: 'Second message', settings }
     await chat.send(conversation.id, next, owner)
@@ -516,7 +519,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(after?.operator_configuration_version_id).not.toBe(before?.operator_configuration_version_id)
     expect(manager.attachments).toBeGreaterThan(0)
     const configured = await repository.configuration(after!.operator_configuration_version_id)
-    expect(configured?.harness).toMatchObject({ model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority', sandbox: DEFAULT_HARNESS_DEFAULTS.codex.sandbox })
+    expect(configured?.harness).toMatchObject({ ...originalHarness, model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority' })
     expect((await chat.send(conversation.id, next, owner)).replayed).toBe(true)
     await expect(chat.send(conversation.id, { ...next, settings: { ...settings, reasoningEffort: 'low' } }, owner)).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
   })

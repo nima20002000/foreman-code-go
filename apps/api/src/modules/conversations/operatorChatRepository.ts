@@ -25,6 +25,7 @@ import { readOperatorActivitySnapshot } from './operatorActivitySnapshot.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
+import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -396,13 +397,7 @@ export class PostgresOperatorConversationRepository {
       const sourceSequence = count.rows[0]?.sequence ?? '0'
       const context = handoffContext(source.handoff_context, source.handoff_omitted_messages ?? 0,
         history.rows, Number(count.rows[0]?.count ?? 0))
-      await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
-      const version = await client.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [current.operatorId])
-      const showThinking = input.settings?.showThinking ?? current.showThinking ?? false
-      const next = OperatorConfigurationVersionSchema.parse({ ...current, id: randomUUID(), version: Number(version.rows[0]!.version),
-        harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
-      validate?.(next)
-      await client.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)', [next.id,next.operatorId,next.version,JSON.stringify(next)])
+      const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate)
       const now = new Date().toISOString()
       const parentTitle = conversation(source).title ?? 'Conversation'
       const record = ConversationSchema.parse({ id: childId, agentId: current.operatorId, scope: 'application',
@@ -471,28 +466,17 @@ export class PostgresOperatorConversationRepository {
         if (harness && harness.harness !== row.harness
           && (await client.query('select 1 from operator_conversation_messages where conversation_id=$1 limit 1', [id])).rowCount)
           throw new DomainError('HARNESS_HANDOFF_REQUIRED', 'A different harness must continue in a linked conversation.', 409)
-        if (harness) {
+        if (!prior) {
           const current = await this.configuration(row.operator_configuration_version_id, client)
           if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
-          const showThinking = input.settings?.showThinking ?? current.showThinking ?? false
-          if (JSON.stringify(current.harness) !== JSON.stringify(harness) || showThinking !== (current.showThinking ?? false)) {
-            await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
-            const versionRow = await client.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [current.operatorId])
-            const next = OperatorConfigurationVersionSchema.parse({ ...current, id: randomUUID(), version: Number(versionRow.rows[0]!.version),
-              harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
-            validate?.(next)
-            await client.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)', [next.id,next.operatorId,next.version,JSON.stringify(next)])
+          const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate)
+          if (next.id !== current.id) {
             await client.query(`update operator_conversations set operator_configuration_version_id=$2,harness=$3,
               native_session_id=case when harness=$3 then native_session_id else null end,
-              provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,harness.harness])
+              provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,next.harness.harness])
             row.operator_configuration_version_id = next.id
             row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: next.id }
-          } else validate?.(current)
-        }
-        if (!prior && !harness) {
-          const current = await this.configuration(row.operator_configuration_version_id, client)
-          if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
-          validate?.(current)
+          }
         }
         // Receipt-only replay above does not require still-live bytes. A fresh admission or
         // definitely-failed relaunch does; hold lifecycle locks through message/receipt commit.
