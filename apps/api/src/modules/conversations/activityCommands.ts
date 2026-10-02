@@ -40,12 +40,17 @@ export async function readActivityCommands(query: Pick<pg.PoolClient, 'query'>, 
     select principal_id,operation,command_id,activity_record_revision::text as revision,created_at,
       result->>'status' as status,result->'acceptedControl' as control,result->'providerAcknowledgment' as acknowledgment from management_command_receipts
       where target_key=$1 and operation in ('agent_chat_control','operator_chat_control') and result->>'status' in ('pending','uncertain')
-      order by created_at,principal_id,command_id limit 201
+      order by created_at desc,principal_id,command_id limit 201
   ), recent as (
     select principal_id,operation,command_id,activity_record_revision::text as revision,created_at,
       result->>'status' as status,result->'acceptedControl' as control,result->'providerAcknowledgment' as acknowledgment from management_command_receipts
       where target_key=$1 and operation in ('agent_chat_control','operator_chat_control') and result->>'status' not in ('pending','uncertain')
       order by created_at desc,principal_id,command_id limit greatest(0,201-(select count(*) from open))
-  ) select * from (select * from open union all select * from recent) visible order by created_at,principal_id,command_id`, [conversationId])).rows
+  ), visible as (select * from open union all select * from recent), ranked as (
+    select *,row_number() over (order by case when status in ('pending','uncertain') then 0 else 1 end,
+      created_at desc,principal_id,command_id) as retention_order from visible
+  ) select * from ranked
+    -- Keep the lookahead last; chronological presentation cannot evict a prioritized control.
+    order by case when retention_order>200 then 1 else 0 end,created_at,principal_id,command_id`, [conversationId])).rows
   return projectActivityCommands(conversationId, scope, rows, scopeRevision)
 }
