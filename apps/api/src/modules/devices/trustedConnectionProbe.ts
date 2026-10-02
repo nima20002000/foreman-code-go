@@ -3,31 +3,10 @@ import { isIP } from 'node:net'
 import { networkInterfaces, userInfo } from 'node:os'
 import { z } from 'zod'
 
-const AddressSchema = z.string().max(253).refine(value => isIP(value) !== 0
-  || /^(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(value), 'Use an IP address or DNS hostname.')
-export const TrustedEndpointSchema = z.object({
-  transport: z.enum(['lan', 'tailscale']), host: AddressSchema,
-  port: z.number().int().min(1).max(65535),
-  osUser: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/),
-}).strict()
-export type TrustedEndpoint = z.infer<typeof TrustedEndpointSchema>
-export const ExecutableReadinessSchema = z.object({
-  state: z.enum(['installed', 'missing', 'unavailable']), version: z.string().max(256).nullable(),
-}).strict()
-export const HostDiscoverySchema = z.object({
-  osUser: z.string(), uid: z.number().int(), platform: z.string(),
-  lanAddresses: z.array(AddressSchema), tailscaleAddresses: z.array(AddressSchema),
-  tailscaleState: z.enum(['running', 'authentication-required', 'stopped', 'unavailable', 'missing']),
-  executables: z.object({ ssh: ExecutableReadinessSchema, rsync: ExecutableReadinessSchema, tailscale: ExecutableReadinessSchema }).strict(),
-}).strict()
-export type HostDiscovery = z.infer<typeof HostDiscoverySchema>
-export const ConnectionProbeSchema = z.object({
-  state: z.enum(['connected', 'authentication-required', 'host-key-mismatch', 'host-key-untrusted', 'offline', 'permission-denied', 'unavailable']),
-  hostKeyFingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/).nullable(),
-  osUser: z.string().nullable(), uid: z.number().int().nonnegative().nullable(),
-  hostname: z.string().max(256).nullable(), sshVersion: z.string().max(256).nullable(), rsyncVersion: z.string().max(256).nullable(), tailscaleVersion: z.string().max(256).nullable(),
-}).strict()
-export type ConnectionProbe = z.infer<typeof ConnectionProbeSchema>
+import { ConnectionProbeSchema, HostDiscoverySchema, TrustedEndpointSchema, type ConnectionProbe, type HostDiscovery, type TrustedEndpoint } from '@graphql/contracts/trusted-device-connection'
+export { ConnectionProbeSchema, HostDiscoverySchema, TrustedEndpointSchema } from '@graphql/contracts/trusted-device-connection'
+export type { ConnectionProbe, HostDiscovery, TrustedEndpoint } from '@graphql/contracts/trusted-device-connection'
+const AddressSchema = z.string().max(253).refine(value => isIP(value) !== 0 || /^(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(value))
 export interface CommandResult { code: number | null; stdout: string; stderr: string; failure?: 'missing' | 'timeout' | 'unavailable' }
 export type ReadinessRunner = (executable: string, args: string[]) => Promise<CommandResult>
 /** No shell, stdin, agent forwarding, interactive authentication, or unbounded output. */
