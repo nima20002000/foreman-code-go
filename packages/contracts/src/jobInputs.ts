@@ -37,3 +37,12 @@ export const JobInputDeviceRequestSchema=z.discriminatedUnion('method',[
  z.object({method:z.literal('authorize'),executionId:z.string().min(1),transferId:z.uuid()}).strict(),
  z.object({method:z.literal('range'),executionId:z.string().min(1),transferId:z.uuid(),offset:z.number().int().nonnegative(),length:z.number().int().min(1).max(8192)}).strict(),
 ])
+/** Send only after registering the original bind result on the worker. The
+ * response is the existing VerifiedTransferReceipt, never a caller intent. */
+export const JobInputStageRequestSchema=z.object({method:z.literal('stage'),transferId:z.uuid()}).strict()
+/** Send after actual detached delivery verification. Main persists/revalidates
+ * the exact receipt and returns JobInputDeliveryReceipt; this DTO grants nothing. */
+export const JobInputDeliveryAckRequestSchema=z.object({method:z.literal('delivery-ack'),transferId:z.uuid(),
+  receipt:JobInputDeliveryReceiptSchema}).strict()
+export type JobInputStageRequest=z.infer<typeof JobInputStageRequestSchema>
+export type JobInputDeliveryAckRequest=z.infer<typeof JobInputDeliveryAckRequestSchema>

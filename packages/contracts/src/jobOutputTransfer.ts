@@ -31,3 +31,9 @@ export const JobOutputDeviceRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('append'), transferId: z.uuid(), offset: z.number().int().nonnegative(),
     sha256: FileSha256Schema, byteLength: z.number().int().positive().max(8192) }).strict(),
 ])
+/** Existing byte-transfer Job channel, after original admission and sealed-byte
+ * registration. Replies reuse VerifiedTransferReceipt and canonical JobArtifact. */
+export const JobOutputStageRequestSchema = z.object({ method: z.literal('job-output-stage'), transferId: z.uuid() }).strict()
+export const JobOutputStatusRequestSchema = z.object({ method: z.literal('job-output-status'), transferId: z.uuid() }).strict()
+export type JobOutputStageRequest = z.infer<typeof JobOutputStageRequestSchema>
+export type JobOutputStatusRequest = z.infer<typeof JobOutputStatusRequestSchema>

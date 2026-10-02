@@ -25,6 +25,25 @@ export const SourceOperationRequestSchema = z.union([SourceFilesystemOperationSc
   z.object({ version: z.literal(1), operation: z.literal('sources.authorize'), request: SourceFilesystemOperationSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.transfer-authorize'), transferId: z.uuid() }).strict()])
 export type SourceOperationRequest = z.infer<typeof SourceOperationRequestSchema>
+/** Existing authenticated source channel; Main resolves the original admission.
+ * A status request never supplies an intent, materialization or ACK assertion. */
+export const SourceTransferStatusRequestSchema = z.object({ version: z.literal(1),
+  operation: z.literal('sources.transfer-status'), transferId: z.uuid() }).strict()
+export const SourceTransferStatusResponseSchema = z.object({ version: z.literal(1),
+  operation: z.literal('sources.transfer-status'), intent: TransferIntentSchema,
+  record: SourceMaterializationRecordSchema }).strict().refine(({ intent, record }) => {
+  const receipt = record.receipt, binding = receipt.binding
+  return intent.direction === 'to-worker' && intent.byteClass === 'source' && record.state !== 'uncertain'
+    && record.operationId === intent.operationId && record.sourceBindingHash === intent.placementHash
+    && receipt.executionId === intent.executionId && receipt.attemptId === intent.attemptId
+    && receipt.placementHash === intent.placementHash && receipt.keyRevision === intent.keyRevision
+    && receipt.authorizationRevision === intent.authorizationRevision && binding.mainId === intent.mainId
+    && binding.deviceId === intent.deviceId && binding.workerInstallationId === intent.workerInstallationId
+    && binding.rootId === intent.rootId && binding.bindingRevision === intent.rootBindingRevision
+    && binding.manifestDigest === intent.manifestDigest && receipt.verifiedManifestDigest === intent.manifestDigest
+}, { message: 'Committed materialization must identify the original source transfer' })
+export type SourceTransferStatusRequest = z.infer<typeof SourceTransferStatusRequestSchema>
+export type SourceTransferStatusResponse = z.infer<typeof SourceTransferStatusResponseSchema>
 /** Trusted Main readback of an entered, currently owned native lifetime. A
  * filesystem request never supplies this evidence or selects mutable mode. */
 export const SourceActiveNativeSessionSchema = z.object({
