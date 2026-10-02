@@ -23,10 +23,11 @@ import { WorkspaceStorageFolderCards } from './WorkspaceStorageFolderCards'
 import { folderSelectionId, type WorkspaceSelectionTarget } from './workspaceSelection'
 interface CardCommand { type: 'rename' | 'archive'; workspaceId: string; expectedRevision: number; name?: string }
 
-function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
+function WorkspaceCardActions({ workspaceId, name, revision = 0, disabled, onCommand }: {
   workspaceId: string
   name: string
   revision?: number
+  disabled?: boolean
   onCommand: (input: CardCommand & { commandId: string }) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
@@ -73,7 +74,7 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
   const uncertain = attempt.current.unresolved && !pending
   return (
     <div>
-      <IconButton ref={triggerRef} label={`Open actions for ${name}`} variant="ghost"
+      <IconButton ref={triggerRef} label={`Open actions for ${name}`} variant="ghost" disabled={disabled}
         aria-haspopup="dialog" aria-expanded={open}
         onClick={() => { if (open) close(); else { setNextName(name); setBaseRevision(revision); setError(undefined); setConfirmingRemove(false); setOpen(true) } }}>
         <Icon name="more" size={16} />
@@ -115,13 +116,7 @@ export function WorkspaceDirectory() {
   const confirmationTargets = useRef<WorkspaceSelectionTarget[]>([])
   const confirmedDeleted = useRef(0)
   const inFlight = useRef(false)
-  const selectRef = useRef<HTMLButtonElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
-  const wasSelecting = useRef(false)
-  useEffect(() => {
-    if (wasSelecting.current && !selection.selecting) selectRef.current?.focus()
-    wasSelecting.current = selection.selecting
-  }, [selection.selecting])
   const recordDeleted = (ids: string[]) => {
     confirmedDeleted.current += ids.length
     selectionStore.setState((current) => ({
@@ -169,6 +164,12 @@ export function WorkspaceDirectory() {
   } })
   const uncertain = attempt.current.unresolved || [...folderAttempts.current.values()].some((value) => value.unresolved)
   const locked = batch.isPending || uncertain
+  const toggleSelection = (id: string, target: WorkspaceSelectionTarget) => {
+    if (locked) return
+    selection.toggle(id, target)
+    if (Object.keys(selectionStore.getState().selected).length) selectionStore.setState({ selecting: true, notice: '' })
+    else selection.clear()
+  }
   const closeConfirmation = () => { if (!locked) { selection.confirm(false); batch.reset() } }
   const deleteSelected = async () => {
     if (inFlight.current) return
@@ -227,19 +228,16 @@ export function WorkspaceDirectory() {
     <section className="workspace-directory resource-directory" aria-label="Workspaces">
       <PageHeader
         title="Workspaces"
-        actions={(workspaces.length > 0 || folders.length > 0 || selection.selecting) && !failed ? <div className="resource-directory-actions">
-          {!selection.selecting ? <Button ref={selectRef} onClick={selection.start}>Select workspaces</Button> : <>
-            <span role="status">{count} selected</span>
-            <Button disabled={locked || !selectable.length} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
-              {allShownSelected ? 'Clear selection' : items.length + folders.filter((folder) => folder.deletion.status === 'available').length > 100 ? 'Select first 100 shown' : 'Select all shown'}
-            </Button>
-            <Button variant="danger" disabled={!count || locked || selectedProtected} onClick={() => {
-              confirmationTargets.current = Object.values(selection.selected)
-              confirmedDeleted.current = 0
-              batch.reset(); selection.confirm(true)
-            }}>Delete selected{count ? ` (${count})` : ''}</Button>
-            <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
-          </>}
+        actions={selection.selecting && !failed ? <div className="resource-directory-actions">
+          <Button variant="danger" disabled={!count || locked || selectedProtected} onClick={() => {
+            confirmationTargets.current = Object.values(selection.selected)
+            confirmedDeleted.current = 0
+            batch.reset(); selection.confirm(true)
+          }}>Delete selected{count ? ` (${count})` : ''}</Button>
+          <Button disabled={locked || !selectable.length} onClick={() => allShownSelected ? selection.clear() : selection.selectMany(selectable)}>
+            {allShownSelected ? 'Clear selection' : items.length + folders.filter((folder) => folder.deletion.status === 'available').length > 100 ? 'Select first 100 shown' : 'Select all shown'}
+          </Button>
+          <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
         </div> : undefined}
       />
       {selection.notice ? <p role="status">{selection.notice}</p> : null}
@@ -253,15 +251,16 @@ export function WorkspaceDirectory() {
         <ul className="workspace-card-list resource-card-list" data-testid="workspace-card-list">
           {workspaces.map((workspace) => <li key={workspace.id}>
             <ResourceCard name={workspace.name} icon="folder" data-testid={`workspace-card-${workspace.id}`}
-              selection={selection.selecting ? {
+              selection={{
+                mode: selection.selecting ? 'visible' : 'hover',
                 'aria-label': `Select ${workspace.name}`, checked: workspace.id in selection.selected,
                 disabled: locked || (count >= 100 && !(workspace.id in selection.selected)),
-                onChange: () => selection.toggle(workspace.id, { kind: 'workspace', workspaceId: workspace.id,
+                onChange: () => toggleSelection(workspace.id, { kind: 'workspace', workspaceId: workspace.id,
                   name: workspace.name, expectedRevision: managedById.get(workspace.id)!.revision }),
-              } : undefined}
+              }}
               open={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId: workspace.id }} search={{}} aria-label={workspace.name} />}
               actions={<WorkspaceCardActions workspaceId={workspace.id} name={workspace.name}
-                revision={managedById.get(workspace.id)?.revision} onCommand={execute} />}
+                revision={managedById.get(workspace.id)?.revision} disabled={locked} onCommand={execute} />}
               protection={managedById.get(workspace.id)?.locationValidation.status === 'restricted' ? { label: 'Location restricted' } : undefined} />
           </li>)}
         </ul>
@@ -271,7 +270,7 @@ export function WorkspaceDirectory() {
             <EmptyState icon="folder" title="No workspaces yet" description="Use New workspace in the navigation to create one." />
           </div> : null}
       <LoadMore loadAll label="workspaces" query={managedQuery} />
-      <WorkspaceStorageFolderCards enabled={!loading && !failed} folders={folderQuery} selection={{ ...selection, locked, count }} />
+      <WorkspaceStorageFolderCards enabled={!loading && !failed} folders={folderQuery} selection={{ ...selection, toggle: toggleSelection, locked, count }} />
       <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
         title={`Delete ${confirmationLabel}?`}
         description="App-created project folders and selected disk folders will be permanently deleted with all files and subfolders. Existing folders selected as workspace destinations are kept. Workflow and run history is retained. Active runs block workspace deletion. Folder deletions run one at a time; earlier confirmed deletions remain if a later target fails."

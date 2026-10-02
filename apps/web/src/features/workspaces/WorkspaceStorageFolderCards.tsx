@@ -48,13 +48,14 @@ function FolderCard({ folder, selection }: { folder: WorkspaceStorageFolder; sel
   }
   const selected = folderSelectionId(folder.path) in selection.selected
   return <ResourceCard name={folder.name} icon="folder"
-    selection={selection.selecting ? {
+    selection={{
+      mode: selection.selecting ? 'visible' : 'hover',
       hint: folder.deletion.status === 'protected' ? <span className="visually-hidden">{folder.deletion.message}</span> : undefined,
       'aria-label': `Select folder ${folder.name}`, checked: selected,
       disabled: selection.locked || (!selected && (folder.deletion.status === 'protected' || selection.count >= 100)),
       onChange: () => selection.toggle(folderSelectionId(folder.path), { kind: 'folder', name: folder.name, path: folder.path, identity: folder.identity }),
-    } : undefined}
-    actions={<TrashIconButton target={`folder ${folder.name}`} disabled={folder.deletion.status === 'protected'}
+    }}
+    actions={<TrashIconButton target={`folder ${folder.name}`} disabled={selection.locked || folder.deletion.status === 'protected'}
       disabledReason={folder.deletion.status === 'protected' ? folder.deletion.message : undefined}
       onClick={() => { target.current = folder; setConfirming(true) }} />}
     protection={folder.deletion.status === 'protected' ? { label: `Protected folder. ${folder.deletion.message}`, reason: folder.deletion.message } : undefined}>
@@ -85,7 +86,6 @@ export function WorkspaceStorageFolderCards({ enabled, folders, selection }: {
     description="Folders on disk could not be checked." onRetry={() => void folders.refetch()} />
   if (!items.length) return null
   return <section aria-label="Workspace folders on disk">
-    <h2>Workspace folders on disk</h2>
     <ul className="workspace-card-list resource-card-list">
       {items.map((folder) => <li key={folder.path}><FolderCard folder={folder} selection={selection} /></li>)}
     </ul>
