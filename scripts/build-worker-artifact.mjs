@@ -82,7 +82,8 @@ const database = new DatabaseSync(join(store, 'index.db'), { readOnly: true });
 let nativePackages;
 try {
   nativePackages = await copySharpPackages({ root, output, lock: parse(snapshotSource('pnpm-lock.yaml').toString('utf8')),
-    record: key => { const row = database.prepare('SELECT data FROM package_index WHERE key = ?').get(key); return row ? unpacker.unpack(row.data) : undefined; } });
+    record: key => database.prepare('SELECT data FROM package_index WHERE key = ?').get(key)?.data,
+    decode: blob => unpacker.unpack(blob) });
 } finally { database.close(); }
 const files = await artifactFiles(output);
 const pkg = JSON.parse(snapshotSource('apps/worker/package.json').toString('utf8'));

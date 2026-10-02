@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import { regularFiles, verifyPackage, artifactFiles, copySharpPackages, sharpPackages, assertWorkerDependency } from '../../../scripts/worker-artifact-files.mjs';
 import { validateManifest } from '../src/installation.mjs';
+
+const { Packr, Unpackr } = createRequire(import.meta.url)('msgpackr');
+const packer = new Packr({ useRecords: true, moreTypes: true });
+const unpacker = new Unpackr({ useRecords: true, moreTypes: true });
 
 function fixture() {
   const files = new Map([['package.json', Buffer.from('{"name":"sharp","version":"0.35.4"}')], ['LICENSE', Buffer.from('license')], ['lib/index.js', Buffer.from('module.exports = {}')]]);
@@ -60,16 +65,21 @@ test('locked native packages use exact TAB keys and copy deterministic verified 
   }
   const first = join(directory, 'first'), second = join(directory, 'second');
   const requested = [];
-  const record = key => { requested.push(key); return records.get(key); };
-  const result = await copySharpPackages({ root, output: first, lock, record });
-  await copySharpPackages({ root, output: second, lock, record });
+  const blobs = new Map([...records].map(([key, index]) => [key, packer.pack(index)]));
+  const record = key => { requested.push(key); return blobs.get(key); };
+  const decode = blob => unpacker.unpack(blob);
+  const result = await copySharpPackages({ root, output: first, lock, record, decode });
+  assert.deepEqual(result, await copySharpPackages({ root, output: second, lock, record, decode }));
   assert.equal(result.length, 6);
   assert.deepEqual(new Set(requested), new Set(records.keys()));
+  for (const entry of result) assert.equal(entry.indexBlobSha256, createHash('sha256').update(blobs.get(`${entry.integrity}\t${entry.name}@${entry.version}`)).digest('hex'));
   assert.deepEqual(await artifactFiles(first), await artifactFiles(second));
   const changed = records.values().next().value;
   changed.files.get('LICENSE').digest = '0'.repeat(128);
-  await assert.rejects(copySharpPackages({ root, output: join(directory, 'bad'), lock, record }), /integrity/);
-  await assert.rejects(copySharpPackages({ root, output: join(directory, 'missing'), lock, record: () => undefined }), /index/);
+  blobs.set(`${integrity}\tsharp@${sharpPackages.sharp}`, packer.pack(changed));
+  await assert.rejects(copySharpPackages({ root, output: join(directory, 'bad'), lock, record, decode }), /integrity/);
+  await assert.rejects(copySharpPackages({ root, output: join(directory, 'missing'), lock, record: () => undefined, decode }), /index/);
+  await assert.rejects(copySharpPackages({ root, output: join(directory, 'malformed'), lock, record: () => Buffer.from([0xc1]), decode }));
 });
 
 

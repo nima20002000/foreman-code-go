@@ -54,7 +54,7 @@ export function verifyPackage(name, version, index, files) {
   if (!licenseTable && ![...files.keys()].some(path => /(?:^|\/)(?:LICENSE|LICENCE|COPYING)(?:\.|$)/i.test(path))) throw new Error(`Package license missing: ${name}`);
 }
 
-export async function copySharpPackages({ root, output, lock, record }) {
+export async function copySharpPackages({ root, output, lock, record, decode }) {
   const modules = join(root, 'node_modules/.pnpm'), installed = await readdir(modules), packages = [];
   for (const [name, version] of Object.entries(sharpPackages)) {
     const integrity = lock.packages?.[`${name}@${version}`]?.resolution?.integrity;
@@ -64,14 +64,16 @@ export async function copySharpPackages({ root, output, lock, record }) {
     if (candidates.length !== 1) throw new Error(`Ambiguous installed package: ${name}`);
     const source = await realpath(join(modules, candidates[0], 'node_modules', name));
     const files = await regularFiles(source, { excludeNodeModules: true });
-    verifyPackage(name, version, record(`${integrity}\t${name}@${version}`), files);
+    const blob = record(`${integrity}\t${name}@${version}`);
+    if (!(blob instanceof Uint8Array)) throw new Error(`Invalid package index blob: ${name}@${version}`);
+    verifyPackage(name, version, decode(blob), files);
     for (const [path, bytes] of files) {
       const destination = join(output, 'node_modules', name, path);
       await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
       // Write the buffers that passed validation, never reread a mutable source.
       await writeFile(destination, bytes, { flag: 'wx', mode: 0o600 });
     }
-    packages.push({ name, version, integrity, files: files.size, bytes: [...files.values()].reduce((sum, bytes) => sum + bytes.length, 0) });
+    packages.push({ name, version, integrity, indexBlobSha256: digest('sha256', blob), files: files.size, bytes: [...files.values()].reduce((sum, bytes) => sum + bytes.length, 0) });
   }
   return packages;
 }
