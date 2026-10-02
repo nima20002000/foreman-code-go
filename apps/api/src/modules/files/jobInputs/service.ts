@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { JobInputAdmissionSchema, type JobInputAdmission } from '@graphql/contracts/job-inputs'
+import { JobInputAdmissionSchema, JobInputDeliveryReceiptSchema, type JobInputDeliveryReceipt, type JobInputAdmission } from '@graphql/contracts/job-inputs'
 import { TransferIntentSchema, type TransferIntent, type TransferContext } from '@graphql/contracts/byte-transfer'
 import { type JobExecution } from '@graphql/contracts/jobs'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
@@ -57,7 +57,7 @@ export class CanonicalJobInputs {
   async recheck(execution:JobExecution,admission:JobInputAdmission) {
     return this.transaction(async sql=>{
       const current=await this.authority.recipient(sql,execution)
-      if(inputHash(current.principal.grants)!==admission.principalGrantsDigest||inputHash(recipient(execution))!==inputHash(admission.manifest.recipient)||snapshotDigest(execution)!==admission.manifest.inputSnapshotDigest)throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Accepted input snapshot or actor grant changed.',403)
+      if(current.principal.id!==admission.principalId||inputHash(current.principal.grants)!==admission.principalGrantsDigest||inputHash(recipient(execution))!==inputHash(admission.manifest.recipient)||snapshotDigest(execution)!==admission.manifest.inputSnapshotDigest)throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Accepted input snapshot or actor grant changed.',403)
       for(const entry of admission.manifest.entries)await this.authority.recheck(sql,execution,entry)
       await this.device(sql,execution)
     })
@@ -102,6 +102,62 @@ export class CanonicalJobInputs {
       if(record.length!==1)throw new DomainError('JOB_INPUT_NOT_ADMITTED','The original input binding has not been persisted.',403)
       return {execution,admission:JobInputAdmissionSchema.parse(record[0]!.result)}
     })
+  }
+  /** Resolve exactly one original bind receipt, never a caller execution/path hint. */
+  async acceptedTransfer(transferId:string) {
+    const rows=(await this.pool.query<{result:unknown}>(`select result from management_command_receipts
+      where operation='job.inputs.bind' and exists(select 1 from jsonb_array_elements(result->'transfers') item
+        where item #>> '{intent,transferId}'=$1)`,[transferId])).rows
+    if(rows.length!==1)throw new DomainError('JOB_INPUT_NOT_ADMITTED','Exactly one original input binding is required.',403)
+    const original=JobInputAdmissionSchema.parse(rows[0]!.result)
+    const matches=original.transfers.filter(value=>value.intent.transferId===transferId)
+    if(matches.length!==1)throw new DomainError('JOB_INPUT_NOT_ADMITTED','Exactly one original input transfer is required.',403)
+    const accepted=await this.accepted(original.manifest.recipient.executionId)
+    if(!isDeepStrictEqual(accepted.admission,original))throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Original input binding changed.',403)
+    await this.recheck(accepted.execution,original)
+    return {...accepted,transfer:matches[0]!}
+  }
+  private deliveryReceipt(execution:JobExecution,admission:JobInputAdmission,raw:unknown):JobInputDeliveryReceipt {
+    const receipt=JobInputDeliveryReceiptSchema.parse(raw)
+    const files=[{relativePath:'manifest.json',sha256:admission.manifest.manifestSha256,byteSize:admission.manifest.manifestByteSize},
+      {relativePath:'workflow-input.json',sha256:createHash('sha256').update(JSON.stringify(admission.manifest.workflowInput)).digest('hex'),byteSize:Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))},
+      ...admission.manifest.entries.map(entry=>({relativePath:entry.relativePath,sha256:entry.pin.sha256,byteSize:entry.pin.byteSize}))]
+    if(!isDeepStrictEqual(receipt.recipient,recipient(execution))||receipt.bindingId!==admission.manifest.bindingId
+      ||receipt.inputSnapshotDigest!==admission.manifest.inputSnapshotDigest||receipt.manifestSha256!==admission.manifest.manifestSha256
+      ||receipt.manifestByteSize!==admission.manifest.manifestByteSize||!isDeepStrictEqual(receipt.files,files))
+      throw new DomainError('JOB_INPUT_RECEIPT_CONFLICT','Detached delivery does not describe the complete original input binding.',409)
+    return receipt
+  }
+  /** Only the authenticated original worker calls after durable detached-file verification. */
+  async acknowledgeDelivery(transferId:string,raw:JobInputDeliveryReceipt,binding:Readonly<DeviceSessionBinding>):Promise<JobInputDeliveryReceipt> {
+    const {execution,admission}=await this.acceptedTransfer(transferId)
+    this.assertChannel(execution,binding)
+    const receipt=this.deliveryReceipt(execution,admission,raw)
+    const initial=await this.transaction(sql=>this.authority.recipient(sql,execution))
+    if(initial.principal.id!==admission.principalId)throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Original input recipient changed.',403)
+    const result=await this.commands.execute({principal:initial.principal,source:'device',operation:'job.inputs.delivery.ack',
+      commandId:`job-input-delivery:${admission.manifest.bindingId}`,targetKey:`job:${execution.id}:inputs`,payload:receipt,
+      authorize:async sql=>{
+        this.assertChannel(execution,binding)
+        const current=await this.authority.recipient(sql,execution)
+        if(current.principal.id!==admission.principalId||inputHash(current.principal.grants)!==admission.principalGrantsDigest)
+          throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Original input actor or grants changed.',403)
+        for(const entry of admission.manifest.entries)await this.authority.recheck(sql,execution,entry)
+        await this.device(sql,execution);this.assertChannel(execution,binding)
+      },replayResult:value=>this.deliveryReceipt(execution,admission,value),perform:async()=>receipt})
+    await this.recheck(execution,admission);this.assertChannel(execution,binding)
+    return result.value
+  }
+  async acknowledged(transferId:string,binding:Readonly<DeviceSessionBinding>):Promise<JobInputDeliveryReceipt> {
+    const {execution,admission}=await this.acceptedTransfer(transferId)
+    this.assertChannel(execution,binding)
+    const rows=(await this.pool.query<{result:unknown}>(`select result from management_command_receipts
+      where operation='job.inputs.delivery.ack' and principal_id=$1 and command_id=$2`,
+    [admission.principalId,`job-input-delivery:${admission.manifest.bindingId}`])).rows
+    if(rows.length!==1)throw new DomainError('JOB_INPUT_DELIVERY_PENDING','Original worker detached delivery has not been acknowledged.',409)
+    const receipt=this.deliveryReceipt(execution,admission,rows[0]!.result)
+    await this.recheck(execution,admission);this.assertChannel(execution,binding)
+    return receipt
   }
   async authorizeTransfer(intent:TransferIntent,context:TransferContext) {
     const {execution,admission}=await this.accepted(intent.executionId)
