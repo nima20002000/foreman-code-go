@@ -1,0 +1,91 @@
+import { randomUUID } from 'node:crypto'
+import type pg from 'pg'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { DeviceRegistration } from '@graphql/contracts/device-identity'
+import { describe, expect, it, vi } from 'vitest'
+import { PostgresTrustedConnectionSetup, type TrustedConnectionConfigure } from './trustedConnectionSetup.js'
+import type { ConnectionProbe } from './trustedConnectionProbe.js'
+function fixture() {
+  const mainId = randomUUID(), deviceId = randomUUID()
+  let registration: DeviceRegistration = { mainId, deviceId, workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] }
+  const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
+  let revoked = false, approvalAllowed = true
+  const receipts = new Map<string, { input_hash: unknown; target_key: unknown; result: unknown }>()
+  const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    let rows: unknown[] = []
+    if (sql.includes('select id,name,audience,grants')) rows = [{ ...principal, expires_at: new Date(principal.expiresAt), revoked_at: revoked ? new Date() : null, delegated_from: null }]
+    else if (sql.includes('select record from device_registrations')) rows = [{ record: registration }]
+    else if (sql.includes('select input_hash, target_key, result')) rows = receipts.has(String(values[2])) ? [receipts.get(String(values[2]))] : []
+    else if (sql.includes('select result from management_command_receipts')) rows = [...receipts.values()].sort((a, b) => (b.result as { revision: number }).revision - (a.result as { revision: number }).revision).slice(0, 1)
+    else if (sql.includes('insert into management_command_receipts')) receipts.set(String(values[2]), { input_hash: values[4], target_key: values[3], result: JSON.parse(values[5] as string) })
+    return { rows, rowCount: rows.length, fields: [], oid: 0, command: 'SELECT' }
+  })
+  const pool = { connect: async () => ({ query, release: vi.fn() }), query } as unknown as pg.Pool
+  const probe = vi.fn(async (): Promise<ConnectionProbe> => ({ state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'dexter', uid: 1000, hostname: 'laptop', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync  version 3.2.7', tailscaleVersion: '1.102.4' }))
+  const verifyOwnerApproval = vi.fn(async () => { if (!approvalAllowed) throw new Error('OWNER_APPROVAL_REQUIRED'); return { ownerId: 'human-owner' } })
+  const service = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval, probe })
+  const input: TrustedConnectionConfigure = { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { transport: 'tailscale', host: '100.76.219.118', port: 22, osUser: 'dexter' }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true, approvalId: randomUUID() }
+  return { service, principal, input, probe, query, verifyOwnerApproval, receipts, revokePrincipal: () => { revoked = true }, denyApproval: () => { approvalAllowed = false }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } } }
+}
+describe('trusted connection consent and readiness', () => {
+  it('requires pair/consent before probing and separates owner SSH from agent authority', async () => {
+    const f = fixture()
+    expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('consent-required'); expect(f.probe).not.toHaveBeenCalled()
+    const consent = await f.service.configure(f.principal, f.input)
+    expect(consent).toMatchObject({ revision: 1, approvedBy: 'human-owner', automaticSudo: false, grantsAgentPermissions: false, privilege: 'selected-os-user' })
+    expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('ready')
+    expect((await f.service.read(f.principal, f.input.deviceId)).registration.scopes).toEqual(['connect', 'heartbeat'])
+    expect(f.query.mock.calls.some(([sql]) => sql.startsWith('insert into management_audit'))).toBe(true)
+  })
+  it('requires verified owner approval even for settings:update and fails closed', async () => {
+    const f = fixture(); f.denyApproval()
+    await expect(f.service.configure(f.principal, f.input)).rejects.toThrow('OWNER_APPROVAL_REQUIRED')
+    expect(f.receipts.size).toBe(0)
+  })
+  it('denies readonly caller and revoked live principal before mutation/probe', async () => {
+    const f = fixture(), reader = { ...f.principal, grants: [{ actions: ['settings:read'] as ('settings:read')[], scope: {} }] }
+    await expect(f.service.configure(reader, f.input)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    f.revokePrincipal()
+    await expect(f.service.inspect(f.principal, f.input.deviceId, f.input.endpoint)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+    expect(f.probe).not.toHaveBeenCalled(); expect(f.verifyOwnerApproval).not.toHaveBeenCalled()
+  })
+  it('replays original command across HTTP/MCP without repeating approval and rejects changed payload', async () => {
+    const f = fixture(), first = await f.service.configure(f.principal, f.input, 'http')
+    expect(await f.service.configure(f.principal, f.input, 'mcp')).toEqual(first)
+    expect(f.verifyOwnerApproval).toHaveBeenCalledTimes(1)
+    await expect(f.service.configure(f.principal, { ...f.input, allowOwnerCommands: false })).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+    await expect(f.service.configure(f.principal, { ...f.input, commandId: randomUUID() })).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_CONFLICT' })
+  })
+  it('persists revocation without SSH or live host security changes; old receipt cannot revive current consent', async () => {
+    const f = fixture(); await f.service.configure(f.principal, f.input)
+    await f.service.configure(f.principal, { ...f.input, commandId: randomUUID(), expectedRevision: 1, allowOwnerCommands: false })
+    expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('consent-revoked')
+    await f.service.configure(f.principal, f.input)
+    expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('consent-revoked')
+    expect(f.probe).not.toHaveBeenCalled()
+  })
+  it.each([{ status: 'revoked' as const }, { authorizationRevision: 2 }, { keyRevision: 2 }, { workerInstallationId: randomUUID() }, { publicKeyFingerprint: 'c'.repeat(64) }])('fences changed paired identity %j', async change => {
+    const f = fixture(); await f.service.configure(f.principal, f.input); f.updateDevice(change)
+    expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe(change.status === 'revoked' ? 'revoked' : 'identity-changed')
+    expect(f.probe).not.toHaveBeenCalled()
+  })
+  it('revocation during SSH check fences successful result', async () => {
+    const f = fixture(); await f.service.configure(f.principal, f.input)
+    f.probe.mockImplementationOnce(async () => { f.updateDevice({ status: 'revoked' }); return { state: 'connected', hostKeyFingerprint: f.input.hostKeyFingerprint, osUser: 'dexter', uid: 1000, hostname: 'host', sshVersion: 'OpenSSH', rsyncVersion: 'rsync', tailscaleVersion: '1.102.4' } })
+    expect(await f.service.check(f.principal, f.input.deviceId)).toMatchObject({ state: 'revoked', probe: null })
+  })
+  it('retains authentication/offline states and rejects a different trusted SSH key or missing tools', async () => {
+    const f = fixture(); await f.service.configure(f.principal, f.input)
+    const connected = await f.probe()
+    f.probe.mockResolvedValue({ ...connected, state: 'authentication-required' }); expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('authentication-required')
+    f.probe.mockResolvedValue({ ...connected, state: 'offline' }); expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('offline')
+    f.probe.mockResolvedValue({ ...connected, hostKeyFingerprint: `SHA256:${'c'.repeat(43)}` }); expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('host-key-mismatch')
+    f.probe.mockResolvedValue({ ...connected, rsyncVersion: null }); expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('tools-missing')
+  })
+  it('offers fixed inspection before consent without claiming ready or issuing a grant', async () => {
+    const f = fixture()
+    expect((await f.service.inspect(f.principal, f.input.deviceId, f.input.endpoint)).state).toBe('connected')
+    expect((await f.service.read(f.principal, f.input.deviceId)).consent).toBeNull()
+    expect(f.verifyOwnerApproval).not.toHaveBeenCalled(); expect(f.receipts.size).toBe(0)
+  })
+})

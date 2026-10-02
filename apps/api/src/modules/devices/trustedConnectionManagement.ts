@@ -1,0 +1,44 @@
+import type { FastifyInstance, FastifyRequest } from 'fastify'
+import type { McpServer } from '@modelcontextprotocol/server'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { z } from 'zod'
+import { hasAction, requireAuthorization } from '../access/policy.js'
+import { toolFailure, toolResult } from '../../mcp/shared/results.js'
+import { ConnectionProbeSchema, HostDiscoverySchema, TrustedEndpointSchema } from './trustedConnectionProbe.js'
+import { TrustedConnectionCheckSchema, TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionReadSchema, type PostgresTrustedConnectionSetup } from './trustedConnectionSetup.js'
+
+export type TrustedConnectionManagementService = Pick<PostgresTrustedConnectionSetup, 'read' | 'configure' | 'inspect' | 'check'> & {
+  /** Composition must revalidate the live principal before exposing local host facts. */
+  discover(principal: ManagementPrincipal): Promise<z.infer<typeof HostDiscoverySchema>>
+}
+const DeviceInput = z.object({ deviceId: z.uuid() }).strict()
+const InspectInput = DeviceInput.extend({ endpoint: TrustedEndpointSchema }).strict()
+export function registerTrustedConnectionRoutes(app: FastifyInstance, service: TrustedConnectionManagementService,
+  authenticate: (request: FastifyRequest) => Promise<ManagementPrincipal>): void {
+  app.get('/api/devices/connection-host', async request => service.discover(await authenticate(request)))
+  app.post('/api/devices/connection-read', async request => service.read(await authenticate(request), DeviceInput.parse(request.body).deviceId))
+  app.post('/api/devices/connection-inspect', async request => {
+    const input = InspectInput.parse(request.body)
+    return service.inspect(await authenticate(request), input.deviceId, input.endpoint)
+  })
+  app.post('/api/devices/connection-check', async request => service.check(await authenticate(request), DeviceInput.parse(request.body).deviceId))
+  app.post('/api/devices/connection-configure', async request => service.configure(await authenticate(request), TrustedConnectionConfigureSchema.parse(request.body), 'http'))
+}
+export function registerTrustedConnectionTools(server: McpServer, service: TrustedConnectionManagementService, principal: ManagementPrincipal): void {
+  const invoke = async (action: 'settings:read' | 'settings:update', operation: () => Promise<unknown>) => {
+    try { requireAuthorization(principal, action); return toolResult(await operation()) }
+    catch (error) { return toolFailure(error, 'The trusted device connection operation failed.') }
+  }
+  const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+  if (hasAction(principal, 'settings:read')) {
+    server.registerTool('device_connection_host_discover', { description: 'Read local OS user, installed SSH/rsync/Tailscale and actual LAN/Tailscale self candidate addresses. Discovery does not prove reachability or grant remote commands.', inputSchema: z.object({}).strict(), outputSchema: HostDiscoverySchema, annotations: readAnnotations }, () => invoke('settings:read', () => service.discover(principal)))
+    server.registerTool('device_connection_read', { description: 'Read existing paired identity and current revisioned owner consent. No credentials or agent grants.', inputSchema: DeviceInput, outputSchema: TrustedConnectionReadSchema, annotations: readAnnotations }, input => invoke('settings:read', () => service.read(principal, input.deviceId)))
+    server.registerTool('device_connection_inspect', { description: 'Perform fixed read-only SSH diagnostics against a selected endpoint/user using existing authentication and strict host trust. Reports observed host key and installed remote executables; never installs or grants access.', inputSchema: InspectInput, outputSchema: ConnectionProbeSchema, annotations: { ...readAnnotations, openWorldHint: true } }, input => invoke('settings:read', () => service.inspect(principal, input.deviceId, input.endpoint)))
+    server.registerTool('device_connection_check', { description: 'Check current consent, paired revisions, strict SSH authentication, host key, selected OS user and remote executables. Reports offline/revoked/auth states truthfully. Does not qualify harnesses or authorize agent execution.', inputSchema: DeviceInput, outputSchema: TrustedConnectionCheckSchema, annotations: { ...readAnnotations, openWorldHint: true } }, input => invoke('settings:read', () => service.check(principal, input.deviceId)))
+  }
+  if (hasAction(principal, 'settings:update')) server.registerTool('device_connection_configure', {
+    description: 'Persist or revoke remote-command consent as the selected OS user, using an existing action-specific human owner approval verified server-side. settings:update alone cannot approve. Does not enable live SSH/VPN, root/sudo, persistent credentials or agent grants. Requires current device and consent revisions.',
+    inputSchema: TrustedConnectionConfigureSchema, outputSchema: TrustedConnectionConsentSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, input => invoke('settings:update', () => service.configure(principal, input, 'mcp')))
+}
