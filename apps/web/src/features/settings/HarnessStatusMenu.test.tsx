@@ -4,6 +4,7 @@ import { server } from '../../mocks/server'
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { HarnessStatusMenu } from './HarnessStatusMenu'
 import { useNavigationUiStore } from '../workspaces/navigationUiStore'
+import { getMockAgentDefaults } from '../../shared/mocks/scenarios'
 
 const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate')
 
@@ -27,8 +28,8 @@ describe('HarnessStatusMenu', () => {
   it.each([
     ['eligible', 'Available'], ['blocked', 'Unavailable'], ['unverified', 'Unverified'],
   ])('shows %s as an accessible status with the matching light', async (status, label) => {
-    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', ({ params }) => HttpResponse.json({
-      harness: params.harness, scope: 'saved-harness-defaults', status, rolloutEnabled: true,
+    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
+      harness: params.harness, scope: new URL(request.url).searchParams.get('scope'), status, rolloutEnabled: true,
       defaultsRevision: 1, checkedAt: new Date().toISOString(), reason: null, limitation: 'Saved defaults only.',
     })))
     renderWithRouter(<HarnessStatusMenu />)
@@ -45,12 +46,32 @@ describe('HarnessStatusMenu', () => {
     expect(await screen.findByRole('link', { name: 'Codex: Unverified' })).toHaveAttribute('title', expect.stringContaining('Could not check'))
   })
 
+  it('checks the selected Claude Operator profile separately from the workflow preset', async () => {
+    const defaults = getMockAgentDefaults()
+    const requests: string[] = []
+    server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ ...defaults, revision: 4,
+      value: { ...defaults.value, operator: { ...defaults.value.operator, harness: { harness: 'claude', model: 'native-model', effort: 'medium',
+        authMode: 'subscription', configDirectory: '/unit/profile', permissionMode: 'default', sandbox: 'danger-full-access',
+        tools: [], permissionRules: [], instructions: '', mcpServers: {} } } } })),
+    http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => {
+      const scope = new URL(request.url).searchParams.get('scope')!
+      requests.push(`${params.harness}:${scope}`)
+      return HttpResponse.json({ harness: params.harness, scope, status: 'eligible', rolloutEnabled: true,
+        defaultsRevision: 4, checkedAt: new Date().toISOString(), reason: null, limitation: 'Exact current profile.' })
+    }))
+    renderWithRouter(<HarnessStatusMenu />)
+    expect(await screen.findByRole('link', { name: 'Claude: Available' })).toHaveAttribute('title', expect.stringContaining('Operator default'))
+    expect(await screen.findByRole('link', { name: 'Codex: Available' })).toHaveAttribute('title', expect.stringContaining('Workflow preset'))
+    expect(requests).toContain('claude:operator-configuration')
+    expect(requests).not.toContain('claude:saved-harness-defaults')
+  })
+
   it.each([
     ['HARNESS_PROFILE_REQUIRED', 'Setup required'],
     ['CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE', 'Not qualified'],
   ])('explains the blocked Claude reason %s without implying installation is missing', async (code, label) => {
-    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', ({ params }) => HttpResponse.json({
-      harness: params.harness, scope: 'saved-harness-defaults', status: params.harness === 'claude' ? 'blocked' : 'eligible', rolloutEnabled: true,
+    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
+      harness: params.harness, scope: new URL(request.url).searchParams.get('scope'), status: params.harness === 'claude' ? 'blocked' : 'eligible', rolloutEnabled: true,
       defaultsRevision: code === 'HARNESS_PROFILE_REQUIRED' ? null : 1, checkedAt: new Date().toISOString(),
       reason: params.harness === 'claude' ? { code, message: 'Claude needs the exact saved profile and native proof.' } : null,
       limitation: 'Saved defaults only.',

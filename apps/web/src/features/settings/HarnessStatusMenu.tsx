@@ -7,14 +7,16 @@ import { getExecutionReadiness } from '../operator-chat/executionReadiness'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { useNavigationUiStore } from '../workspaces/navigationUiStore'
+import { useAgentDefaultsQuery } from '../../shared/api/query'
+import type { ExecutionReadiness } from '@graphql/contracts/management'
 import './harnessStatusMenu.css'
 
-function HarnessStatus({ harness }: { harness: AgentHarness }) {
+function HarnessStatus({ harness, scope, revision, enabled }: { harness: AgentHarness; scope: ExecutionReadiness['scope']; revision?: number; enabled: boolean }) {
   const epoch = useHarnessSessionEpoch()
   const query = useQuery({
-    queryKey: ['workbench', 'management', 'harness-readiness', epoch, harness],
-    queryFn: ({ signal }) => getExecutionReadiness(harness, signal),
-    enabled: !sessionIsSwitching(), retry: false, staleTime: 30_000, refetchInterval: 30_000,
+    queryKey: ['workbench', 'management', 'harness-readiness', epoch, harness, scope, revision],
+    queryFn: ({ signal }) => getExecutionReadiness(harness, signal, scope),
+    enabled: enabled && !sessionIsSwitching(), retry: false, staleTime: 30_000, refetchInterval: 30_000,
   })
   const name = harnessNames[harness]
   const state = query.isError || query.isPaused ? 'unverified' : query.data?.status ?? 'checking'
@@ -22,7 +24,8 @@ function HarnessStatus({ harness }: { harness: AgentHarness }) {
     ? query.data?.reason?.code === 'HARNESS_PROFILE_REQUIRED' ? 'Setup required'
       : query.data?.reason?.code === 'CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE' ? 'Not qualified' : 'Unavailable'
     : state === 'checking' ? 'Checking' : 'Unverified'
-  const detail = query.isError ? 'Could not check harness availability.' : query.data?.reason?.message ?? 'Availability with saved harness settings. Workspace checks run when execution starts.'
+  const context = scope === 'operator-configuration' ? 'Operator default' : 'Workflow preset'
+  const detail = query.isError ? 'Could not check harness availability.' : `${context}. ${query.data?.reason?.message ?? 'Current saved configuration is available. Workspace checks run when execution starts.'}`
   return <Link to="/settings/harnesses" search={{ harness, section: 'model' }} className="harness-status-link"
     aria-label={`${name}: ${label}`} title={`${name}: ${label}. ${detail}`}>
     <span className={`harness-status-light harness-status-light--${state}`} aria-hidden="true" />
@@ -37,6 +40,7 @@ export function HarnessStatusMenu() {
   const collapsed = useNavigationUiStore((state) => state.collapsed)
   const width = useNavigationUiStore((state) => state.width)
   const motion = useNavigationUiStore((state) => state.motion)
+  const defaults = useAgentDefaultsQuery(!sessionIsSwitching())
 
   useLayoutEffect(() => {
     const links = Array.from(menuRef.current?.querySelectorAll<HTMLAnchorElement>('.harness-status-link') ?? [])
@@ -61,6 +65,8 @@ export function HarnessStatusMenu() {
   }, [collapsed, width, motion])
 
   return <nav ref={menuRef} className="harness-status-menu" aria-label="Harness availability">
-    {AgentHarnessSchema.options.map((harness) => <HarnessStatus key={harness} harness={harness} />)}
+    {AgentHarnessSchema.options.map((harness) => <HarnessStatus key={harness} harness={harness}
+      scope={defaults.data?.value.operator.harness.harness === harness ? 'operator-configuration' : 'saved-harness-defaults'}
+      revision={defaults.data?.revision} enabled={!defaults.isPending} />)}
   </nav>
 }

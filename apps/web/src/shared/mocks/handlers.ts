@@ -276,8 +276,10 @@ export const handlers: RequestHandler[] = [
     if (harness !== 'codex' && harness !== 'opencode') return fixtureNotFound('harness', harness)
     return HttpResponse.json({ ...mockQualification(harness), status: 'qualifying', startedAt: new Date().toISOString() }, { status: 202 })
   }),
-  http.get('/api/management/harnesses/:harness/execution-readiness', ({ params }) => HttpResponse.json({
-    harness: params.harness, scope: 'saved-harness-defaults', status: 'unverified', rolloutEnabled: false,
+  http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
+    harness: params.harness, scope: new URL(request.url).searchParams.get('scope') ?? 'saved-harness-defaults',
+    ...(new URL(request.url).searchParams.has('configurationVersionId') ? { configurationVersionId: new URL(request.url).searchParams.get('configurationVersionId') } : {}),
+    status: 'unverified', rolloutEnabled: false,
     defaultsRevision: null, checkedAt: new Date().toISOString(),
     reason: { code: 'HARNESS_DISCOVERY_UNAVAILABLE', message: 'Execution qualification has not been checked.' },
     limitation: 'Deterministic fixture; no native execution.',

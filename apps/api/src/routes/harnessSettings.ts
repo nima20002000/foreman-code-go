@@ -24,9 +24,9 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
   app.get('/api/management/harnesses/:harness/execution-readiness', async (request) => {
     const principal = requirePrincipal(request)
     requireAuthorization(principal, 'harnesses:read')
-    const { harness } = ExecutionReadinessInputSchema.parse(request.params)
+    const { harness, scope, configurationVersionId } = ExecutionReadinessInputSchema.parse({ ...request.params as object, ...request.query as object })
     if (!services.executionReadiness) throw new DomainError('READINESS_UNAVAILABLE', 'Execution readiness is unavailable.', 503)
-    return ExecutionReadinessSchema.parse(await services.executionReadiness.get(principal, harness))
+    return ExecutionReadinessSchema.parse(await services.executionReadiness.get(principal, harness, scope, configurationVersionId))
   })
   app.get('/api/management/harnesses/:harness/options', async (request) => {
     requireAuthorization(requirePrincipal(request), 'harnesses:read')

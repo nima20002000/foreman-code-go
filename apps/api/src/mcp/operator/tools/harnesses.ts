@@ -29,10 +29,10 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_qualification_run', () => context.services.harnessQualifications!.run(context.principal, 'mcp', input.harness)))
   if (operatorToolAvailable(context, 'execution_readiness_get')) server.registerTool('execution_readiness_get', {
-    description: 'Read native rollout eligibility and model-free qualification of persisted harness defaults. Configured MCP and server health are separate; execution still checks the selected configuration, workspace, grants, and MCP policy.',
+    description: 'Read native eligibility for workflow harness presets (default scope) or the exact saved Operator configuration (operator-configuration scope). Supply configurationVersionId to inspect a pinned Operator configuration; otherwise inspect its current saved defaults. These scopes have separate host profiles and sandbox policies. No configuration is written or model turn started. Execution still checks workspace, grants, and MCP policy.',
     inputSchema: ExecutionReadinessInputSchema, outputSchema: ExecutionReadinessSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'execution_readiness_get', () => context.services.executionReadiness!.get(context.principal, input.harness)))
+  }, async (input) => invokeOperatorTool(context, 'execution_readiness_get', () => context.services.executionReadiness!.get(context.principal, input.harness, input.scope, input.configurationVersionId)))
   if (operatorToolAvailable(context, 'harness_list')) server.registerTool('harness_list', {
     description: 'List qualified local harness capabilities and saved defaults.', inputSchema: z.object({}).strict(),
     outputSchema: HarnessCatalogResultSchema,

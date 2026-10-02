@@ -9,7 +9,7 @@ export function OperatorSetupNotice({ data, checking, failed, onRetry }: {
   if (failed) return <Alert tone="warning" title="GraphQL MCP could not be checked"
     action={<Button size="sm" disabled={checking} onClick={onRetry}>Check again</Button>}>Chat is unavailable until the installation is verified.</Alert>
   if (!data) return null
-  if (data.status === 'configured') return <ExecutionReadinessNotice harness={data.harness} />
+  if (data.status === 'configured') return <ExecutionReadinessNotice harness={data.harness} configurationVersionId={data.configurationVersionId} />
   const name = data.harness === 'opencode' ? 'OpenCode' : data.harness === 'claude' ? 'Claude' : 'Codex'
   return <Alert tone="warning" title={`Install GraphQL MCP in ${name} first`}
     action={<><a className="n-button n-button--secondary n-button--sm"
