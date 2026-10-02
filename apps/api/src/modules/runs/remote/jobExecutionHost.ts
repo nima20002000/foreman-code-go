@@ -126,7 +126,8 @@ export class RemoteJobExecutionHost {
       collectOutputs: async () => {},
     }, signal)
     if (result.recoveryRequired || !result.processStopped || !result.outcome) { await this.ports.journal.jobUncertain(intent.operationId, 'OCI entry or physical closure remains uncertain'); return }
-    const receipt = await this.ports.journal.jobTerminal(intent.operationId, this.terminalEvidence(result, false))
+    const logGapPossible = result.logError || (await this.ports.journal.jobPendingLogs(intent.operationId)).length > 0
+    const receipt = await this.ports.journal.jobTerminal(intent.operationId, this.terminalEvidence(result, logGapPossible))
     await this.publish(receipt)
   }
   private supervisor(execution: JobExecution) {
