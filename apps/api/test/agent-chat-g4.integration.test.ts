@@ -114,6 +114,15 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
         values($1,'g4-2',$2::jsonb,$3,'next_turn','completed',$4)`, [f.id, JSON.stringify({ content: user2.content }), '0'.repeat(64), user2.id])
       await pool.query(`update operator_conversation_turns set delivery='completed' where conversation_id=$1`, [f.id])
       await pool.query(`update operator_conversations set active_request_id=null,active_native_turn_id=null,active_phase=null,turn_state='idle' where id=$1`, [f.id])
+      const expected = [firstMessage, answer1, { ...user2,
+        originalInput: { requestId: 'g4-2', content: user2.content, attachments: [] } }, answer2]
+      // History exposes persisted ordering/revision metadata and exact admitted user input.
+      const persisted = (await pool.query<{ id: string; revision: string; sequence: string }>(`
+        select id,activity_record_revision::text as revision,sequence::text as sequence
+        from operator_conversation_messages where conversation_id=$1 order by sequence`, [f.id])).rows
+      assert.deepEqual(persisted.map((message) => message.id), expected.map((message) => message.id))
+      const expectedMessages = expected.map((message, index) => ({ ...message,
+        revision: persisted[index]!.revision, sequence: persisted[index]!.sequence }))
       const state = AgentChatStateSchema.parse((await f.read()).json())
       assert.equal(state.messages.length, 0)
       assert.equal(state.hasEarlierMessages, true)
@@ -137,7 +146,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
         assert.notEqual(page.nextCursor, before)
         before = page.nextCursor
       }
-      assert.deepEqual(messages, [firstMessage, answer1, user2, answer2])
+      assert.deepEqual(messages, expectedMessages)
       const prior = await f.repository.get(f.id)
       const deniedHttp = await f.app.inject({ method: 'GET', url: `${f.url}/conversations/${f.id}/history`,
         headers: { authorization: `Bearer ${deniedToken}` } })
