@@ -185,7 +185,8 @@ export function providerLaunchCredentials(runs: PostgresRunRepository, locations
         || !run?.executionLocation || run.executionLocation.runnerId !== 'local') throw new DomainError(
         'WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight requires the pinned local execution.', 409)
       const { manager } = managers.resolve({ executionId: execution.id, agentId: execution.agentId,
-        harness: input.harness, workingDirectory: input.workingDirectory, configuration })
+        harness: input.harness, workingDirectory: input.workingDirectory, configuration,
+        runId: execution.runId, attempt: execution.attempt, ...(input.purpose ? { purpose: input.purpose } : {}) })
       return new WorkerLaunchCredentialService(new McpDetectionService(inspector(manager), providerAppEndpoint),
         credentials, run.executionLocation.runnerId).prepare(input)
     },
