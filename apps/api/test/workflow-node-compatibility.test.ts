@@ -64,11 +64,16 @@ describe('current mixed Agent/Job node boundaries', () => {
     expect(hasSupportedApprovalTopology(version)).toBe(false)
     expect(resolveImmutableApprovalRoute(version, f.identities[1]!.workflowNodeId, f.identities[1]!.agentId)).toBeUndefined()
   })
-  it('keeps duplicate Agent occurrences invalid in a mixed graph', () => {
+  it('allows distinct Worker nodes to reuse an Agent in a mixed graph', () => {
     const f = makeCurrentWorkflowFixture('node-compat-duplicate', 'approval')
     const version: WorkflowVersionV3 = structuredClone(f.version)
     version.definition.nodes.push(jobNode('build'), { ...f.version.definition.nodes[1]!, id: 'duplicate-agent' })
-    expect(hasSupportedApprovalTopology(version)).toBe(false)
+    expect(hasSupportedApprovalTopology(version)).toBe(true)
+    expect(resolveImmutableApprovalRoute(version, f.identities[1]!.workflowNodeId, f.identities[1]!.agentId))
+      .toMatchObject({ requestingNodeId: f.identities[1]!.workflowNodeId })
+    expect(resolveImmutableApprovalRoute(version, 'duplicate-agent', f.identities[1]!.agentId)).toBeUndefined()
+    version.definition.nodes.push({ ...f.version.definition.nodes[0]!, id: 'duplicate-reviewer' })
+    expect(resolveImmutableApprovalRoute(version, f.identities[1]!.workflowNodeId, f.identities[1]!.agentId)).toBeUndefined()
   })
   it('never promotes a Job from a colliding Agent native acknowledgement', () => {
     const f = makeCurrentWorkflowFixture('node-compat-lifecycle', 'single'), agent = f.identities[0]!
