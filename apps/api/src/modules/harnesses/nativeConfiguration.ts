@@ -11,6 +11,7 @@ import { runCommand } from './process.js'
 import { HarnessExecutionError } from './errors.js'
 import { DomainError } from '../errors.js'
 import { claudeSettingSupport, type ClaudeNativeConfigurationPort } from './claudeSdk/nativeConfiguration.js'
+import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
 
 export class NativeConfigurationService {
   private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>()
@@ -35,6 +36,7 @@ export class NativeConfigurationService {
   private async inspectConfiguration(value: HarnessConfiguration) {
     const signal = AbortSignal.timeout(60_000)
     if (value.harness === 'claude') {
+      requireClaudeProductionCredentialDelivery(value)
       const qualification = HarnessQualificationSchema.parse(await this.claudePort().qualify(value, this.directory, signal))
       if (qualification.harness !== 'claude') throw new DomainError('CLAUDE_QUALIFICATION_MISMATCH', 'The selected Claude profile returned another harness.', 503)
       return qualification

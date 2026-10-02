@@ -1,6 +1,7 @@
 import type { HarnessConfiguration, HarnessQualification } from '@graphql/contracts'
 import type { HarnessConfigurationQualifier } from './port.js'
 import { NativeHarnessFactories } from './runtimeFactory.js'
+import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
 
 /** Model-free native qualification is separate from passive installation discovery. */
 export class NativeHarnessConfigurationQualifier implements HarnessConfigurationQualifier {
@@ -10,6 +11,7 @@ export class NativeHarnessConfigurationQualifier implements HarnessConfiguration
   }
 
   qualify(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal): Promise<HarnessQualification> {
+    requireClaudeProductionCredentialDelivery(configuration)
     return this.factories.qualifyConfiguration(configuration, workingDirectory, signal)
   }
 }
