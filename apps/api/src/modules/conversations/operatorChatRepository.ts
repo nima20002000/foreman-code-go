@@ -568,17 +568,29 @@ export class PostgresOperatorConversationRepository {
   }
 
 
-  async submitted(id: string, requestId: string, nativeTurnId: string): Promise<boolean> {
+  async submitted(id: string, requestId: string, nativeTurnId: string,
+    owner: { nativeSessionId: string; principalId: string | null }): Promise<boolean> {
     // ACK evidence and handoff initialization commit in one SQL statement. An
     // uncertain ACK stays fenced by the active turn and is recovered here too.
-    const result = await this.pool.query(`with acknowledged as (
-      update operator_conversations set active_native_turn_id=$3,active_phase='submitted',
-        turn_state=case when cancel_requested then 'canceling' else 'active' end,revision=revision+1,updated_at=now()
-        where id=$1 and active_request_id=$2 and (active_native_turn_id is null or active_native_turn_id=$3)
-          and (active_native_turn_id is distinct from $3 or active_phase is distinct from 'submitted'
-            or turn_state is distinct from case when cancel_requested then 'canceling' else 'active' end
-            or exists(select 1 from operator_conversation_turns t where t.conversation_id=$1 and t.request_id=$2 and t.native_turn_id is distinct from $3))
-        returning id,native_session_id,handoff_context,fork_request_id
+    const result = await this.pool.query(`with owned_session as materialized (
+      select c.id,c.native_session_id,c.handoff_context,c.fork_request_id,c.active_native_turn_id,
+        c.active_phase,c.turn_state,c.cancel_requested,t.native_turn_id as receipt_native_turn_id,t.payload as receipt_payload
+      from operator_conversations c join operator_conversation_turns t on t.conversation_id=c.id and t.request_id=$2
+      where c.id=$1 and c.active_request_id=$2 and c.native_session_id=$4 and c.owner_principal_id=$5
+        and c.kind='operator' and c.deleted_at is null
+        and (c.active_native_turn_id is null or c.active_native_turn_id=$3)
+        and (t.native_turn_id is null or t.native_turn_id=$3) for update of c,t
+    ), existing as (
+      select id from owned_session where active_native_turn_id=$3 and receipt_native_turn_id=$3
+        and active_phase='submitted' and turn_state=case when cancel_requested then 'canceling' else 'active' end
+        and (handoff_context is null or (receipt_payload->>'handoffContextIncluded'='true'
+          or (not (receipt_payload ? 'handoffContextIncluded') and $2=fork_request_id)) is not true
+          or receipt_payload->>'handoffContextSessionId'=native_session_id)
+    ), acknowledged as (
+      update operator_conversations c set active_native_turn_id=$3,active_phase='submitted',
+        turn_state=case when c.cancel_requested then 'canceling' else 'active' end,revision=c.revision+1,updated_at=now()
+        from owned_session o where c.id=o.id and not exists (select 1 from existing)
+        returning c.id,c.native_session_id,c.handoff_context,c.fork_request_id
     ), initialized as (
       update operator_conversation_turns t set native_turn_id=$3,payload=case when a.handoff_context is not null and a.native_session_id is not null
           and (t.payload->>'handoffContextIncluded'='true'
@@ -586,7 +598,7 @@ export class PostgresOperatorConversationRepository {
           then t.payload || jsonb_build_object('handoffContextSessionId',a.native_session_id) else t.payload end
         from acknowledged a where t.conversation_id=a.id and t.request_id=$2
       returning t.request_id
-    ) select id from acknowledged`, [id, requestId, nativeTurnId])
+    ) select id from acknowledged union select id from existing`, [id, requestId, nativeTurnId, owner.nativeSessionId, owner.principalId])
     return result.rowCount === 1
   }
   async requestCancel(id: string, requestId: string): Promise<boolean> {
