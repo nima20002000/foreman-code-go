@@ -7,18 +7,23 @@ interface ResourceCardProps extends HTMLAttributes<HTMLDivElement> {
   icon: IconName
   open?: ReactElement<{ className?: string; children?: ReactNode; title?: string }>
   actions?: ReactNode
-  selection?: Omit<ComponentProps<typeof Checkbox>, 'label' | 'className'>
+  selection?: Omit<ComponentProps<typeof Checkbox>, 'label' | 'className'> & { mode?: 'replace' | 'hover' | 'visible' }
   protection?: { label: string; reason?: string }
 }
 
 /** Directory presentation only: callers own routing, selection and commands. */
 export function ResourceCard({ name, icon, open, actions, selection, protection, className, children, ...props }: ResourceCardProps) {
+  const { mode = 'replace', ...checkboxProps } = selection ?? {}
+  const replacesIdentity = selection && mode === 'replace'
+  const compactSelection = selection && mode !== 'replace'
   const identity = <><Icon name={icon} size={16} /><span className="resource-card-name">{name}</span></>
-  return <Card {...props} className={cx('resource-card', selection?.checked && 'is-selected', selection && 'is-selecting', className)}>
-    {selection ? <Checkbox {...selection} label={name} title={name} className="resource-card-select" />
+  return <Card {...props} className={cx('resource-card', selection?.checked && 'is-selected', selection && mode !== 'hover' && 'is-selecting', compactSelection && 'has-compact-selection', className)}>
+    {compactSelection ? <div className={cx('resource-card-selection-slot', mode === 'hover' && 'is-hover-selection')}
+      onClick={(event) => event.stopPropagation()}><Checkbox {...checkboxProps} label={name} title={name} className="resource-card-compact-select" /></div> : null}
+    {replacesIdentity ? <Checkbox {...checkboxProps} label={name} title={name} className="resource-card-select" />
       : open ? cloneElement(open, { className: cx('resource-card-open', open.props.className), title: name, children: identity })
         : <div className="resource-card-open" title={name}>{identity}</div>}
-    {!selection && actions ? <div className="resource-card-actions">{actions}</div> : null}
+    {!replacesIdentity && actions ? <div className="resource-card-actions">{actions}</div> : null}
     {protection ? <span className="resource-card-protection" role="img" aria-label={protection.label}
       title={protection.reason ?? protection.label}><Icon name="lock" size={14} /></span> : null}
     {children}

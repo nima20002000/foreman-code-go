@@ -14,8 +14,9 @@ import {
   useUpdateManagedWorkflowMutation,
 } from '../../shared/api/query'
 import {
-  Alert, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
+  Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
 } from '../../shared/ui/nocturne'
+import { ResourceCard } from '../../shared/ui/ResourceCard'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
@@ -38,10 +39,9 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
   useDismissableSurface({ open, onDismiss: close, surfaceRef, triggerRef })
 
   return (
-    <div className="workflow-card-actions-wrap">
+    <div>
       <IconButton
         ref={triggerRef}
-        className="workflow-card-more"
         label={`Open actions for ${name}`}
         variant="ghost"
         size="sm"
@@ -52,7 +52,7 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
         <Icon name="more" size={16} />
       </IconButton>
       {open ? (
-        <div ref={surfaceRef} className="workflow-card-actions" role="dialog" aria-label={`${name} actions`}>
+        <div ref={surfaceRef} className="resource-card-menu" role="dialog" aria-label={`${name} actions`}>
           <TextField
             ref={nameInputRef}
             label="Name"
@@ -162,24 +162,21 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
         <ul className="workflow-card-list resource-card-list" data-testid="workflow-card-list">
           {workflows.map((workflow) => (
             <li
-              className="workflow-card-item"
               data-testid={`workflow-card-${workflow.id}`}
               key={workflow.id}
             >
-              <Card className={`workflow-card resource-card${workflow.id in selection.selected ? ' is-selected' : ''}`}>
-                {selection.selecting ? <Checkbox className="resource-card-select" label={workflow.name}
-                  aria-label={`Select ${workflow.name}`} checked={workflow.id in selection.selected}
-                  disabled={locked || (count >= 100 && !(workflow.id in selection.selected))}
-                  onChange={() => selection.toggle(workflow.id, managedById.get(workflow.id)!.revision)} /> : <><Link
+              <ResourceCard name={workflow.name} icon="workflow"
+                selection={selection.selecting ? {
+                  'aria-label': `Select ${workflow.name}`, checked: workflow.id in selection.selected,
+                  disabled: locked || (count >= 100 && !(workflow.id in selection.selected)),
+                  onChange: () => selection.toggle(workflow.id, managedById.get(workflow.id)!.revision),
+                } : undefined}
+                open={<Link
                   to="/workspaces/$workspaceId"
                   params={{ workspaceId }}
                   search={{ workflowId: workflow.id }}
-                  className="workflow-card-open resource-card-open"
-                >
-                  <Icon name="workflow" size={16} />
-                  <span className="resource-card-name">{workflow.name}</span>
-                </Link>
-                <WorkflowCardActions
+                />}
+                actions={<WorkflowCardActions
                   name={workflow.name}
                   onRename={(name) => {
                     const item = managedById.get(workflow.id)
@@ -195,8 +192,7 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
                       onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
                     })
                   }}
-                /></>}
-              </Card>
+                />} />
             </li>
           ))}
         </ul>

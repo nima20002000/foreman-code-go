@@ -52,6 +52,29 @@ it('supports a caller-owned open action and its native disabled state', async ()
   expect(open).toHaveBeenCalledOnce()
 })
 
+it('keeps a compact hover checkbox keyboard reachable without activating the open action or card', async () => {
+  const open = vi.fn()
+  const cardClick = vi.fn()
+  function HoverCard() {
+    const [checked, setChecked] = useState(false)
+    return <ResourceCard name="Website" icon="folder" onClick={cardClick} open={<button type="button" onClick={open} />}
+      actions={<TrashIconButton target="Website" />} selection={{ mode: checked ? 'visible' : 'hover', checked,
+        'aria-label': 'Select Website', onChange: (event) => setChecked(event.target.checked) }} />
+  }
+  render(<HoverCard />)
+  const checkbox = screen.getByRole('checkbox', { name: 'Select Website' })
+  const user = userEvent.setup()
+  await user.tab()
+  expect(checkbox).toHaveFocus()
+  await user.keyboard(' ')
+  expect(checkbox).toBeChecked()
+  expect(open).not.toHaveBeenCalled()
+  expect(cardClick).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Website' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Delete Website' })).toBeVisible()
+  expect(checkbox.closest('.resource-card')).toHaveClass('is-selecting')
+})
+
 it('exposes protection and disables deletion with an accessible reason and caller descriptions', async () => {
   const remove = vi.fn()
   const ref = createRef<HTMLButtonElement>()
