@@ -32,12 +32,14 @@ export interface DialogProps {
   closeOnOutsideClick?: boolean
   /** Focus target when the element that opened the dialog is gone on close. */
   returnFocusRef?: RefObject<HTMLElement | null>
+  /** Keep a compact dialog beside the control that opened it. */
+  anchorRef?: RefObject<HTMLElement | null>
   initialFocusRef?: RefObject<HTMLElement | null>
   className?: string
   onAfterClose?: () => void
 }
 export function Dialog({ open, onOpenChange, title, description, children, footer, headerLeading, onKeyDownCapture, size = 'md', variant = 'dialog', dismissible = true,
-  closeOnOutsideClick = true, initialFocusRef, className, onAfterClose, side = 'end', role = 'dialog', busy = false, closeLabel = 'Close dialog', returnFocusRef }: DialogProps) {
+  closeOnOutsideClick = true, initialFocusRef, className, onAfterClose, side = 'end', role = 'dialog', busy = false, closeLabel = 'Close dialog', returnFocusRef, anchorRef }: DialogProps) {
   const canDismiss = dismissible && !busy
   const ref = useRef<HTMLDialogElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -60,6 +62,32 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
       else returnFocus?.focus()
     }
   }, [open, initialFocusRef, returnFocusRef])
+  useEffect(() => {
+    const dialog = ref.current, anchor = anchorRef?.current
+    if (!open || !dialog || !anchor) return
+    const viewport = window.visualViewport
+    const position = () => {
+      const rect = anchor.getBoundingClientRect()
+      const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0
+      const width = viewport?.width ?? window.innerWidth, height = viewport?.height ?? window.innerHeight
+      dialog.style.position = 'fixed'; dialog.style.margin = '0'; dialog.style.inset = 'auto'
+      dialog.style.maxHeight = `${Math.max(0, height - 24)}px`
+      const size = dialog.getBoundingClientRect()
+      dialog.style.left = `${Math.max(left + 12, Math.min(rect.right - size.width, left + width - size.width - 12))}px`
+      const below = rect.bottom + 8
+      dialog.style.top = `${Math.max(top + 12, Math.min(below + size.height <= top + height - 12 ? below : rect.top - size.height - 8, top + height - size.height - 12))}px`
+    }
+    position()
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(position) : undefined
+    observer?.observe(anchor); observer?.observe(dialog)
+    window.addEventListener('resize', position); window.addEventListener('scroll', position, true)
+    viewport?.addEventListener('resize', position); viewport?.addEventListener('scroll', position)
+    return () => {
+      observer?.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true)
+      viewport?.removeEventListener('resize', position); viewport?.removeEventListener('scroll', position)
+      for (const property of ['position', 'margin', 'inset', 'max-height', 'left', 'top']) dialog.style.removeProperty(property)
+    }
+  }, [open, anchorRef])
   if (typeof document === 'undefined') return null
   return createPortal(<dialog ref={ref} className={cx('n-theme', 'n-dialog', `n-dialog--${size}`, variant === 'drawer' && 'n-drawer', variant === 'sheet' && 'n-sheet', className)}
     role={role} aria-modal="true" aria-busy={busy || undefined} data-side={side} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
