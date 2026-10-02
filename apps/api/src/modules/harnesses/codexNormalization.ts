@@ -17,6 +17,8 @@ export interface CodexNotificationOwner {
   turnId?: string
   runtimeGeneration: number
   terminal: boolean
+  /** Bounded current-generation/current-turn start evidence supplied by the owning adapter. */
+  knownCommandItem?(itemId: string): boolean
 }
 
 /** Pure classification, with no state store or synthesized parent/root IDs.
@@ -36,7 +38,13 @@ export function normalizeCodexNotification(owner: CodexNotificationOwner, envelo
   if (threadId && threadId !== owner.threadId) return { kind: 'unlinked' as const, evidence }
   const exactThread = ['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)
   if (exactThread && threadId !== owner.threadId) return { kind: 'ignored' as const, reason: 'missing_thread' }
-  if (turnId !== undefined && (turnId !== owner.turnId || owner.terminal)) return { kind: 'ignored' as const, reason: 'inactive_turn' }
+  // Only a previously observed command may settle after its parent. Late text,
+  // new items and root terminal evidence retain the original terminal fence.
+  const knownAfterTerminal = owner.terminal && method === 'item/completed'
+    && threadId === owner.threadId && turnId === owner.turnId && turnId !== undefined
+    && item?.type === 'commandExecution' && item.status === 'completed'
+    && itemId !== undefined && itemId === text(item.id) && owner.knownCommandItem?.(itemId) === true
+  if (turnId !== undefined && (turnId !== owner.turnId || owner.terminal && !knownAfterTerminal)) return { kind: 'ignored' as const, reason: 'inactive_turn' }
   if (method === 'turn/started' || method === 'turn/completed') {
     if (!turnId || !turn || !Array.isArray(turn.items) || !['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status))
       || (method === 'turn/completed' && turn.status === 'inProgress')) return { kind: 'ignored' as const, reason: 'invalid_turn' }
@@ -44,7 +52,7 @@ export function normalizeCodexNotification(owner: CodexNotificationOwner, envelo
   }
   if (method === 'item/started' || method === 'item/completed') {
     if (!turnId || !item || !itemId || !text(item.type)) return { kind: 'ignored' as const, reason: 'invalid_item' }
-    return { kind: 'item' as const, evidence, item, completed: method === 'item/completed' }
+    return { kind: 'item' as const, evidence, item, completed: method === 'item/completed', knownAfterTerminal }
   }
   if (method === 'item/agentMessage/delta') {
     if (!turnId || !itemId || typeof params.delta !== 'string') return { kind: 'ignored' as const, reason: 'invalid_delta' }

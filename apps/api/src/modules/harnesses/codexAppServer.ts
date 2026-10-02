@@ -326,6 +326,9 @@ function stringArray(value: unknown): string[] | undefined {
   return value as string[]
 }
 function requestKey(generation: number, id: RequestId): string { return `${generation}:${typeof id}:${String(id)}` }
+function itemNotificationKey(generation: number, method: string, turnId: unknown, itemId: unknown, itemType: unknown): string {
+  return createHash('sha256').update(canonical([generation, method, turnId, itemId, itemType])).digest('hex')
+}
 function snapshot(runtime: Runtime): TurnSnapshot {
   return {
     activeTurnId: runtime.activeTurnId, activeCorrelationId: runtime.activeCorrelationId,
@@ -1962,7 +1965,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (params.threadId === runtime.session.nativeSessionId && !staged && this.stage(runtime, { method, params, arrivalOrdinal })) return
     }
     const normalized = normalizeCodexNotification({ threadId: runtime.session.nativeSessionId, ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
-      runtimeGeneration: runtime.generation, terminal: Boolean(runtime.terminalResult) }, {
+      runtimeGeneration: runtime.generation, terminal: Boolean(runtime.terminalResult),
+      knownCommandItem: (itemId) => !runtime.closed && !runtime.disposed && runtime.transport.isConnected?.() === true
+        && runtime.seenNotifications.has(itemNotificationKey(runtime.generation, 'item/started', runtime.activeTurnId, itemId, 'commandExecution')) }, {
       providerVersion: runtime.session.providerVersion, schemaIdentity: runtime.schemaIdentity,
       connectionId: runtime.connectionId, runtimeGeneration: runtime.generation, arrivalOrdinal, method, params,
     })
@@ -1988,10 +1993,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return
     }
     if (method === 'item/started' || method === 'item/completed') {
-      if (params.threadId !== runtime.session.nativeSessionId || params.turnId !== runtime.activeTurnId || runtime.terminalResult) return
+      if (params.threadId !== runtime.session.nativeSessionId || params.turnId !== runtime.activeTurnId
+        || runtime.terminalResult && !(normalized.kind === 'item' && normalized.knownAfterTerminal)) return
       const item = isObject(params.item) ? params.item : undefined
       if (!item || !text(item.id) || !text(item.type)) return
-      const fingerprint = createHash('sha256').update(canonical([method, params.turnId, item.id])).digest('hex')
+      const fingerprint = itemNotificationKey(runtime.generation, method, params.turnId, item.id, item.type)
       if (runtime.seenNotifications.has(fingerprint)) return
       runtime.seenNotifications.add(fingerprint)
       if (runtime.seenNotifications.size > MAX_EVENTS) runtime.seenNotifications.delete(runtime.seenNotifications.values().next().value!)
