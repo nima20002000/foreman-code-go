@@ -14,10 +14,13 @@ export function WorkspaceLocationCard({ label, path, description, disabled, onCh
   presentation?: 'card' | 'compact'
   triggerRef?: RefObject<HTMLButtonElement | null>
 }) {
-  if (presentation === 'compact') return <button ref={triggerRef} type="button" className="workspace-location-compact" aria-label={label}
-    title={path || 'Choose execution location'} disabled={disabled} onClick={onChoose}>
-    <Icon name="folder" size={14} /><span dir={path ? 'ltr' : undefined}>{path || 'Choose execution location'}</span>
-  </button>
+  if (presentation === 'compact') return <div className="workspace-location-compact">
+    <Icon name="folder" size={14} />
+    <button ref={triggerRef} type="button" className="workspace-location-compact-path" aria-label={label} aria-description={path || undefined}
+      title={path || 'Choose execution location'} disabled={disabled} onClick={onChoose}>
+      <span dir={path ? 'ltr' : undefined}>{path || 'Choose execution location'}</span>
+    </button>
+  </div>
   return <div className="mcp-folder-notice workspace-location-card" data-copy={Boolean(onCopy && path)}>
     <button type="button" className="workspace-location-choose"
       aria-label={label} disabled={disabled} onClick={onChoose} />
