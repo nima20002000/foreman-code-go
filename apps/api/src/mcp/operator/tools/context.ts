@@ -6,6 +6,8 @@ import { currentWorkflowAvailable, currentWorkflowRequirements, type CurrentWork
 import { runInspectionToolAvailable, runInspectionRequirements } from './runInspection.js'
 import { runGraphToolAvailable } from './runGraph.js'
 import { ScheduleOperatorCapabilitiesSchema, workflowScheduleCapabilities } from './workflowSchedules.js'
+import { jobCapabilities } from './jobs.js'
+import { jobRuntimeCapabilities } from './jobRuntimeProfiles.js'
 import { hasAction, isAuthorized } from '../../../modules/access/policy.js'
 import { invokeOperatorTool } from '../invoke.js'
 import { OPERATOR_TOOL_ACTIONS } from '../catalog.js'
@@ -21,7 +23,7 @@ export const OPERATOR_RUNTIME_LIMITS = [
   {feature:'process_exit_confirmation',state:'limited',detail:'run_stop acceptance is not native-process-exit proof; processStopped remains conservative.'},
   {feature:'historical_runs',state:'limited',detail:'Restore history into a new validated current version before running it. Old immutable versions are never edited.'},
   {feature:'resource_deletion',state:'protected',detail:'History-preserving archive/restore is supported; permanent deletion is not exposed.'},
-  {feature:'remote_runners_and_host_browsing',state:'unsupported',detail:'Only the local runner is supported. workspace_create can create a named project folder under an explicit parentPath with provisioning, location-update and location-read grants. workspace_folders_list and workspace_folder_create operate only inside app-managed workspace storage; Desktop and runtime storage are not workspace destinations. No arbitrary host browsing or remote dispatch.'},
+  {feature:'remote_runners_and_host_browsing',state:'limited',detail:'workspace_create folder provisioning operates on the local runner under an explicit parentPath with provisioning, location-update and location-read grants. workspace_folders_list and workspace_folder_create operate only inside app-managed workspace storage; Desktop and runtime storage are not workspace destinations. There is no arbitrary host browsing. Execution on an approved computer requires its separately configured services and accepted source/root authority.'},
   {feature:'approval_reassignment',state:'protected',detail:'Read permissions span handlers; response authority stays with the accepted handler. Changing a draft does not take over a running request.'},
   {feature:'trusted_device_owner_approval',state:'protected',detail:'Operator can discover, inspect, check and read trusted device connections, and configure consent using an existing exact browser owner approval. Requesting, approving and revoking that human approval requires the signed-in owner in the browser; settings:update never permits self-approval or grants agent execution permissions.'},
   {feature:'operator_self_authorization',state:'protected',detail:'No tools are added for the Operator to answer its own human gates or manage its delegated credential.'},
@@ -48,6 +50,8 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
       ? Object.values(CANONICAL_RUN_GRAPH_MCP_TOOLS).filter((name) => runGraphToolAvailable(context, name)) : []
     const inspection = Object.values(RUN_INSPECTION_TOOLS).filter((name) => runInspectionToolAvailable(context, name, resource))
     const schedules = workflowScheduleCapabilities(context, resource)
+    const jobs = jobCapabilities(context, resource)
+    const jobRuntime = jobRuntimeCapabilities(context, resource)
     const scheduleRuntime = context.services.runs?.scheduleAvailability?.()
     const runtimeLimits = OPERATOR_RUNTIME_LIMITS.map((limit) =>
       limit.feature === 'schedule_delivery' && scheduleRuntime?.configured
@@ -56,7 +60,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
             + (scheduleRuntime.runtimeAdmission ? 'Timed Run admission is available.'
               : 'Timed Run admission is paused until native runtime readiness returns.') }
         : limit)
-    const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection, ...schedules.map((entry) => entry.name)]
+    const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection, ...schedules.map((entry) => entry.name), ...jobs.map((entry) => entry.name), ...jobRuntime.map((entry) => entry.name)]
     return {endpoint:'/mcp',audience:'operator',protocol:'2026-07-28',tools,
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
       grants:context.principal.grants,requestedResource:resource,
@@ -67,8 +71,9 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
           detail: 'Current V3 only. Concrete services recheck all scope, pin and settlement requirements; Stop also needs each affected Run grant.' })),
         ...graph.map((name) => ({ name, actions: ['runs:read' as const], detail: 'Exact current Run/workflow/version scope. Metadata reads do not grant execution authority.' })),
         ...inspection.map((name) => ({ name, actions: runInspectionRequirements(name),
-          detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' })), ...schedules],
-      runtimeLimits:[...runtimeLimits, runHistoryCapabilityLimit(context), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
+          detail: 'Private bounded V3 Run inspection. runs:read is checked on the exact persisted Run; run_version_get additionally requires workflows:read on its workflow. Read-only grants are sufficient; no execution authority is conferred.' })), ...schedules, ...jobs, ...jobRuntime],
+      runtimeLimits:[...runtimeLimits, runHistoryCapabilityLimit(context), ...(jobs.length ? [{ feature: 'ci_jobs', state: 'limited' as const,
+        detail: 'Saved Jobs can explicitly select Main or a connected computer. Only the listed Job operations are available to this caller. job_start requires live scoped jobs:start authority, an approved source/root and current host-bound CI qualification. Connecting a computer or listing tools is not qualification. The saved Job target stays pinned. No automatic default build routing or redirection of Agent shell commands is provided. Job management tools remain Operator-only; Coder and Orchestrator roles cannot invoke them.' }] : []), ...(schedules.length ? [{ feature: 'schedule_persistence', state: 'limited' as const,
         detail: 'Schedule CRUD and bounded occurrence history have HTTP/MCP parity. '
           + (scheduleRuntime?.configured ? 'Timed Run admission is composed; see schedule_delivery for policy and readiness. '
             : 'This persistence-only composition has no dispatcher or timed Run admission. ')
