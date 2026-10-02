@@ -25,6 +25,8 @@ import { transferContextForBinding } from '../../byte-transfer/carrier.js'
 import type { TransferContext } from '@graphql/contracts/byte-transfer'
 import { assertRepeatCanonicalReceiptLocked,requireRepeatCanonicalReceiptBeforeCommit } from '../../run-graph/repeatReceipts.js'
 import type { WorkflowPhysicalArtifactsPort } from './workflowPhysicalArtifacts.js'
+import { readWorkflowNativeEntryLocked,workflowNativeReservation,type WorkflowNativeReservation,type WorkflowNativeEntryRecord } from '../workflowNativeEntry.js'
+import { canonicalRepeatEffectReceipt } from '../../run-graph/repeatPublication.js'
 
 export interface RemoteWorkflowMainLifetime {
   execution: HarnessExecution
@@ -288,9 +290,10 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         || readout.runtimeLeaf.canonicalRuntimeDirectory !== lifetime.execution.runtimeDirectory) return unavailable()
       const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share', [intent.operationId])).rows[0]
       if (!origin || !same(DeviceConnectionIdentitySchema.parse(origin.connection), receipt.connection)) return unavailable()
-      const executionRow = (await sql.query<{ record: unknown; accepted: boolean }>('select record,accepted from harness_executions where id=$1 and run_id=$2 for share', [intent.executionId, intent.runId])).rows[0]
+      // accepted marks terminal result acceptance, after physical proof/adoption.
+      const executionRow = (await sql.query<{ record: unknown }>('select record from harness_executions where id=$1 and run_id=$2 for share', [intent.executionId, intent.runId])).rows[0]
       const execution = HarnessExecutionSchema.safeParse(executionRow?.record)
-      if (!executionRow?.accepted || !execution.success || execution.data.id !== lifetime.execution.id
+      if (!execution.success || execution.data.id !== lifetime.execution.id
         || execution.data.agentId !== lifetime.execution.agentId || execution.data.attempt !== intent.technicalAttempt
         || execution.data.workflowNodeId !== intent.nodeId || execution.data.workingDirectory !== native.workingTree.canonicalCwd
         || execution.data.nativeSessionId !== undefined && execution.data.nativeSessionId !== readout.session.nativeSessionId) return unavailable()
@@ -303,12 +306,28 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         if(!saved||!same(saved.receipt,receipt))return unavailable()
       }
       const entry = (await sql.query<{ phase: string; source_id: string | null; source_digest: string | null;
-        reservation: { execution: ReturnType<typeof repeatExecutionIdentity>; scope: {runId:string} };
-        transition: { phase: string; launchDigest: string | null; reservation: unknown } }>(
+        reservation: WorkflowNativeReservation; transition: WorkflowNativeEntryRecord }>(
         'select phase,source_id,source_digest,reservation,transition from workflow_native_entries where execution_id=$1 and run_id=$2 for share', [intent.executionId, intent.runId])).rows[0]
       if (!entry || entry.phase !== 'entered' || entry.transition?.phase !== 'entered' || !entry.transition.launchDigest || !entry.source_id || !entry.source_digest
         || entry.reservation?.scope?.runId !== intent.runId || !same(entry.reservation.execution, repeatExecutionIdentity(execution.data))
         || !same(entry.transition.reservation,entry.reservation)) return unavailable()
+      if(published){
+        const reservation=workflowNativeReservation(entry.reservation.scope,entry.reservation.ref,execution.data,repeatDigest(execution.data.input,4*1024*1024))
+        const admitted=await readWorkflowNativeEntryLocked(sql,reservation)
+        if(admitted.phase!=='entered'||!same(admitted.transition,entry.transition)||admitted.source_id!==entry.source_id
+          ||admitted.source_digest!==entry.source_digest||entry.source_digest!==repeatDigest(entry.transition,8*1024*1024)
+          ||(reservation.ref.occurrence?.occurrenceId??null)!==intent.occurrenceId
+          ||(reservation.ref.occurrence?.occurrenceIndex??0)!==intent.occurrenceIndex)return unavailable()
+        await assertRepeatCanonicalReceiptLocked(sql,{scope:reservation.scope,
+          evidence:{sourceKind:'execution',sourceId:entry.source_id,sourceRevision:'1'},sourceDigest:entry.source_digest,effect:null})
+        const effects=await sql.query<{payload_digest:string}>(
+          "select payload_digest from run_repeat_effects where run_id=$1 and effect_kind='input.bind' and entity_id=$2 for share",
+          [intent.runId,intent.executionId])
+        if(effects.rows.length!==1||!effects.rows[0])return unavailable()
+        const inputReceipt=canonicalRepeatEffectReceipt(reservation.scope,{kind:'input.bind',entityId:intent.executionId,digest:effects.rows[0].payload_digest})
+        await assertRepeatCanonicalReceiptLocked(sql,inputReceipt)
+        requireRepeatCanonicalReceiptBeforeCommit(sql,inputReceipt)
+      }
       const sessionRow = (await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1 for share', [intent.executionId])).rows[0]
       if (sessionRow ? !same(NativeSessionReferenceSchema.parse(sessionRow.reference), readout.session) : original.source.type !== 'session_created') return unavailable()
       const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed_reference:unknown; closed: boolean; detached:boolean;
