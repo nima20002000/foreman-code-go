@@ -31,6 +31,7 @@ export interface OperatorServices {
   workspaceRoots?: import('../../modules/workspace-roots/service.js').WorkspaceBoundLocationService
   harnessInstances?: import('../../modules/harnesses/instanceSettings/service.js').HostHarnessOverrideService
   harnessRegistry?: import('../../modules/harnesses/productionRegistry.js').ProductionHarnessRegistry
+  trustedConnections?: import('../../modules/devices/trustedConnectionManagement.js').TrustedConnectionManagementService
   devices?: DeviceManagementService
   sources?: import('../../modules/sources/service.js').PostgresSourceService
   fileReferences?: FileReferenceService

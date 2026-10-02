@@ -9,7 +9,8 @@ import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
 
-export const DEVICE_OPERATOR_TOOLS = ['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'] as const
+export const DEVICE_OPERATOR_TOOLS = ['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get',
+  'device_connection_host_discover', 'device_connection_read', 'device_connection_inspect', 'device_connection_check', 'device_connection_configure'] as const
 export function registerDeviceOperatorTools(server: McpServer, context: OperatorRequestContext): void {
   const service = context.services.devices
   if (!service) return
@@ -49,9 +50,10 @@ export async function unavailableDeviceOperatorToolCall(context: OperatorRequest
   const call = ToolCall.safeParse(body)
   if (!call.success || operatorToolAvailable(context, call.data.params.name)) return undefined
   const name = call.data.params.name
-  const error = context.services.devices
+  const availableService = name.startsWith('device_connection_') ? context.services.trustedConnections : context.services.devices
+  const error = availableService
     ? new DomainError('ACCESS_DENIED', 'Device management requires a compatible global settings grant.', 403)
-    : new DomainError('DEVICE_MANAGEMENT_UNAVAILABLE', 'Device management is not composed in this application.', 503)
+    : new DomainError(name.startsWith('device_connection_') ? 'DEVICE_CONNECTION_UNAVAILABLE' : 'DEVICE_MANAGEMENT_UNAVAILABLE', 'The requested device service is not composed in this application.', 503)
   if (error.status === 403) await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
   return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(error) }
 }

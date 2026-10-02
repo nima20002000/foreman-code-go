@@ -64,3 +64,14 @@ describe('trusted device HTTP and Operator MCP registrar parity', () => {
     } finally { await client.close(); await server.close() }
   })
 })
+
+it('does not register global host diagnostics for workspace-scoped settings grants', async () => {
+  const f = fixture(), server = new McpServer({ name: 'scoped', version: '1' }), client = new Client({ name: 'scoped', version: '1' })
+  registerTrustedConnectionTools(server, f.service, { ...f.principal, grants: [{ actions: ['settings:read', 'settings:update'], scope: { workspaceIds: ['only-this-workspace'] } }] })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  try {
+    await server.connect(serverTransport); await client.connect(clientTransport)
+    expect((await client.listTools()).tools).toEqual([])
+    expect(f.service.read).not.toHaveBeenCalled()
+  } finally { await client.close(); await server.close() }
+})

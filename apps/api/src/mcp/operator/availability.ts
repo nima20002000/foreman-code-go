@@ -126,6 +126,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'execution_readiness_get' || name === 'harness_registry_get') scope = 'global'
   if (name.startsWith('workspace_root_')) scope = 'workspace'
   if (name.startsWith('source_')) scope = 'workspace'
+  if (name.startsWith('device_connection_')) scope = 'global'
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name)) scope = 'global'
   if (name === 'run_start') scope = 'workflow'
   if (name.startsWith('agent_chat_')) scope = 'resource'
@@ -195,6 +196,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name === 'harness_registry_get' && !service.harnessRegistry) return false
   if (name.startsWith('workspace_root_') && !service.workspaceRoots) return false
   if (name.startsWith('source_') && !service.sources) return false
+  if (name.startsWith('device_connection_') && !service.trustedConnections) return false
   if (['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'device_setup_code_create', 'device_setup_options_get'].includes(name) && !service.devices) return false
   if (name.startsWith('run_') && !service.runs) return false
   if (name.startsWith('workflow_') && !service.workflows) return false

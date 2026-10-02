@@ -654,6 +654,7 @@ export const OperatorToolNameSchema = z.enum([
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
   "device_setup_code_create",
   "device_setup_options_get",
+  "device_connection_host_discover", "device_connection_read", "device_connection_inspect", "device_connection_check", "device_connection_configure",
   "harness_registry_get", "workspace_root_choices_list", "workspace_root_location_get", "workspace_root_location_validate", "workspace_root_directories_list", "workspace_root_location_set",
   "resource_telemetry_read", "resource_telemetry_selector_get",
   ...REPEAT_OPERATOR_TOOL_NAMES,

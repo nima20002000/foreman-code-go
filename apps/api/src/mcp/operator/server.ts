@@ -6,6 +6,7 @@ import { registerResourceTelemetryTools } from './resourceTelemetry.js'
 import { registerResourceTelemetrySelectorTools } from './resourceTelemetrySelector.js'
 import { registerJobTools } from './tools/jobs.js'
 import { registerJobRuntimeTools } from './tools/jobRuntimeProfiles.js'
+import { registerTrustedConnectionTools } from '../../modules/devices/trustedConnectionManagement.js'
 import { registerDeviceOperatorTools } from './tools/devices.js'
 import { registerOperatorControlTools } from './tools/operatorControls.js'
 import { registerSourceTools } from '../../modules/sources/mcp.js'
@@ -50,6 +51,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerJobTools(server, context)
   registerJobRuntimeTools(server, context)
   registerDeviceOperatorTools(server, context)
+  if (context.services.trustedConnections) registerTrustedConnectionTools(server, context.services.trustedConnections, context.principal)
   registerOperatorControlTools(server, context)
   registerFileReferenceTools(server, context)
   registerContextTools(server, context)
