@@ -3,17 +3,28 @@ import type pg from 'pg'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DeviceRegistrationSchema, type DeviceRegistration } from '@graphql/contracts/device-identity'
-import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionApprovalRequestSchema,
-  TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema,
-  type TrustedConnectionConfigure, type TrustedConnectionApprovalReceipt, type TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
-export { TrustedConnectionApprovalRequestSchema, TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema } from '@graphql/contracts/trusted-device-connection'
-export type { TrustedConnectionApprovalReceipt, TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
+import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionApprovalRequestSchema as SharedApprovalRequestSchema,
+  TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema as SharedApprovalReceiptSchema, TrustedConnectionApprovalReadSchema as SharedApprovalReadSchema,
+  type TrustedConnectionConfigure } from '@graphql/contracts/trusted-device-connection'
+export { TrustedConnectionApprovalCommandSchema } from '@graphql/contracts/trusted-device-connection'
 import { z } from 'zod'
 import { requireBrowserSession, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator, commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { intersectGrants } from '../access/operatorDelegation.js'
+import { operatorChatGrants } from '../access/operatorChatDelegation.js'
+
+// Approved optional extension pending root shared publication. No default delegate.
+export const TrustedConnectionApplyAuthoritySchema = z.object({ principalId: z.string().min(1).max(200), audience: z.literal('operator'),
+  delegatedFromOwnerId: z.string().min(1).max(200), conversationId: z.string().min(1).max(200), authorityHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
+export type TrustedConnectionApplyAuthority = z.infer<typeof TrustedConnectionApplyAuthoritySchema>
+export const TrustedConnectionApprovalRequestSchema = SharedApprovalRequestSchema.extend({ applyPrincipalId: z.string().min(1).max(200).optional() }).strict()
+export const TrustedConnectionApprovalReceiptSchema = SharedApprovalReceiptSchema.extend({ applyAuthority: TrustedConnectionApplyAuthoritySchema.optional() }).strict()
+export const TrustedConnectionApprovalReadSchema = SharedApprovalReadSchema.extend({ applyAuthority: TrustedConnectionApplyAuthoritySchema.optional() }).strict()
+export type TrustedConnectionApprovalReceipt = z.infer<typeof TrustedConnectionApprovalReceiptSchema>
+export type TrustedConnectionApprovalRead = z.infer<typeof TrustedConnectionApprovalReadSchema>
 
 const REQUEST = 'device.trusted-connection.approval.request'
 const APPROVE = 'device.trusted-connection.approval.approve'
@@ -28,12 +39,38 @@ const reject = (code: string, message: string, status = 403): never => { throw n
 export class PostgresTrustedConnectionHumanAuthority {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string) {}
   private target(id: string) { return `${this.mainId}:${id}` }
+  private async currentOwner(client: pg.PoolClient, write: boolean): Promise<string> {
+    const row = (await client.query<{ principal_id: string }>('select principal_id from browser_auth_owner where singleton=true for share')).rows[0]
+    if (!row) reject('DEVICE_CONNECTION_WRONG_OWNER', 'The current application owner is unavailable.')
+    requireAuthorization(await readLiveManagementPrincipal(client, row!.principal_id), write ? 'settings:update' : 'settings:read')
+    return row!.principal_id
+  }
   private async owner(client: pg.PoolClient, principal: ManagementPrincipal, write: boolean): Promise<string> {
     requireAuthorization(principal, write ? 'settings:update' : 'settings:read')
     requireAuthorization(await readLiveManagementPrincipal(client, principal.id), write ? 'settings:update' : 'settings:read')
-    const row = (await client.query<{ principal_id: string }>('select principal_id from browser_auth_owner where singleton=true for share')).rows[0]
-    if (!row || row.principal_id !== principal.id) reject('DEVICE_CONNECTION_WRONG_OWNER', 'Only the current signed-in application owner can authorize this action.')
-    return row!.principal_id
+    const ownerId = await this.currentOwner(client, write)
+    if (ownerId !== principal.id) reject('DEVICE_CONNECTION_WRONG_OWNER', 'Only the current signed-in application owner can authorize this action.')
+    return ownerId
+  }
+  private async delegateAuthority(client: pg.PoolClient, ownerId: string, principalId: string): Promise<TrustedConnectionApplyAuthority> {
+    const subject = (await client.query<{ audience: string; delegated_from: string | null }>(
+      'select audience,delegated_from from management_principals where id=$1 for share', [principalId])).rows[0]
+    if (!subject || subject.audience !== 'operator' || subject.delegated_from !== ownerId) {
+      reject('DEVICE_CONNECTION_DELEGATE_UNAVAILABLE', 'Select an existing Operator directly delegated by the current human owner.', 409)
+    }
+    const chat = (await client.query<{ conversation_id: string; owner_principal_id: string; deleted_at: Date | null; status: string }>(
+      `select credential.conversation_id,c.owner_principal_id,c.deleted_at,c.record->>'status' as status
+       from operator_chat_credentials credential join operator_conversations c on c.id=credential.conversation_id
+       where credential.principal_id=$1 for share of credential,c`, [principalId])).rows[0]
+    if (!chat || chat.owner_principal_id !== ownerId || chat.deleted_at || chat.status !== 'open') {
+      reject('DEVICE_CONNECTION_DELEGATE_UNAVAILABLE', 'The original Operator conversation is no longer active or owned.', 409)
+    }
+    const live = await readLiveManagementPrincipal(client, principalId), owner = await readLiveManagementPrincipal(client, ownerId)
+    const effective = { ...live, grants: intersectGrants(live.grants, operatorChatGrants(owner.grants)) }
+    requireAuthorization(effective, 'settings:update')
+    const facts = { principalId, audience: 'operator' as const, delegatedFromOwnerId: ownerId, conversationId: chat!.conversation_id }
+    return TrustedConnectionApplyAuthoritySchema.parse({ ...facts,
+      authorityHash: commandInputHash({ ...facts, effectiveGrants: effective.grants, acceptedExpiresAt: effective.expiresAt }).slice('sha256:'.length) })
   }
   private browser(request: FastifyRequest): ManagementPrincipal {
     requireBrowserSession(request)
@@ -67,10 +104,20 @@ export class PostgresTrustedConnectionHumanAuthority {
     const revoked = rows.filter(row => row.operation === REVOKE).map(row => EventSchema.parse(row.result))[0]
     const consumed = rows.filter(row => row.operation === CONSUME).map(row => ConsumedSchema.parse(row.result))[0]
     const current = await this.current(client, receipt.action)
-    const state: TrustedConnectionApprovalRead['state'] = revoked || current.registration.status === 'revoked' ? 'revoked'
+    let state: TrustedConnectionApprovalRead['state'] = revoked || current.registration.status === 'revoked' ? 'revoked'
       : consumed ? 'consumed' : Date.parse(receipt.expiresAt) <= Date.now() ? 'expired'
       : current.registration.status !== 'paired' || commandInputHash(current.registration) !== commandInputHash(receipt.registration)
         || current.revision !== receipt.action.expectedRevision ? 'stale' : approved ? 'approved' : 'pending'
+    if (receipt.applyAuthority && ['pending', 'approved'].includes(state)) {
+      try {
+        const currentAuthority = await this.delegateAuthority(client, receipt.ownerId, receipt.applyAuthority.principalId)
+        if (commandInputHash(currentAuthority) !== commandInputHash(receipt.applyAuthority)) state = 'stale'
+      } catch (error) {
+        if (!(error instanceof DomainError)) throw error
+        if (!['AUTH_REVOKED', 'AUTH_EXPIRED', 'ACCESS_DENIED', 'DEVICE_CONNECTION_DELEGATE_UNAVAILABLE'].includes(error.code)) throw error
+        state = error.code === 'AUTH_EXPIRED' ? 'expired' : error.code === 'DEVICE_CONNECTION_DELEGATE_UNAVAILABLE' ? 'stale' : 'revoked'
+      }
+    }
     return TrustedConnectionApprovalReadSchema.parse({ ...receipt, state, approvedAt: approved?.at ?? null, consumedAt: consumed?.at ?? null, revokedAt: revoked?.at ?? null })
   }
   async requestBrowser(request: FastifyRequest, raw: z.infer<typeof TrustedConnectionApprovalRequestSchema>): Promise<TrustedConnectionApprovalRead> {
@@ -85,7 +132,9 @@ export class PostgresTrustedConnectionHumanAuthority {
         if (current.registration.status !== 'paired' || current.registration.authorizationRevision !== action.expectedAuthorizationRevision || current.revision !== action.expectedRevision) {
           reject('DEVICE_CONNECTION_APPROVAL_STALE', 'The paired device or consent changed. Review current facts before requesting approval.', 409)
         }
-        return TrustedConnectionApprovalReceiptSchema.parse({ id, mainId: this.mainId, ownerId, action, registration: current.registration,
+        const applyAuthority = input.applyPrincipalId && input.applyPrincipalId !== ownerId
+          ? await this.delegateAuthority(client, ownerId, input.applyPrincipalId) : undefined
+        return TrustedConnectionApprovalReceiptSchema.parse({ ...(applyAuthority ? { applyAuthority } : {}), id, mainId: this.mainId, ownerId, action, registration: current.registration,
           requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString() })
       } })
     // Retry returns original identity/expiry, with current status rather than a stale pending claim.
@@ -120,10 +169,17 @@ export class PostgresTrustedConnectionHumanAuthority {
   /** Adapter runs in the configure transaction; receipt consumption rolls back if
    * configuration fails and is committed atomically with its consent/audit. */
   readonly verifyOwnerApproval = async (client: pg.PoolClient, principal: ManagementPrincipal, input: TrustedConnectionConfigure, registration: DeviceRegistration): Promise<{ ownerId: string }> => {
-    const ownerId = await this.owner(client, principal, true)
+    requireAuthorization(principal, 'settings:update')
+    requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+    const ownerId = await this.currentOwner(client, true)
     await this.lock(client, input.approvalId)
     const receipt = await this.receipt(client, input.approvalId)
     if (receipt.ownerId !== ownerId) reject('DEVICE_CONNECTION_WRONG_OWNER', 'This approval belongs to a different owner.')
+    if (receipt.applyAuthority) {
+      if (principal.id !== receipt.applyAuthority.principalId) reject('DEVICE_CONNECTION_WRONG_APPLIER', 'This approval is bound to a different Operator.')
+      const currentAuthority = await this.delegateAuthority(client, ownerId, principal.id)
+      if (commandInputHash(currentAuthority) !== commandInputHash(receipt.applyAuthority)) reject('DEVICE_CONNECTION_DELEGATE_CHANGED', 'The approved Operator authority changed. Review a new request.')
+    } else if (principal.id !== ownerId) reject('DEVICE_CONNECTION_WRONG_OWNER', 'This approval permits application only by its human owner.')
     if (commandInputHash(receipt.action) !== commandInputHash(input) || commandInputHash(receipt.registration) !== commandInputHash(registration)) {
       reject('DEVICE_CONNECTION_APPROVAL_MISMATCH', 'The approved action or paired identity does not match this command.')
     }

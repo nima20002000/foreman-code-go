@@ -155,3 +155,46 @@ browser-only Fastify helpers; they do not claim authentic browser-session or rea
 SQL concurrency proof. Real inherited host scheduler namespace/token evidence:
 `device-setup-authority-scheduler-evidence.json`;52 focused cases + API types and
 owned lint passed before the final extra expiry/agent-consumption regression.
+
+## Explicit delegated Operator apply (parity fix)
+
+Parent approved a minimal optional exact delegate binding. Failing-before evidence:
+`device-setup-delegated-before.log` shows the eligible delegated caller rejected
+in the former owner-only verifier. Ordinary owner approvals remain owner-only.
+The browser owner may now explicitly select `applyPrincipalId` at request time.
+Server captures optional `applyAuthority` containing principalId, audience=operator,
+delegatedFromOwnerId, original conversationId and 64-character authorityHash.
+No new credential or settings grant is created. No unrelated bearer is admitted.
+
+This supported delegate is an existing direct Operator-chat credential bound by
+`operator_chat_credentials` to an open, nondeleted conversation belonging to the
+current browser owner. A bare delegated_from field, different role, unrelated
+Operator token, nested delegation or Job/Run authority is insufficient. Both live
+principal and parent authority are revalidated; effective permissions retain the
+existing operatorChatGrants ceiling and must already authorize unscoped
+settings:update. The stable hash covers caller/role/direct owner/conversation,
+full effective grants and accepted DB expiry facts, never the current clock.
+Request, browser review and consumption require the same hash. Closed chat,
+changed/lost grants, revocation, expiry, wrong caller/action, changed device or
+used receipt cannot consume. Receipt ownerId and consent approvedBy always remain
+the actual authenticated human owner. Consumption receipt principal_id/audit
+identify the applying delegate. Owner cannot substitute for a specifically bound
+delegate; choose an owner-only request instead. Human issuance/review/revocation
+remain browser-only. Configure and persisted readback work through the existing
+Operator MCP registrar; exact retries consume once.
+
+Root was sent exact optional shared schema declarations before implementation and
+approved them. No reserved contract file was edited in this lane. Until root
+publishes, the owned authority module extends root's original approval schemas
+with the approved optional fields. Root e195a767 was consumed as local prerequisite
+7096472d (includes shared approval import replacement); do not cherry-pick that
+borrowed commit again. Pending shared DTO/UI publication must expose explicit
+selection, never select a delegate automatically or synthesize a grant.
+
+Verification:62/62 four-file cases, API tsc and eight-file ESLint passed in
+`device-setup-delegated-focused.log`. Positive delegated case uses the real
+in-memory MCP SDK for configure, readback and same-command retry with mocked SQL
+transaction storage. Denial cases assert exact codes and no consumption. Real
+PostgreSQL/authenticated HTTP-MCP/native Operator acceptance remains integration
+owner work, with no claim of live grant changes. Final extra time-stability case
+is in `device-setup-delegated-stability.log`.

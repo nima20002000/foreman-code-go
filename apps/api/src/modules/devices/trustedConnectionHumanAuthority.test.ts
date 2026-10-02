@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import type { FastifyRequest } from 'fastify'
 import Fastify from 'fastify'
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client'
+import { McpServer } from '@modelcontextprotocol/server'
+import { registerTrustedConnectionTools } from './trustedConnectionManagement.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { DeviceRegistration } from '@graphql/contracts/device-identity'
 import { describe, expect, it, vi } from 'vitest'
@@ -12,6 +15,9 @@ function fixture() {
   const mainId = randomUUID(), deviceId = randomUUID()
   let registration: DeviceRegistration = { mainId, deviceId, workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), scopes: ['connect'], status: 'paired' }
   const principal: ManagementPrincipal = { id: 'human-owner', name: 'Owner', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }
+  const delegate = { ...principal, id: 'operator-delegate' }
+  let delegateRevoked = false, delegateGrants = structuredClone(delegate.grants), chatOpen = true, delegateExpiry = new Date(principal.expiresAt)
+  const conversationId = randomUUID()
   let ownerId = principal.id, principalRevoked = false, failConsentInsert = false
   let receipts: Receipt[] = [], backup: Receipt[] | null = null
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
@@ -19,7 +25,9 @@ function fixture() {
     if (sql === 'begin') backup = structuredClone(receipts)
     else if (sql === 'commit') backup = null
     else if (sql === 'rollback') { if (backup) receipts = backup; backup = null }
-    else if (sql.includes('select id,name,audience,grants')) rows = [{ ...principal, id: values[0], expires_at: new Date(principal.expiresAt), revoked_at: principalRevoked ? new Date() : null, delegated_from: null }]
+    else if (sql.includes('select id,name,audience,grants')) rows = [{ ...principal, id: values[0], grants: values[0] === delegate.id ? delegateGrants : principal.grants, expires_at: values[0] === delegate.id ? delegateExpiry : new Date(principal.expiresAt), revoked_at: principalRevoked || values[0] === delegate.id && delegateRevoked ? new Date() : null, delegated_from: values[0] === delegate.id ? principal.id : null }]
+    else if (sql.includes('operator_chat_credentials')) rows = values[0] === delegate.id ? [{ conversation_id: conversationId, owner_principal_id: principal.id, deleted_at: null, status: chatOpen ? 'open' : 'closed' }] : []
+    else if (sql.includes('select audience,delegated_from')) rows = [{ audience: 'operator', delegated_from: values[0] === delegate.id ? principal.id : null }]
     else if (sql.includes('from browser_auth_owner')) rows = [{ principal_id: ownerId }]
     else if (sql.includes('from device_registrations')) rows = [{ record: registration }]
     else if (sql.includes('select input_hash, target_key, result')) rows = receipts.filter(row => row.principal_id === values[0] && row.operation === values[1] && row.command_id === values[2])
@@ -39,7 +47,7 @@ function fixture() {
   const authority = new PostgresTrustedConnectionHumanAuthority(pool, mainId)
   const setup = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval: authority.verifyOwnerApproval })
   const input = { requestCommandId: randomUUID(), action: { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { host: '100.76.219.118', port: 22, osUser: 'dexter', transport: 'tailscale' as const }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true } }
-  return { authority, setup, principal, request, input, query, client, get receipts() { return receipts }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } }, switchOwner: () => { ownerId = 'replacement-owner' }, revokePrincipal: () => { principalRevoked = true }, failWrite: (value: boolean) => { failConsentInsert = value } }
+  return { authority, setup, principal, delegate, request, input, query, client, revokeDelegate: () => { delegateRevoked = true }, removeDelegateGrant: () => { delegateGrants = [] }, changeDelegateGrant: () => { delegateGrants = [{ actions: ['settings:update'], scope: {} }] }, expireDelegate: () => { delegateExpiry = new Date(Date.now() - 1000) }, closeChat: () => { chatOpen = false }, get receipts() { return receipts }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } }, switchOwner: () => { ownerId = 'replacement-owner' }, revokePrincipal: () => { principalRevoked = true }, failWrite: (value: boolean) => { failConsentInsert = value } }
 }
 describe('connection-specific human owner approval authority', () => {
   it('issues truthful pending exact action, preserves request identity/expiry, approves and atomically consumes', async () => {
@@ -55,6 +63,66 @@ describe('connection-specific human owner approval authority', () => {
     expect(await f.setup.configure(f.principal, pending.action, 'http')).toEqual(consent)
     expect(f.receipts.filter(row => row.operation.endsWith('.consume'))).toHaveLength(1)
     await expect(f.authority.verifyOwnerApproval(f.client, f.principal, pending.action, pending.registration)).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_OWNER_APPROVAL_REQUIRED' })
+  })
+  it('applies an exact human-approved connection action through its explicitly bound Operator MCP delegate', async () => {
+    const f = fixture(), pending = await f.authority.requestBrowser(f.request, { ...f.input, applyPrincipalId: f.delegate.id })
+    expect(pending.applyAuthority).toMatchObject({ principalId: f.delegate.id, audience: 'operator', delegatedFromOwnerId: f.principal.id })
+    await f.authority.decideBrowser(f.request, pending.id, { commandId: randomUUID() }, 'approve')
+    const server = new McpServer({ name: 'bound-connection-delegate', version: '1' }), client = new Client({ name: 'delegate', version: '1' })
+    registerTrustedConnectionTools(server, f.setup, f.delegate)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    try {
+      await server.connect(serverTransport); await client.connect(clientTransport)
+      const result = await client.callTool({ name: 'device_connection_configure', arguments: pending.action })
+      expect(result.isError).not.toBe(true)
+      expect(result.structuredContent).toMatchObject({ approvedBy: f.principal.id, grantsAgentPermissions: false })
+      const retry = await client.callTool({ name: 'device_connection_configure', arguments: pending.action })
+      expect(retry.structuredContent).toEqual(result.structuredContent)
+      expect(f.receipts.filter(row => row.operation.endsWith('.consume'))).toHaveLength(1)
+      await expect(f.authority.verifyOwnerApproval(f.client, f.delegate, pending.action, pending.registration)).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_OWNER_APPROVAL_REQUIRED' })
+      const readback = await client.callTool({ name: 'device_connection_read', arguments: { deviceId: f.input.action.deviceId } })
+      expect(readback.structuredContent).toMatchObject({ consent: result.structuredContent })
+    } finally { await client.close(); await server.close() }
+  })
+  it('keeps the authority binding stable as time passes without changed grants or expiry facts', async () => {
+    const f = fixture(), pending = await f.authority.requestBrowser(f.request, { ...f.input, applyPrincipalId: f.delegate.id })
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 1000)
+    try {
+      const approved = await f.authority.decideBrowser(f.request, pending.id, { commandId: randomUUID() }, 'approve')
+      expect(approved.applyAuthority?.authorityHash).toBe(pending.applyAuthority?.authorityHash)
+      expect((await f.setup.configure(f.delegate, approved.action, 'mcp')).approvedBy).toBe(f.principal.id)
+    } finally { clock.mockRestore() }
+  })
+  it('keeps omitted delegate approvals owner-only and denies wrong delegate, owner substitution and wrong action', async () => {
+    const f = fixture(), ownerOnly = await f.authority.requestBrowser(f.request, f.input)
+    await f.authority.decideBrowser(f.request, ownerOnly.id, { commandId: randomUUID() }, 'approve')
+    await expect(f.setup.configure(f.delegate, ownerOnly.action, 'mcp')).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_WRONG_OWNER' })
+    const bound = await f.authority.requestBrowser(f.request, { ...f.input, requestCommandId: randomUUID(), applyPrincipalId: f.delegate.id })
+    await f.authority.decideBrowser(f.request, bound.id, { commandId: randomUUID() }, 'approve')
+    await expect(f.setup.configure({ ...f.delegate, id: 'other-agent' }, bound.action, 'mcp')).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_WRONG_APPLIER' })
+    await expect(f.setup.configure(f.principal, bound.action)).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_WRONG_APPLIER' })
+    await expect(f.setup.configure(f.delegate, { ...bound.action, endpoint: { ...bound.action.endpoint, osUser: 'root' } }, 'mcp')).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_APPROVAL_MISMATCH' })
+    expect(f.receipts.filter(row => row.operation.endsWith('.consume'))).toHaveLength(0)
+  })
+  it.each(['changed', 'removed', 'revoked', 'expired', 'closed', 'stale-device'])('denies bound delegate after %s authority change', async change => {
+    const f = fixture(), bound = await f.authority.requestBrowser(f.request, { ...f.input, applyPrincipalId: f.delegate.id })
+    await f.authority.decideBrowser(f.request, bound.id, { commandId: randomUUID() }, 'approve')
+    if (change === 'changed') f.changeDelegateGrant()
+    if (change === 'removed') f.removeDelegateGrant()
+    if (change === 'revoked') f.revokeDelegate()
+    if (change === 'expired') f.expireDelegate()
+    if (change === 'closed') f.closeChat()
+    if (change === 'stale-device') f.updateDevice({ keyRevision: 2 })
+    await expect(f.setup.configure(f.delegate, bound.action, 'mcp')).rejects.toMatchObject({ code: change === 'changed' ? 'DEVICE_CONNECTION_DELEGATE_CHANGED' : change === 'removed' ? 'ACCESS_DENIED' : change === 'revoked' || change === 'expired' ? 'AUTH_REVOKED' : change === 'closed' ? 'DEVICE_CONNECTION_DELEGATE_UNAVAILABLE' : 'DEVICE_CONNECTION_APPROVAL_MISMATCH' })
+    expect(f.receipts.filter(row => row.operation.endsWith('.consume'))).toHaveLength(0)
+  })
+  it('does not bind an ineligible delegate, and requires unchanged authority at human review', async () => {
+    const f = fixture(); f.removeDelegateGrant()
+    await expect(f.authority.requestBrowser(f.request, { ...f.input, applyPrincipalId: f.delegate.id })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    const eligible = fixture(), pending = await eligible.authority.requestBrowser(eligible.request, { ...eligible.input, applyPrincipalId: eligible.delegate.id })
+    eligible.changeDelegateGrant()
+    expect((await eligible.authority.readBrowser(eligible.request, pending.id)).state).toBe('stale')
+    await expect(eligible.authority.decideBrowser(eligible.request, pending.id, { commandId: randomUUID() }, 'approve')).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_APPROVAL_NOT_PENDING' })
   })
   it('rejects bearer authentication even with human principal, and arbitrary/missing approval IDs', async () => {
     const f = fixture()
