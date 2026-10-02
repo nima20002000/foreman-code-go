@@ -273,6 +273,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           if (!execution || !configuration || execution.workingDirectory !== input.workingDirectory
             || configuration.harness.harness !== input.harness) throw new Error('Native execution identity is missing')
           const { manager } = managers.resolve({ executionId: execution.id, agentId: execution.agentId,
+            runId: execution.runId, attempt: execution.attempt, ...(input.purpose ? { purpose: input.purpose } : {}),
             harness: input.harness, workingDirectory: input.workingDirectory, configuration })
           const inspector = manager instanceof CodexAppServerSessionManager ? codexMcpInspectorAdapter(manager)
             : openCodeMcpInspectorAdapter(manager as OpenCodeNativeSessionManager)
