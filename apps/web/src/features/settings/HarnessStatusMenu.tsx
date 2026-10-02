@@ -18,7 +18,10 @@ function HarnessStatus({ harness }: { harness: AgentHarness }) {
   })
   const name = harnessNames[harness]
   const state = query.isError || query.isPaused ? 'unverified' : query.data?.status ?? 'checking'
-  const label = state === 'eligible' ? 'Available' : state === 'blocked' ? 'Unavailable' : state === 'checking' ? 'Checking' : 'Unverified'
+  const label = state === 'eligible' ? 'Available' : state === 'blocked'
+    ? query.data?.reason?.code === 'HARNESS_PROFILE_REQUIRED' ? 'Setup required'
+      : query.data?.reason?.code === 'CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE' ? 'Not qualified' : 'Unavailable'
+    : state === 'checking' ? 'Checking' : 'Unverified'
   const detail = query.isError ? 'Could not check harness availability.' : query.data?.reason?.message ?? 'Availability with saved harness settings. Workspace checks run when execution starts.'
   return <Link to="/settings/harnesses" search={{ harness, section: 'model' }} className="harness-status-link"
     aria-label={`${name}: ${label}`} title={`${name}: ${label}. ${detail}`}>

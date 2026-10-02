@@ -45,6 +45,23 @@ describe('HarnessStatusMenu', () => {
     expect(await screen.findByRole('link', { name: 'Codex: Unverified' })).toHaveAttribute('title', expect.stringContaining('Could not check'))
   })
 
+  it.each([
+    ['HARNESS_PROFILE_REQUIRED', 'Setup required'],
+    ['CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE', 'Not qualified'],
+  ])('explains the blocked Claude reason %s without implying installation is missing', async (code, label) => {
+    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', ({ params }) => HttpResponse.json({
+      harness: params.harness, scope: 'saved-harness-defaults', status: params.harness === 'claude' ? 'blocked' : 'eligible', rolloutEnabled: true,
+      defaultsRevision: code === 'HARNESS_PROFILE_REQUIRED' ? null : 1, checkedAt: new Date().toISOString(),
+      reason: params.harness === 'claude' ? { code, message: 'Claude needs the exact saved profile and native proof.' } : null,
+      limitation: 'Saved defaults only.',
+    })))
+    renderWithRouter(<HarnessStatusMenu />)
+    const link = await screen.findByRole('link', { name: `Claude: ${label}` })
+    expect(link).toHaveAttribute('title', expect.stringContaining('exact saved profile'))
+    expect(link.querySelector('.harness-status-light')).toHaveClass('harness-status-light--blocked')
+    expect(await screen.findByRole('link', { name: 'Codex: Available' })).toBeVisible()
+  })
+
   it('animates manual relocation with transform/opacity and cancels it for instant keyboard changes', async () => {
     const { animate, cancel } = mockRelocation()
     renderWithRouter(<HarnessStatusMenu />)
