@@ -28,15 +28,15 @@ describe('canonical host harness inventory', () => {
     const { registry, input } = fixture()
     expect(registry.pin(input).installation).toMatchObject({ installed: true, authenticated: null, compatible: null, qualified: null })
   })
-  it('ignores stale async evidence after refresh or instance edits', async () => {
-    const { registry, input, record, instances } = fixture()
+  it('ignores stale async evidence after explicit invalidation or instance edits', async () => {
+    const { registry, input, instances } = fixture()
     let finish!: (value: string) => void
     const pending = registry.metadata(registry.pin(input), 'suite', () => new Promise<string>((resolve) => { finish = resolve }))
     await Promise.resolve()
-    registry.refresh([record]); finish('old')
+    registry.invalidate(); finish('old')
     await expect(pending).rejects.toThrow('stale')
     const expiredBinding = registry.pin(input)
-    registry.refresh([record])
+    registry.invalidate()
     await expect(registry.metadata(expiredBinding, 'suite', async () => 'old')).rejects.toThrow('stale')
     const binding = registry.pin(input)
     instances.reload([{ instanceId: 'a', instanceRevision: '2', driverId: 'test', enabled: true, configuration: { model: 'two' } }])
