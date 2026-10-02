@@ -876,7 +876,7 @@ export class ApprovalExecutionCoordinator {
         return failures.map((error) => safe.error(error) as Error)
       }))
       const failures = results.flat()
-      if (failures.length) throw new AggregateError(failures, 'Native restart closure was incomplete.')
+      if (failures.length) throw new AggregateError(failures, 'Native restart closure was incomplete.', { cause: failures[0] })
     })()
     this.restartClosure = task
     // A failed receipt/close is not cached success. The same captured manager
