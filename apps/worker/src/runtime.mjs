@@ -37,7 +37,7 @@ export async function acquireWorkerLock(stateDirectory, status = () => ({ active
 
 // This composition has no control-plane imports. Identity and connection implementations
 // are explicitly injected from W07-A/B; execution admission is a later W08 port.
-export async function startWorker({ stateDirectory, loadIdentity, createConnection, shutdownMs = 10_000, readBootId = async () => (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }) {
+export async function startWorker({ stateDirectory, loadIdentity, createConnection, beforeUnlock, shutdownMs = 10_000, readBootId = async () => (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }) {
   let connection;
   const unlock = await acquireWorkerLock(stateDirectory, () => ({ active: true, phase: connection?.status?.().phase ?? 'connecting', failure: connection?.status?.().failure ?? null }));
   try {
@@ -51,11 +51,15 @@ export async function startWorker({ stateDirectory, loadIdentity, createConnecti
       stopping ??= (async () => {
         let timer;
         try {
-          await Promise.race([Promise.resolve().then(() => connection.stop()), new Promise((_, reject) => { timer = setTimeout(() => reject(new WorkerError('shutdown_timeout')), shutdownMs); })]);
+          await Promise.race([Promise.resolve().then(async () => { await connection.stop(); await beforeUnlock?.(); }), new Promise((_, reject) => { timer = setTimeout(() => reject(new WorkerError('shutdown_timeout')), shutdownMs); })]);
           await unlock();
         } finally { clearTimeout(timer); }
       })();
       return stopping;
     } };
-  } catch (error) { try { await connection?.stop(); } finally { await unlock(); } throw error; }
+  } catch (error) {
+    try { await connection?.stop(); await beforeUnlock?.(); await unlock(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Worker startup cleanup remains incomplete.', { cause: cleanupError }); }
+    throw error;
+  }
 }
