@@ -44,6 +44,8 @@ import { requireAuthorization } from '../../src/modules/access/policy.js'
 import { readLiveManagementPrincipal } from '../../src/modules/access/liveManagementPrincipal.js'
 import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
+import { nativePersistenceRedactor } from '../../src/modules/interactions/nativePersistence.js'
+import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
 import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecycle.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
@@ -289,6 +291,17 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const approvals = new ApprovalExecutionCoordinator(runs, interactions, budgets,
         managers, 180_000, credentials, validateContinuation, new PostgresWorkflowClosureStore(livePool),
         new PostgresRepeatReviewerBindings(livePool), workflowCapture.capture, reviewCapture.capture)
+      const observeExact = approvals.observeExact.bind(approvals)
+      approvals.observeExact = async (input) => {
+        try { return await observeExact(input) }
+        catch (error) {
+          const errors = (evidence.nativeObservationErrors ??= []) as unknown[]
+          if (errors.length < 16) errors.push({ executionId: input.execution.id,
+            ...(error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
+              message: nativePersistenceRedactor([]).text(error.message) } : { name: typeof error }) })
+          throw error
+        }
+      }
       const engine = new LangGraphWorkflowEngine(runs, workflows, approvals, saver, runtimeDirectory, locations,
         credentials, interactions, undefined, { workerParallelism: 2 })
       return { engine, runs, approvals, interactions, budgets, registry, managers }
@@ -298,7 +311,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     stopRun = () => engine!.cancel(run.id, authorizeStop)
     const startTask = engine.start(run.id)
     if (options.control) void startTask.catch((error: unknown) => {
-      evidence.startError = error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null }
+      evidence.startError = error instanceof Error ? { name: error.name, code: 'code' in error ? String(error.code) : null,
+        message: nativePersistenceRedactor([]).text(error.message) }
         : { name: typeof error }
     })
     const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
@@ -441,6 +455,18 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   } catch (error) {
     evidence.error = error instanceof Error ? { name: error.name, message: error.message } : String(error)
     if (runId && pool) {
+      evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
+      if (activeRuntime) {
+        const owned = Reflect.get(activeRuntime.approvals, 'ownedSessions') as Map<string, {
+          session?: NativeSessionReference; manager: NativeHarnessSessionManager
+        }>
+        evidence.failureNativeHistories = await Promise.all([...owned].map(async ([executionId, value]) => {
+          if (!value.session) return { executionId }
+          const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => undefined)
+          return { executionId, nativeTurnId: history?.nativeTurnId, terminalOutcome: history?.terminalResult?.outcome,
+            lastEvents: history?.events.slice(-5).map(({ type, sequence }) => ({ type, sequence })) }
+        }))
+      }
       const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => undefined)
       evidence.failureExecutions = rows?.rows.map((row) => {
         const execution = HarnessExecutionSchema.parse(row.record)
