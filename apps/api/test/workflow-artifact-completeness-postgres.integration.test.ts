@@ -3,8 +3,14 @@ import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { HarnessExecution } from '@graphql/contracts'
 import { makeCurrentWorkflowFixture, canonicalGraphJson, type AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
+import type { RemoteWorkflowPhysicalReadout } from '@graphql/contracts/remote-workflow-physical'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { workflowArtifactTransferManifestDigest } from '@graphql/contracts/workflow-artifact-transfer-node'
+import { commandInputHash } from '@graphql/contracts/command-identity-node'
+import { PostgresFileRepository } from '../src/modules/files/postgres.js'
+import { PostgresWorkflowPhysicalArtifacts } from '../src/modules/runs/remote/workflowPhysicalArtifacts.js'
 import { RemoteOperationReceiptSchema } from '@graphql/contracts/remote-execution'
-import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { beforeGraphCommit, ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { freezePlacement, deriveDispatch } from '../src/modules/placement/binding.js'
 import { bindingIdentity } from '../src/modules/files/tools/context.js'
 import type { FileToolContext } from '../src/modules/files/tools/types.js'
@@ -55,12 +61,12 @@ function facts() {
     const sha256 = (index ? 'b' : 'c').repeat(64), transferId = randomUUID()
     return NativeArtifactOutputSchema.parse({ version: 1, producer, outputKey, commandId: `original-command-${outputKey}`,
       nativeIdentity: { nativeSessionId: context.nativeSessionId, turnId: context.turnId }, scope: context.scope,
-      publication: { ownerPrincipalId: principalId, requestId: `original-command-${outputKey}`, binding: bindingIdentity(context) },
+      publication: { ownerPrincipalId: principalId, requestId: `fil05:remote:${createHash('sha256').update(`original-command-${outputKey}`).digest('hex')}`, binding: bindingIdentity(context) },
       pins: { fileId: randomUUID(), revisionId: randomUUID(), sha256, byteSize: 12 },
       transferReceipt: { version: 1, receiptId: randomUUID(), transferId, sha256, byteSize: 12, verifiedAt: f.createdAt,
         intent: { version: 1, ...transferContext, transferId, operationId: intent.operationId, executionId: execution.id, attemptId: intent.attemptId,
           placementHash: intent.bindingHash, rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-main', byteClass: 'artifact',
-          sha256, byteSize: 12, manifestDigest: digest, chunkBytes: 1024, expiresAt: '2099-01-01T00:00:00.000Z' } } })
+          sha256, byteSize: 12, manifestDigest: workflowArtifactTransferManifestDigest({ commandId: `original-command-${outputKey}`, sha256, byteSize: 12 }), chunkBytes: 1024, expiresAt: '2099-01-01T00:00:00.000Z' } } })
   })
   const proof: WorkflowNativeProofRecord = { proofId: randomUUID(), scope: f.scope, ref: { nodeId: node.id, occurrence: null },
     execution: repeatExecutionIdentity(execution), inputDigest: repeatDigest(execution.input), commandId: `execution:${execution.id}`,
@@ -143,8 +149,13 @@ describe.skipIf(!databaseUrl)('durable artifact completeness gate on real Postgr
           values($1,$2,'fixture.md','text/markdown',$3,$4,'agent_output',now(),$5)`, [pins.revisionId, pins.fileId, pins.byteSize, pins.sha256, randomUUID()])
         await client.query(`insert into file_allocations(allocation_id,owner_principal_id,request_id,input_hash,file_id,revision_id,state,created_at)
           values($1,$2,$3,$4,$5,$6,'finalized',now())`, [randomUUID(), x.principalId, record.publication.requestId, 'a'.repeat(64), pins.fileId, pins.revisionId])
-        const link = { ...record.publication, context, ref: { fileId: pins.fileId, revisionId: pins.revisionId }, transferReceipt: record.transferReceipt, createdAt: new Date().toISOString() }
+        const link = { ...record.publication, context, publicationInputHash: 'a'.repeat(64), ref: { fileId: pins.fileId, revisionId: pins.revisionId }, transferReceipt: record.transferReceipt, createdAt: new Date().toISOString() }
         await client.query('insert into file_tool_publications(owner_principal_id,request_id,binding,file_id,revision_id,record) values($1,$2,$3,$4,$5,$6::jsonb)', [x.principalId, record.publication.requestId, record.publication.binding, pins.fileId, pins.revisionId, text(link)])
+        const declaration = { commandId: record.commandId, sha256: pins.sha256, byteSize: pins.byteSize }
+        const admitted = { workerPrincipalId: x.principalId, accepted: x.accepted, declaration, intent: record.transferReceipt.intent }
+        await client.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
+          values($1,'remote.artifact-transfer.admit',$2,$3,$4,$5::jsonb)`, [x.principalId, record.commandId,
+          `workflow-artifact:${x.principalId}`, commandInputHash(declaration), text(admitted)])
       }
       await client.query('commit')
     } catch (error) { await client.query('rollback'); throw error }
@@ -169,8 +180,42 @@ describe.skipIf(!databaseUrl)('durable artifact completeness gate on real Postgr
       }) } finally { await connection.close(); current.release(connection.unusable) }
     }
     const visits = async () => (await pool.query<{ visits: number }>('select visits from fixture_gate_commits where execution_id=$1', [execution.id])).rows[0]?.visits ?? 0
-    return { ...x, check, visits, repository }
+    // Only the metadata-facing fields of the physical readout are supplied.
+    // This is a SQL companion boundary double, never a qualified physical DTO.
+    const readout = { receipt: x.remote, output: { kind: 'published-artifacts', result: execution.result,
+      artifactOutputs: JSON.parse((execution.result!.output as { text: string }).text).artifactOutputs } } as RemoteWorkflowPhysicalReadout
+    const binding: DeviceSessionBinding = { ...x.accepted.transferContext, connectionGeneration: 1 }
+    const metadata = new PostgresWorkflowPhysicalArtifacts(x.mainId, { files: new PostgresFileRepository(pool),
+      authority: { resolveWorkflowContext: async () => x.accepted,
+        authorize: async (_accepted, sql) => { if (!sql) throw new Error('Same SQL required'); return authorize(sql) },
+        assertSourceLive: async (_accepted, _receipt, sql) => { await authorize(sql) } } })
+    const checkMetadata = async (adopted: boolean, after: (sql: FileQuery) => Promise<void> = async () => {}) => {
+      const current = await pool.connect(), connection = new ExclusiveGraphConnection(current, () => {})
+      try { await connection.transaction(async sql => {
+        const verify = () => adopted ? metadata.assertAdopted(sql, readout, binding) : metadata.assertPublications(sql, readout, binding)
+        await verify(); beforeGraphCommit(sql, verify)
+        await sql.query('insert into fixture_gate_commits(execution_id,visits) values($1,1) on conflict(execution_id) do update set visits=fixture_gate_commits.visits+1', [execution.id])
+        await after(sql)
+      }) } finally { await connection.close(); current.release(connection.unusable) }
+    }
+    return { ...x, check, checkMetadata, visits, repository }
   }
+  it('allows original canonical publications before adoption and requires complete immutable maps afterward', async () => {
+    const x = await seed([]); await x.checkMetadata(false); expect(await x.visits()).toBe(1)
+    await expect(x.checkMetadata(true)).rejects.toMatchObject({ code: 'REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE' })
+    for (const record of x.records) await x.repository.bind(record, async sql => {
+      requireAuthorization(await readLiveManagementPrincipal(sql, x.principalId), 'agent_chat:write', { workspaceId: x.run.workspaceId })
+    })
+    await x.checkMetadata(true); await x.checkMetadata(true); expect(await x.visits()).toBe(3)
+  })
+  it.each(['authority', 'retention'] as const)('resamples adopted SQL metadata and %s in a COMMIT finalizer', async reason => {
+    const x = await seed()
+    await expect(x.checkMetadata(true, async sql => {
+      if (reason === 'authority') await sql.query('update management_principals set revoked_at=now() where id=$1', [x.principalId])
+      else await sql.query("update files set created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' where file_id=$1", [x.records[0]!.pins.fileId])
+    })).rejects.toMatchObject({ code: reason === 'authority' ? 'AUTH_REVOKED' : 'REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE' })
+    expect(await x.visits()).toBe(0); await x.checkMetadata(true)
+  })
   it('commits the complete original mapping, rereads on replay and rejects current grant revocation', async () => {
     const x = await seed(); await x.check(); await x.check(); expect(await x.visits()).toBe(2)
     await pool.query('update management_principals set revoked_at=now() where id=$1', [x.principalId])
