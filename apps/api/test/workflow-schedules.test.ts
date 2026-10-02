@@ -36,7 +36,7 @@ describe('schedule persistence input boundaries', () => {
     { ...weekly, weekdays: [8] }, { ...weekly, weekdays: [1.5] }, { ...weekly, time: '24:00' },
     { ...settings, mode: 'interval', every: 0, unit: 'minute', anchorAt: '2030-01-01T00:00:00Z' },
     { ...settings, mode: 'interval', every: 0.5, unit: 'hour', anchorAt: '2030-01-01T00:00:00Z' },
-    { ...settings, mode: 'interval', every: 1, unit: 'second', anchorAt: '2030-01-01T00:00:00Z' },
+    { ...settings, mode: 'interval', every: 1, unit: 'day', anchorAt: '2030-01-01T00:00:00Z' },
     { ...settings, mode: 'once', localDate: '2030-02-30', time: '10:00' },
   ])('rejects invalid settings before connecting to SQL: %j', async (schedule) => {
     const connect = vi.fn()
