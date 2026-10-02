@@ -46,7 +46,7 @@ export function registerWorkspaceRootTools(server: McpServer, service: Workspace
       return toolFailure(error)
     }
   }
-  server.registerTool(TOOLS.choices, { description: 'List persisted human-approved computer/base/root policies for an existing workspace, without filesystem probing. Requires scoped source_roots:read and workspace_locations:read. No Agent or workflow is required; metadata-only is not worker readiness.',
+  server.registerTool(TOOLS.choices, { description: 'List persisted computer/base/root policies for an existing workspace, including Main app-managed Workspaces storage and explicitly owner-approved additional roots, without filesystem probing. Requires scoped source_roots:read and workspace_locations:read. No Agent or workflow is required; metadata-only is not worker readiness.',
     inputSchema: WorkspaceRootListInputSchema, outputSchema: WorkspaceRootListResultSchema, annotations: read }, input => invoke(TOOLS.choices, () => service.choices(principal, input)))
   server.registerTool(TOOLS.get, { description: 'Read the current exact workspace root binding and location revision. Requires scoped source_roots:read and workspace_locations:read. Legacy locations explicitly lack root evidence; never infer a host from a path.',
     inputSchema: WorkspaceBoundLocationGetInputSchema, outputSchema: WorkspaceBoundLocationReadbackSchema, annotations: read }, input => invoke(TOOLS.get, () => service.get(principal, input)))
@@ -60,6 +60,6 @@ export function registerWorkspaceRootTools(server: McpServer, service: Workspace
 }
 export function workspaceRootCapabilityLimit(composed: boolean) {
   return { feature: 'workspace_registered_roots', state: composed ? 'limited' as const : 'unsupported' as const,
-    detail: composed ? 'Independent workspace roots expose exact schemas through tools/list: workspace_root_choices_list/location_get require source_roots:read and workspace_locations:read; directories_list/location_validate additionally require workspace_locations:validate; location_set additionally requires source_roots:bind and workspace_locations:update. Main persists revision-fenced bindings; native roots come from human-approved host configuration.'
+    detail: composed ? 'Independent workspace roots expose exact schemas through tools/list: workspace_root_choices_list/location_get require source_roots:read and workspace_locations:read; directories_list/location_validate additionally require workspace_locations:validate; location_set additionally requires source_roots:bind and workspace_locations:update. Main persists revision-fenced bindings; Main app-managed Workspaces storage is initialized by the installation, while additional and device roots require explicit owner-approved host configuration.'
       : 'Registered workspace root services are not composed.' }
 }

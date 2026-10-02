@@ -39,8 +39,8 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     if (!isDeepStrictEqual(configuration.hostRef, host)) throw new DomainError('ROOT_CONFIGURATION_CONFLICT', 'Persisted root host facts changed.', 409)
     return configuration
   }
-  /** Trusted W07-C/HRT-C configuration adoption only. No HTTP/MCP input can
-   * publish paths. The carrier/bootstrap verifies the actual approved config
+  /** Trusted W07-C/HRT-C configuration or Main app-storage adoption only. No
+   * HTTP/MCP input can publish paths. The carrier/bootstrap verifies the config
    * signature/provenance and supplies these exact matching host/digest facts.
    */
   async publishApprovedHostConfiguration(sql: Sql, raw: ApprovedRootAllowlist, evidence: {
