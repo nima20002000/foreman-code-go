@@ -4,6 +4,10 @@ import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { DeviceSessionBindingSchema } from './deviceConnection.js'
 const Digest=z.string().regex(/^[a-f0-9]{64}$/)
+export const JOB_RUNTIME_WORKSPACE_LAYOUT='source-inputs-private-git-scheduler-v1' as const
+// Missing/unsupported layout stays readable in immutable history. Never default
+// it to the current layout: admission uses the Current schemas/issue below.
+const HistoricalWorkspaceLayout=z.string().min(1).max(200).optional()
 export const JobRuntimeLimitsSchema=z.object({cpuLimit:z.number().positive().max(256),memoryBytes:z.number().int().positive(),pidsLimit:z.number().int().positive(),diskBytes:z.number().int().positive()}).strict()
 /** Policy metadata refers to an existing authorized root, never a caller filesystem path. */
 export const JobRuntimeProfileInputSchema=z.object({rootId:z.uuid(),bindingRevision:z.number().int().positive(),limits:JobRuntimeLimitsSchema,
@@ -15,12 +19,16 @@ export const JobRuntimeProfileInputSchema=z.object({rootId:z.uuid(),bindingRevis
 export const QualifiedJobRuntimeSchema=JobRuntimeLimitsSchema.extend({policyId:IdSchema,policyRevision:z.number().int().positive(),imageDigest:z.string().regex(/^sha256:[a-f0-9]{64}$/),toolchainDigest:Digest,
   runtimeVersion:z.string().min(1).max(200),ociRuntimeVersion:z.string().min(1).max(200),kernelVersion:z.string().min(1).max(200),qualificationId:IdSchema,
   rootless:z.literal(true),cgroupV2:z.literal(true),filesystemBounded:z.literal(true),descendantContainment:z.literal(true),network:z.literal('none'),
+  workspaceLayout:HistoricalWorkspaceLayout,
 }).strict()
+export const CurrentQualifiedJobRuntimeSchema=QualifiedJobRuntimeSchema.extend({workspaceLayout:z.literal(JOB_RUNTIME_WORKSPACE_LAYOUT)}).strict()
 export const JobRuntimeFingerprintSchema=z.object({schemaVersion:z.literal(1),profileId:IdSchema,profileRevision:z.number().int().positive(),specDigest:Digest,
   hostRef:JobTargetSchema.shape.hostRef,registration:JobTargetSchema.shape.registration,mainInstallationId:IdSchema,bootId:z.uuid(),
   root:SourceRootRecordSchema,runtimeExecutable:z.string().startsWith('/'),runtimeBinarySha256:Digest,ociExecutable:z.string().startsWith('/'),ociBinarySha256:Digest,configurationDigest:Digest,
   imageDigest:z.string().regex(/^sha256:[a-f0-9]{64}$/),toolchainDigest:Digest,limits:JobRuntimeLimitsSchema,
+  workspaceLayout:HistoricalWorkspaceLayout,
 }).strict()
+export const CurrentJobRuntimeFingerprintSchema=JobRuntimeFingerprintSchema.extend({workspaceLayout:z.literal(JOB_RUNTIME_WORKSPACE_LAYOUT)}).strict()
 export const JobRuntimeApprovalSchema=z.object({schemaVersion:z.literal(1),id:z.uuid(),qualificationId:z.uuid(),workspaceId:IdSchema,profileId:IdSchema,profileRevision:z.number().int().positive(),
   fingerprint:JobRuntimeFingerprintSchema,fingerprintDigest:Digest,requestedByPrincipalId:IdSchema,
   status:z.enum(['awaiting-approval','approved','qualifying','complete','failed','cancelled','recovery-required']),approvedByPrincipalId:IdSchema.nullable(),approvedAt:TimestampSchema.nullable(),expiresAt:TimestampSchema,
@@ -59,6 +67,10 @@ export const JobRuntimeMeasurementSchema=z.object({schemaVersion:z.literal(1),qu
   if(Date.parse(value.expiresAt)<=Date.parse(value.checkedAt))ctx.addIssue({code:'custom',path:['expiresAt'],message:'Qualification evidence must expire after its actual check.'})
   if(new Set(value.checks.map(check=>check.id)).size!==7||value.checks.some(check=>!check.passed))ctx.addIssue({code:'custom',path:['checks'],message:'Every exact real-runtime qualification check must pass.'})
   if(value.runtime.policyId!==value.profileId||value.runtime.policyRevision!==value.profileRevision||value.runtime.qualificationId!==value.qualificationId)ctx.addIssue({code:'custom',message:'Qualification identity differs from its actual profile.'})
+  if(value.runtime.workspaceLayout!==value.fingerprint.workspaceLayout)ctx.addIssue({code:'custom',message:'Runtime and approved fingerprint workspace layouts differ.'})
+})
+export const CurrentJobRuntimeMeasurementSchema=JobRuntimeMeasurementSchema.safeExtend({
+  runtime:CurrentQualifiedJobRuntimeSchema,fingerprint:CurrentJobRuntimeFingerprintSchema,
 })
 export const JobRuntimeProfileSchema=z.object({schemaVersion:z.literal(1),id:IdSchema,workspaceId:IdSchema,revision:z.number().int().positive(),name:z.string().trim().min(1).max(200),
   root:SourceRootRecordSchema,policy:JobPolicySchema,limits:JobRuntimeLimitsSchema,specDigest:Digest,
@@ -71,9 +83,18 @@ export type JobRuntimeProfile=z.infer<typeof JobRuntimeProfileSchema>
 export type JobRuntimeProfileSave=z.infer<typeof JobRuntimeProfileSaveSchema>
 export type JobRuntimeMeasurement=z.infer<typeof JobRuntimeMeasurementSchema>
 export type QualifiedJobRuntime=z.infer<typeof QualifiedJobRuntimeSchema>
+export type CurrentQualifiedJobRuntime=z.infer<typeof CurrentQualifiedJobRuntimeSchema>
+export type CurrentJobRuntimeMeasurement=z.infer<typeof CurrentJobRuntimeMeasurementSchema>
 
 export type JobRuntimeFingerprint=z.infer<typeof JobRuntimeFingerprintSchema>
+export type CurrentJobRuntimeFingerprint=z.infer<typeof CurrentJobRuntimeFingerprintSchema>
 export type JobRuntimeApproval=z.infer<typeof JobRuntimeApprovalSchema>
+/** Readiness/admission can explain stale history without reparsing it as a new layout or mutating saved facts. */
+export function jobRuntimeWorkspaceLayoutIssue(runtime:Pick<QualifiedJobRuntime,'workspaceLayout'>,
+  fingerprint:Pick<JobRuntimeFingerprint,'workspaceLayout'>):'unsupported_workspace_layout'|null {
+  return runtime.workspaceLayout===JOB_RUNTIME_WORKSPACE_LAYOUT&&fingerprint.workspaceLayout===JOB_RUNTIME_WORKSPACE_LAYOUT
+    ?null:'unsupported_workspace_layout'
+}
 
 export const JobRuntimeQualificationReadSchema=z.object({approval:JobRuntimeApprovalSchema,nativeAdmission:JobRuntimeNativeAdmissionSchema.nullable(),measurement:JobRuntimeMeasurementSchema.nullable(),profile:JobRuntimeProfileSchema,readiness:z.object({ready:z.boolean(),reasons:z.array(z.string()),sideEffects:z.literal(false)}).strict()}).strict()
 export const JobRuntimeQualificationCommandSchema=z.object({commandId:IdSchema}).strict()
