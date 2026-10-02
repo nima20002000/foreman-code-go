@@ -1,11 +1,12 @@
 import { useEffect, useId, useMemo, useRef } from 'react'
 import { useStore } from 'zustand'
-import { Download, Files, Upload } from 'lucide-react'
+import { Download, Files } from 'lucide-react'
 import type { FileWithRevision, PermanentFileScope } from '@graphql/contracts/files'
 import { Button, IconButton } from '../../shared/ui/nocturne/Button'
 import { Dialog, Tooltip } from '../../shared/ui/nocturne/Overlays'
 import { Icon } from '../../shared/ui/nocturne/Icon'
 import { TextField } from '../../shared/ui/nocturne/Fields'
+import { TrashIconButton } from '../../shared/ui/ResourceCard'
 import { useFloatingSurface } from '../../shared/ui/nocturne/useFloatingSurface'
 import { useFileDrop } from '../../shared/ui/useFileDrop'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -79,9 +80,9 @@ function ScopedWorkflowFilesButton({ workspaceId, workflowId, readOnly = false, 
       if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)
         && !store.getState().removal) setOpen(false)
     }}>
-    <Tooltip content="Files"><IconButton ref={trigger} size="sm" variant="ghost" label="Files"
+    <IconButton ref={trigger} size="sm" variant="ghost" label="Files"
       aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined}
-      onClick={() => setOpen(!open)}><Files size={16} aria-hidden="true" focusable="false" /></IconButton></Tooltip>
+      onClick={() => setOpen(!open)}><Files size={16} aria-hidden="true" focusable="false" /></IconButton>
     {open && <div ref={surface} id={id} role="dialog" aria-label="Files" tabIndex={-1} popover="manual"
       className="n-theme workflow-files-popover"
       onKeyDown={(event) => {
@@ -90,19 +91,19 @@ function ScopedWorkflowFilesButton({ workspaceId, workflowId, readOnly = false, 
         }
       }}>
       <header className="workflow-files-heading"><strong>Files</strong>
-        <IconButton size="sm" variant="ghost" label="Close files" onClick={close}><Icon name="close" size={16} /></IconButton>
-      </header>
-      <section role="group" aria-label="Workflow files" className="workflow-files-group" {...drop.dropTargetProps}>
-        <div className="workflow-files-heading"><h3>Workflow</h3>
-          {!readOnly && <Tooltip content="Upload file"><IconButton size="sm" variant="ghost" label="Upload workflow file"
-            disabled={files.upload.isPending} onClick={() => picker.current?.click()}>
-            <Upload size={16} aria-hidden="true" focusable="false" /></IconButton></Tooltip>}
+        <div className="workflow-files-actions">
+          {!readOnly && <IconButton size="sm" variant="ghost" label="Add file"
+            disabled={files.upload.isPending} onClick={() => picker.current?.click()}><Icon name="plus" size={16} /></IconButton>}
+          <IconButton size="sm" variant="ghost" label="Close files" onClick={close}><Icon name="close" size={16} /></IconButton>
         </div>
-        {!readOnly && <TextField ref={picker} type="file" label="Choose workflow file" className="workflow-files-picker"
+      </header>
+      <section role="group" aria-label="Workflow files" className="workflow-files-group workflow-files-drop-area" {...drop.dropTargetProps}>
+        {!readOnly && <div hidden><TextField ref={picker} type="file" label="Choose workflow file" hidden
           accept={ATTACHMENT_ACCEPT} tabIndex={-1} disabled={files.upload.isPending}
-          onChange={(event) => { drop.clearDropError(); selectFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />}
+          onChange={(event) => { drop.clearDropError(); selectFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} /></div>}
         {files.upload.isPending && <p className="workflow-files-status" role="status">Uploading…</p>}
-        {!readOnly && <p className="workflow-files-status">{drop.isDragging ? 'Drop to upload' : 'Drop a file here or use Upload.'}</p>}
+        {drop.isDragging && visibleReferenceRows(files.workflow.data?.pages).length > 0 &&
+          <p className="workflow-files-status" role="status">Drop to add file</p>}
         {drop.dropError && <p className="workflow-files-error" role="alert">{drop.dropError}</p>}
         {selectionIssue && <p className="workflow-files-error" role="alert" title={selectionIssue.message}>{selectionIssue.label}</p>}
         {uploadError && <div className="workflow-files-status"><p role="alert" title={errorDetail(files.upload.error)}>Upload failed</p>
@@ -111,14 +112,15 @@ function ScopedWorkflowFilesButton({ workspaceId, workflowId, readOnly = false, 
           }}><Icon name="refresh" size={16} /></IconButton>}
         </div>}
         <FileGroup query={files.workflow} scope={files.workflowScope} files={files} label="workflow"
-          onRemove={readOnly ? undefined : askRemove} />
+          emptyLabel={readOnly ? 'No files' : drop.isDragging ? 'Drop to add file' : 'Drop a file here'} onRemove={readOnly ? undefined : askRemove} />
       </section>
-      <section role="group" aria-label="Inherited workspace files" className="workflow-files-group workflow-files-inherited">
-        <div className="workflow-files-heading"><h3>Workspace</h3>
-          <span role="img" title="Inherited · read-only" aria-label="Inherited, read-only"><Icon name="lock" size={14} /></span>
-        </div>
-        <FileGroup query={files.workspace} scope={files.workspaceScope} files={files} label="workspace" />
-      </section>
+      {(files.workspace.isPending || files.workspace.isError || visibleReferenceRows(files.workspace.data?.pages).length > 0) &&
+        <section role="group" aria-label="Inherited workspace files" className="workflow-files-group workflow-files-inherited">
+          <div className="workflow-files-heading"><h3>Workspace</h3>
+            <span role="img" title="Inherited · read-only" aria-label="Inherited, read-only"><Icon name="lock" size={14} /></span>
+          </div>
+          <FileGroup query={files.workspace} scope={files.workspaceScope} files={files} label="workspace" />
+        </section>}
       {files.download.isError && <p className="workflow-files-error" role="alert" title={errorDetail(files.download.error)}>Download failed</p>}
     </div>}
     {removal && <Dialog open onOpenChange={(next) => { if (!next) setRemoval(null) }} title="Remove file?"
@@ -137,11 +139,12 @@ function ScopedWorkflowFilesButton({ workspaceId, workflowId, readOnly = false, 
   </div>
 }
 
-function FileGroup({ query, scope, files, label, onRemove }: {
+function FileGroup({ query, scope, files, label, emptyLabel = 'No files', onRemove }: {
   query: ReturnType<typeof useWorkflowFiles>['workflow']
   scope: PermanentFileScope
   files: ReturnType<typeof useWorkflowFiles>
   label: 'workflow' | 'workspace'
+  emptyLabel?: string
   onRemove?: (row: FileWithRevision) => void
 }) {
   const rows = visibleReferenceRows(query.data?.pages)
@@ -151,7 +154,7 @@ function FileGroup({ query, scope, files, label, onRemove }: {
       <IconButton size="sm" variant="ghost" label={`Retry ${label} files`} disabled={query.isFetching}
         onClick={() => { void query.refetch() }}><Icon name="refresh" size={16} /></IconButton>
     </div>}
-    {!query.isPending && !query.isError && rows.length === 0 && <p className="workflow-files-status">No files</p>}
+    {!query.isPending && !query.isError && rows.length === 0 && !files.upload.isPending && <p className="workflow-files-status workflow-files-empty">{emptyLabel}</p>}
     <ul className="workflow-files-list">
       {rows.map((row) => {
         const downloading = files.download.isPending && files.download.variables?.row.file.fileId === row.file.fileId
@@ -164,8 +167,8 @@ function FileGroup({ query, scope, files, label, onRemove }: {
             {row.file.state === 'ready' && <Tooltip content="Download"><IconButton size="sm" variant="ghost"
               label={`Download ${row.revision.filename}`} disabled={files.download.isPending} loading={downloading}
               onClick={() => files.download.mutate({ scope, row })}><Download size={16} aria-hidden="true" focusable="false" /></IconButton></Tooltip>}
-            {onRemove && <Tooltip content="Remove"><IconButton size="sm" variant="ghost" label={`Remove ${row.revision.filename}`}
-              disabled={files.remove.isPending} onClick={() => onRemove(row)}><Icon name="trash" size={16} /></IconButton></Tooltip>}
+            {onRemove && <TrashIconButton target={row.revision.filename} action="Remove"
+              disabled={files.remove.isPending} onClick={() => onRemove(row)} />}
           </div>
         </li>
       })}

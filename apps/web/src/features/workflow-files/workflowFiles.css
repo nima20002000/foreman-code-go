@@ -17,6 +17,8 @@
 .workflow-files-heading h3 { font-size: 12px; font-weight: 600; margin: 0; }
 .workflow-files-heading strong { font-size: 13px; }
 .workflow-files-group { padding: 4px; }
+.workflow-files-drop-area { min-height: 96px; }
+.workflow-files-empty { justify-content: center; min-height: 80px; margin: 0; }
 .workflow-files-inherited { border-top: 1px solid var(--n-border, #343842); margin-top: 6px; padding-top: 8px; }
 .workflow-files-list { list-style: none; margin: 0; padding: 0; }
 .workflow-files-row { display: flex; align-items: center; gap: 6px; min-height: 44px; padding-block: 3px; }
@@ -30,4 +32,3 @@
 .workflow-files-confirm-name { overflow-wrap: anywhere; margin: 0; }
 .workflow-files-confirm { box-sizing: border-box; max-width: calc(100vw - 24px); }
 .workflow-files-popover :focus-visible { outline: 2px solid var(--n-focus, #a7b6ff); outline-offset: 2px; }
-.workflow-files-picker { display: none; }
