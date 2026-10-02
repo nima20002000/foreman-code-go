@@ -122,7 +122,7 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
   })
   it('concrete factory forwards the actual callback-map reader with its current generation', async () => {
     const inspect = vi.fn<ClaudeLiveCallbackReader['inspectCallbackAvailability']>((query) => ({ nativeSessionId: query.nativeSessionId,
-      nativeRequestId: query.nativeRequestId, nativeRequestType: query.nativeRequestType, generation: query.generation,
+      nativeRequestId: query.nativeRequestId, nativeRequestType: query.nativeRequestType, nativeMessageId: query.nativeMessageId, generation: query.generation,
       qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }))
     const f = fixture({ inspectCallbackAvailability: inspect }); let session!: NativeSessionReference
     const events = f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: start.correlationId, onSessionObserved: async (observed) => { session = observed } })[Symbol.asyncIterator]()

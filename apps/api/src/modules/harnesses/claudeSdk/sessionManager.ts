@@ -5,7 +5,7 @@ import { HarnessExecutionError } from '../errors.js'
 import type { NativeMcpHttpCredentialAcknowledgement } from '../mcpDetection.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type ResponseAvailabilityInspector } from '../responseAvailability.js'
 import { claudeMcpDetection, decodeClaudeMcpControl, type ClaudeMcpInspection } from './mcpInspection.js'
-import type { ClaudeLiveCallbackReader, ClaudeNativeCallbackContext, ClaudeCallbackAuthority, ClaudePendingNotification } from './callbackAvailability.js'
+import type { ClaudeResponseAvailabilityQuery, ClaudeLiveCallbackReader, ClaudeNativeCallbackContext, ClaudeCallbackAuthority, ClaudePendingNotification } from './callbackAvailability.js'
 import { ClaudeBoundedQueue } from './queue.js'
 import type { ClaudeNativeObservation, ClaudeSdkRunner, ClaudeSdkSession, ClaudeSessionScope } from './port.js'
 
@@ -484,7 +484,7 @@ export function createClaudeNativeSessionManager(options: {
         if (signal.aborted) waiter.abort()
       })
     },
-    async inspectResponseAvailability(session, query, signal): Promise<NativeResponseAvailability> {
+    async inspectResponseAvailability(session, query: ClaudeResponseAvailabilityQuery, signal): Promise<NativeResponseAvailability> {
       signal?.throwIfAborted()
       const runtime = resident.get(session.nativeSessionId)
       if (!runtime || runtime.closed || disposed) return unavailableNativeResponse(session, query, 'session_closed')
@@ -495,13 +495,17 @@ export function createClaudeNativeSessionManager(options: {
       if (!options.liveCallbacks) return unavailableNativeResponse(session, query, 'callback_lost')
       const turn = runtime.active
       if (!turn?.submitted || !turn.nativeMessageId || runtime.failure) return unavailableNativeResponse(session, query, 'callback_lost')
+      if (query.expectedNativeMessageId !== undefined && query.expectedNativeMessageId !== turn.nativeMessageId
+        || query.expectedGeneration !== undefined && query.expectedGeneration !== runtime.generation) {
+        return unavailableNativeResponse(session, query, 'identity_mismatch')
+      }
       const result = await options.liveCallbacks.inspectCallbackAvailability({ ...query, nativeSessionId: session.nativeSessionId,
         nativeMessageId: turn.nativeMessageId, generation: runtime.generation })
       signal?.throwIfAborted()
       if (runtime.closed || disposed || resident.get(session.nativeSessionId) !== runtime) return unavailableNativeResponse(session, query, 'session_closed')
       if (runtime.active !== turn || turn.terminal || result.nativeSessionId !== session.nativeSessionId
         || result.nativeRequestId !== query.nativeRequestId || result.nativeRequestType !== query.nativeRequestType
-        || result.state === 'available' && (result.generation !== runtime.generation || !result.qualified || result.path !== 'live_callback' || result.reason !== 'live_callback' || result.nativeTurnId !== undefined)) {
+        || result.state === 'available' && (result.nativeMessageId !== turn.nativeMessageId || result.generation !== runtime.generation || !result.qualified || result.path !== 'live_callback' || result.reason !== 'live_callback' || result.nativeTurnId !== undefined)) {
         return unavailableNativeResponse(session, query, 'identity_mismatch')
       }
       return result

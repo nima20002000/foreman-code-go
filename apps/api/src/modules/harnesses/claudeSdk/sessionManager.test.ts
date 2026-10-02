@@ -240,7 +240,7 @@ describe('Claude native session manager admission', () => {
   it('inspects only the exact live callback generation/message and performs no SDK response or pending-row lookup', async () => {
     const inspect = vi.fn(async (query: import('./callbackAvailability.js').ClaudeLiveCallbackQuery) => ({
       nativeSessionId: query.nativeSessionId, nativeRequestId: query.nativeRequestId, nativeRequestType: query.nativeRequestType,
-      generation: query.generation, qualified: true, state: 'available' as const, path: 'live_callback' as const, reason: 'live_callback' as const,
+      nativeMessageId: query.nativeMessageId, generation: query.generation, qualified: true, state: 'available' as const, path: 'live_callback' as const, reason: 'live_callback' as const,
     }))
     const pending = vi.fn(async () => undefined); const respond = vi.fn(async () => undefined)
     const f = fixture(() => (raw) => {
@@ -251,7 +251,7 @@ describe('Claude native session manager admission', () => {
     const session = await f.manager.attachSession({ harness: f.manager.harness, providerVersion: '2.1.284', nativeSessionId: 'native-session' }, start)
     const subscriber = f.manager.startTurn(session, { prompt: 'one', clientCorrelationId: 'request-one' })[Symbol.asyncIterator]()
     const message = await f.nextMessage()
-    const query = { nativeRequestId: 'native-request-one', nativeRequestType: 'can_use_tool' }
+    const query: import('./callbackAvailability.js').ClaudeResponseAvailabilityQuery = { nativeRequestId: 'native-request-one', nativeRequestType: 'can_use_tool' }
     expect((await f.manager.inspectResponseAvailability!(session, query)).reason).toBe('callback_lost')
     f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'root-frame', user_message_uuid: message.uuid,
       message: { id: 'api-one', content: [{ type: 'tool_use', id: 'root-tool-one', name: 'Bash', input: {} }] } })
@@ -263,8 +263,24 @@ describe('Claude native session manager admission', () => {
     expect(inspect).toHaveBeenCalledWith({ ...query, nativeSessionId: session.nativeSessionId, nativeMessageId: message.uuid, generation: context.generation })
     expect(pending).not.toHaveBeenCalled(); expect(respond).not.toHaveBeenCalled()
     expect((await f.manager.inspectResponseAvailability!(session, { ...query, expectedNativeTurnId: 'not-a-native-turn' })).reason).toBe('identity_mismatch')
+    query.expectedNativeMessageId = message.uuid
+    query.expectedGeneration = context.generation
+    expect((await f.manager.inspectResponseAvailability!(session, query)).state).toBe('available')
+    const beforeMismatch = inspect.mock.calls.length
+    query.expectedNativeMessageId = 'older-native-message'
+    expect((await f.manager.inspectResponseAvailability!(session, query)).reason).toBe('identity_mismatch')
+    query.expectedNativeMessageId = message.uuid
+    query.expectedGeneration = 'older-runtime-generation'
+    expect((await f.manager.inspectResponseAvailability!(session, query)).reason).toBe('identity_mismatch')
+    expect(inspect.mock.calls.length).toBe(beforeMismatch)
+    query.expectedGeneration = context.generation
+    inspect.mockImplementationOnce(async q => ({ nativeSessionId: q.nativeSessionId, nativeRequestId: q.nativeRequestId,
+      nativeRequestType: q.nativeRequestType, nativeMessageId: 'wrong-resident-message', generation: q.generation,
+      qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }))
+    expect((await f.manager.inspectResponseAvailability!(session, query)).reason).toBe('identity_mismatch')
+
     inspect.mockImplementation(async (q) => ({ nativeSessionId: q.nativeSessionId, nativeRequestId: q.nativeRequestId,
-      nativeRequestType: q.nativeRequestType, generation: 'old-generation', qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }))
+      nativeRequestType: q.nativeRequestType, nativeMessageId: q.nativeMessageId, generation: 'old-generation', qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }))
     expect((await f.manager.inspectResponseAvailability!(session, query)).reason).toBe('identity_mismatch')
     await subscriber.return?.(); await f.manager.close(session)
     expect((await f.manager.inspectResponseAvailability!(session, query)).reason).toBe('session_closed')

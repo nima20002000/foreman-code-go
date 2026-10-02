@@ -4,11 +4,16 @@ import { bindingIdentity } from '../../files/tools/context.js'
 import type { FileToolContext } from '../../files/tools/types.js'
 import { mergeMessagePins } from '../../conversations/messagePublications.js'
 
+export interface ClaudeMessagePublicationReceipt {
+  receiptId: string; messageId: string; fileId: string; fileRevisionId: string
+  nativeSessionId: string; nativeMessageId: string; fileActivityRevision: string; fileState: string
+}
+
 /** Read-only recovery of finalized output after publish-before-adoption loss.
  * The exact native message receipt and sender come from admitted persisted facts;
  * uploads, current selection, callbacks, and native turn guesses are irrelevant. */
 export async function readClaudeMessagePublications(query: Pick<pg.PoolClient, 'query'>,
-  conversationId: string, messageIds: readonly string[]): Promise<Map<string, MessageAttachmentRef[]>> {
+  conversationId: string, messageIds: readonly string[], onReceipt?: (receipt: ClaudeMessagePublicationReceipt) => void): Promise<Map<string, MessageAttachmentRef[]>> {
   const result = new Map<string, MessageAttachmentRef[]>()
   if (!messageIds.length) return result
   const turns = (await query.query<{
@@ -49,8 +54,10 @@ export async function readClaudeMessagePublications(query: Pick<pg.PoolClient, '
     bindings.set(bindingIdentity(context), turn)
   }
   if (!bindings.size) return result
-  const published = (await query.query<{ binding: string; owner_principal_id: string; file_id: string; revision_id: string }>(`
-    select p.binding,p.owner_principal_id,p.file_id,p.revision_id from file_tool_publications p
+  const published = (await query.query<{ binding: string; owner_principal_id: string; file_id: string; revision_id: string; request_id: string; file_activity_revision: string; file_state: string }>(`
+    select p.binding,p.owner_principal_id,p.file_id,p.revision_id,p.request_id,
+      f.activity_record_revision::text as file_activity_revision,f.state as file_state from file_tool_publications p
+    join files f on f.file_id=p.file_id and f.owner_principal_id=p.owner_principal_id
     join file_allocations a on a.owner_principal_id=p.owner_principal_id and a.request_id=p.request_id
       and a.file_id=p.file_id and a.revision_id=p.revision_id and a.state='finalized'
     where p.binding=any($1::text[]) order by p.request_id`, [[...bindings.keys()]])).rows
@@ -59,6 +66,18 @@ export async function readClaudeMessagePublications(query: Pick<pg.PoolClient, '
     if (!turn || turn.owner_principal_id !== publication.owner_principal_id) continue
     const ref = MessageAttachmentRefSchema.parse({ fileId: publication.file_id, revisionId: publication.revision_id })
     result.set(turn.message_id, mergeMessagePins(result.get(turn.message_id) ?? [], [ref]))
+    onReceipt?.({ receiptId: publication.request_id, messageId: turn.message_id, fileId: ref.fileId, fileRevisionId: ref.revisionId,
+      nativeSessionId: turn.native_session_id, nativeMessageId: turn.native_message_id,
+      fileActivityRevision: publication.file_activity_revision, fileState: publication.file_state })
   }
   return result
+}
+
+/** Original finalized ledger receipts, including outputs not yet adopted by the message.
+ * This read does not reissue credentials or mutate publication/adoption authority. */
+export async function readClaudeMessagePublicationReceipts(query: Pick<pg.PoolClient, 'query'>,
+  conversationId: string, messageIds: readonly string[]): Promise<ClaudeMessagePublicationReceipt[]> {
+  const receipts: ClaudeMessagePublicationReceipt[] = []
+  await readClaudeMessagePublications(query, conversationId, messageIds, (receipt) => receipts.push(receipt))
+  return receipts
 }

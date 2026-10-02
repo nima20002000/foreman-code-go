@@ -1,6 +1,5 @@
 import { PendingNativeInteractionSchema, type PendingNativeInteraction, type NativeSessionReference, type ApprovalResponseOption } from '@graphql/contracts'
-import type { ClaudeLiveCallbackQuery } from './callbackAvailability.js'
-import type { NativeResponseAvailability } from '../responseAvailability.js'
+import type { ClaudeLiveCallbackQuery, ClaudeResponseAvailability } from './callbackAvailability.js'
 import { ClaudeQuestionInputSchema, ClaudeQuestionAnswersSchema, type ClaudeHarnessConfiguration } from '@graphql/contracts/claude'
 import { isDeepStrictEqual } from 'node:util'
 import { HarnessExecutionError } from '../errors.js'
@@ -59,10 +58,12 @@ export class ClaudeInteractionBridge {
   }
 
   /** Inspect only the owned SDK callback map; availability is never delivery evidence. */
-  inspectCallbackAvailability(query: ClaudeLiveCallbackQuery): NativeResponseAvailability {
+  inspectCallbackAvailability(query: ClaudeLiveCallbackQuery): ClaudeResponseAvailability {
     const base = { nativeSessionId: query.nativeSessionId, nativeRequestId: query.nativeRequestId, nativeRequestType: query.nativeRequestType }
-    const unavailable = (reason: NativeResponseAvailability['reason']): NativeResponseAvailability => ({ ...base, qualified: false, state: 'unavailable', path: null, reason })
+    const unavailable = (reason: ClaudeResponseAvailability['reason']): ClaudeResponseAvailability => ({ ...base, qualified: false, state: 'unavailable', path: null, reason })
     if (this.controller.signal.aborted) return unavailable('callback_lost')
+    if (query.expectedNativeMessageId !== undefined && query.expectedNativeMessageId !== query.nativeMessageId
+      || query.expectedGeneration !== undefined && query.expectedGeneration !== query.generation) return unavailable('identity_mismatch')
     if (!query.nativeSessionId || !query.nativeMessageId || !query.generation || query.nativeRequestType !== 'can_use_tool') return unavailable('identity_mismatch')
     const candidates = [...this.requests.values()].filter((entry) => entry.identity.nativeRequestId === query.nativeRequestId)
     const matches = candidates.filter(({ identity }) => identity.nativeSessionId === query.nativeSessionId
@@ -74,7 +75,7 @@ export class ClaudeInteractionBridge {
     if (request.signal.aborted) return unavailable('callback_lost')
     if (request.stage === 'consumed') return unavailable('request_consumed')
     if (request.stage === 'response_in_flight') return unavailable('response_in_flight')
-    return { ...base, ...(request.identity.nativeTurnId ? { nativeTurnId: request.identity.nativeTurnId } : {}), generation: query.generation,
+    return { ...base, nativeMessageId: query.nativeMessageId, ...(request.identity.nativeTurnId ? { nativeTurnId: request.identity.nativeTurnId } : {}), generation: query.generation,
       qualified: true, state: 'available', path: 'live_callback', reason: 'live_callback' }
   }
 
