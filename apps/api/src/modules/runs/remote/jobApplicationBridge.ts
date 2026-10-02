@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import { RemoteJobMainRpcRequestSchema, RemoteJobDispatchIntentSchema, type RemoteJobDispatchIntent, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
+import { RemoteJobMainRpcRequestSchema, RemoteJobDispatchIntentSchema, type RemoteJobDispatchIntent } from '@graphql/contracts/remote-job-execution'
 import { JobRepository } from '../../jobs/repository.js'
 import type { PostgresJobDispatch } from '../../jobs/dispatch.js'
 import type { JobWorkerService } from '../../jobs/worker.js'
@@ -66,22 +66,4 @@ export class JobApplicationBridge {
     return { persistedSequence: frame.receipt.sequence }
   }
 }
-export interface WorkerJobApplicationChannel { request(namespace: 'execution-v1', payload: unknown): Promise<{ payload: unknown }> }
-/** Worker callbacks use only narrow selected-main application RPC, not a DB handle. */
-export class WorkerJobApplicationSink {
-  constructor(private readonly channel: WorkerJobApplicationChannel) {}
-  async authorize(intent: RemoteJobDispatchIntent, action: 'start'|'read'|'control'|'publish') {
-    const result = (await this.channel.request('execution-v1', { method: 'job-authorize', intent, action })).payload
-    if (!result || typeof result !== 'object' || !('authorized' in result) || result.authorized !== true
-      || !('operationId' in result) || result.operationId !== intent.operationId || !('attemptId' in result) || result.attemptId !== intent.attemptId
-      || !('bindingHash' in result) || result.bindingHash !== intent.bindingHash || !('owner' in result) || !isDeepStrictEqual(result.owner, intent.owner)) throw new Error('Main did not authorize this exact job operation')
-  }
-  async observeReceipt(receipt: RemoteJobOperationReceipt) {
-    const result = (await this.channel.request('execution-v1', { method: 'job-report', receipt })).payload
-    if (!result || typeof result !== 'object' || !('persistedSequence' in result) || result.persistedSequence !== receipt.sequence) throw new Error('Main job receipt acknowledgment uncertain')
-  }
-  async appendLog(intent: RemoteJobDispatchIntent, chunk: Parameters<JobWorkerService['appendLog']>[3]) {
-    const result = (await this.channel.request('execution-v1', { method: 'job-log', intent, chunk })).payload
-    if (!result || typeof result !== 'object' || !('persistedSequence' in result) || typeof result.persistedSequence !== 'number' || result.persistedSequence < chunk.sequence) throw new Error('Main did not persist this log sequence')
-  }
-}
+export { WorkerJobApplicationSink, type WorkerJobApplicationChannel } from './workerJobApplicationSink.js'

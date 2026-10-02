@@ -1,3 +1,13 @@
+import { randomUUID } from 'node:crypto'
+import { RemoteJobExecutionRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
+import { createInstalledJobExecutionHost } from '../jobs/executorInstalled.js'
+import { WorkerJobApplicationSink } from '../runs/remote/workerJobApplicationSink.js'
+import { createInstalledJobSource } from '../runs/remote/installedJobSource.js'
+import { createRemoteExecutionHandler } from '../runs/remote/executionRouter.js'
+import { createWorkerJobInputPort } from '../files/jobInputs/factory.js'
+import { createWorkerJobOutputCollector } from '../runs/remote/jobCanonicalOutputs.js'
+import { DeviceConnectionError } from './deviceWire.js'
+import type { RemoteJobExecutionHost } from '../runs/remote/jobExecutionHost.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { createWorkerQualificationExtension } from '../jobs/workerQualificationCarrier.js'
@@ -44,10 +54,10 @@ export async function createInstalledWorkerDomains(input: {
       throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The current original paired Main connection is unavailable.', 409)
     return binding
   }
-  const request = async (namespace: string, payload: unknown, options?: { signal?: AbortSignal }) => {
+  const request = async (namespace: string, payload: unknown, options?: { signal?: AbortSignal; bytes?: Uint8Array }) => {
     const binding = current(), captured = input.connection()?.captureRequest(namespace)
     if (!captured || !isDeepStrictEqual(captured.binding, binding)) throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The exact original Main channel is unavailable.', 409)
-    const reply = await captured.request(payload, { signal: options?.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal })
+    const reply = await captured.request(payload, { signal: options?.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal, ...(options?.bytes ? { bytes: options.bytes } : {}) })
     if (!isDeepStrictEqual(current(), binding)) throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The authenticated Main generation changed.', 409)
     return reply
   }
@@ -98,6 +108,46 @@ export async function createInstalledWorkerDomains(input: {
       return { payload: inspected.inventory }
     },
   })
+  let jobs: RemoteJobExecutionHost | undefined, jobOpening: Promise<RemoteJobExecutionHost> | undefined
+  let jobInputs: ReturnType<typeof createWorkerJobInputPort> | undefined
+  const openJobs = () => jobOpening ??= (async () => {
+    const connection = current(), retained = await jobJournal()
+    const application = new WorkerJobApplicationSink({ request })
+    jobInputs = createWorkerJobInputPort({ channel: { request, currentBinding: current },
+      stagingRoot: join(input.stateDirectory, 'job-input-transfer-staging'), receiptRoot: join(input.stateDirectory, 'job-input-receipts') })
+    const host = createInstalledJobExecutionHost({ configuration: input.jobConfiguration ?? null, registry: jobRegistry,
+      connection, incarnationId: randomUUID(), journal: retained, currentBinding: current,
+      source: createInstalledJobSource({ journal: retained, application, currentBinding: current, approvedRoots: roots }), inputs: jobInputs,
+      authorize: (intent, _execution, action) => application.authorize(intent, action),
+      observeReceipt: receipt => application.observeReceipt(receipt),
+      appendLog: async chunk => {
+        const owners = (await retained.jobOperations()).filter(receipt => receipt.execution.id === chunk.executionId && receipt.intent.attemptId === chunk.attemptId)
+        if (owners.length !== 1) throw new DomainError('JOB_LOG_OWNER_UNAVAILABLE', 'The original Job log owner is unavailable.', 409)
+        await application.appendLog(owners[0]!.intent, chunk)
+      },
+      collectOutputs: createWorkerJobOutputCollector({ request }, { current: async signal => { signal?.throwIfAborted(); return transferContextForBinding(current()) },
+        retryable: error => error instanceof DeviceConnectionError && ['transport', 'timeout'].includes(error.code) }, retained),
+    })
+    await host.recover()
+    jobs = host
+    return host
+  })()
+  const execution = extensions.find(extension => extension.namespace === 'execution-v1')
+  if (input.jobConfiguration && approved) {
+    const workflow = execution?.handle
+    const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+      async handle(payload, context) {
+        if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'Execution requires its actual authenticated worker channel.', 409)
+        const job = RemoteJobExecutionRpcRequestSchema.safeParse(payload).success ? await openJobs() : jobs
+        return { payload: await createRemoteExecutionHandler({ handle: async raw => {
+          if (!workflow) throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE', 'The installed Workflow runtime is unavailable.', 409)
+          return (await workflow(raw, context)).payload
+        } }, job)(payload) }
+      },
+    }
+    if (execution) extensions.splice(extensions.indexOf(execution), 1, handler)
+    else extensions.push(handler)
+  }
   const tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
     lifetime.signal.throwIfAborted()
     const task = extension.handle!(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) })
@@ -109,6 +159,8 @@ export async function createInstalledWorkerDomains(input: {
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
+      try { if (jobOpening) await (await jobOpening).shutdown() } catch (error) { failures.push(error) }
+      try { await jobInputs?.close() } catch (error) { failures.push(error) }
       try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }
       await Promise.allSettled([...active])
       try { await receiver?.receiver.close() } catch (error) { failures.push(error) }
