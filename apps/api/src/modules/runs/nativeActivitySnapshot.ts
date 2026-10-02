@@ -27,7 +27,7 @@ export const RUN_NATIVE_ACTIVITY_FACTS_SQL = `with normalized as (
   where item_id is not null and item_type in ('commandExecution','mcpToolCall','dynamicToolCall','collabAgentToolCall','tool','subagent')
   order by execution_id,native_session_id,generation,item_id,sequence desc
 ) select execution_id,sequence::text,item_id,item_type,status,native_session_id,native_turn_id,generation,observed_at
-  from latest order by execution_id,sequence limit 1001`
+  from latest order by execution_id,latest.sequence limit 1001`
 
 export async function readNativeActivityFacts(sql: Pick<pg.PoolClient, 'query'>, runId: string) {
   return (await sql.query<NativeActivityFact>(RUN_NATIVE_ACTIVITY_FACTS_SQL, [runId])).rows
