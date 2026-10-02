@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { assertSession, sessionGeneration } from '../api/sessionBoundary'
-import { Button } from './nocturne'
+import { Button, Icon } from './nocturne'
 
 export function LoadMore({ label, query, loadAll = false }: {
   label: string
@@ -31,15 +31,18 @@ export function LoadMore({ label, query, loadAll = false }: {
   })
   const fetching = query.isFetching || remaining.isPending
   const failed = query.isFetchNextPageError || remaining.isError
+  const compact = loadAll && !fetching && !failed
   if (!query.hasNextPage) return null
   return <div className="resource-load-more">
     {failed ? <p role="alert">Could not load more {label}. Try again.</p> : null}
-    <Button variant="ghost" size="sm" disabled={fetching} onClick={() => {
+    <Button variant="ghost" size="sm" disabled={fetching}
+      aria-label={compact ? `Show more ${label}` : undefined}
+      leading={compact ? <Icon name="plus" size={15} /> : undefined} onClick={() => {
       if (inFlight.current) return
       inFlight.current = true
       remaining.mutate()
     }}>
-      {fetching ? 'Loading…' : failed ? `Retry loading ${label}` : `Show more ${label}`}
+      {fetching ? 'Loading…' : failed ? `Retry loading ${label}` : compact ? 'Show more' : `Show more ${label}`}
     </Button>
   </div>
 }
