@@ -7,6 +7,7 @@ import { WorkerJobApplicationSink } from '../runs/remote/workerJobApplicationSin
 import { createInstalledJobSource } from '../runs/remote/installedJobSource.js'
 import { createRemoteExecutionHandler } from '../runs/remote/executionRouter.js'
 import { createWorkerJobInputPort } from '../files/jobInputs/workerFactory.js'
+import { JOB_INPUT_NAMESPACE } from '../files/jobInputs/protocol.js'
 import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.js'
 import { createInstalledJobOutputRsync } from '../runs/remote/installedJobOutputRsync.js'
 import { DeviceConnectionError } from './deviceWire.js'
@@ -168,6 +169,7 @@ export async function createInstalledWorkerDomains(input: {
   })()
   const execution = extensions.find(extension => extension.namespace === 'execution-v1')
   if (input.jobConfiguration && approved) {
+    extensions.push({namespace:JOB_INPUT_NAMESPACE,version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192})
     const workflow = execution?.handle
     const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
       async handle(payload, context) {

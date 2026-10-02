@@ -4,11 +4,11 @@ import { chmod, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
+import { JOB_RUNTIME_WORKSPACE_LAYOUT, CurrentJobRuntimeFingerprintSchema, JobQualificationCandidateSchema, JobRuntimeFingerprintSchema, JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
 import { identity } from '../sources/privateFilesystem.js'
 import type { JobSql } from './repository.js'
 import { jobSpec } from '../../../test/helpers/jobFixture.js'
-import { captureInstalledRuntimeConfiguration, createInstalledJobRuntimeHost, inspectInstalledJobRuntime, InstalledJobRuntimeCaptureInputSchema, InstalledJobRuntimeConfigurationSchema, readInstalledRuntimeConfiguration } from './installedRuntimeHost.js'
+import { captureInstalledRuntimeConfiguration, createInstalledJobRuntimeHost, inspectInstalledJobRuntime, inspectInstalledJobRuntimeCandidate, InstalledJobRuntimeCaptureInputSchema, InstalledJobRuntimeConfigurationSchema, readInstalledRuntimeConfiguration } from './installedRuntimeHost.js'
 import * as qualification from './qualification.js'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
 
@@ -79,6 +79,8 @@ describe('protected installed runtime reader, no DB or native runtime execution'
     const host = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
     expect(await host.currentMetadata(f.sql, f.profile)).toBeNull()
     const snapshot = await host.inspect(f.profile)
+    expect(snapshot.fingerprint.workspaceLayout).toBe(JOB_RUNTIME_WORKSPACE_LAYOUT)
+    expect(CurrentJobRuntimeFingerprintSchema.parse(snapshot.fingerprint)).toEqual(snapshot.fingerprint)
     const observed = { ...f.configuration.target, bootId: f.configuration.pins.bootId, connection: null }
     expect(await inspectInstalledJobRuntime({ configuration: f.location, profile: f.profile, host: observed })).toEqual(snapshot)
     await expect(inspectInstalledJobRuntime({ configuration: f.location, profile: f.profile, host: { ...observed, mainInstallationId: 'other-main' } })).rejects.toMatchObject({ details: { reason: 'installation_changed' } })
@@ -90,6 +92,31 @@ describe('protected installed runtime reader, no DB or native runtime execution'
     await expect(host.descriptor(f.profile)).rejects.toMatchObject({ details: { reason: 'configuration_unavailable' } })
     const restarted = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
     expect(await restarted.currentMetadata(f.sql, f.profile)).toBeNull()
+  })
+  it.each([undefined, 'source-inputs-v0'])('rejects historical candidate layout %s without upgrading immutable fingerprints', async workspaceLayout => {
+    const f = await fixture(), measuredConfiguration = { actualMetadataFixture: true }
+    const capture = vi.spyOn(qualification, 'captureJobRuntimeConfiguration').mockResolvedValue(measuredConfiguration as unknown as Awaited<ReturnType<typeof qualification.captureJobRuntimeConfiguration>>)
+    f.configuration.pins.ociBinarySha256 = f.configuration.pins.runtimeBinarySha256
+    f.configuration.pins.findmntBinarySha256 = f.configuration.pins.runtimeBinarySha256
+    f.configuration.pins.configurationDigest = createHash('sha256').update(canonicalGraphJson(measuredConfiguration)).digest('hex')
+    await writeFile(f.location.path, JSON.stringify(f.configuration))
+    const host = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
+    const snapshot = await host.inspect(f.profile)
+    const historical = { ...snapshot.fingerprint }
+    if (workspaceLayout === undefined) delete (historical as { workspaceLayout?: string }).workspaceLayout
+    else Object.assign(historical, { workspaceLayout })
+    const fingerprint = JobRuntimeFingerprintSchema.parse(historical)
+    const candidate = JobQualificationCandidateSchema.parse({ qualificationId: id, operationId: id, approvalId: id, fingerprint,
+      findmntBinary: f.configuration.findmntExecutable, findmntBinarySha256: f.configuration.pins.findmntBinarySha256,
+      backingFile: f.configuration.backingFile, backingBytes: fingerprint.limits.diskBytes,
+      controllerEnvironment: f.configuration.controllerEnvironment, sourceParent: fingerprint.root.binding.canonicalPath,
+      runtimeRoot: f.configuration.runtimeRoot, spoolBytes: 131072, ttlSeconds: 60 })
+    const original = structuredClone(candidate)
+    await expect(inspectInstalledJobRuntimeCandidate({ configuration: null, candidate,
+      host: { ...f.configuration.target, bootId: f.configuration.pins.bootId, connection: null } })).rejects.toMatchObject({ details: { reason: 'unsupported_workspace_layout' } })
+    expect(candidate).toEqual(original)
+    expect(fingerprint.workspaceLayout).toBe(workspaceLayout)
+    expect(capture).toHaveBeenCalledTimes(1)
   })
   it('missing configuration is explicit unavailable, never defaulted or admitted', async () => {
     const f = await fixture(); const reserve = vi.fn()
