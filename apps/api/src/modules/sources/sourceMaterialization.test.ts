@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rename, symlink, r
 import { deflateSync } from 'node:zlib'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSourceManifest, sourceSha256, verifySourceManifest, sourcePath } from './manifest.js'
+import { createSourceManifest, sourceSha256, verifySourceManifest, verifySourceBytes, sourcePath } from './manifest.js'
 import { PrivateSourceMaterializer } from './materialization.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { createPrivateSourceRepository } from './repository.js'
@@ -44,6 +44,23 @@ describe('source manifest policy', () => {
   })
 
   it.each(['../outside', '/absolute', 'C:/drive', 'dir\\file', 'dir//file', 'dir/../file', 'x\0z', 'e\u0301', 'dir/name.', '.git/config', '.env', 'id_ed25519', '.config/provider/token', 'CON'])('rejects ambiguous or sensitive inclusion %s', (path) => { expect(() => sourcePath(path)).toThrow() })
+  it.each(['apps/api/src/modules/interactions/wave25/credentials.ts', 'src/credentials.test.ts', 'src/credentials.spec.js', 'src/credentials.d.ts', 'src/credentials.d.mts', 'src/credentials.d.cts',
+    'src/credentials.tsx', 'src/credentials.js', 'src/credentials.jsx', 'src/credentials.mts', 'src/credentials.cts',
+    'src/credentials.mjs', 'src/credentials.cjs'])('classifies implementation leaf %s as source', path => {
+    expect(sourcePath(path)).toBe(path)
+  })
+  it.each(['credentials', 'credentials/data.ts', 'credentials.ts/index.ts', 'credentials.test.ts/index.ts',
+    '.aws/credentials.ts', 'src/.ssh/credentials.ts', 'src/.env', 'src/.env.local',
+    'credentials.json', 'credentials.ini', 'credentials.yaml', 'credentials.yml', 'credentials.txt', 'credentials.bak',
+    'credentials.ts.bak', 'credentials.backup', 'credentials.unknown', 'credentials.json.ts', 'credentials.pem.ts',
+    'credentials.backup.ts', 'credentials.custom.ts', 'private.pem', 'private.key', 'id_rsa', 'id_ed25519'])('keeps credential material or sensitive ancestor %s blocked', path => {
+    expect(() => sourcePath(path)).toThrow('credential')
+  })
+  it('rejects private-key content even inside an otherwise allowed credential implementation filename', () => {
+    const path = sourcePath('src/credentials.ts')
+    const bytes = Buffer.from('-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-not-a-key\n-----END OPENSSH PRIVATE KEY-----\n')
+    expect(() => verifySourceBytes({ path, kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }, bytes)).toThrow('Private key content')
+  })
   it('allows explicit environment examples and rejects changed digests/case aliases', async () => {
     expect(sourcePath('.env.example')).toBe('.env.example')
     const { manifest } = await fixture()
@@ -152,6 +169,21 @@ describe('capture semantics', () => {
     expect(target.content.get('hidden.txt')?.toString()).toBe('exact git bytes'); expect(manifest.git?.commit).toBe(commit)
     await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit: 'HEAD', approvedPaths: [], executablePolicy: 'strip', sink: sink() })).rejects.toThrow('exact Git commit')
   })
+  it('captures the complete approved Git tree including credential implementation code', async () => {
+    const f = await fixture(); await qualifiedGit(f.root, ['init', '--template='])
+    const modulePath = 'apps/api/src/modules/interactions/wave25/credentials.ts'
+    await mkdir(join(f.root, 'apps/api/src/modules/interactions/wave25'), { recursive: true })
+    const code = Buffer.from('export class CredentialService { readonly lifetime = 60 }\n')
+    await writeFile(join(f.root, modulePath), code); await writeFile(join(f.root, 'README.md'), 'complete fixture tree\n')
+    await qualifiedGit(f.root, ['add', '.']); await qualifiedGit(f.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source'])
+    const commit = (await qualifiedGit(f.root, ['rev-parse', 'HEAD'])).toString().trim(), target = sink()
+    const manifest = await captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit, approvedPaths: [modulePath, 'README.md'], executablePolicy: 'strip', sink: target })
+    expect(manifest.entries.map(entry => entry.path)).toEqual(['README.md', modulePath])
+    expect(target.content.get(modulePath)).toEqual(code); expect(target.committed).toEqual([manifest])
+    const incomplete = sink()
+    await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit, approvedPaths: [modulePath], executablePolicy: 'strip', sink: incomplete })).rejects.toThrow('Every exact tree entry must be explicitly approved')
+    expect(incomplete.committed).toEqual([]); expect(incomplete.content.size).toBe(0)
+  })
   it('rejects missing objects, LFS pointers and unqualified submodules', async () => {
     const f = await fixture(); await qualifiedGit(f.root, ['init', '--template='])
     await writeFile(join(f.root, 'asset.bin'), 'version https://git-lfs.github.com/spec/v1\noid sha256:' + 'a'.repeat(64) + '\nsize 99\n')
@@ -177,6 +209,15 @@ describe('capture semantics', () => {
     await qualifiedGit(f.root, ['add', '.']); await qualifiedGit(f.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source'])
     const commit = (await qualifiedGit(f.root, ['rev-parse', 'HEAD'])).toString().trim()
     await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit, approvedPaths: ['.env'], executablePolicy: 'strip', sink: sink() })).rejects.toThrow('credential')
+  })
+  it('aborts complete-tree capture for tracked credential data even when it is not approved', async () => {
+    const f = await fixture(); await qualifiedGit(f.root, ['init', '--template='])
+    await writeFile(join(f.root, 'credentials.ts'), 'export class CredentialService {}\n')
+    await writeFile(join(f.root, 'credentials.json'), '{"token":"synthetic-placeholder"}\n')
+    await qualifiedGit(f.root, ['add', '.']); await qualifiedGit(f.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source'])
+    const commit = (await qualifiedGit(f.root, ['rev-parse', 'HEAD'])).toString().trim(), target = sink()
+    await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit, approvedPaths: ['credentials.ts'], executablePolicy: 'strip', sink: target })).rejects.toThrow('credential')
+    expect(target.committed).toEqual([]); expect(target.content.size).toBe(0)
   })
 })
 
