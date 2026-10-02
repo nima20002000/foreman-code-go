@@ -97,6 +97,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'workflow_defaults_get', action: 'settings:read' },
   { name: 'workflow_defaults_update', action: 'settings:update' },
   { name: 'workspace_list', action: 'workspaces:read' },
+  { name: 'workspace_storage_folders_list', action: 'workspaces:read' },
+  { name: 'workspace_storage_folder_delete', action: 'workspaces:archive' },
   { name: 'workspace_get', action: 'workspaces:read' },
   { name: 'workspace_create', action: 'workspaces:create' },
   { name: 'workspace_update', action: 'workspaces:update' },

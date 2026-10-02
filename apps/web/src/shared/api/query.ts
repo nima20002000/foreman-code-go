@@ -72,6 +72,7 @@ export const queryKeys = {
   resources: (workspaceId: string) => ['workbench', 'workspace', workspaceId, 'resources'] as const,
   harnessDefaults: ['workbench', 'settings', 'harness-defaults'] as const,
   managedWorkspaces: ['workbench', 'management', 'workspaces'] as const,
+  workspaceStorageFolders: ['workbench', 'management', 'workspace-storage-folders'] as const,
   managedWorkspace: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId] as const,
   managedWorkflow: (workspaceId: string, workflowId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflows', 'detail', workflowId] as const,
   managedWorkflows: (workspaceId: string) => ['workbench', 'management', 'workspace', workspaceId, 'workflows'] as const,
@@ -107,6 +108,17 @@ export function useWorkspacePages(enabled = true) {
   return useInfiniteQuery({
     enabled, queryKey: [...queryKeys.managedWorkspaces, 'pages'], initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkspacePage(pageParam, { signal }),
+    getNextPageParam: (last, _pages, _lastParam, params) => {
+      const next = last.pageInfo.nextCursor
+      return next && !params.includes(next) ? next : undefined
+    },
+  })
+}
+
+export function useWorkspaceStorageFolderPages(enabled = true) {
+  return useInfiniteQuery({
+    enabled, queryKey: queryKeys.workspaceStorageFolders, initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) => apiClient.listWorkspaceStorageFolderPage(pageParam, { signal }),
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
       return next && !params.includes(next) ? next : undefined

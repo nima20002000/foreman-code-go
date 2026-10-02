@@ -17,6 +17,7 @@ import { assertSession, sessionGeneration } from '../../shared/api/sessionBounda
 import { Alert, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField } from '../../shared/ui/nocturne'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import '../../shared/ui/resourceDirectory.css'
+import { WorkspaceStorageFolderCards } from './WorkspaceStorageFolderCards'
 interface CardCommand { type: 'rename' | 'archive'; workspaceId: string; expectedRevision: number; name?: string }
 
 function WorkspaceCardActions({ workspaceId, name, revision = 0, onCommand }: {
@@ -136,6 +137,7 @@ export function WorkspaceDirectory() {
       )
       selection.clear(`${deleted.size} ${deleted.size === 1 ? 'workspace' : 'workspaces'} deleted.`)
       void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStorageFolders })
       // Refresh cached details for every removed workspace without per-item HTTP reads.
       queryClient.removeQueries({ predicate: (query) => deleted.has(String(query.queryKey[3]))
         && query.queryKey[1] === 'management' && query.queryKey[2] === 'workspace' })
@@ -165,6 +167,7 @@ export function WorkspaceDirectory() {
     } : current)
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStorageFolders }),
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
     ]).catch(() => undefined)
   }
@@ -219,6 +222,7 @@ export function WorkspaceDirectory() {
             <EmptyState icon="folder" title="No workspaces yet" description="Use New workspace in the navigation to create one." />
           </div>}
       <LoadMore label="workspaces" query={managedQuery} />
+      <WorkspaceStorageFolderCards enabled={!loading && !failed} />
       <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
         title={`Delete ${count} ${count === 1 ? 'workspace' : 'workspaces'}?`}
         description="Selected workspaces will be removed from the list. App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained. Workspaces with active runs cannot be deleted."

@@ -836,7 +836,7 @@ export function buildProductionApp(
     executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
     operatorChat: chat,
     agentChat,
-    workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
+    workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings, projectRoot),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),

@@ -19,6 +19,8 @@ import { WorkspaceLocationService } from './location.js'
 import { replayWorkspaceResult } from './receipts.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { cleanupWorkspaceProjectFolders, WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
+import { WorkspaceStorageFolders } from './storageFolders.js'
+import { workspaceStorageRoot } from './storage.js'
 
 interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null; created_project_folder?: unknown }
 
@@ -34,12 +36,14 @@ function managed(row: WorkspaceRow): ManagedWorkspace {
 }
 
 export class WorkspaceManagementService {
+  readonly storageFolders: WorkspaceStorageFolders
   constructor(
     private readonly pool: pg.Pool,
     private readonly commands: PostgresCommandCoordinator,
     private readonly locations: WorkspaceLocationService,
     private readonly defaults: Pick<PostgresFoundationSettingsRepository, 'getWorkspaceDefaults'> = new PostgresFoundationSettingsRepository(pool),
-  ) {}
+    projectRoot = workspaceStorageRoot(),
+  ) { this.storageFolders = new WorkspaceStorageFolders(pool, commands, projectRoot) }
 
   async list(principal: ManagementPrincipal, input: { cursor?: string | undefined; limit: number; includeArchived: boolean }) {
     if (!hasAction(principal, 'workspaces:read')) requireAuthorization(principal, 'workspaces:read')

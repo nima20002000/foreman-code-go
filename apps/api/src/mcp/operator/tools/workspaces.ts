@@ -7,6 +7,8 @@ import {
   WorkspaceBatchArchiveInputSchema, WorkspaceBatchArchiveResultSchema,
   WorkspaceArchiveInputSchema, WorkspaceCreateInputSchema, WorkspaceGetInputSchema,
   WorkspaceListInputSchema, WorkspaceUpdateInputSchema,
+  WorkspaceStorageFoldersListInputSchema, WorkspaceStorageFoldersPageSchema,
+  WorkspaceStorageFolderDeleteInputSchema, WorkspaceStorageFolderDeleteResultSchema,
   ManagedWorkspaceCommandResultSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
   WorkspaceLocationSetInputSchema, WorkspaceLocationSetResultSchema,
   WorkspaceLocationValidateInputSchema, WorkspaceLocationValidationSchema,
@@ -17,6 +19,16 @@ import type { OperatorRequestContext } from '../types.js'
 import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@graphql/contracts/management'
 
 export function registerWorkspaceTools(server: McpServer, context: OperatorRequestContext): void {
+  if (operatorToolAvailable(context, 'workspace_storage_folders_list')) server.registerTool('workspace_storage_folders_list', {
+    description: 'List one page of direct-child workspace folders in the app’s Workspaces storage location, including identity and deletion status/reason. Exact active registered destinations are deduplicated against workspace_list; other referenced folders remain visible with protected deletion state. Folder ownership, archived references, active runs and defaults prevent deletion; symlinks are excluded. Reads never register workspaces. Requires global workspace-read and location-read grants. Pass nextCursor to load more.',
+    inputSchema: WorkspaceStorageFoldersListInputSchema, outputSchema: WorkspaceStorageFoldersPageSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_storage_folders_list', () => context.services.workspaces.storageFolders.list(context.principal, input)))
+  if (operatorToolAvailable(context, 'workspace_storage_folder_delete')) server.registerTool('workspace_storage_folder_delete', {
+    description: 'Permanently delete an unregistered direct-child workspace folder and ALL its contents. Supply the exact path and expectedIdentity from workspace_storage_folders_list. Never deletes storage roots, registered workspace destinations, active-run locations, defaults or symlinks. Requires global workspaces:archive, workspace_locations:provision and workspace_locations:read. Reuse commandId and the same input after an uncertain result.',
+    inputSchema: WorkspaceStorageFolderDeleteInputSchema, outputSchema: WorkspaceStorageFolderDeleteResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (input) => invokeOperatorTool(context, 'workspace_storage_folder_delete', () => context.services.workspaces.storageFolders.delete(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_folders_delete')) server.registerTool('workspace_folders_delete', {
     description: 'Delete selected empty folders inside workspace storage. Never removes the storage root, contents, workspace destinations or defaults. Returns deleted paths and per-folder failures. Reuse commandId and paths after an uncertain result.',
     inputSchema: WorkspaceFolderDeleteInputSchema, outputSchema: WorkspaceFolderDeleteResultSchema,

@@ -73,6 +73,8 @@ import {
   ManagedWorkspaceCommandResultSchema,
   ManagedWorkspaceSchema,
   ManagedWorkspacePageSchema,
+  WorkspaceStorageFoldersPageSchema, WorkspaceStorageFolderDeleteInputSchema, WorkspaceStorageFolderDeleteResultSchema,
+  type WorkspaceStorageFolderDeleteInput,
   ManagedAgentPageSchema,
   RunStopInputSchema,
   RunStopResultSchema,
@@ -303,6 +305,15 @@ export class ApiClient {
 
   listManagedWorkspacePage(cursor?: string, options?: RequestOptions) {
     return this.request(managementPageUrl('/api/management/workspaces', cursor, cursor ? 10 : 5), ManagedWorkspacePageSchema, options)
+  }
+
+  listWorkspaceStorageFolderPage(cursor?: string, options?: RequestOptions) {
+    return this.request(managementPageUrl('/api/management/workspace-storage/folders', cursor, cursor ? 10 : 5), WorkspaceStorageFoldersPageSchema, options)
+  }
+
+  deleteWorkspaceStorageFolder(input: WorkspaceStorageFolderDeleteInput, options?: RequestOptions) {
+    return this.request('/api/management/workspace-storage/folders/delete', WorkspaceStorageFolderDeleteResultSchema,
+      { ...options, method: 'POST', body: parseRequest(WorkspaceStorageFolderDeleteInputSchema, input) })
   }
 
   getManagedWorkflow(workspaceId: string, workflowId: string, options?: RequestOptions) {

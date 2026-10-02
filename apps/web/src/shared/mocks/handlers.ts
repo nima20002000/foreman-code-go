@@ -378,6 +378,9 @@ export const handlers: RequestHandler[] = [
       .filter((item): item is NonNullable<typeof item> => Boolean(item && !item.archivedAt))
     return HttpResponse.json({ items, pageInfo: { nextCursor: null } })
   }),
+  http.get('/api/management/workspace-storage/folders', () => HttpResponse.json({
+    rootPath: '/workspaces', items: [], pageInfo: { nextCursor: null },
+  })),
   http.post('/api/management/workspaces', async ({ request }) => {
     const body = await readJson(request) as { name?: string; description?: string; parentPath?: string }
     if (body?.name !== undefined && !body.name.trim()) return apiError('INVALID_REQUEST', 'A workspace name is required.', 400)
