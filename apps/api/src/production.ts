@@ -454,7 +454,7 @@ export function buildProductionApp(
         const principal = (await currentOperatorAuthority(client, row.principal_id)).principal
         requireAuthorization(principal, 'runs:start', { workspaceId: current.run.workspaceId, workflowId: current.run.workflowId })
       } else if (binding.kind === 'operator-inspection') {
-        const principal = (await currentOperatorAuthority(client, binding.principalId)).principal
+        const principal = await access.currentHarnessInspectionPrincipal(binding.principalId, client)
         requireAuthorization(principal, 'harnesses:read')
         await authorizeOperatorConfigurationRead(client, principal, binding.configurationVersionId)
         const row = (await client.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1 and operator_id=$2',
@@ -893,7 +893,7 @@ export function buildProductionApp(
     fileRetention: new FileRetentionService(database.pool, commands),
     executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog, async (principal, configurationVersionId) => {
       if (configurationVersionId) await authorizeOperatorConfigurationRead(database.pool,
-        (await currentOperatorAuthority(database.pool, principal.id)).principal, configurationVersionId)
+        await access.currentHarnessInspectionPrincipal(principal.id), configurationVersionId)
       const defaults = configurationVersionId ? undefined : await foundationSettings.getAgentDefaults()
       const configuration = configurationVersionId ? await operatorConversations.configuration(configurationVersionId)
         : await operators.inspectionConfiguration(defaults!.revision)

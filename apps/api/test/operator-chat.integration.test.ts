@@ -22,7 +22,7 @@ import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
 import { PostgresOperatorChatAuthority } from '../src/modules/conversations/operatorChatAuthority.js'
-import type { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
+import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 
 const connectionString = process.env.TEST_DATABASE_URL
@@ -372,6 +372,87 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect((await pool.query('select principal_id from operator_chat_credentials')).rowCount).toBe(0)
     } finally { for (const client of clients) await client.close(); await app.close() }
   })
+
+  it.each(['scope', 'missing grant', 'parent grant', 'parent write', 'revoked parent', 'expired parent', 'expired delegate', 'revoked delegate', 'dead turn'] as const)(
+    'inspects an active chat-derived MCP setup without Run/root authority and denies %s', async (denial) => {
+      const parent = await access.issue({ name: 'Read-only native delegation owner', audience: 'operator', grants: [{
+        actions: ['operator_chat:read', 'operator_chat:write', 'harnesses:read', 'settings:read'], scope: {},
+      }], expiresAt: new Date(Date.now() + 120_000) })
+      const settings = new PostgresFoundationSettingsRepository(pool)
+      const commands = new PostgresCommandCoordinator(pool)
+      const inspected: string[] = []
+      let endpoint = ''
+      let token: string | undefined
+      const makeAuthority = () => new PostgresOperatorChatAuthority(pool, access, new NativeRollout({ NODE_ENV: 'test', HOST: '127.0.0.1' }),
+        '/tmp/graphql-test-operator', endpoint, () => ({ inspect: async (request) => ({ harness: request.harness,
+          providerVersion: 'synthetic-codex-cli', runnerId: request.runnerId, workingDirectory: request.workingDirectory, inspectedAt: new Date().toISOString(),
+          entry: { name: 'graphql', enabled: true, transport: 'stdio', automaticEndpoint: true,
+            credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', status: 'connected' } }) }), async () => {},
+        async (principal, configuration) => {
+          inspected.push(principal.id)
+          return { harness: 'claude', status: 'configured', endpoint: configuration.harness.harness === 'claude' ? configuration.harness.mcpServers.graphql!.url : '', checkedAt: new Date().toISOString() }
+        })
+      let nativeAuthority: PostgresOperatorChatAuthority
+      const bound: OperatorChatAuthority = { current: (id) => nativeAuthority.current(id),
+        assertConfiguration: (value) => nativeAuthority.assertConfiguration(value),
+        setup: (...input) => nativeAuthority.setup(...input), setupConfiguration: (...input) => nativeAuthority.setupConfiguration(...input),
+        prepare: async (...input) => { const environment = await nativeAuthority.prepare(...input); token = environment.variables.GRAPHQL_MCP_TOKEN; return environment },
+        release: (id) => nativeAuthority.release(id) }
+      manager.autoFinish = false
+      chat = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', bound)
+      const service = new FoundationSettingsManagementService(settings, commands, undefined, operators)
+      const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services: { settings: service, operatorChat: chat, commands } as unknown as OperatorServices } })
+      const client = new Client({ name: 'actual-chat-delegate', version: '1' })
+      try {
+        const address = await app.listen({ host: '127.0.0.1', port: 0 }); endpoint = `${address}/mcp`
+        nativeAuthority = makeAuthority()
+        const conversation = await chat.create(parent.principal)
+        await chat.send(conversation.id, { requestId: 'active-delegate-turn', content: 'Synthetic native admission fixture' }, parent.principal)
+        await waitFor(async () => (await repository.active(conversation.id))?.active_phase === 'submitted')
+        expect(token).toBeTruthy()
+        const delegate = await access.authenticate(token)
+        expect(delegate.id).not.toBe(parent.principal.id)
+        await expect(access.currentOperator(delegate.id)).rejects.toMatchObject({ code: 'AUTH_INVALID' })
+        const readAuthority = await access.currentHarnessInspectionPrincipal(delegate.id)
+        expect(readAuthority.id).toBe(delegate.id)
+        expect(readAuthority.grants.flatMap((grant) => grant.actions)).not.toContain('operator_chat:write')
+        expect(readAuthority.grants.flatMap((grant) => grant.actions)).not.toContain('settings:update')
+        const first = (await operators.ensure()).configuration
+        const mainId = '11111111-1111-4111-8111-111111111111'
+        const selector = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef: { kind: 'main' as const, mainId },
+          applicationInstallationId: mainId, harnessInstallationId: 'synthetic-installed-claude', installationFingerprint: 'synthetic-native-payload' } }
+        const harness = { harness: 'claude' as const, model: 'synthetic-claude', authMode: 'subscription' as const, configDirectory: '/synthetic/profile',
+          permissionMode: 'default' as const, sandbox: 'danger-full-access' as const, tools: [], permissionRules: [], instructions: '',
+          mcpServers: { graphql: { type: 'http' as const, url: endpoint } } }
+        await settings.updateAgentDefaults({ ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness, harnessProfileSelection: selector } }, 0)
+        const connection = await pool.connect()
+        try { await connection.query('begin'); await operators.updateWithClient(connection, harness, first.id, false, undefined, selector); await connection.query('commit') }
+        catch (error) { await connection.query('rollback'); throw error } finally { connection.release() }
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token! } }))
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('operator_mcp_setup_get')
+        expect((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).isError).not.toBe(true)
+        expect(inspected).toEqual([delegate.id])
+        expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_create')
+        if (denial === 'dead turn') {
+          manager.finish(nativeCorrelation(conversation.id, 'active-delegate-turn'))
+          await waitFor(async () => (await repository.active(conversation.id))?.active_request_id === null)
+        } else if (denial === 'revoked parent') await access.revoke(parent.principal.id)
+        else if (denial === 'revoked delegate') await access.revoke(delegate.id)
+        else if (denial === 'expired parent' || denial === 'expired delegate') await pool.query('update management_principals set expires_at=$2 where id=$1',
+          [denial === 'expired parent' ? parent.principal.id : delegate.id, new Date(Date.now() - 1000)])
+        else {
+          const parentChange = denial === 'parent grant' || denial === 'parent write'
+          const actions = parentChange ? parent.principal.grants[0]!.actions.filter((action) => action !== (denial === 'parent write' ? 'operator_chat:write' : 'harnesses:read'))
+            : denial === 'missing grant' ? ['settings:read'] : ['harnesses:read']
+          await pool.query('update management_principals set grants=$2::jsonb where id=$1', [parentChange ? parent.principal.id : delegate.id,
+            JSON.stringify([{ actions, scope: denial === 'scope' ? { workspaceIds: ['unrelated-workspace'] } : {} }])])
+        }
+        const result = await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} }).then((value) => value, (error: unknown) => error)
+        expect(result instanceof Error || typeof result === 'object' && result !== null && 'isError' in result && result.isError === true).toBe(true)
+        expect(inspected).toEqual([delegate.id])
+      } finally { await client.close().catch(() => {}); await app.close() }
+    }, 30_000)
 
   it('checks the Operator MCP setup without creating an Operator or a conversation', async () => {
     expect(await chat.setup(owner)).toMatchObject({ harness: 'codex', status: 'configured' })

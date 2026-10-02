@@ -37,7 +37,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   }
 
   async setupConfiguration(principal: ManagementPrincipal, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<OperatorChatSetup> {
-    const current = await this.current(principal.id)
+    const current = await this.access.currentHarnessInspectionPrincipal(principal.id)
     requireAuthorization(current, 'harnesses:read')
     signal.throwIfAborted()
     this.assertConfiguration(configuration)
@@ -45,7 +45,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       'OPERATOR_SETUP_INSPECTION_UNAVAILABLE', 'Claude installation inspection is unavailable.', 503)
     const result = await this.inspectClaudeConfiguration(current, configuration, signal)
     signal.throwIfAborted()
-    requireAuthorization(await this.current(principal.id), 'harnesses:read')
+    requireAuthorization(await this.access.currentHarnessInspectionPrincipal(principal.id), 'harnesses:read')
     if (result.harness !== 'claude' || result.endpoint !== this.endpoint
       || result.configurationVersionId && result.configurationVersionId !== configuration.id) throw new DomainError(
       'MCP_INSPECTION_CONTEXT_MISMATCH', 'Native MCP inspection returned another Operator launch context.', 500)

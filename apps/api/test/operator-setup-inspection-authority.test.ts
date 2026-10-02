@@ -23,7 +23,7 @@ function fixture() {
   const query = vi.fn()
   const delivery = vi.fn()
   const inspect = vi.fn(async (): Promise<OperatorChatSetup> => ({ harness: 'claude', status: 'configured', endpoint, checkedAt: '2026-10-02T00:00:00Z' }))
-  const authority = new PostgresOperatorChatAuthority({ query } as unknown as pg.Pool, { currentOperator } as unknown as PostgresAccessService,
+  const authority = new PostgresOperatorChatAuthority({ query } as unknown as pg.Pool, { currentOperator, currentHarnessInspectionPrincipal: currentOperator } as unknown as PostgresAccessService,
     {} as NativeRollout, '/fixture/operator', endpoint, undefined, delivery, inspect)
   return { authority, principal, currentOperator, query, delivery, inspect, deny: () => { principal = { ...principal, grants: [] } } }
 }
