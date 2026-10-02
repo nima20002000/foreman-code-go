@@ -41,11 +41,15 @@ export type TrustedConnectionCheck = z.infer<typeof TrustedConnectionCheckSchema
 
 export const TrustedConnectionApprovalRequestSchema = z.object({
   requestCommandId: z.string().min(8).max(200), action: TrustedConnectionConfigureSchema.omit({ approvalId: true }),
+  applyPrincipalId: z.string().min(1).max(200).optional(),
 }).strict()
 export const TrustedConnectionApprovalCommandSchema = z.object({ commandId: z.string().min(8).max(200) }).strict()
 export const TrustedConnectionApprovalReceiptSchema = z.object({
   id: z.uuid(), mainId: z.uuid(), ownerId: z.string().min(1),
   action: TrustedConnectionConfigureSchema, registration: DeviceRegistrationSchema,
+  applyAuthority: z.object({ principalId: z.string().min(1).max(200), audience: z.literal('operator'),
+    delegatedFromOwnerId: z.string().min(1).max(200), conversationId: z.string().min(1).max(200),
+    authorityHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
   requestedAt: z.string().datetime(), expiresAt: z.string().datetime(),
 }).strict()
 export type TrustedConnectionApprovalReceipt = z.infer<typeof TrustedConnectionApprovalReceiptSchema>
