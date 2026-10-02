@@ -1,0 +1,88 @@
+import { createHash } from 'node:crypto'
+import { isDeepStrictEqual as same } from 'node:util'
+import type pg from 'pg'
+import { z } from 'zod'
+import { ArtifactAttemptSchema, ArtifactEdgeBindingSchema, type ArtifactAttempt } from '@graphql/contracts/artifact-edges'
+import { VerifiedTransferReceiptSchema } from '@graphql/contracts/byte-transfer'
+import { canonicalGraphJson } from '@graphql/contracts/wave25'
+import type { DistributedPublicationLink } from '../../files/distributed/publicationLedger.js'
+import type { FileQuery } from '../../files/repository.js'
+import { fileScopeIdentity } from '../../files/requests.js'
+import { DomainError } from '../../errors.js'
+import { NativeArtifactOutputSchema, type NativeArtifactOutput, type NativeArtifactOutputRepository } from './nativeArtifactOutputs.js'
+
+const operation = 'remote.native-artifact.output'
+const conflict = (): never => { throw new DomainError('NATIVE_ARTIFACT_OUTPUT_CONFLICT', 'The original native output slot identifies different canonical facts.', 409) }
+const unavailable = (): never => { throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The exact finalized canonical publication is unavailable.', 410) }
+
+/** Existing command/publication ledgers only. mainId is captured from the installed Main identity. */
+export class PostgresNativeArtifactOutputRepository implements NativeArtifactOutputRepository {
+  private readonly mainId: string
+  constructor(private readonly pool: pg.Pool, mainId: string) { this.mainId = z.uuid().parse(mainId) }
+  private target(producer: ArtifactAttempt, outputKey: string): string {
+    producer = ArtifactAttemptSchema.parse(producer)
+    outputKey = ArtifactEdgeBindingSchema.shape.outputKey.parse(outputKey)
+    return JSON.stringify([this.mainId, producer.executionId, producer.attemptId, outputKey])
+  }
+  private validate(record: NativeArtifactOutput): void {
+    const { producer, transferReceipt: receipt, scope } = record, intent = receipt.intent
+    if (intent.mainId !== this.mainId || intent.executionId !== producer.executionId || intent.attemptId !== producer.attemptId
+      || intent.placementHash !== producer.placementHash || intent.direction !== 'to-main' || intent.byteClass !== 'artifact'
+      || receipt.sha256 !== record.pins.sha256 || receipt.byteSize !== record.pins.byteSize
+      || scope.kind !== 'temporary' || scope.chat.kind !== 'agent' || scope.chat.workspaceId !== producer.workspaceId
+      || scope.chat.workflowId !== producer.workflowId || scope.chat.runId !== producer.runId || scope.chat.executionId !== producer.executionId) conflict()
+  }
+  private async live(query: FileQuery, record: NativeArtifactOutput): Promise<void> {
+    const result = await query.query<{ record: DistributedPublicationLink }>(`select p.record from file_tool_publications p
+      join file_revisions r on r.file_id=p.file_id and r.revision_id=p.revision_id
+      join files f on f.file_id=r.file_id
+      join file_allocations a on a.owner_principal_id=p.owner_principal_id and a.request_id=p.request_id
+      where p.owner_principal_id=$1 and p.request_id=$2 and p.binding=$3 and p.file_id=$4 and p.revision_id=$5
+        and r.sha256=$6 and r.byte_size=$7 and f.state='ready' and a.state='finalized'
+        and f.scope_kind='temporary' and f.expires_at>clock_timestamp() for update of f`,
+    [record.publication.ownerPrincipalId, record.publication.requestId, record.publication.binding,
+      record.pins.fileId, record.pins.revisionId, record.pins.sha256, record.pins.byteSize])
+    const link = result.rows[0]?.record
+    if (result.rowCount !== 1 || !link) unavailable()
+    const native = { nativeSessionId: link.context.nativeSessionId, ...(link.context.turnId ? { turnId: link.context.turnId } : {}),
+      ...(link.context.nativeMessageId ? { nativeMessageId: link.context.nativeMessageId } : {}), ...(link.context.messageId ? { messageId: link.context.messageId } : {}) }
+    if (link.ownerPrincipalId !== record.publication.ownerPrincipalId || link.requestId !== record.publication.requestId
+      || link.binding !== record.publication.binding || !same(link.ref, { fileId: record.pins.fileId, revisionId: record.pins.revisionId })
+      || !same(native, record.nativeIdentity) || fileScopeIdentity(link.context.scope) !== fileScopeIdentity(record.scope)
+      || !same(VerifiedTransferReceiptSchema.parse(link.transferReceipt), record.transferReceipt)) conflict()
+    // Resample after the file row wait; the initial WHERE can predate lock acquisition.
+    if ((await query.query(`select file_id from files where file_id=$1 and state='ready' and expires_at>clock_timestamp()`, [record.pins.fileId])).rowCount !== 1) unavailable()
+  }
+  async bind(raw: NativeArtifactOutput, authorize: (query: FileQuery) => Promise<void>): Promise<NativeArtifactOutput> {
+    const record = NativeArtifactOutputSchema.parse(raw)
+    this.validate(record)
+    const target = this.target(record.producer, record.outputKey), serialized = canonicalGraphJson(record)
+    const commandId = createHash('sha256').update(target).digest('hex'), inputHash = createHash('sha256').update(serialized).digest('hex')
+    const client = await this.pool.connect()
+    try {
+      await client.query('begin')
+      await client.query("set local lock_timeout='5s'; set local statement_timeout='10s'")
+      await authorize(client)
+      await this.live(client, record)
+      await client.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
+        values ($1,$2,$3,$4,$5,$6::jsonb) on conflict do nothing`, [record.publication.ownerPrincipalId, operation, commandId, target, inputHash, serialized])
+      const stored = await client.query<{ principal_id: string; input_hash: string; result: unknown }>(`select principal_id,input_hash,result from management_command_receipts
+        where operation=$1 and target_key=$2`, [operation, target])
+      const original = stored.rows[0]
+      if (stored.rowCount !== 1 || !original || original.principal_id !== record.publication.ownerPrincipalId
+        || original.input_hash !== inputHash || !same(NativeArtifactOutputSchema.parse(original.result), record)) conflict()
+      await client.query('commit')
+      return structuredClone(record)
+    } catch (error) { await client.query('rollback').catch(() => {}); throw error }
+    finally { client.release() }
+  }
+  async read(producer: ArtifactAttempt, outputKey: string): Promise<NativeArtifactOutput | undefined> {
+    const result = await this.pool.query<{ result: unknown }>('select result from management_command_receipts where operation=$1 and target_key=$2',
+      [operation, this.target(producer, outputKey)])
+    if (!result.rows[0]) return undefined
+    const original = NativeArtifactOutputSchema.parse(result.rows[0].result)
+    this.validate(original)
+    if (result.rowCount !== 1 || !same(original.producer, producer) || original.outputKey !== outputKey) conflict()
+    return original
+  }
+}
