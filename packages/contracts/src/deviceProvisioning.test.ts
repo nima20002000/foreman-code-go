@@ -26,6 +26,12 @@ describe('strict sanitized provisioning readiness, plans and operations', () => 
   ])('rejects duplicate, stale, unapproved or fabricated ready facts %j', change => {
     expect(DeviceReadinessSchema.safeParse({ ...fixtures.ready.readiness, ...change }).success).toBe(false)
   })
+  it('requires an advertised primary Fix even when currently unavailable', () => {
+    const unknown = fixtures.pairedNoObservation.readiness
+    expect(unknown.summary.primaryAction?.id).toBe('check')
+    expect(unknown.summary.primaryAction?.enabled).toBe(false)
+    expect(DeviceReadinessSchema.safeParse({ ...unknown, summary: { ...unknown.summary, primaryAction: null } }).success).toBe(false)
+  })
   it('cannot hide a blocker behind the Ready summary or an unadvertised fix', () => {
     expect(DeviceReadinessSchema.safeParse({ ...fixtures.localAdminRequired.readiness, summary: fixtures.ready.readiness.summary }).success).toBe(false)
     expect(DeviceReadinessSchema.safeParse({ ...fixtures.pairedNoObservation.readiness,

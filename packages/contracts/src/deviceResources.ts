@@ -198,3 +198,9 @@ export function validateHistoricalDeviceExecutionAdmission(value: Partial<Device
   if (fields.some(field => value[field] !== undefined) && fields.some(field => value[field] === undefined))
     ctx.addIssue({ code: 'custom', message: 'Historical admission is absent or retains a complete policy and device approval reference.' })
 }
+export type DeviceStorageCapacity = z.infer<typeof DeviceStorageCapacitySchema>
+export type DeviceResourceReadRequest = z.infer<typeof DeviceResourceReadRequestSchema>
+export type DeviceResourceUpdateResult = z.infer<typeof DeviceResourceUpdateResultSchema>
+export type DeviceResourceApplyNowResult = z.infer<typeof DeviceResourceApplyNowResultSchema>
+export type DeviceResourceFieldIssue = z.infer<typeof DeviceResourceFieldIssueSchema>
+export type DeviceResourceError = z.infer<typeof DeviceResourceErrorSchema>

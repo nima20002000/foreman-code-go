@@ -51,7 +51,7 @@ export const DeviceCapabilityStateSchema = z.object({ state: z.enum(['ready', 'p
 export const DeviceReadinessSummarySchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('ready'), label: z.literal('Ready'), remainingSteps: z.literal(0), primaryAction: z.null() }).strict(),
   z.object({ state: z.literal('needs-steps'), label: z.string().regex(/^Needs [1-9][0-9]? steps?$/),
-    remainingSteps: DeviceSafeIntegerSchema.min(1).max(32), primaryAction: DeviceFixActionSchema.nullable(),
+    remainingSteps: DeviceSafeIntegerSchema.min(1).max(32), primaryAction: DeviceFixActionSchema,
   }).strict().superRefine((value, ctx) => {
     if (value.label !== `Needs ${value.remainingSteps} ${value.remainingSteps === 1 ? 'step' : 'steps'}`)
       ctx.addIssue({ code: 'custom', path: ['label'], message: 'The one-line status must match its step count.' })
@@ -259,3 +259,26 @@ export const DeviceProvisioningWireResultSchema = z.discriminatedUnion('method',
 })
 export type DeviceProvisioningWireRequest = z.infer<typeof DeviceProvisioningWireRequestSchema>
 export type DeviceProvisioningWireResult = z.infer<typeof DeviceProvisioningWireResultSchema>
+
+export type DeviceReadinessReadRequest = z.infer<typeof DeviceReadinessReadRequestSchema>
+export type DeviceReadinessReadResult = z.infer<typeof DeviceReadinessReadResultSchema>
+export type DeviceReadinessCheckRequest = z.infer<typeof DeviceReadinessCheckRequestSchema>
+export type DeviceReadinessCheckResult = z.infer<typeof DeviceReadinessCheckResultSchema>
+export type DeviceRepairPlanRequest = z.infer<typeof DeviceRepairPlanRequestSchema>
+export type DeviceRepairPlanResult = z.infer<typeof DeviceRepairPlanResultSchema>
+export type DeviceRepairStartRequest = z.infer<typeof DeviceRepairStartRequestSchema>
+export type DeviceRepairStartResult = z.infer<typeof DeviceRepairStartResultSchema>
+export type DeviceProvisioningOperationReadRequest = z.infer<typeof DeviceProvisioningOperationReadRequestSchema>
+export type DeviceProvisioningOperationReadResult = z.infer<typeof DeviceProvisioningOperationReadResultSchema>
+export type DeviceRuntimeApprovalReadRequest = z.infer<typeof DeviceRuntimeApprovalReadRequestSchema>
+export type DeviceRuntimeApprovalReadResult = z.infer<typeof DeviceRuntimeApprovalReadResultSchema>
+export type DeviceRuntimeApprovalRequest = z.infer<typeof DeviceRuntimeApprovalRequestSchema>
+export type DeviceRuntimeApprovalGrant = z.infer<typeof DeviceRuntimeApprovalGrantSchema>
+export type DeviceRuntimeApprovalRevoke = z.infer<typeof DeviceRuntimeApprovalRevokeSchema>
+export type DeviceRuntimeApprovalCommandResult = z.infer<typeof DeviceRuntimeApprovalCommandResultSchema>
+export type DevicePairingInstallCode = z.infer<typeof DevicePairingInstallCodeSchema>
+export type DeviceProvisioningRelease = z.infer<typeof DeviceProvisioningReleaseSchema>
+export type DevicePairingInstallCreate = z.infer<typeof DevicePairingInstallCreateSchema>
+export type DevicePairingInstallCreateResult = z.infer<typeof DevicePairingInstallCreateResultSchema>
+export type DevicePairingInstallRedeem = z.infer<typeof DevicePairingInstallRedeemSchema>
+export type DevicePairingInstallRedeemResult = z.infer<typeof DevicePairingInstallRedeemResultSchema>

@@ -59,10 +59,16 @@ const ready = DeviceReadinessSchema.parse({ schemaVersion: 1, target: deviceProv
     : ['ci-image', 'container-runtime'].includes(id) ? ['jobs'] : ['jobs', 'agents'], reasonCode: null, checkedAt: observedAt, evidenceDigest: digest, actions: [] })),
   capacity: deviceCapacityFixture, resourcePolicy: deviceResourcePolicyFixture, runtimeApproval: deviceRuntimeApprovalFixture, operations: [] })
 function blocked(reason: DeviceReasonCode, changes: Partial<DeviceReadiness> = {}): DeviceReadiness {
+  const fix = DeviceFixActionSchema.parse({ ...deviceCheckActionFixture,
+    enabled: false, disabledReason: reason })
+  const checks = (changes.checks?.length ? changes.checks : changes.checks ? ready.checks.map(check => ({ ...check,
+    state: 'unknown' as const, reasonCode: reason, checkedAt: null, evidenceDigest: null })) : ready.checks)
+    .map((check, index) => index === 0 ? { ...check, actions: [...check.actions.filter(action => action.id !== fix.id), fix] } : check)
   return DeviceReadinessSchema.parse({ ...ready, capabilities: { jobs: { state: 'blocked', reasons: [reason], workspaceQualificationRequired: false },
     agents: { state: 'blocked', reasons: [reason], workspaceQualificationRequired: false },
     files: { state: 'unknown', reasons: [reason], workspaceQualificationRequired: false } },
-  summary: { state: 'needs-steps', label: 'Needs 1 step', remainingSteps: 1, primaryAction: null }, ...changes })
+    ...changes, checks,
+    summary: changes.summary ?? { state: 'needs-steps', label: 'Needs 1 step', remainingSteps: 1, primaryAction: fix } })
 }
 function missing(checkId: typeof checkIds[number], state: 'missing' | 'repairing' | 'blocked', reason: DeviceReasonCode,
   fix: ReturnType<typeof action>, changes: Partial<DeviceReadiness> = {}): DeviceReadiness {
