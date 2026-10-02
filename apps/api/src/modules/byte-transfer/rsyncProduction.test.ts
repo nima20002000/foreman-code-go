@@ -12,6 +12,7 @@ import { assertRsyncBackendSelection, createRsyncProductionBackend, type RsyncBa
   type RsyncExternalStagingQuota, type RsyncControlRequest, type RsyncProductionInput } from './rsyncProduction.js'
 import type { RsyncExecutor, RsyncCommand, RsyncTransferWriters } from './rsync.js'
 import { RsyncWriterOwnership, rsyncArgumentDigest, type RsyncAccessLease } from './rsyncWriterOwnership.js'
+import { createProductionRsyncComposition, type ProductionRsyncProviders } from './productionComposition.js'
 
 const bytes = Buffer.from('exact accepted immutable package\n'), hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')
 async function fixture(direction: TransferIntent['direction'] = 'to-worker') {
@@ -371,6 +372,58 @@ describe('production rsync leaf', () => {
       expect(f.accesses.find(access => access.role === 'snapshot')!.close).toHaveBeenCalledOnce()
       expect(f.quota.release).not.toHaveBeenCalled()
     } finally { await f.dispose() }
+  })
+})
+describe('F-30 production ownership availability', () => {
+  async function compositionFixture(side: 'main' | 'worker') {
+    const f = await fixture(), ownership = side === 'main' ? f.mainOwnership : f.workerOwnership
+    const receiver = side === 'main' ? f.mainReceiver : f.workerReceiver
+    const providers: ProductionRsyncProviders = {
+      stagingRoot: side === 'main' ? f.localRoot : f.remoteRoot, accepted: f.accepted, receiver, ownership, writers: f.writers,
+      resolveSource: async () => f.source,
+      acknowledged: async () => { throw new Error('No publication acknowledgement in availability fixture') },
+      quiescent: (intent, signal) => ownership.processesQuiescent(intent, signal, true),
+      selection: async () => f.selection, peer: { capture: () => undefined },
+    }
+    return { ...f, providers, receiverStart: vi.spyOn(receiver, 'start'), reserve: vi.spyOn(receiver, 'reserve') }
+  }
+  describe.each(['main', 'worker'] as const)('%s discovery', side => {
+    it.each(['ownership', 'writers'] as const)('is unavailable without %s before allocating canonical or staging state', async field => {
+      const f = await compositionFixture(side)
+      try {
+        const providers: Partial<ProductionRsyncProviders> = { ...f.providers }
+        delete providers[field]
+        const mounted = createProductionRsyncComposition({ side, providers, current: () => f.original })
+        expect(mounted.kind).toBe('unavailable'); expect(mounted.extensions).toEqual([])
+        expect(mounted.missing).toContain(field === 'ownership' ? 'original writer ownership' : 'causal byte writer ports')
+        expect(f.reserve).not.toHaveBeenCalled(); expect(f.receiverStart).not.toHaveBeenCalled()
+        expect(f.source.read).not.toHaveBeenCalled()
+      } finally { await f.dispose() }
+    })
+    it('rejects an ownership-shaped object before configuration or allocation', async () => {
+      const f = await compositionFixture(side)
+      try {
+        const ownership = { store: f.providers.ownership.store.bind(f.providers.ownership),
+          assertRoot: f.providers.ownership.assertRoot.bind(f.providers.ownership) } as RsyncWriterOwnership
+        const mounted = createProductionRsyncComposition({ side, providers: { ...f.providers, ownership }, current: () => f.original })
+        expect(mounted.kind).toBe('unavailable'); expect(mounted.extensions).toEqual([])
+        expect(mounted.missing).toContain('original writer ownership')
+        expect(f.reserve).not.toHaveBeenCalled(); expect(f.receiverStart).not.toHaveBeenCalled()
+        expect(f.source.read).not.toHaveBeenCalled()
+      } finally { await f.dispose() }
+    })
+    it.each(['local', 'remote', 'activate', 'quiescent', 'stop'] as const)('is unavailable without the %s writer method', async method => {
+      const f = await compositionFixture(side)
+      try {
+        const writers: Partial<RsyncTransferWriters> = { ...f.writers }
+        delete writers[method]
+        const mounted = createProductionRsyncComposition({ side, providers: { ...f.providers, writers: writers as RsyncTransferWriters },
+          current: () => f.original })
+        expect(mounted.kind).toBe('unavailable'); expect(mounted.extensions).toEqual([])
+        expect(mounted.missing).toContain('causal byte writer ports')
+        expect(f.reserve).not.toHaveBeenCalled(); expect(f.receiverStart).not.toHaveBeenCalled()
+      } finally { await f.dispose() }
+    })
   })
 })
 describe('setup-bound selection', () => {
