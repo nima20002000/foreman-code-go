@@ -40,7 +40,7 @@ describe.skipIf(!url)('trusted connection action approval and delegated MCP appl
     const setup = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval: authority.verifyOwnerApproval })
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       localDevBrowserAccess: new LocalDevBrowserAccess(pool, access, origin, owner.principal.id),
-      operator: { access, services: { commands: new PostgresCommandCoordinator(pool), trustedConnections: setup } as OperatorServices } })
+      operator: { access, services: { commands: new PostgresCommandCoordinator(pool), trustedConnections: setup } as unknown as OperatorServices } })
     registerTrustedConnectionApprovalRoutes(app, authority)
     registerTrustedConnectionRoutes(app, setup, async request => request.reauthorizeOperator ? request.reauthorizeOperator() : requirePrincipal(request))
     address = await app.listen({ host: '127.0.0.1', port: 0 })
