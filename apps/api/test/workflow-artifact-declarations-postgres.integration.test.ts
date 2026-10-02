@@ -80,7 +80,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('saved workflow artifact declara
       expect(CurrentWorkflowReadResultSchema.parse(mcpRead.structuredContent)).toEqual(http.json())
       const editedArtifact = { version: 1 as const, outputKeys: ['report_v2'] }
       const edit = { ...input, commandId: randomUUID(), expectedRevision: saved.value.revision, expectedWorkflowVersionId: saved.value.currentVersionId,
-        graph: { ...graph, nodes: [{ ...graph.nodes[0]!, artifactOutputs: editedArtifact }, graph.nodes[1]!],
+        graph: { ...saved.value.version.definition, nodes: [{ ...graph.nodes[0]!, artifactOutputs: editedArtifact }, graph.nodes[1]!],
           edges: [{ ...graph.edges[0]!, artifactInputs: editedArtifact }] } }
       const editedHttp = await app.inject({ method: 'PUT', url: path, headers, payload: edit })
       expect(editedHttp.statusCode, editedHttp.body).toBe(200)
