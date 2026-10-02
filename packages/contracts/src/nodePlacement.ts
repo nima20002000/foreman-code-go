@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 import { SourcePinSchema, SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema } from './sourceAdmission.js'
 import { GraphIdSchema, IdSchema } from './schemaPrimitives.js'
+import { WorkflowArtifactOutputsV1Schema } from './workflowArtifactDeclarations.js'
 
 /** v0 interface checkpoint uses wire version 1; unknown versions fail closed. */
 export const PLACEMENT_CONTRACT_VERSION = 1 as const
@@ -33,6 +34,8 @@ const AgentPayload = z.object({
   harnessInstallationId: IdSchema, installationFingerprint: IdSchema,
   runtimeContractVersion: z.literal(1), protocolRevision: IdSchema,
   credentialScopeRefs: z.array(IdSchema),
+  /** Exact saved declaration, admitted before the immutable placement hash. */
+  artifactOutputs: WorkflowArtifactOutputsV1Schema.optional(),
   profileProofDigest: PlacementDigestSchema.optional(), qualificationDigest: PlacementDigestSchema.optional(),
 }).strict()
 const JobPayload = z.object({

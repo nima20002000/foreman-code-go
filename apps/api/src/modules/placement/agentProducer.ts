@@ -71,6 +71,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           source: { kind: 'pending', ...root.source, revisionId: root.source.snapshotId, rootId: root.binding.rootId,
             bindingRevision: root.binding.bindingRevision, materializationId: null, materializationDigest: null },
           payload: { kind: 'agent', agentId: config.agentId, agentConfigurationVersionId: config.id,
+            ...(node.artifactOutputs ? { artifactOutputs: structuredClone(node.artifactOutputs) } : {}),
             driverId: selection.selection.driverId, driverRevision: selection.installation.driverRevision,
             instanceId: selection.selection.instanceId, instanceRevision: selection.selection.instanceRevision,
             harnessInstallationId: selection.selection.harnessInstallationId, installationFingerprint: selection.selection.installationFingerprint,
