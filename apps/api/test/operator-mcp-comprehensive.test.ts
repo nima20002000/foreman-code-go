@@ -51,7 +51,7 @@ describe('Operator MCP permission boundaries', () => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('current device and Operator control MCP parity', () => {
-  async function fixture() {
+  async function fixture(options: { settings?: boolean; operatorChat?: boolean } = {}) {
     // Reuse the discovery fixture. Only the changed ports and authenticated
     // endpoint are exercised; the pool must never connect in this unit suite.
     const c = context()
@@ -111,6 +111,8 @@ describe('current device and Operator control MCP parity', () => {
       if (token === 'scoped') return scoped
       throw new DomainError('AUTH_REQUIRED', 'Invalid bearer.', 401)
     })
+    if (options.settings === false) delete c.services.settings
+    if (options.operatorChat === false) delete c.services.operatorChat
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: c.services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -149,19 +151,29 @@ describe('current device and Operator control MCP parity', () => {
     } finally { await f.close() }
   })
 
-  it('constructs the complete control composition once without settings and preserves unavailable services', async () => {
-    const f = await fixture()
+  it('constructs the complete control composition once without settings', async () => {
+    const f = await fixture({ settings: false })
     try {
-      delete f.c.services.settings
       const server = await createGraphqlMcpServer({ role: 'operator', principal: owner, operator: f.c.services })
       await server.close()
       const client = await f.connect('owner')
       const names = (await client.listTools()).tools.map(tool => tool.name)
       for (const name of ['operator_chat_cancel', 'operator_chat_respond']) expect(names.filter(candidate => candidate === name)).toHaveLength(1)
       expect(names).not.toContain('agent_defaults_get')
-      delete f.c.services.operatorChat
-      const unavailable = await client.callTool({ name: 'operator_chat_cancel', arguments: {} })
-      expect(unavailable).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('"code":"OPERATOR_CHAT_UNAVAILABLE"') }] })
+      expect(f.connectSql).not.toHaveBeenCalled()
+    } finally { await f.close() }
+  })
+
+  it('preserves unavailable control responses when chat is absent at construction', async () => {
+    const f = await fixture({ operatorChat: false })
+    try {
+      const client = await f.connect('owner')
+      const names = (await client.listTools()).tools.map(tool => tool.name)
+      for (const name of ['operator_chat_cancel', 'operator_chat_respond']) {
+        expect(names).not.toContain(name)
+        const unavailable = await client.callTool({ name, arguments: {} })
+        expect(unavailable).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('"code":"OPERATOR_CHAT_UNAVAILABLE"') }] })
+      }
       expect(f.cancel).not.toHaveBeenCalled(); expect(f.respond).not.toHaveBeenCalled()
       expect(f.connectSql).not.toHaveBeenCalled()
     } finally { await f.close() }
