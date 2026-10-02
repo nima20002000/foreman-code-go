@@ -22,6 +22,8 @@ import { createRemoteWorkflowPhysicalVerification, type PreparedRemoteWorkflowPh
 import { remoteWorkflowSourceDigest } from '../runs/remote/workflowPhysicalReadout.js'
 import type { WorkflowOriginalNativeSource, WorkflowNativeCapture, WorkflowNativeCaptureInput } from '../interactions/workflowNativeCapture.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
+import type { WorkflowNativeProofRecord } from '../runs/workflowNativeProof.js'
+import type { WorkflowPhysicalArtifactsPort } from '../runs/remote/workflowPhysicalArtifacts.js'
 import { DomainError } from '../errors.js'
 import { admitRemoteOwnerControl } from '../runs/remote/ownerControlAdmission.js'
 import { readOriginalInteractionDeliveryClaim } from '../interactions/originalDeliveryClaim.js'
@@ -35,12 +37,15 @@ export function createProductionRemoteWorkflow(input: {
   endpoint(): DeviceEndpoint
   producer(): AgentPlacementProducer | undefined
   execution(id: string): Promise<HarnessExecution | undefined>
+  artifacts?: WorkflowPhysicalArtifactsPort
 }) {
   const bindings = new Map<string, AcceptedExecutionBinding | null>()
   const channel = createRemoteNativeSourceChannel()
-  const physical = createRemoteWorkflowPhysicalVerification({ endpoint: input.endpoint })
+  const physical = createRemoteWorkflowPhysicalVerification({ endpoint: input.endpoint,
+    ...(input.artifacts ? { artifacts: input.artifacts } : {}) })
   const acknowledgments = new Set<VerifiedRemoteOriginalSource>()
   const companions = new WeakMap<WorkflowNativeCapture, RemoteNativeSourceEvidence>()
+  const artifactTerminals = new WeakMap<WorkflowNativeCapture, VerifiedRemoteOriginalSource>()
   const latest = new Map<string, string>()
   const retained = new Map<string, Map<string, { source: WorkflowOriginalNativeSource; prepared: PreparedRemoteWorkflowPhysical; evidence?: RemoteNativeSourceEvidence; acknowledged?: boolean; capture?: WorkflowNativeCapture }>>()
   const requireProducer = () => {
@@ -160,6 +165,22 @@ export function createProductionRemoteWorkflow(input: {
       }
       entry.capture = capture
       companions.set(capture, entry.evidence)
+    },
+    async artifactTerminalContext(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture, proof: WorkflowNativeProofRecord) {
+      const evidence = companions.get(capture)
+      if (!evidence) throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'The original artifact terminal has no authenticated physical companion.', 409)
+      const original = channel.verify.read(evidence)
+      const context = await physical.artifactTerminalContext(sql, owner, original, capture, proof)
+      artifactTerminals.set(capture, original)
+      return context
+    },
+    assertArtifactTerminal(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture, proof: WorkflowNativeProofRecord) {
+      return physical.assertArtifactTerminal(sql, owner, capture, proof)
+    },
+    assertAdoptedArtifacts(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture) {
+      const original = artifactTerminals.get(capture)
+      if (!original) throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'The original artifact terminal companion is unavailable.', 409)
+      return physical.assertAdoptedArtifacts(sql, owner, original)
     },
     fileTransferContext(capture: WorkflowNativeCapture) {
       if (bindings.get(capture.execution.id)?.placement.hostRef.kind !== 'device') return undefined

@@ -58,6 +58,10 @@ import { createReviewNativeCaptureChannel } from './modules/interactions/reviewN
 import { ReviewNativeProofServices } from './modules/interactions/reviewNativeProof.js'
 import { PostgresRepeatReviewerBindings } from './modules/interactions/repeatReviewer.js'
 import { createWorkflowRepositoryServices } from './modules/runs/workflowRepositoryServices.js'
+import { createProductionWorkflowArtifactResultSource } from './modules/runs/remote/workflowArtifactResultProduction.js'
+import { WorkflowArtifactResultAdoption } from './modules/runs/remote/workflowArtifactResultAdoption.js'
+import { createWorkflowArtifactOutputsGate } from './modules/runs/remote/workflowArtifactAcceptance.js'
+import { PostgresWorkflowPhysicalArtifacts } from './modules/runs/remote/workflowPhysicalArtifacts.js'
 import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
 import { fileURLToPath } from 'node:url'
 import { AppMcpRoutes } from './modules/harnesses/appMcpRoutes.js'
@@ -200,6 +204,7 @@ export function buildProductionApp(
   let agentPreparation: AgentExecutionPreparation | undefined
   let executionAuthority: ReturnType<typeof createExecutionAuthorityExtension> | undefined
   let workflowArtifacts: ReturnType<typeof mountProductionWorkflowArtifacts> | undefined
+  let workflowPhysicalArtifacts: PostgresWorkflowPhysicalArtifacts | undefined
   let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
@@ -266,19 +271,28 @@ export function buildProductionApp(
   const workflowCapture = createWorkflowNativeCaptureChannel()
   const reviewCapture = createReviewNativeCaptureChannel()
   let admitWorkflowFileContext: ReturnType<typeof createProductionWorkflowFileContexts> | undefined
+  let artifactResultSource: ReturnType<typeof createProductionWorkflowArtifactResultSource> | undefined
+  let artifactOutputsGate: ReturnType<typeof createWorkflowArtifactOutputsGate> | undefined
   const workflowRuntime = createWorkflowRepositoryServices(workflowCapture.verify, (sql, owner, capture) => {
     if (!remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
     return remoteWorkflow.assertPhysical(sql, owner, capture)
   }, async (sql, evidence, proof) => {
     if (!admitWorkflowFileContext) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'The original Main file-context composition is unavailable.', 503)
     await admitWorkflowFileContext(sql, evidence, proof)
+    await artifactResultSource?.retainOriginalLocked(sql, evidence, proof)
   })
   const workflowServices: RepeatRepositoryServices = { ...workflowRuntime.services,
+    async assertWorkflowArtifactOutputsLocked(sql, run, version, execution) {
+      if (!artifactOutputsGate) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact acceptance composition is unavailable.', 503)
+      await artifactOutputsGate(sql, run, version, execution)
+    },
     async admitPlacementExecutionLocked(sql, owner, run, execution, ref, inputDigest) {
       if (agentPlacement) { await agentPlacement.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId); return }
       if (await readAcceptedPlacement(sql, run.id, execution.workflowNodeId)) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Agent placement producer is unavailable.', 503)
     },
     async preparePlacementExecution(owner, run, execution) {
+      if (!artifactResultSource) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact composition is unavailable.', 503)
+      await owner.oneShotConnection().transaction(sql => artifactResultSource!.assertLaunchSupportedLocked(sql, execution.id, run.id))
       if (agentPreparation) {
         const prepared = await approvals.withSourceObservationLane(owner, execution, () => agentPreparation!.prepare(owner, run, execution))
         return prepared ? { ...prepared, revalidate: () => approvals.withSourceObservationLane(owner, execution, prepared.revalidate) } : undefined
@@ -296,11 +310,26 @@ export function buildProductionApp(
   const workflows = new PostgresWorkflowRepository(database.pool)
   const runs = new PostgresRunRepository(database.pool, workflows, locations,
     { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime, services: workflowServices }, async evidence => {
+      const accepted = artifactResultSource?.acceptedAfterCommit(evidence)
+      if (accepted) {
+        if (!workflowArtifacts || !artifactResultSource) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The original workflow artifact composition is unavailable.', 503)
+        await new WorkflowArtifactResultAdoption(artifactResultSource.source, workflowArtifacts.artifacts.outputs).adoptOriginalOutputs(accepted)
+        await artifactResultSource.assertAdoptedAfterCommit(evidence)
+      }
       try { await remoteWorkflow.afterCommit(workflowCapture.verify.read(evidence)) }
       catch (error) { app.log.warn({ err: error }, 'Original remote metadata acknowledgment remains pending') }
     })
   const remoteWorkflow = createProductionRemoteWorkflow({ pool: database.pool, locations, endpoint: () => deviceRuntime.endpointForDomains(),
-    producer: () => agentPlacement, execution: id => runs.getExecution(id) })
+    producer: () => agentPlacement, execution: id => runs.getExecution(id), artifacts: {
+      assertPublications: (sql, readout, binding) => {
+        if (!workflowPhysicalArtifacts) throw new DomainError('REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE', 'The original canonical artifact physical composition is unavailable.', 503)
+        return workflowPhysicalArtifacts.assertPublications(sql, readout, binding)
+      },
+      assertAdopted: (sql, readout, binding) => {
+        if (!workflowPhysicalArtifacts) throw new DomainError('REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE', 'The original canonical artifact physical composition is unavailable.', 503)
+        return workflowPhysicalArtifacts.assertAdopted(sql, readout, binding)
+      },
+    } })
   const workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = new PostgresSettingsRepository(database.pool)
   const hostProfileEvidence = new HostHarnessProfileEvidenceRepository(database.pool)
@@ -842,6 +871,8 @@ export function buildProductionApp(
   registerFileRetentionRoutes(app, operatorServices.fileRetention)
   const mountArtifacts = () => {
     if (workflowArtifacts || !fileStorage || !artifactComposition) return
+    workflowPhysicalArtifacts = new PostgresWorkflowPhysicalArtifacts(artifactComposition.mainId,
+      { authority: artifactComposition.authority, files: fileStorage.repository })
     workflowArtifacts = mountProductionWorkflowArtifacts({ app, pool: database.pool, files: fileStorage,
       ...artifactComposition, attempts: artifactComposition.fence, commands, access,
       endpoint: deviceRuntime.endpointForDomains(), stagingRoot: resolve(fileStorageRoot, 'workflow-artifact-transfers') })
@@ -994,6 +1025,9 @@ export function buildProductionApp(
           return agentPlacement.assertPinsCurrent(...args)
         } } }
       const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, artifactPorts)
+      artifactOutputsGate = createWorkflowArtifactOutputsGate(machine.installationId, artifactAuthority)
+      artifactResultSource = createProductionWorkflowArtifactResultSource({ captures: workflowCapture.verify,
+        physical: remoteWorkflow, authority: artifactAuthority })
       admitWorkflowFileContext = createProductionWorkflowFileContexts(machine.installationId, { captures: workflowCapture.verify,
         assertPhysical: remoteWorkflow.assertPhysical, authority: artifactAuthority, transferContext: remoteWorkflow.fileTransferContext })
       artifactComposition = { mainId: machine.installationId, authority: artifactAuthority,
