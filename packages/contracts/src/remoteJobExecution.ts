@@ -3,6 +3,7 @@ import { JobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs
 import { MachineReferenceSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 import { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
+import { SourceMaterializationRecordSchema, SourceRootRecordSchema } from './sourceAdmission.js'
 
 /** New job envelopes use genuine subjects; existing workflow dispatch contracts are unchanged. */
 export const RemoteExecutionSubjectSchema = z.discriminatedUnion('kind', [
@@ -66,4 +67,12 @@ export const RemoteJobMainRpcRequestSchema = z.discriminatedUnion('method', [
  z.object({ method: z.literal('job-report'), receipt: RemoteJobOperationReceiptSchema }).strict(),
  z.object({ method: z.literal('job-log'), intent: RemoteJobDispatchIntentSchema, chunk: JobLogChunkSchema }).strict(),
  z.object({ method: z.literal('job-authorize'), intent: RemoteJobDispatchIntentSchema, action: z.enum(['start','read','control','publish']) }).strict(),
+ z.object({ method: z.literal('job-source'), intent: RemoteJobDispatchIntentSchema }).strict(),
 ])
+
+/** Original accepted Main metadata; this is not physical source or host qualification. */
+export const RemoteJobAcceptedSourceReadoutSchema = z.object({
+ execution: z.lazy(() => JobExecutionSchema), materialization: SourceMaterializationRecordSchema,
+ root: SourceRootRecordSchema, diskQuotaBytes: z.number().int().positive(),
+}).strict()
+export type RemoteJobAcceptedSourceReadout = z.infer<typeof RemoteJobAcceptedSourceReadoutSchema>

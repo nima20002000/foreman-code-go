@@ -1,19 +1,15 @@
 import { isDeepStrictEqual as same } from 'node:util'
 import { join } from 'node:path'
 import type { JobExecution } from '@graphql/contracts/jobs'
-import { ApprovedSourceSchema, SourceMaterializationRecordSchema, SourceRootRecordSchema, type SourceMaterializationRecord, type SourceRootRecord } from '@graphql/contracts/source-admission'
+import { ApprovedSourceSchema, SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import type { RemoteJobAcceptedSourceReadout } from '@graphql/contracts/remote-job-execution'
 import { JobRuntimeProfileSchema } from '@graphql/contracts/job-runtime'
 import type { JobSql } from '../../jobs/repository.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../../sources/bindingHash.js'
 import { sourceSha256, verifySourceManifest } from '../../sources/manifest.js'
 import { DomainError } from '../../errors.js'
 
-export interface AcceptedJobSourceReadout {
-  execution: JobExecution
-  materialization: SourceMaterializationRecord
-  root: SourceRootRecord
-  diskQuotaBytes: number
-}
+export type AcceptedJobSourceReadout = RemoteJobAcceptedSourceReadout
 function conflict(): never { throw new DomainError('JOB_ACCEPTED_SOURCE_CONFLICT', 'The original accepted Job source/root/runtime binding is unavailable or changed.', 409) }
 /** Call after the exact current Job read fence, in the same transaction. This
  * returns immutable Main metadata, never a physical source/qualification claim. */
