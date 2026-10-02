@@ -1,4 +1,4 @@
-import { HarnessProfileSelectionSchema } from './harnessRegistry.js';
+import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
 import { ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
 export * from './claude.js';

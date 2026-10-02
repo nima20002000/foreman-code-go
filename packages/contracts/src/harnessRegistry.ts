@@ -4,12 +4,9 @@ import { HarnessConfigurationSchema, type HarnessConfiguration } from './index.j
 import { DevicePresenceSchema } from './deviceConnection.js'
 import { DeviceSessionBindingSchema } from './deviceConnection.js'
 import { HarnessQualificationSchema } from './harnessQualification.js'
-import type { CanonicalMachineReference } from './deviceIdentity.js'
+import { HarnessHostReferenceSchema, HostHarnessOverrideTargetSchema } from './harnessProfileSelection.js'
+export { HarnessHostReferenceSchema, HostHarnessOverrideTargetSchema, HarnessProfileSelectionSchema, type HarnessProfileSelection } from './harnessProfileSelection.js'
 
-export const HarnessHostReferenceSchema: z.ZodType<CanonicalMachineReference> = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('main'), mainId: z.uuid() }).strict(),
-  z.object({ kind: z.literal('device'), mainId: z.uuid(), deviceId: z.uuid() }).strict(),
-])
 const Identity = z.string().min(1)
 export const HarnessInstanceAvailabilitySchema = z.enum(['available', 'disabled', 'unknown-driver', 'invalid-configuration'])
 export const ConfiguredHarnessInstanceSchema = z.object({
@@ -69,11 +66,6 @@ export const HarnessRegistryReadbackSchema = z.object({
 export type HarnessRegistryReadback = z.infer<typeof HarnessRegistryReadbackSchema>
 
 
-/** Global presets remain managed defaults; overrides are exact-host immutable revisions. */
-export const HostHarnessOverrideTargetSchema = z.object({
-  hostRef: HarnessHostReferenceSchema, applicationInstallationId: z.uuid(), harnessInstallationId: Identity,
-  installationFingerprint: Identity,
-}).strict()
 function validateHostEnvironment(configuration: HarnessConfiguration, context: z.RefinementCtx, prefix: string[]): void {
   if (configuration.harness !== 'codex') return
   for (const [key, text] of Object.entries(configuration.advanced?.shellEnvironment.set ?? {})) {
@@ -85,11 +77,7 @@ function validateHostEnvironment(configuration: HarnessConfiguration, context: z
     }
   }
 }
-/** Explicit user-selected configured profile. Execution locations retain their separate accepted placement. */
-export const HarnessProfileSelectionSchema = z.object({
-  instanceId: z.uuid(), instanceRevision: Identity, target: HostHarnessOverrideTargetSchema,
-}).strict()
-export type HarnessProfileSelection = z.infer<typeof HarnessProfileSelectionSchema>
+
 
 export const HostHarnessOverrideSaveSchema = z.object({
   commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().nonnegative(),
