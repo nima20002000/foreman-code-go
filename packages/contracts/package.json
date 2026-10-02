@@ -235,6 +235,10 @@
     "./trusted-device-connection": {
       "types": "./dist/trustedDeviceConnection.d.ts",
       "import": "./dist/trustedDeviceConnection.js"
+    },
+    "./worker-native-output": {
+      "types": "./dist/workerNativeOutput.d.ts",
+      "import": "./dist/workerNativeOutput.js"
     }
   },
   "scripts": {
