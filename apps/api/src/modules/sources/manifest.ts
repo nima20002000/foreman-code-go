@@ -6,13 +6,16 @@ export class SourceError extends Error {
 }
 export const SOURCE_LIMITS = Object.freeze({ entries: 4096, bytes: 128 * 1024 * 1024,
   fileBytes: 16 * 1024 * 1024, depth: 32, preparationMs: 30_000, concurrent: 2 })
+// Credential implementation/test/declaration leaves are code, not credential data or directories.
+// Byte verification still applies; data/backup suffixes never qualify as source filenames.
+const credentialSourceLeaf = /^credentials(?:(?:\.(?:test|spec))?\.(?:[cm]?[jt]s|[jt]sx)|\.d\.[cm]?ts)$/
 export function sourcePath(path: string): string {
   if (!path || path.length > 1024 || path.normalize('NFC') !== path || /[\\:]/u.test(path) || [...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
     || path.startsWith('/') || path.split('/').some((part) => !part || part === '.' || part === '..' || /[. ]$/.test(part))
     || path.split('/').length > SOURCE_LIMITS.depth) throw new SourceError('SOURCE_PATH_INVALID', 'Source paths must be unambiguous relative paths.')
   const parts = path.toLowerCase().split('/')
-  if (parts.some((part) => /^(?:\.git|\.ssh|\.aws|\.config|\.local|\.mozilla|\.gnupg|node_modules|\.env(?:\..*)?|id_rsa|id_ed25519|credentials(?:\..*)?|.*\.pem|.*\.key|.*\.sqlite(?:3)?|.*\.db)$/.test(part)
-    && part !== '.env.example') || parts.some((part) => /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/.test(part))) {
+  if (parts.some((part, index) => /^(?:\.git|\.ssh|\.aws|\.config|\.local|\.mozilla|\.gnupg|node_modules|\.env(?:\..*)?|id_rsa|id_ed25519|credentials(?:\..*)?|.*\.pem|.*\.key|.*\.sqlite(?:3)?|.*\.db)$/.test(part)
+    && part !== '.env.example' && !(index === parts.length - 1 && credentialSourceLeaf.test(part))) || parts.some((part) => /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/.test(part))) {
     throw new SourceError('SOURCE_SENSITIVE_PATH', 'The approved source includes a credential, runtime, or unsupported path; approve a different snapshot.')
   }
   return path

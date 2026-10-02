@@ -35,7 +35,7 @@ function fixture() {
     source: { kind: 'pending', approvedSourceId: randomUUID(), snapshotId: randomUUID(), rootId, bindingRevision: 1, revisionId: 'source', manifestDigest: digest, materializationId: null, materializationDigest: null },
     payload: { kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: 'codex', driverRevision: '1',
       instanceId: 'instance', instanceRevision: '1', harnessInstallationId: 'harness', installationFingerprint: digest,
-      runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [] } })
+      runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [], artifactOutputs: { version: 1, outputKeys: ['result'] } } })
   const intent = deriveDispatch(placement, { executionId, attemptId, operationId, occurrenceId: null,
     occurrenceIndex: 0, technicalAttempt: 1, inputDigest: `sha256:${digest}`, owner: { grantId: 'grant', epoch: '1' } })
   const execution: HarnessExecution = { id: executionId, runId: 'run', workflowNodeId: 'node', agentId: 'agent', agentConfigurationVersionId: 'configuration',
@@ -54,11 +54,13 @@ function fixture() {
     allowMutation: true, allowedTools: codexChatFileTools(configuration.harness as typeof DEFAULT_HARNESS_DEFAULTS.codex) } }
   const state = { execution, configuration, receipt, principalId: 'run-owner', callerAllowed: false, conversationAvailable: true,
     conversationCount: 1, revoked: false, writeAllowed: true, grantLive: true, stopped: false, nativeSessionId: 'original-session',
-    messages: false, queries: [] as { text: string; args: unknown[] }[] }
+    messages: false, cleanup: false, queries: [] as { text: string; args: unknown[] }[] }
   const query = vi.fn(async (text: string, args: unknown[] = []) => {
     state.queries.push({ text, args }); let rows: unknown[] = []
     if (text.includes('from harness_executions e join runs')) rows = [{ execution: state.execution, configuration: state.configuration,
       workspace_id: 'workspace', workflow_id: 'workflow', authorization_principal_id: state.principalId, stopped: state.stopped }]
+    else if (text.includes('from runs r join harness_executions')) rows = [{ workspace_id: 'workspace', workflow_id: 'workflow' }]
+    else if (text.includes('from run_cleanup_intents')) rows = state.cleanup ? [{}] : []
     else if (text.includes('from management_principals')) rows = [{ id: args[0], name: 'accepted owner', audience: 'operator',
       grants: [{ actions: ['agent_chat:read', ...(state.writeAllowed ? ['agent_chat:write'] : [])], scope: {} }],
       expires_at: new Date('2099-01-01T00:00:00.000Z'), revoked_at: state.revoked ? new Date() : null, delegated_from: null }]
@@ -80,9 +82,58 @@ function fixture() {
   const ports = { locations: { revalidateRunAuthorization: vi.fn(async () => {}) }, producer: { assertPinsCurrent: vi.fn(async () => {}) } }
   const authority = new PostgresArtifactPublicationAuthority(mainId, {} as pg.Pool, ports)
   const fence = new PostgresAcceptedArtifactAttemptFence(mainId, ports)
-  return { mainId, placement, intent, execution, attempt, accepted, state, sql, ports, authority, fence }
+  const declarationsRequest = { version: 1 as const, operation: 'worker-mcp.authorize-native-output-declarations' as const, intent, placement,
+    applicationAccess: { kind: 'scoped-worker-mcp' as const, token: 'original-worker-bearer', executionId, agentId: 'agent',
+      operationId, attemptId, bindingHash: intent.bindingHash } }
+  return { mainId, placement, intent, execution, attempt, accepted, state, sql, ports, authority, fence, declarationsRequest }
 }
 describe('original accepted artifact authority', () => {
+  it('accepts the actual authenticated W07 frame while preserving original connection identity', async () => {
+    const t = fixture(), frame = { ...t.state.receipt.connection, connectionEpoch: randomUUID() }
+    expect(await t.authority.authorizeNativeOutputDeclarations(t.declarationsRequest, frame, t.sql)).toMatchObject({ agentConfigurationVersionId: 'configuration' })
+    await t.authority.assertNativeOutputConnection({ ...t.declarationsRequest, operation: 'worker-mcp.authorize-native-output',
+      outputOperation: 'create', nativeSessionId: 'original-session', turnId: 'original-turn' }, frame, t.sql)
+  })
+  it('checks saved declaration permissions before a native turn exists without inventing scope or qualification', async () => {
+    const t = fixture(); delete t.state.execution.nativeSessionId; t.state.execution.state = 'starting'; t.state.conversationAvailable = false
+    expect(await t.authority.authorizeNativeOutputDeclarations(t.declarationsRequest, t.state.receipt.connection, t.sql)).toEqual({
+      agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'],
+    })
+    expect(t.state.queries.some(q => /execution_native_sessions|remote_execution_receipts|operator_conversations/.test(q.text))).toBe(false)
+    const audit = t.state.queries.find(q => q.text.includes('native_output.authorize_declarations'))!
+    expect(audit.args[0]).toBe('run-owner')
+    expect(JSON.parse(audit.args[2] as string)).toEqual({ operationId: t.intent.operationId, attemptId: t.intent.attemptId,
+      bindingHash: t.intent.bindingHash, agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'] })
+  })
+  it.each(['readonly', 'read-grant', 'revoked', 'stopped', 'ended', 'cleanup', 'grant', 'configuration', 'origin-boot', 'origin-generation', 'foreign-intent', 'foreign-placement'] as const)(
+    'denies declaration authority for %s without auditing success', async reason => {
+      const t = fixture(), request = structuredClone(t.declarationsRequest), connection = structuredClone(t.state.receipt.connection)
+      if (reason === 'readonly') t.state.configuration.harness = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'read-only' }
+      if (reason === 'read-grant') t.state.writeAllowed = false
+      if (reason === 'revoked') t.state.revoked = true
+      if (reason === 'stopped') t.state.stopped = true
+      if (reason === 'ended') t.state.execution.state = 'completed'
+      if (reason === 'cleanup') t.state.cleanup = true
+      if (reason === 'grant') t.state.grantLive = false
+      if (reason === 'configuration') t.state.configuration.id = 'foreign'
+      if (reason === 'origin-boot') connection.bootId = randomUUID()
+      if (reason === 'origin-generation') connection.connectionGeneration++
+      if (reason === 'foreign-intent') request.intent.inputDigest = 'sha256:' + 'b'.repeat(64)
+      if (reason === 'foreign-placement') request.placement.destination.canonicalCwd = '/foreign'
+      await expect(t.authority.authorizeNativeOutputDeclarations(request, connection, t.sql)).rejects.toThrow()
+      expect(t.state.queries.some(q => q.text.includes('insert into management_audit'))).toBe(false)
+    })
+  it('requires the original durable native ACK and connection for mutation, even after declaration authorization', async () => {
+    const t = fixture(), request = { ...t.declarationsRequest, operation: 'worker-mcp.authorize-native-output' as const,
+      outputOperation: 'create' as const, nativeSessionId: 'original-session', turnId: 'original-turn' }
+    await t.authority.assertNativeOutputConnection(request, t.state.receipt.connection, t.sql)
+    await expect(t.authority.assertNativeOutputConnection({ ...request, turnId: 'foreign' }, t.state.receipt.connection, t.sql)).rejects.toMatchObject({ status: 403 })
+    t.state.receipt.stopFence = true
+    await expect(t.authority.assertNativeOutputConnection(request, t.state.receipt.connection, t.sql)).rejects.toMatchObject({ status: 403 })
+    t.state.receipt.stopFence = false
+    await expect(t.authority.assertNativeOutputConnection(request, { ...t.state.receipt.connection, connectionGeneration: 2 }, t.sql)).rejects.toMatchObject({ status: 403 })
+  })
+
   it('resolves only an already admitted original workflow context from saved Run/configuration facts', async () => {
     const t = fixture()
     expect(await t.authority.resolveWorkflowContext(t.attempt, t.accepted.transferContext, t.sql)).toEqual(t.accepted)

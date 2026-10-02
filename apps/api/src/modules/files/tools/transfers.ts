@@ -1,5 +1,5 @@
 import { Writable, type Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
+import { finished, pipeline } from 'node:stream/promises'
 
 /** No filesystem/path API: only a completed runner byte stream may become a snapshot.
  * This module has no runtime dependencies and is also tested directly with node:test. */
@@ -40,7 +40,7 @@ export async function byteRange(source: Readable, offset: number, length: number
   const chunks: Buffer[] = []
   let position = 0, size = 0
   try {
-    for await (const chunk of source) {
+    for await (const chunk of source.iterator({ destroyOnReturn: false })) {
       if (!(chunk instanceof Uint8Array)) throw new FileTransferError('FILE_READ_INVALID', 'Byte chunks are required.')
       const start = Math.max(0, offset - position)
       const end = Math.min(chunk.byteLength, offset + length - position)
@@ -49,5 +49,13 @@ export async function byteRange(source: Readable, offset: number, length: number
       if (position >= offset + length) break
     }
     return Buffer.concat(chunks, size)
-  } finally { source.destroy() }
+  } finally {
+    const closed = finished(source, { cleanup: true })
+    source.destroy()
+    await closed.catch((error: unknown) => {
+      // An intentionally bounded read ends before EOF; original cleanup errors
+      // still reject the read rather than allowing retained pins to escape.
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ERR_STREAM_PREMATURE_CLOSE') throw error
+    })
+  }
 }

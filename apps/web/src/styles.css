@@ -508,6 +508,17 @@ h1 {
   gap: 0;
 }
 
+/* Harness status labels wrap in the narrow rail instead of clipping to one letter. */
+.workspace-shell-navigation-collapsed .sidebar-footer > :first-child { width: 100%; min-width: 0; }
+.workspace-shell-navigation-collapsed .sidebar-footer > :first-child :is(span, button, a, li, small) {
+  max-width: 100%;
+  overflow: visible;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 .workspace-shell-navigation-collapsed .theme-toggle {
   justify-self: center;
 }

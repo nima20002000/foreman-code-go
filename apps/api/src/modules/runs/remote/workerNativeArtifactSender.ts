@@ -20,8 +20,16 @@ export interface WorkerNativeArtifactSnapshot {
   assertCurrent(signal?: AbortSignal): Promise<void>
   read(offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array>
 }
+export interface WorkerNativeArtifactCallback {
+  assertCurrent(signal?: AbortSignal): void | Promise<void>
+}
+/** Capture this call's original checker, never a mutable latest-call slot. */
+export function captureWorkerNativeArtifactCallback(callback: WorkerNativeArtifactCallback): WorkerNativeArtifactCallback {
+  const check = callback.assertCurrent.bind(callback)
+  return Object.freeze({ assertCurrent: (signal?: AbortSignal) => check(signal) })
+}
 export interface WorkerNativeArtifactSource {
-  sealed(publication: AgentFilePublishInput, signal?: AbortSignal): Promise<WorkerNativeArtifactSnapshot>
+  sealed(publication: AgentFilePublishInput, callback: WorkerNativeArtifactCallback, signal?: AbortSignal): Promise<WorkerNativeArtifactSnapshot>
 }
 export interface WorkerNativeArtifactApplication {
   admit(input: WorkflowArtifactTransferInput, signal?: AbortSignal): Promise<TransferIntent>
@@ -50,13 +58,19 @@ export class WorkerNativeArtifactSender {
       || intent.bindingHash !== placement.bindingHash || !root.rootId || !Number.isSafeInteger(root.rootBindingRevision)
       || root.rootBindingRevision < 1) conflict()
   }
-  async publish(raw: AgentFilePublishInput, signal?: AbortSignal): Promise<AgentFilePublishResult> {
+  async publish(raw: AgentFilePublishInput, callback: WorkerNativeArtifactCallback, signal?: AbortSignal): Promise<AgentFilePublishResult> {
+    const call = captureWorkerNativeArtifactCallback(callback)
     const publication = AgentFilePublishInputSchema.parse(raw)
     const chat = publication.scope.chat
     if (chat.kind !== 'agent' || chat.runId !== this.binding.intent.runId || chat.executionId !== this.binding.intent.executionId) conflict()
-    signal?.throwIfAborted()
-    const snapshot = await this.source.sealed(publication, signal)
-    const check = async () => { signal?.throwIfAborted(); await snapshot.assertCurrent(signal); signal?.throwIfAborted() }
+    const current = async (bounded?: AbortSignal) => {
+      signal?.throwIfAborted(); bounded?.throwIfAborted()
+      await call.assertCurrent(bounded ?? signal)
+      signal?.throwIfAborted(); bounded?.throwIfAborted()
+    }
+    await current()
+    const snapshot = await this.source.sealed(publication, call, signal)
+    const check = async (bounded?: AbortSignal) => { await current(bounded); await snapshot.assertCurrent(bounded ?? signal); await current(bounded) }
     await check()
     if (!Number.isSafeInteger(snapshot.byteSize) || snapshot.byteSize < 0 || snapshot.byteSize > MAX_FILE_BYTES) conflict()
     const hash = createHash('sha256')
@@ -84,7 +98,19 @@ export class WorkerNativeArtifactSender {
       || transfer.byteSize !== snapshot.byteSize || transfer.manifestDigest !== workflowArtifactTransferManifestDigest(declaration)) conflict()
     // Receiver-owned retries/resume use the same frozen original bytes. No expired
     // transfer fallback: Main must explicitly support any canonical-only replay.
-    const receipt = VerifiedTransferReceiptSchema.parse(await new ResumableByteTransferSender(this.receiver, {
+    const guarded = async <T>(action: () => Promise<T>, bounded?: AbortSignal) => {
+      await check(bounded); const result = await action(); await check(bounded); return result
+    }
+    const receiver: ByteTransferPort = {
+      start: (...args) => guarded(() => this.receiver.start(...args)),
+      status: (...args) => guarded(() => this.receiver.status(...args)),
+      append: (...args) => guarded(() => this.receiver.append(...args)),
+      finish: (...args) => guarded(() => this.receiver.finish(...args)),
+      cancel: (...args) => guarded(() => this.receiver.cancel(...args)),
+    }
+    const connection: TransferSenderConnection = { retryable: error => this.connection.retryable(error),
+      current: bounded => guarded(() => this.connection.current(bounded), bounded) }
+    const receipt = VerifiedTransferReceiptSchema.parse(await new ResumableByteTransferSender(receiver, {
       read: async (accepted, offset, length, bounded) => {
         await check(); bounded?.throwIfAborted()
         if (!isDeepStrictEqual(accepted, transfer)) conflict()
@@ -92,7 +118,7 @@ export class WorkerNativeArtifactSender {
         await check(); bounded?.throwIfAborted()
         return bytes
       },
-    }, this.connection).send(transfer, signal))
+    }, connection).send(transfer, signal))
     await check()
     if (!isDeepStrictEqual(receipt.intent, transfer) || receipt.transferId !== transfer.transferId
       || receipt.sha256 !== sha256 || receipt.byteSize !== snapshot.byteSize) conflict()

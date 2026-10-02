@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { TransferIntentSchema, BYTE_TRANSFER_POLICY, RsyncControlRequestSchema,
-  RsyncControlResponseSchema, RSYNC_STAGE_EXTENSION } from './byteTransfer.js'
+  RsyncControlResponseSchema, RsyncWriterPrepareResponseSchema, RSYNC_STAGE_EXTENSION } from './byteTransfer.js'
 import { negotiateDeviceExtensions } from './deviceApplication.js'
 const intent = () => ({ version: 1, transferId: randomUUID(), mainId: randomUUID(), deviceId: randomUUID(),
   workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(),
@@ -43,11 +43,34 @@ describe('rsync staging control contract', () => {
   it('requires the existing verified receipt only for receiver verification', () => {
     for (const method of RsyncControlRequestSchema.shape.method.options) {
       const response = { ...request, method }
-      expect(RsyncControlResponseSchema.safeParse(response).success).toBe(method !== 'receiver-verify')
+      expect(RsyncControlResponseSchema.safeParse(response).success).toBe(method !== 'receiver-verify' && method !== 'writer-prepare')
       expect(RsyncControlResponseSchema.safeParse({ ...response, receipt }).success).toBe(method === 'receiver-verify')
     }
     expect(RsyncControlResponseSchema.safeParse({ ...request, method: 'receiver-verify', receipt: {} }).success).toBe(false)
     expect(RsyncControlResponseSchema.safeParse({ ...request, accepted: true }).success).toBe(false)
+  })
+
+  it('keeps writer admission ID-only and rejects paths and process facts in replies', () => {
+    const owner = { transferId, ownerId: randomUUID(), ownerDigest: '1'.repeat(64) }
+    expect(RsyncWriterPrepareResponseSchema.parse(owner)).toEqual(owner)
+    const prepared = { ...request, method: 'writer-prepare', ownerId: owner.ownerId, ownerDigest: owner.ownerDigest }
+    expect(RsyncControlResponseSchema.parse(prepared)).toEqual(prepared)
+    for (const method of ['writer-prepare', 'writer-activate', 'writer-status', 'writer-stop']) {
+      const command = { ...request, method }
+      for (const extra of [{ path: '/caller' }, { nodeBinary: '/caller/node' }, { entryPoint: '/caller/cli' },
+        { pid: 123 }, { startTicks: '123' }, { stopped: true }, { ownerId: owner.ownerId }]) {
+        expect(RsyncControlRequestSchema.safeParse({ ...command, ...extra }).success).toBe(false)
+      }
+    }
+    for (const extra of [{ path: '/caller' }, { pid: 123 }, { stopped: true }, { nodeBinary: '/caller/node' }]) {
+      expect(RsyncWriterPrepareResponseSchema.safeParse({ ...owner, ...extra }).success).toBe(false)
+      expect(RsyncControlResponseSchema.safeParse({ ...prepared, ...extra }).success).toBe(false)
+      for (const method of ['writer-status', 'writer-stop']) {
+        expect(RsyncControlResponseSchema.safeParse({ ...request, method, ...extra }).success).toBe(false)
+      }
+    }
+    expect(RsyncWriterPrepareResponseSchema.safeParse({ ...owner, ownerId: '/caller' }).success).toBe(false)
+    expect(RsyncWriterPrepareResponseSchema.safeParse({ ...owner, ownerDigest: 'unverified' }).success).toBe(false)
   })
 
   it('rejects a receipt or retained intent for another transfer', () => {

@@ -15,6 +15,8 @@ import { DomainError } from '../errors.js'
 import { HarnessExecutionError, NativeTurnNotActiveError } from './errors.js'
 import { CodexRuntimeFileTurn, type CodexChatFiles } from './codexFiles/runtime.js'
 import { codexChatFileDeclarations, codexChatFileTools } from './codexFiles/declarations.js'
+import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, CODEX_NATIVE_OUTPUT_TOOL_ALIASES,
+  type CodexNativeOutputs, type CodexNativeOutputQualificationInput, type CodexNativeOutputSandbox } from './codexNativeOutput.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { nativeQualification } from './nativeQualification.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
@@ -130,6 +132,7 @@ interface StartingTurn {
   cancelRequested: boolean
   preparationController: AbortController
   filePreparation?: Promise<CodexRuntimeFileTurn | undefined>
+  nativeOutputPreparation?: Promise<CodexRuntimeNativeOutputTurn>
   onSubmitted?: NativeTurnInput['onSubmitted']
   acknowledgement?: Promise<void>
   acknowledgedTurnId?: string
@@ -160,6 +163,9 @@ interface Runtime extends TurnSnapshot {
   starting: StartingTurn | undefined
   files: CodexRuntimeFileTurn | undefined
   fileCleanup: Promise<void> | undefined
+  nativeOutput?: CodexRuntimeNativeOutputTurn | undefined
+  nativeOutputCleanup?: Promise<void> | undefined
+  effectiveSandbox?: CodexNativeOutputSandbox | undefined
   fileRequests: Map<string, { signature: string; pending: boolean; conflictingIdentity?: boolean }>
   cancellation: { turnId: string; promise: Promise<boolean> } | undefined
   interactions: Map<string, WaitingRequest>
@@ -182,6 +188,7 @@ interface Prepared {
   environment: NodeJS.ProcessEnv
   qualified: QualifiedCodex
   disabledAppMcpServerNames: readonly string[]
+  effectiveSandbox?: CodexNativeOutputSandbox
 }
 interface Creation {
   identity: string
@@ -329,6 +336,12 @@ function requestKey(generation: number, id: RequestId): string { return `${gener
 function itemNotificationKey(generation: number, method: string, turnId: unknown, itemId: unknown, itemType: unknown): string {
   return createHash('sha256').update(canonical([generation, method, turnId, itemId, itemType])).digest('hex')
 }
+function stagedNativeOutputTerminal(runtime: Runtime, turnId: string): boolean {
+  return runtime.starting?.staged.some(event => 'method' in event && event.method === 'turn/completed'
+    && event.params.threadId === runtime.session.nativeSessionId && isObject(event.params.turn)
+    && event.params.turn.id === turnId && ['completed', 'failed', 'interrupted'].includes(String(event.params.turn.status))) ?? false
+}
+
 function snapshot(runtime: Runtime): TurnSnapshot {
   return {
     activeTurnId: runtime.activeTurnId, activeCorrelationId: runtime.activeCorrelationId,
@@ -379,6 +392,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     private readonly chatFiles?: CodexChatFiles,
     dependencies: CodexSessionDependencies = { mode: 'native' },
     private readonly inspection: CodexInspectionOptions = {},
+    private readonly nativeOutputs?: CodexNativeOutputs,
   ) {
     const defaults: CodexSessionOperations = {
       transport: (...args) => new CodexStdioTransport(...args),
@@ -526,7 +540,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         // Declarations grant no access: handlers still require an admitted file
         // turn and its durable ACK, never the credentialed text-mode process.
         ...(this.chatFiles || prepared.input.kind === 'operator'
-          ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
+          ? { dynamicTools: codexChatFileDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) }
+          : this.nativeOutputs ? { dynamicTools: codexNativeOutputDeclarations(prepared.harnessConfiguration, prepared.qualified.providerVersion) } : {}),
       }, signal, (value, error) => {
         void (async () => {
           if (error) {
@@ -737,16 +752,18 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const restarting = signal?.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
       if (!restarting) starting.cancelRequested = true
       starting.preparationController.abort(signal?.reason)
-      void this.finishFiles(runtime).catch(() => undefined)
+      void this.finishTurnResources(runtime).catch(() => undefined)
       if (!restarting && runtime.activeTurnId && !runtime.terminalResult) void this.interrupt(runtime).catch(() => undefined)
     }
     signal?.addEventListener('abort', abort, { once: true })
     let cursor = runtime.sequence
     let nativeSubmissionAttempted = false
     try {
-      await this.finishFiles(runtime)
+      await this.finishTurnResources(runtime)
       runtime.files = undefined
       runtime.fileCleanup = undefined
+      runtime.nativeOutput = undefined
+      runtime.nativeOutputCleanup = undefined
       runtime.fileRequests.clear()
       const preparationSignal = AbortSignal.any([starting.preparationController.signal, this.shutdownController.signal, subscriberSignal, ...(signal ? [signal] : [])])
       preparationSignal.throwIfAborted()
@@ -772,6 +789,22 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         })
       }
       preparationSignal.throwIfAborted()
+      if (this.nativeOutputs) {
+        if (!starting.onSubmitted || !runtime.effectiveSandbox) throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_ADMISSION_REQUIRED', 'Native outputs require measured policy and durable turn admission.')
+        starting.nativeOutputPreparation = this.nativeOutputs.prepare({
+          ...this.nativeOutputQualification(runtime.configuration, runtime.qualified, runtime.workingDirectory, runtime.effectiveSandbox.tmpdir),
+          effectiveSandbox: structuredClone(runtime.effectiveSandbox), session: structuredClone(session),
+          clientCorrelationId: input.clientCorrelationId, connectionId: runtime.connectionId, runtimeGeneration: runtime.generation,
+        }, preparationSignal).then(async (bridge) => {
+          const output = new CodexRuntimeNativeOutputTurn(bridge)
+          runtime.nativeOutput = output
+          if (runtime.closed || runtime.disposed || starting.cancelRequested || preparationSignal.aborted) {
+            await output.close(); throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_CLOSED', 'Native output preparation was withdrawn.')
+          }
+          return output
+        })
+        await starting.nativeOutputPreparation
+      }
       const preparedFiles = await starting.filePreparation
       const nativeInput = preparedFiles ? await preparedFiles.bridge.nativeInput(input.prompt)
         : [{ type: 'text' as const, text: input.prompt, text_elements: [] }]
@@ -807,7 +840,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         // The consumer can suspend at yield while more events (including terminal
         // events) arrive. Drain them before returning or registering a waiter.
         if (runtime.events.some((event) => event.sequence >= cursor)) continue
-        if (runtime.terminalResult || runtime.closed) { await this.finishFiles(runtime); return }
+        if (runtime.terminalResult || runtime.closed) { await this.finishTurnResources(runtime); return }
         await this.wait(runtime, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]))
       }
     } catch (error) {
@@ -817,7 +850,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       signal?.removeEventListener('abort', abort)
       try {
         if (!nativeSubmissionAttempted || signal?.aborted || subscriberSignal.aborted || runtime.closed || runtime.terminalResult) {
-          await this.finishFiles(runtime)
+          await this.finishTurnResources(runtime)
         }
       } finally { runtime.streamActive = false }
     }
@@ -1010,7 +1043,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (runtime.starting) {
       runtime.starting.cancelRequested = true
       runtime.starting.preparationController.abort()
-      void this.finishFiles(runtime).catch(() => undefined)
+      void this.finishTurnResources(runtime).catch(() => undefined)
       const id = await deadline(runtime.starting.nativeIdentity, signal, undefined, this.dependencies)
       if (!id) return false
     }
@@ -1100,8 +1133,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       // Stop the process even when host cleanup or token revocation fails. Keep
       // ownership until BOTH cleanups succeed, so explicit disposal can retry.
       const fileCleanup = (async () => {
-        await runtime.starting?.filePreparation?.catch(() => undefined)
-        await this.finishFiles(runtime)
+        await Promise.allSettled([runtime.starting?.filePreparation, runtime.starting?.nativeOutputPreparation])
+        await this.finishTurnResources(runtime)
       })()
       for (const waiting of runtime.interactions.values()) waiting.resolve('cleared')
       this.wake(runtime)
@@ -1386,6 +1419,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal)
+    if (this.nativeOutputs) {
+      if (input.kind === 'operator' || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox !== 'workspace-write') {
+        throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_UNQUALIFIED', 'Native outputs require original workflow workspace-write and scoped App MCP; no promotion is permitted.')
+      }
+      codexNativeOutputDeclarations(harnessConfiguration, qualified.providerVersion)
+      await this.nativeOutputs.assertQualified(this.nativeOutputQualification(harnessConfiguration, qualified, workingDirectory, scopedEnvironment.TMPDIR), signal)
+      signal.throwIfAborted()
+    }
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, strippedCredentialVariable, environment: scopedEnvironment, qualified,
       disabledAppMcpServerNames,
     }
@@ -1425,6 +1466,17 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     } catch { throw new HarnessExecutionError('CODEX_MCP_CONFIG_INVALID', 'Codex returned invalid structured MCP configuration.') }
   }
 
+  private nativeOutputQualification(configuration: CodexHarnessConfiguration, qualified: QualifiedCodex,
+    cwd: string, tmpdir: string | undefined): CodexNativeOutputQualificationInput {
+    const draft = advanced(configuration)
+    return { configuration: structuredClone(configuration), binary: qualified.binary, binaryIdentity: qualified.identity,
+      providerVersion: qualified.providerVersion, schemaIdentity: qualified.schemaManifestSha256,
+      expectedSandbox: { cwd, writableRoots: [...draft.additionalWritableDirectories], tmpdir,
+        networkAccess: draft.workspaceWrite?.networkAccess ?? false,
+        excludeTmpdirEnvVar: draft.workspaceWrite?.excludeTmpdirEnvVar ?? false,
+        excludeSlashTmp: draft.workspaceWrite?.excludeSlashTmp ?? false } }
+  }
+
   private async validateMcpPolicies(
     value: CodexHarnessConfiguration, binary: string, cwd: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal,
     io: CodexDiagnosticOperations = this.dependencies,
@@ -1460,7 +1512,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
   }
 
-  private validateThreadResponse(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory'>, response: JsonObject, expectedId?: string): JsonObject {
+  private validateThreadResponse(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'environment' | 'effectiveSandbox'>, response: JsonObject, expectedId?: string): JsonObject {
     const thread = object(response.thread, 'CODEX_THREAD_INVALID')
     if (!text(thread.id) || String(thread.id).length > 1_024 || (expectedId !== undefined && thread.id !== expectedId)) {
       throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex returned a different or missing thread identity.')
@@ -1485,6 +1537,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     if (thread.ephemeral !== undefined && thread.ephemeral !== (draft.sessionPersistence === 'ephemeral')) mismatch = true
     if (mismatch) throw new HarnessExecutionError('CODEX_EFFECTIVE_SETTINGS_MISMATCH', 'Codex did not retain the accepted thread settings; execution is refused.')
+    if (value.sandbox === 'workspace-write') prepared.effectiveSandbox = {
+      cwd: String(response.cwd), writableRoots: stringArray(sandbox.writableRoots) ?? [],
+      networkAccess: sandbox.networkAccess === true, excludeTmpdirEnvVar: sandbox.excludeTmpdirEnvVar === true,
+      excludeSlashTmp: sandbox.excludeSlashTmp === true, tmpdir: prepared.environment.TMPDIR,
+    }
     return thread
   }
 
@@ -1497,7 +1554,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       strippedCredentialVariable: prepared.strippedCredentialVariable,
       qualified: { ...prepared.qualified },
       phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
-      files: undefined, fileCleanup: undefined, fileRequests: new Map(),
+      files: undefined, fileCleanup: undefined, nativeOutput: undefined, nativeOutputCleanup: undefined,
+      effectiveSandbox: prepared.effectiveSandbox ? structuredClone(prepared.effectiveSandbox) : undefined, fileRequests: new Map(),
       activeTurnId: undefined, activeCorrelationId: undefined, terminalResult: undefined, finalAnswer: undefined, lastAgentMessage: undefined,
       finalAnswerId: undefined, lastAgentMessageId: undefined,
       interactions: new Map(), resolvedRequests: new Map(), events: [], eventSizes: [], eventBytes: 0, sequence: 0,
@@ -1592,8 +1650,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const generation = runtime.generation + 1
     // Withdraw the old turn's file authority before replacing its process.
     runtime.starting?.preparationController.abort()
-    await runtime.starting?.filePreparation?.catch(() => undefined)
-    await this.finishFiles(runtime)
+    await Promise.allSettled([runtime.starting?.filePreparation, runtime.starting?.nativeOutputPreparation])
+    await this.finishTurnResources(runtime)
     // The old transport remains owned until its entire process tree is stopped.
     await runtime.transport.close()
     const candidate = await this.transport(prepared, generation, signal)
@@ -1608,6 +1666,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       runtime.scopedCredentialVariable = prepared.scopedCredentialVariable
       runtime.strippedCredentialVariable = prepared.strippedCredentialVariable
       runtime.qualified = { ...prepared.qualified }
+      runtime.effectiveSandbox = prepared.effectiveSandbox ? structuredClone(prepared.effectiveSandbox) : undefined
       runtime.closed = false
       for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
       await candidate.activate(runtime)
@@ -1625,7 +1684,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     runtime.starting = undefined
     starting.resolveIdentity(undefined)
     starting.staged.length = 0
-    void this.finishFiles(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => undefined)
     this.record(runtime, 'turn.start_rejected', { correlationId: starting.correlationId })
   }
 
@@ -1648,16 +1707,25 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         // Durable identity FIRST. Early callbacks remain staged across both
         // persistence and token issuance, including a late-ACK recovery path.
         await starting.onSubmitted?.(turnId)
-        if (runtime.disposed || runtime.closed) { await this.finishFiles(runtime); return }
+        if (runtime.disposed || runtime.closed) { await this.finishTurnResources(runtime); return }
         if (runtime.files && !runtime.files.closed && !starting.cancelRequested && turn.status === 'inProgress') {
           await runtime.files.activate(turnId)
         } else await this.finishFiles(runtime)
+        if (runtime.nativeOutput && !starting.cancelRequested && turn.status === 'inProgress') {
+          const output = runtime.nativeOutput, transport = runtime.transport, generation = runtime.generation
+          await output.activate({ session: structuredClone(runtime.session), connectionId: runtime.connectionId,
+            runtimeGeneration: generation, nativeTurnId: turnId, assertCurrent: () => {
+              if (runtime.nativeOutput !== output || runtime.transport !== transport || runtime.generation !== generation
+                || runtime.closed || runtime.disposed || runtime.terminalResult || starting.cancelRequested
+                || runtime.activeTurnId !== turnId || stagedNativeOutputTerminal(runtime, turnId)) throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_CLOSED', 'Original native output turn was withdrawn.')
+            } }, starting.preparationController.signal)
+        } else if (runtime.nativeOutput) await this.finishTurnResources(runtime)
         runtime.phase = 'active'
         this.record(runtime, 'turn.started', { threadId: runtime.session.nativeSessionId, turnId, clientCorrelationId: starting.correlationId })
         this.applyTurn(runtime, turn)
       } catch (error) {
         runtime.phase = 'uncertain'
-        await this.finishFiles(runtime)
+        await this.finishTurnResources(runtime)
         throw error
       } finally {
         // Keep the gate closed while draining: callbacks arriving during an
@@ -1679,6 +1747,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return acknowledgement
   }
 
+  private finishTurnResources(runtime: Runtime): Promise<void> {
+    if (runtime.nativeOutput && !runtime.nativeOutputCleanup) {
+      const attempt = runtime.nativeOutput.close()
+      runtime.nativeOutputCleanup = attempt
+      void attempt.catch(() => { if (runtime.nativeOutputCleanup === attempt) runtime.nativeOutputCleanup = undefined })
+    }
+    return Promise.all([this.finishFiles(runtime), runtime.nativeOutputCleanup]).then(() => undefined)
+  }
+
   private finishFiles(runtime: Runtime): Promise<void> {
     if (!runtime.files) return Promise.resolve()
     if (runtime.fileCleanup) return runtime.fileCleanup
@@ -1697,7 +1774,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!turnId || runtime.terminalResult) return Promise.resolve(false)
     if (runtime.starting) { runtime.starting.cancelRequested = true; runtime.starting.preparationController.abort() }
     // Cancellation withdraws file authority even when native interrupt delivery is uncertain.
-    void this.finishFiles(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => undefined)
     if (runtime.cancellation?.turnId === turnId) return runtime.cancellation.promise
     const promise = (async () => {
       for (let attempt = 0; attempt <= INTERRUPT_STARTUP_RETRIES; attempt += 1) {
@@ -1832,7 +1909,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       : turn.status === 'interrupted' ? { outcome: 'canceled' }
         : { outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: text(isObject(turn.error) ? turn.error.message : undefined) ?? 'Codex turn failed.', retryable: false } }
     runtime.phase = 'idle'
-    void this.finishFiles(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => undefined)
     for (const [key, waiting] of runtime.interactions) {
       if (waiting.pending.turn.nativeTurnId === turn.id) this.resolveInteraction(runtime, key, waiting, 'cleared')
     }
@@ -1867,7 +1944,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (request.method === 'item/tool/call') {
       // Do not block the stdio frame reader on file I/O: turn/completed and
       // interrupt acknowledgements must be able to withdraw authority mid-call.
-      void this.handleFileCall(runtime, request).catch(() => {
+      void this.handleFileCall(runtime, request, typeof params.tool === 'string'
+        && Object.hasOwn(CODEX_NATIVE_OUTPUT_TOOL_ALIASES, params.tool)).catch(() => {
         this.record(runtime, 'files.response_unconfirmed', {})
       })
       return
@@ -1902,7 +1980,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
-  private async handleFileCall(runtime: Runtime, request: RpcRequest): Promise<void> {
+  private async handleFileCall(runtime: Runtime, request: RpcRequest, nativeOutputCall = false): Promise<void> {
     const params = request.params ?? {}
     const transport = runtime.transport
     const generation = runtime.generation
@@ -1930,14 +2008,27 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!capacityExceeded) runtime.fileRequests.set(key, receipt)
     try {
       if (capacityExceeded || runtime.closed || runtime.disposed || runtime.terminalResult || params.turnId !== runtime.activeTurnId
-        || !runtime.files || typeof params.callId !== 'string' || typeof params.tool !== 'string'
+        || (nativeOutputCall ? !runtime.nativeOutput : !runtime.files) || typeof params.callId !== 'string' || typeof params.tool !== 'string'
         || (params.namespace != null && typeof params.namespace !== 'string')) {
         await transport.respond(request.id, request.method, denied); return
       }
-      const result = await runtime.files.dispatch({ threadId: runtime.session.nativeSessionId,
+      const output = runtime.nativeOutput
+      const outputTool = nativeOutputCall
+      if (outputTool && params.namespace != null) { await transport.respond(request.id, request.method, denied); return }
+      const assertCurrent = () => {
+        if (!output || runtime.nativeOutput !== output || runtime.transport !== transport || runtime.generation !== generation
+          || runtime.closed || runtime.disposed || runtime.terminalResult || runtime.activeTurnId !== params.turnId
+          || runtime.fileRequests.get(key) !== receipt || receipt.conflictingIdentity || !receipt.pending
+          || runtime.transport.isConnected?.() !== true || stagedNativeOutputTerminal(runtime, String(params.turnId))) throw new HarnessExecutionError('CODEX_NATIVE_OUTPUT_CLOSED', 'Original native output callback was withdrawn.')
+      }
+      const result = outputTool && output ? await output.dispatch(params.tool, params.arguments, {
+        session: structuredClone(runtime.session), connectionId: runtime.connectionId, runtimeGeneration: generation,
+        nativeTurnId: String(params.turnId), rpcId: request.id, callId: params.callId, assertCurrent,
+      }) : runtime.files ? await runtime.files.dispatch({ threadId: runtime.session.nativeSessionId,
         turnId: String(params.turnId), callId: params.callId, tool: params.tool, arguments: params.arguments,
         ...(typeof params.namespace === 'string' ? { namespace: params.namespace } : {}),
-      })
+      }) : denied
+      if (outputTool) assertCurrent()
       if (runtime.transport === transport && runtime.generation === generation && !runtime.disposed && !runtime.closed
         && runtime.fileRequests.get(key) === receipt && !receipt.conflictingIdentity) {
         await transport.respond(request.id, request.method, { ...result })
@@ -2046,7 +2137,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private handleDisconnect(runtime: Runtime): void {
     runtime.closed = true
     runtime.starting?.preparationController.abort()
-    void this.finishFiles(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => undefined)
     if (runtime.phase === 'starting' || runtime.phase === 'active') runtime.phase = 'uncertain'
     for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
     this.record(runtime, 'transport.disconnected', { unresolvedInteractions: runtime.interactions.size })

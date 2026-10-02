@@ -5,6 +5,10 @@ import type { DeviceRegistration } from '@graphql/contracts/device-identity'
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresTrustedConnectionSetup, type TrustedConnectionConfigure } from './trustedConnectionSetup.js'
 import type { ConnectionProbe } from './trustedConnectionProbe.js'
+import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { TransferIntentSchema } from '@graphql/contracts/byte-transfer'
+import { transferContextForBinding } from '../byte-transfer/carrier.js'
+import { isDeepStrictEqual } from 'node:util'
 function fixture() {
   const mainId = randomUUID(), deviceId = randomUUID()
   let registration: DeviceRegistration = { mainId, deviceId, workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] }
@@ -87,5 +91,64 @@ describe('trusted connection consent and readiness', () => {
     expect((await f.service.inspect(f.principal, f.input.deviceId, f.input.endpoint)).state).toBe('connected')
     expect((await f.service.read(f.principal, f.input.deviceId)).consent).toBeNull()
     expect(f.verifyOwnerApproval).not.toHaveBeenCalled(); expect(f.receipts.size).toBe(0)
+  })
+})
+
+async function acceptedFixture() {
+  const f = fixture(), consent = await f.service.configure(f.principal, f.input)
+  let binding: DeviceSessionBinding = { mainId: consent.mainId, deviceId: consent.deviceId, workerInstallationId: consent.workerInstallationId,
+    keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
+  const intent = TransferIntentSchema.parse({ ...transferContextForBinding(binding), version: 1, transferId: randomUUID(), operationId: randomUUID(), executionId: randomUUID(),
+    attemptId: randomUUID(), placementHash: 'a'.repeat(64), rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-worker', byteClass: 'source',
+    sha256: 'b'.repeat(64), byteSize: 2, manifestDigest: 'c'.repeat(64), chunkBytes: 2, expiresAt: new Date(Date.now() + 120000).toISOString() })
+  let denied = false
+  const accepted = { intent: vi.fn(async () => intent), authorize: vi.fn(async (candidate: typeof intent) => {
+    if (denied) throw new Error('original domain grant revoked')
+    if (!isDeepStrictEqual(candidate, intent)) throw new Error('original accepted intent changed')
+  }) }
+  const authority = { accepted, binding: structuredClone(binding), current: () => binding }
+  return { ...f, intent, authority, deny: () => { denied = true }, move: () => { binding = { ...binding, connectionEpoch: randomUUID(), connectionGeneration: 2 } } }
+}
+describe('accepted-transfer trusted setup domain capability', () => {
+  it('uses original accepted authority without settings:read or a borrowed management principal', async () => {
+    const f = await acceptedFixture(), actor = { ...f.principal, grants: [{ actions: ['job_artifacts:read'] as ('job_artifacts:read')[], scope: {} }] }
+    await expect(f.service.check(actor, f.input.deviceId)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    f.query.mockClear()
+    const checked = await f.service.checkAcceptedTransfer(f.intent, f.authority, new AbortController().signal)
+    expect(checked.state).toBe('ready'); expect(f.authority.accepted.authorize).toHaveBeenCalledTimes(2)
+    expect(f.query.mock.calls.some(([sql]) => sql.includes('management_principals'))).toBe(false)
+    expect(actor.grants[0]!.actions).toEqual(['job_artifacts:read'])
+  })
+  it('rejects altered accepted identity and denied data grants before probing', async () => {
+    const f = await acceptedFixture()
+    await expect(f.service.checkAcceptedTransfer({ ...f.intent, sha256: 'e'.repeat(64) }, f.authority, new AbortController().signal)).rejects.toMatchObject({ code: 'DEVICE_TRANSFER_INTENT_CHANGED' })
+    f.deny(); await expect(f.service.checkAcceptedTransfer(f.intent, f.authority, new AbortController().signal)).rejects.toThrow('original domain grant revoked')
+    expect(f.probe).not.toHaveBeenCalled()
+  })
+  it('fences current outgoing W07 capture before and after probe', async () => {
+    const f = await acceptedFixture(); f.move()
+    await expect(f.service.checkAcceptedTransfer(f.intent, f.authority, new AbortController().signal)).rejects.toMatchObject({ code: 'DEVICE_TRANSFER_CONNECTION_CHANGED' })
+    expect(f.probe).not.toHaveBeenCalled()
+    const g = await acceptedFixture(), observed = await g.probe(); g.probe.mockClear()
+    g.probe.mockImplementationOnce(async () => { g.move(); return observed })
+    await expect(g.service.checkAcceptedTransfer(g.intent, g.authority, new AbortController().signal)).rejects.toMatchObject({ code: 'DEVICE_TRANSFER_CONNECTION_CHANGED' })
+  })
+  it('rechecks original domain grant and current consent after asynchronous probing', async () => {
+    const f = await acceptedFixture(), observed = await f.probe(); f.probe.mockClear()
+    f.probe.mockImplementationOnce(async () => { f.deny(); return observed })
+    await expect(f.service.checkAcceptedTransfer(f.intent, f.authority, new AbortController().signal)).rejects.toThrow('original domain grant revoked')
+    const g = await acceptedFixture(), same = await g.probe(); g.probe.mockClear()
+    g.probe.mockImplementationOnce(async () => { await g.service.configure(g.principal, { ...g.input, commandId: randomUUID(), expectedRevision: 1, allowOwnerCommands: false }); return same })
+    expect((await g.service.checkAcceptedTransfer(g.intent, g.authority, new AbortController().signal)).state).toBe('consent-revoked')
+  })
+  it('fences expiry/cancellation and changed registration without creating setup grants', async () => {
+    const f = await acceptedFixture(), controller = new AbortController(); controller.abort(new Error('cancelled'))
+    await expect(f.service.checkAcceptedTransfer(f.intent, f.authority, controller.signal)).rejects.toThrow('cancelled')
+    const expired = { ...f.intent, expiresAt: new Date(Date.now() - 1).toISOString() }; f.authority.accepted.intent.mockResolvedValueOnce(expired)
+    f.authority.accepted.authorize.mockResolvedValueOnce()
+    await expect(f.service.checkAcceptedTransfer(expired, f.authority, new AbortController().signal)).rejects.toMatchObject({ code: 'DEVICE_TRANSFER_EXPIRED' })
+    const g = await acceptedFixture(), observed = await g.probe(); g.probe.mockClear()
+    g.probe.mockImplementationOnce(async () => { g.updateDevice({ keyRevision: 2 }); return observed })
+    await expect(g.service.checkAcceptedTransfer(g.intent, g.authority, new AbortController().signal)).rejects.toMatchObject({ code: 'DEVICE_TRANSFER_IDENTITY_CHANGED' })
   })
 })

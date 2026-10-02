@@ -1,6 +1,9 @@
 import type pg from 'pg'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
-import { WorkerMcpRelayRequestSchema, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema, type WorkerMcpRelayRequest } from '@graphql/contracts/worker-mcp-relay'
+import { WorkerMcpRelayRequestSchema, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema,
+  WorkerNativeOutputDeclarationsAuthorizationSchema, WorkerNativeOutputDeclarationsPolicySchema,
+  type WorkerNativeOutputDeclarationsPolicy, type WorkerMcpRelayRequest } from '@graphql/contracts/worker-mcp-relay'
+import { TemporaryFileScopeSchema, type TemporaryFileScope } from '@graphql/contracts/files'
 import { WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from '@graphql/contracts/worker-native-output'
 import type { PostgresArtifactPublicationAuthority } from '../runs/remote/nativeArtifactAuthority.js'
 import type { AcceptedArtifactPublication } from '../files/distributed/publication.js'
@@ -21,21 +24,25 @@ export interface SelectedMainMcpForward {
   request(body: unknown, token: string, protocolVersion?: string): Promise<{ statusCode: number; contentType: 'application/json' | 'text/event-stream' | 'empty'; body: string }>
 }
 export type NativeOutputRequest = Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output' }>
+export type NativeOutputDeclarationsRequest = Extract<WorkerMcpRelayRequest, { operation: 'worker-mcp.authorize-native-output-declarations' }>
 export interface WorkerNativeOutputAuthorizationPort {
   /** Must use the actual original admitted publication context, never tool scope or a replacement lease. */
-  authorize(input: NativeOutputRequest, connection: DeviceConnectionIdentity, sql: FileQuery): Promise<void>
+  authorize(input: NativeOutputRequest, connection: DeviceConnectionIdentity, sql: FileQuery): Promise<TemporaryFileScope>
+  authorizeDeclarations(input: NativeOutputDeclarationsRequest, connection: DeviceConnectionIdentity, sql: FileQuery): Promise<WorkerNativeOutputDeclarationsPolicy>
 }
 export function createWorkerNativeOutputAuthorizationPort(
-  authority: Pick<PostgresArtifactPublicationAuthority, 'authorize'>,
+  authority: Pick<PostgresArtifactPublicationAuthority, 'authorize' | 'assertNativeOutputConnection' | 'authorizeNativeOutputDeclarations'>,
   resolveAccepted: (input: NativeOutputRequest, connection: DeviceConnectionIdentity, sql: FileQuery) => Promise<AcceptedArtifactPublication>,
 ): WorkerNativeOutputAuthorizationPort {
   return { async authorize(input, connection, sql) {
+    await authority.assertNativeOutputConnection(input, connection, sql)
     const accepted = await resolveAccepted(input, connection, sql)
     const caller = await authority.authorize(accepted, sql)
     const scope = caller.context.scope.chat
     if (scope.kind !== 'agent' || scope.runId !== input.intent.runId || scope.executionId !== input.intent.executionId
       || scope.agentId !== input.applicationAccess.agentId || accepted.attempt.executionId !== input.intent.executionId
       || accepted.attempt.runId !== input.intent.runId || accepted.attempt.nodeId !== input.intent.nodeId
+      || scope.workspaceId !== accepted.attempt.workspaceId || scope.workflowId !== accepted.attempt.workflowId
       || accepted.attempt.attemptId !== input.intent.attemptId || accepted.attempt.placementHash !== input.intent.bindingHash
       || caller.context.nativeSessionId !== input.nativeSessionId || caller.context.turnId !== input.turnId
       || !caller.context.allowMutation || !caller.context.allowedTools.includes(WORKER_NATIVE_OUTPUT_FILE_OPERATIONS[input.outputOperation])) {
@@ -44,6 +51,13 @@ export function createWorkerNativeOutputAuthorizationPort(
     requireAuthorization(caller.principal, 'agent_chat:write', {
       workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
     })
+    await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+      values($1,'device',$2,$3,'succeeded',$4::jsonb)`, [caller.principal.id, `native_output.authorize.${input.outputOperation}`,
+      `execution:${input.intent.executionId}`, JSON.stringify({ operationId: input.intent.operationId, attemptId: input.intent.attemptId,
+        bindingHash: input.intent.bindingHash, nativeSessionId: input.nativeSessionId, turnId: input.turnId, scope: caller.context.scope })])
+    return TemporaryFileScopeSchema.parse(structuredClone(caller.context.scope))
+  }, async authorizeDeclarations(input, connection, sql) {
+    return WorkerNativeOutputDeclarationsPolicySchema.parse(await authority.authorizeNativeOutputDeclarations(input, connection, sql))
   } }
 }
 /** Main-only domain handler on W07's authenticated worker-mcp-v1 namespace. It
@@ -65,6 +79,8 @@ export class MainWorkerMcpRelay {
     }
     const client = await this.pool.connect()
     let authorization: ReturnType<typeof WorkerMcpRelayAuthorizationSchema.parse>
+    let nativeScope: TemporaryFileScope | undefined
+    let declarations: WorkerNativeOutputDeclarationsPolicy | undefined
     try {
       await client.query('begin')
       const intent = await readReconciledDispatchIntent(client, app.operationId, true)
@@ -101,19 +117,34 @@ export class MainWorkerMcpRelay {
       requireAuthorization(authority.principal, 'runs:start', { workspaceId: binding.workspace_id, workflowId: binding.workflow_id })
       authorization = WorkerMcpRelayAuthorizationSchema.parse({ version: 1, mainId: this.mainId, audience: 'worker', principalId: principal.id,
         executionId: app.executionId, agentId: app.agentId, operationId: app.operationId, attemptId: app.attemptId, bindingHash: app.bindingHash, expiresAt: principal.expiresAt })
-      if (input.operation === 'worker-mcp.authorize-native-output') {
+      if (input.operation === 'worker-mcp.authorize-native-output' || input.operation === 'worker-mcp.authorize-native-output-declarations') {
         if (binding.purpose !== 'workflow' || placement.payload.kind !== 'agent' || !placement.payload.artifactOutputs) {
           throw new DomainError('WORKER_NATIVE_OUTPUT_DENIED', 'Native output requires the original declared workflow Agent.', 403)
         }
         if (!this.nativeOutputs) throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native output authorization is not mounted.', 409)
-        await this.nativeOutputs.authorize(input, connection, client)
+        if (input.operation === 'worker-mcp.authorize-native-output') {
+          nativeScope = TemporaryFileScopeSchema.parse(await this.nativeOutputs.authorize(input, connection, client))
+          if (nativeScope.chat.kind !== 'agent' || nativeScope.chat.workspaceId !== binding.workspace_id
+            || nativeScope.chat.workflowId !== binding.workflow_id || nativeScope.chat.runId !== intent.runId) {
+            throw new DomainError('WORKER_NATIVE_OUTPUT_DENIED', 'The original native output file scope changed.', 403)
+          }
+          // Validate the returned scope while rollback can still reject a bad provider response.
+          WorkerNativeOutputAuthorizationSchema.parse({ ...authorization, outputOperation: input.outputOperation,
+            nativeSessionId: input.nativeSessionId, turnId: input.turnId, scope: nativeScope })
+        } else {
+          declarations = WorkerNativeOutputDeclarationsPolicySchema.parse(await this.nativeOutputs.authorizeDeclarations(input, connection, client))
+          if (declarations.agentConfigurationVersionId !== placement.payload.agentConfigurationVersionId) {
+            throw new DomainError('WORKER_NATIVE_OUTPUT_DENIED', 'The accepted native output configuration changed.', 403)
+          }
+        }
       }
       await client.query('commit')
     } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
     if (input.operation === 'worker-mcp.authorize') return authorization
     if (input.operation === 'worker-mcp.authorize-native-output') return WorkerNativeOutputAuthorizationSchema.parse({
-      ...authorization, outputOperation: input.outputOperation, nativeSessionId: input.nativeSessionId, turnId: input.turnId,
+      ...authorization, outputOperation: input.outputOperation, nativeSessionId: input.nativeSessionId, turnId: input.turnId, scope: nativeScope,
     })
+    if (input.operation === 'worker-mcp.authorize-native-output-declarations') return WorkerNativeOutputDeclarationsAuthorizationSchema.parse({ ...authorization, ...declarations })
     return WorkerMcpRelayResponseSchema.parse(await this.forward.request(input.body, app.token, input.protocolVersion))
   }
 }

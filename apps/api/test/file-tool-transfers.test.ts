@@ -41,6 +41,32 @@ test('bounded ranges span chunks and close their stream', async () => {
   assert.equal(stream.destroyed, true)
   assert.equal((await byteRange(Readable.from([Buffer.from('abc')]), 3, 4)).length, 0)
 })
+test('range completion waits for the original reader cleanup', async () => {
+  let beginCleanup!: () => void, finishCleanup!: () => void
+  const started = new Promise<void>((resolve) => { beginCleanup = resolve })
+  const release = new Promise<void>((resolve) => { finishCleanup = resolve })
+  let closed = false, returned = false
+  const stream = Readable.from((async function* () {
+    try { yield Buffer.from('abc'); yield Buffer.from('def') }
+    finally { beginCleanup(); await release; closed = true }
+  })(), { objectMode: false, highWaterMark: 1 })
+  const pending = byteRange(stream, 0, 2).then((bytes) => { returned = true; return bytes })
+  try {
+    await started
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(returned, false)
+  } finally { finishCleanup(); await pending }
+  assert.equal((await pending).toString(), 'ab')
+  assert.equal(closed, true)
+})
+test('range completion preserves an original reader cleanup failure', async () => {
+  const failure = new Error('original reader cleanup failed')
+  const stream = Readable.from((async function* () {
+    try { yield Buffer.from('abc'); yield Buffer.from('def') }
+    finally { await Promise.reject(failure) }
+  })(), { objectMode: false, highWaterMark: 1 })
+  await assert.rejects(byteRange(stream, 0, 2), (error) => error === failure)
+})
 test('invalid sizes/ranges fail before reading', async () => {
   await assert.rejects(completedBytes(Readable.from([]), 0), RangeError)
   await assert.rejects(byteRange(Readable.from([]), -1, 5), RangeError)
