@@ -38,3 +38,19 @@ export const TrustedConnectionCheckSchema = TrustedConnectionReadSchema.extend({
   probe: ConnectionProbeSchema.nullable(), checkedAt: z.string().datetime(),
 }).strict()
 export type TrustedConnectionCheck = z.infer<typeof TrustedConnectionCheckSchema>
+
+export const TrustedConnectionApprovalRequestSchema = z.object({
+  requestCommandId: z.string().min(8).max(200), action: TrustedConnectionConfigureSchema.omit({ approvalId: true }),
+}).strict()
+export const TrustedConnectionApprovalCommandSchema = z.object({ commandId: z.string().min(8).max(200) }).strict()
+export const TrustedConnectionApprovalReceiptSchema = z.object({
+  id: z.uuid(), mainId: z.uuid(), ownerId: z.string().min(1),
+  action: TrustedConnectionConfigureSchema, registration: DeviceRegistrationSchema,
+  requestedAt: z.string().datetime(), expiresAt: z.string().datetime(),
+}).strict()
+export type TrustedConnectionApprovalReceipt = z.infer<typeof TrustedConnectionApprovalReceiptSchema>
+export const TrustedConnectionApprovalReadSchema = TrustedConnectionApprovalReceiptSchema.extend({
+  state: z.enum(['pending', 'approved', 'consumed', 'expired', 'stale', 'revoked']),
+  approvedAt: z.string().datetime().nullable(), consumedAt: z.string().datetime().nullable(), revokedAt: z.string().datetime().nullable(),
+}).strict()
+export type TrustedConnectionApprovalRead = z.infer<typeof TrustedConnectionApprovalReadSchema>

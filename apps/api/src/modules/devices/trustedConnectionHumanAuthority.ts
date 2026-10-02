@@ -3,7 +3,11 @@ import type pg from 'pg'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { DeviceRegistrationSchema, type DeviceRegistration } from '@graphql/contracts/device-identity'
-import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, type TrustedConnectionConfigure } from '@graphql/contracts/trusted-device-connection'
+import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionApprovalRequestSchema,
+  TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema,
+  type TrustedConnectionConfigure, type TrustedConnectionApprovalReceipt, type TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
+export { TrustedConnectionApprovalRequestSchema, TrustedConnectionApprovalCommandSchema, TrustedConnectionApprovalReceiptSchema, TrustedConnectionApprovalReadSchema } from '@graphql/contracts/trusted-device-connection'
+export type { TrustedConnectionApprovalReceipt, TrustedConnectionApprovalRead } from '@graphql/contracts/trusted-device-connection'
 import { z } from 'zod'
 import { requireBrowserSession, requirePrincipal } from '../access/http.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -11,21 +15,6 @@ import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator, commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 
-export const TrustedConnectionApprovalRequestSchema = z.object({
-  requestCommandId: z.string().min(8).max(200), action: TrustedConnectionConfigureSchema.omit({ approvalId: true }),
-}).strict()
-export const TrustedConnectionApprovalCommandSchema = z.object({ commandId: z.string().min(8).max(200) }).strict()
-export const TrustedConnectionApprovalReceiptSchema = z.object({
-  id: z.uuid(), mainId: z.uuid(), ownerId: z.string().min(1),
-  action: TrustedConnectionConfigureSchema, registration: DeviceRegistrationSchema,
-  requestedAt: z.string().datetime(), expiresAt: z.string().datetime(),
-}).strict()
-export type TrustedConnectionApprovalReceipt = z.infer<typeof TrustedConnectionApprovalReceiptSchema>
-export const TrustedConnectionApprovalReadSchema = TrustedConnectionApprovalReceiptSchema.extend({
-  state: z.enum(['pending', 'approved', 'consumed', 'expired', 'stale', 'revoked']),
-  approvedAt: z.string().datetime().nullable(), consumedAt: z.string().datetime().nullable(), revokedAt: z.string().datetime().nullable(),
-}).strict()
-export type TrustedConnectionApprovalRead = z.infer<typeof TrustedConnectionApprovalReadSchema>
 const REQUEST = 'device.trusted-connection.approval.request'
 const APPROVE = 'device.trusted-connection.approval.approve'
 const REVOKE = 'device.trusted-connection.approval.revoke'
