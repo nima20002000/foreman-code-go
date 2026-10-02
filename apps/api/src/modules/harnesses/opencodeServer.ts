@@ -616,6 +616,7 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       if (!current()) return unavailable('callback_lost', true)
       if (this.responseReceipts.has(JSON.stringify([session.nativeSessionId, query.nativeRequestId]))) return unavailable('request_consumed')
       if (state.responsesInFlight.has(query.nativeRequestId)) return unavailable('response_in_flight')
+      if (state.responsesUncertain.has(query.nativeRequestId)) return unavailable('callback_lost', true)
       return { nativeSessionId: session.nativeSessionId, nativeRequestId: query.nativeRequestId,
         nativeRequestType: query.nativeRequestType, nativeTurnId, generation: `${state.connectionId}:${generation}`,
         qualified: true, state: 'available', path: 'qualified_recovery', reason: 'qualified_recovery' }
