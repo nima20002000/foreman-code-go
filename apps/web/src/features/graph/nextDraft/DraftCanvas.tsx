@@ -104,7 +104,7 @@ const DraftJob=memo(function DraftJob({id,data,selected}:NodeProps<JobGraphNode>
   const core=useRef<HTMLButtonElement>(null),panel=open?.nodeId===id?open.panel:undefined
   return <><AgentNodeView ref={core} name={data.label} harnessLabel="Job" statusLabel="Saved job" selected={selected} entry={entry} openPanel={panel}
     ariaLabel={`${data.label}, job, saved revision ${data.jobDefinitionRevision}`}
-    onSelect={()=>inspect(()=>{selectNode?.(id);setOpen({nodeId:id,panel:'info'})})}
+    onSelect={(event)=>{event.stopPropagation();inspect(()=>{selectNode?.(id);setOpen({nodeId:id,panel:'info'})})}}
 ><AgentHandles name={data.label}/></AgentNodeView>
     {panel?<Dialog open className="job-dialog" title={data.label} description="Noninteractive job" onOpenChange={value=>{if(!value)inspect(()=>setOpen(undefined))}}>{panels(id).info}{panels(id).settings}</Dialog>:null}</>
 })
