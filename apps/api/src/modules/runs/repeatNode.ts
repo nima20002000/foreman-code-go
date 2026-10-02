@@ -89,8 +89,8 @@ export function repeatTerminalResolution(version: WorkflowVersionV3, scope: Repe
   if (execution.result.outcome === 'succeeded') {
     AcceptedCurrentNodeResultSchema.parse(execution.result)
     if (node.choice) {
-      outcome = (exit ? parseRepeatExitResultV1(execution.result, node.choice)
-        : parseCurrentChoiceResult(execution.result, node.choice)).routing.outcome
+      outcome = (exit ? parseRepeatExitResultV1(execution.result, node.choice, node.kind === 'job' ? undefined : node.artifactOutputs)
+        : parseCurrentChoiceResult(execution.result, node.choice, node.kind === 'job' ? undefined : node.artifactOutputs)).routing.outcome
       const target = node.choice.outcomes.find((item) => item.outcome === outcome)!.target
       if (exit) deferred = outgoing
       else {

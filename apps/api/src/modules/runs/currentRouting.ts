@@ -1,4 +1,5 @@
 import type { ExecutionResult } from '@graphql/contracts'
+import { WorkflowArtifactOutputsV1Schema, type WorkflowArtifactOutputsV1 } from '@graphql/contracts/workflow-artifact-result'
 import {
   AcceptedCurrentNodeResultSchema, WorkflowChoiceSchema, parseChoiceResultEnvelope,
   type WorkflowChoice, type ChoiceResultEnvelope,
@@ -6,8 +7,10 @@ import {
 
 /** Parsing-only native text view; the complete original result remains the
  * accepted/digested evidence. No prefix salvage, Markdown or mixed carriers. */
-export function parseCurrentChoiceResult(result: ExecutionResult, choice: WorkflowChoice): ChoiceResultEnvelope {
+export function parseCurrentChoiceResult(result: ExecutionResult, choice: WorkflowChoice,
+  artifactOutputs?: WorkflowArtifactOutputsV1): ChoiceResultEnvelope {
   AcceptedCurrentNodeResultSchema.parse(result)
+  if (artifactOutputs) return parseChoiceResultEnvelope(result, choice, artifactOutputs)
   const output = result.outcome === 'succeeded' ? result.output : undefined
   if (output !== null && typeof output === 'object' && !Array.isArray(output)
     && Object.keys(output).length === 1 && 'text' in output && typeof output.text === 'string') {
@@ -18,8 +21,26 @@ export function parseCurrentChoiceResult(result: ExecutionResult, choice: Workfl
 
 /** Request-only instructions derived from the immutable node. Never mutate the
  * saved configuration, accepted input, model settings, or routing authority. */
-export function currentInitialPrompt(node: { initialPrompt?: string | undefined; choice?: WorkflowChoice | undefined }, repeatExit = false,
+export function currentInitialPrompt(node: { initialPrompt?: string | undefined; choice?: WorkflowChoice | undefined;
+  artifactOutputs?: WorkflowArtifactOutputsV1 | undefined }, repeatExit = false,
   handoff = false): string | undefined {
+  if (node.artifactOutputs) {
+    const saved = WorkflowArtifactOutputsV1Schema.parse(node.artifactOutputs)
+    const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(item => item.outcome) : undefined
+    const contract = [
+      'GraphQL saved workflow artifact result contract (version 1)',
+      `Required saved output keys: ${JSON.stringify(saved.outputKeys)}`,
+      `On success return exactly one complete JSON object with ${outcomes ? 'routing, data, and artifactOutputs' : 'data and artifactOutputs'}.`,
+      ...(outcomes ? [`routing has exactly outcome, one of ${JSON.stringify(outcomes)}.`] : []),
+      'artifactOutputs has exactly version: 1 and outputs: an array containing each required key exactly once.',
+      'Each output entry has exactly outputKey and commandId. Use the exact commandId of that original native turn’s successful files.publish_transferred_result call.',
+      'Admit, transfer, and publish the original bytes before completing. A command ID alone does not prove publication; the backend verifies canonical bytes and durable output mappings.',
+      'Do not invent command IDs, select latest files, reuse another execution’s publication, or claim success for an unpublished required output.',
+      'data is a JSON value. Preserve the accepted task data requirements. Do not wrap the complete JSON in Markdown or commentary. Maximum 65536 UTF-8 bytes.',
+      'End GraphQL saved workflow artifact result contract.',
+    ].join('\n')
+    return node.initialPrompt ? `${node.initialPrompt}\n\n${contract}` : contract
+  }
   if (handoff) {
     const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(({ outcome }) => outcome) : []
     const contract = [
