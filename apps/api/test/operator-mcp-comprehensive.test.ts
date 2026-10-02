@@ -3,10 +3,12 @@ import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OperatorConversationStateSchema, CancelOperatorTurnResponseSchema } from '@graphql/contracts'
+import { DeviceSetupOptionsSchema } from '@graphql/contracts/device-setup'
 import { ActivitySnapshotV1Schema } from '@graphql/contracts/activity'
 import { DeviceListResultSchema, DeviceRegistrationSchema, DevicePairingGrantResultSchema, MainDeviceIdentityPublicSchema } from '@graphql/contracts/device-identity'
 import { ManagementActionSchema, type ManagementPrincipal } from '@graphql/contracts/management'
 import { buildApp } from '../src/app.js'
+import { createGraphqlMcpServer } from '../src/mcp/unified/server.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
@@ -75,7 +77,7 @@ describe('current device and Operator control MCP parity', () => {
       readMainIdentity: async () => ({ mainId: registration.mainId, mainPublicKey: 'public-key', mainPublicKeyFingerprint: 'b'.repeat(64) }),
       list: async () => [saved], revoke,
       createPairingGrant: grant,
-      createSetupCode: vi.fn(), readSetupOptions: vi.fn(),
+      createSetupCode: vi.fn(), readSetupOptions: vi.fn(async () => ({ endpoint: null, available: false, reason: 'listener-unconfigured' as const })),
     }
     const activitySnapshot = ActivitySnapshotV1Schema.parse({ schemaVersion: 1,
       scope: { kind: 'operator_chat', conversationId: 'conversation' }, revision: '7',
@@ -126,23 +128,41 @@ describe('current device and Operator control MCP parity', () => {
     const f = await fixture()
     try {
       const ownerClient = await f.connect('owner'), reader = await f.connect('reader'), scoped = await f.connect('scoped')
-      const names = ['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond']
+      const names = ['device_main_identity_get', 'device_setup_options_get', 'devices_list', 'device_setup_code_create', 'device_pairing_grant_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond']
       expect((await ownerClient.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(names))
       const capability = await ownerClient.callTool({ name: 'operator_get_capabilities', arguments: {} })
       expect(capability.structuredContent).toMatchObject({ tools: expect.arrayContaining(names) })
       const readerNames = (await reader.listTools()).tools.map(tool => tool.name)
       expect(readerNames).toContain('devices_list')
-      for (const name of names.filter(name => !['device_main_identity_get', 'devices_list'].includes(name))) expect(readerNames).not.toContain(name)
+      for (const name of names.filter(name => !['device_main_identity_get', 'device_setup_options_get', 'devices_list'].includes(name))) expect(readerNames).not.toContain(name)
       const scopedNames = (await scoped.listTools()).tools.map(tool => tool.name)
       for (const name of names) expect(scopedNames).not.toContain(name)
-      for (const name of ['device_pairing_grant_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond']) {
+      for (const name of ['device_pairing_grant_create', 'device_setup_code_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond']) {
         const denied = await reader.callTool({ name, arguments: {} })
         expect(denied.isError).toBe(true)
         expect(f.audit).toHaveBeenCalledWith('reader', 'mcp', name, `mcp:${name}`)
       }
-      expect(f.grant).not.toHaveBeenCalled(); expect(f.revoke).not.toHaveBeenCalled(); expect(f.cancel).not.toHaveBeenCalled(); expect(f.respond).not.toHaveBeenCalled()
+      expect(f.c.services.devices!.createSetupCode).not.toHaveBeenCalled(); expect(f.grant).not.toHaveBeenCalled(); expect(f.revoke).not.toHaveBeenCalled(); expect(f.cancel).not.toHaveBeenCalled(); expect(f.respond).not.toHaveBeenCalled()
       delete f.c.services.devices; delete f.c.services.operatorChat
       for (const name of ['device_revoke', 'operator_chat_cancel', 'operator_chat_respond'] as const) expect(operatorToolAvailable(f.c, name)).toBe(false)
+      expect(f.connectSql).not.toHaveBeenCalled()
+    } finally { await f.close() }
+  })
+
+  it('constructs the complete control composition once without settings and preserves unavailable services', async () => {
+    const f = await fixture()
+    try {
+      delete f.c.services.settings
+      const server = await createGraphqlMcpServer({ role: 'operator', principal: owner, operator: f.c.services })
+      await server.close()
+      const client = await f.connect('owner')
+      const names = (await client.listTools()).tools.map(tool => tool.name)
+      for (const name of ['operator_chat_cancel', 'operator_chat_respond']) expect(names.filter(candidate => candidate === name)).toHaveLength(1)
+      expect(names).not.toContain('agent_defaults_get')
+      delete f.c.services.operatorChat
+      const unavailable = await client.callTool({ name: 'operator_chat_cancel', arguments: {} })
+      expect(unavailable).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('"code":"OPERATOR_CHAT_UNAVAILABLE"') }] })
+      expect(f.cancel).not.toHaveBeenCalled(); expect(f.respond).not.toHaveBeenCalled()
       expect(f.connectSql).not.toHaveBeenCalled()
     } finally { await f.close() }
   })
@@ -152,6 +172,8 @@ describe('current device and Operator control MCP parity', () => {
     try {
       const client = await f.connect('owner')
       expect(MainDeviceIdentityPublicSchema.parse((await client.callTool({ name: 'device_main_identity_get', arguments: {} })).structuredContent).mainId).toBe(f.registration.mainId)
+      expect(DeviceSetupOptionsSchema.parse((await client.callTool({ name: 'device_setup_options_get', arguments: {} })).structuredContent)).toEqual({ endpoint: null, available: false, reason: 'listener-unconfigured' })
+      expect(f.c.services.devices!.readSetupOptions).toHaveBeenCalledWith(owner)
       const grantInput = { workerInstallationId: f.registration.workerInstallationId, publicKey: 'approved-public-key',
         expectedFingerprint: f.registration.publicKeyFingerprint, scopes: f.registration.scopes, commandId: randomUUID() }
       const issued = DevicePairingGrantResultSchema.parse((await client.callTool({ name: 'device_pairing_grant_create', arguments: grantInput })).structuredContent)
