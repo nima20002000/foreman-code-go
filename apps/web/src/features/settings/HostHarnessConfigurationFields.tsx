@@ -25,7 +25,7 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
       options={[{ value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
       onChange={event => change({ ...value, authMode: event.target.value as typeof value.authMode })} />
     <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues ?? [], 'sandbox')}
-      options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }]}
+      options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Full access' }]}
       onChange={event => change({ ...value, sandbox: event.target.value as typeof value.sandbox })} />
     <p>These are explicit configuration values. Saving does not discover models, install, sign in or qualify a harness. Use the saved profile check on this computer.</p>
     <h4>Access and approvals</h4>
