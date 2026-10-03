@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { Linter } from 'eslint'
+import tseslint from 'typescript-eslint'
 import config from '../index.mjs'
 
 const linter = new Linter({ configType: 'flat' })
+const configWithTypeScript = [{ files: ['**/*.ts'], languageOptions: { parser: tseslint.parser } }, ...config]
 
 function messages(code, filename = 'src/workflow.mjs') {
-  return linter.verify(code, config, { filename }).map((message) => message.message)
+  return linter.verify(code, configWithTypeScript, { filename }).map((message) => message.message)
 }
 
 function assertReports(code, expected, filename) {
@@ -65,9 +67,73 @@ describe('density', () => {
   })
 })
 
-describe('tests', () => {
-  it('reports tests that read source text', () => {
+describe('tests that lock in source code', () => {
+  const testFile = 'test/engine.test.ts'
+
+  it('reports tests that read or evaluate source files', () => {
     assertReports("import source from './Editor.tsx?raw'\nexport { source }\n", 'not read source text', 'src/Editor.test.mjs')
-    assertReports("export const path = read('../src/runs/engine.ts')\n", 'not read source files', 'test/engine.test.mjs')
+    assertReports("export const path = read('../src/runs/engine.ts')\n", 'not read source files', testFile)
+    assertReports("export const text = readFileSync(resolve(repo, 'apps/web/src/Board.tsx'))\n", 'not read source files', testFile)
+    assertReports("import vm from 'node:vm'\nexport { vm }\n", 'not compile or evaluate', testFile)
+    assertReports('export const load = (ts, text) => ts.transpileModule(text, {})\n', 'not compile or evaluate', testFile)
+  })
+
+  it('allows fixture paths, module mocks and titles that mention files', () => {
+    assertClean("export const target = join(root, 'src/app.ts')\n", testFile)
+    assertClean("vi.mock('../src/engine.ts')\n", testFile)
+  })
+
+  it('reports SQL text matching and casts to private members', () => {
+    assertReports("export const hit = (sql) => sql.startsWith('select * from runs')\n", 'SQL text', testFile)
+    assertReports("export const hit = (sql) => sql === 'delete from runs'\n", 'SQL text', testFile)
+    assertReports("export function reply(sql) {\n  switch (sql) {\n    case 'update runs set x = 1': return 1\n  }\n}\n",
+      'SQL text', testFile)
+    assertReports('export const sent = (q) => q.match(/^insert into runs/)\n', 'SQL text', testFile)
+    assertReports('export const peek = (service) => (service as unknown as { managers: number }).managers\n',
+      'public interface', testFile)
+    assertReports('export const peek = (service) => (service as any).managers\n', 'public interface', testFile)
+  })
+
+  it('allows tests to query a real database', () => {
+    assertClean("export const seed = (pool) => pool.query('insert into runs values (1)')\n", testFile)
+  })
+})
+
+describe('tests that cannot fail', () => {
+  const vitestFile = 'test/engine.test.ts'
+  const nodeTestFile = 'test/engine.test.mjs'
+
+  it('reports skipped, deferred and focused tests', () => {
+    assertReports("it.skip('runs', () => {\n  expect(run()).toBe(1)\n})\n", 'Do not skip', vitestFile)
+    assertReports("it.only('runs', () => {\n  expect(run()).toBe(1)\n})\n", 'Do not skip', vitestFile)
+    assertReports("it.todo('runs')\n", 'Do not skip', vitestFile)
+    assertReports("import { test } from 'node:test'\ntest('runs', { skip: true }, () => {\n  assert.equal(run(), 1)\n})\n",
+      'Do not skip', nodeTestFile)
+  })
+
+  it('leaves conditional skips to the CI skipped-test check', () => {
+    assertClean("import { test } from 'node:test'\ntest('runs', { skip: !artifact }, () => {\n  assert.equal(run(), 1)\n})\n",
+      nodeTestFile)
+  })
+
+  it('reports tests without assertions or with vacuous assertions', () => {
+    assertReports("it('runs', () => {\n  run()\n})\n", 'Test has no assertions', vitestFile)
+    assertReports("it('runs', () => {\n  expect(1).toBe(1)\n})\n", 'Do not compare two constants', vitestFile)
+    assertReports("it('fails', () => {\n  expect(() => run()).toThrow()\n})\n", 'error message', vitestFile)
+    assertReports("it('fails', () => {\n  assert.throws(() => run())\n})\n", 'which error is thrown', vitestFile)
+    assertReports("it('runs', async () => {\n  try {\n    await run()\n  } catch (error) {\n    expect(error).toBe(1)\n  }\n})\n",
+      'inside conditional', vitestFile)
+  })
+
+  it('accepts focused assertions', () => {
+    assertClean("it('shows the run', async () => {\n  await screen.findByText('Run 1')\n})\n", vitestFile)
+    assertClean("it('fails', () => {\n  expect(() => run()).toThrow('Run is closed')\n})\n", vitestFile)
+    assertClean("it('fails', () => {\n  assert.throws(() => run(), /closed/)\n})\n", vitestFile)
+    assertClean("it('runs', () => {\n  expect(run(), 'run result').toBe(2)\n})\n", vitestFile)
+  })
+
+  it('reports test files that no runner discovers', () => {
+    assertReports('export const ready = true\n', 'not discovered by any test runner', 'test/board.smoke.mjs')
+    assertClean('export const ready = true\n', 'test/board.helpers.mjs')
   })
 })

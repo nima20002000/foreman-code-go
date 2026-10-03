@@ -49,7 +49,32 @@ const noTicketReferences = {
   },
 }
 
+// Suffixes of ad hoc test scripts that no test runner discovers.
+const UNRUN_TEST_FILE = /\.(?:smoke|model|qualification|node)\.[cm]?[jt]sx?$/
+
+const testFileNames = {
+  meta: {
+    type: 'problem',
+    docs: { description: 'Require test files to use the .test suffix that the test runners discover.' },
+    schema: [],
+    messages: {
+      unrun: 'Test file "{{name}}" is not discovered by any test runner. Rename it to *.test.* or delete it.',
+    },
+  },
+  create(context) {
+    return {
+      Program(node) {
+        const name = basename(context.filename)
+        if (UNRUN_TEST_FILE.test(name)) context.report({ node, messageId: 'unrun', data: { name } })
+      },
+    }
+  },
+}
+
 export default {
   meta: { name: 'maintainability' },
-  rules: { 'no-ticket-references': noTicketReferences },
+  rules: {
+    'no-ticket-references': noTicketReferences,
+    'test-file-names': testFileNames,
+  },
 }
