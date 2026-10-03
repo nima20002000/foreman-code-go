@@ -1,4 +1,5 @@
 import eslint from '@eslint/js'
+import maintainability, { restrictedSyntax } from '@graphql/eslint-config'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import globals from 'globals'
@@ -37,15 +38,21 @@ export default tseslint.config(
       ],
     },
   },
+  ...maintainability,
   {
     // Feature code renders form fields through the design-system kit (shared/ui/nocturne).
     files: ['src/features/**/*.tsx', 'src/routes/**/*.tsx', 'src/app/**/*.tsx'],
     ignores: ['**/*.test.tsx', '**/fixtures/**'],
     rules: {
-      'no-restricted-syntax': ['error', {
+      'no-restricted-syntax': ['error', ...restrictedSyntax, {
         selector: "JSXOpeningElement[name.name=/^(input|select|textarea)$/]",
         message: 'Use TextField, SearchField, Textarea, Select, Checkbox, Switch or Slider from shared/ui/nocturne.',
       }],
     },
+  },
+  {
+    // Terminal output is stripped of control sequences before display.
+    files: ['src/features/jobs/model.ts'],
+    rules: { 'no-control-regex': 'off' },
   },
 )

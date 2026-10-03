@@ -45,6 +45,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@graphql/eslint-config": "workspace:*",
     "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "26.5.1",
     "@types/pg": "8.20.0",
