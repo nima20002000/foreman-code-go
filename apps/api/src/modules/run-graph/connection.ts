@@ -22,6 +22,24 @@ export function beforeGraphCommit(sql: GraphTransactionSql, finalize: () => Prom
   leases.get(sql)!.finalizers.push(finalize)
 }
 
+interface CommitCheckBatch { key: object; verify: (expected: readonly unknown[]) => Promise<void>; expected: unknown[] }
+const commitCheckBatches = new WeakMap<() => Promise<void>, CommitCheckBatch>()
+
+/** Adjacent read-only checks share one live read, while every captured expectation
+ * is verified. An intervening finalizer always starts a separate check batch. */
+export function beforeGraphCommitChecks<T>(sql: GraphTransactionSql, key: object, expected: T,
+  verify: (expected: readonly T[]) => Promise<void>): void {
+  assertGraphTransaction(sql)
+  const finalizers = leases.get(sql)!.finalizers
+  const last = finalizers.at(-1)
+  const batch = last && commitCheckBatches.get(last)
+  if (batch?.key === key && batch.verify === verify) { batch.expected.push(expected); return }
+  const next = { key, verify: verify as CommitCheckBatch['verify'], expected: [expected] }
+  const finalize = () => next.verify(next.expected)
+  commitCheckBatches.set(finalize, next)
+  finalizers.push(finalize)
+}
+
 const context = new AsyncLocalStorage<ExclusiveGraphConnection>()
 
 /** Runtime check as well as a TypeScript port: a plain Pool/Client cannot impersonate a transaction. */

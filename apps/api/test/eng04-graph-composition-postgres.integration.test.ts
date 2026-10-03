@@ -8,7 +8,7 @@ import {
   graphFixture, graphPosition, ownedGraph, changeRunState, privateCanary,
   type GraphFixture, type GraphTestDatabase,
 } from './eng04-graph-composition-fixture.js'
-import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { beforeGraphCommit, withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { openRunGraphPublication, graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
 import { publishRepeatStoppedRunLocked, repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
@@ -114,6 +114,24 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     }))).rejects.toBeDefined()
     expect(await graphPosition(db, t)).toBe('1')
     expect((await snapshot(t)).state.run.executionState).toBe('queued')
+  })
+
+  it('rolls back after actual owner loss in an intervening commit finalizer', async () => {
+    const t = await fixture(), before = await snapshot(t)
+    await expect(ownedGraph(db, t, owner => owner.oneShotConnection().transaction(async sql => {
+      const publication = await openRunGraphPublication(sql, t.scope)
+      await sql.query(`update runs set execution_state='running',record=jsonb_set(record,'{executionState}','"running"') where id=$1`, [t.run.id])
+      await publishRepeatRunStateLocked(publication, owner)
+      beforeGraphCommit(sql, async () => {
+        expect((await sql.query<{ unlocked: boolean }>('select pg_advisory_unlock(810002,hashtext($1)) as unlocked', [t.run.id])).rows[0]?.unlocked).toBe(true)
+      })
+      await publication.repeatRunReadback({ evidence: { sourceKind: 'run', sourceId: 'after-finalizer', sourceRevision: '1' },
+        sourceDigest: graphSourceDigest('after-finalizer') }, owner,
+      async () => [{ type: 'repeat.run.state', state: { ...before.state.run, executionState: 'running' } }])
+    }))).rejects.toMatchObject({ code: 'RUN_OWNERSHIP_LOST' })
+    expect(await graphPosition(db, t)).toBe('1')
+    expect((await snapshot(t)).state.run.executionState).toBe('queued')
+    expect((await db.pool.query("select 1 from run_graph_sources where run_id=$1 and source_id='after-finalizer'", [t.run.id])).rowCount).toBe(0)
   })
 
   it('cannot borrow a real owner on a different PostgreSQL session', async () => {
