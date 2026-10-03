@@ -3,14 +3,15 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, posix, resolve } from 'node:path'
-import { availableParallelism, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
+  superviseIntegrationProcess } from './integration-process.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const { Pool } = require('pg')
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
 export function isIntegrationTestPath(file) {
   if (!file.startsWith('apps/api/test/') || !file.endsWith('.integration.test.ts')) return false
@@ -99,8 +100,8 @@ export function fullRunExitCode(failed, interrupted) {
   return interrupted === 'SIGINT' ? 130 : interrupted ? 143 : failed ? 1 : 0
 }
 
-export function integrationShardLimit(value, cpuCount = availableParallelism()) {
-  const limit = value === undefined ? Math.min(12, cpuCount) : Number(value)
+export function integrationShardLimit(value) {
+  const limit = value === undefined ? 12 : Number(value)
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 12) throw new Error('Integration shards must be an integer from 1 to 12')
   return limit
 }
@@ -120,18 +121,33 @@ export async function scheduleFiles(files, slots, runFile, shouldStop = () => fa
   return { outcomes, skipped: files.length - next }
 }
 
-function groupUsed(pgid) {
-  if (!pgid) return false
-  try {
-    for (const entry of readdirSync('/proc')) {
-      if (!/^\d+$/.test(entry)) continue
-      try {
-        const fields = readFileSync(`/proc/${entry}/stat`, 'utf8').split(') ')[1].split(' ')
-        if (Number(fields[2]) === pgid && fields[0] !== 'Z') return true
-      } catch { /* process exited */ }
+export function integrationTimeouts(environment) {
+  const timeouts = { ...integrationProcessLimits }
+  for (const [setting, variable] of [
+    ['idleTimeoutMs', 'GRAPHQL_INTEGRATION_IDLE_TIMEOUT_MS'],
+    ['fileTimeoutMs', 'GRAPHQL_INTEGRATION_FILE_TIMEOUT_MS'],
+  ]) {
+    if (environment[variable] === undefined) continue
+    const value = Number(environment[variable])
+    if (!Number.isSafeInteger(value) || value < 1000 || value > 60 * 60_000) {
+      throw new Error(`${variable} must be an integer from 1000 to 3600000 ms`)
     }
-  } catch { return true }
-  return false
+    timeouts[setting] = value
+  }
+  return timeouts
+}
+
+export function integrationProgressLine({ phase, total, passed, failed, active, slotCount }, now = Date.now()) {
+  const completed = passed + failed
+  const queued = Math.max(0, total - completed - active.size)
+  const running = [...active].map(([index, { file, progress }]) => {
+    const elapsed = Math.floor((now - progress.started) / 1000)
+    const idle = Math.floor((now - progress.lastOutputAt) / 1000)
+    return `slot ${index}: ${file}, elapsed ${elapsed}s, output idle ${idle}s, ${progress.bytes} bytes`
+  })
+  const summary = `[integration] PROGRESS ${phase}: ${completed}/${total} completed`
+    + ` (${passed} passed, ${failed} failed); ${active.size}/${slotCount} slots active; ${queued} queued`
+  return `${summary}${running.length ? `; ${running.join('; ')}` : ''}.`
 }
 
 function procStart(pid) {
@@ -157,25 +173,12 @@ export function hasHeavyJobAdmission(environment, common) {
 }
 
 export function signalOwnedChildren(active, timers, signal, graceMs = 5000) {
-  for (const [index, child] of active) {
+  for (const [index, { child }] of active) {
     if (!child.pid) continue
     try { process.kill(-child.pid, signal) } catch { /* already exited */ }
     if (!timers.has(index)) timers.set(index, setTimeout(() => {
       if (groupUsed(child.pid)) { try { process.kill(-child.pid, 'SIGKILL') } catch { /* already exited */ } }
     }, graceMs))
-  }
-}
-
-async function stopGroup(pgid, signal = 'SIGTERM') {
-  if (!groupUsed(pgid)) return
-  try { process.kill(-pgid, signal) } catch { /* already exited */ }
-  const started = Date.now()
-  while (groupUsed(pgid) && Date.now() - started < 5000) await sleep(100)
-  if (groupUsed(pgid)) {
-    try { process.kill(-pgid, 'SIGKILL') } catch { /* already exited */ }
-    const killed = Date.now()
-    while (groupUsed(pgid) && Date.now() - killed < 5000) await sleep(100)
-    if (groupUsed(pgid)) throw new Error(`Child process group ${pgid} did not exit`)
   }
 }
 
@@ -228,8 +231,10 @@ async function main() {
   // its own disposable database there, so the run stays fully parallel.
   if (process.env.TEST_DATABASE_URL) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
   const shardCount = Math.min(integrationShardLimit(process.env.GRAPHQL_INTEGRATION_SHARDS), selected.length)
+  const timeouts = integrationTimeouts(process.env)
   const adminUrl = adminDatabaseUrl(process.env.TEST_DATABASE_URL)
-  const admin = new Pool({ connectionString: adminUrl, max: 1 })
+  const admin = new Pool({ connectionString: adminUrl, max: 1,
+    connectionTimeoutMillis: 10_000, query_timeout: 30_000 })
   const slots = []
   const active = new Map()
   const killTimers = new Map()
@@ -252,6 +257,22 @@ async function main() {
   const retestFailedFiles = new Set()
   const cases = { passed: 0, failed: 0, skipped: 0 }
   const retest = { passed: 0, failed: 0, skipped: 0 }
+  let phase = 'first pass'
+  let phaseTotal = selected.length
+  let heartbeat
+  const reportProgress = () => {
+    const counts = phase.startsWith('retest') ? retest : { passed, failed }
+    console.log(integrationProgressLine({ phase, total: phaseTotal, ...counts, active, slotCount: shardCount }))
+  }
+  const resetSlotDatabase = async (slot) => {
+    if (slot.name) await admin.query(`drop database "${slot.name}" with (force)`)
+    slot.name = `graphql_test_${randomUUID().replaceAll('-', '')}`
+    await admin.query(`create database "${slot.name}"`)
+    const connection = new URL(adminUrl)
+    connection.pathname = `/${slot.name}`
+    slot.databaseUrl = connection.toString()
+    delete slot.resetError
+  }
   try {
     for (let index = 0; index < shardCount; index++) {
       if (interrupted) throw new Error(`Interrupted during database setup (${interrupted})`)
@@ -264,10 +285,14 @@ async function main() {
       slots.push({ index: index + 1, directory, name, databaseUrl: connection.toString() })
     }
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
+    console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file.`)
+    heartbeat = setInterval(reportProgress, 30_000)
     if (startAt) console.log(`[integration] RESUME at ${startAt}: partial run only; a clean full run is required for suite proof.`)
     if (failedFrom) console.log(`[integration] RETEST ${selected.length} failed files from ${failedFrom}: partial run only; a clean full run is required for suite proof.`)
     const runFile = async (slot, file, phase = 'first') => {
       if (interrupted) return { code: 128 + (interrupted === 'SIGINT' ? 2 : 15) }
+      if (active.has(slot.index)) throw new Error(`Slot ${slot.index} still has an owned process group`)
+      if (slot.resetError) throw new Error(`Slot ${slot.index} database reset failed: ${slot.resetError.message}`)
       const started = Date.now()
       const isRetest = phase === 'retest'
       const label = isRetest ? 'RETEST ' : ''
@@ -278,21 +303,23 @@ async function main() {
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
       const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
       closeSync(fd)
-      active.set(slot.index, child)
+      const progress = integrationProcessProgress()
+      active.set(slot.index, { child, file, progress })
+      console.log(`[integration] ${label}START ${file} (slot ${slot.index}, pid ${child.pid ?? 'unavailable'}); log: ${log}`)
       if (interrupted) signalOwnedChildren(active, killTimers, interrupted)
-      let code = 1
-      let error
-      try {
-        code = await new Promise((resolve, reject) => {
-          child.once('error', reject)
-          child.once('exit', (value, signal) => resolve(value ?? (signal ? 128 + (signal === 'SIGINT' ? 2 : 15) : 1)))
-        })
-      } catch (reason) { error = reason }
+      const result = await superviseIntegrationProcess(child, { log, progress, ...timeouts,
+        onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
+        resetAfterTimeout: async () => {
+          try { await resetSlotDatabase(slot) }
+          catch (reason) { slot.resetError = reason; throw reason }
+          console.log(`[integration] slot ${slot.index} database reset after timeout; remaining queue continues.`)
+        },
+      })
+      let code = result.code
+      let error = result.error
       clearTimeout(killTimers.get(slot.index))
       killTimers.delete(slot.index)
-      try { await stopGroup(child.pid) }
-      catch (reason) { code = 1; error = reason }
-      if (!groupUsed(child.pid)) active.delete(slot.index)
+      active.delete(slot.index)
       const retained = integrationLogPath(join(failedLogs, 'slots', `${isRetest ? 'retest-' : ''}slot-${slot.index}`), file)
       mkdirSync(dirname(retained), { recursive: true })
       copyFileSync(log, retained)
@@ -360,23 +387,20 @@ async function main() {
     }
     const toRetest = autoRetestFiles(failedFiles, { diagnostic, interrupted })
     if (toRetest.length) {
+      phase = 'retest setup'
+      phaseTotal = toRetest.length
       retest.skipped = toRetest.length
       console.log(`[integration] RETEST ${toRetest.length} first-pass failed files on fresh disposable databases.`)
       const retestSlots = slots.slice(0, Math.min(slots.length, toRetest.length))
       for (const slot of retestSlots) {
         if (interrupted) break
-        await admin.query(`drop database "${slot.name}" with (force)`)
-        slot.name = null
-        const name = `graphql_test_${randomUUID().replaceAll('-', '')}`
-        await admin.query(`create database "${name}"`)
-        slot.name = name
-        const connection = new URL(adminUrl)
-        connection.pathname = `/${name}`
-        slot.databaseUrl = connection.toString()
+        await resetSlotDatabase(slot)
         slot.directory = join(tempRoot, `retest-slot-${slot.index}`)
         mkdirSync(slot.directory)
       }
       if (!interrupted) {
+        phase = 'retest'
+        reportProgress()
         const retestStartup = toRetest.includes(startupFile)
         if (retestStartup) await runSafely(retestSlots[0], startupFile, 'retest')
         const retestParallel = toRetest.filter((file) => file !== startupFile)
@@ -385,9 +409,10 @@ async function main() {
       }
     }
   } finally {
+    clearInterval(heartbeat)
     let cleanupError
-    for (const [index, child] of active) {
-      try { await stopGroup(child.pid, interrupted || 'SIGTERM'); active.delete(index) }
+    for (const [index, { child }] of active) {
+      try { await stopGroup(child.pid, { signal: interrupted || 'SIGTERM' }); active.delete(index) }
       catch (error) { cleanupError ??= error }
     }
     for (const timer of killTimers.values()) clearTimeout(timer)

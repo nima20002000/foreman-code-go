@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationShardLimit, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
+import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -102,13 +102,34 @@ test('a successful retest cannot make a failed first pass green', () => {
   assert.equal(fullRunExitCode(1, 'SIGTERM'), 143)
 })
 
-test('integration shard limit respects CPU capacity by default and bounds explicit overrides', () => {
-  assert.equal(integrationShardLimit(undefined, 4), 4)
-  assert.equal(integrationShardLimit(undefined, 16), 12)
-  assert.equal(integrationShardLimit('8', 4), 8)
-  assert.equal(integrationShardLimit('12', 16), 12)
-  assert.throws(() => integrationShardLimit('0', 16), /integer from 1 to 12/)
-  assert.throws(() => integrationShardLimit('13', 16), /integer from 1 to 12/)
+test('integration defaults to twelve slots and bounds explicit overrides', () => {
+  assert.equal(integrationShardLimit(undefined), 12)
+  assert.equal(integrationShardLimit('8'), 8)
+  assert.equal(integrationShardLimit('12'), 12)
+  assert.throws(() => integrationShardLimit('0'), /integer from 1 to 12/)
+  assert.throws(() => integrationShardLimit('13'), /integer from 1 to 12/)
+})
+
+test('process deadlines allow long progressing files and cannot be disabled by overrides', () => {
+  const limits = integrationTimeouts({})
+  assert.equal(limits.idleTimeoutMs, 600_000)
+  assert.equal(limits.fileTimeoutMs, 3_600_000)
+  assert.equal(integrationTimeouts({ GRAPHQL_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
+  for (const value of ['0', '-1', 'Infinity', 'NaN', '3600001', '1.5']) {
+    assert.throws(() => integrationTimeouts({ GRAPHQL_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)
+  }
+})
+
+test('progress distinguishes twelve configured slots from a draining file and retest queue', () => {
+  const active = new Map([[3, { file: 'slow.integration.test.ts',
+    progress: { started: 1000, lastOutputAt: 6000, bytes: 2048 } }]])
+  const line = integrationProgressLine({ phase: 'first pass', total: 175,
+    passed: 171, failed: 3, active, slotCount: 12 }, 11_000)
+  assert.match(line, /174\/175 completed \(171 passed, 3 failed\); 1\/12 slots active; 0 queued/)
+  assert.match(line, /slot 3: slow.integration.test.ts, elapsed 10s, output idle 5s, 2048 bytes/)
+  const retest = integrationProgressLine({ phase: 'retest', total: 2,
+    passed: 0, failed: 0, active, slotCount: 12 }, 11_000)
+  assert.match(retest, /PROGRESS retest: 0\/2 completed.*1\/12 slots active; 1 queued/)
 })
 
 test('a failed file is reported while the remaining files continue', async () => {
@@ -159,13 +180,34 @@ test('slots draw the next file only when their current file finishes', async () 
   assert.equal((await pending).skipped, 0)
 })
 
+test('twelve slots start twelve files and refill an available slot after a failure', async () => {
+  const files = Array.from({ length: 13 }, (_, index) => `file-${index + 1}`)
+  const slots = Array.from({ length: integrationShardLimit() }, (_, index) => index + 1)
+  const waiting = new Map()
+  const started = []
+  const pending = scheduleFiles(files, slots, (slot, file) => new Promise((resolve) => {
+    started.push([slot, file])
+    waiting.set(file, resolve)
+  }))
+  assert.equal(started.length, 12)
+  assert.equal(new Set(started.map(([slot]) => slot)).size, 12)
+  waiting.get('file-4')({ code: 1 })
+  await Promise.resolve()
+  assert.deepEqual(started.at(-1), [4, 'file-13'])
+  for (const [file, finish] of waiting) if (file !== 'file-4') finish({ code: 0 })
+  const result = await pending
+  assert.equal(result.outcomes.length, 13)
+  assert.equal(result.skipped, 0)
+  assert.equal(result.outcomes.filter(({ code }) => code !== 0).length, 1)
+})
+
 test('interrupt escalates a TERM-ignoring owned process group without awaiting its exit', async () => {
   const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
   const timers = new Map()
   let timeout
   try {
     await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject) })
-    signalOwnedChildren(new Map([[1, child]]), timers, 'SIGTERM', 100)
+    signalOwnedChildren(new Map([[1, { child }]]), timers, 'SIGTERM', 100)
     const signal = await Promise.race([
       new Promise((resolve) => child.once('exit', (_code, value) => resolve(value))),
       new Promise((_resolve, reject) => { timeout = setTimeout(() => reject(new Error('TERM-ignoring child did not exit')), 2000) }),
