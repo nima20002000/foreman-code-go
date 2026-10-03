@@ -423,15 +423,10 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
   return { handle, send, retirePreparation, retireMaterialization, sender: (source: ImmutableTransferSource) => ({ send: (intent: TransferIntent, signal?: AbortSignal) => send(intent, source, signal) }), retireExpired: async (raw: TransferIntent, signal = AbortSignal.timeout(5000)) => {
     const i = TransferIntentSchema.parse(raw)
     if (Date.now() < Date.parse(i.expiresAt)) throw new Error('Rsync cleanup requires original expiry')
-    return locked(i.transferId, async () => {
-      if (!input.quiescent) throw new Error('Stopped rsync writer proof unavailable')
-      await input.quiescent(i, signal); signal.throwIfAborted()
-      await sources.get(i.transferId)?.close(); sources.delete(i.transferId)
-      await leases.get(i.transferId)?.interrupt(); leases.delete(i.transferId)
-      const value = verified.get(i.transferId)
-      if (value) { await value.bytes.close(); verified.delete(i.transferId) }
-      await (isSource(input.side, i) ? sourceStore : receiverStore).retire(i)
-    })
+    if (!input.quiescent) throw new Error('Stopped rsync writer proof unavailable')
+    await input.quiescent(i, signal)
+    signal.throwIfAborted()
+    await retireTransfer(i, signal)
   }, acknowledge: async (raw: TransferIntent, signal = AbortSignal.timeout(5000)) => {
     const i = TransferIntentSchema.parse(raw)
     if (input.side !== 'main') throw new Error('Only Main coordinates canonical rsync acknowledgment')

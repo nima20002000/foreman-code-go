@@ -96,7 +96,13 @@ export function createInstalledRsyncComposition(input: {
     const original = selections.get(intent.transferId)
     if (original && (!isDeepStrictEqual(original.endpoint, current.endpoint) || !isDeepStrictEqual(original.check.consent, current.check.consent)
       || original.nodeBinary !== current.nodeBinary || original.entryPoint !== current.entryPoint)) throw new Error('Original protected rsync selection changed')
-    if (!original) selections.set(intent.transferId, structuredClone(current))
+    if (!original) selections.set(intent.transferId, {
+      backend: current.backend,
+      endpoint: structuredClone(current.endpoint),
+      check: structuredClone(current.check),
+      nodeBinary: current.nodeBinary,
+      entryPoint: current.entryPoint,
+    })
     return current
   }
   const remote = async (intent: TransferIntent, method: RsyncControlRequest['method'], signal: AbortSignal) => {

@@ -41,7 +41,7 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage } = buildProductionApp(config, database, checkpoints,
+  const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, undefined,
     { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
     { mode: 'native', rsyncInstallation, ...(deviceListener ? { deviceListener } : {}) })
@@ -97,6 +97,11 @@ async function main() {
     stopIfClosing()
     await initialize()
     stopIfClosing()
+    if (rsync.kind === 'configured') {
+      for (const intent of rsync.ownership.inventory()) {
+        if (Date.parse(intent.expiresAt) <= Date.now()) await rsync.backend.retireExpired(intent)
+      }
+    }
     // Native recovery may call the scoped MCP endpoint during attachment.
     await app.listen({ host: config.host, port: config.port })
     stopIfClosing()

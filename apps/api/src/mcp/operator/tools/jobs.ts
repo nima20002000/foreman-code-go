@@ -10,6 +10,8 @@ import { DomainError } from '../../../modules/errors.js'
 import type { JobService } from '../../../modules/jobs/service.js'
 import type { PostgresCommandCoordinator } from '../../../modules/commands/postgres.js'
 import { toolFailure, toolResult } from '../../shared/results.js'
+import { componentLogger } from '../../../infrastructure/logger.js'
+const log = componentLogger('jobs')
 export const JOB_TOOLS = ['job_choices_get','job_workflow_execution_get','job_definition_list','job_definition_get','job_definition_version_get','job_definition_save','job_validate','job_start','job_get','job_list','job_cancel','job_cancellation_recovery_propose','job_cancellation_recovery_get','job_logs_read','job_artifacts_list','job_artifact_read'] as const
 export type JobToolName = typeof JOB_TOOLS[number]
 const actions:Record<JobToolName,ManagementAction> = {
@@ -28,6 +30,7 @@ export function jobCapabilities(context:JobMcpContext,resource:AuthorizedResourc
 async function invoke(context:JobMcpContext,name:JobToolName,work:()=>Promise<unknown>) {
   try {return toolResult(await work())} catch(error) {
     if(error instanceof DomainError && error.status===403) await context.services.commands.recordDenied(context.principal.id,'mcp',name,`mcp:${name}`)
+    if (!(error instanceof DomainError)) log.error({ err: error, tool: name }, 'Job tool failed')
     return toolFailure(error)
   }
 }

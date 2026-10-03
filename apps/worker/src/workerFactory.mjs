@@ -106,6 +106,11 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
         ...(rsync ? { rsync } : rsyncEntrypoint?.kind === 'configured' ? { rsync: rsyncEntrypoint.providers } : {}),
         codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision) });
+      if (installed.rsync) {
+        for (const intent of installed.rsyncOwnership.inventory()) {
+          if (Date.parse(intent.expiresAt) <= Date.now()) await installed.rsync.retireExpired(intent);
+        }
+      }
       if (!installed.rsyncAvailable && rsyncEntrypoint?.kind === 'configured') {
         process.stderr.write(`rsync unavailable: ${installed.rsyncMissing.join(', ')}\n`);
         throw new WorkerError('rsync_runtime_unavailable');

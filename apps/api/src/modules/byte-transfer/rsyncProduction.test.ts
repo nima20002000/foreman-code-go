@@ -16,7 +16,7 @@ import { RsyncWriterOwnership, rsyncArgumentDigest, type RsyncAccessLease } from
 import { createProductionRsyncComposition, type ProductionRsyncProviders } from './productionComposition.js'
 
 const bytes = Buffer.from('exact accepted immutable package\n'), hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')
-async function fixture(direction: TransferIntent['direction'] = 'to-worker', options: { realQuota?: boolean } = {}) {
+async function fixture(direction: TransferIntent['direction'] = 'to-worker', options: { realQuota?: boolean; cleanupProof?: boolean } = {}) {
   const root = await mkdtemp('/tmp/graphql-rsync-production-')
   const localRoot = join(root, 'main'), remoteRoot = join(root, 'worker')
   await mkdir(localRoot, { mode: 0o700 }); await mkdir(remoteRoot, { mode: 0o700 })
@@ -124,6 +124,7 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
     { binding: bound!, signal: options.signal }) } : undefined }
   const main = createRsyncProductionBackend({ side: 'main', stagingRoot: localRoot, current, accepted,
     quota: options.realQuota ? mainReceiver : quota,
+    ...(options.cleanupProof ? { quiescent: (intent: TransferIntent, signal: AbortSignal) => mainOwnership.quiescent(intent, signal) } : {}),
     receiver: mainReceiver, acknowledged: acknowledge, selection: async () => selection, peer, executor, ownership: mainOwnership, writers })
   return { root, i, original, check, selection, main, worker, quota, source, commands, accepted, localRoot, remoteRoot, mainReceiver, workerReceiver, mainOwnership, workerOwnership, writers, mainStore, workerStore, accesses, events, execute, copy,
     publish: () => { published = true }, deny: () => { denied = true }, disconnect: () => { bound = undefined },
@@ -132,6 +133,24 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
 }
 
 describe('production rsync leaf', () => {
+  it.each(['source-read', 'quota-admission'] as const)('retires an expired %s failure without inventing a staging record', async failure => {
+    const f = await fixture('to-worker', { realQuota: true, cleanupProof: true })
+    try {
+      if (failure === 'source-read') f.source.read.mockRejectedValueOnce(new Error('preparation failed'))
+      else vi.spyOn(f.mainReceiver, 'reserve').mockRejectedValueOnce(new Error('preparation failed'))
+      await expect(f.main.send(f.i, f.source)).rejects.toThrow('preparation failed')
+      await expect(f.main.retireExpired(f.i)).rejects.toThrow('requires original expiry')
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.i.expiresAt) + 1)
+      try {
+        await f.main.retireExpired(f.i)
+        expect(await f.mainReceiver.hasReservation(f.i, 'rsync-source')).toBe(false)
+        expect(f.mainOwnership.inventory()).toContainEqual(f.i)
+      } finally { clock.mockRestore() }
+    } finally {
+      await f.dispose()
+    }
+  })
+
   function materialization(intent: TransferIntent): SourceMaterializationRecord {
     const filesystem = { device: '1', inode: '2', mountId: '3' }
     return { operationId: randomUUID(), reservationId: randomUUID(), rootPolicyId: randomUUID(), rootPolicyRevision: '1',

@@ -134,7 +134,7 @@ describe('original rsync common composition, no SSH/native acceptance', () => {
     expect(mounted.kind).toBe('unavailable'); expect(mounted.missing).toEqual(['protected installed staging root'])
     await expect(readFile(join(stagingRoot, '.rsync-writers', 'intent.json'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
-  it('joins both original hosts and pins the selected client before dispatch', async () => {
+  it.each(['fixed', 'revalidated'])('joins both hosts and pins the client with a %s selection', async mode => {
     const f = await fixture(), localRoot = join(f.root, 'installed-main'), remoteRoot = join(f.root, 'installed-worker')
     await mkdir(localRoot, { mode: 0o700 }); await mkdir(remoteRoot, { mode: 0o700 })
     f.binding.bootId = bootIdentity(); f.intent.bootId = f.binding.bootId
@@ -153,6 +153,7 @@ describe('original rsync common composition, no SSH/native acceptance', () => {
         allowOwnerCommands: true, approvedBy: 'original-human', approvalId: randomUUID(), approvedAt: new Date().toISOString(), privilege: 'selected-os-user',
         automaticSudo: false, grantsAgentPermissions: false }, probe: { state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: endpoint.user,
         uid: 1000, hostname: 'worker', sshVersion: 'fixture', rsyncVersion: 'fixture', tailscaleVersion: 'fixture' } } }
+    if (mode === 'revalidated') selected.revalidate = vi.fn(async () => {})
     const main = createInstalledRsyncComposition({ side: 'main', current: f.current, providers: { ...f.providers, stagingRoot: localRoot,
       selection: async () => selected, peer: { capture: () => ({ binding: f.binding, request: (payload, options) =>
         worker.extensions[0]!.handle!(payload, { binding: f.binding, signal: options.signal }) }) } } })
