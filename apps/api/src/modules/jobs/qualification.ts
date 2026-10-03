@@ -405,7 +405,7 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     if (!measurement) throw new Error('Bounded model-free isolation probe did not return.')
-    const rows = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean }; Config: { Labels: Record<string, string> }; Mounts: QualificationMount[]; HostConfig?: { Tmpfs?: Record<string,string> } }>
+    const rows = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean }; Config: { Labels: Record<string, string>; Hostname?: string }; Mounts: QualificationMount[]; HostConfig?: { Tmpfs?: Record<string,string> } }>
     const row = rows[0]
     if (rows.length !== 1 || row?.Id !== id || row.Config.Labels['graphql.qualification.fingerprint'] !== fingerprint || !row.State.Running || row.State.Pid <= 0) throw new Error('Qualification container ownership mismatch.')
     await owner.enterContainer(identity, id)
@@ -414,7 +414,7 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
     const relative = /^0::(\/[^\n]*)$/.exec(cgroup)?.[1]
     if (!relative || relative.split('/').includes('..') || !relative.includes(`libpod-${id}.scope`)) throw new Error('Owned cgroup identity unavailable.')
     const cgroupPath = `/sys/fs/cgroup${relative}`
-    validateIsolationMeasurement(measurement, candidate, before)
+    validateIsolationMeasurement(measurement, candidate, {...before,containerId:id,containerHostname:row.Config.Hostname})
     await podman(['stop', '--time=1', id])
     const stopped = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean; Status: string } }>
     if (stopped.length !== 1 || stopped[0]?.Id !== id || stopped[0].State.Running || stopped[0].State.Pid !== 0 || stopped[0].State.Status !== 'exited') throw new Error('Container stop proof unavailable.')
@@ -473,9 +473,14 @@ async function measureContext(candidate: JobQualificationCandidate) {
 /** Actual entry recheck outside SQL. GET never invokes this function. */
 export async function assertJobRuntimeEntryContext(candidate: JobQualificationCandidate): Promise<void> { await measureContext(JobQualificationCandidateSchema.parse(candidate)) }
 
-export function validateIsolationMeasurement(probe: Record<string, unknown>, candidate: JobQualificationCandidate, host: { hostPidNamespace: string; hostNetworkNamespace: string }) {
+export function validateIsolationMeasurement(probe: Record<string, unknown>, candidate: JobQualificationCandidate, host: { hostPidNamespace: string; hostNetworkNamespace: string; containerId?: string; containerHostname?: string|undefined }) {
   const toolchain = probe.toolchain as Record<string, unknown> | undefined
-  if (!toolchain || !/^v(?:2[2-9]|[3-9]\d)\./.test(String(toolchain.node)) || toolchain.pnpm !== '11.27.0' || !/^git version \d/.test(String(toolchain.git)) ||
+  const environment=['CI','GRAPHQL_JOB_INPUT_MANIFEST','HOME','LANG','PATH',...Object.keys(JOB_GIT_ENVIRONMENT)]
+  const managedHostname=Array.isArray(probe.environment)&&probe.environment.includes('HOSTNAME')
+  if(managedHostname)environment.push('HOSTNAME')
+  const hostnameMatches=managedHostname?typeof probe.hostname==='string'&&probe.hostname.length>0&&/^[a-f0-9]{64}$/.test(host.containerId??'')
+    &&(probe.hostname===host.containerHostname||probe.hostname===host.containerId?.slice(0,12)):probe.hostname==null
+  if (!hostnameMatches || !toolchain || !/^v(?:2[2-9]|[3-9]\d)\./.test(String(toolchain.node)) || toolchain.pnpm !== '11.27.0' || !/^git version \d/.test(String(toolchain.git)) ||
     !/^flock from util-linux \d/.test(String(toolchain.flock)) || !/^\d+\.\d+\.\d+/.test(String(toolchain.corepack)) ||
     typeof probe.pidNamespace !== 'string' || !/^pid:\[\d+\]$/.test(probe.pidNamespace) ||
     typeof probe.networkNamespace !== 'string' || !/^net:\[\d+\]$/.test(probe.networkNamespace) ||
@@ -487,7 +492,7 @@ export function validateIsolationMeasurement(probe: Record<string, unknown>, can
     probe.gitCommon!==JOB_GIT_CONTAINER_DIRECTORY||probe.gitRead!==true||probe.gitConfigWriteError!=='EROFS'
     ||probe.gitIndexWriteError!=='EROFS'||probe.gitHeadWriteError!=='EROFS'||probe.gitObjectWriteError!=='EROFS'||probe.schedulerWrite!==true
     ||probe.inputRead !== true || probe.inputWriteError !== 'EROFS' ||
-    JSON.stringify(probe.environment)!==JSON.stringify(['CI','GRAPHQL_JOB_INPUT_MANIFEST','HOME','LANG','PATH',...Object.keys(JOB_GIT_ENVIRONMENT)].sort())) throw new Error('Measured isolation/toolchain/resource controls rejected.')
+    JSON.stringify(probe.environment)!==JSON.stringify(environment.sort())) throw new Error('Measured isolation/toolchain/resource controls rejected.')
 }
 
 export interface QualificationMount {Type:string;Source:string;Destination:string;RW:boolean}
@@ -532,4 +537,4 @@ const version=(argv)=>{const p=cp.spawnSync(argv[0],argv.slice(1),{encoding:'utf
 fs.mkdirSync(process.env.HOME,{recursive:true});let rootfsWriteError=null;try{fs.writeFileSync('/ci-qualification-outside','x')}catch(e){rootfsWriteError=e.code}
 const gitCommon=version(['git','rev-parse','--path-format=absolute','--git-common-dir']),gitRead=version(['git','show','HEAD:qualification.txt'])==='original qualification snapshot';const deniedWrite=(path)=>{try{fs.writeFileSync(path,'changed');return null}catch(e){return e.code}};const gitConfigWriteError=deniedWrite('/graphql-job-git/config'),gitIndexWriteError=deniedWrite('/graphql-job-git/index'),gitHeadWriteError=deniedWrite('/graphql-job-git/HEAD');const head=fs.readFileSync('/graphql-job-git/HEAD','utf8').trim(),gitObjectWriteError=deniedWrite('/graphql-job-git/objects/'+head.slice(0,2)+'/'+head.slice(2));const schedulerFile=fs.openSync('/graphql-job-git/graphql-heavy-jobs/probe','wx',0o600);fs.writeSync(schedulerFile,'original scheduler state');fs.fsyncSync(schedulerFile);fs.closeSync(schedulerFile);const schedulerWrite=fs.readFileSync('/graphql-job-git/graphql-heavy-jobs/probe','utf8')==='original scheduler state';fs.writeFileSync('/workspace/probe','bounded qualification write');const input=JSON.parse(fs.readFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'utf8')),inputRead=input.version===1&&input.workflowInput===null&&Array.isArray(input.files)&&input.files.length===0;let inputWriteError=null;try{fs.writeFileSync(process.env.GRAPHQL_JOB_INPUT_MANIFEST,'changed')}catch(e){inputWriteError=e.code}const cpu=fs.readFileSync('/sys/fs/cgroup/cpu.max','utf8').trim().split(' ');
 const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}),status=fs.readFileSync('/proc/self/status','utf8');
-console.log('GRAPHQL_CI_QUALIFICATION '+JSON.stringify({toolchain:{node:process.version,corepack:version(['corepack','--version']),pnpm:version(['corepack','pnpm','--version']),git:version(['git','--version']),flock:version(['flock','--version'])},rootfsWriteError,gitCommon,gitRead,gitConfigWriteError,gitIndexWriteError,gitHeadWriteError,gitObjectWriteError,schedulerWrite,inputRead,inputWriteError,sourceWrite:true,proc:fs.existsSync('/proc/self/stat'),pidNamespace:fs.readlinkSync('/proc/self/ns/pid'),networkNamespace:fs.readlinkSync('/proc/self/ns/net'),interfaces:fs.readdirSync('/sys/class/net').sort(),memoryMax:fs.readFileSync('/sys/fs/cgroup/memory.max','utf8').trim(),swapMax:fs.readFileSync('/sys/fs/cgroup/memory.swap.max','utf8').trim(),pidsMax:fs.readFileSync('/sys/fs/cgroup/pids.max','utf8').trim(),cpuRatio:Number(cpu[0])/Number(cpu[1]),environment:Object.keys(process.env).sort(),detachedChild:!!child.pid,capabilities:status.match(/^CapEff:\\s*(.*)$/m)?.[1],noNewPrivileges:status.match(/^NoNewPrivs:\\s*(.*)$/m)?.[1]}));setInterval(()=>{},1000);`
+console.log('GRAPHQL_CI_QUALIFICATION '+JSON.stringify({toolchain:{node:process.version,corepack:version(['corepack','--version']),pnpm:version(['corepack','pnpm','--version']),git:version(['git','--version']),flock:version(['flock','--version'])},rootfsWriteError,gitCommon,gitRead,gitConfigWriteError,gitIndexWriteError,gitHeadWriteError,gitObjectWriteError,schedulerWrite,inputRead,inputWriteError,sourceWrite:true,proc:fs.existsSync('/proc/self/stat'),pidNamespace:fs.readlinkSync('/proc/self/ns/pid'),networkNamespace:fs.readlinkSync('/proc/self/ns/net'),interfaces:fs.readdirSync('/sys/class/net').sort(),memoryMax:fs.readFileSync('/sys/fs/cgroup/memory.max','utf8').trim(),swapMax:fs.readFileSync('/sys/fs/cgroup/memory.swap.max','utf8').trim(),pidsMax:fs.readFileSync('/sys/fs/cgroup/pids.max','utf8').trim(),cpuRatio:Number(cpu[0])/Number(cpu[1]),environment:Object.keys(process.env).sort(),hostname:process.env.HOSTNAME??null,detachedChild:!!child.pid,capabilities:status.match(/^CapEff:\\s*(.*)$/m)?.[1],noNewPrivileges:status.match(/^NoNewPrivs:\\s*(.*)$/m)?.[1]}));setInterval(()=>{},1000);`
