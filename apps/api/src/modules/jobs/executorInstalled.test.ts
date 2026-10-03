@@ -131,8 +131,11 @@ describe('installed Job original Git/scheduler propagation', () => {
     await expect(f.check()).rejects.toThrow('Unique original installed Job admission')
   })
   it.each(['git', 'scheduler'] as const)('rejects a foreign %s filesystem despite a passing leaf double', async mount => {
-    const f = await fixture(); f.mounts[mount].filesystem.inode = '0'
+    const f = await fixture()
+    const observedFilesystem = f.mounts[mount].filesystem
+    f.mounts[mount].filesystem = { ...observedFilesystem, inode: '0' }
     await expect(f.check()).rejects.toThrow('qualified filesystem or identity')
+    expect(await filesystem(f.mounts[mount].directory)).toEqual(observedFilesystem)
   })
   it.each([
     ['git', 'device'], ['git', 'mountId'], ['scheduler', 'device'], ['scheduler', 'mountId'],
