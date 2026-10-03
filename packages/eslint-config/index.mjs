@@ -53,7 +53,9 @@ const testRestrictedSyntax = [
   },
   {
     // A repository path such as '../src/app.ts' or 'apps/web/src/Board.tsx' passed to readFile, new URL, etc.
-    selector: `:matches(CallExpression, NewExpression):not([callee.object.name='vi'], [callee.name=${TEST_FUNCTION}])`
+    // Collection lookups such as map.get('apps/api/src/app.ts') handle paths as data and are allowed.
+    selector: `:matches(CallExpression, NewExpression):not([callee.object.name='vi'], [callee.name=${TEST_FUNCTION}], `
+      + '[callee.property.name=/^(?:get|has|set|add|delete|includes|indexOf|push|startsWith|endsWith)$/])'
       + ' > Literal[value=/^(?:[.]{1,2}[\\u002F]|(?:apps|packages)[\\u002F]).*[.](?:ts|tsx|mts|cts|css)$/]',
     message: 'Tests must exercise behavior, not read source files.',
   },
