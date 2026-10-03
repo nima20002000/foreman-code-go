@@ -3,7 +3,7 @@ import { NativeSessionReferenceSchema } from './index.js'
 import { DispatchIntentSchema } from './nodePlacement.js'
 import { IdSchema } from './schemaPrimitives.js'
 import { SourceHashSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
-import { SourceRootRecordSchema, SourceMaterializationRecordSchema, SourcePinSchema, SourceCwdAttestationSchema } from './sourceAdmission.js'
+import { SourceRootRecordSchema, SourceMaterializationRecordSchema, SourcePinSchema, SourceCwdAttestationSchema, SourcePreparationClosureSchema } from './sourceAdmission.js'
 import { TransferIntentSchema } from './byteTransfer.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 export const SOURCE_OPERATION_EXTENSION = { namespace: 'source-operations-v1', version: 1, maxJsonBytes: 1048576, maxBinaryBytes: 0, maxPending: 2 } as const
@@ -19,6 +19,7 @@ export const SourceFilesystemOperationSchema = z.discriminatedUnion('operation',
     relativeCwd: z.string().max(1024).default('') }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.private-repository'), record: SourceMaterializationRecordSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.release'), record: SourceMaterializationRecordSchema }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('sources.reconcile-preparation'), reconciliationId: z.uuid() }).strict(),
 ])
 export type SourceFilesystemOperation = z.infer<typeof SourceFilesystemOperationSchema>
 export const SourceOperationRequestSchema = z.union([SourceFilesystemOperationSchema,
@@ -61,7 +62,7 @@ export const SourceActiveNativeSessionSchema = z.object({
 export type SourceActiveNativeSession = z.infer<typeof SourceActiveNativeSessionSchema>
 export const SourceOperationOwnerSchema = z.object({ identity: SourcePreparationIdentitySchema, root: SourceRootRecordSchema,
   attempt: SourceOperationAttemptSchema, source: SourcePinSchema, record: SourceMaterializationRecordSchema.nullable(),
-  physicalClosureConfirmed: z.boolean(), activeNativeSession: SourceActiveNativeSessionSchema.nullish() }).strict()
+  physicalClosureConfirmed: z.boolean(), activeNativeSession: SourceActiveNativeSessionSchema.nullish(), preparationClosed: z.literal(true).optional() }).strict()
 export type SourceOperationOwner = z.infer<typeof SourceOperationOwnerSchema>
 export const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),
   generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict()
@@ -73,6 +74,7 @@ export const SourceOperationResponseSchema = z.discriminatedUnion('operation', [
     cwdAttestation: SourceCwdAttestationSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.private-repository'), repository: PrivateSourceRepositoryResultSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.release'), materializationId: z.uuid(), operationId: IdSchema, released: z.literal(true) }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('sources.reconcile-preparation'), closure: SourcePreparationClosureSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.authorize'), owner: SourceOperationOwnerSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.transfer-authorize'), intent: TransferIntentSchema }).strict(),
 ])

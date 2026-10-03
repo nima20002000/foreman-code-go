@@ -140,6 +140,8 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
     if (name === 'workspace_root_location_set') result.push({ action: 'source_roots:bind', scope: 'workspace' }, { action: 'workspace_locations:validate', scope: 'workspace' })
   }
   if (name === 'source_approve') result.push({action:'sources:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
+  if (name.startsWith('source_preparation_')) result.push({action:'source_roots:read',scope:'workspace'})
+  if (name === 'source_preparation_reconcile') result.push({action:'sources:read',scope:'workspace'})
   if (name.startsWith('source_root_')) result.push({action:'sources:read',scope:'workspace'})
   if (name === 'source_root_bind') result.push({action:'source_roots:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
   // Every chat command returns protected state. Discovery requires overlapping
