@@ -248,7 +248,8 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
           await input.journal.jobProcessClosed(execution.operationId, launch.launchId)
         }
       }
-      const closed = await Promise.all(processOwners.map(processOwner => input.registry.closeOwner(processOwner)))
+      const recordedOwners = new Set((retained?.launches ?? []).map(launch => launch.processOwner ?? owner))
+      const closed = await Promise.all([...recordedOwners].map(processOwner => input.registry.closeOwner(processOwner)))
       return closed.every(Boolean)
     },
     async confirmUnreleasedClosure(containerId) {
