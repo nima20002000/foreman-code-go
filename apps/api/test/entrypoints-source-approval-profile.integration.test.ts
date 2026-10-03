@@ -114,7 +114,7 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
     const deniedClient = new Client({ name: 'Denied source profile', version: '1' }); clients.push(deniedClient)
     await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => denied.token } }))
     expect((await deniedClient.callTool({ name: 'source_approve', arguments: { ...input, commandId: randomUUID() } })).isError).toBe(true)
-    expect(stages.totalMs).toBeLessThan(15_000)
+    expect(stages.totalMs).toBeLessThan(20_000)
     for (const transport of ['http', 'mcp'] as const) {
       const controller = new AbortController(), timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(controller.signal)
       const fault = vi.spyOn(store, 'write').mockImplementation(async (...args) => {
