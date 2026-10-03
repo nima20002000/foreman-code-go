@@ -2,6 +2,7 @@ import { constants } from 'node:fs'
 import { open, mkdir, realpath, readFile, type FileHandle } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { SourceError } from './manifest.js'
+import { DomainError } from '../errors.js'
 
 export const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 export function anchored(handle: FileHandle, name = ''): string { return `/proc/self/fd/${handle.fd}${name ? `/${name}` : ''}` }
@@ -9,7 +10,7 @@ export async function identity(handle: FileHandle): Promise<{ device: string; in
   const stat = await handle.stat({ bigint: true })
   const info = await readFile(`/proc/self/fdinfo/${handle.fd}`, 'utf8')
   const mountId = /^mnt_id:\s*(\d+)$/m.exec(info)?.[1]
-  if (!mountId) throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Linux mount identity cannot be qualified.')
+  if (!mountId) throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Linux mount identity cannot be qualified.', 422)
   return { device: stat.dev.toString(), inode: stat.ino.toString(), mountId }
 }
 /** Linux procfs anchors every operation to an open directory, including ancestors.
@@ -18,17 +19,17 @@ export async function identity(handle: FileHandle): Promise<{ device: string; in
  */
 export async function openPrivateRoot(path: string, privateOnly = true): Promise<FileHandle> {
   if (process.platform !== 'linux' || !isAbsolute(path) || path !== await realpath(path))
-    throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'An approved canonical Linux private root is required.')
+    throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'An approved canonical Linux private root is required.', 422)
   let parent = await open('/', directoryFlags)
   try {
     for (const component of path.split('/').filter(Boolean)) {
       const ancestor = await parent.stat()
       if ((ancestor.uid !== 0 && ancestor.uid !== process.getuid?.())
         || ((ancestor.mode & 0o022) !== 0 && (ancestor.mode & 0o1000) === 0))
-        throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Root ancestors must exclude replacement by other principals.')
+        throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Root ancestors must exclude replacement by other principals.', 422)
       const child = await open(anchored(parent, component), directoryFlags)
       if ((ancestor.mode & 0o022) !== 0 && (await child.stat()).uid !== process.getuid?.()) {
-        await child.close(); throw new SourceError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Sticky-directory entries must be owned by this worker.')
+        await child.close(); throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Sticky-directory entries must be owned by this worker.', 422)
       }
       await parent.close(); parent = child
     }
