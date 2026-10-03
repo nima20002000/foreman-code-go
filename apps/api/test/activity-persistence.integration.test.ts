@@ -6,6 +6,7 @@ import { PostgresOperatorActivityRepository } from '../src/modules/conversations
 import { fixture } from './helpers/agentChatF1.js'
 import { agentActivitySnapshot } from '../src/modules/conversations/activitySnapshot.js'
 import { activitySnapshotMigration } from '../src/infrastructure/activitySnapshotMigration.js'
+import { compactCommandActivityMigration } from '../src/infrastructure/compactCommandActivityMigration.js'
 
 // Orchestrator executes against its owned disposable TEST_DATABASE_URL. No provider I/O.
 const connectionString = process.env.TEST_DATABASE_URL
@@ -92,6 +93,7 @@ describe.skipIf(!connectionString)('activity transaction fencing in PostgreSQL',
         result jsonb, activity_record_revision bigint not null default 0, created_at timestamptz not null default now());
       insert into operator_conversation_turns (conversation_id,request_id,intent,delivery,updated_at)
         values ('conversation','A','next_turn','accepted',now())`)
+    await pool.query(compactCommandActivityMigration.sql)
     await repository.append('conversation', 'A', { ...value('running'), id: 'old-child', kind: 'subagent' }, fence('1'))
     for (let index = 0; index < 101; index++) await repository.append('conversation', 'A',
       { ...value('completed'), id: `done-${index}` }, fence(String(index + 2)))
