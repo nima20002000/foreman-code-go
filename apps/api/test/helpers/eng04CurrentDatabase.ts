@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { rm } from 'node:fs/promises'
 import pg from 'pg'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 /** The existing disposable loopback test gate, without importing retired
@@ -20,7 +19,7 @@ export async function currentDatabase() {
   await admin.query(`create schema ${schema}`)
   const pool = new pg.Pool({ connectionString: url, max: 10,
     options: `-c search_path=${schema},public -c statement_timeout=10000 -c lock_timeout=5000` })
-  const directory = await mkdtemp(join(tmpdir(), 'eng04-b-'))
+  const directory = await privateFixtureDirectory('eng04-b-')
   try { await applyApplicationMigrations(pool) } catch (error) {
     await pool.end(); await admin.query(`drop schema ${schema} cascade`); await admin.end()
     await rm(directory, { recursive: true, force: true }); throw error

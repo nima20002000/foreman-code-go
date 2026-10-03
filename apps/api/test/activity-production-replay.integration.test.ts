@@ -16,6 +16,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { buildProductionApp } from '../src/production.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
 import { createActivityReplayFileStorage, createActivityReplayWorkspace, startActivityReplayProduction } from './helpers/activityReplayLifecycle.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 
 const closes: Array<() => Promise<void>> = []
@@ -67,7 +68,9 @@ async function freePort() {
 }
 async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write' } = {}) {
   const db = await agent3Database(); closes.push(db.close)
-  const workspace = await createActivityReplayWorkspace(db.directory)
+  const directory = await privateFixtureDirectory('activity-replay-workspace-')
+  closes.push(() => rm(directory, { recursive: true, force: true }))
+  const workspace = await createActivityReplayWorkspace(directory)
   const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: workspace.harnessWorkspaceRoot,
     PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex', OPENCODE_BINARY: '/recorded-no-native-opencode' })
   config.workspaceStorageRoot = workspace.workspaceStorageRoot

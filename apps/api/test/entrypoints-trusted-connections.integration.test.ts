@@ -1,4 +1,5 @@
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagementActionSchema } from '@graphql/contracts/management'
@@ -26,6 +27,7 @@ async function fixture(pinOwner = true) {
     BETTER_AUTH_SECRET: 'entrypoints-test-browser-secret-'.repeat(3), BETTER_AUTH_URL: origin,
     ...(pinOwner ? { OWNER_OPERATOR_PRINCIPAL_ID: owner.principal.id } : {}) })
   config.workspaceStorageRoot = join(db.directory, 'workspaces')
+  await mkdir(config.harnesses.workspaceRoot, { mode: 0o700 })
   const cpSchema = `${db.schema}_cp`
   const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
   const clients: Client[] = []
