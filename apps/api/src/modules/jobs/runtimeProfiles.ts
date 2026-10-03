@@ -50,7 +50,8 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         const readiness=profile.status==='qualified'&&profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()?await this.producer.revalidate(sql,profile):{ready:false,reasons:[`RUNTIME_${profile.status.toUpperCase().replaceAll('-','_')}`]}
         return {profile,...readiness,sideEffects:false as const}
       }))
-      await this.authorize(sql,principal,workspaceId);return {profiles}
+      const approvals=(await sql.query<{record:unknown}>(`select record from job_runtime_qualification_approvals where workspace_id=$1 and record->>'status' in ('awaiting-approval','approved') order by id limit 100`,[workspaceId])).rows.map(row=>JobRuntimeApprovalSchema.parse(row.record))
+      await this.authorize(sql,principal,workspaceId);return {profiles,approvals}
     })
   }
   async save(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobRuntimeProfileSave) {

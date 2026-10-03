@@ -41,6 +41,11 @@ function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.statu
   return {state,producer,human,query,sql:{query:vi.fn().mockImplementation(query)},service:new JobRuntimeProfiles(pool,commands,{} as PostgresSourceService,producer,human)}
 }
 describe('CI runtime metadata authority and original qualification ownership',()=>{
+  it('lists scoped pending approval fingerprints without probing or approving',async()=>{
+    const f=fixture(),read=await f.service.list(principal,profile.workspaceId)
+    expect(read).toHaveProperty('approvals',[f.state.approval])
+    expect(f.producer.capture).not.toHaveBeenCalled();expect(f.producer.run).not.toHaveBeenCalled()
+  })
   it('reads original approval without any candidate capture or native probe',async()=>{
     const f=fixture(),read=await f.service.getQualification(principal,profile.workspaceId,approval.id)
     expect(read.readiness).toEqual({ready:false,reasons:['RUNTIME_UNQUALIFIED'],sideEffects:false})
