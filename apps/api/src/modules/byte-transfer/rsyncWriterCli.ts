@@ -39,6 +39,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const stop = () => controller.abort(new Error('Rsync writer interrupted'))
   process.once('SIGTERM', stop); process.once('SIGINT', stop)
   void runRsyncWriterCli(process.argv.slice(2), controller.signal).then(code => { process.exitCode = code })
-    .catch(() => { process.stderr.write('Rsync writer failed; original ownership retained\n'); process.exitCode = 1 })
+    .catch(error => {
+      const reason = error instanceof Error ? error.message : 'Unknown writer failure'
+      process.stderr.write(`Rsync writer failed: ${reason.slice(0, 2048)}; original ownership retained\n`)
+      process.exitCode = 1
+    })
     .finally(() => { process.off('SIGTERM', stop); process.off('SIGINT', stop) })
 }

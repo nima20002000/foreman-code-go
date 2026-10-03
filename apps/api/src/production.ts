@@ -1022,12 +1022,14 @@ export function buildProductionApp(
   })
   const runtimeServices: OperatorServices & { jobs?: import('./modules/jobs/service.js').JobService;
     jobRuntimeProfiles?: import('./modules/jobs/runtimeProfiles.js').JobRuntimeProfiles } = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
+  const localDevBrowserAccess = config.localDevBrowserAccess
+    ? new LocalDevBrowserAccess(database.pool, access,
+      config.localDevBrowserAccess.origin, config.localDevBrowserAccess.principalId)
+    : undefined
   const app = buildApp({
     runtimeIdentity: () => readRuntimeIdentity(database.pool, fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString),
     ...(config.browserAuth ? { browserAuth: new BrowserAuthentication(database.pool, access, config.browserAuth) } : {}),
-    ...(config.localDevBrowserAccess ? { localDevBrowserAccess: new LocalDevBrowserAccess(
-      database.pool, access, config.localDevBrowserAccess.origin, config.localDevBrowserAccess.principalId,
-    ) } : {}),
+    ...(localDevBrowserAccess ? { localDevBrowserAccess } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
     harnessCompatibility,
@@ -1157,7 +1159,9 @@ export function buildProductionApp(
       const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
       assertOpen()
-      const connectionAuthority = new PostgresTrustedConnectionHumanAuthority(database.pool, machine.installationId)
+      const connectionAuthority = new PostgresTrustedConnectionHumanAuthority(
+        database.pool, machine.installationId, localDevBrowserAccess,
+      )
       trustedConnections = new PostgresTrustedConnectionSetup(database.pool, machine.installationId,
         { verifyOwnerApproval: connectionAuthority.verifyOwnerApproval })
       runtimeServices.trustedConnections = trustedConnections

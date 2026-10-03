@@ -12,6 +12,12 @@ import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
  * authoritative retention/ownership reconciliation owns reclamation.
  */
 export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByteReader {
+  private readonly manifests = new Map<string, {
+    identity: string
+    manifest: SourceManifest
+    entries: Map<string, SourceEntry>
+  }>()
+
   constructor(private readonly canonicalRoot: string) {}
   private async directory(id: string, create: boolean): Promise<{ root: FileHandle; snapshot: FileHandle }> {
     SourceManifestSchema.shape.snapshotId.parse(id)
@@ -107,19 +113,42 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
     const root = await openPrivateRoot(this.canonicalRoot)
     try { return await identity(root) } finally { await root.close() }
   }
+
+  private async readManifest(snapshot: FileHandle, snapshotId: string) {
+    const file = await open(anchored(snapshot, 'manifest.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      const before = await file.stat({ bigint: true })
+      if (!before.isFile() || before.nlink !== 1n || before.size > 2n * 1024n * 1024n) {
+        throw new SourceError('SOURCE_MANIFEST_INVALID', 'Invalid canonical manifest record.')
+      }
+      const identity = [before.dev, before.ino, before.size, before.mtimeNs, before.ctimeNs].join(':')
+      const cached = this.manifests.get(snapshotId)
+      // Every entry reopens the protected file; unchanged manifests need parsing only once.
+      if (cached?.identity === identity) return cached
+
+      const manifest = verifySourceManifest(JSON.parse(await file.readFile('utf8')))
+      const after = await file.stat({ bigint: true })
+      if (identity !== [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':')) {
+        throw new SourceError('SOURCE_MANIFEST_INVALID', 'Canonical manifest changed while reading.')
+      }
+      const record = { identity, manifest, entries: new Map(manifest.entries.map(entry => [entry.path, entry])) }
+      if (!this.manifests.has(snapshotId) && this.manifests.size >= 8) {
+        this.manifests.delete(this.manifests.keys().next().value!)
+      }
+      this.manifests.set(snapshotId, record)
+      return record
+    } finally {
+      await file.close()
+    }
+  }
+
   async read(pin: SourceSnapshotPin, entry: SourceEntry, signal: AbortSignal): Promise<Uint8Array> {
     signal.throwIfAborted()
     const { root, snapshot } = await this.directory(pin.snapshotId, false)
     try {
-      const file = await open(anchored(snapshot, 'manifest.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
-      let manifest: SourceManifest
-      try {
-        const stat = await file.stat()
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_MANIFEST_INVALID', 'Invalid canonical manifest record.')
-        manifest = verifySourceManifest(JSON.parse(await file.readFile('utf8')))
-      } finally { await file.close() }
+      const { manifest, entries } = await this.readManifest(snapshot, pin.snapshotId)
       if (manifest.snapshotId !== pin.snapshotId || manifest.manifestDigest !== pin.manifestDigest || manifest.approvedSourceId !== pin.approvedSourceId
-        || !manifest.entries.some((candidate) => isDeepStrictEqual(candidate, entry))) throw new SourceError('SOURCE_PIN_CONFLICT', 'Canonical source access requires the exact approved snapshot and inclusion.')
+        || !isDeepStrictEqual(entries.get(entry.path), entry)) throw new SourceError('SOURCE_PIN_CONFLICT', 'Canonical source access requires the exact approved snapshot and inclusion.')
       const bytes = await this.readEntry(snapshot, entry); signal.throwIfAborted(); return bytes
     } finally { await snapshot.close(); await root.close() }
   }

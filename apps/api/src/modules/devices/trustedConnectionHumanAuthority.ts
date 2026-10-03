@@ -16,6 +16,7 @@ import { PostgresCommandCoordinator, commandInputHash } from '../commands/postgr
 import { DomainError } from '../errors.js'
 import { intersectGrants } from '../access/operatorDelegation.js'
 import { operatorChatGrants } from '../access/operatorChatDelegation.js'
+import type { LocalDevBrowserAccess } from '../access/localDevBrowser.js'
 
 // Use the exact root-owned nested schema; never reconstruct or strip its binding.
 export const TrustedConnectionApplyAuthoritySchema = TrustedConnectionApprovalReceiptSchema.shape.applyAuthority.unwrap()
@@ -32,13 +33,18 @@ const reject = (code: string, message: string, status = 403): never => { throw n
 /** Connection-specific human authority. Only verified browser routes issue approval.
  * Uses immutable original command receipts; no generic approval IDs or Job authority. */
 export class PostgresTrustedConnectionHumanAuthority {
-  constructor(private readonly pool: pg.Pool, private readonly mainId: string) {}
+  constructor(
+    private readonly pool: pg.Pool,
+    private readonly mainId: string,
+    private readonly localDevBrowserAccess?: Pick<LocalDevBrowserAccess, 'authenticate'>,
+  ) {}
   private target(id: string) { return `${this.mainId}:${id}` }
   private async currentOwner(client: pg.PoolClient, write: boolean): Promise<string> {
     const row = (await client.query<{ principal_id: string }>('select principal_id from browser_auth_owner where singleton=true for share')).rows[0]
-    if (!row) reject('DEVICE_CONNECTION_WRONG_OWNER', 'The current application owner is unavailable.')
-    requireAuthorization(await readLiveManagementPrincipal(client, row!.principal_id), write ? 'settings:update' : 'settings:read')
-    return row!.principal_id
+    const ownerId = row?.principal_id ?? (await this.localDevBrowserAccess?.authenticate())?.id
+    if (!ownerId) return reject('DEVICE_CONNECTION_WRONG_OWNER', 'The current application owner is unavailable.')
+    requireAuthorization(await readLiveManagementPrincipal(client, ownerId), write ? 'settings:update' : 'settings:read')
+    return ownerId
   }
   private async owner(client: pg.PoolClient, principal: ManagementPrincipal, write: boolean): Promise<string> {
     requireAuthorization(principal, write ? 'settings:update' : 'settings:read')

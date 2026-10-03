@@ -7,6 +7,9 @@ import { BYTE_TRANSFER_POLICY as POLICY, TransferContextSchema, TransferIntentSc
 import { nativeProcessExit } from '../harnesses/recovery/processRegistry.js'
 import type { RsyncProcessLaunch, RsyncRemoteWriter } from './rsyncWriterOwnership.js'
 import type { TransferAuthorization, TransferOperation } from './service.js'
+import { componentLogger } from '../../infrastructure/logger.js'
+
+const log = componentLogger('byte-transfer')
 
 export const RSYNC_SSH_ARGS = Object.freeze(['-F', '/dev/null', '-o', 'BatchMode=yes', '-o',
   'StrictHostKeyChecking=yes', '-o', 'ForwardAgent=no', '-o', 'ConnectTimeout=5'])
@@ -129,7 +132,12 @@ export class NodeRsyncExecutor implements RsyncExecutor {
           if (ownershipError) throw ownershipError
           if (signal.aborted) reject(signal.reason ?? new Error('Rsync interrupted'))
           else if (overflow) reject(new Error('Rsync diagnostic limit exceeded'))
-          else if (code !== 0) reject(new Error(`Rsync command failed (${code})`))
+          else if (code !== 0) {
+            const diagnostic = output.trim().slice(-4096)
+            const error = new Error(`Rsync command failed (${code})`, { cause: new Error(diagnostic) })
+            log.error({ err: error, exitCode: code }, 'rsync command failed')
+            reject(error)
+          }
           else resolve(output)
         })().catch(reject)
       })
@@ -233,6 +241,9 @@ export class RsyncStagingTransport {
         if (Date.now() >= expires) throw new Error('Transfer expired')
         return staged.read(offset, length, bounded)
       } }
+    } catch (error) {
+      log.error({ err: error, transferId: intent.transferId }, 'rsync transfer failed')
+      throw error
     } finally {
       clearTimeout(deadline); clearInterval(poll); signal?.removeEventListener('abort', abort)
       if (writerPrepared && !completed) {
