@@ -95,29 +95,46 @@ export class WorkflowNativeProofServices {
     await assertRepeatCanonicalReceiptLocked(sql, { scope,
       evidence: { sourceKind: 'execution', sourceId: entry.source_id, sourceRevision: '1' },
       sourceDigest: entry.source_digest, effect: null })
-    const sessionRow = (await sql.query<{ reference: unknown }>(
-      'select reference from execution_native_sessions where execution_id=$1 for update', [stored.execution.id])).rows[0]
-    if (sessionRow ? !sameRepeatValue(NativeSessionReferenceSchema.parse(sessionRow.reference), capture.session)
-      : capture.source.type !== 'session_created') return fail()
-    if (stored.execution.nativeSessionId !== undefined && stored.execution.nativeSessionId !== capture.session.nativeSessionId) return fail()
-    const configuration = (await sql.query<{ harness: string }>(
-      "select record#>>'{harness,harness}' as harness from agent_configuration_versions where id=$1 and agent_id=$2 and workspace_id=$3 for share",
-      [stored.execution.agentConfigurationVersionId, stored.execution.agentId, scope.workspaceId])).rows[0]
-    if (configuration?.harness !== capture.session.harness) return fail()
-    if (!capture.closureGeneration && capture.source.type !== 'boundary') return fail()
-    const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed: boolean }>(
-      `select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed from execution_native_closures
-       where execution_id=$1 order by generation desc limit 1 for update`, [stored.execution.id])).rows[0]
-    if (capture.closureGeneration && (!closure || closure.generation !== capture.closureGeneration || closure.closed
-      || closure.expected_reference !== null && !sameRepeatValue(closure.expected_reference, capture.session))) return fail('NATIVE_LIFETIME_CHANGED')
-    if (capture.lane) {
-      const lane = (await sql.query<{ owner_agent_id: string; harness: string; native_session_id: string;
-        generation: string; token: string | null; correlation: string | null; provider_id: string | null; held: boolean }>(
-        `select owner_agent_id,harness,native_session_id,record->>'connectionGeneration' as generation,
+    // Read and lock the same physical guards in one round trip. Nothing is
+    // cached between calls: lease expiry and every immutable identity are still
+    // revalidated at each original boundary and immediately before commit.
+    const physical = (await sql.query<{
+      session: { reference: unknown } | null; configuration: { harness: string } | null
+      closure: { generation: string; expected_reference: unknown; closed: boolean } | null
+      lane: { owner_agent_id: string; harness: string; native_session_id: string; generation: string;
+        token: string | null; correlation: string | null; provider_id: string | null; held: boolean } | null
+    }>(`with current_session as materialized (
+        select reference from execution_native_sessions where execution_id=$1 for update
+      ), current_configuration as materialized (
+        select record#>>'{harness,harness}' as harness from agent_configuration_versions
+        where id=$2 and agent_id=$3 and workspace_id=$4 for share
+      ), current_closure as materialized (
+        select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed
+        from execution_native_closures where execution_id=$1 order by generation desc limit 1 for update
+      ), current_lane as materialized (
+        select owner_agent_id,harness,native_session_id,record->>'connectionGeneration' as generation,
           record->>'leaseToken' as token,record->>'correlationId' as correlation,
           record->>'currentTurnOrMessageId' as provider_id,
           coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
-         from native_session_lanes where id=$1 for update`, [capture.lane.id])).rows[0]
+        from native_session_lanes where id=$5 for update
+      ) select (select row_to_json(s) from current_session s) as session,
+        (select row_to_json(c) from current_configuration c) as configuration,
+        (select row_to_json(c) from current_closure c) as closure,
+        (select row_to_json(l) from current_lane l) as lane`,
+    [stored.execution.id, stored.execution.agentConfigurationVersionId, stored.execution.agentId,
+      scope.workspaceId, capture.lane?.id ?? null])).rows[0]!
+    const sessionRow = physical.session
+    if (sessionRow ? !sameRepeatValue(NativeSessionReferenceSchema.parse(sessionRow.reference), capture.session)
+      : capture.source.type !== 'session_created') return fail()
+    if (stored.execution.nativeSessionId !== undefined && stored.execution.nativeSessionId !== capture.session.nativeSessionId) return fail()
+    const configuration = physical.configuration
+    if (configuration?.harness !== capture.session.harness) return fail()
+    if (!capture.closureGeneration && capture.source.type !== 'boundary') return fail()
+    const closure = physical.closure
+    if (capture.closureGeneration && (!closure || closure.generation !== capture.closureGeneration || closure.closed
+      || closure.expected_reference !== null && !sameRepeatValue(closure.expected_reference, capture.session))) return fail('NATIVE_LIFETIME_CHANGED')
+    if (capture.lane) {
+      const lane = physical.lane
       if (!lane || lane.owner_agent_id !== stored.execution.agentId || lane.harness !== capture.session.harness
         || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane.token || !lane.held
         || lane.generation !== String(capture.lane.connectionGeneration)
