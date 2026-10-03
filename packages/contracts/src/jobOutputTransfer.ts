@@ -4,6 +4,7 @@ import { JobArtifactMediaTypeSchema } from './jobArtifacts.js'
 import { FileSha256Schema, MAX_FILE_BYTES } from './files.js'
 import { TransferIntentSchema } from './byteTransfer.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
+import { DeviceSessionBindingSchema } from './deviceConnection.js'
 
 /** Worker arguments assert output metadata only; main issues transfer identity and authority. */
 export const JobOutputPublicationInputSchema = z.object({
@@ -19,7 +20,7 @@ export const JobOutputAdmissionSchema = z.object({
   inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/), specDigest: FileSha256Schema,
   materializationId: z.uuid(), materializationDigest: FileSha256Schema,
   fileId: z.string().min(1), revisionId: z.string().min(1), allocationExpiresAt: z.string().datetime(),
-  originalConnection: DeviceConnectionIdentitySchema, nativeIdentityDigest: FileSha256Schema,
+  originalConnection: z.union([DeviceSessionBindingSchema, DeviceConnectionIdentitySchema]), nativeIdentityDigest: FileSha256Schema,
   closureEvidenceDigest: FileSha256Schema, receiptSequence: z.number().int().positive(),
   intent: TransferIntentSchema, admittedAt: z.string().datetime(),
 }).strict()
