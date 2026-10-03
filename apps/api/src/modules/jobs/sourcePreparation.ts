@@ -12,6 +12,7 @@ import { sourceSha256 } from '../sources/manifest.js'
 import { verifiedSourceWorkingTree } from '../sources/nativeStamp.js'
 import { authorizeSource } from '../sources/authority.js'
 import { DomainError } from '../errors.js'
+import { DeviceAccessError } from '../devices/access.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import { JobPreparationService, type JobPreparationSources } from './preparation.js'
 
@@ -37,7 +38,13 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     const targets:JobAuthoringChoices['targets']=[]
     for(const root of roots.filter(root=>sources.some(source=>source.snapshotId===root.source.snapshotId&&source.manifestDigest===root.source.manifestDigest))) {
       try{const target=await this.target(sql,principal,root);targets.push({id:root.binding.rootId,label:root.selection.hostRef.kind==='main'?'Main computer':`Computer ${root.selection.hostRef.deviceId}`,target,ready:root.binding.accessMode==='exclusive-write',reasons:root.binding.accessMode==='exclusive-write'?[]:['SOURCE_READ_ONLY']})}
-      catch(error){if(!(error instanceof DomainError)||error.status>=500||error.status===403)throw error} // Current unavailable roots are not silently retargeted.
+      catch (error) {
+        // Retained roots on revoked devices remain history, but cannot be selected for another Job.
+        if (root.selection.hostRef.kind === 'device' && error instanceof DeviceAccessError && error.code === 'revoked') {
+          continue
+        }
+        if (!(error instanceof DomainError) || error.status >= 500 || error.status === 403) throw error
+      }
     }
     return {sources,targets,policies}
   }
