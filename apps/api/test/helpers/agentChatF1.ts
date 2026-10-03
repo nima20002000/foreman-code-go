@@ -83,7 +83,7 @@ export class F1Store {
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
-    if (sql.startsWith('with open as ( select principal_id,operation,command_id')) return result() // No accepted controls in this fixture.
+    if (sql.startsWith('with candidates as materialized ( select r.principal_id,r.operation,r.command_id')) return result() // No accepted controls in this fixture.
     if (sql.startsWith('select a.conversation_id,a.request_id,a.activity_id,a.source_provenance')) {
       assert.equal(values[0], 'agent')
       assert(values[1] === null || values[1] === this.row.id)
