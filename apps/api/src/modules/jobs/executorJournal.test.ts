@@ -132,6 +132,36 @@ async function qualifiedFixture() {
   await f.journal.qualificationResult(id, { outcome: 'qualified', measurement })
   return { ...f, candidate, measurement }
 }
+async function qualifyAgain(f: Awaited<ReturnType<typeof qualifiedFixture>>, change?: (candidate: typeof f.candidate) => void) {
+  const original = await f.journal.qualificationStatus(f.candidate.operationId)
+  if (!original?.container?.certificate) throw new Error('Qualification fixture missing')
+  const id = randomUUID()
+  const candidate = structuredClone(f.candidate)
+  Object.assign(candidate, { operationId: id, qualificationId: id, approvalId: id })
+  change?.(candidate)
+  const { jobQualificationFingerprint } = await import('./qualification.js')
+  const fingerprintDigest = jobQualificationFingerprint(candidate)
+  const admission = { ...original.admission, operationId: id, qualificationId: id, approvalId: id, leaseId: id,
+    fingerprintDigest, bootId: candidate.fingerprint.bootId }
+  const measurement = { ...structuredClone(f.measurement), qualificationId: id, approvalId: id,
+    fingerprint: candidate.fingerprint, fingerprintDigest, checkedAt: '2099-01-01T00:00:00.000Z',
+    runtime: { ...f.measurement.runtime, qualificationId: id } }
+  await f.journal.qualificationAccept(admission, candidate)
+  await f.journal.qualificationReserveEntry(id)
+  const identity = `graphql-ci-qualification-${id}`
+  const containerId = 'c'.repeat(64)
+  await f.journal.qualificationContainerIntent(id, identity, fingerprintDigest)
+  await f.journal.qualificationBindContainer(id, identity, containerId)
+  const certificate = structuredClone(original.container.certificate)
+  Object.assign(certificate, { containerId })
+  Object.assign(certificate.scope, { admission, bootId: admission.bootId })
+  Object.assign(certificate.scope.subject, { operationId: id, qualificationId: id, fingerprint: fingerprintDigest })
+  certificate.process.bootId = admission.bootId
+  await f.journal.qualificationCertificate(id, certificate)
+  await f.journal.qualificationClose(id)
+  await f.journal.qualificationResult(id, { outcome: 'qualified', measurement })
+  return candidate
+}
 describe('measured qualifier selection remains distinct from a Job grant', () => {
   it('selects only original matching measured policy/host/root evidence', async () => {
     const f = await qualifiedFixture()
@@ -140,6 +170,50 @@ describe('measured qualifier selection remains distinct from a Job grant', () =>
     await expect(f.journal.qualifiedJobRuntime(changed)).rejects.toThrow('missing or ambiguous')
     changed.acceptedSpec.target.destination.rootPolicyRevision = '1'; changed.acceptedSpec.policy.toolchainDigest = 'a'.repeat(64)
     await expect(f.journal.qualifiedJobRuntime(changed)).rejects.toThrow('missing or ambiguous')
+    expect(await f.journal.jobNativeOwner(f.execution.operationId)).toBeNull()
+  })
+  it('selects the newest equivalent qualification and retains it when another diagnostic completes', async () => {
+    const f = await qualifiedFixture()
+    const repeated = await qualifyAgain(f)
+    const selected = await f.journal.qualifiedJobRuntime(f.execution)
+    expect(selected.candidate.operationId).toBe(repeated.operationId)
+    await f.journal.jobReserveEntry(f.execution.operationId)
+    await f.journal.jobContainerIntent(f.execution.operationId, jobSupervisorIdentity(f.execution),
+      f.execution.acceptedSpec.specDigest, selected.candidate.operationId)
+    const later = await qualifyAgain(f)
+    expect((await f.journal.qualifiedJobRuntime(f.execution)).candidate.operationId).toBe(repeated.operationId)
+    const fresh = { ...f.execution, operationId: 'another-job-operation' }
+    const tieWinner = [repeated.operationId, later.operationId].sort().at(-1)
+    expect((await f.journal.qualifiedJobRuntime(fresh)).candidate.operationId).toBe(tieWinner)
+    await f.journal.close()
+    const reopened = await RemoteOperationJournal.open(f.path)
+    journals.push(reopened)
+    expect((await reopened.qualifiedJobRuntime(f.execution)).candidate.operationId).toBe(repeated.operationId)
+    expect((await reopened.jobNativeOwner(f.execution.operationId))?.qualificationOperationId).toBe(repeated.operationId)
+    expect(await reopened.qualificationStatus(f.candidate.operationId)).toMatchObject({ result: { outcome: 'qualified' } })
+  })
+  it.each(['configurationDigest', 'bootId'] as const)('rejects competing qualifications with a changed %s', async field => {
+    const f = await qualifiedFixture()
+    await qualifyAgain(f, candidate => {
+      candidate.fingerprint[field] = field === 'bootId' ? randomUUID() : 'e'.repeat(64)
+    })
+    await expect(f.journal.qualifiedJobRuntime(f.execution)).rejects.toThrow('missing or ambiguous')
+  })
+  it('does not use a different registration or workspace root to resolve qualification selection', async () => {
+    const f = await qualifiedFixture()
+    await qualifyAgain(f)
+    const changed = structuredClone(f.execution)
+    changed.workspaceId = 'another-workspace'
+    await expect(f.journal.qualifiedJobRuntime(changed)).rejects.toThrow('missing or ambiguous')
+    changed.workspaceId = f.execution.workspaceId
+    changed.acceptedSpec.target.registration = { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 }
+    await expect(f.journal.qualifiedJobRuntime(changed)).rejects.toThrow('missing or ambiguous')
+  })
+  it('rejects a fresh Job when every equivalent measurement has expired', async () => {
+    const f = await qualifiedFixture()
+    await qualifyAgain(f)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2101-01-01T00:00:00.000Z'))
+    await expect(f.journal.qualifiedJobRuntime(f.execution)).rejects.toThrow('missing or ambiguous')
     expect(await f.journal.jobNativeOwner(f.execution.operationId)).toBeNull()
   })
   it('pins the original qualifier for cleanup without granting expired evidence a fresh launch', async () => {
@@ -159,6 +233,7 @@ describe('measured qualifier selection remains distinct from a Job grant', () =>
 describe('installed actual Job factory with native/process doubles', () => {
   it('journals guarded commands before spawn and keeps observed exit7 separate from publication transport', async () => {
     const f = await qualifiedFixture()
+    const repeated = await qualifyAgain(f)
     const mounts = await mountFixture(f.execution)
     const { EventEmitter } = await import('node:events'), { PassThrough } = await import('node:stream')
     const processes = await import('../harnesses/recovery/processRegistry.js')
@@ -216,7 +291,7 @@ describe('installed actual Job factory with native/process doubles', () => {
       expect(await f.journal.jobStatus(f.execution.operationId)).toMatchObject({ status: 'known', receipt: { terminal: { outcome: 'build_failed', exitCode: 7 }, publication: 'complete' } })
       await host.deliver(f.intent, f.execution)
       expect(spawned.filter(argv => argv.includes('create'))).toHaveLength(1)
-      expect((await f.journal.jobNativeOwner(f.execution.operationId))?.qualificationOperationId).toBe(f.candidate.operationId)
+      expect((await f.journal.jobNativeOwner(f.execution.operationId))?.qualificationOperationId).toBe(repeated.operationId)
     } finally { vi.restoreAllMocks() }
   })
 })

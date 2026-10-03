@@ -500,28 +500,42 @@ export class RemoteOperationJournal {
     })
   }
 
-  /** Select genuine original diagnostic evidence; executable presence is not readiness. */
+  /** Repeated diagnostics can renew one installed runtime; native owners keep their selected diagnostic. */
   async qualifiedJobRuntime(execution: JobExecution): Promise<QualificationReceipt> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     const spec = execution.acceptedSpec
     const retained = this.data.jobOwners.find(value => value.operationId === execution.operationId)?.qualificationOperationId
-    const matches = this.data.qualificationReceipts.filter(receipt => {
-      if (receipt.phase !== 'closed' || receipt.result?.outcome !== 'qualified') return false
-      const measurement = receipt.result.measurement, runtime = measurement.runtime
-      return (!retained || receipt.admission.operationId === retained) && runtime.policyId === spec.policy.isolationPolicyId && runtime.policyRevision === spec.policy.isolationPolicyRevision &&
-        runtime.imageDigest === spec.policy.imageDigest && runtime.toolchainDigest === spec.policy.toolchainDigest &&
-        same(measurement.hostRef, spec.target.hostRef) && same(measurement.registration, spec.target.registration) &&
-        measurement.fingerprint.mainInstallationId === spec.target.mainInstallationId &&
-        measurement.root.binding.workspaceId === execution.workspaceId &&
-        measurement.root.selection.rootPolicyId === spec.target.destination.rootPolicyId &&
-        measurement.root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision &&
-        measurement.root.selection.locationRevision === spec.target.destination.locationRevision &&
-        (Boolean(retained) || Date.parse(measurement.expiresAt) > Date.now())
+    const matches = this.data.qualificationReceipts.flatMap(receipt => {
+      if (receipt.phase !== 'closed' || receipt.result?.outcome !== 'qualified') return []
+      const measurement = receipt.result.measurement
+      const runtime = measurement.runtime
+      const matching = (!retained || receipt.admission.operationId === retained)
+        && runtime.policyId === spec.policy.isolationPolicyId
+        && runtime.policyRevision === spec.policy.isolationPolicyRevision
+        && runtime.imageDigest === spec.policy.imageDigest
+        && runtime.toolchainDigest === spec.policy.toolchainDigest
+        && same(measurement.hostRef, spec.target.hostRef)
+        && same(measurement.registration, spec.target.registration)
+        && measurement.fingerprint.mainInstallationId === spec.target.mainInstallationId
+        && measurement.root.binding.workspaceId === execution.workspaceId
+        && measurement.root.selection.rootPolicyId === spec.target.destination.rootPolicyId
+        && measurement.root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision
+        && measurement.root.selection.locationRevision === spec.target.destination.locationRevision
+        && (Boolean(retained) || Date.parse(measurement.expiresAt) > Date.now())
+      return matching ? [{ receipt, checkedAt: Date.parse(measurement.checkedAt) }] : []
     })
-    if (matches.length !== 1) throw new Error('Original qualified Job runtime missing or ambiguous: recovery required')
-    return structuredClone(matches[0]!)
+    const first = matches[0]
+    if (!first) throw new Error('Original qualified Job runtime missing or ambiguous: recovery required')
+    const context = { ...first.receipt.candidate, qualificationId: null, operationId: null, approvalId: null }
+    if (matches.some(({ receipt }) => !same(context, {
+      ...receipt.candidate, qualificationId: null, operationId: null, approvalId: null,
+    }))) throw new Error('Original qualified Job runtime missing or ambiguous: recovery required')
+    matches.sort((left, right) => right.checkedAt - left.checkedAt
+      || right.receipt.admission.operationId.localeCompare(left.receipt.admission.operationId))
+    return structuredClone(matches[0]!.receipt)
   }
+
   private jobOwner(data: z.infer<typeof JournalSchema>, operationId: string): JobNativeOwner {
     const receipt = this.jobReceipt(data, operationId)
     if (!receipt.entryAttempted) throw new Error('Original Job native reservation required')
