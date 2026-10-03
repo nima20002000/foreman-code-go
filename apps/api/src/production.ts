@@ -1,4 +1,9 @@
 import { WORKSPACE_ROOT_EXTENSION } from '@graphql/contracts/workspace-root-policies'
+import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
+import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
+import { RsyncTransferAuthorizeRequestSchema } from '@graphql/contracts/byte-transfer'
+import type { AcceptedTransferAuthority } from './modules/byte-transfer/carrier.js'
+import type { InstalledMainRsyncProviders } from './modules/byte-transfer/productionComposition.js'
 import { createInstalledRsyncComposition } from './modules/byte-transfer/productionComposition.js'
 import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import { transferContextForBinding } from './modules/byte-transfer/carrier.js'
@@ -213,7 +218,39 @@ export function buildProductionApp(
   let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
   const inputAcknowledgements = new Map<string, TransferIntent>()
-  const rsyncProviders=infrastructure?.rsync?{...infrastructure.rsync,acknowledged:async(...args:Parameters<NonNullable<typeof infrastructure.rsync.acknowledged>>)=>{
+  const acceptedRsync: AcceptedTransferAuthority = {
+    async intent(id, binding) {
+      if (!jobRuntime) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Original Main source and Job transfer services have not initialized.', 503)
+      if (!isDeepStrictEqual(deviceRuntime.endpointForDomains().captureRequest(binding.deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding, binding))
+        throw new DomainError('RSYNC_CONNECTION_CONFLICT', 'Transfer lookup requires the actual current rsync channel.', 403)
+      const owners = (await database.pool.query<{ operation: string }>(`select operation from management_command_receipts where
+        (operation in ('source.package.admit','job.output.admit') and result #>> '{intent,transferId}'=$1)
+        or (operation='job.inputs.bind' and exists(select 1 from jsonb_array_elements(result->'transfers') item where item #>> '{intent,transferId}'=$1))`, [id])).rows
+      if (owners.length !== 1) throw new DomainError('RSYNC_TRANSFER_DENIED', 'Exactly one original source or Job admission must own the transfer.', 403)
+      const operation = owners[0]!.operation
+      if (operation === 'source.package.admit') return jobRuntime.transfers.intent(id, binding)
+      if (operation === 'job.inputs.bind') {
+        const { transfer } = await jobRuntime.inputs.main.acceptedTransfer(id)
+        await jobRuntime.inputs.main.authorizeTransfer(transfer.intent, transferContextForBinding(binding))
+        return transfer.intent
+      }
+      const intent = await jobRuntime.outputs.admission.intentForTransfer(id)
+      await jobRuntime.outputs.admission.authorizeTransfer(intent, transferContextForBinding(binding))
+      return intent
+    },
+    async authorize(intent, context) {
+      const binding = deviceRuntime.endpointForDomains().captureRequest(intent.deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding
+      if (!binding || !isDeepStrictEqual(transferContextForBinding(binding), context) || !isDeepStrictEqual(await acceptedRsync.intent(intent.transferId, binding), intent))
+        throw new DomainError('RSYNC_TRANSFER_DENIED', 'The original accepted transfer or authenticated generation changed.', 403)
+    },
+  }
+  const entrypoint = infrastructure?.rsyncInstallation?.kind === 'configured' && !infrastructure.rsync
+    ? createMainRsyncEntrypoint({ installation: infrastructure.rsyncInstallation, endpoint: () => deviceRuntime.endpointForDomains(), accepted: acceptedRsync,
+      setup: new PostgresTrustedConnectionSetup(database.pool, infrastructure.rsyncInstallation.selected.registration.mainId,
+        { verifyOwnerApproval: async () => { throw new DomainError('RSYNC_SELECTION_UNAVAILABLE', 'Only existing human owner consent may select rsync.', 403) } }),
+      ownership: () => rsync.kind === 'configured' ? rsync.ownership : undefined }) : undefined
+  const installedRsync: InstalledMainRsyncProviders | undefined = infrastructure?.rsync ?? entrypoint?.providers
+  const rsyncProviders: InstalledMainRsyncProviders | undefined=installedRsync?{...installedRsync,acknowledged:async(...args:Parameters<NonNullable<InstalledMainRsyncProviders['acknowledged']>>)=>{
     const [intent,context]=args
     const binding=deviceRuntime.endpointForDomains().captureRequest(intent.deviceId,RSYNC_STAGE_EXTENSION.namespace)?.binding
     if(!binding||!isDeepStrictEqual(transferContextForBinding(binding),context))throw new DomainError('RSYNC_CONNECTION_CONFLICT','Canonical ACK requires the original actual Main capture.',403)
@@ -226,13 +263,20 @@ export function buildProductionApp(
     }else if(isDeepStrictEqual(inputAcknowledgements.get(intent.transferId),intent)){
       if(!jobRuntime)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The original input delivery authority is unavailable.',503)
       await jobRuntime.inputs.main.acknowledged(intent.transferId,binding)
-    }else await infrastructure.rsync!.acknowledged(...args)
+    }else await installedRsync.acknowledged(...args)
   }}:undefined
-  const rsync = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
+  const rsync: ReturnType<typeof createInstalledRsyncComposition> = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
     current: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding })
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
-      ...rsync.extensions,
+      ...rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const, async handle(raw: unknown, context: import('./modules/devices/deviceApplicationChannel.js').DeviceExtensionContext) {
+        context.signal.throwIfAborted()
+        if (context.bytes !== undefined) throw new DomainError('RSYNC_TRANSFER_DENIED', 'Transfer authorization accepts metadata only.', 403)
+        const request = RsyncTransferAuthorizeRequestSchema.parse(raw)
+        const intent = await acceptedRsync.intent(request.transferId, context.binding)
+        context.signal.throwIfAborted()
+        return { payload: intent }
+      } })),
       { namespace: WORKSPACE_ROOT_EXTENSION.namespace, version: WORKSPACE_ROOT_EXTENSION.version, role: 'client', maxJsonBytes: WORKSPACE_ROOT_EXTENSION.maxPayloadBytes, maxBinaryBytes: 0 },
       { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(payload, context) {
         const handler = jobRuntime?.qualificationExtension.handle
@@ -954,6 +998,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
@@ -1048,8 +1093,8 @@ export function buildProductionApp(
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         activeNativeSession, captureNativeSession,
-        ...(infrastructure?.rsync ? { transferSender: source => rsync.sender(source),
-          transferReceiver:infrastructure.rsync.receiver,
+        ...(installedRsync ? { transferSender: source => rsync.sender(source),
+          transferReceiver:installedRsync.receiver,
           outputRsync:{stage:async(intent,signal)=>{
             if(rsync.kind!=='configured')throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE','The selected original rsync lifecycle is unavailable.',409)
             return rsync.backend.send(intent,undefined,signal)

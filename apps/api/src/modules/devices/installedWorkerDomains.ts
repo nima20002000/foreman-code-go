@@ -110,7 +110,7 @@ export async function createInstalledWorkerDomains(input: {
   if (rsync.kind === 'configured' && input.rsync && input.jobConfiguration && approved) jobInputRsync = createInstalledJobInputRsync({
     receiver: input.rsync.receiver, journal: await jobJournal(), channel: { request, currentBinding: current },
     receiptRoot: join(input.stateDirectory, 'job-input-receipts'), admissionRoot: join(input.stateDirectory, 'job-input-rsync-admissions') })
-  const extensions: DeviceExtensionRegistration[] = [...rsync.extensions]
+  const extensions: DeviceExtensionRegistration[] = rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const }))
   let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
   let native: Awaited<ReturnType<typeof createInstalledWorkflowHost>> | undefined
   if (approved) {
@@ -201,7 +201,7 @@ export async function createInstalledWorkerDomains(input: {
   } } : {}) }))
   let shutdown: Promise<void> | undefined
   return { extensions: tracked, rsyncAvailable: rsync.kind === 'configured', rsyncMissing: rsync.missing,
-    ...(rsync.kind === 'configured' ? { rsync: rsync.backend, rsyncWriters: rsync.rsyncWriters } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
+    ...(rsync.kind === 'configured' ? { rsync: rsync.backend, rsyncWriters: rsync.rsyncWriters, rsyncOwnership: rsync.ownership } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
