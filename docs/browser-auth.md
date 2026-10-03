@@ -94,6 +94,42 @@ Cookies are HttpOnly, SameSite=Strict and Secure when the configured origin is
 HTTPS. Local HTTP uses non-Secure cookies, consistent with the existing local
 stack. No wildcard trusted origins or trust-proxy changes are introduced.
 
+## Existing paired local installation
+
+`GET /api/auth/setup` returning `locked` / `existing-installation` means that
+management principals already exist and no browser owner has been established.
+Use the server-only `OWNER_OPERATOR_PRINCIPAL_ID` selection above. Keep the
+original database and managed runtime directory when restarting Main. Complete
+`/setup` and `/sign-in` with the same exact configured browser origin. Owner
+setup writes only the browser account and owner link; it preserves the selected
+principal, Main identity, paired device keys, worker credential and their expiry.
+No database reset or manual owner/consent insert is required.
+
+In automatic local development mode, the existing browser's
+`GET /api/auth/session` identifies its current Operator principal. Select that
+principal only if it is the intended owner and has live, global `settings:read`
+and `settings:update` authority. If `GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID` is
+explicitly configured, keep it aligned with the owner pin. A development browser
+session by itself does not create `browser_auth_owner`. Configure Better Auth
+and complete the normal setup path before requesting trusted connection approval.
+If setup reports `complete`, use the existing owner's sign-in; changing the
+principal pin never replaces an established owner.
+
+After setup, trusted connection management uses
+`POST /api/devices/connection-read` with `{ "deviceId": "<paired-device-uuid>" }`.
+The signed-in owner browser requests the exact action at
+`POST /api/devices/connection-approvals`, reads it at
+`GET /api/devices/connection-approvals/:approvalId`, then decides at
+`POST /api/devices/connection-approvals/:approvalId/approve` with a fresh
+`commandId`. Apply the returned exact `action` through
+`POST /api/devices/connection-configure` or Operator MCP
+`device_connection_configure`, then read back the persisted consent through HTTP
+or `device_connection_read`. Bearer/MCP credentials cannot make the human
+approval decision. An Operator delegate must be bound explicitly to the owner's
+live conversation when the approval request is created; ordinary write grants
+alone do not confer consent. These are supported browser API routes; there is
+currently no dedicated trusted connection approval widget.
+
 ## Bootstrap and session guarantees
 
 Setup requires an exact local Origin and is available only before an owner exists.

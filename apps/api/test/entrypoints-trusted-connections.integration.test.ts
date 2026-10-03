@@ -17,14 +17,14 @@ const origin = 'http://127.0.0.1:5173'
 const browserHeaders = { host: '127.0.0.1:3000', origin }
 const account = { email: 'entrypoints-owner@example.test', password: 'entrypoints-owned-test-password' }
 
-async function fixture() {
+async function fixture(pinOwner = true) {
   const db = await currentDatabase(), access = new PostgresAccessService(db.pool)
   const owner = await access.issue({ name: 'Existing installation owner', audience: 'operator',
     grants: [{ actions: ManagementActionSchema.options, scope: {} }], expiresAt: new Date(Date.now() + 3_600_000) })
   const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: join(db.directory, 'runtime'),
     CODEX_BINARY: '/unprovisioned-test-codex', OPENCODE_BINARY: '/unprovisioned-test-opencode',
     BETTER_AUTH_SECRET: 'entrypoints-test-browser-secret-'.repeat(3), BETTER_AUTH_URL: origin,
-    OWNER_OPERATOR_PRINCIPAL_ID: owner.principal.id })
+    ...(pinOwner ? { OWNER_OPERATOR_PRINCIPAL_ID: owner.principal.id } : {}) })
   config.workspaceStorageRoot = join(db.directory, 'workspaces')
   const cpSchema = `${db.schema}_cp`
   const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
@@ -40,10 +40,11 @@ async function fixture() {
   }
   try {
     await checkpoints.setup()
-    production = buildProductionApp(config, { pool: db.pool, ping: async () => { await db.pool.query('select 1') },
+    const build = () => buildProductionApp(config, { pool: db.pool, ping: async () => { await db.pool.query('select 1') },
       migrate: () => applyApplicationMigrations(db.pool), close: async () => {} }, checkpoints, false)
+    production = build()
     await production.initialize()
-    const app = production.app, address = await app.listen({ host: '127.0.0.1', port: 0 })
+    let app = production.app, address = await app.listen({ host: '127.0.0.1', port: 0 })
     const auth = { authorization: `Bearer ${owner.token}` }
     // Pair through the original grant service and signed worker proof. Never insert an owner or consent record.
     const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
@@ -69,11 +70,56 @@ async function fixture() {
       const values = signedIn.headers['set-cookie'], cookie = (Array.isArray(values) ? values : [values!]).map(value => value.split(';')[0]).join('; ')
       return { ...browserHeaders, cookie }
     }
-    return { db, access, owner, app, auth, paired, config, setup, call, close }
+    const restartWithOwnerPin = async () => {
+      await production!.shutdown()
+      config.browserAuth!.ownerPrincipalId = owner.principal.id
+      production = build()
+      await production.initialize()
+      app = production.app
+      address = await app.listen({ host: '127.0.0.1', port: 0 })
+    }
+    return { db, access, owner, get app() { return app }, auth, paired, setup, call, close, restartWithOwnerPin }
   } catch (error) { await close(); throw error }
 }
 
 describe.skipIf(!postgresEnabled)('trusted connections through the production Main entrypoint', () => {
+  it('establishes the pinned browser owner on an existing installation without changing its paired identity or authority', async () => {
+    const f = await fixture(false)
+    try {
+      const before = {
+        principal: (await f.db.pool.query('select * from management_principals where id=$1', [f.owner.principal.id])).rows,
+        installation: (await f.db.pool.query('select * from application_installation')).rows,
+        main: (await f.db.pool.query('select * from device_main_identity')).rows,
+        device: (await f.db.pool.query('select * from device_registrations')).rows,
+      }
+      const status = () => f.app.inject({ method: 'GET', url: '/api/auth/setup', headers: browserHeaders })
+      expect((await status()).json()).toEqual({ state: 'locked', reason: 'existing-installation' })
+      const locked = await f.app.inject({ method: 'POST', url: '/api/auth/setup', headers: browserHeaders, payload: account })
+      expect(locked.statusCode).toBe(409)
+      expect((await f.db.pool.query('select * from browser_auth_owner')).rows).toEqual([])
+      // Same original database, Main identity, runtime and worker registration; only the supported server pin changes.
+      await f.restartWithOwnerPin()
+      expect((await status()).json()).toEqual({ state: 'ready' })
+      const browser = await f.setup()
+      expect((await status()).json()).toEqual({ state: 'complete' })
+      const session = await f.app.inject({ method: 'GET', url: '/api/auth/session', headers: browser })
+      expect(session.statusCode, session.body).toBe(200)
+      expect(session.json().principal.id).toBe(f.owner.principal.id)
+      expect(session.json().principal.grants).toEqual(f.owner.principal.grants)
+      expect((await f.db.pool.query('select principal_id from browser_auth_owner where singleton=true')).rows).toEqual([{ principal_id: f.owner.principal.id }])
+      expect({
+        principal: (await f.db.pool.query('select * from management_principals where id=$1', [f.owner.principal.id])).rows,
+        installation: (await f.db.pool.query('select * from application_installation')).rows,
+        main: (await f.db.pool.query('select * from device_main_identity')).rows,
+        device: (await f.db.pool.query('select * from device_registrations')).rows,
+      }).toEqual(before)
+      expect((await f.access.authenticate(f.owner.token)).id).toBe(f.owner.principal.id)
+      const worker = await new PostgresDeviceAccessService(f.db.pool, f.paired.registration.mainId).authenticateDevice(f.paired.credential, 'connect')
+      expect(worker).toMatchObject({ mainId: f.paired.registration.mainId, deviceId: f.paired.registration.deviceId,
+        workerInstallationId: f.paired.registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1 })
+    } finally { await f.close() }
+  }, 120_000)
+
   it('mounts HTTP/browser approval and MCP with denial, atomic consent and persisted readback', async () => {
     const f = await fixture()
     try {
