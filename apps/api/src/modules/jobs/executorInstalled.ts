@@ -251,6 +251,17 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
       const closed = await Promise.all(processOwners.map(processOwner => input.registry.closeOwner(processOwner)))
       return closed.every(Boolean)
     },
+    async confirmUnreleasedClosure(containerId) {
+      const retained = await input.journal.jobNativeOwner(execution.operationId)
+      if (!retained?.container || retained.container.containerId !== containerId
+        || retained.container.certificate || retained.launches.some(launch => !launch.closed)) return false
+      // The command gate is released only after a durable certificate and an
+      // explicitly journaled exec. A stopped bootstrap never ran user argv.
+      return !retained.launches.some(launch => {
+        const argv = launch.argv[0] === '--remote=false' ? launch.argv.slice(1) : launch.argv
+        return argv[0] === 'exec'
+      })
+    },
     async readCertificate(containerId) {
       const native = await input.journal.jobNativeOwner(execution.operationId)
       if (!native?.container || native.container.containerId !== containerId) throw new Error('Original Job container evidence missing')

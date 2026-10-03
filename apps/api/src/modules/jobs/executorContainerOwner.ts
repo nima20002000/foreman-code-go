@@ -38,6 +38,7 @@ export interface OCIContainerOwnership {
   /** Existing guarded native launch owners supply their passive disjoint helpers. */
   launchHelpers(): Promise<OCIHostCertificate['helpers']>
   closeHelpers?(): Promise<boolean>
+  confirmUnreleasedClosure?(containerId: string): Promise<boolean>
   readCertificate(containerId: string): Promise<OCIHostCertificate | null>
   publish(certificate: OCIHostCertificate): Promise<void>
 }
@@ -151,9 +152,11 @@ export class OwnedOCIContainer {
       if (row?.State.Running) { await this.commands.run(['kill', '--signal', 'KILL', row.Id]); row = await this.inspect(row.Id) }
     }
     const helpersClosed = row && !row.State.Running && row.State.Pid === 0 ? await this.ownership.closeHelpers?.() ?? true : false
-    const closed = helpersClosed && !!row && !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited' && !!this.certificate &&
-      await proveOCIBoundaryEmpty(this.certificate.boundary) && (await Promise.all(this.certificate.helpers.map(helper =>
+    const stopped = helpersClosed && !!row && !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
+    const closed = stopped && (this.certificate
+      ? await proveOCIBoundaryEmpty(this.certificate.boundary) && (await Promise.all(this.certificate.helpers.map(helper =>
         helper.boundary ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)
+      : await this.ownership.confirmUnreleasedClosure?.(row!.Id) ?? false)
     if (this.certificate) await this.ownership.publish({ ...this.certificate, lifecycle: closed ? 'closed' : 'closure-unconfirmed' })
     return closed
   }
