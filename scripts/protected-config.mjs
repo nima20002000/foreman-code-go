@@ -8,7 +8,9 @@ const PROTECTED = [
   /^\.npmrc$/,
   /^pnpm-workspace\.yaml$/,
   /^\.github\//,
-  /^scripts\/(?:protected-config|check-[^/]+|heavy-job|test-integration|vitest-heavy-setup)\.mjs$/,
+  /^scripts\/(?:protected-config|label-approval|check-[^/]+|heavy-job|test-integration|vitest-heavy-setup)\.mjs$/,
+  /^scripts\/(?:test-results|test-inventory|node-test-results-reporter|run-mutation-tests|mutation-[a-z]+|stryker\.config)\.mjs$/,
+  /^test-policy\.json$/,
   /^AGENTS\.md$/,
 ]
 
@@ -16,18 +18,4 @@ export const APPROVAL_LABEL = 'protected-config-approved'
 
 export function protectedFiles(paths) {
   return paths.filter((path) => PROTECTED.some((pattern) => pattern.test(path)))
-}
-
-/**
- * Decides whether a pull request may change protected files.
- * `changedSincePreviousPush` is undefined when the previous head is unknown, which revokes approval.
- */
-export function reviewProtectedChanges({ changedInPullRequest, changedSincePreviousPush, labels, isNewPush }) {
-  const changed = protectedFiles(changedInPullRequest)
-  if (changed.length === 0) return { pass: true, changed, revokeApproval: false }
-  const approved = labels.includes(APPROVAL_LABEL)
-  const changedAgain = isNewPush && (changedSincePreviousPush === undefined
-    || protectedFiles(changedSincePreviousPush).length > 0)
-  const revokeApproval = approved && changedAgain
-  return { pass: approved && !changedAgain, changed, revokeApproval }
 }

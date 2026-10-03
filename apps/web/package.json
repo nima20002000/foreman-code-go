@@ -8,7 +8,7 @@
     "typecheck": "node ../../scripts/heavy-job.mjs -- tsc -b",
     "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0",
     "test": "node ../../scripts/heavy-job.mjs -- sh -c \"corepack pnpm test:run-graph-smoke && vitest run --maxWorkers=4\"",
-    "test:run-graph-smoke": "node ../../scripts/heavy-job.mjs -- node --test src/features/workflow-board/currentSource.smoke.mjs",
+    "test:run-graph-smoke": "node ../../scripts/heavy-job.mjs -- node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=../../scripts/node-test-results-reporter.mjs --test-reporter-destination=stdout src/features/workflow-board/currentSource.smoke.mjs",
     "build": "node ../../scripts/heavy-job.mjs --build web -- sh -c \"tsc -b && vite build\""
   },
   "dependencies": {

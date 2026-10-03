@@ -81,6 +81,7 @@ describe('tests that lock in source code', () => {
   it('allows fixture paths, module mocks and titles that mention files', () => {
     assertClean("export const target = join(root, 'src/app.ts')\n", testFile)
     assertClean("vi.mock('../src/engine.ts')\n", testFile)
+    assertClean("export const ranges = (diff) => diff.get('apps/api/src/runs/engine.ts')\n", testFile)
   })
 
   it('reports SQL text matching and casts to private members', () => {
