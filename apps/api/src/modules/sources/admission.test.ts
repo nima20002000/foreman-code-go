@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { SourceApproveInputSchema, SourceRootBindInputSchema, type SourceRootRecord, type SourceMaterializationRecord } from '@graphql/contracts/source-admission'
+import { SourceApproveInputSchema, SourceRootBindInputSchema, type SourceRootRecord, type SourceMaterializationRecord, type SourcePreparationClosure } from '@graphql/contracts/source-admission'
 import { PostgresSourceService } from './service.js'
 import { PostgresSourceReservations } from './reservations.js'
 import { sourceBindingHash, sourceMaterializationDigest } from './bindingHash.js'
@@ -13,6 +13,32 @@ import type { RegisteredSourceRootPort, SourceClosureProofPort } from './admissi
 import type { SourceExecutionHostPort } from './service.js'
 const principal: ManagementPrincipal = { id: 'real-reader-fixture', name: 'reader', audience: 'operator', grants: [{ actions: ['sources:read'], scope: { workspaceIds: ['workspace-owned'] } }], expiresAt: '9999-01-01T00:00:00Z', revokedAt: null }
 describe('source admission boundaries', () => {
+  it.each(['metadata-only', 'materialized'] as const)('accounts retained %s failures without charging uncreated source copies', async state => {
+    const operationId = randomUUID()
+    const reservedBytes = 100 * 1024 * 1024
+    let storedBytes = reservedBytes
+    const sql = { query: async (_statement: string, values: unknown[]) => {
+      if (values[1] === 'retained') storedBytes = Number(values[2])
+      return { rows: [], rowCount: 1 }
+    } } as unknown as pg.PoolClient
+    const reservation = { reservationId: randomUUID(), scopeId: 'original-volume', ownerKind: 'materialization' as const,
+      ownerId: operationId, reservedBytes }
+    const closure: SourcePreparationClosure = { version: 1, reconciliationId: randomUUID(), operationId,
+      executionId: randomUUID(), attemptId: randomUUID(), rootId: randomUUID(), bindingRevision: 1,
+      materializationId: state === 'metadata-only' ? null : randomUUID(), mainId: randomUUID(), deviceId: randomUUID(),
+      workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
+      filesystem: { device: '1', inode: '2', mountId: '3' }, admissionClosed: true, childrenClosed: true,
+      claimReleased: true, evidencePreserved: true, observedAt: new Date().toISOString() }
+    const reservations = new PostgresSourceReservations()
+    await expect(reservations.retainClosedPreparation(sql, reservation, { ...closure, operationId: randomUUID() }, storedBytes))
+      .rejects.toMatchObject({ code: 'SOURCE_RESERVATION_CONFLICT' })
+    expect(storedBytes).toBe(reservedBytes)
+    await reservations.retainClosedPreparation(sql, reservation, closure, storedBytes)
+    expect(storedBytes).toBe(state === 'metadata-only' ? 16 * 1024 : reservedBytes)
+    await reservations.retainClosedPreparation(sql, reservation, closure, storedBytes)
+    expect(storedBytes).toBe(state === 'metadata-only' ? 16 * 1024 : reservedBytes)
+  })
+
   it('requires approval scope before SQL, filesystem, host or command work', async () => {
     const probe = vi.fn()
     const service = new PostgresSourceService({ connect: probe } as unknown as pg.Pool, { execute: probe } as unknown as PostgresCommandCoordinator,

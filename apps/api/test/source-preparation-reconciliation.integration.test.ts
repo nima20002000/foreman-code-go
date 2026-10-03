@@ -131,8 +131,13 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       expect(denied.statusCode).toBe(403)
       const result=await operator.callTool({name:'source_preparation_reconcile',arguments:{workspaceId,...command}})
       expect(result.isError).not.toBe(true)
-      const value=(result.structuredContent as {value:{reservationState:string;closure:{materializationId:string|null}}}).value
+      const value=(result.structuredContent as {value:{reservationState:string;reservedBytes:number;closure:{materializationId:string|null}}}).value
       expect(value.reservationState).toBe('retained')
+      expect(value.reservedBytes).toBe(value.closure.materializationId === null
+        ? Math.min(before.json().reservedBytes, 16 * 1024) : before.json().reservedBytes)
+      const stored = (await database.pool.query<{ reserved_bytes: string }>(
+        'select reserved_bytes from source_storage_reservations where owner_id=$1', [row.operation_id])).rows[0]!
+      expect(Number(stored.reserved_bytes)).toBe(value.reservedBytes)
       expect((await operator.callTool({name:'source_preparation_get',arguments:{workspaceId,operationId:row.operation_id}})).structuredContent).toEqual(value)
       const replay=await app.inject({method:'POST',url:sourceUrl()+'/reconcile',headers:{authorization:`Bearer ${writer.token}`},payload:command})
       expect(replay.statusCode).toBe(200);expect(replay.json()).toEqual({value,replayed:true})

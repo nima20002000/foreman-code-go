@@ -179,9 +179,9 @@ export class PostgresSourcePreparationReconciliation {
         const state = await load(sql, input.workspaceId, input.operationId)
         await admissionClosed(sql, state); await hostAuthority(sql, state)
         if (!closure || closure.reconciliationId !== state.reconciliation_id) throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'Worker closure was not positively confirmed.', 409)
-        // Retained evidence keeps its bounded disk charge, but releases the
-        // active preparing/materialization slots. No default deletion or expiry.
-        await new PostgresSourceReservations().retain(sql, state.reservation, 'retained', Number(state.reserved_bytes))
+        await new PostgresSourceReservations().retainClosedPreparation(
+          sql, state.reservation, closure, Number(state.reserved_bytes),
+        )
         await sql.query("update source_execution_materializations set state='closed' where operation_id=$1", [input.operationId])
         await sql.query("update source_preparation_reconciliations set status='closed',closure=$2::jsonb where operation_id=$1", [input.operationId,JSON.stringify(closure)])
         return metadata(await load(sql, input.workspaceId, input.operationId))

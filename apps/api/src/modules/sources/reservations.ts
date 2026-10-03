@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { isDeepStrictEqual } from 'node:util'
 import { DomainError } from '../errors.js'
+import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
 
 export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number }
 export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024, preparing: 4, materializations: 2 })
@@ -10,6 +11,15 @@ export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024
  * Expiry/disconnect never frees an execution reservation or a pending capture.
  */
 export class PostgresSourceReservations {
+  async retainClosedPreparation(sql: GraphSqlClient, reservation: SourceReservation,
+    closure: SourcePreparationClosure, currentBytes: number): Promise<void> {
+    if (reservation.ownerKind !== 'materialization' || reservation.ownerId !== closure.operationId) {
+      throw new DomainError('SOURCE_RESERVATION_CONFLICT', 'Preparation closure belongs to another reservation.', 409)
+    }
+    // Without a materialization, only the bounded 16 KiB closure record remains.
+    const retainedBytes = closure.materializationId === null ? Math.min(currentBytes, 16 * 1024) : currentBytes
+    await this.retain(sql, reservation, 'retained', retainedBytes)
+  }
   async reserve(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>): Promise<SourceReservation> {
     if (!Number.isSafeInteger(request.reservedBytes) || request.reservedBytes < 0 || request.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes)
       throw new DomainError('SOURCE_CAPACITY', 'Invalid source disk reservation.', 409)
