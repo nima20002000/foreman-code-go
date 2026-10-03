@@ -342,6 +342,25 @@ it('captures complete native history only when needed for a pending request or t
   assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)
 })
 
+it('commits complete exact terminal history while its original stream still has queued transcript', async () => {
+  const f = fixture()
+  let consumed = 0
+  const events = Array.from({ length: 8 }, (_, sequence) => ({ sequence, type: 'native.notification',
+    occurredAt: now, payload: { original: `queued-${sequence}` } }))
+  f.manager.snapshot = { events, pendingInteractions: [], terminalResult: success }
+  f.manager.startTurn = async function* (session, input, signal) {
+    f.manager.turns.push({ session, input, ...(signal ? { signal } : {}) })
+    for (const event of events) { consumed++; yield event }
+  }
+  const completed = await f.coordinator.observeExact(f.input)
+  assert.equal(completed.state, 'completed')
+  assert.equal(consumed, 1)
+  assert.equal(f.manager.turns.length, 1)
+  assert.deepEqual(f.executions.get(f.candidate.id)?.result, success)
+  assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)
+  assert.equal(f.manager.closed.length, 1)
+})
+
 it('continues observing normal native work after approval without replay or credential revocation', async () => {
   const f = fixture()
   f.snapshot('request-a')
