@@ -236,6 +236,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
   it('E03-A01 isolates a native approval wait from its progressing sibling', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'eng03-c-approval-'))
     const target = join(outside, 'approved.txt')
+    const command = `printf 'APPROVED\\n' > '${target}'`
     let interactionId = '', sessionId = '', siblingActiveAtWait = false
     let approvalEvidence: unknown
     try {
@@ -244,8 +245,14 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
           variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false,
           advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION,
             permissionRules: [{ permission: 'bash', pattern: '*', effect: 'ask' }] } } },
-        prompts: { A: `Use the shell tool to run exactly: printf 'APPROVED\\n' > '${target}'. This is a task-owned path outside your project. If approval is requested, wait for the User decision and then finish the command. Report its result and end with A-APPROVED.`,
-          B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 50, one row per n. End with B-PROGRESSED.' },
+        prompts: { A: [
+          `Use the shell tool once to run exactly: ${command}.`,
+          'Leave workdir unset so the shell uses the accepted project directory.',
+          'Do not inspect directories, read files, or run any other commands.',
+          'This is a task-owned output path outside your project.',
+          'Wait for the User approval, finish the command, and end with A-APPROVED.',
+        ].join(' '),
+          B: 'Read the accepted Entry result. Without tools or files, list n and n squared modulo 97 for n=1 through 120, one row per n. End with B-PROGRESSED.' },
         control: async ({ pool, runId, nodeIds, runs, approvals, interactions, budgets, engine, startTask }) => {
           const deadline = Date.now() + 120_000
           let pending: ReturnType<typeof DurableInteractionSchema.parse> | undefined
@@ -267,6 +274,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
             await delay(250)
           }
           expect(pending?.graphInterruptId).toBeTruthy()
+          expect(pending!.request).toMatchObject({ permission: 'bash', metadata: { command } })
           expect(siblingActiveAtWait).toBe(true)
           expect((await runs.get(runId))?.executionState).toBe('waiting')
           const budget = (await pool.query<{ active_started_at: Date | null; approval_wait_started_at: Date | null }>(
