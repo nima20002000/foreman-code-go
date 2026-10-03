@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { DispatchIntentSchema, type DispatchIntent } from '@graphql/contracts/node-placement'
-import { JobLogChunkSchema, type JobLogChunk, type JobExecution } from '@graphql/contracts/jobs'
+import { JobLogChunkSchema, JobExecutionSchema, type JobLogChunk, type JobExecution } from '@graphql/contracts/jobs'
 import type { DeviceConnectionIdentity } from '@graphql/contracts/device-identity'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
@@ -366,8 +366,69 @@ export class RemoteOperationJournal {
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     return structuredClone(this.data.receipts.filter((receipt): receipt is RemoteJobOperationReceipt => 'kind' in receipt))
   }
-  jobAccept(raw: RemoteJobDispatchIntent, execution: JobExecution, connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
+  async jobCancellationConnection(execution: JobExecution): Promise<RemoteJobConnectionIdentity> {
+    await this.tail
+    if (this.closed || this.faulted) throw new Error('Original journal unavailable for cancellation')
+    const existing = this.data.receipts.find(value => value.intent.operationId === execution.operationId)
+    if (existing) {
+      if (!('kind' in existing)) throw new Error('Job operation binding conflict')
+      return structuredClone(existing.connection)
+    }
+    const spec = execution.acceptedSpec
+    const matches = this.data.qualificationReceipts.filter(receipt => {
+      if (receipt.phase !== 'closed' || receipt.result?.outcome !== 'qualified' || !receipt.admission.connection) return false
+      const measurement = receipt.result.measurement
+      return measurement.runtime.policyId === spec.policy.isolationPolicyId
+        && measurement.runtime.policyRevision === spec.policy.isolationPolicyRevision
+        && measurement.runtime.imageDigest === spec.policy.imageDigest
+        && measurement.runtime.toolchainDigest === spec.policy.toolchainDigest
+        && same(measurement.hostRef, spec.target.hostRef) && same(measurement.registration, spec.target.registration)
+        && measurement.fingerprint.mainInstallationId === spec.target.mainInstallationId
+        && measurement.root.binding.workspaceId === execution.workspaceId
+        && measurement.root.selection.rootPolicyId === spec.target.destination.rootPolicyId
+        && measurement.root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision
+    })
+    if (matches.length !== 1) throw new Error('Original Job connection missing or ambiguous')
+    return structuredClone(matches[0]!.admission.connection!)
+  }
+  jobCancelBeforeEntry(intent: RemoteJobDispatchIntent, raw: JobExecution, connection: RemoteJobConnectionIdentity,
+    workerIncarnationId: string, command: RemoteJobOwnerControl, rawTerminal: RemoteJobTerminalEvidence) {
     return this.change(data => {
+      const execution = JobExecutionSchema.parse(raw)
+      const terminal = RemoteJobTerminalEvidenceSchema.parse(rawTerminal)
+      if (terminal.outcome !== 'cancelled' || terminal.exitCode !== null || terminal.signal !== null
+        || !terminal.processStopped) throw new Error('No-entry cancellation terminal required')
+      if (intent.executionId !== execution.id || intent.attemptId !== execution.attemptId
+        || intent.operationId !== execution.operationId || intent.bindingHash !== execution.acceptedSpec.bindingHash
+        || intent.inputDigest !== `sha256:${execution.acceptedSpec.specDigest}` || !same(intent.owner, execution.owner)) {
+        throw new Error('Job cancellation execution ownership mismatch')
+      }
+      if (data.jobOwners.some(owner => owner.operationId === intent.operationId)) {
+        throw new Error('Original Job native entry owner requires physical reconciliation')
+      }
+      const receipt = this.acceptJob(data, intent, execution, connection, workerIncarnationId)
+      if (receipt.entryAttempted || receipt.native || (receipt.terminal && receipt.terminal.outcome !== 'cancelled')) {
+        throw new Error('Original Job entry requires physical reconciliation')
+      }
+      if (!same(receipt.connection, connection) || !same(receipt.execution.acceptedSpec, execution.acceptedSpec)) {
+        throw new Error('Original Job cancellation binding changed')
+      }
+      this.recordJobControl(data, command)
+      if (receipt.terminal && !same(receipt.terminal, terminal)) throw new Error('Job cancellation terminal conflict')
+      if (!receipt.terminal) {
+        receipt.terminal = terminal
+        receipt.phase = 'confirmed_terminal'
+        receipt.sequence++
+        receipt.observedAt = new Date().toISOString()
+      }
+      return receipt
+    })
+  }
+  jobAccept(raw: RemoteJobDispatchIntent, execution: JobExecution, connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
+    return this.change(data => this.acceptJob(data, raw, execution, connection, workerIncarnationId))
+  }
+  private acceptJob(data: z.infer<typeof JournalSchema>, raw: RemoteJobDispatchIntent, execution: JobExecution,
+    connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
       const intent = RemoteJobDispatchIntentSchema.parse(raw)
       const existing = data.receipts.find(value => value.intent.operationId === intent.operationId)
       if (existing) {
@@ -381,7 +442,6 @@ export class RemoteOperationJournal {
       const receipt = RemoteJobOperationReceiptSchema.parse({ schemaVersion: 1, kind: 'job', intent, execution, connection, workerIncarnationId,
         sequence: 1, observedAt: new Date().toISOString(), phase: 'received', entryAttempted: false, stopFence: false, controls: [], publication: 'pending' })
       data.receipts.push(receipt); return receipt
-    })
   }
   jobReserveEntry(operationId: string) {
     return this.change(data => {
@@ -400,7 +460,9 @@ export class RemoteOperationJournal {
     })
   }
   jobControl(raw: RemoteJobOwnerControl) {
-    return this.change(data => {
+    return this.change(data => this.recordJobControl(data, raw))
+  }
+  private recordJobControl(data: z.infer<typeof JournalSchema>, raw: RemoteJobOwnerControl) {
       const command = RemoteJobOwnerControlSchema.parse(raw), receipt = this.jobReceipt(data, command.operationId)
       const prior = receipt.controls.find(value => value.commandId === command.commandId)
       if (prior) { if (!same(prior, command)) throw new Error('Job control command conflict'); return { dispatch: false, receipt } }
@@ -411,7 +473,6 @@ export class RemoteOperationJournal {
       receipt.controls.push(command); receipt.stopFence = true
       if (receipt.phase !== 'confirmed_terminal') receipt.phase = 'stop_requested'
       receipt.sequence++; receipt.observedAt = new Date().toISOString(); return { dispatch: receipt.native !== undefined && !receipt.terminal, receipt }
-    })
   }
   jobTerminal(operationId: string, raw: RemoteJobTerminalEvidence) {
     return this.change(data => {

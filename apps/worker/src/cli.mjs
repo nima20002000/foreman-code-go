@@ -16,6 +16,7 @@ const help = `Usage:
   graphql-worker pair --state /absolute/private/state --enrollment-stdin
   graphql-worker pair --state /absolute/private/state --enrollment-file /absolute/private/enrollment.json
   graphql-worker capture-job-runtime --state /absolute/private/state --input /absolute/private/reviewed-capture.json
+  graphql-worker cleanup-job-before-entry --state /absolute/private/state --grant /absolute/private/approved-grant.json
 
 Install: node /approved/artifact/src/install-cli.mjs install --root /private/app --state /private/state --artifact /approved/artifact --manifest-sha256 APPROVED_SHA256
 Update: use the same install command with the new approved artifact and hash, adding --approve-stopped-update yes.
@@ -23,15 +24,22 @@ Rollback: node /approved/artifact/src/install-cli.mjs rollback --root /private/a
 Before update or rollback, complete the approved drain/stop policy and stop the worker service. An active worker blocks replacement.
 Initialize-native-runtime is an explicit new-installation action. A lost established journal requires original-owner recovery.
 Capture-job-runtime is a human-reviewed installer action while the worker is stopped. It refuses an existing job-runtime.json and never qualifies or launches a Job.
+Cleanup-job-before-entry requires a current Main-signed human-approved grant and a stopped worker. It preserves the original journal and source bytes; it cannot stop a Job that entered native execution.
 Operator MCP can manage CI policies and request/read/run human-approved qualification; it cannot self-select installer filesystem paths or approve itself.
 Keep app and state in separate private persistent directories. Pairing retries reuse the original enrollment file, requestId and state identity.
 `;
 async function main() {
   if (!args.length || args.includes('--help') || args.includes('-h')) { process.stdout.write(help); return; }
-  if (!stateDirectory || !['run', 'doctor', 'identity', 'identity-request', 'pair', 'initialize-native-runtime', 'capture-job-runtime'].includes(command)
-    || (!['pair', 'capture-job-runtime'].includes(command) && args.length !== 3)
+  if (!stateDirectory || !['run', 'doctor', 'identity', 'identity-request', 'pair', 'initialize-native-runtime', 'capture-job-runtime', 'cleanup-job-before-entry'].includes(command)
+    || (!['pair', 'capture-job-runtime', 'cleanup-job-before-entry'].includes(command) && args.length !== 3)
     || (command === 'pair' && !((args.length===4&&args[3]==='--enrollment-stdin')||(args.length===5&&args[3]==='--enrollment-file'&&isAbsolute(args[4]))))
-    || (command === 'capture-job-runtime' && !(args.length === 5 && args[3] === '--input' && isAbsolute(args[4])))) throw new WorkerError('usage: graphql-worker --help');
+    || (command === 'capture-job-runtime' && !(args.length === 5 && args[3] === '--input' && isAbsolute(args[4])))
+    || (command === 'cleanup-job-before-entry' && !(args.length === 5 && args[3] === '--grant' && isAbsolute(args[4])))) throw new WorkerError('usage: graphql-worker --help');
+  if (command === 'cleanup-job-before-entry') {
+    const { cleanupJobBeforeEntry } = await import('./jobCancellationCleanup.mjs');
+    console.log(JSON.stringify(await cleanupJobBeforeEntry(stateDirectory, args[4])));
+    return;
+  }
   if (command === 'capture-job-runtime') {
     const { captureJobRuntime } = await import('./jobRuntimeCapture.mjs');
     console.log(JSON.stringify(await captureJobRuntime(stateDirectory, args[4])));
@@ -96,4 +104,9 @@ async function main() {
   };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
-main().catch((error) => { console.error(command === 'pair' && pairingErrorMessage ? pairingErrorMessage(error) : error instanceof WorkerError ? error.code : 'worker_start_failed'); process.exitCode = 1; });
+main().catch((error) => {
+  const fallback = command === 'cleanup-job-before-entry' ? 'job_cleanup_failed' : 'worker_start_failed';
+  console.error(command === 'pair' && pairingErrorMessage ? pairingErrorMessage(error)
+    : error instanceof WorkerError ? error.code : fallback);
+  process.exitCode = 1;
+});

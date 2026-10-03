@@ -38,6 +38,7 @@ import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
 import { createWorkflowJobComposition } from './workflowComposition.js'
 import { JobApplicationBridge } from '../runs/remote/jobApplicationBridge.js'
 import { join } from 'node:path'
+import { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
 
 export interface ProductionJobInfrastructure {
   installedConfiguration: InstalledRuntimeHostDependencies['configuration']
@@ -144,6 +145,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     preparation,
     dispatch,
     artifacts,
+    cancellationRecovery: new PostgresJobCancellationRecovery(input.pool, input.commands, dispatch),
     ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
   })
   const workers = new JobWorkerService(input.pool, { require: dispatch.require.bind(dispatch),

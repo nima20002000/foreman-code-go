@@ -17,6 +17,8 @@ import { DomainError } from '../errors.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
+import type { PostgresJobCancellationRecovery } from './cancellationRecovery.js'
+import type { JobCancellationRecoveryApply } from '@graphql/contracts/job-cancellation-recovery'
 
 export const jobDigest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex')
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
@@ -33,6 +35,7 @@ export class JobService {
       dispatch: JobDispatchPort
       artifacts: JobArtifactPort
       workerExecution?: WorkerExecutionPolicy
+      cancellationRecovery?: PostgresJobCancellationRecovery
     },
     private readonly clock: () => Date = () => new Date()) {
     this.workerExecution = ports.workerExecution ?? new WorkerExecutionPolicy()
@@ -232,8 +235,24 @@ export class JobService {
   listExecutions(principal:ManagementPrincipal,workspaceId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'jobs:read',async sql=>(await sql.query<{record:unknown}>('select record from job_executions where workspace_id=$1 order by id desc limit 100',[workspaceId])).rows.map(row=>JobExecutionSchema.parse(row.record)),source)
   }
-  async cancel(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,id:string,commandId:string) {
+  private recovery() {
+    if (!this.ports.cancellationRecovery) throw new DomainError('JOB_RECOVERY_UNAVAILABLE', 'Job cleanup recovery is unavailable.', 503)
+    return this.ports.cancellationRecovery
+  }
+  proposeCancellationRecovery(principal: ManagementPrincipal, source: 'http' | 'mcp', input: unknown) {
+    return this.recovery().propose(principal, source, input)
+  }
+  getCancellationRecovery(principal: ManagementPrincipal, input: unknown) {
+    return this.recovery().get(principal, input)
+  }
+  approveCancellationRecovery(request: import('fastify').FastifyRequest, workspaceId: string, executionId: string,
+    recoveryId: string, commandId: string) {
+    return this.recovery().approveBrowser(request, workspaceId, executionId, recoveryId, commandId)
+  }
+  async cancel(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,id:string,commandId:string,
+    recovery?: JobCancellationRecoveryApply) {
     parse(z.string().min(1),commandId)
+    if (recovery) return this.recovery().apply(principal, source, workspaceId, id, commandId, recovery)
     await this.command(principal,source,workspaceId,'jobs:cancel',commandId,'job.cancel',{id},async(sql,live)=>{
       const execution=await this.repository.execution(sql,workspaceId,id,true)
       if(execution.process.phase!=='terminal') {
