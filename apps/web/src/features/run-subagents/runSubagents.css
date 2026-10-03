@@ -1,0 +1,16 @@
+.run-subagents-overlay { position: absolute; inset: 0; pointer-events: none; }
+.run-subagents-links { position: absolute; width: 1px; height: 1px; overflow: visible; }
+.run-subagents-links line { stroke: var(--border); stroke-width: 2; }
+.run-subagent-circle { position: absolute; transform: translate(-50%, -50%); width: 44px; height: 44px; padding: 4px; background: transparent; border: 0; border-radius: 50%; pointer-events: auto; cursor: pointer; color: var(--text); }
+.run-subagent-circle span { display: grid; place-items: center; width: 36px; height: 36px; border: 2px solid var(--accent, #7c82eb); border-radius: 50%; background: var(--surface, #252633); font: inherit; }
+.run-subagent-circle[data-inactive="true"] span { border-color: var(--border); color: var(--text-muted, #a1a1aa); background: var(--surface); }
+.run-subagent-circle[data-uncertain="true"] span { border-style: dashed; }
+.run-subagent-circle:focus-visible { outline: 2px solid var(--accent, #7c82eb); outline-offset: 2px; }
+.run-subagent-circle[aria-pressed="true"] span { box-shadow: 0 0 0 3px var(--accent, #7c82eb); }
+.run-subagents-notice { position: absolute; bottom: 12px; right: 12px; display: flex; gap: 8px; flex-wrap: wrap; max-width: min(360px, 80%); padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.run-subagent-lifecycle { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+.run-subagent-lifecycle dd { margin: 0; overflow-wrap: anywhere; }
+.run-subagent-message, .run-subagent-tool { padding-block: 12px; border-bottom: 1px solid var(--border); }
+.run-subagent-message p, .run-subagent-tool pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-subagent-panel section h3 { margin-block: 16px 8px; }
+.run-subagent-panel pre { max-height: 240px; overflow: auto; font-size: 12px; }
