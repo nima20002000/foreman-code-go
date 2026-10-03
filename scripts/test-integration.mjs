@@ -144,6 +144,18 @@ export function hasActiveHeavyJobToken(environment, common, owner) {
     && owner.pid > 0 && procStart(owner.pid) === owner.start)
 }
 
+export function hasHeavyJobAdmission(environment, common) {
+  const state = join(common, 'graphql-heavy-jobs')
+  const paths = [join(state, 'active', 'owner.json')]
+  try { paths.push(...readdirSync(join(state, 'running')).map((name) => join(state, 'running', name))) } catch { /* no new-format slots */ }
+  return paths.some((path) => {
+    try {
+      const owner = JSON.parse(readFileSync(path, 'utf8'))
+      return owner?.common === common && hasActiveHeavyJobToken(environment, common, owner)
+    } catch { return false }
+  })
+}
+
 export function signalOwnedChildren(active, timers, signal, graceMs = 5000) {
   for (const [index, child] of active) {
     if (!child.pid) continue
@@ -195,9 +207,7 @@ async function main() {
   const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8' })
   if (commonResult.status !== 0) throw new Error('Could not find the project heavy-job queue')
   const common = realpathSync(commonResult.stdout.trim())
-  let owner
-  try { owner = JSON.parse(readFileSync(join(common, 'graphql-heavy-jobs', 'active', 'owner.json'), 'utf8')) } catch { owner = null }
-  if (!hasActiveHeavyJobToken(process.env, common, owner)) {
+  if (!hasHeavyJobAdmission(process.env, common)) {
     const child = spawn(process.execPath, [fileURLToPath(new URL('./heavy-job.mjs', import.meta.url)), '--timeout-ms', '9000000', '--', process.execPath, import.meta.filename, ...process.argv.slice(2)], { stdio: 'inherit', env: process.env })
     process.exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code ?? 1)) })
     return
