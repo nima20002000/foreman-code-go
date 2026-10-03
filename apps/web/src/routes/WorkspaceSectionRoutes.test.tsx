@@ -273,6 +273,10 @@ describe('workspace section routes', () => {
       http.get('/api/auth/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
       http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({ evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } })),
       http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),
+      http.get('/api/management/harnesses/directories', () => HttpResponse.json({
+        roots: [{ id: 'workspaces', label: 'Workspaces', path: mainRoot.bases[0]!.canonicalPath }],
+        rootId: null, path: null, parent: null, directories: [], nextCursor: null,
+      })),
       http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => HttpResponse.json({ workspaceId: 'workspace-1', selection: await request.json(),
         browse: { relativePath: '', directories: [], truncated: false } })),
     )
@@ -288,7 +292,7 @@ describe('workspace section routes', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Choose folder' })
     expect(dialog).toBeVisible()
     expect(await within(dialog).findByRole('textbox', { name: 'Destination' })).toHaveValue(mainRoot.bases[0]!.canonicalPath)
-    expect(within(dialog).getByRole('button', { name: 'New folder' })).toBeVisible()
+    expect(await within(dialog).findByRole('button', { name: 'New folder' })).toBeVisible()
     expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
   })

@@ -16,7 +16,7 @@ const base = mainRoot.bases[0]!.canonicalPath
 let saved: WorkspaceBoundLocationReadback
 let folders: string[]
 let writes: WorkspaceRootSelection[]
-let legacyBrowses: number
+let localRootReads: string[]
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   clients.push(client)
@@ -26,13 +26,17 @@ beforeEach(() => {
   useBoundLocationDraftStore.getState().reset()
   saved = { evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0,
     executionLocation: { runnerId: 'server-main-runner', rootPath: `${base}/existing` } }
-  folders = ['existing', 'target']; writes = []; legacyBrowses = 0
+  folders = ['existing', 'target']; writes = []; localRootReads = []
   server.use(
     http.get('/api/auth/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
     http.get('/api/management/settings/workspaces/creation', () => HttpResponse.json({ suggestedName: 'New workspace', description: '', parentPath: base })),
     http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json(saved)),
     http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),
-    http.get('/api/management/harnesses/directories', () => { legacyBrowses++; return HttpResponse.json({ roots: [], rootId: null, path: null, parent: null, directories: [], nextCursor: null }) }),
+    // Confirm mutation roots independently; bound browsing still owns navigation.
+    http.get('/api/management/harnesses/directories', ({ request }) => {
+      localRootReads.push(new URL(request.url).search)
+      return HttpResponse.json({ roots: [{ id: 'workspaces', label: 'Workspaces', path: base }], rootId: null, path: null, parent: null, directories: [], nextCursor: null })
+    }),
     http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => {
       const input = await request.json() as WorkspaceRootSelection
       expect(input.hostRef).toEqual(mainRoot.hostRef)
@@ -61,7 +65,7 @@ describe('compact Main folder browser', () => {
     expect(within(dialog).queryByRole('heading', { name: 'Folders' })).not.toBeInTheDocument()
     expect(await within(dialog).findByRole('list', { name: 'Folders' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Back' })).toBeVisible()
-    expect(within(dialog).getByRole('button', { name: 'New folder' })).toBeVisible()
+    expect(await within(dialog).findByRole('button', { name: 'New folder' })).toBeVisible()
     expect(dialog).toHaveTextContent('Main')
     expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
     expect(await within(dialog).findByRole('button', { name: 'target' })).toBeVisible()
@@ -75,7 +79,7 @@ describe('compact Main folder browser', () => {
       configurationRevision: '1', relativePath: 'target', accessMode: 'read-write', expectedLocationRevision: 0, expectedRootPolicyRevision: 0 })
     expect(writes[0]).not.toHaveProperty('runnerId')
     expect(screen.getByRole('button', { name: 'Execution location' })).toHaveAttribute('title', `${base}/target`)
-    expect(legacyBrowses).toBe(0)
+    expect(new Set(localRootReads)).toEqual(new Set(['']))
   })
 
   it('uses existing authenticated folder creation and naming before the bound location save', async () => {
@@ -91,7 +95,7 @@ describe('compact Main folder browser', () => {
     mount(); const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Execution location' }))
     await screen.findByRole('button', { name: 'target' })
-    await user.click(screen.getByRole('button', { name: 'New folder' }))
+    await user.click(await screen.findByRole('button', { name: 'New folder' }))
     const name = await screen.findByRole('textbox', { name: 'Folder name' })
     expect(name).toHaveFocus()
     await user.clear(name); await user.type(name, 'Created folder{Enter}')
@@ -102,7 +106,7 @@ describe('compact Main folder browser', () => {
     expect(creations[0]).toMatchObject({ parentPath: base })
     expect(names[0]).toMatchObject({ name: 'Created folder', creationCommandId: (creations[0] as { commandId: string }).commandId })
     expect(writes[0]?.relativePath).toBe('Created folder')
-    expect(legacyBrowses).toBe(0)
+    expect(new Set(localRootReads)).toEqual(new Set(['']))
   })
 
   it('retries the original binding command after lost acknowledgement', async () => {
@@ -132,7 +136,7 @@ describe('compact Main folder browser', () => {
     expect(await screen.findByText('Main folder access is unavailable.')).toBeVisible()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument()
-    expect(legacyBrowses).toBe(0)
+    expect(localRootReads).toEqual([])
     expect(writes).toHaveLength(0)
   })
 
@@ -141,7 +145,7 @@ describe('compact Main folder browser', () => {
     mount()
     expect(await screen.findByText('Authenticated execution location or computer roots could not be read.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Execution location' })).not.toBeInTheDocument()
-    expect(legacyBrowses).toBe(0)
+    expect(localRootReads).toEqual([])
     expect(writes).toHaveLength(0)
   })
 })
