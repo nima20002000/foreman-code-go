@@ -139,10 +139,11 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       await this.verify(receipt, { binding, attempt }); return receipt
     } finally { await root.close() }
   }
-  private async verifyTree(tree: FileHandle, manifest: SourceManifest): Promise<void> {
+  private async verifyTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal): Promise<void> {
     const expected = new Set(manifest.entries.map((entry) => entry.path))
     const walk = async (directory: FileHandle, prefix: string): Promise<void> => {
       for (const item of await readdir(anchored(directory), { withFileTypes: true })) {
+        signal?.throwIfAborted()
         const path = prefix ? `${prefix}/${item.name}` : item.name
         sourcePath(path)
         if (item.isDirectory()) {
@@ -154,6 +155,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     }
     await walk(tree, '')
     for (const entry of manifest.entries) {
+      signal?.throwIfAborted()
       const { parent, leaf } = await entryParent(tree, entry.path, false)
       try {
         const file = await open(anchored(parent, leaf), constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -161,12 +163,13 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
           const stat = await file.stat()
           if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.byteSize || !!(stat.mode & 0o111) !== entry.executable)
             throw new SourceError('SOURCE_TREE_INVALID', 'Materialized kind, size, link count or executable policy changed.')
-          verifySourceBytes(entry, await file.readFile())
+          verifySourceBytes(entry, await file.readFile({ signal }))
         } finally { await file.close() }
       } finally { await parent.close() }
     }
   }
-  async verify(input: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt }): Promise<void> {
+  async verify(input: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<void> {
+    expected.signal?.throwIfAborted()
     const receipt = MaterializationReceiptSchema.parse(input)
     if (!equal(receipt.binding, RootBindingSchema.parse(expected.binding)) || !equal({ placementHash: receipt.placementHash,
       executionId: receipt.executionId, attemptId: receipt.attemptId, keyRevision: receipt.keyRevision,
@@ -191,12 +194,12 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         const tree = await openChildDirectory(directory, 'tree')
         try {
           if (!equal(await identity(tree), receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized tree replaced.')
-          await this.verifyTree(tree, manifest)
+          await this.verifyTree(tree, manifest, expected.signal)
         } finally { await tree.close() }
       } finally { await directory.close() }
     } finally { await root.close() }
   }
-  async resolve(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt }): Promise<string> {
+  async resolve(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<string> {
     await this.verify(receipt, expected)
     return join(receipt.binding.canonicalPath, receipt.materializationId, 'tree')
   }

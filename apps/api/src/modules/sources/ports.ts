@@ -10,8 +10,8 @@ export type MaterializationAttempt = {
 }
 export interface SourceMaterializationPort {
   prepare(input: { manifest: SourceManifest; binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<MaterializationReceipt>
-  verify(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt }): Promise<void>
-  resolve(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt }): Promise<string>
+  verify(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<void>
+  resolve(receipt: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<string>
 }
 /** The caller must hold a qualified writer exclusion for explicit/dirty capture. */
 export interface ExclusiveSourceCapture {

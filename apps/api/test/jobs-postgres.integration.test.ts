@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { jobsMigration } from '../src/infrastructure/jobsMigration.js'
@@ -11,6 +11,7 @@ import { JobWorkerService } from '../src/modules/jobs/worker.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { jobSpec } from './helpers/jobFixture.js'
+import { DomainError } from '../src/modules/errors.js'
 
 /** Real PostgreSQL, authenticated HTTP/MCP, receipts and live revocation. No physical launch claim. */
 describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied MCP parity',()=>{
@@ -74,6 +75,37 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
     await worker.settleProcess(workspaceId,execution.id,fenced,{process:{phase:'terminal',outcome:'build_failed',exitCode:7,signal:null,processStopped:true},startedAt:new Date().toISOString(),finishedAt:new Date().toISOString()})
     const result=await jobs.getExecution(reader.principal,workspaceId,execution.id)
     expect(result.process.exitCode).toBe(7);expect(result.process.outcome).toBe('build_failed');expect(result.transport).toBe('connected')
+  })
+  it('returns the retryable preparation timeout through HTTP/MCP and retries only the retained original admission',async()=>{
+    const saved=await app.inject({method:'POST',url:`${root()}/definitions`,headers:{authorization:`Bearer ${writer.token}`},payload:{commandId:randomUUID(),expectedRevision:null,name:'Retained preparation',spec:jobSpec()}})
+    expect(saved.statusCode).toBe(200)
+    const command={commandId:randomUUID(),definitionId:saved.json().definition.id,expectedRevision:1}
+    // Carrier normalization and actual canceled Git closure are independently
+    // covered in source units; this boundary verifies authenticated parity/SQL.
+    const error=new DomainError('SOURCE_REPOSITORY_TIMEOUT','Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.',503,{retryable:true})
+    const prepare=vi.spyOn(jobs,'prepareDefinition').mockRejectedValue(error)
+    const client=await connect(writer.token)
+    try {
+      const http=await app.inject({method:'POST',url:`${root()}/executions`,headers:{authorization:`Bearer ${writer.token}`},payload:command})
+      expect(http.statusCode).toBe(503);expect(http.json().error).toMatchObject({code:error.code,message:error.message,details:{retryable:true}})
+      const retained=(await database.pool.query('select execution_id,attempt_id,operation_id from job_preparations where principal_id=$1 and command_id=$2',[writer.principal.id,command.commandId])).rows
+      expect(retained).toHaveLength(1)
+      const mcp=await client.callTool({name:'job_start',arguments:{workspaceId,...command}})
+      expect(mcp.isError).toBe(true);expect(JSON.stringify(mcp.content)).toContain('SOURCE_REPOSITORY_TIMEOUT')
+      expect(JSON.stringify(mcp.content)).toContain('retryable');expect(JSON.stringify(mcp.content)).not.toContain('INTERNAL_ERROR')
+      expect((await database.pool.query('select execution_id,attempt_id,operation_id from job_preparations where principal_id=$1 and command_id=$2',[writer.principal.id,command.commandId])).rows).toEqual(retained)
+      expect((await database.pool.query('select id from job_executions where id=$1',[retained[0].execution_id])).rows).toHaveLength(0)
+      const denied=await (await connect(reader.token)).callTool({name:'job_start',arguments:{workspaceId,...command}})
+      expect(denied.isError).toBe(true);expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED');expect(prepare).toHaveBeenCalledTimes(2)
+      prepare.mockRestore()
+      const resumed=await client.callTool({name:'job_start',arguments:{workspaceId,...command}})
+      expect(resumed.isError).not.toBe(true)
+      const execution=(resumed.structuredContent as {execution:{id:string;attemptId:string;operationId:string}}).execution
+      expect({execution_id:execution.id,attempt_id:execution.attemptId,operation_id:execution.operationId}).toEqual(retained[0])
+      const read=await client.callTool({name:'job_get',arguments:{workspaceId,executionId:execution.id}})
+      expect(read.structuredContent).toEqual(resumed.structuredContent)
+      expect((await database.pool.query('select result from management_command_receipts where principal_id=$1 and command_id=$2',[writer.principal.id,command.commandId])).rows).toHaveLength(1)
+    } finally {prepare.mockRestore()}
   })
   it('denies read-only MCP writes, wrong workspace and revoked live authority without probing source',async()=>{
     const client=await connect(reader.token)
