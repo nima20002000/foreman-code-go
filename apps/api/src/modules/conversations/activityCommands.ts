@@ -36,15 +36,18 @@ export function projectActivityCommands(conversationId: string, scope: ActivityS
 }
 /** One component of the same conversation snapshot transaction; stored state snapshots are deliberately not selected. */
 export async function readActivityCommands(query: Pick<pg.PoolClient, 'query'>, conversationId: string, scope: ActivityScope, scopeRevision: string) {
-  const rows = (await query.query<Receipt>(`with open as (
-    select principal_id,operation,command_id,activity_record_revision::text as revision,created_at,
-      result->>'status' as status,result->'acceptedControl' as control,result->'providerAcknowledgment' as acknowledgment from management_command_receipts
-      where target_key=$1 and operation in ('agent_chat_control','operator_chat_control') and result->>'status' in ('pending','uncertain')
+  const rows = (await query.query<Receipt>(`with candidates as materialized (
+    select r.principal_id,r.operation,r.command_id,r.activity_record_revision::text as revision,r.created_at,
+      outcome.status,outcome."acceptedControl" as control,outcome."providerAcknowledgment" as acknowledgment
+    from management_command_receipts r
+    cross join lateral jsonb_to_record(r.result) as outcome(status text,"acceptedControl" jsonb,"providerAcknowledgment" jsonb)
+    where r.target_key=$1 and r.operation in ('agent_chat_control','operator_chat_control')
+      and jsonb_typeof(r.result)='object'
+  ), open as (
+    select * from candidates where status in ('pending','uncertain')
       order by created_at desc,principal_id,command_id limit 201
   ), recent as (
-    select principal_id,operation,command_id,activity_record_revision::text as revision,created_at,
-      result->>'status' as status,result->'acceptedControl' as control,result->'providerAcknowledgment' as acknowledgment from management_command_receipts
-      where target_key=$1 and operation in ('agent_chat_control','operator_chat_control') and result->>'status' not in ('pending','uncertain')
+    select * from candidates where status not in ('pending','uncertain')
       order by created_at desc,principal_id,command_id limit greatest(0,201-(select count(*) from open))
   ), visible as (select * from open union all select * from recent), ranked as (
     select *,row_number() over (order by case when status in ('pending','uncertain') then 0 else 1 end,
