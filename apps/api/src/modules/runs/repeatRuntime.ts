@@ -349,7 +349,20 @@ export async function executeRepeatRuntime(input: {
     ].includes(code)
   }
   const cancel = () => cancellation ??= input.lifecycle.cancelNativeAndRequestCleanup()
-  const drain = () => withCleanupDeadline(async () => { while (tasks.size) await Promise.allSettled([...tasks]) })
+  const drain = async (cleanup = false) => {
+    const wait = async () => { while (tasks.size) await Promise.allSettled([...tasks]) }
+    if (cleanup) return withCleanupDeadline(wait)
+    // Healthy siblings retain their active budgets; the cleanup deadline applies
+    // only after cancellation/restart, not while observing their original work.
+    let abort: (() => void) | undefined
+    try {
+      await Promise.race([wait(), new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason)
+        signal.addEventListener('abort', abort, { once: true })
+        if (signal.aborted) abort()
+      })])
+    } finally { if (abort) signal.removeEventListener('abort', abort) }
+  }
   const track = (task: Promise<unknown>) => {
       tasks.add(task)
       void task.then(() => { tasks.delete(task) }, (error: unknown) => {
@@ -452,7 +465,7 @@ export async function executeRepeatRuntime(input: {
       // ownership. Restart is not a synthetic Stop or terminal business result.
       await input.lifecycle.requestCleanup()
       failed.abort(error)
-      await drain()
+      await drain(true)
       throw error
     }
     const current = await input.lifecycle.currentState()
@@ -470,7 +483,7 @@ export async function executeRepeatRuntime(input: {
     failed.abort(error)
     const closing = cancel()
     let drained = false
-    try { await drain(); drained = true } catch { /* retain uncertain cleanup */ }
+    try { await drain(true); drained = true } catch { /* retain uncertain cleanup */ }
     const clean = await closing
     input.owner.assertOwned()
     await input.lifecycle.settleRun(current.stopRequested, input.signal.aborted && !current.stopRequested)

@@ -4,6 +4,7 @@ import { ExecutionLocationSchema } from '@graphql/contracts'
 import { WorkspaceRootListResultSchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema, WorkspaceRootPolicySchema, type WorkspaceRootSelection, type WorkspaceRootPolicy } from '@graphql/contracts/workspace-root-policies'
 import { WorkspaceBoundLocationGetInputSchema, WorkspaceBoundLocationSetInputSchema, WorkspaceBoundLocationReadbackSchema,
   WorkspaceBoundLocationValidationSchema, WorkspaceBoundLocationBrowseResultSchema, type WorkspaceBoundLocationReadback, type WorkspaceBoundLocationSetInput } from '@graphql/contracts/workspace-bound-location'
+import { WorkspaceRootConfigurationAdoptSchema } from '@graphql/contracts/workspace-bound-location'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { authorizeSource } from '../sources/authority.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -51,6 +52,16 @@ export class WorkspaceBoundLocationService {
     const { workspaceId } = WorkspaceBoundLocationGetInputSchema.parse(raw)
     return this.read(principal, 'workspace_locations:read', workspaceId,
       async (sql, live) => WorkspaceRootListResultSchema.parse(await this.roots.list(sql, live, workspaceId)))
+  }
+  async adopt(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) {
+    const input = WorkspaceRootConfigurationAdoptSchema.parse(raw)
+    return this.commands.execute({ principal, source, operation: 'workspace.root.configuration.adopt', commandId: input.commandId,
+      targetKey: `workspace:${input.workspaceId}:root-configuration`, payload: input,
+      authorize: sql => this.authorize(sql, principal, 'workspace_locations:update', input.workspaceId).then(() => undefined),
+      perform: async sql => {
+        if (!this.roots.adopt) throw new DomainError('ROOT_CONFIGURATION_UNAVAILABLE', 'Protected host configuration adoption is unavailable.', 409)
+        return this.roots.adopt(sql, principal, input.workspaceId, input.hostRef)
+      } })
   }
   private async prepare(principal: ManagementPrincipal, selection: WorkspaceRootSelection, action: ManagementAction) {
     const root = await this.read(principal, action, selection.workspaceId, (sql, live) => this.roots.authorize(sql, live, selection))

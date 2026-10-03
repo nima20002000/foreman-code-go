@@ -411,6 +411,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
           const next = await restartRecoverableRuntime()
           expect((await next.runs.getExecution(cutExecutionId))?.nativeSessionId).toBe(cutNativeSessionId)
           await next.engine.reconcile()
+          await next.engine.start(runId)
           expect((await next.runs.get(runId))?.outcome).toBe('succeeded')
           expect((await next.runs.getExecution(cutExecutionId))?.result).toEqual(cutResult)
           const after = await pool.query<{ accepted: boolean }>('select accepted from harness_executions where id=$1', [cutExecutionId])

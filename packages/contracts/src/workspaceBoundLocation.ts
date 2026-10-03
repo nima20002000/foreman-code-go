@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { ExecutionLocationSchema } from './executionLocation.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
-import { WorkspaceRootSelectionSchema, WorkspaceRootPolicySchema, WorkspaceRootAttestationSchema, WorkspaceRootBrowseResultSchema } from './workspaceRootPolicies.js'
+import { WorkspaceRootSelectionSchema, WorkspaceRootPolicySchema, WorkspaceRootAttestationSchema, WorkspaceRootBrowseResultSchema, WorkspaceRootHostSchema, ApprovedRootAllowlistSchema } from './workspaceRootPolicies.js'
 
 export const WorkspaceBoundLocationGetInputSchema = z.object({ workspaceId: IdSchema }).strict()
 export const WorkspaceBoundLocationValidateInputSchema = WorkspaceRootSelectionSchema
@@ -28,3 +28,11 @@ export type WorkspaceBoundLocationBrowseInput = z.infer<typeof WorkspaceBoundLoc
 export type WorkspaceBoundLocationValidation = z.infer<typeof WorkspaceBoundLocationValidationSchema>
 export type WorkspaceBoundLocationBrowseResult = z.infer<typeof WorkspaceBoundLocationBrowseResultSchema>
 export type WorkspaceBoundLocationSetResult = z.infer<typeof WorkspaceBoundLocationSetResultSchema>
+
+/** Audited adoption of an existing protected host configuration; never caller-selected paths. */
+export const WorkspaceRootConfigurationAdoptSchema = z.object({
+  workspaceId: IdSchema, commandId: WorkspaceBoundLocationSetInputSchema.shape.commandId, hostRef: WorkspaceRootHostSchema,
+}).strict()
+export const WorkspaceRootConfigurationAdoptResultSchema = z.object({ value: ApprovedRootAllowlistSchema, replayed: z.boolean() }).strict()
+export type WorkspaceRootConfigurationAdopt = z.infer<typeof WorkspaceRootConfigurationAdoptSchema>
+export type WorkspaceRootConfigurationAdoptResult = z.infer<typeof WorkspaceRootConfigurationAdoptResultSchema>

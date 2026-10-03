@@ -13,6 +13,8 @@ import { hostFacts, requirePrivateDirectory, WorkerError } from './diagnostics.m
 import { validateManifest } from './installation.mjs';
 import { startWorker, acquireWorkerLock } from './runtime.mjs';
 import { approvedRootExtensions } from './rootExtension.mjs';
+import { fileURLToPath } from 'node:url';
+import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
 
 export { createWorkerConnection };
 export { approvedRootExtensions, createWorkerExecutionDomains };
@@ -57,7 +59,7 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
 export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync }) {
   const manifest = await prepareWorkerState(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
-  let installed, connection;
+  let installed, connection, rsyncEntrypoint;
   const bindingDrains = new Set();
   const bindingFailures = [];
   const bindingLost = binding => {
@@ -75,10 +77,25 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     while (bindingDrains.size) await Promise.allSettled([...bindingDrains]);
     const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []).concat(bindingFailures);
     if (failures.length) throw new AggregateError(failures, 'Worker shutdown remains incomplete.');
+    if (rsyncEntrypoint?.kind === 'configured') await rsyncEntrypoint.close();
   }, createConnection: async ({ bootId }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
     const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
     if (!executionDomains) {
+      if (!rsync) {
+        try { rsyncEntrypoint = await loadWorkerRsyncEntrypoint({ path: join(stateDirectory, 'rsync-selection.json'), pairing,
+          entryPoint: fileURLToPath(new URL('./rsync-writer.mjs', import.meta.url)),
+          current: () => connection?.currentBinding(), ownership: () => installed?.rsyncOwnership,
+          request: async (payload, signal) => {
+            const captured = connection?.captureRequest('rsync-stage-v1');
+            if (!captured) throw new WorkerError('rsync_authorization_unavailable');
+            return captured.request(payload, { signal });
+          } }); } catch (error) {
+          process.stderr.write(`rsync unavailable: ${error.message}\n`);
+          throw error;
+        }
+        if (rsyncEntrypoint.kind === 'unavailable') process.stderr.write(`rsync unavailable: ${rsyncEntrypoint.reason}\n`);
+      }
       const configurationPath = join(stateDirectory, 'workflow-runtime.json');
       const selection = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       const jobConfigurationPath = join(stateDirectory, 'job-runtime.json');
@@ -87,8 +104,12 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         configuration: selection ? { path: configurationPath, ownerUid: process.getuid() } : null,
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
-        ...(rsync ? { rsync } : {}),
+        ...(rsync ? { rsync } : rsyncEntrypoint?.kind === 'configured' ? { rsync: rsyncEntrypoint.providers } : {}),
         codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision) });
+      if (!installed.rsyncAvailable && rsyncEntrypoint?.kind === 'configured') {
+        process.stderr.write(`rsync unavailable: ${installed.rsyncMissing.join(', ')}\n`);
+        throw new WorkerError('rsync_runtime_unavailable');
+      }
     }
     connection = createWorkerConnection({ pairing, bootId, appVersion: manifest.version,
       onBindingLost: bindingLost,

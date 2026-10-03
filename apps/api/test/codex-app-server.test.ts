@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import { DomainError } from '../src/modules/errors.js'
+import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
@@ -344,6 +345,17 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.deepEqual(history.terminalResult?.output, { text: 'recovered-answer' })
     await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'after-recovery' }))
     assert.equal((await wire('turn/start')).length, 2)
+  })
+
+  it('retains the exact native terminal source when recovering a disconnected workflow turn', async () => {
+    const session = await manager.createSession(source)
+    const execution = { id: source.request.executionId, agentId: source.request.configuration.agentId }
+    const correlationId = `execution:${execution.id}`
+    await collect(manager.startTurn(session, { prompt: 'crash-completed', clientCorrelationId: correlationId }))
+    const history = await manager.reconcile(session, correlationId)
+    assert.equal(history.terminalTurn?.result.outcome, 'succeeded')
+    assertOriginalWorkflowTerminal(execution, session, history)
+    assert.equal((await wire('turn/start')).length, 1)
   })
 
   it('F06/F12: uncertain start is reconciled by its own correlation, without replay', async () => {

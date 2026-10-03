@@ -1,3 +1,4 @@
+import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
 import { ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
@@ -679,6 +680,7 @@ export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
 ] as const;
 
 export const OperatorToolNameSchema = z.enum([
+  ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
   ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get",

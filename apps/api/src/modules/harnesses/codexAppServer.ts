@@ -1878,6 +1878,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       }
       this.applyTurn(runtime, selected)
     }
+    // Retain the actual full native turn read, not just its derived terminal enum.
+    this.record(runtime, 'thread.reconciled', {
+      threadId: thread.id, thread: { id: thread.id, turns: [selected] },
+    })
   }
 
   private applyTurn(runtime: Runtime, turn: JsonObject): void {

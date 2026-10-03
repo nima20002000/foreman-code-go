@@ -144,6 +144,18 @@ export function hasActiveHeavyJobToken(environment, common, owner) {
     && owner.pid > 0 && procStart(owner.pid) === owner.start)
 }
 
+export function hasHeavyJobAdmission(environment, common) {
+  const state = join(common, 'graphql-heavy-jobs')
+  const paths = [join(state, 'active', 'owner.json')]
+  try { paths.push(...readdirSync(join(state, 'running')).map((name) => join(state, 'running', name))) } catch { /* no secondary slots */ }
+  return paths.some((path) => {
+    try {
+      const owner = JSON.parse(readFileSync(path, 'utf8'))
+      return owner?.common === common && hasActiveHeavyJobToken(environment, common, owner)
+    } catch { return false }
+  })
+}
+
 export function signalOwnedChildren(active, timers, signal, graceMs = 5000) {
   for (const [index, child] of active) {
     if (!child.pid) continue
@@ -178,6 +190,14 @@ function requireLoopbackTestDatabase(url) {
   }
 }
 
+export function integrationEnvironment(environment, slot) {
+  requireLoopbackTestDatabase(slot.databaseUrl)
+  return { ...environment, TEST_DATABASE_URL: slot.databaseUrl,
+    NIM2691_POSTGRES: '1', NIM2691_ADMIN_DATABASE_URL: slot.databaseUrl,
+    HRT_F14_ADMIN_DATABASE_URL: slot.databaseUrl,
+    TMPDIR: slot.directory, TMP: slot.directory, TEMP: slot.directory }
+}
+
 function options(argv) {
   const startAt = process.env.GRAPHQL_INTEGRATION_START_AT || null
   const failedFrom = process.env.GRAPHQL_INTEGRATION_FAILED_LOG || null
@@ -195,9 +215,7 @@ async function main() {
   const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8' })
   if (commonResult.status !== 0) throw new Error('Could not find the project heavy-job queue')
   const common = realpathSync(commonResult.stdout.trim())
-  let owner
-  try { owner = JSON.parse(readFileSync(join(common, 'graphql-heavy-jobs', 'active', 'owner.json'), 'utf8')) } catch { owner = null }
-  if (!hasActiveHeavyJobToken(process.env, common, owner)) {
+  if (!hasHeavyJobAdmission(process.env, common)) {
     const child = spawn(process.execPath, [fileURLToPath(new URL('./heavy-job.mjs', import.meta.url)), '--timeout-ms', '9000000', '--', process.execPath, import.meta.filename, ...process.argv.slice(2)], { stdio: 'inherit', env: process.env })
     process.exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code ?? 1)) })
     return
@@ -249,15 +267,14 @@ async function main() {
     if (failedFrom) console.log(`[integration] RETEST ${selected.length} failed files from ${failedFrom}: partial run only; a clean full run is required for suite proof.`)
     const runFile = async (slot, file, phase = 'first') => {
       if (interrupted) return { code: 128 + (interrupted === 'SIGINT' ? 2 : 15) }
+      const started = Date.now()
       const isRetest = phase === 'retest'
       const label = isRetest ? 'RETEST ' : ''
       const log = integrationLogPath(slot.directory, file)
       mkdirSync(dirname(log), { recursive: true })
       const fd = openSync(log, 'w', 0o600)
-      const environment = { ...process.env, TEST_DATABASE_URL: slot.databaseUrl,
-        NIM2691_POSTGRES: '1', NIM2691_ADMIN_DATABASE_URL: slot.databaseUrl,
-        TMPDIR: slot.directory, TMP: slot.directory, TEMP: slot.directory }
-      const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
+      const environment = integrationEnvironment(process.env, slot)
+      const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--reporter=verbose', '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
       closeSync(fd)
       active.set(slot.index, child)
       if (interrupted) signalOwnedChildren(active, killTimers, interrupted)
@@ -274,6 +291,10 @@ async function main() {
       try { await stopGroup(child.pid) }
       catch (reason) { code = 1; error = reason }
       if (!groupUsed(child.pid)) active.delete(slot.index)
+      const retained = integrationLogPath(join(failedLogs, 'slots', `${isRetest ? 'retest-' : ''}slot-${slot.index}`), file)
+      mkdirSync(dirname(retained), { recursive: true })
+      copyFileSync(log, retained)
+      const elapsedMs = Date.now() - started
       const summary = parseVitestCases(readFileSync(log, 'utf8'))
       if (!isRetest) {
         if (summary) for (const kind of ['passed', 'failed', 'skipped']) cases[kind] += summary[kind]
@@ -284,7 +305,7 @@ async function main() {
       if (code === 0) {
         if (isRetest) retest.passed++
         else passed++
-        console.log(`[integration] ${label}PASS ${file} (slot ${slot.index}; ${summary.passed} cases passed, ${summary.skipped} skipped)`)
+        console.log(`[integration] ${label}PASS ${file} (slot ${slot.index}; ${summary.passed} cases passed, ${summary.skipped} skipped; ${elapsedMs} ms)`)
       }
       else {
         if (isRetest) {
@@ -293,7 +314,7 @@ async function main() {
         const saved = integrationLogPath(isRetest ? join(failedLogs, 'retest') : failedLogs, file)
         mkdirSync(dirname(saved), { recursive: true })
         copyFileSync(log, saved)
-        console.error(`[integration] ${label}FAIL ${file} (slot ${slot.index}, exit ${code}); log: ${saved}`)
+        console.error(`[integration] ${label}FAIL ${file} (slot ${slot.index}, exit ${code}); ${elapsedMs} ms; log: ${saved}`)
         for (const name of failedCasesFromLog(readFileSync(log, 'utf8'))) console.error(`[integration]   × ${name}`)
         if (error) console.error(`[integration] ${error.message}`)
       }

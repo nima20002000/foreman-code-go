@@ -239,7 +239,8 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     const native = FakeNative.all[0]!
     native.hold = true
     await service.send(writer, workspace, request(codexNode, 'hold me', conversationId))
-    await settled(service, read, (value) => Boolean(value.activeTurn?.nativeTurnId) && value.activeTurn?.requestId !== first.turn.requestId)
+    await settled(service, read, (value) => Boolean(value.activeTurn?.nativeTurnId)
+      && native.activeTurn === value.activeTurn?.nativeTurnId && value.activeTurn?.requestId !== first.turn.requestId)
     const queuedA = await service.send(writer, workspace, request(codexNode, 'queued A', conversationId))
     const queuedB = await service.send(writer, workspace, request(codexNode, 'queued B', conversationId))
     expect(queuedA.turn.delivery).toBe('queued')
