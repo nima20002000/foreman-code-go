@@ -82,7 +82,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
           await parent.sync()
         } finally { await parent.close() }
       }
-      await this.verifyTree(tree, manifest)
+      await verifyMaterializedSourceTree(tree, manifest)
       signal.throwIfAborted(); await this.authorize(binding, attempt)
       const current = await openPrivateRoot(binding.canonicalPath)
       try { if (!equal(await identity(current), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root replaced before activation.') }
@@ -141,35 +141,6 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       await this.verify(receipt, { binding, attempt }); return receipt
     } finally { await root.close() }
   }
-  private async verifyTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal): Promise<void> {
-    const expected = new Set(manifest.entries.map((entry) => entry.path))
-    const walk = async (directory: FileHandle, prefix: string): Promise<void> => {
-      for (const item of await readdir(anchored(directory), { withFileTypes: true })) {
-        signal?.throwIfAborted()
-        const path = prefix ? `${prefix}/${item.name}` : item.name
-        sourcePath(path)
-        if (item.isDirectory()) {
-          if (!manifest.entries.some((entry) => entry.path.startsWith(`${path}/`))) throw new SourceError('SOURCE_TREE_EXTRA', 'Unexpected materialization directory.')
-          const child = await openChildDirectory(directory, item.name)
-          try { await walk(child, path) } finally { await child.close() }
-        } else if (!item.isFile() || !expected.has(path)) throw new SourceError('SOURCE_TREE_EXTRA', 'Unexpected materialization entry.')
-      }
-    }
-    await walk(tree, '')
-    for (const entry of manifest.entries) {
-      signal?.throwIfAborted()
-      const { parent, leaf } = await entryParent(tree, entry.path, false)
-      try {
-        const file = await open(anchored(parent, leaf), constants.O_RDONLY | constants.O_NOFOLLOW)
-        try {
-          const stat = await file.stat()
-          if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.byteSize || !!(stat.mode & 0o111) !== entry.executable)
-            throw new SourceError('SOURCE_TREE_INVALID', 'Materialized kind, size, link count or executable policy changed.')
-          verifySourceBytes(entry, await file.readFile({ signal }))
-        } finally { await file.close() }
-      } finally { await parent.close() }
-    }
-  }
   async verify(input: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<void> {
     expected.signal?.throwIfAborted()
     const receipt = MaterializationReceiptSchema.parse(input)
@@ -196,7 +167,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         const tree = await openChildDirectory(directory, 'tree')
         try {
           if (!equal(await identity(tree), receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized tree replaced.')
-          await this.verifyTree(tree, manifest, expected.signal)
+          await verifyMaterializedSourceTree(tree, manifest, expected.signal)
         } finally { await tree.close() }
       } finally { await directory.close() }
     } finally { await root.close() }
@@ -206,14 +177,61 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     return join(receipt.binding.canonicalPath, receipt.materializationId, 'tree')
   }
 }
+export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal): Promise<void> {
+  const expected = new Set(manifest.entries.map((entry) => entry.path))
+  const walk = async (directory: FileHandle, prefix: string): Promise<void> => {
+    for (const item of await readdir(anchored(directory), { withFileTypes: true })) {
+      signal?.throwIfAborted()
+      const path = prefix ? `${prefix}/${item.name}` : item.name
+      sourcePath(path)
+      if (item.isDirectory()) {
+        if (!manifest.entries.some((entry) => entry.path.startsWith(`${path}/`))) throw new SourceError('SOURCE_TREE_EXTRA', 'Unexpected materialization directory.')
+        const child = await openChildDirectory(directory, item.name)
+        try { await walk(child, path) } finally { await child.close() }
+      } else if (!item.isFile() || !expected.has(path)) throw new SourceError('SOURCE_TREE_EXTRA', 'Unexpected materialization entry.')
+    }
+  }
+  await walk(tree, '')
+  for (const entry of manifest.entries) {
+    signal?.throwIfAborted()
+    const { parent, leaf } = await entryParent(tree, entry.path, false)
+    try {
+      const file = await open(anchored(parent, leaf), constants.O_RDONLY | constants.O_NOFOLLOW)
+      try {
+        const stat = await file.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.byteSize || !!(stat.mode & 0o111) !== entry.executable)
+          throw new SourceError('SOURCE_TREE_INVALID', 'Materialized kind, size, link count or executable policy changed.')
+        verifySourceBytes(entry, await file.readFile({ signal }))
+      } finally { await file.close() }
+    } finally { await parent.close() }
+  }
+}
+
 /** Called only after authoritative execution reconciliation, never on disconnect. */
 export async function releaseMaterializationClaim(receipt: MaterializationReceipt, reconcile: () => Promise<'released' | 'owned' | 'uncertain'>): Promise<void> {
+  return archiveMaterializationClaim(receipt, { filesystem: receipt.binding.filesystem }, reconcile)
+}
+
+/** Only the separately signed original-Job cleanup grant can authorize a restored volume. */
+export async function releaseMaterializationClaimForCancellation(receipt: MaterializationReceipt,
+  filesystem: RootBinding['filesystem'], reconcile: () => Promise<'released' | 'owned' | 'uncertain'>): Promise<void> {
+  RootBindingSchema.shape.filesystem.parse(filesystem)
+  if (filesystem.inode !== receipt.binding.filesystem.inode) {
+    throw new SourceError('SOURCE_ROOT_CHANGED', 'The original source root inode changed.')
+  }
+  return archiveMaterializationClaim(receipt, { filesystem, verifyOriginalSource: true }, reconcile)
+}
+
+async function archiveMaterializationClaim(receipt: MaterializationReceipt,
+  options: { filesystem: RootBinding['filesystem']; verifyOriginalSource?: true },
+  reconcile: () => Promise<'released' | 'owned' | 'uncertain'>): Promise<void> {
   MaterializationReceiptSchema.parse(receipt)
   if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
   const binding = receipt.binding, root = await openPrivateRoot(binding.canonicalPath)
   try {
-    if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
+    if (!equal(await identity(root), options.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed.')
     await withClaimLock(root, async () => {
+      if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
       const name = `binding-${binding.rootId}.lock`, releasedName = 'released-claim.json'
       const directory = await openChildDirectory(root, receipt.materializationId)
       const validateClaim = async (lock: FileHandle): Promise<void> => {
@@ -231,14 +249,31 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
         try {
           const stat = await record.stat()
           if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid receipt record.')
-          if (!equal((JSON.parse(await record.readFile('utf8')) as { receipt: unknown }).receipt, receipt))
+          const stored = JSON.parse(await record.readFile('utf8')) as { receipt: unknown; manifest: unknown }
+          if (!equal(stored.receipt, receipt)) {
             throw new SourceError('SOURCE_RECEIPT_CONFLICT', 'Release does not match the exact original materialization receipt.')
+          }
+          if (options.verifyOriginalSource) {
+            const manifest = verifySourceManifest(stored.manifest)
+            if (manifest.manifestDigest !== receipt.verifiedManifestDigest || manifest.snapshotId !== binding.snapshotId
+              || manifest.totalEntries !== receipt.verifiedEntries || manifest.totalBytes !== receipt.verifiedBytes) {
+              throw new SourceError('SOURCE_RECEIPT_CONFLICT', 'The original verified source manifest changed.')
+            }
+            const tree = await openChildDirectory(directory, 'tree')
+            try {
+              const expected = { ...receipt.localTreeIdentity, device: options.filesystem.device,
+                mountId: options.filesystem.mountId }
+              if (!equal(await identity(tree), expected)) throw new SourceError('SOURCE_ROOT_CHANGED', 'The original source tree inode changed.')
+              await verifyMaterializedSourceTree(tree, manifest)
+            } finally { await tree.close() }
+          }
         } finally { await record.close() }
         const released = await open(anchored(directory, releasedName), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
           if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
           throw error
         })
         if (released) {
+          if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
           try { await validateClaim(released); await released.sync() } finally { await released.close() }
           // Finish durability after a crash/lost ACK during the original rename.
           // Never inspect or delete a successor claim on this replay branch.
@@ -253,6 +288,7 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
           } finally { await current.close() }
           // Atomically remove active ownership AND preserve its original claim.
           // Absence alone is never accepted as evidence that release completed.
+          if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution ownership is not reconciled.')
           await rename(anchored(root, name), anchored(directory, releasedName))
           await lock.sync(); await directory.sync(); await root.sync()
         } finally { await lock.close() }
@@ -264,7 +300,7 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
 /** A new worker generation cannot infer closure from its empty in-memory task
  * set. Look for same-UID processes using the original private namespace, without
  * exposing argv or accepting PID/path assertions from the caller. */
-async function preparationChildrenClosed(namespace: string): Promise<boolean> {
+export async function preparationChildrenClosed(namespace: string): Promise<boolean> {
   const entries = await readdir('/proc')
   if (entries.length > 32768) return false
   const inside = (path: string) => path === namespace || path.startsWith(namespace + '/')

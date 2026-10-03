@@ -51,6 +51,10 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       expect(runtimeNames(capabilities.tools)).toEqual(listedRuntime)
       expect(runtimeNames(capabilities.requirements!.map(requirement=>requirement.name))).toEqual(listedRuntime)
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({name:'job_start',actions:['jobs:start']}))
+      for (const name of ['job_cancellation_recovery_propose', 'job_cancellation_recovery_get']) {
+        expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name, actions: ['jobs:cancel'],
+          detail: expect.stringContaining('MCP cannot approve itself') }))
+      }
       const limit=capabilities.runtimeLimits!.find(limit=>limit.feature==='ci_jobs')
       expect(limit).toMatchObject({state:'limited'})
       expect(limit!.detail).toContain('current host-bound CI qualification')

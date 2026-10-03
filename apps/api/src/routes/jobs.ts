@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { JobDefinitionSaveSchema, JobDefinitionSpecSchema, JobStartSchema } from '@graphql/contracts/jobs'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { JobService } from '../modules/jobs/service.js'
-interface Scope {workspaceId:string;runId:string;nodeExecutionId:string;definitionId:string;versionId:string;executionId:string;fileId:string;revisionId:string}
+import { JobCancelInputSchema, JobCancellationProposalInputSchema } from '@graphql/contracts/job-cancellation-recovery'
+interface Scope {workspaceId:string;runId:string;nodeExecutionId:string;definitionId:string;versionId:string;executionId:string;fileId:string;revisionId:string;recoveryId:string}
 export function registerJobRoutes(app:FastifyInstance,service:JobService):void {
   const root='/api/management/workspaces/:workspaceId/jobs'
   app.get<{Params:Scope}>(`${root}/choices`,async request=>service.choices(requirePrincipal(request),request.params.workspaceId))
@@ -16,7 +17,24 @@ export function registerJobRoutes(app:FastifyInstance,service:JobService):void {
   app.post<{Params:Scope;Body:unknown}>(`${root}/executions`,async request=>({execution:await service.start(requirePrincipal(request),'http',request.params.workspaceId,JobStartSchema.parse(request.body))}))
   app.get<{Params:Scope}>(`${root}/executions`,async request=>({executions:await service.listExecutions(requirePrincipal(request),request.params.workspaceId)}))
   app.get<{Params:Scope}>(`${root}/executions/:executionId`,async request=>({execution:await service.getExecution(requirePrincipal(request),request.params.workspaceId,request.params.executionId)}))
-  app.post<{Params:Scope;Body:unknown}>(`${root}/executions/:executionId/cancel`,async request=>({execution:await service.cancel(requirePrincipal(request),'http',request.params.workspaceId,request.params.executionId,z.object({commandId:z.string().min(1)}).strict().parse(request.body).commandId)}))
+  app.post<{Params:Scope;Body:unknown}>(`${root}/executions/:executionId/cancel`, async request => {
+    const input = JobCancelInputSchema.parse(request.body)
+    return { execution: await service.cancel(requirePrincipal(request), 'http', request.params.workspaceId,
+      request.params.executionId, input.commandId, input.recovery) }
+  })
+  app.post<{Params:Scope;Body:unknown}>(`${root}/executions/:executionId/cancellation-recovery`, request => {
+    const input = JobCancellationProposalInputSchema.omit({ workspaceId: true, executionId: true }).parse(request.body)
+    return service.proposeCancellationRecovery(requirePrincipal(request), 'http', JobCancellationProposalInputSchema.parse({
+      ...input, workspaceId: request.params.workspaceId, executionId: request.params.executionId }))
+  })
+  app.get<{Params:Scope}>(`${root}/executions/:executionId/cancellation-recovery/:recoveryId`, request =>
+    service.getCancellationRecovery(requirePrincipal(request), { workspaceId: request.params.workspaceId,
+      executionId: request.params.executionId, recoveryId: request.params.recoveryId }))
+  app.post<{Params:Scope;Body:unknown}>(`${root}/executions/:executionId/cancellation-recovery/:recoveryId/approve`, request => {
+    const input = JobCancellationProposalInputSchema.pick({ commandId: true }).parse(request.body)
+    return service.approveCancellationRecovery(request, request.params.workspaceId, request.params.executionId,
+      request.params.recoveryId, input.commandId)
+  })
   app.get<{Params:Scope;Querystring:unknown}>(`${root}/executions/:executionId/logs`,async request=>{
     const query=z.object({afterSequence:z.coerce.number().int().nonnegative().default(0),limit:z.coerce.number().int().min(1).max(100).default(50)}).strict().parse(request.query)
     return service.readLogs(requirePrincipal(request),request.params.workspaceId,request.params.executionId,query.afterSequence,query.limit)

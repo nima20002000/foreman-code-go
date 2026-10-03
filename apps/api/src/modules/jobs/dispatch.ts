@@ -146,6 +146,35 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     })
     if(terminal)await this.release(executionId)
   }
+  async importCancellationClosure(workspaceId: string, executionId: string, receipt: RemoteJobOperationReceipt,
+    authorizeAndRelease: (sql: GraphTransactionSql, execution: JobExecution) => Promise<void>): Promise<void> {
+    let active = this.owners.get(executionId)
+    if (!active) {
+      const abort = new AbortController()
+      const owner = await JobOwnership.acquire(this.pool, executionId, () => abort.abort())
+      if (!owner) throw new DomainError('JOB_RECOVERY_OWNER_BUSY', 'The original Job owner is still active.', 409)
+      active = { owner, abort }
+      this.owners.set(executionId, active)
+    }
+    try {
+      await active.owner.connection.transaction(async sql => {
+        const execution = await this.readExecutionLocked(sql, workspaceId, executionId)
+        const fence = await active!.owner.readFence(sql)
+        await sql.query('update job_dispatch_intents set owner_id=$2,owner_fence=$3 where execution_id=$1',
+          [executionId, fence.ownerId, fence.fence])
+        await this.requireOwner(sql, execution, { attemptId: execution.attemptId, owner: execution.owner })
+        await authorizeAndRelease(sql, execution)
+        if (await this.acceptReceipt(sql, execution, receipt)) {
+          const transport = execution.transport
+          await this.host.observe(sql, execution, receipt)
+          execution.transport = transport
+          await this.repository.putExecution(sql, execution)
+        }
+      })
+    } finally {
+      await this.release(executionId)
+    }
+  }
   private async acceptReceipt(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<boolean> {
     receipt=RemoteJobOperationReceiptSchema.parse(receipt)
     const row=(await sql.query<{intent:unknown;receipt_sequence:string;last_receipt:unknown}>('select intent,receipt_sequence::text,last_receipt from job_dispatch_intents where execution_id=$1 for update',[execution.id])).rows[0]!

@@ -251,6 +251,10 @@
     "./worker-native-output": {
       "types": "./dist/workerNativeOutput.d.ts",
       "import": "./dist/workerNativeOutput.js"
+    },
+    "./job-cancellation-recovery": {
+      "types": "./dist/jobCancellationRecovery.d.ts",
+      "import": "./dist/jobCancellationRecovery.js"
     }
   },
   "scripts": {

@@ -1,3 +1,5 @@
+import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema,
+  JobCancellationRecoveryReadSchema } from '@graphql/contracts/job-cancellation-recovery'
 import { JobWorkflowExecutionReferenceSchema } from '@graphql/contracts/job-workflow'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
@@ -8,18 +10,20 @@ import { DomainError } from '../../../modules/errors.js'
 import type { JobService } from '../../../modules/jobs/service.js'
 import type { PostgresCommandCoordinator } from '../../../modules/commands/postgres.js'
 import { toolFailure, toolResult } from '../../shared/results.js'
-export const JOB_TOOLS = ['job_choices_get','job_workflow_execution_get','job_definition_list','job_definition_get','job_definition_version_get','job_definition_save','job_validate','job_start','job_get','job_list','job_cancel','job_logs_read','job_artifacts_list','job_artifact_read'] as const
+export const JOB_TOOLS = ['job_choices_get','job_workflow_execution_get','job_definition_list','job_definition_get','job_definition_version_get','job_definition_save','job_validate','job_start','job_get','job_list','job_cancel','job_cancellation_recovery_propose','job_cancellation_recovery_get','job_logs_read','job_artifacts_list','job_artifact_read'] as const
 export type JobToolName = typeof JOB_TOOLS[number]
 const actions:Record<JobToolName,ManagementAction> = {
   job_choices_get:'job_definitions:read',job_workflow_execution_get:'jobs:read',job_definition_list:'job_definitions:read',job_definition_get:'job_definitions:read',job_definition_version_get:'job_definitions:read',job_definition_save:'job_definitions:write',job_validate:'job_definitions:read',
-  job_start:'jobs:start',job_get:'jobs:read',job_list:'jobs:read',job_cancel:'jobs:cancel',job_logs_read:'job_logs:read',job_artifacts_list:'job_artifacts:read',job_artifact_read:'job_artifacts:read',
+  job_start:'jobs:start',job_get:'jobs:read',job_list:'jobs:read',job_cancel:'jobs:cancel',job_cancellation_recovery_propose:'jobs:cancel',job_cancellation_recovery_get:'jobs:cancel',job_logs_read:'job_logs:read',job_artifacts_list:'job_artifacts:read',job_artifact_read:'job_artifacts:read',
 }
 export interface JobMcpContext {principal:ManagementPrincipal;services:{jobs?:JobService;commands:PostgresCommandCoordinator}}
 export function jobToolAvailable(context:JobMcpContext,name:JobToolName,resource:AuthorizedResource={}) {
   return !!context.services.jobs && (Object.keys(resource).length ? isAuthorized(context.principal,actions[name],resource) : hasAction(context.principal,actions[name]))
 }
 export function jobCapabilities(context:JobMcpContext,resource:AuthorizedResource) {
-  return JOB_TOOLS.filter(name=>jobToolAvailable(context,name,resource)).map(name=>({name,actions:[actions[name]],detail:'Workspace-scoped job authority is rechecked live. Accepted specifications and file revisions are immutable. No Agent, provider login or Operator credential enters the build.'}))
+  return JOB_TOOLS.filter(name=>jobToolAvailable(context,name,resource)).map(name=>({name,actions:[actions[name]],detail: name.startsWith('job_cancellation_recovery')
+    ? 'Cleanup requires jobs:cancel and separate browser-owner approval. MCP cannot approve itself or authorize execution.'
+    : 'Workspace-scoped job authority is rechecked live. Accepted specifications and file revisions are immutable. No Agent, provider login or Operator credential enters the build.'}))
 }
 async function invoke(context:JobMcpContext,name:JobToolName,work:()=>Promise<unknown>) {
   try {return toolResult(await work())} catch(error) {
@@ -44,7 +48,21 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   if(jobToolAvailable(context,'job_start')) server.registerTool('job_start',{description:'Accept one immutable job using the definition revision. The same commandId and payload reconcile the original execution. Retryable JOB_DISPATCH_PENDING identifies its executionId, attemptId and operationId: read job_get and retry the original commandId and payload. An attempted delivery is never redelivered; pending or empty journal state does not prove that execution never started.',inputSchema:JobStartSchema.extend({workspaceId:z.string().min(1)}),outputSchema:z.object({execution:JobExecutionSchema}),annotations:write},input=>invoke(context,'job_start',async()=>{const {workspaceId,...body}=input;return {execution:await service.start(context.principal,'mcp',workspaceId,body)}}))
   if(jobToolAvailable(context,'job_get')) server.registerTool('job_get',{description:'Read exact accepted job and separate process, transport and publication facts.',inputSchema:execution,outputSchema:z.object({execution:JobExecutionSchema}),annotations:read},input=>invoke(context,'job_get',async()=>({execution:await service.getExecution(context.principal,input.workspaceId,input.executionId,'mcp')})))
   if(jobToolAvailable(context,'job_list')) server.registerTool('job_list',{description:'List workspace job executions.',inputSchema:scope,outputSchema:z.object({executions:z.array(JobExecutionSchema)}),annotations:read},input=>invoke(context,'job_list',async()=>({executions:await service.listExecutions(context.principal,input.workspaceId,'mcp')})))
-  if(jobToolAvailable(context,'job_cancel')) server.registerTool('job_cancel',{description:'Persist idempotent cancellation intent. Retryable JOB_DISPATCH_PENDING identifies the original executionId, attemptId and operationId: read job_get and retry the original commandId and payload to reconcile that attempt. A receipt or pending journal does not claim that the owned process or descendants stopped.',inputSchema:execution.extend({commandId:z.string().min(1)}),outputSchema:z.object({execution:JobExecutionSchema}),annotations:write},input=>invoke(context,'job_cancel',async()=>({execution:await service.cancel(context.principal,'mcp',input.workspaceId,input.executionId,input.commandId)})))
+  if (jobToolAvailable(context, 'job_cancel')) server.registerTool('job_cancel', {
+    description: 'Request cancellation of the original Job. Pending journal state does not prove physical closure. For a revoked Worker, recovery requires a fresh browser-owner-approved grant and the original installation signed no-entry/source-claim closure. Recovery never authorizes execution or publication.',
+    inputSchema: JobCancelInputSchema.extend({ workspaceId: z.string().min(1), executionId: z.string().min(1) }),
+    outputSchema: z.object({ execution: JobExecutionSchema }), annotations: write,
+  }, input => invoke(context, 'job_cancel', async () => ({ execution: await service.cancel(context.principal,
+    'mcp', input.workspaceId, input.executionId, input.commandId, input.recovery) })))
+  if (jobToolAvailable(context, 'job_cancellation_recovery_propose')) server.registerTool('job_cancellation_recovery_propose', {
+    description: 'Propose cleanup of one original manual Job on a revoked Worker, pinned to its retained journal digest. This creates no cleanup authority. Only the signed-in human application owner may approve the reviewed proposal in the browser.',
+    inputSchema: JobCancellationProposalInputSchema, outputSchema: JobCancellationRecoveryReadSchema, annotations: write,
+  }, input => invoke(context, 'job_cancellation_recovery_propose', () =>
+    service.proposeCancellationRecovery(context.principal, 'mcp', input)))
+  if (jobToolAvailable(context, 'job_cancellation_recovery_get')) server.registerTool('job_cancellation_recovery_get', {
+    description: "Read this caller's original cleanup proposal, approved short-lived grant and persisted signed closure. A grant permits only no-entry fencing and release of its original source claim; ordinary revoked Worker authentication remains denied.",
+    inputSchema: JobCancellationRecoveryGetSchema, outputSchema: JobCancellationRecoveryReadSchema, annotations: read,
+  }, input => invoke(context, 'job_cancellation_recovery_get', () => service.getCancellationRecovery(context.principal, input)))
   if(jobToolAvailable(context,'job_logs_read')) server.registerTool('job_logs_read',{description:'Read durable sequenced log chunks; resume with nextCursor. Explicitly reports truncation.',inputSchema:execution.extend({afterSequence:z.number().int().nonnegative().default(0),limit:z.number().int().min(1).max(100).default(50)}),outputSchema:JobLogPageSchema,annotations:read},input=>invoke(context,'job_logs_read',()=>service.readLogs(context.principal,input.workspaceId,input.executionId,input.afterSequence,input.limit,'mcp')))
   if(jobToolAvailable(context,'job_artifact_read')) server.registerTool('job_artifact_read',{description:'Read bounded exact digest-verified artifact bytes as base64. Expired, missing or corrupt revisions fail; larger artifacts use authenticated HTTP attachment download.',inputSchema:execution.extend({fileId:z.string().min(1),revisionId:z.string().min(1)}),outputSchema:z.object({artifact:JobArtifactSchema,encoding:z.literal('base64'),content:z.string()}),annotations:read},input=>invoke(context,'job_artifact_read',async()=>{
     const value=await service.readArtifact(context.principal,input.workspaceId,input.executionId,input.fileId,input.revisionId,'mcp')
