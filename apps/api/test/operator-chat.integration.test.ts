@@ -236,33 +236,47 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await expect(chat.send(source.id, { ...input, requestId: 'stale-fork', forkExpectedRevision: before.revision - 1 }, owner))
       .rejects.toMatchObject({ code: 'CONVERSATION_REVISION_CONFLICT' })
   })
-  it('offers the same fork through authenticated MCP with persisted readback and denied callers', async () => {
-    const openCode = new ChatManager('opencode')
-    chat = new OperatorChatService(repository, operators,
-      (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
-      '/tmp/graphql-test-operator', authority)
-    const service = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool),
-      new PostgresCommandCoordinator(pool), { qualifyConfiguration: async () => ({} as never) }, operators)
-    const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      operator: { access, services: { settings: service, operatorChat: chat, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
-    const clients: Client[] = []
-    try {
-      const address = await app.listen({ host: '127.0.0.1', port: 0 })
-      async function connect(actions: ManagementPrincipal['grants'][number]['actions']) {
+  describe('MCP fork source fixture', () => {
+    let app: ReturnType<typeof buildApp>
+    let address: string
+    let clients: Client[]
+    let connect: (actions: ManagementPrincipal['grants'][number]['actions']) => Promise<Client>
+    let client: Client
+    let sourceId: string
+    let get: (id: string) => Promise<OperatorConversationState>
+    let source: OperatorConversationState
+    beforeEach(async () => {
+      const openCode = new ChatManager('opencode')
+      chat = new OperatorChatService(repository, operators,
+        (configuration) => configuration.harness.harness === 'opencode' ? openCode : manager,
+        '/tmp/graphql-test-operator', authority)
+      const service = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool),
+        new PostgresCommandCoordinator(pool), { qualifyConfiguration: async () => ({} as never) }, operators)
+      app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services: { settings: service, operatorChat: chat, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+      clients = []
+      address = await app.listen({ host: '127.0.0.1', port: 0 })
+      connect = async (actions) => {
         const issued = await access.issue({ name: 'Fork MCP caller', audience: 'operator', grants: [{ actions, scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
         const client = new Client({ name: 'fork-mcp', version: '1' }); clients.push(client)
         await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => issued.token } }))
         return client
       }
-      const client = await connect(['operator_chat:read', 'operator_chat:write', 'settings:read', 'settings:update', 'harnesses:read'])
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['operator_chat_create', 'operator_chat_get', 'operator_chat_send']))
+      client = await connect(['operator_chat:read', 'operator_chat:write', 'settings:read', 'settings:update', 'harnesses:read'])
       const created = (await client.callTool({ name: 'operator_chat_create', arguments: {} })).structuredContent as { conversation: { id: string } }
-      const sourceId = created.conversation.id
+      sourceId = created.conversation.id
       await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId,
         request: { requestId: 'mcp-source', content: 'Remember the release details.' } } })
-      const get = async (id: string) => (await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: id } })).structuredContent as OperatorConversationState
+      get = async (id: string) => (await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: id } })).structuredContent as OperatorConversationState
       await waitFor(async () => (await get(sourceId)).turnState === 'idle')
-      const source = await get(sourceId)
+      source = await get(sourceId)
+    })
+    afterEach(async () => {
+      for (const client of clients ?? []) await client.close()
+      await app?.close()
+    })
+    it('offers the same fork through authenticated MCP with persisted readback and denied callers', async () => {
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['operator_chat_create', 'operator_chat_get', 'operator_chat_send']))
       const defaults = (await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent as { revision: number; value: typeof DEFAULT_AGENT_DEFAULTS }
       const target = { ...DEFAULT_HARNESS_DEFAULTS.opencode }
       const changed = await client.callTool({ name: 'agent_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: defaults.revision,
@@ -290,7 +304,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const denied = await connect(['operator_chat:read'])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
       await expect(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).rejects.toThrow('not found')
-    } finally { for (const client of clients) await client.close(); await app.close() }
+    })
   })
   it('checks the Operator MCP setup without creating an Operator or a conversation', async () => {
     expect(await chat.setup(owner)).toMatchObject({ harness: 'codex', status: 'configured' })

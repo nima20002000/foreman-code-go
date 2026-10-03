@@ -274,7 +274,8 @@ async function main() {
       mkdirSync(dirname(log), { recursive: true })
       const fd = openSync(log, 'w', 0o600)
       const environment = integrationEnvironment(process.env, slot)
-      const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--reporter=verbose', '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
+      // One slot is one case; it.concurrent must not multiply its SQL fixture load.
+      const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
       closeSync(fd)
       active.set(slot.index, child)
       if (interrupted) signalOwnedChildren(active, killTimers, interrupted)

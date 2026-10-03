@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
 import { currentRunHistory } from './helpers/currentRunHistory.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 
 describe.skipIf(!postgresEnabled)('persisted current Run history pins', () => {
+  let f: Awaited<ReturnType<typeof currentRunHistory>>
+  beforeAll(async () => { f = await currentRunHistory() })
+  afterAll(async () => { await f?.db.close() })
   it('reads the accepted V3 version after a newer workflow version is published', async () => {
-    const f = await currentRunHistory()
-    try {
       const history = await readCurrentRunDetails(f.db.pool, f.owner.principal, f.run.workspaceId, f.run.id)
       expect(history.run.workflowVersionId).toBe(f.saved.value.currentVersionId)
       expect(history.run.workflowVersionId).not.toBe(f.newer.value.currentVersionId)
@@ -18,6 +19,5 @@ describe.skipIf(!postgresEnabled)('persisted current Run history pins', () => {
         workflowId: f.run.workflowId, workflowVersionId: history.run.workflowVersionId })
       expect(exact.version).toEqual(f.saved.value.version)
       expect(exact.currentVersionId).toBe(f.newer.value.currentVersionId)
-    } finally { await f.db.close() }
   })
 })

@@ -14,7 +14,7 @@ describe('persisted Operator activity', () => {
       if (text.includes('from operator_conversation_turns')) return { rows: [{ request_id: 'A', sequence: '1', started_at: startedAt, outcome: null, native_turn_id: 'turn-A' }] }
       if (text.includes('from operator_conversation_messages')) return { rows: [{ record: { id: 'text', conversationId: 'conversation', requestId: 'A',
         role: 'assistant', content: '', nativeMessageId: 'native-text', nativeMessageComplete: true, revision: '4', sequence: '3' } }] }
-      if (text.startsWith('with open as (')) return { rows: [] }
+      if (text.startsWith('with candidates as materialized (')) return { rows: [] }
       if (text.includes('operator_conversation_activity')) return { rows: [] }
       throw new Error(`Unexpected SQL ${text}`)
     } } as unknown as Pick<pg.PoolClient, 'query'>
