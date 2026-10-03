@@ -52,9 +52,17 @@ async function createDatabase(existingPR17 = false) {
   }
 }
 
-async function database(test: (pool: pg.Pool) => Promise<void>, existingPR17 = false) {
-  const fixture = await createDatabase(existingPR17)
-  try { await test(fixture.pool) } finally { await fixture.close() }
+function withDatabaseFixture(createFixture: () => ReturnType<typeof createDatabase>) {
+  let fixture: Awaited<ReturnType<typeof createDatabase>> | undefined
+  beforeEach(async () => {
+    fixture = await createFixture()
+  }, 60_000)
+  afterEach(async () => {
+    const current = fixture
+    fixture = undefined
+    await current?.close()
+  }, 60_000)
+  return (test: (pool: pg.Pool) => Promise<void>) => test(fixture!.pool)
 }
 
 async function seed(pool: pg.Pool) {
@@ -257,7 +265,9 @@ describe('PR17 F10 PostgreSQL event allocation', () => {
   })
 })
 
-describe('PR17 F10 migration 1702', () => {
+describe('native event sequence migration on fresh databases', () => {
+  const database = withDatabaseFixture(createDatabase)
+
   it('applies on a fresh database and is a receipt-controlled no-op on restart', async () => {
     await database(async (pool) => {
       expect(await nextSequence(pool)).toBe('0')
@@ -271,6 +281,10 @@ describe('PR17 F10 migration 1702', () => {
       expect(fn.rows).toEqual([{ provolatile: 'v', prosecdef: false }])
     })
   })
+})
+
+describe('native event sequence migration upgrades', () => {
+  const database = withDatabaseFixture(() => createDatabase(true))
 
   it('upgrades the actual existing PR17 migration level without changing event history; rollback is restart-safe', async () => {
     await database(async (pool) => {
@@ -309,6 +323,6 @@ describe('PR17 F10 migration 1702', () => {
       expect((await pool.query('select * from application_migrations where version<>1702 order by version')).rows).toEqual(oldReceipts)
       expect((await pool.query('select version from application_migrations where version=1702')).rowCount).toBe(1)
       expect(await counts(pool)).toEqual({ events: 3, activity: 3 })
-    }, true)
+    })
   }, 20_000)
 })
