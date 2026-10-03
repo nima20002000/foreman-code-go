@@ -1,3 +1,4 @@
+import { componentLogger } from '../../infrastructure/logger.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import { constants } from 'node:fs'
 import { open, realpath } from 'node:fs/promises'
@@ -110,7 +111,8 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
       // create/start below still requires the current authenticated Main channel.
       connection: original.admission.connection,
     } })
-  } catch {
+  } catch (error) {
+    componentLogger('jobs').error({ err: error, executionId: execution.id }, 'Installed Job qualification read failed')
     // executeJob records a positive pre-entry preparation failure; never downgrade isolation.
     return new PodmanJobSupervisor(null, unavailable, async () => { throw new Error('Job isolation unavailable') })
   }

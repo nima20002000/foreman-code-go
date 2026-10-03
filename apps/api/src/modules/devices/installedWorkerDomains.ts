@@ -1,3 +1,4 @@
+import { componentLogger } from '../../infrastructure/logger.js'
 import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
 import { createInstalledRsyncComposition, type InstalledRsyncProviders } from '../byte-transfer/productionComposition.js'
 import { randomUUID } from 'node:crypto'
@@ -173,7 +174,10 @@ export async function createInstalledWorkerDomains(input: {
       collectOutputs: createWorkerJobOutputCollector({ request }, { current: async signal => { signal?.throwIfAborted(); return transferContextForBinding(current()) },
         retryable: error => error instanceof DeviceConnectionError && ['transport', 'timeout'].includes(error.code) }, retained,jobOutputRsync?.collector),
     })
-    await host.recover()
+    try { await host.recover() } catch (error) {
+      componentLogger('jobs').error({ err: error }, 'Installed Job recovery failed')
+      throw error
+    }
     jobs = host
     return host
   })()
