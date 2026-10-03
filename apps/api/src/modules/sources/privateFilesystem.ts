@@ -7,8 +7,7 @@ import { DomainError } from '../errors.js'
 export const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 export function anchored(handle: FileHandle, name = ''): string { return `/proc/self/fd/${handle.fd}${name ? `/${name}` : ''}` }
 export async function identity(handle: FileHandle): Promise<{ device: string; inode: string; mountId: string }> {
-  const stat = await handle.stat({ bigint: true })
-  const info = await readFile(`/proc/self/fdinfo/${handle.fd}`, 'utf8')
+  const [stat, info] = await Promise.all([handle.stat({ bigint: true }), readFile(`/proc/self/fdinfo/${handle.fd}`, 'utf8')])
   const mountId = /^mnt_id:\s*(\d+)$/m.exec(info)?.[1]
   if (!mountId) throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Linux mount identity cannot be qualified.', 422)
   return { device: stat.dev.toString(), inode: stat.ino.toString(), mountId }
@@ -37,7 +36,10 @@ export async function openPrivateRoot(path: string, privateOnly = true): Promise
     if (stat.uid !== process.getuid?.() || (privateOnly ? (stat.mode & 0o077) !== 0 || (stat.mode & 0o700) !== 0o700 : (stat.mode & 0o022) !== 0 || (stat.mode & 0o500) !== 0o500))
       throw new SourceError('SOURCE_ROOT_NOT_PRIVATE', privateOnly ? 'The approved root must be owned by this worker with mode 0700.' : 'The approved base must be worker-owned and protected from other writers.')
     const current = await open(path, directoryFlags)
-    try { if (JSON.stringify(await identity(current)) !== JSON.stringify(await identity(parent))) throw new SourceError('SOURCE_ROOT_CHANGED', 'Root changed during validation.') }
+    try {
+      const [currentIdentity, parentIdentity] = await Promise.all([identity(current), identity(parent)])
+      if (JSON.stringify(currentIdentity) !== JSON.stringify(parentIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Root changed during validation.')
+    }
     finally { await current.close() }
     return parent
   } catch (error) { await parent.close(); throw error }
@@ -48,7 +50,7 @@ export async function openChildDirectory(parent: FileHandle, name: string, creat
   const stat = await child.stat()
   if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) { await child.close(); throw new SourceError('SOURCE_DIRECTORY_NOT_PRIVATE', 'Materialization parents must be private worker directories.') }
   try {
-    const parentIdentity = await identity(parent), childIdentity = await identity(child)
+    const [parentIdentity, childIdentity] = await Promise.all([identity(parent), identity(child)])
     if (parentIdentity.device !== childIdentity.device || parentIdentity.mountId !== childIdentity.mountId)
       throw new SourceError('SOURCE_MOUNT_CHANGED', 'Source entries cannot cross a filesystem or mount boundary.')
     return child
