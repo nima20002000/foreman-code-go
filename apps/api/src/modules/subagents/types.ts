@@ -1,0 +1,36 @@
+import type { HarnessNativeEvent } from '@graphql/contracts'
+import type { RunSubagent, RunSubagentCommandReceipt, RunSubagentMessage, RunSubagentTool, SubagentNativeMode } from '@graphql/contracts/subagents'
+
+export interface SubagentProjectionContext {
+  workspaceId: string; workflowId: string; workflowVersionId: string; runId: string
+  parentNodeId: string; parentAgentId: string; parentExecutionId: string; parentAttemptKey: string
+  provider: RunSubagent['provider']; parentSessionId: string; profile: RunSubagent['profile']
+}
+export type SubagentChange =
+  | { kind: 'discover'; childId: string; parentSessionId: string; nativeMode: SubagentNativeMode;
+      status: RunSubagent['status']; name?: string; taskId?: string; spawnToolUseId?: string; turnId?: string; agentPath?: string }
+  | { kind: 'status'; childId: string; status: RunSubagent['status']; turnId?: string; taskId?: string; activateTask?: boolean }
+  | { kind: 'message'; childId: string; nativeMessageId: string; blockId?: string; role: 'user' | 'assistant'; text: string; final: boolean; parentToolUseId?: string; nativeTruncation?: RunSubagentMessage['truncation'] }
+  | { kind: 'tool'; childId: string; nativeToolId: string; name?: string; status: RunSubagentTool['status']; input?: unknown; output?: unknown; error?: unknown; nativeMessageId?: string; parentToolUseId?: string; durationMs?: number }
+
+/** Only an admitted computer-owned manager may supply this lease. Main must never borrow a remote session. */
+export interface SubagentControlLease {
+  generation: string; nativeTurnId: string | null
+  matches(child: RunSubagent): boolean
+  assertCurrent(): void
+  sendInput?(receipt: RunSubagentCommandReceipt, text: string): Promise<void>
+  interrupt?(receipt: RunSubagentCommandReceipt): Promise<void>
+  /** Read exact native correlation, never retry a prompt after uncertain delivery. */
+  reconcile?(receipt: RunSubagentCommandReceipt): Promise<'acknowledged' | 'rejected' | 'uncertain'>
+}
+export type SubagentControlResolver = (child: RunSubagent) => SubagentControlLease | undefined
+export interface SubagentNativeHistoryPage {
+  events: readonly HarnessNativeEvent[]
+  nextCursor: string | null
+  /** Complete only after verified ancestry and authoritative full child history, not an SSE window. */
+  coverage: RunSubagent['coverage']
+}
+export type SubagentNativeHistoryReader = (child: RunSubagent, cursor?: string) => Promise<SubagentNativeHistoryPage>
+export type SubagentStoredItem = RunSubagentMessage | RunSubagentTool
+
+export type SubagentNativeRecoverySource = (executionId: string, session: import('@graphql/contracts').NativeSessionReference, cursor: string | undefined, signal: AbortSignal) => Promise<import('../harnesses/port.js').NativeSubagentHistoryPage>

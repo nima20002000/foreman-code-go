@@ -90,6 +90,7 @@ export const ManagementActionSchema = z.enum([
   "runs:read",
   "runs:start",
   "runs:stop",
+  "runs:subagents:input",
   "interactions:read",
   "interactions:respond",
 ]);
@@ -747,6 +748,7 @@ export const OperatorToolNameSchema = z.enum([
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
   "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_start", "run_stop",
+  "run_subagents_list_v1", "run_subagent_get_v1", "run_subagent_messages_list_v1", "run_subagent_tools_list_v1", "run_subagent_input_v1", "run_subagent_interrupt_v1",
   "interaction_list", "interaction_get",
 ]);
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;

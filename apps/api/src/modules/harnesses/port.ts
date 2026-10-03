@@ -122,6 +122,11 @@ export interface NativeHistory {
 }
 
 /** Rich provider-neutral lifecycle. Concrete Codex/OpenCode transports are HAP-02/03. */
+export interface NativeSubagentHistoryPage {
+  events: readonly NativeHarnessEvent[]
+  nextCursor: string | null
+}
+
 export interface NativeHarnessSessionManager extends ResponseAvailabilityInspector {
   readonly harness: AgentHarness
   capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities>
@@ -145,6 +150,8 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   /** Synchronously stop client-side auto replies before cleanup reads; never terminal evidence. */
   stopAutomaticResponses?(session: NativeSessionReference): void
   cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean>
+  /** Read native descendants through their exact admitted parent. Never resumes a child or changes its input owner. */
+  subagentHistory?(session: NativeSessionReference, cursor?: string, signal?: AbortSignal): Promise<NativeSubagentHistoryPage>
   history(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory>
   /** Refresh authenticated remote ownership before a coordinator boundary check. */
   observeBoundary?(session: NativeSessionReference, signal?: AbortSignal): Promise<void>

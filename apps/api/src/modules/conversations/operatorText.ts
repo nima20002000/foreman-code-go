@@ -5,6 +5,7 @@ function object(value: unknown): ObjectValue { return value && typeof value === 
 /** Deltas are presentation-only; completed public message items are persisted separately. */
 export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new Map<string, string>()): Array<{ partId: string; text: string; mode: 'append' | 'replace' }> {
   const payload = event.payload
+  if (payload.subagentNativeId || event.type === 'native.unlinked_notification') return []
   if (event.type === 'claude.text' && !payload.parentToolUseId && typeof payload.itemId === 'string'
     && typeof payload.text === 'string' && (payload.operation === 'append' || payload.operation === 'replace')) {
     return [{ partId: payload.itemId, text: payload.text, mode: payload.operation }]
@@ -42,6 +43,7 @@ export function nativeAssistantText(event: NativeHarnessEvent, partKinds = new M
 
 export function completedNativeAssistantMessage(event: NativeHarnessEvent, harness: 'codex' | 'opencode' | 'claude'):
   { id: string; text: string; parentMessageId?: string; complete?: boolean } | undefined {
+  if (event.payload.subagentNativeId || event.type === 'native.unlinked_notification') return undefined
   if (harness === 'claude' && event.type === 'claude.text' && !event.payload.parentToolUseId
     && event.payload.operation === 'replace' && typeof event.payload.itemId === 'string'
     && typeof event.payload.text === 'string') {
