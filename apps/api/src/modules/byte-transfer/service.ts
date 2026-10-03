@@ -194,6 +194,21 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
     }))
   }
   /** Supervisor-only: caller has deleted the exact private bytes and confirmed original writer/readers stopped. */
+  async hasReservation(input: TransferIntent, inputKind: ExternalStagingKind): Promise<boolean> {
+    const intent = TransferIntentSchema.parse(input)
+    const kind = ExternalKindSchema.parse(inputKind)
+    return this.locked(intent.transferId, async () => {
+      const journal = await this.load(intent.transferId).catch(error => {
+        if (error.code === 'ENOENT') return undefined
+        throw error
+      })
+      if (!journal) return false
+      this.sameIntent(journal, intent)
+      const hold = journal.external?.[kind]
+      return !!hold && !hold.released
+    })
+  }
+
   async release(input: TransferIntent, inputKind: ExternalStagingKind): Promise<void> {
     const intent = TransferIntentSchema.parse(input), kind = ExternalKindSchema.parse(inputKind)
     return this.locked(intent.transferId, () => this.allocated(async () => {

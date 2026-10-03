@@ -34,6 +34,8 @@ describe('actual installed worker mount availability, no physical acceptance', (
     await absent.close()
     const configured=await createInstalledWorkerDomains({...input,jobConfiguration:{path:'/uncreated-job-selection.json',ownerUid:process.getuid!()}})
     expect(extensionDescriptors(configured.extensions).filter(value=>value.namespace==='job-inputs-v1')).toEqual([{namespace:'job-inputs-v1',version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192}])
+    expect(extensionDescriptors(configured.extensions).filter(value => value.namespace === 'byte-transfer-v1'))
+      .toEqual([{ namespace: 'byte-transfer-v1', version: 1, role: 'duplex', maxJsonBytes: 16384, maxBinaryBytes: 1048576 }])
     await configured.close()
   })
 })

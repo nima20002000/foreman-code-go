@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import pino, { type Level, type Logger, type LevelWithSilent } from 'pino'
 
 /** Components that own a child logger. Keep this list short and stable: it is the `component` field operators filter on. */
-export type LogComponent = 'lifecycle' | 'http' | 'engine' | 'harness' | 'db'
+export type LogComponent = 'lifecycle' | 'http' | 'engine' | 'harness' | 'db' | 'devices' | 'jobs' | 'byte-transfer'
 
 // Secrets and model content never reach a log line, wherever they sit in a logged object.
 const REDACTED_KEYS = ['authorization', 'cookie', 'set-cookie', 'token', 'accessToken', 'refreshToken', 'apiKey', 'api_key',

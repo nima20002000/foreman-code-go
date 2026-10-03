@@ -51,11 +51,33 @@ async function fixture() {
   const readRoots = vi.fn(async () => roots), open = vi.fn(async () => Readable.from([data]))
   const currentOwner = vi.fn(async () => structuredClone(owner))
   const nativeOwnerFor = vi.fn(async (): Promise<SourceInstalledNativeOwner | null> => null)
+  const preparationNativeClosed = vi.fn(async () => true)
+  const preparationTransfersClosed = vi.fn(async () => {})
   const service = new SourceOperationWorkerService({ authenticate: async () => {}, approvedRoots: readRoots, currentOwner,
-    transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext, nativeOwnerFor })
+    transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext,
+    nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed })
   const context = { binding, signal: new AbortController().signal }
-  return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner, readRoots, open, nativeOwnerFor }
+  return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner,
+    readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed }
 }
+
+it('confirms preparation cleanup only after native closure and transfer reservations are released', async () => {
+  const f = await fixture()
+  f.owner.preparationClosed = true
+  const request = { version: 1, operation: 'sources.reconcile-preparation', reconciliationId: randomUUID() }
+  f.preparationNativeClosed.mockResolvedValue(false)
+  await expect(f.service.handle(request, f.context)).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+  expect(f.preparationTransfersClosed).not.toHaveBeenCalled()
+  f.preparationNativeClosed.mockResolvedValue(true)
+  f.preparationTransfersClosed.mockRejectedValueOnce(new Error('Transfer cleanup incomplete'))
+  await expect(f.service.handle(request, f.context)).rejects.toThrow('Transfer cleanup incomplete')
+  const response = await f.service.handle(request, f.context)
+  expect(response).toMatchObject({ operation: request.operation, closure: {
+    operationId: f.owner.identity.operationId, executionId: f.owner.attempt.executionId,
+    claimReleased: true, childrenClosed: true, evidencePreserved: true,
+  } })
+  expect(f.preparationTransfersClosed).toHaveBeenCalledTimes(2)
+})
 
 async function continuationFixture() {
   const f = await fixture(), prepared = await f.service.handle(f.request, f.context)

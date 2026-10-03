@@ -11,6 +11,7 @@ import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, SourceOper
 import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt, type TransferContext } from '@graphql/contracts/byte-transfer'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { SourceManifest, MaterializationReceipt } from '@graphql/contracts/source-materialization'
+import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
 import { SourceError, verifySourceManifest } from './manifest.js'
 import { anchored, openPrivateRoot, openChildDirectory } from './privateFilesystem.js'
 import { verifyApprovedRootAllowlist } from './rootAttestation.js'
@@ -38,6 +39,7 @@ export interface SourceOperationWorkerOptions {
   nativeOwnerFor?: SourceInstalledNativeOwnerReader
   /** Original protected installed Job journal. Missing evidence fails closed. */
   preparationNativeClosed?(operationId: string): Promise<boolean>
+  preparationTransfersClosed?(closure: SourcePreparationClosure, signal: AbortSignal): Promise<void>
 }
 function attemptOf(record: NonNullable<SourceOperationOwner['record']>) {
   const r = record.receipt
@@ -121,6 +123,7 @@ export class SourceOperationWorkerService {
         if (!this.options.preparationNativeClosed) throw new SourceError('source-reconciliation-unconfirmed', 'Original native closure evidence is unavailable.')
         const closure = await reconcileSourcePreparation(request.reconciliationId, owner,
           () => this.options.preparationNativeClosed!(owner.identity.operationId), reauthorize)
+        await this.options.preparationTransfersClosed?.(closure, context.signal)
         await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, closure })
       }
       if (request.operation === 'sources.prepare') {

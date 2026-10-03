@@ -4,6 +4,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile, readdir, lst
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
 import { TransferIntentSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import type { TrustedConnectionCheck } from '@graphql/contracts/trusted-device-connection'
 import { ResumableByteTransferService } from './service.js'
@@ -15,7 +16,7 @@ import { RsyncWriterOwnership, rsyncArgumentDigest, type RsyncAccessLease } from
 import { createProductionRsyncComposition, type ProductionRsyncProviders } from './productionComposition.js'
 
 const bytes = Buffer.from('exact accepted immutable package\n'), hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')
-async function fixture(direction: TransferIntent['direction'] = 'to-worker') {
+async function fixture(direction: TransferIntent['direction'] = 'to-worker', options: { realQuota?: boolean } = {}) {
   const root = await mkdtemp('/tmp/graphql-rsync-production-')
   const localRoot = join(root, 'main'), remoteRoot = join(root, 'worker')
   await mkdir(localRoot, { mode: 0o700 }); await mkdir(remoteRoot, { mode: 0o700 })
@@ -46,7 +47,8 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker') {
       if (denied) throw new Error('revoked original grant')
       if (!isDeepStrictEqual(candidate, i)) throw new Error('accepted pins changed')
     }) }
-  const quota: RsyncExternalStagingQuota = { reserve: vi.fn(async () => {}), release: vi.fn(async () => {}) }
+  const quota: RsyncExternalStagingQuota = { reserve: vi.fn(async () => {}), release: vi.fn(async () => {}),
+    hasReservation: vi.fn(async () => true), retire: vi.fn(async () => {}) }
   const current = () => bound
   const mainReceiver = new ResumableByteTransferService(join(root, 'main-canonical'), accepted)
   const workerReceiver = new ResumableByteTransferService(join(root, 'worker-canonical'), accepted)
@@ -98,7 +100,8 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker') {
     }),
   }
   const worker = createRsyncProductionBackend({ side: 'worker', stagingRoot: remoteRoot, accepted, current,
-    receiver: workerReceiver, quota, resolveSource: async () => source, acknowledged: acknowledge, ownership: workerOwnership, writers })
+    receiver: workerReceiver, quota: options.realQuota ? workerReceiver : quota,
+    resolveSource: async () => source, acknowledged: acknowledge, ownership: workerOwnership, writers })
   const commands: string[][] = []
   const copy = async (command: RsyncCommand, signal: AbortSignal) => {
     signal.throwIfAborted()
@@ -119,7 +122,8 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker') {
   } }
   const peer = { capture: () => bound ? { binding: bound, request: (request: RsyncControlRequest, options: { signal: AbortSignal }) => worker.handle(request,
     { binding: bound!, signal: options.signal }) } : undefined }
-  const main = createRsyncProductionBackend({ side: 'main', stagingRoot: localRoot, current, accepted, quota,
+  const main = createRsyncProductionBackend({ side: 'main', stagingRoot: localRoot, current, accepted,
+    quota: options.realQuota ? mainReceiver : quota,
     receiver: mainReceiver, acknowledged: acknowledge, selection: async () => selection, peer, executor, ownership: mainOwnership, writers })
   return { root, i, original, check, selection, main, worker, quota, source, commands, accepted, localRoot, remoteRoot, mainReceiver, workerReceiver, mainOwnership, workerOwnership, writers, mainStore, workerStore, accesses, events, execute, copy,
     publish: () => { published = true }, deny: () => { denied = true }, disconnect: () => { bound = undefined },
@@ -128,6 +132,51 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker') {
 }
 
 describe('production rsync leaf', () => {
+  function closedPreparation(intent: TransferIntent): SourcePreparationClosure {
+    return { version: 1, reconciliationId: randomUUID(), operationId: intent.operationId,
+      executionId: intent.executionId, attemptId: intent.attemptId, rootId: intent.rootId,
+      bindingRevision: intent.rootBindingRevision, materializationId: null,
+      mainId: intent.mainId, deviceId: intent.deviceId, workerInstallationId: intent.workerInstallationId,
+      keyRevision: intent.keyRevision, authorizationRevision: intent.authorizationRevision,
+      filesystem: { device: '1', inode: '2', mountId: '3' }, admissionClosed: true,
+      childrenClosed: true, claimReleased: true, evidencePreserved: true, observedAt: new Date().toISOString() }
+  }
+
+  it('releases both staging reservations after verified failed-preparation cleanup and preserves journals', async () => {
+    const f = await fixture('to-worker', { realQuota: true })
+    try {
+      f.execute.mockRejectedValueOnce(new Error('connection interrupted'))
+      await expect(f.main.send(f.i, f.source)).rejects.toThrow('connection interrupted')
+      expect(await f.mainReceiver.hasReservation(f.i, 'rsync-source')).toBe(true)
+      expect(await f.workerReceiver.hasReservation(f.i, 'rsync-receiver')).toBe(true)
+      const closure = closedPreparation(f.i)
+      await expect(f.main.retirePreparation({ ...closure, attemptId: randomUUID() }, AbortSignal.timeout(5000)))
+        .rejects.toThrow('does not own')
+      expect(await f.mainReceiver.hasReservation(f.i, 'rsync-source')).toBe(true)
+      await f.worker.retirePreparation(closure, AbortSignal.timeout(5000))
+      await f.main.retirePreparation(closure, AbortSignal.timeout(5000))
+      expect(await f.mainReceiver.hasReservation(f.i, 'rsync-source')).toBe(false)
+      expect(await f.workerReceiver.hasReservation(f.i, 'rsync-receiver')).toBe(false)
+      expect(f.mainOwnership.inventory()).toContainEqual(f.i)
+      expect(f.workerOwnership.inventory()).toContainEqual(f.i)
+      await expect(readFile(join(f.localRoot, `${f.i.transferId}.snapshot`))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readFile(join(f.remoteRoot, `${f.i.transferId}.part`))).rejects.toMatchObject({ code: 'ENOENT' })
+      await f.main.retirePreparation(closure, AbortSignal.timeout(5000))
+    } finally { await f.dispose() }
+  })
+
+  it('releases a reservation when source reading fails before a staging snapshot exists', async () => {
+    const f = await fixture('to-worker', { realQuota: true })
+    try {
+      f.source.read.mockRejectedValueOnce(new Error('source unavailable'))
+      await expect(f.main.send(f.i, f.source)).rejects.toThrow('source unavailable')
+      expect(await f.mainReceiver.hasReservation(f.i, 'rsync-source')).toBe(true)
+      await f.main.retirePreparation(closedPreparation(f.i), AbortSignal.timeout(5000))
+      expect(await f.mainReceiver.hasReservation(f.i, 'rsync-source')).toBe(false)
+      expect(f.mainOwnership.inventory()).toContainEqual(f.i)
+    } finally { await f.dispose() }
+  })
+
   it.each(['to-worker', 'to-main'] as const)('adopts original %s bytes into actual canonical verifier, retains staging before acknowledgment', async direction => {
     const f = await fixture(direction)
     try {

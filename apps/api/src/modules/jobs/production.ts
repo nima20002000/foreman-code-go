@@ -58,6 +58,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']>; nativeRegistry?: NativeProcessRegistry;
   transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']>;
   transferAcknowledged?: NonNullable<Parameters<typeof createProductionSources>[0]['transferAcknowledged']>;
+  transferPreparationClosed?: NonNullable<Parameters<typeof createProductionSources>[0]['transferPreparationClosed']>;
   outputRsync?:MainJobOutputRsyncPorts; inputRsync?:MainJobInputRsyncPorts; transferReceiver?:ResumableByteTransferService }) {
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })

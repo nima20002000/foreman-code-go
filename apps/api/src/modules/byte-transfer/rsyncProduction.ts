@@ -10,6 +10,7 @@ import { TrustedConnectionCheckSchema, type TrustedConnectionCheck } from '@grap
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
 import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
+import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
 import { authenticatedTransferAuthority, transferContextForBinding, type AcceptedTransferAuthority } from './carrier.js'
 import type { ImmutableTransferSource } from './sender.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
@@ -24,6 +25,8 @@ export type RsyncQuotaKind = 'rsync-source' | 'rsync-receiver'
 export interface RsyncExternalStagingQuota {
   reserve(intent: TransferIntent, context: TransferContext, input: { kind: RsyncQuotaKind; byteSize: number }): Promise<void>
   release(intent: TransferIntent, kind: RsyncQuotaKind): Promise<void>
+  hasReservation(intent: TransferIntent, kind: RsyncQuotaKind): Promise<boolean>
+  retire(id: string): Promise<void>
 }
 export interface RsyncBackendSelection {
   backend: 'rsync'
@@ -352,7 +355,35 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
       return sameReceipt(receipt, i)
     })
   }
-  return { handle, send, sender: (source: ImmutableTransferSource) => ({ send: (intent: TransferIntent, signal?: AbortSignal) => send(intent, source, signal) }), retireExpired: async (raw: TransferIntent, signal = AbortSignal.timeout(5000)) => {
+  const retirePreparation = async (closure: SourcePreparationClosure, signal: AbortSignal) => {
+    for (const intent of input.ownership.inventory().filter(value => value.operationId === closure.operationId)) {
+      const matchingOwner = intent.byteClass === 'source' && intent.direction === 'to-worker'
+        && intent.rootBindingRevision === closure.bindingRevision
+        && ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision',
+          'executionId', 'attemptId', 'rootId'].every(key => Reflect.get(intent, key) === Reflect.get(closure, key))
+      if (!matchingOwner || !closure.admissionClosed || !closure.childrenClosed || !closure.claimReleased) {
+        throw new Error('Source preparation closure does not own this rsync transfer')
+      }
+      await locked(intent.transferId, async () => {
+        await input.ownership.stopProcesses(intent, signal)
+        await sources.get(intent.transferId)?.close()
+        sources.delete(intent.transferId)
+        await leases.get(intent.transferId)?.interrupt()
+        leases.delete(intent.transferId)
+        await verified.get(intent.transferId)?.bytes.close()
+        verified.delete(intent.transferId)
+        await input.ownership.quiescent(intent, signal)
+        if (!input.quota) throw new Error('Shared external staging quota unavailable')
+        const source = isSource(input.side, intent)
+        const kind = source ? 'rsync-source' : 'rsync-receiver'
+        if (await input.quota.hasReservation(intent, kind)) {
+          await (source ? sourceStore : receiverStore).retire(intent, 'preparation-closed')
+          await input.quota.retire(intent.transferId)
+        }
+      })
+    }
+  }
+  return { handle, send, retirePreparation, sender: (source: ImmutableTransferSource) => ({ send: (intent: TransferIntent, signal?: AbortSignal) => send(intent, source, signal) }), retireExpired: async (raw: TransferIntent, signal = AbortSignal.timeout(5000)) => {
     const i = TransferIntentSchema.parse(raw)
     if (Date.now() < Date.parse(i.expiresAt)) throw new Error('Rsync cleanup requires original expiry')
     return locked(i.transferId, async () => {

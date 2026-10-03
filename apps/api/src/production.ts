@@ -1196,6 +1196,10 @@ export function buildProductionApp(
         activeNativeSession, captureNativeSession,
         ...(installedRsync ? { transferSender: source => rsync.sender(source),
           transferReceiver:installedRsync.receiver,
+          transferPreparationClosed: async closure => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Rsync cleanup is unavailable.', 409)
+            await rsync.backend.retirePreparation(closure, AbortSignal.timeout(15_000))
+          },
           outputRsync:{stage:async(intent,signal)=>{
             if(rsync.kind!=='configured')throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE','The selected original rsync lifecycle is unavailable.',409)
             return rsync.backend.send(intent,undefined,signal)

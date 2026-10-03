@@ -111,7 +111,9 @@ export async function resolvePreparationReconciliationOwner(sql: GraphSqlClient,
 }
 
 export class PostgresSourcePreparationReconciliation {
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator, private readonly executions: SourceExecutionHostPort) {}
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
+    private readonly executions: SourceExecutionHostPort,
+    private readonly options: { retireTransfers?: ((closure: SourcePreparationClosure) => Promise<void>) | undefined } = {}) {}
   private async transaction<T>(work: (sql: pg.PoolClient) => Promise<T>) {
     const sql = await this.pool.connect()
     try { await sql.query('begin'); const value = await work(sql); await sql.query('commit'); return value }
@@ -170,6 +172,7 @@ export class PostgresSourcePreparationReconciliation {
             || pending.owner.record && closure.materializationId !== pending.owner.record.receipt.materializationId)
             throw new DomainError('SOURCE_CLOSURE_CONFLICT', 'Worker closure does not match the exact original cleanup/source owner.', 409)
         }
+        if (closure) await this.options.retireTransfers?.(closure)
       },
       perform: async sql => {
         await authorize(sql, principal, input.workspaceId, true)

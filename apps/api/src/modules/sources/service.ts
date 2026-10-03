@@ -43,6 +43,10 @@ type Transport = 'http' | 'mcp'
 type Sql = GraphSqlClient
 interface ApprovalRow { approved_source_id: string; snapshot_id: string; input_hash: string; state: string;
   origin: { location: RunExecutionLocation; mainId: string; ownerId: string; reservation: SourceReservation }; request: unknown }
+interface SourceLifecycle {
+  adopted?: ((record: SourceMaterializationRecord) => Promise<void>) | undefined
+  preparationClosed?: ((closure: SourcePreparationClosure) => Promise<void>) | undefined
+}
 
 export class PostgresSourceService implements SourceAdmissionPort {
   readonly reservations = new PostgresSourceReservations()
@@ -50,13 +54,15 @@ export class PostgresSourceService implements SourceAdmissionPort {
     return new PostgresSourcePreparationReconciliation(this.pool, this.commands, this.executions).get(principal, source, input)
   }
   preparationReconcile(principal: ManagementPrincipal, source: Transport, input: unknown) {
-    return new PostgresSourcePreparationReconciliation(this.pool, this.commands, this.executions).reconcile(principal, source, input)
+    return new PostgresSourcePreparationReconciliation(this.pool, this.commands, this.executions, {
+      retireTransfers: this.lifecycle.preparationClosed,
+    }).reconcile(principal, source, input)
   }
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly locations: WorkspaceLocationService, private readonly store: PrivateSourceSnapshotStore,
     private readonly mainId: string, private readonly roots: RegisteredSourceRootPort,
     private readonly executions: SourceExecutionHostPort, private readonly closure: SourceClosureProofPort,
-    private readonly adopted?: (record: SourceMaterializationRecord) => Promise<void>) {}
+    private readonly lifecycle: SourceLifecycle = {}) {}
   private async transaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     const sql = await this.pool.connect()
     try { await sql.query('begin'); const result = await work(sql); await sql.query('commit'); return result }
@@ -278,7 +284,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         ownerKind: 'materialization', ownerId: input.operationId, reservedBytes: source.manifest.totalBytes * 3 + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024 })
       return { root, source, record: null, reservation }
     })
-    if (state.record) { await this.adopted?.(state.record); return state.record }
+    if (state.record) { await this.lifecycle.adopted?.(state.record); return state.record }
     // No main SQL transaction spans carrier/native filesystem I/O.
     const receipt = await this.executions.prepare(state.source.manifest, state.root, input.attempt)
     if (!isDeepStrictEqual(receipt.binding, state.root.binding) || receipt.executionId !== input.attempt.executionId
@@ -297,7 +303,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         input.rootId, input.bindingRevision, state.reservation!.reservationId, JSON.stringify(record)])
       await this.reservations.retain(sql, state.reservation!, 'owned'); return record
     })
-    await this.adopted?.(committed); return committed
+    await this.lifecycle.adopted?.(committed); return committed
   }
   async verifyPreparation(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string> {
     return this.verifyPrepared(input, false)
