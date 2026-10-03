@@ -22,7 +22,7 @@ function mutate(pkg, patterns) {
   const report = join(reportDirectory, `${pkg.replace('/', '-')}.json`)
   const stryker = ['exec', 'stryker', 'run', join(root, 'scripts/stryker.config.mjs'), '--mutate', patterns.join(',')]
   const run = spawnSync('node', [join(root, 'scripts/heavy-job.mjs'), '--', 'corepack', 'pnpm', ...stryker], {
-    cwd: join(root, pkg), stdio: 'inherit', env: { ...process.env, MUTATION_REPORT: report },
+    cwd: join(root, pkg), stdio: 'inherit', env: { ...process.env, MUTATION_REPORT: report, UNIT_TESTS_ONLY: '1' },
   })
   if (run.status !== 0 || !existsSync(report)) throw new Error(`Stryker failed in ${pkg} (exit ${run.status}).`)
   return summarizeMutationReport(JSON.parse(readFileSync(report, 'utf8')), pkg)
