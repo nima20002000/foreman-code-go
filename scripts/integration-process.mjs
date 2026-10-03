@@ -117,7 +117,18 @@ export function waitForIntegrationProcess(child, {
 
 export async function superviseIntegrationProcess(child, { resetAfterTimeout, ...options }) {
   const result = await waitForIntegrationProcess(child, options)
-  await stopGroup(child.pid, { graceMs: options.graceMs ?? integrationProcessLimits.graceMs })
-  if (result.timedOut) await resetAfterTimeout()
+  try {
+    await stopGroup(child.pid, { graceMs: options.graceMs ?? integrationProcessLimits.graceMs })
+  } catch (error) {
+    return { ...result, code: 1, error, slotUnavailable: true }
+  }
+  if (result.timedOut) {
+    try {
+      await resetAfterTimeout()
+    } catch (resetError) {
+      appendFileSync(options.log, `\n[integration] SLOT RETIRED: ${resetError.message}\n`)
+      return { ...result, resetError, slotUnavailable: true }
+    }
+  }
   return result
 }

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { groupUsed, integrationProcessProgress, stopGroup, superviseIntegrationProcess,
   waitForIntegrationProcess } from './integration-process.mjs'
-import { scheduleFiles } from './test-integration.mjs'
+import { fullRunExitCode, scheduleFiles } from './test-integration.mjs'
 
 function loggedChild(log, script) {
   const fd = openSync(log, 'w', 0o600)
@@ -80,6 +80,88 @@ test('an idle owned group fails, retains its log, and frees the slot for the nex
     assert.equal(groupUsed(unrelated.pid), true, 'another process group must remain untouched')
   } finally {
     for (const child of [...children, unrelated]) await stopGroup(child.pid, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a failed timeout reset retires its slot while the healthy worker executes the remaining queue', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-reset-'))
+  const children = []
+  const started = []
+  const slots = [{ index: 1 }, { index: 2 }]
+  const files = ['hang', 'healthy', 'remaining-one', 'remaining-two']
+  const resetError = new Error('owned database reset rejected')
+  try {
+    const result = await scheduleFiles(files, slots, async (slot, file) => {
+      if (slot.resetError) throw slot.resetError
+      started.push([slot.index, file])
+      const log = join(directory, `${file}.log`)
+      let script = "console.log('completed')"
+      if (file === 'hang') script = "console.log('ready'); setInterval(() => {}, 1000)"
+      if (file === 'healthy') {
+        script = "console.log('ready'); const timer = setInterval(() => console.log('working'), 50);"
+          + "setTimeout(() => { clearInterval(timer); console.log('completed') }, 650)"
+      }
+      const child = loggedChild(log, script)
+      children.push(child)
+      if (file === 'hang' || file === 'healthy') await waitForLog(log, 'ready')
+      const outcome = await superviseIntegrationProcess(child, { log, idleTimeoutMs: 200,
+        fileTimeoutMs: 3000, pollIntervalMs: 20, graceMs: 100,
+        resetAfterTimeout: async () => {
+          assert.equal(groupUsed(child.pid), false)
+          slot.resetError = resetError
+          throw resetError
+        },
+      })
+      slot.unavailable = outcome.slotUnavailable
+      return outcome
+    })
+    assert.deepEqual(started, [[1, 'hang'], [2, 'healthy'],
+      [2, 'remaining-one'], [2, 'remaining-two']])
+    assert.equal(result.skipped, 0)
+    assert.deepEqual(result.unexecuted, [])
+    const timeout = result.outcomes.find(({ file }) => file === 'hang')
+    assert.equal(timeout.code, 124)
+    assert.equal(timeout.slotUnavailable, true)
+    assert.equal(timeout.resetError, resetError)
+    assert.equal(result.outcomes.filter(({ code }) => code === 0).length, 3)
+    const saved = readFileSync(join(directory, 'hang.log'), 'utf8')
+    assert.match(saved, /TIMEOUT: no log output/)
+    assert.match(saved, /database reset rejected/)
+    assert.ok(children.every((child) => !groupUsed(child.pid)))
+  } finally {
+    for (const child of children) await stopGroup(child.pid, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('when every slot is retired, remaining files are identified as unexecuted and the run fails', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-all-retired-'))
+  const children = []
+  const files = ['hang-one', 'hang-two', 'unexecuted-one', 'unexecuted-two']
+  try {
+    const result = await scheduleFiles(files, [{ index: 1 }, { index: 2 }], async (slot, file) => {
+      const log = join(directory, `${file}.log`)
+      const child = loggedChild(log, "console.log('ready'); setInterval(() => {}, 1000)")
+      children.push(child)
+      await waitForLog(log, 'ready')
+      return superviseIntegrationProcess(child, { log, idleTimeoutMs: 200,
+        fileTimeoutMs: 3000, pollIntervalMs: 20, graceMs: 100,
+        resetAfterTimeout: async () => {
+          assert.equal(groupUsed(child.pid), false)
+          throw new Error(`slot ${slot.index} reset failed`)
+        },
+      })
+    })
+    assert.equal(result.outcomes.length, 2)
+    assert.ok(result.outcomes.every(({ code, slotUnavailable }) => code === 124 && slotUnavailable))
+    assert.deepEqual(result.unexecuted, ['unexecuted-one', 'unexecuted-two'])
+    assert.equal(fullRunExitCode(result.outcomes.filter(({ code }) => code !== 0).length, null), 1)
+    assert.ok(children.every((child) => !groupUsed(child.pid)))
+    assert.ok(!existsSync(join(directory, 'unexecuted-one.log')))
+    assert.ok(!existsSync(join(directory, 'unexecuted-two.log')))
+  } finally {
+    for (const child of children) await stopGroup(child.pid, { graceMs: 100 })
     rmSync(directory, { recursive: true, force: true })
   }
 })

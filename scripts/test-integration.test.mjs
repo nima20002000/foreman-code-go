@@ -130,6 +130,9 @@ test('progress distinguishes twelve configured slots from a draining file and re
   const retest = integrationProgressLine({ phase: 'retest', total: 2,
     passed: 0, failed: 0, active, slotCount: 12 }, 11_000)
   assert.match(retest, /PROGRESS retest: 0\/2 completed.*1\/12 slots active; 1 queued/)
+  const retired = integrationProgressLine({ phase: 'first pass', total: 175,
+    passed: 171, failed: 3, active, slotCount: 12, usableCount: 11 }, 11_000)
+  assert.match(retired, /1\/12 slots active; 0 queued; 1 retired/)
 })
 
 test('a failed file is reported while the remaining files continue', async () => {
