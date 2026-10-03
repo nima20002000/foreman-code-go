@@ -3,6 +3,7 @@ import { DeviceExecutionAdmissionFields, HistoricalDeviceExecutionAdmissionField
 import { JobExecutionSchema, CurrentJobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs.js'
 import { MachineReferenceSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
+import { DeviceSessionBindingSchema } from './deviceConnection.js'
 import { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
 import { SourceMaterializationRecordSchema, SourceRootRecordSchema } from './sourceAdmission.js'
 
@@ -44,7 +45,9 @@ export const RemoteJobTerminalEvidenceSchema = z.object({
   outputCollectionError: z.boolean(), artifactDigests: z.array(PlacementDigestSchema).max(128),
 }).strict()
 export type RemoteJobTerminalEvidence = z.infer<typeof RemoteJobTerminalEvidenceSchema>
-export const RemoteJobConnectionIdentitySchema = z.union([DeviceConnectionIdentitySchema, z.object({ kind: z.literal('main'), mainId: z.uuid(), mainInstallationId: z.string().min(1), bootId: z.uuid() }).strict()])
+// Installed Jobs retain the full authenticated epoch. Original historical
+// receipts without an epoch remain readable for status/control, never rewritten.
+export const RemoteJobConnectionIdentitySchema = z.union([DeviceSessionBindingSchema, DeviceConnectionIdentitySchema, z.object({ kind: z.literal('main'), mainId: z.uuid(), mainInstallationId: z.string().min(1), bootId: z.uuid() }).strict()])
 export type RemoteJobConnectionIdentity = z.infer<typeof RemoteJobConnectionIdentitySchema>
 export const RemoteJobOperationReceiptSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('job'), intent: RemoteJobDispatchIntentSchema, execution: z.lazy(() => JobExecutionSchema),
