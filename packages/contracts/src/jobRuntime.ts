@@ -11,9 +11,10 @@ export const JOB_RUNTIME_WORKSPACE_LAYOUT='source-inputs-private-git-scheduler-v
 // it to the current layout: admission uses the Current schemas/issue below.
 const HistoricalWorkspaceLayout=z.string().min(1).max(200).optional()
 export const JobRuntimeLimitsSchema=z.object({cpuLimit:z.number().positive().max(256),memoryBytes:z.number().int().positive(),pidsLimit:z.number().int().positive(),diskBytes:z.number().int().positive()}).strict()
+export const JobRuntimeQualificationSpoolBytesSchema=z.number().int().min(131072).max(67108864)
 /** Policy metadata refers to an existing authorized root, never a caller filesystem path. */
 export const JobRuntimeProfileInputSchema=z.object({rootId:z.uuid(),bindingRevision:z.number().int().positive(),limits:JobRuntimeLimitsSchema,
-  policy:JobPolicySchema.omit({isolationPolicyId:true,isolationPolicyRevision:true}),
+  policy:JobPolicySchema.omit({isolationPolicyId:true,isolationPolicyRevision:true}).extend({maxWorkerSpoolBytes:JobRuntimeQualificationSpoolBytesSchema}),
 }).strict().superRefine((value,ctx)=>{
   if(value.policy.network!=='none'||value.policy.environmentScopeRefs.length)ctx.addIssue({code:'custom',path:['policy'],message:'This qualified noninteractive profile requires no network or credential environment.'})
   if(value.policy.maxWorkerSpoolBytes>value.limits.diskBytes||value.policy.maxOutputBytes>value.limits.diskBytes)ctx.addIssue({code:'custom',path:['policy'],message:'Declared spool/output budgets exceed the qualified filesystem limit.'})
@@ -173,7 +174,7 @@ export type InstalledJobRuntimeDescriptor=z.infer<typeof InstalledJobRuntimeDesc
 export const JobQualificationCandidateSchema=z.object({qualificationId:z.uuid(),operationId:z.uuid(),approvalId:z.uuid(),
   fingerprint:JobRuntimeFingerprintSchema,findmntBinary:QualificationPath,findmntBinarySha256:Digest,
   backingFile:QualificationPath,backingBytes:z.number().int().positive(),controllerEnvironment:QualificationEnvironment,
-  sourceParent:QualificationPath,runtimeRoot:QualificationPath,spoolBytes:z.number().int().min(131072).max(67108864),
+  sourceParent:QualificationPath,runtimeRoot:QualificationPath,spoolBytes:JobRuntimeQualificationSpoolBytesSchema,
   ttlSeconds:z.number().int().positive().max(86400),
 }).strict().superRefine((value,ctx)=>{
   if(value.fingerprint.root.binding.accessMode!=='exclusive-write'||value.sourceParent!==value.fingerprint.root.binding.canonicalPath)
