@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
   type NativeSessionReference } from '@graphql/contracts'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { cgroupBoundary, killCgroup } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
 import { bootIdentity, identityAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
@@ -16,6 +16,7 @@ import { repeatDigest, type RepeatNodeInput, type RepeatInputBinding } from '../
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
 import { runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
+import { qualifyEng03OpenCode } from './helpers/eng03OpenCodeQualification.js'
 
 async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeControl) {
   const deadline = Date.now() + 120_000
@@ -38,6 +39,9 @@ async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeContro
 
 /** Paid-provider, task-owned internal qualification. Public app acceptance is separate. */
 describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live native lifecycle', () => {
+  let closeQualification: (() => Promise<void>) | undefined
+  beforeAll(async () => { closeQualification = await qualifyEng03OpenCode() }, 360_000)
+  afterAll(async () => { await closeQualification?.() }, 30_000)
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L01', 'codex', 'codex', {

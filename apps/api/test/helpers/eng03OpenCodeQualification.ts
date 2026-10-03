@@ -1,0 +1,87 @@
+import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import pg from 'pg'
+import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { PostgresSettingsRepository } from '../../src/modules/settings/postgres.js'
+import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
+import { HarnessQualificationRepository } from '../../src/modules/harnesses/qualification/repository.js'
+import { HarnessQualificationRegistry } from '../../src/modules/harnesses/qualification/registry.js'
+import { HarnessQualificationService } from '../../src/modules/harnesses/qualification/service.js'
+import { codexQualificationSuite, opencodeQualificationSuite, withNativeQualificationOwnership,
+  NativeProcessRegistry } from '../../src/modules/harnesses/qualification/cliEntry.js'
+import { nativeCompatibilityProbe } from '../../src/modules/harnesses/compatibility/probe.js'
+import { clearQualificationGate, installQualificationGate } from '../../src/modules/harnesses/qualification/gate.js'
+
+/** Actual qualification through the audited service; never seed a qualified row
+ * or mark a version trusted from a serialized CLI result. Own schema/resources only. */
+export async function qualifyEng03OpenCode() {
+  const configured = process.env.ENG03_A_TEST_DATABASE_URL
+  assert.ok(configured)
+  const url = new URL(configured)
+  assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname.includes('test'))
+  const schema = `native_qualification_${randomUUID().replaceAll('-', '')}`
+  const admin = new pg.Pool({ connectionString: configured, max: 1 })
+  await admin.query(`create schema ${schema}`)
+  url.searchParams.set('options', `-c search_path=${schema},public`)
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 5 })
+  const directory = await mkdtemp(join(tmpdir(), 'eng03-qualification-'))
+  const processes = new NativeProcessRegistry(join(directory, 'native-process-registry'))
+  let service: HarnessQualificationService | undefined
+  const close = async () => {
+    clearQualificationGate()
+    await service?.shutdown()
+    await pool.end()
+    await admin.query(`drop schema ${schema} cascade`)
+    await admin.end()
+    await rm(directory, { recursive: true, force: true })
+  }
+  try {
+    await applyApplicationMigrations(pool)
+    const repository = new HarnessQualificationRepository(pool)
+    const registry = new HarnessQualificationRegistry(repository,
+      { codex: codexQualificationSuite.revision, opencode: opencodeQualificationSuite.revision })
+    const binaries = { codex: process.env.ENG03_A_CODEX_BINARY ?? 'codex',
+      opencode: process.env.ENG03_A_OPENCODE_BINARY ?? '/home/nima/.local/bin/opencode' }
+    const selected = await registry.inspectBinary(binaries.opencode)
+    const checker = await registry.inspectBinary(process.execPath)
+    const guard = (binary: string, sha256: string) => async (signal?: AbortSignal) => {
+      signal?.throwIfAborted()
+      assert.equal((await registry.inspectBinary(binary)).sha256, sha256, 'Native binary changed during qualification')
+      signal?.throwIfAborted()
+    }
+    const suites = { codex: withNativeQualificationOwnership(codexQualificationSuite, processes,
+      (input) => guard(input.binary, input.binarySha256)),
+    opencode: withNativeQualificationOwnership(opencodeQualificationSuite, processes,
+      (input) => guard(input.binary, input.binarySha256)) }
+    service = new HarnessQualificationService(repository, registry, suites, binaries,
+      new PostgresCommandCoordinator(pool), new PostgresSettingsRepository(pool), undefined, undefined,
+      (_harness, binary, timeoutMs) => nativeCompatibilityProbe({ codex: binary, opencode: binary }, directory,
+        process.env, timeoutMs, { recovery: processes.scope(`qualification-probe:${randomUUID()}`),
+          beforeCommand: async (current, signal) => {
+            const original = current === process.execPath ? checker : selected
+            assert.equal((await registry.inspectBinary(current)).binary, original.binary)
+            await guard(original.binary, original.sha256)(signal)
+          } }))
+    const authority = await new PostgresAccessService(pool).issue({ name: 'ENG03 owned qualification', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }] })
+    const submitted = (await service.run(authority.principal, 'http', 'opencode')).qualification
+    assert.ok(submitted.binarySha256)
+    let qualification = submitted
+    const deadline = Date.now() + 350_000
+    while (qualification.status === 'qualifying' && Date.now() < deadline) {
+      await delay(250)
+      qualification = await repository.find('opencode', submitted.version, submitted.binarySha256,
+        submitted.suiteRevision) ?? submitted
+    }
+    assert.equal(qualification.status, 'qualified', JSON.stringify(qualification))
+    assert.ok(qualification.binarySha256)
+    assert.equal(await registry.trustedExact('opencode', qualification.version, qualification.binarySha256), true)
+    installQualificationGate(registry, service)
+    return close
+  } catch (error) { await close(); throw error }
+}

@@ -30,6 +30,10 @@ import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
 import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
+import { buildApp } from '../../src/app.js'
+import { PostgresAppInteractionService } from '../../src/modules/interactions/app.js'
+import { PostgresInteractionRepository } from '../../src/modules/interactions/postgres.js'
+import { AppMcpRoutes } from '../../src/modules/harnesses/appMcpRoutes.js'
 import { repeatDigest, sameRepeatValue, type RepeatNodeInput, type RepeatInputBinding } from '../../src/modules/runs/repeatResolution.js'
 import { LangGraphWorkflowEngine } from '../../src/modules/runs/engine.js'
 import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
@@ -151,6 +155,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   let checkpoints: ReturnType<typeof createCheckpointStore> | undefined
   let engine: LangGraphWorkflowEngine | undefined
   let activeRuntime: RuntimeInstance | undefined
+  let mcpApp: ReturnType<typeof buildApp> | undefined
+  let mcpRoutes: AppMcpRoutes | undefined
   let runId: string | undefined
   let stopRun: (() => Promise<boolean>) | undefined
   const evidence: Record<string, unknown> = { scenario, mode: 'current V3 native internal acceptance', artifactPath,
@@ -244,7 +250,15 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       requireAuthorization(principal, 'runs:stop', { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id })
     }
     const livePool = pool
-    const endpoint = process.env.APP_MCP_ENDPOINT ?? 'http://127.0.0.1:3000/mcp'
+    // These credentials belong to this schema, so their actual MCP endpoint
+    // must authenticate against this database rather than another live app.
+    mcpApp = buildApp({ readiness: { database: { ping: async () => { await livePool.query('select 1') } },
+      checkpoints: { ping: async () => undefined } }, appMcp: { access: new PostgresAccessService(livePool),
+      interactions: new PostgresAppInteractionService(livePool, new PostgresInteractionRepository(livePool),
+        new PostgresCommandCoordinator(livePool)) } })
+    const endpoint = `${await mcpApp.listen({ host: '127.0.0.1', port: 0 })}/mcp`
+    mcpRoutes = new AppMcpRoutes(livePool, endpoint)
+    evidence.mcpEndpoint = endpoint
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)
@@ -252,6 +266,20 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const workflowCapture = createWorkflowNativeCaptureChannel(), reviewCapture = createReviewNativeCaptureChannel()
       const runs = new PostgresRunRepository(livePool, workflows, locations,
         { runtimeRoot: runtimeDirectory, ...createWorkflowRepositoryServices(workflowCapture.verify) })
+      const appendNativeEvent = runs.appendNativeEvent.bind(runs)
+      runs.appendNativeEvent = async (...args) => {
+        const began = performance.now()
+        try { return await appendNativeEvent(...args) }
+        finally {
+          const stats = (evidence.nativeEventPersistence ??= { count: 0, totalMs: 0, maxMs: 0 }) as {
+            count: number; totalMs: number; maxMs: number
+          }
+          const elapsedMs = Math.round(performance.now() - began)
+          stats.count++; stats.totalMs += elapsedMs; stats.maxMs = Math.max(stats.maxMs, elapsedMs)
+          if (stats.count % 64 === 0) await writeFile(artifactPath.replace('.json', '-persistence.json'),
+            JSON.stringify({ scenario, ...stats })).catch(() => undefined)
+        }
+      }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
       const registry = new NativeProcessRegistry(join(runtimeDirectory, 'native-process-registry'))
       const managers = new ExecutionScopedNativeSessionManagerResolver((context) => {
@@ -279,7 +307,27 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
             harness: input.harness, workingDirectory: input.workingDirectory, configuration })
           const inspector = manager instanceof CodexAppServerSessionManager ? codexMcpInspectorAdapter(manager)
             : openCodeMcpInspectorAdapter(manager as OpenCodeNativeSessionManager)
-          return new WorkerLaunchCredentialService(new McpDetectionService(inspector, endpoint), workerCredentials, 'runner-local').prepare(input)
+          const diagnosticInspector: typeof inspector = { async inspect(request) {
+            const began = performance.now()
+            try {
+              const inspected = await inspector.inspect(request)
+              const entries = (evidence.mcpInspectionEntries ??= []) as unknown[]
+              if (entries.length < 16) entries.push({ executionId: input.executionId, phase: request.phase,
+                expectedEndpoint: endpoint, ...inspected })
+              return inspected
+            }
+            catch (error) {
+              const errors = (evidence.mcpInspectionErrors ??= []) as unknown[]
+              if (errors.length < 16) errors.push({ executionId: input.executionId,
+                elapsedMs: Math.round(performance.now() - began),
+                ...(error instanceof Error ? { name: error.name, message: nativePersistenceRedactor([]).text(error.message) }
+                  : { name: typeof error }) })
+              throw error
+            }
+          } }
+          const prepared = await new WorkerLaunchCredentialService(new McpDetectionService(diagnosticInspector, endpoint), workerCredentials, 'runner-local').prepare(input)
+          await mcpRoutes!.refresh()
+          return prepared
         },
         revoke: (credential) => workerCredentials.revoke(credential),
         revokeForExecution: (id) => workerCredentials.revokeForExecution(id),
@@ -484,6 +532,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   } finally {
     await engine?.shutdown().catch(() => undefined)
     await activeRuntime?.managers.dispose().catch(() => undefined)
+    await mcpRoutes?.close().catch(() => undefined)
+    await mcpApp?.close().catch(() => undefined)
     if (runId) await checkpoints?.saver.deleteThread(runId).catch(() => undefined)
     await checkpoints?.close().catch(() => undefined)
     await pool?.end().catch(() => undefined)
