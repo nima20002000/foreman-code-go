@@ -2,6 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CanonicalMachineReference, DeviceRegistration } from '@graphql/contracts/device-identity'
 import { ComputerSettings } from './ComputerSettings'
+vi.mock('../runtime-qualification/ComputerRuntimeApprovals', () => ({ ComputerRuntimeApprovals: () => null }))
 
 const fixture = vi.hoisted(() => ({
   mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222',
