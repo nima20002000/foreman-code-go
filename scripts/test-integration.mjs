@@ -234,7 +234,8 @@ async function main() {
   const timeouts = integrationTimeouts(process.env)
   const adminUrl = adminDatabaseUrl(process.env.TEST_DATABASE_URL)
   const admin = new Pool({ connectionString: adminUrl, max: 1,
-    connectionTimeoutMillis: 10_000, query_timeout: 30_000 })
+    connectionTimeoutMillis: 10_000, query_timeout: 35_000,
+    options: '-c statement_timeout=30000 -c lock_timeout=10000' })
   const slots = []
   const active = new Map()
   const killTimers = new Map()
