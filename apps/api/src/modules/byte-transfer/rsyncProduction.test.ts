@@ -4,7 +4,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile, readdir, lst
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import type { SourcePreparationClosure, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { TransferIntentSchema, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import type { TrustedConnectionCheck } from '@graphql/contracts/trusted-device-connection'
 import { ResumableByteTransferService } from './service.js'
@@ -48,7 +48,7 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
       if (!isDeepStrictEqual(candidate, i)) throw new Error('accepted pins changed')
     }) }
   const quota: RsyncExternalStagingQuota = { reserve: vi.fn(async () => {}), release: vi.fn(async () => {}),
-    hasReservation: vi.fn(async () => true), retire: vi.fn(async () => {}) }
+    hasReservation: vi.fn(async () => true), retire: vi.fn(async () => {}), inventory: vi.fn(async () => []) }
   const current = () => bound
   const mainReceiver = new ResumableByteTransferService(join(root, 'main-canonical'), accepted)
   const workerReceiver = new ResumableByteTransferService(join(root, 'worker-canonical'), accepted)
@@ -132,6 +132,39 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
 }
 
 describe('production rsync leaf', () => {
+  function materialization(intent: TransferIntent): SourceMaterializationRecord {
+    const filesystem = { device: '1', inode: '2', mountId: '3' }
+    return { operationId: randomUUID(), reservationId: randomUUID(), rootPolicyId: randomUUID(), rootPolicyRevision: '1',
+      sourceBindingHash: intent.placementHash, finalDispatchBindingHash: intent.placementHash, state: 'closed',
+      receipt: { version: 1, materializationId: randomUUID(), placementHash: intent.placementHash,
+        executionId: intent.executionId, attemptId: intent.attemptId, keyRevision: intent.keyRevision,
+        authorizationRevision: intent.authorizationRevision, verifiedManifestDigest: intent.manifestDigest,
+        verifiedEntries: 1, verifiedBytes: intent.byteSize, verifiedAt: new Date().toISOString(), localTreeIdentity: filesystem,
+        binding: { version: 1, mainId: intent.mainId, deviceId: intent.deviceId,
+          workerInstallationId: intent.workerInstallationId, workspaceId: 'workspace', rootId: intent.rootId,
+          bindingRevision: intent.rootBindingRevision, locationRevision: 1, canonicalPath: '/retained/source',
+          filesystem, accessMode: 'exclusive-write', snapshotId: randomUUID(), manifestDigest: intent.manifestDigest } } }
+  }
+
+  it('retires failed input staging that has only a canonical reservation, keeping other attempts untouched', async () => {
+    const f = await fixture('to-worker', { realQuota: true })
+    try {
+      f.i.byteClass = 'artifact'
+      const context = transferContextForBinding(f.original)
+      await f.workerReceiver.start(f.i, context)
+      expect(f.workerOwnership.inventory()).toEqual([])
+      const record = materialization(f.i)
+      await f.worker.retireMaterialization({ ...record, receipt: { ...record.receipt, attemptId: randomUUID() } },
+        AbortSignal.timeout(5000))
+      expect((await f.workerReceiver.status(f.i.transferId, context)).state).toBe('allocated')
+      await expect(f.worker.retireMaterialization({ ...record, finalDispatchBindingHash: 'd'.repeat(64),
+        sourceBindingHash: 'e'.repeat(64) }, AbortSignal.timeout(5000))).rejects.toThrow('does not own')
+      await f.worker.retireMaterialization(record, AbortSignal.timeout(5000))
+      await expect(f.workerReceiver.status(f.i.transferId, context)).rejects.toThrow('cancelled')
+      expect(await f.workerReceiver.inventory()).toContainEqual(f.i)
+    } finally { await f.dispose() }
+  })
+
   function closedPreparation(intent: TransferIntent): SourcePreparationClosure {
     return { version: 1, reconciliationId: randomUUID(), operationId: intent.operationId,
       executionId: intent.executionId, attemptId: intent.attemptId, rootId: intent.rootId,
@@ -329,7 +362,7 @@ describe('production rsync leaf', () => {
         return { ...reference, nodeBinary: '/other/node', entryPoint: '/other/writer.mjs' }
       })
       await f.main.send(f.i, f.source)
-      expect(f.execute.mock.calls[0]![0].args).toContainEqual(expect.stringMatching(/^--rsync-path=\/protected\/node \/protected\/rsync-writer\.mjs /))
+      expect(f.execute.mock.calls[0]![0].args).toContainEqual(expect.stringContaining('--rsync-path=/usr/bin/systemd-run --user --scope --quiet --property=Delegate=yes --collect -- /protected/node /protected/rsync-writer.mjs '))
       expect(vi.mocked(f.writers.activate).mock.calls[0]![1]).toMatchObject({ nodeBinary: f.selection.nodeBinary, entryPoint: f.selection.entryPoint })
     } finally { await f.dispose() }
   })

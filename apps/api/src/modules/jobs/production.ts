@@ -59,6 +59,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']>;
   transferAcknowledged?: NonNullable<Parameters<typeof createProductionSources>[0]['transferAcknowledged']>;
   transferPreparationClosed?: NonNullable<Parameters<typeof createProductionSources>[0]['transferPreparationClosed']>;
+  transferMaterializationClosed?: NonNullable<Parameters<typeof createProductionSources>[0]['transferMaterializationClosed']>;
   outputRsync?:MainJobOutputRsyncPorts; inputRsync?:MainJobInputRsyncPorts; transferReceiver?:ResumableByteTransferService }) {
   const source = await createProductionSources({ ...input, dispatch: () => dispatch,
     ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
@@ -111,7 +112,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
         `select record,state from source_execution_materializations where execution_id=$1`,
         [executionId])).rows[0]
       if (!row) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original Job source materialization is missing.', 409)
-      if (row.state === 'closed') return
+      if (row.state === 'closed' && !input.transferMaterializationClosed) return
       await source.sources.confirmClosed(SourceMaterializationRecordSchema.parse(row.record))
     },
     async observe(sql, execution, receipt) {

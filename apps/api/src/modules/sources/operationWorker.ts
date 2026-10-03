@@ -11,7 +11,7 @@ import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, SourceOper
 import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt, type TransferContext } from '@graphql/contracts/byte-transfer'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { SourceManifest, MaterializationReceipt } from '@graphql/contracts/source-materialization'
-import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import type { SourcePreparationClosure, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { SourceError, verifySourceManifest } from './manifest.js'
 import { anchored, openPrivateRoot, openChildDirectory } from './privateFilesystem.js'
 import { verifyApprovedRootAllowlist } from './rootAttestation.js'
@@ -40,6 +40,7 @@ export interface SourceOperationWorkerOptions {
   /** Original protected installed Job journal. Missing evidence fails closed. */
   preparationNativeClosed?(operationId: string): Promise<boolean>
   preparationTransfersClosed?(closure: SourcePreparationClosure, signal: AbortSignal): Promise<void>
+  executionTransfersClosed?(record: SourceMaterializationRecord, signal: AbortSignal): Promise<void>
 }
 function attemptOf(record: NonNullable<SourceOperationOwner['record']>) {
   const r = record.receipt
@@ -192,6 +193,8 @@ export class SourceOperationWorkerService {
         const current = await this.authority(request, context)
         return current.physicalClosureConfirmed ? 'released' : 'uncertain'
       })
+      await this.options.executionTransfersClosed?.(record, context.signal)
+      await reauthorize()
       return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, materializationId: record.receipt.materializationId, operationId: record.operationId, released: true })
     } finally { if (preparation) this.preparing.delete(preparation); packageReader?.close(); this.active-- }
   }

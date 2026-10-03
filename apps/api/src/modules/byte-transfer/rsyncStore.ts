@@ -201,7 +201,7 @@ export class RsyncPrivateStore {
   }
   /** Called only by the existing cleanup supervisor after writer-death/expiry or canonical acknowledgment.
    * Locks are never stolen by age. Partial reservations are released by the same quota supervisor. */
-  async retire(input: TransferIntent, reason: 'acknowledged' | 'preparation-closed' = 'acknowledged') {
+  async retire(input: TransferIntent, reason: 'acknowledged' | 'execution-closed' = 'acknowledged') {
     const intent = TransferIntentSchema.parse(input), owners = this.owners()
     return owners.retire(intent, async () => {
       const directory = await this.directory()
@@ -215,7 +215,7 @@ export class RsyncPrivateStore {
           // The exact owner journal/retirement barrier remains durable if a prior expired
           // cleanup deleted staging identity before the shared quota release failed.
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT'
-            || reason !== 'preparation-closed' && Date.now() < Date.parse(intent.expiresAt)) throw error
+            || reason !== 'execution-closed' && Date.now() < Date.parse(intent.expiresAt)) throw error
         }
         if (original) try {
           owners.captureRetirementHandle(intent, original)

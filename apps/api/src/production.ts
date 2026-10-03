@@ -263,6 +263,9 @@ export function buildProductionApp(
       setup: { checkAcceptedTransfer: (...args) => {
         if (!trustedConnections) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The original Main trusted connection authority has not initialized.', 503)
         return trustedConnections.checkAcceptedTransfer(...args)
+      }, readAcceptedTransfer: (...args) => {
+        if (!trustedConnections) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Connection consent is unavailable.', 503)
+        return trustedConnections.readAcceptedTransfer(...args)
       } },
       ownership: () => rsync.kind === 'configured' ? rsync.ownership : undefined }) : undefined
   const installedRsync: InstalledMainRsyncProviders | undefined = infrastructure?.rsync ?? entrypoint?.providers
@@ -1199,6 +1202,10 @@ export function buildProductionApp(
           transferPreparationClosed: async closure => {
             if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Rsync cleanup is unavailable.', 409)
             await rsync.backend.retirePreparation(closure, AbortSignal.timeout(15_000))
+          },
+          transferMaterializationClosed: async record => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Rsync cleanup is unavailable.', 409)
+            await rsync.backend.retireMaterialization(record, AbortSignal.timeout(15_000))
           },
           outputRsync:{stage:async(intent,signal)=>{
             if(rsync.kind!=='configured')throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE','The selected original rsync lifecycle is unavailable.',409)

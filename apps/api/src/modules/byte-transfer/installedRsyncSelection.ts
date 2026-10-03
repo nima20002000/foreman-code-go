@@ -33,7 +33,7 @@ export type InstalledRsyncSelection = z.infer<typeof InstalledRsyncSelectionSche
 export interface InstalledRsyncSelectionPorts {
   /** Must read explicit protected installed configuration afresh; undefined means not selected. */
   installed(deviceId: string, signal: AbortSignal): Promise<InstalledRsyncSelection | undefined>
-  setup: Pick<PostgresTrustedConnectionSetup, 'checkAcceptedTransfer'>
+  setup: Pick<PostgresTrustedConnectionSetup, 'checkAcceptedTransfer' | 'readAcceptedTransfer'>
   accepted: AcceptedTransferAuthority
   /** Actual endpoint.captureRequest(deviceId,'rsync-stage-v1').binding on Main. */
   capture(deviceId: string): Readonly<DeviceSessionBinding> | undefined
@@ -175,6 +175,20 @@ export function createInstalledRsyncSelectionProvider(ports: InstalledRsyncSelec
     result.check = checked
     assertRsyncBackendSelection(result, intent)
     signal.throwIfAborted()
-    return result
+    return { ...result, revalidate: async (bounded: AbortSignal) => {
+      bounded.throwIfAborted()
+      if (!isDeepStrictEqual(await installed(), selected)) unavailable('Protected backend selection changed.')
+      const current = await ports.setup.readAcceptedTransfer(intent, {
+        accepted: ports.accepted, binding: pinned, current: () => ports.capture(intent.deviceId),
+      }, bounded)
+      if (!isDeepStrictEqual(current.registration, selected.registration)
+        || !isDeepStrictEqual(current.consent, result.check.consent) || !current.consent?.allowOwnerCommands) {
+        unavailable('The selected connection consent or registration changed.')
+      }
+      if (!isDeepStrictEqual(await installed(), selected) || !isDeepStrictEqual(ports.capture(intent.deviceId), pinned)) {
+        unavailable('Protected selection or authenticated capture changed during authorization.')
+      }
+      bounded.throwIfAborted()
+    } }
   } }
 }

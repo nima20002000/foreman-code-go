@@ -66,7 +66,7 @@ export async function readMainRsyncEntrypoint(path: string) {
 }
 export type MainRsyncEntrypoint = Awaited<ReturnType<typeof readMainRsyncEntrypoint>>
 export function createMainRsyncEntrypoint(input: { installation: Extract<MainRsyncEntrypoint, { kind: 'configured' }>;
-  endpoint(): DeviceEndpoint; setup: Pick<PostgresTrustedConnectionSetup, 'checkAcceptedTransfer'>;
+  endpoint(): DeviceEndpoint; setup: Pick<PostgresTrustedConnectionSetup, 'checkAcceptedTransfer' | 'readAcceptedTransfer'>;
   accepted: AcceptedTransferAuthority; ownership(): RsyncWriterOwnership | undefined }) {
   const { selected, path } = input.installation, deviceId = selected.registration.deviceId
   const capture = () => input.endpoint().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)

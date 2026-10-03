@@ -63,6 +63,33 @@ async function fixture() {
     version: (value: string) => { version = value }, remoteDigest: (value: string) => { remoteDigest = value } }
 }
 describe('protected explicit installed rsync selection', () => {
+  it('rechecks transfer permission and consent without repeating SSH qualification for each byte operation', async () => {
+    const f = await fixture()
+    const selected = await f.provider.selection(f.intent, new AbortController().signal)
+    f.executor.run.mockClear()
+    f.probe.mockClear()
+    f.accepted.authorize.mockClear()
+    for (let index = 0; index < 4; index++) await selected.revalidate!(new AbortController().signal)
+    expect(f.executor.run).not.toHaveBeenCalled()
+    expect(f.probe).not.toHaveBeenCalled()
+    expect(f.accepted.authorize).toHaveBeenCalled()
+    await f.provider.selection(f.intent, new AbortController().signal)
+    expect(f.executor.run).toHaveBeenCalled()
+    expect(f.probe).toHaveBeenCalled()
+  })
+
+  it.each(['consent', 'registration', 'selection', 'grant', 'connection'] as const)
+  ('rejects a changed %s during a selected transfer', async change => {
+    const f = await fixture()
+    const selected = await f.provider.selection(f.intent, new AbortController().signal)
+    if (change === 'consent') f.updateConsent({ allowOwnerCommands: false })
+    if (change === 'registration') f.updateRegistration({ authorizationRevision: 2 })
+    if (change === 'selection') f.removeSelection()
+    if (change === 'grant') f.deny()
+    if (change === 'connection') f.move()
+    await expect(selected.revalidate!(new AbortController().signal)).rejects.toThrow()
+  })
+
   it('reads only private explicit installation config; absence is not selected', async () => {
     const f = await fixture(), signal = new AbortController().signal
     expect(await readProtectedInstalledRsyncSelection(f.file, signal)).toEqual(f.selected)

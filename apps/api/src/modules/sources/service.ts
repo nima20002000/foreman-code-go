@@ -46,6 +46,7 @@ interface ApprovalRow { approved_source_id: string; snapshot_id: string; input_h
 interface SourceLifecycle {
   adopted?: ((record: SourceMaterializationRecord) => Promise<void>) | undefined
   preparationClosed?: ((closure: SourcePreparationClosure) => Promise<void>) | undefined
+  closed?: ((record: SourceMaterializationRecord) => Promise<void>) | undefined
 }
 
 export class PostgresSourceService implements SourceAdmissionPort {
@@ -362,6 +363,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
     record = SourceMaterializationRecordSchema.parse(record)
     if (!await this.closure.confirmedClosed(record)) throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original execution physical closure is not confirmed.', 409)
     await this.executions.releaseClaim(record)
+    await this.lifecycle.closed?.(record)
     await this.transaction(async sql => {
       const row = (await sql.query<{ record: unknown }>('select record from source_execution_materializations where materialization_id=$1 for update', [record.receipt.materializationId])).rows[0]
       if (!row || !isDeepStrictEqual(row.record, record)) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Closure does not match the original materialization.', 409)

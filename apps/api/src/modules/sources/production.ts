@@ -9,7 +9,7 @@ import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
-import { SourceRootRecordSchema, type SourceRootRecord, type SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import { SourceRootRecordSchema, type SourceRootRecord, type SourcePreparationClosure, type SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
 import { ExistingByteTransferSourcePackageSender, type SourcePackageTransferAdmission } from './operationSender.js'
@@ -47,7 +47,8 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader;
   transferSender?: SourcePackageTransferAdmission['sender'];
   transferAcknowledged?: (intent: TransferIntent) => Promise<void>;
-  transferPreparationClosed?: (closure: SourcePreparationClosure) => Promise<void> }) {
+  transferPreparationClosed?: (closure: SourcePreparationClosure) => Promise<void>;
+  transferMaterializationClosed?: (record: SourceMaterializationRecord) => Promise<void> }) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
   const hosts: WorkspaceRootHostPort = {
     async configuration(sql, host) {
@@ -188,7 +189,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     if (!channel) unavailable()
     const intent = await lifecycle.forMaterialization(record, channel!.binding)
     await input.transferAcknowledged!(intent)
-  } : undefined, preparationClosed: input.transferPreparationClosed })
+  } : undefined, preparationClosed: input.transferPreparationClosed, closed: input.transferMaterializationClosed })
   return { sources, policies, executions, snapshots, attempts, owners, transfers, lifecycle,
     sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle) }
 }

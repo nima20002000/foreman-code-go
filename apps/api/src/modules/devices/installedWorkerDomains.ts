@@ -135,6 +135,7 @@ export async function createInstalledWorkerDomains(input: {
       preparationNativeClosed: async operationId => input.jobConfiguration ? (await (await jobJournal()).jobNativeOwner(operationId)) === null : false,
       ...(rsync.kind === 'configured' ? {
         preparationTransfersClosed: (closure, signal) => rsync.backend.retirePreparation(closure, signal),
+        executionTransfersClosed: (record, signal) => rsync.backend.retireMaterialization(record, signal),
       } : {}),
     })
     native = await createInstalledWorkflowHost({ stateDirectory: input.stateDirectory, pairing: input.pairing, bootId: input.bootId,

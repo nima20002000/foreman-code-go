@@ -10,7 +10,7 @@ import { TrustedConnectionCheckSchema, type TrustedConnectionCheck } from '@grap
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
 import type { DeviceApplicationResult } from '@graphql/contracts/device-application'
-import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import type { SourcePreparationClosure, SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { authenticatedTransferAuthority, transferContextForBinding, type AcceptedTransferAuthority } from './carrier.js'
 import type { ImmutableTransferSource } from './sender.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
@@ -27,6 +27,7 @@ export interface RsyncExternalStagingQuota {
   release(intent: TransferIntent, kind: RsyncQuotaKind): Promise<void>
   hasReservation(intent: TransferIntent, kind: RsyncQuotaKind): Promise<boolean>
   retire(id: string): Promise<void>
+  inventory(): Promise<TransferIntent[]>
 }
 export interface RsyncBackendSelection {
   backend: 'rsync'
@@ -35,6 +36,7 @@ export interface RsyncBackendSelection {
   /** Protected installed remote wrapper paths; never accepted through control RPC. */
   nodeBinary: string
   entryPoint: string
+  revalidate?: (signal: AbortSignal) => Promise<void>
 }
 export type { RsyncControlRequest } from '@graphql/contracts/byte-transfer'
 export interface RsyncControlChannel {
@@ -307,6 +309,11 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
       if (endpoint.localRoot !== input.stagingRoot) throw new Error('Rsync selected root differs from installed staging root')
       let receipt: VerifiedTransferReceipt | undefined
       const selectedAuthority = { authorize: async (...args: Parameters<typeof authority.authorize>) => {
+        if (selection.revalidate) {
+          await selection.revalidate(signal)
+          await authority.authorize(...args)
+          return
+        }
         const next = await input.selection!(i, signal)
         assertRsyncBackendSelection(next, i)
         if (!isDeepStrictEqual(next.check.consent, selection.check.consent) || !isDeepStrictEqual(next.endpoint, endpoint)
@@ -355,6 +362,52 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
       return sameReceipt(receipt, i)
     })
   }
+  const retireTransfer = async (intent: TransferIntent, signal: AbortSignal) => {
+    await locked(intent.transferId, async () => {
+      const owned = input.ownership.inventory().find(value => value.transferId === intent.transferId)
+      if (owned) {
+        if (!isDeepStrictEqual(owned, intent)) throw new Error('Retained transfer ownership changed')
+        await input.ownership.stopProcesses(intent, signal)
+        await sources.get(intent.transferId)?.close()
+        sources.delete(intent.transferId)
+        await leases.get(intent.transferId)?.interrupt()
+        leases.delete(intent.transferId)
+        await verified.get(intent.transferId)?.bytes.close()
+        verified.delete(intent.transferId)
+        await input.ownership.quiescent(intent, signal)
+      }
+      if (!input.quota) throw new Error('Shared external staging quota unavailable')
+      const source = isSource(input.side, intent)
+      const kind = source ? 'rsync-source' : 'rsync-receiver'
+      if (await input.quota.hasReservation(intent, kind)) {
+        if (!owned) throw new Error('Original external staging owner is unavailable')
+        await (source ? sourceStore : receiverStore).retire(intent, 'execution-closed')
+      }
+      const canonical = (await input.quota.inventory()).find(value => value.transferId === intent.transferId)
+      if (canonical) {
+        if (!isDeepStrictEqual(canonical, intent)) throw new Error('Retained canonical transfer changed')
+        await input.quota.retire(intent.transferId)
+      }
+    })
+  }
+  const retireMaterialization = async (record: SourceMaterializationRecord, signal: AbortSignal) => {
+    if (!input.quota) throw new Error('Shared external staging quota unavailable')
+    const receipt = record.receipt
+    const expected = { mainId: receipt.binding.mainId, deviceId: receipt.binding.deviceId,
+      workerInstallationId: receipt.binding.workerInstallationId, keyRevision: receipt.keyRevision,
+      authorizationRevision: receipt.authorizationRevision, rootId: receipt.binding.rootId,
+      rootBindingRevision: receipt.binding.bindingRevision }
+    const intents = new Map([...input.ownership.inventory(), ...await input.quota.inventory()]
+      .map(intent => [intent.transferId, intent]))
+    for (const intent of intents.values()) {
+      if (intent.executionId !== receipt.executionId || intent.attemptId !== receipt.attemptId) continue
+      if (!Object.entries(expected).every(([key, value]) => Reflect.get(intent, key) === value)
+        || ![record.sourceBindingHash, record.finalDispatchBindingHash].includes(intent.placementHash)) {
+        throw new Error('Closed materialization does not own this transfer')
+      }
+      await retireTransfer(intent, signal)
+    }
+  }
   const retirePreparation = async (closure: SourcePreparationClosure, signal: AbortSignal) => {
     for (const intent of input.ownership.inventory().filter(value => value.operationId === closure.operationId)) {
       const matchingOwner = intent.byteClass === 'source' && intent.direction === 'to-worker'
@@ -364,26 +417,10 @@ export function createRsyncProductionBackend(input: RsyncProductionInput) {
       if (!matchingOwner || !closure.admissionClosed || !closure.childrenClosed || !closure.claimReleased) {
         throw new Error('Source preparation closure does not own this rsync transfer')
       }
-      await locked(intent.transferId, async () => {
-        await input.ownership.stopProcesses(intent, signal)
-        await sources.get(intent.transferId)?.close()
-        sources.delete(intent.transferId)
-        await leases.get(intent.transferId)?.interrupt()
-        leases.delete(intent.transferId)
-        await verified.get(intent.transferId)?.bytes.close()
-        verified.delete(intent.transferId)
-        await input.ownership.quiescent(intent, signal)
-        if (!input.quota) throw new Error('Shared external staging quota unavailable')
-        const source = isSource(input.side, intent)
-        const kind = source ? 'rsync-source' : 'rsync-receiver'
-        if (await input.quota.hasReservation(intent, kind)) {
-          await (source ? sourceStore : receiverStore).retire(intent, 'preparation-closed')
-          await input.quota.retire(intent.transferId)
-        }
-      })
+      await retireTransfer(intent, signal)
     }
   }
-  return { handle, send, retirePreparation, sender: (source: ImmutableTransferSource) => ({ send: (intent: TransferIntent, signal?: AbortSignal) => send(intent, source, signal) }), retireExpired: async (raw: TransferIntent, signal = AbortSignal.timeout(5000)) => {
+  return { handle, send, retirePreparation, retireMaterialization, sender: (source: ImmutableTransferSource) => ({ send: (intent: TransferIntent, signal?: AbortSignal) => send(intent, source, signal) }), retireExpired: async (raw: TransferIntent, signal = AbortSignal.timeout(5000)) => {
     const i = TransferIntentSchema.parse(raw)
     if (Date.now() < Date.parse(i.expiresAt)) throw new Error('Rsync cleanup requires original expiry')
     return locked(i.transferId, async () => {

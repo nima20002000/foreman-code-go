@@ -111,22 +111,33 @@ export class PostgresTrustedConnectionSetup {
   }
   /** Server-internal accepted-transfer capability only. Does not lend settings grants,
    * expose a new management route or authorize bytes independently of the original domain. */
+  private async authorizeAcceptedTransfer(intent: TransferIntent, authority: AcceptedTrustedConnectionTransfer,
+    signal: AbortSignal): Promise<void> {
+    const binding = DeviceSessionBindingSchema.parse(authority.binding)
+    signal.throwIfAborted()
+    const current = authority.current()
+    if (!current || !isDeepStrictEqual(current, binding)) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'The actual authenticated transfer connection changed.', 409)
+    const original = TransferIntentSchema.parse(await authority.accepted.intent(intent.transferId, binding))
+    if (!isDeepStrictEqual(original, intent) || intent.mainId !== this.mainId
+      || ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'].some(key => intent[key as keyof TransferIntent] !== binding[key as keyof DeviceSessionBinding])) {
+      throw new DomainError('DEVICE_TRANSFER_INTENT_CHANGED', 'The original accepted transfer identity does not match this device.', 409)
+    }
+    await authority.accepted.authorize(intent, transferContextForBinding(binding), 'start')
+    signal.throwIfAborted()
+    if (!isDeepStrictEqual(authority.current(), binding)) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'The authenticated connection changed during original transfer authorization.', 409)
+    if (Date.parse(intent.expiresAt) <= Date.now()) throw new DomainError('DEVICE_TRANSFER_EXPIRED', 'The original accepted transfer expired.', 409)
+  }
+  async readAcceptedTransfer(raw: TransferIntent, authority: AcceptedTrustedConnectionTransfer,
+    signal: AbortSignal): Promise<TrustedConnectionRead> {
+    const intent = TransferIntentSchema.parse(raw)
+    await this.authorizeAcceptedTransfer(intent, authority, signal)
+    const current = await this.transaction(client => this.readRecord(client, intent.deviceId))
+    await this.authorizeAcceptedTransfer(intent, authority, signal)
+    return current
+  }
   async checkAcceptedTransfer(raw: TransferIntent, authority: AcceptedTrustedConnectionTransfer, signal: AbortSignal): Promise<TrustedConnectionCheck> {
     const intent = TransferIntentSchema.parse(raw), binding = DeviceSessionBindingSchema.parse(authority.binding)
-    const authorize = async () => {
-      signal.throwIfAborted()
-      const current = authority.current()
-      if (!current || !isDeepStrictEqual(current, binding)) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'The actual authenticated transfer connection changed.', 409)
-      const original = TransferIntentSchema.parse(await authority.accepted.intent(intent.transferId, binding))
-      if (!isDeepStrictEqual(original, intent) || intent.mainId !== this.mainId
-        || ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'].some(key => intent[key as keyof TransferIntent] !== binding[key as keyof DeviceSessionBinding])) {
-        throw new DomainError('DEVICE_TRANSFER_INTENT_CHANGED', 'The original accepted transfer identity does not match this device.', 409)
-      }
-      await authority.accepted.authorize(intent, transferContextForBinding(binding), 'start')
-      signal.throwIfAborted()
-      if (!isDeepStrictEqual(authority.current(), binding)) throw new DomainError('DEVICE_TRANSFER_CONNECTION_CHANGED', 'The authenticated connection changed during original transfer authorization.', 409)
-      if (Date.parse(intent.expiresAt) <= Date.now()) throw new DomainError('DEVICE_TRANSFER_EXPIRED', 'The original accepted transfer expired.', 409)
-    }
+    const authorize = () => this.authorizeAcceptedTransfer(intent, authority, signal)
     await authorize()
     const before = await this.transaction(client => this.readRecord(client, intent.deviceId)), initial = blocked(before)
     signal.throwIfAborted()

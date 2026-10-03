@@ -417,6 +417,15 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
     }
     return count
   }
+  async inventory(): Promise<TransferIntent[]> {
+    await this.initialize()
+    const names = await readdir(`/proc/self/fd/${this.directory!.fd}`)
+    const records = names.filter(name => /^[a-f0-9-]{36}\.json$/.test(name))
+    if (records.length > POLICY.maxRecords) throw new Error('Transfer record quota exceeded')
+    const intents: TransferIntent[] = []
+    for (const name of records) intents.push((await this.load(name.slice(0, -5))).intent)
+    return intents
+  }
   async close() {
     if (this.busy.size || this.readers.size) throw new Error('Transfer operations still active')
     await this.directory?.close(); this.directory = undefined; this.initializing = undefined
