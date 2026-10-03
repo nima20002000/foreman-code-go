@@ -83,7 +83,10 @@ export function rsyncCommand(endpoint: RsyncEndpoint, intent: TransferIntent, re
   const remoteCommand = remote ? (() => {
     safePath(remote.nodeBinary); safePath(remote.entryPoint); hash(remote.ownerDigest)
     if (remote.transferId !== intent.transferId || !/^[a-f0-9-]{36}$/.test(remote.ownerId)) throw new Error('Invalid remote rsync owner')
-    return `${remote.nodeBinary} ${remote.entryPoint} --rsync-root ${endpoint.remoteRoot} --rsync-transfer ${intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`
+    const scope = '/usr/bin/systemd-run --user --scope --quiet --property=Delegate=yes --collect --'
+    return [scope, remote.nodeBinary, remote.entryPoint,
+      '--rsync-root', endpoint.remoteRoot, '--rsync-transfer', intent.transferId,
+      '--rsync-owner', remote.ownerId, '--rsync-owner-digest', remote.ownerDigest].join(' ')
   })() : endpoint.remoteBinary
   return { executable: endpoint.localBinary, args: ['--protect-args', '--checksum', '--partial',
     '--partial-dir=.rsync-partial', '--no-whole-file', '--no-links', '--no-devices', '--no-specials',

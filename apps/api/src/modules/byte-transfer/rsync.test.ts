@@ -59,6 +59,17 @@ describe('rsync argument and security boundary', () => {
     expect(command.args.join(' ')).toContain('StrictHostKeyChecking=yes')
     expect(command.args.join(' ')).toContain('ForwardAgent=no')
   })
+  it.each(['to-main', 'to-worker'] as const)('starts the authenticated %s writer in a delegated user scope', direction => {
+    const transfer = { ...intent(), direction }
+    const remote = { transferId: transfer.transferId, ownerId: randomUUID(), ownerDigest: 'c'.repeat(64),
+      nodeBinary: '/protected/node', entryPoint: '/protected/rsync-writer.mjs' }
+    const command = rsyncCommand(endpoint, transfer, remote)
+    const writer = command.args.find(argument => argument.startsWith('--rsync-path='))
+    expect(writer).toContain('/usr/bin/systemd-run --user --scope --quiet --property=Delegate=yes --collect -- /protected/node /protected/rsync-writer.mjs')
+    expect(writer).toContain(`--rsync-transfer ${transfer.transferId} --rsync-owner ${remote.ownerId}`)
+    expect(writer).toContain(`--rsync-owner-digest ${remote.ownerDigest}`)
+    expect(command.args.join(' ')).toContain('StrictHostKeyChecking=yes')
+  })
   it('fails closed on existing vulnerable versions before any staging', async () => {
     const i = intent(), ports: RsyncStagingPorts = { source: vi.fn(), receiver: vi.fn() }
     const executor: RsyncExecutor = { run: vi.fn(async () => 'rsync  version 3.4.1  protocol version 32\n') }
