@@ -1,3 +1,4 @@
+import { WORKSPACE_ROOT_EXTENSION } from '@graphql/contracts/workspace-root-policies'
 import { createInstalledRsyncComposition } from './modules/byte-transfer/productionComposition.js'
 import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
 import { transferContextForBinding } from './modules/byte-transfer/carrier.js'
@@ -232,6 +233,7 @@ export function buildProductionApp(
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
       ...rsync.extensions,
+      { namespace: WORKSPACE_ROOT_EXTENSION.namespace, version: WORKSPACE_ROOT_EXTENSION.version, role: 'client', maxJsonBytes: WORKSPACE_ROOT_EXTENSION.maxPayloadBytes, maxBinaryBytes: 0 },
       { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(payload, context) {
         const handler = jobRuntime?.qualificationExtension.handle
         if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual diagnostic qualification authority is unavailable.', 503)

@@ -35,6 +35,9 @@ import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
+import { isDeepStrictEqual } from 'node:util'
+import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
+import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
@@ -46,6 +49,23 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   transferAcknowledged?: (intent: TransferIntent) => Promise<void> }) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
   const hosts: WorkspaceRootHostPort = {
+    async configuration(sql, host) {
+      if (host.kind === 'main') return readInstalledRootConfiguration(join(input.runtimeRoot, 'approved-roots.json'))
+      const row = (await sql.query<{ record: unknown }>('select record from device_registrations where id=$1 and main_id=$2 for share', [host.deviceId, host.mainId])).rows[0]
+      if (!row) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The selected root host is not registered.', 403)
+      const registration = DeviceRegistrationSchema.parse(row.record)
+      await assertDeviceHostInstallation(sql, host, registration.workerInstallationId)
+      const endpoint = input.endpoint(), captured = endpoint.captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
+      if (!captured || captured.binding.mainId !== host.mainId || captured.binding.workerInstallationId !== registration.workerInstallationId
+        || captured.binding.keyRevision !== registration.keyRevision || captured.binding.authorizationRevision !== registration.authorizationRevision) unavailable()
+      const reply = await captured!.request({ version: 1, operation: 'workspace-roots.configuration' }, { signal: AbortSignal.timeout(10_000) })
+      if (reply.bytes !== undefined || !isDeepStrictEqual(endpoint.currentBinding(host.deviceId), captured!.binding))
+        throw new DomainError('ROOT_DEVICE_CONFLICT', 'The authenticated root configuration channel changed during adoption.', 409)
+      const configuration = ApprovedRootAllowlistSchema.parse(reply.payload)
+      if (!isDeepStrictEqual(configuration.hostRef, host) || configuration.applicationInstallationId !== registration.workerInstallationId)
+        throw new DomainError('ROOT_CONFIGURATION_CONFLICT', 'The approved configuration belongs to another host installation.', 409)
+      return configuration
+    },
     authorize: async (sql, _principal, host, installationId) => {
       const registration = await assertDeviceHostInstallation(sql, host, installationId)
       return registration ? { workerInstallationId: registration.workerInstallationId,

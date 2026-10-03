@@ -46,3 +46,12 @@ it('supports protected owner-only-write bases with ordinary readable project per
   await chmod(join(f.base, 'project'), 0o777)
   await expect(attestWorkspaceRoot(approved, f.selection)).rejects.toThrow('other writers')
 })
+
+it('returns only the original allowlist through authenticated configuration adoption', async () => {
+  const f = await fixture(), authorize = vi.fn(async () => {}), read = vi.fn(async () => f.allowlist)
+  expect(await createWorkspaceRootWorkerHandler(read, authorize)({ version: 1, operation: 'workspace-roots.configuration' })).toEqual(f.allowlist)
+  expect(authorize).toHaveBeenCalledBefore(read)
+  read.mockClear(); authorize.mockRejectedValue(new Error('denied'))
+  await expect(createWorkspaceRootWorkerHandler(read, authorize)({ version: 1, operation: 'workspace-roots.configuration' })).rejects.toThrow('denied')
+  expect(read).not.toHaveBeenCalled()
+})
