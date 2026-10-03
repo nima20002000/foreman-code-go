@@ -68,13 +68,18 @@ export async function readProtectedInstalledRsyncSelection(path: string, signal:
     return InstalledRsyncSelectionSchema.parse(JSON.parse(text))
   } finally { await file.close() }
 }
-async function precheckInstalledFile(pin: { path: string; sha256: string }, signal: AbortSignal, executable = true): Promise<void> {
+const MAX_INSTALLED_FILE_BYTES = 64 * 1024 * 1024
+// The reviewed Node 22.23.3 executable is 124,827,920 bytes. Other installation files keep their existing bound.
+const MAX_INSTALLED_NODE_BINARY_BYTES = 128 * 1024 * 1024
+async function precheckInstalledFile(pin: { path: string; sha256: string }, signal: AbortSignal,
+  kind: 'executable' | 'node' | 'script' = 'executable'): Promise<void> {
   const path = pin.path
   await safeAncestors(path)
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
     const stat = await file.stat()
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0 || executable && !(stat.mode & 0o111) || stat.size > 64 * 1024 * 1024) unavailable('Selected app-private binary is not a protected executable.')
+    const maxBytes = kind === 'node' ? MAX_INSTALLED_NODE_BINARY_BYTES : MAX_INSTALLED_FILE_BYTES
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0 || kind !== 'script' && !(stat.mode & 0o111) || stat.size > maxBytes) unavailable('Selected app-private binary is not a protected executable.')
     const hash = createHash('sha256'), buffer = Buffer.alloc(65536)
     let offset = 0
     while (offset <= stat.size) {
@@ -103,8 +108,8 @@ export async function readProtectedInstalledRsyncWriterSelection(path: string,
   validateRsyncEndpoint({ ...selected.endpoint, localBinary: selected.localBinary.path, remoteBinary: selected.remoteBinary.path,
     localBinarySha256: selected.localBinary.sha256, remoteBinarySha256: selected.remoteBinary.sha256 })
   await precheckInstalledFile(selected.remoteBinary, signal)
-  await precheckInstalledFile(selected.nodeBinary, signal)
-  await precheckInstalledFile(selected.entryPoint, signal, false)
+  await precheckInstalledFile(selected.nodeBinary, signal, 'node')
+  await precheckInstalledFile(selected.entryPoint, signal, 'script')
   if (!isDeepStrictEqual(await readProtectedInstalledRsyncSelection(path, signal), selected)) unavailable('Protected writer installation changed during verification.')
   signal.throwIfAborted()
   return { stagingRoot: selected.endpoint.remoteRoot, binary: { executable: selected.remoteBinary.path, sha256: selected.remoteBinary.sha256 },
