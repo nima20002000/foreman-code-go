@@ -1317,6 +1317,9 @@ export class ApprovalExecutionCoordinator {
 
       const observePending = async (history: NativeHistory, sourceEvent?: NativeHarnessEvent,
         sourceLease?: WorkflowNativeLease): Promise<ApprovalExecutionObservation | undefined> => {
+        signal.throwIfAborted()
+        input.owner.assertOwned()
+        if (!history.pendingInteractions.length) return undefined
         const originalHistory = this.captureNative(input.owner, execution,
           { type: 'history', history: safeValue(history) }, sourceLease?.live ? 'live' : 'recovery',
           manager!.capturedLease(session!))
@@ -1324,7 +1327,6 @@ export class ApprovalExecutionCoordinator {
           safeValue({ ...event, executionId: execution.id })).event) }
         signal.throwIfAborted()
         input.owner.assertOwned()
-        if (!history.pendingInteractions.length) return undefined
         const pendingExecution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
         await this.runs.updateExecution(pendingExecution, input.owner, originalHistory)
         execution = (await repeat.readExecution(pendingExecution.id)).execution
