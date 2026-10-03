@@ -28,6 +28,13 @@ export class JobService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly ports: { preparation: JobPreparationPort; dispatch: JobDispatchPort; artifacts: JobArtifactPort },
     private readonly clock: () => Date = () => new Date()) {}
+  private async wakeAccepted(execution:JobExecution):Promise<void> {
+    try {await this.ports.dispatch.wake(execution.id)} catch(error) {
+      if(error instanceof DomainError)throw error
+      throw new DomainError('JOB_DISPATCH_PENDING','The accepted Job could not be delivered or reconciled. Read its persisted state and retry the original command; execution may have begun.',503,
+        {retryable:true,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId})
+    }
+  }
   private async authorize(sql: pg.PoolClient, principal: ManagementPrincipal, workspaceId: string, action: ManagementAction) {
     const live = await readLiveManagementPrincipal(sql,principal.id)
     requireAuthorization(live,action,{workspaceId})
@@ -169,7 +176,7 @@ export class JobService {
           await this.authorize(sql,principal,workspaceId,'jobs:start');return execution
       }})
     const execution=JobExecutionSchema.parse(result.value)
-    await this.ports.dispatch.wake(execution.id).catch(()=>undefined)
+    await this.wakeAccepted(execution)
     return this.read(principal,workspaceId,'jobs:start',sql=>this.repository.execution(sql,workspaceId,execution.id),source)
   }
   prepareDefinition(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,identity:{executionId:string;attemptId:string;operationId:string}) {
@@ -223,7 +230,7 @@ export class JobService {
       }
       return {executionId:id}
     })
-    await this.ports.dispatch.wake(id).catch(()=>undefined)
+    await this.wakeAccepted(await this.read(principal,workspaceId,'jobs:cancel',sql=>this.repository.execution(sql,workspaceId,id),source))
     return this.read(principal,workspaceId,'jobs:cancel',sql=>this.repository.execution(sql,workspaceId,id),source)
   }
   readLogs(principal:ManagementPrincipal,workspaceId:string,id:string,afterSequence:number,limit:number,source:'http'|'mcp'='http') {
