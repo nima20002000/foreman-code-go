@@ -46,6 +46,13 @@ export type VerifiedTransferReceipt = z.infer<typeof VerifiedTransferReceiptSche
 export const RSYNC_STAGE_EXTENSION = Object.freeze({
   namespace: 'rsync-stage-v1', version: 1 as const, maxJsonBytes: 16384, maxBinaryBytes: 0,
 })
+/** Authenticated Worker-to-Main lookup of original persisted transfer membership.
+ * The domain authority must authorize the caller before returning TransferIntent. */
+export const RsyncTransferAuthorizeRequestSchema = z.object({
+  kind: z.literal('rsync-stage-v1'), method: z.literal('transfer-authorize'), transferId: z.uuid(),
+}).strict()
+export type RsyncTransferAuthorizeRequest = z.infer<typeof RsyncTransferAuthorizeRequestSchema>
+
 export const RsyncControlRequestSchema = z.object({
   kind: z.literal('rsync-stage-v1'),
   method: z.enum(['source-prepare', 'source-verify', 'source-close', 'receiver-prepare',

@@ -134,6 +134,12 @@ export const JobRuntimeProfileSchema=z.object({schemaVersion:z.literal(1),id:IdS
   status:z.enum(['unqualified','awaiting-approval','qualifying','qualified','failed','revoked','recovery-required']),
   measurement:JobRuntimeMeasurementSchema.nullable(),createdAt:TimestampSchema,updatedAt:TimestampSchema,
 }).strict()
+/** Scoped metadata read; listing pending approvals performs no qualification or repair. */
+export const JobRuntimeProfileListSchema = z.object({
+  profiles: z.array(z.object({ profile: JobRuntimeProfileSchema, ready: z.boolean(), reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()),
+  approvals: z.array(JobRuntimeApprovalSchema),
+}).strict()
+export type JobRuntimeProfileList = z.infer<typeof JobRuntimeProfileListSchema>
 export const JobRuntimeProfileSaveSchema=z.object({commandId:IdSchema,id:IdSchema.optional(),expectedRevision:z.number().int().positive().nullable(),name:z.string().trim().min(1).max(200),spec:JobRuntimeProfileInputSchema}).strict()
 export const JobRuntimeQualificationRequestSchema=z.object({commandId:IdSchema,profileId:IdSchema,expectedRevision:z.number().int().positive()}).strict()
 export type JobRuntimeProfile=z.infer<typeof JobRuntimeProfileSchema>
