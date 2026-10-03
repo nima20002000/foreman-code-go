@@ -626,7 +626,7 @@ describe('cross-host rsync control boundary', () => {
       const remote = { ...reference, nodeBinary: '/usr/bin/node', entryPoint: '/opt/app/rsync-wrapper.js' }
       const command = rsyncCommand(endpoint, f.intent, remote)
       expect(() => new NodeRsyncExecutor().run(command, signal())).toThrow('subprocess owner unavailable')
-      expect(command.args).toContain(`--rsync-path=/usr/bin/node /opt/app/rsync-wrapper.js --rsync-root ${endpoint.remoteRoot} --rsync-transfer ${f.intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`)
+      expect(command.args).toContain(`--rsync-path=/usr/bin/systemd-run --user --scope --quiet --property=Delegate=yes --collect -- /usr/bin/node /opt/app/rsync-wrapper.js --rsync-root ${endpoint.remoteRoot} --rsync-transfer ${f.intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`)
       expect(() => rsyncCommand(endpoint, f.intent, { ...remote, entryPoint: '/tmp/$(id)' })).toThrow('Unsafe')
       expect(() => rsyncCommand(endpoint, f.intent, { ...remote, transferId: randomUUID() })).toThrow('remote rsync owner')
       const snapshot = { verify: vi.fn(async () => {}), close: vi.fn(async () => {}) }

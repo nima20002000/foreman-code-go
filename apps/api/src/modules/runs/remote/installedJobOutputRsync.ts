@@ -4,6 +4,7 @@ import { JobArtifactSchema } from '@graphql/contracts/jobs'
 import { JobOutputStageRequestSchema, JobOutputStatusRequestSchema } from '@graphql/contracts/job-output-transfer'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { InstalledRsyncProviders } from '../../byte-transfer/productionComposition.js'
+import type { RsyncWriterOwnership } from '../../byte-transfer/rsyncWriterOwnership.js'
 import { transferContextForBinding } from '../../byte-transfer/carrier.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationChannel.js'
 import { DomainError } from '../../errors.js'
@@ -15,6 +16,7 @@ import type { WorkerJobOutputRsyncPort } from './workerJobOutputs.js'
 
 /** Actual closed Job journal, original quota and current W07 carrier. */
 export async function createInstalledJobOutputRsync(input:{providers:InstalledRsyncProviders;journal:RemoteOperationJournal;
+  ownership: Pick<RsyncWriterOwnership, 'access'>;
   current():Readonly<DeviceSessionBinding>;
   request(namespace:string,payload:unknown,options:{signal:AbortSignal;timeoutMs?:number}):Promise<{payload:unknown;bytes?:Uint8Array}>}){
   const context=async(signal?:AbortSignal)=>{signal?.throwIfAborted();return transferContextForBinding(input.current())}
@@ -44,7 +46,19 @@ export async function createInstalledJobOutputRsync(input:{providers:InstalledRs
       throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Canonical readback differs from the exact original closed Job output.',409)
     return artifact
   }
-  const collector:WorkerJobOutputRsyncPort={published,register:(...args)=>source.register(...args),stage:async(intent,signal)=>{
+  const collector:WorkerJobOutputRsyncPort={published,register:async(execution,publication,intent,bytes,signal)=>{
+    signal.throwIfAborted()
+    const binding = input.current()
+    await input.providers.accepted.authorize(intent, transferContextForBinding(binding), 'read')
+    signal.throwIfAborted()
+    const access = input.ownership.access(intent, binding, 'source-materializer')
+    try {
+      await access.run(ownerSignal => source.register(execution, publication, intent, bytes,
+        AbortSignal.any([signal, ownerSignal])))
+    } finally {
+      await access.close()
+    }
+  },stage:async(intent,signal)=>{
     signal.throwIfAborted()
     const timeoutMs = Math.min(BYTE_TRANSFER_POLICY.maxIdleMs, Date.parse(intent.expiresAt) - Date.now())
     if (timeoutMs <= 0) throw new DomainError('JOB_OUTPUT_TRANSFER_EXPIRED', 'The original output transfer has expired.', 409)

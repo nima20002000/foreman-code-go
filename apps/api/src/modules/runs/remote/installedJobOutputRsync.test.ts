@@ -7,6 +7,7 @@ import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
 import type { RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
 import type { ProductionRsyncProviders } from '../../byte-transfer/productionComposition.js'
 import { ResumableByteTransferService } from '../../byte-transfer/service.js'
+import { RsyncWriterOwnership } from '../../byte-transfer/rsyncWriterOwnership.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationChannel.js'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
@@ -38,13 +39,22 @@ async function fixture(){
   const artifact={executionId:execution.id,publicationId:'original-publication',fileId:'original-file',revisionId:'original-revision',path:input.path,sha256,byteSize:2,mediaType:input.mediaType,state:'available',expiresAt:new Date(Date.now()+3600000).toISOString()}
   const request=vi.fn(async(_namespace:string,payload:unknown)=>({payload:(payload as {method:string}).method==='job-output-stage'?receipt:artifact}))
   const providers={stagingRoot,receiver,accepted:{authorize},quiescent} as unknown as ProductionRsyncProviders
-  const current=()=>binding,ports={providers,journal,current,request},mounted=await createInstalledJobOutputRsync(ports)
+  const current=()=>binding
+  const ownership = new RsyncWriterOwnership(stagingRoot, current)
+  cleanups.push(() => ownership.drain(AbortSignal.timeout(5000)))
+  const ports={providers,journal,current,request,ownership},mounted=await createInstalledJobOutputRsync(ports)
   return {directory,stagingRoot,execution,intent,input,bytes,original,receipt,artifact,request,authorize,quiescent,release,ports,mounted,context,signal:new AbortController().signal,
     rebind:()=>{binding={...binding,connectionEpoch:randomUUID(),connectionGeneration:2}}}
 }
 describe('installed original closed Job rsync composition, no physical acceptance',()=>{
   it('registers captured bytes before stage, recovers original reader and requires canonical readback before retirement',async()=>{
     const f=await fixture();await f.mounted.collector.register(f.execution,f.input,f.intent,f.bytes,f.signal)
+    expect(f.ports.ownership.inventory()).toEqual([f.intent])
+    const materializer = f.ports.ownership.access(f.intent, f.ports.current(), 'source-materializer')
+    await materializer.run(async () => {
+      expect(await readFile(join(f.stagingRoot, `${f.intent.transferId}.retained.bytes`))).toEqual(f.bytes)
+    })
+    await materializer.close()
     const recovered=await createInstalledJobOutputRsync(f.ports),reader=await recovered.resolveSource(f.intent,f.signal)
     expect(await reader.read(f.intent,0,2,f.signal)).toEqual(Buffer.from('{}'))
     await recovered.collector.stage(f.intent,f.signal)
