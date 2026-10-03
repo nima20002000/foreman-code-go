@@ -14,6 +14,7 @@ import { type NativeResponseDeliveryEvidence } from '../interactions/delivery.js
 import type { NativeHistory } from '../harnesses/port.js'
 import { OPENCODE_RECONCILIATION_EVENT, readOpenCodeReconciliation } from '../harnesses/opencodeReconciliation.js'
 import { openCodeGraphReconciliation } from '../harnesses/opencodeGraphReconciliation.js'
+import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
 
 export interface WorkflowNativeLease {
   id: string
@@ -160,6 +161,15 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       reconciliationIdentity, scope, key, generation) : undefined
     if (normalized.event.type === OPENCODE_RECONCILIATION_EVENT && !reconciliation) return
     const observation = reconciliation ?? nativeDisconnectObservation(scope, key, normalized.event, generation)
+    // Raw transcript frames already passed the source/physical/lane checks and
+    // were retained above. Preserve correlation initialization, but do not run
+    // a second raw append and semantic authority/projection reads for a frame
+    // the shared selector cannot project. Reliability and approval evidence
+    // still take the complete ingester path.
+    const claudeEvidence = ['message.submitted', 'interaction.pending', 'turn.completed'].includes(normalized.event.type)
+      && normalized.event.payload.nativeMessageId !== undefined
+    if (!approval && !observation && !claudeEvidence
+      && selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind === 'ignored') return
     await appendNativeGraphEvent(publication, normalized.event, [{ guard, correlationKey,
       ...(observation ? { observation } : {}) }])
 }
