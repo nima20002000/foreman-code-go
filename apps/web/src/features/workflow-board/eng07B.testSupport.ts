@@ -119,7 +119,7 @@ export async function eng07BoardFixture(id: ScenarioId, suffix: string) {
       const node = nativeNode(scenario.nodes[index]!), executionId = `exec-${run.id}-${index}-${round}`
       const identity = { executionId, workflowNodeId: node.id, agentId: nativeNode(node).agentId,
         agentConfigurationVersionId: version.agentConfigurationVersionIds[nativeNode(node).agentId]!, attempt: 1 }
-      const predecessors: RunExecutionDetail['acceptedInput']['value']['predecessors'] = []
+      const predecessors: Array<RunExecutionDetail['acceptedInput']['value']['predecessors'][number]> = []
       for (const edge of scenario.edges.filter((edge) => edge.target === node.id).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
         const from = scenario.nodes.findIndex((candidate) => candidate.id === edge.source)
         if (!scenario.executedIndexes.includes(from)) continue

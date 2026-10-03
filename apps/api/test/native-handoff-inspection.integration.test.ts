@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { RUN_INSPECTION_TOOLS, RunExecutionsPageSchema } from '@graphql/contracts/wave25'
+import { RUN_INSPECTION_TOOLS, RunExecutionsPageSchema, RunExecutionDetailSchema, RunExecutionBindingsPageSchema } from '@graphql/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -62,6 +62,30 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('current handoff inspectio
         const mcp = await graphRpc(app, reader.token, 'tools/call', { name: RUN_INSPECTION_TOOLS.executions, arguments: input })
         expect(mcp.result?.isError).not.toBe(true)
         expect(RunExecutionsPageSchema.parse(graphRpcValue(mcp.result))).toEqual(page)
+        const detailInput = { ...input, executionId }
+        const detailHttp = await app.inject({ method: 'GET', url: `${url}/${executionId}`, headers: graphHeaders(reader.token) })
+        expect(detailHttp.statusCode, detailHttp.body).toBe(200)
+        const detail = RunExecutionDetailSchema.parse(detailHttp.json())
+        const originalInput = before.record.input
+        expect(detail.acceptedInput.value).toEqual(originalInput)
+        expect(detail.acceptedResult).toEqual({ status: 'not_accepted' })
+        const detailMcp = await graphRpc(app, reader.token, 'tools/call', { name: RUN_INSPECTION_TOOLS.execution, arguments: detailInput })
+        expect(detailMcp.result?.isError).not.toBe(true)
+        expect(RunExecutionDetailSchema.parse(graphRpcValue(detailMcp.result))).toEqual(detail)
+        const bindingsHttp = await app.inject({ method: 'GET', url: `${url}/${executionId}/bindings`, headers: graphHeaders(reader.token) })
+        expect(bindingsHttp.statusCode, bindingsHttp.body).toBe(200)
+        const bindings = RunExecutionBindingsPageSchema.parse(bindingsHttp.json())
+        expect(bindings.items).toEqual([])
+        const bindingsMcp = await graphRpc(app, reader.token, 'tools/call', { name: RUN_INSPECTION_TOOLS.bindings, arguments: detailInput })
+        expect(bindingsMcp.result?.isError).not.toBe(true)
+        expect(RunExecutionBindingsPageSchema.parse(graphRpcValue(bindingsMcp.result))).toEqual(bindings)
+        for (const [suffix, name] of [['', RUN_INSPECTION_TOOLS.execution], ['/bindings', RUN_INSPECTION_TOOLS.bindings]] as const) {
+          const deniedHttp = await app.inject({ method: 'GET', url: `${url}/${executionId}${suffix}`, headers: graphHeaders(denied.token) })
+          expect(deniedHttp.statusCode).toBe(403)
+          const deniedDetailMcp = await graphRpc(app, denied.token, 'tools/call', { name, arguments: detailInput })
+          expect(deniedDetailMcp.result?.isError).toBe(true)
+          expect(JSON.stringify(deniedDetailMcp.result)).toContain('ACCESS_DENIED')
+        }
         const hidden = await app.inject({ method: 'GET', url, headers: graphHeaders(denied.token) })
         expect(hidden.statusCode).toBe(403)
         expect(hidden.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
