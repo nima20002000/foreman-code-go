@@ -131,6 +131,12 @@ export const RunExecutionBindingsPageSchema = z.object({
   items: z.array(RunExecutionBindingSchema).max(RUN_INSPECTION_LIMITS.bindings), pageInfo: PageInfo,
 }).strict()
 export const RunVersionDetailSchema = z.object({ scope: CurrentRunScopeSchema, version: WorkflowVersionV3Schema }).strict()
+  .superRefine(({ scope, version }, context) => {
+    if (scope.workspaceId !== version.workspaceId || scope.workflowId !== version.workflowId
+      || scope.workflowVersionId !== version.id || scope.executionSemanticsVersion !== version.executionSemanticsVersion) {
+      context.addIssue({ code: 'custom', message: 'RUN_VERSION_SNAPSHOT_PIN_MISMATCH' })
+    }
+  })
 export type RunExecutionsPage = z.infer<typeof RunExecutionsPageSchema>
 export type RunExecutionDetail = z.infer<typeof RunExecutionDetailSchema>
 export type RunExecutionBindingsPage = z.infer<typeof RunExecutionBindingsPageSchema>
