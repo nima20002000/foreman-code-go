@@ -248,14 +248,25 @@ describe('installed actual Job factory with native/process doubles', () => {
     vi.spyOn(OwnedOCIContainer.prototype, 'close').mockResolvedValue(true)
     const children = new Map<object, number>(), spawned: string[][] = [], cid = 'c'.repeat(64)
     let started=false,released=false;const waiting:Array<()=>void>=[]
-    const reserveLaunch = vi.fn((owner: string) => ({ root: f.root, owner, launchId: randomUUID() }))
-    const registry = { reserveLaunch, closeRegistration: vi.fn(), abandonReservedLaunch: vi.fn(async () => true), closeOwner: vi.fn(async () => true), snapshot: () => ({ revision: '1', launches: [] }) } as unknown as NativeProcessRegistry
+    const activeOwners = new Map<string, string>()
+    const reserveLaunch = vi.fn((owner: string) => {
+      if (activeOwners.has(owner)) throw new Error('An earlier native process is still active for this owner')
+      const launchId = randomUUID()
+      activeOwners.set(owner, launchId)
+      return { root: f.root, owner, launchId }
+    })
+    const closeRegistration = vi.fn(async (scope: { owner: string }, launchId: string) => {
+      if (activeOwners.get(scope.owner) === launchId) activeOwners.delete(scope.owner)
+    })
+    const registry = { reserveLaunch, closeRegistration, abandonReservedLaunch: vi.fn(async () => true), closeOwner: vi.fn(async () => true), snapshot: () => ({ revision: '1', launches: [] }) } as unknown as NativeProcessRegistry
     vi.spyOn(processes, 'nativeProcessExit').mockImplementation(child => ({ exitCode: children.get(child) ?? null, exitSignal: null }))
     vi.spyOn(processes, 'spawnNativeProcess').mockImplementation((binary, argv, options) => {
       expect(binary).toBe(f.candidate.fingerprint.runtimeExecutable)
       expect(options.env).toEqual(f.candidate.controllerEnvironment)
       expect(options.env).not.toHaveProperty('HOME'); expect(options.env).not.toHaveProperty('SSH_AUTH_SOCK'); expect(options.env).not.toHaveProperty('GRAPHQL_HEAVY_JOB_TOKEN')
-      expect(options.recovery?.owner).toBe(`job:${f.execution.operationId}:${f.execution.owner.grantId}:${f.execution.owner.epoch}`)
+      expect([`job:${f.execution.operationId}:${f.execution.owner.grantId}:${f.execution.owner.epoch}`,
+        `job:${f.execution.operationId}:${f.execution.owner.grantId}:${f.execution.owner.epoch}:control`,
+        `job:${f.execution.operationId}:${f.execution.owner.grantId}:${f.execution.owner.epoch}:wait`]).toContain(options.recovery?.owner)
       spawned.push([...argv])
       const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() }, stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null as number | null })
       setImmediate(() => {

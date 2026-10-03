@@ -552,8 +552,13 @@ export class RemoteOperationJournal {
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     return structuredClone(this.data.jobOwners.find(value => value.operationId === operationId) ?? null)
   }
-  jobReserveProcess(operationId: string, input: { launchId: string; binary: string; argv: string[] }) {
+  jobReserveProcess(operationId: string, input: { launchId: string; processOwner?: string; binary: string; argv: string[] }) {
     return this.change(data => {
+      const receipt = this.jobReceipt(data, operationId)
+      const rootOwner = `job:${operationId}:${receipt.intent.owner.grantId}:${receipt.intent.owner.epoch}`
+      if (input.processOwner && ![rootOwner, `${rootOwner}:control`, `${rootOwner}:wait`].includes(input.processOwner)) {
+        throw new Error('Job controller owner differs from its original operation')
+      }
       const owner = this.jobOwner(data, operationId)
       if (owner.launches.some(value => value.launchId === input.launchId)) throw new Error('Job native launch already reserved')
       owner.launches.push({ ...input, exit: null, closed: false })

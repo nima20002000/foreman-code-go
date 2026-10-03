@@ -116,13 +116,18 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
   }
   admitted(candidate.fingerprint.root.binding.filesystem)
   const owner = `job:${execution.operationId}:${execution.owner.grantId}:${execution.owner.epoch}`
+  const processOwners = [owner, `${owner}:control`, `${owner}:wait`]
+  const hostIdentity = (value: typeof connection) => 'deviceId' in value
+    ? { mainId: value.mainId, deviceId: value.deviceId, workerInstallationId: value.workerInstallationId,
+      bootId: value.bootId, keyRevision: value.keyRevision, authorizationRevision: value.authorizationRevision }
+    : value
   const launches = new Map<string, { scope: NativeProcessRecovery; child?: ChildProcess; closed: boolean }>()
   const assertLocal = async () => {
     await assertJobRuntimeEntryContext(candidate)
     if (bootIdentity() !== connection.bootId) throw new Error('Original Job boot changed; no automatic reboot relaunch')
     const status = await input.journal.jobStatus(execution.operationId)
     if (status.status !== 'known' || !same(status.receipt.intent.owner, execution.owner) || !same(status.receipt.execution.acceptedSpec, execution.acceptedSpec) ||
-      !same(status.receipt.connection, connection) || !status.receipt.entryAttempted) throw new Error('Original Job native owner changed')
+      !same(hostIdentity(status.receipt.connection), hostIdentity(connection)) || !status.receipt.entryAttempted) throw new Error('Original Job native owner changed')
   }
   async function closeLaunch(id: string) {
     const launch = launches.get(id)
@@ -135,18 +140,19 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     await input.journal.jobProcessClosed(execution.operationId, id, exit ? { exitCode: exit.exitCode, signal: exit.exitSignal } : undefined)
     launch.closed = true
   }
-  const spawn = async (argv: string[]) => {
+  const spawn = async (argv: string[], purpose: 'attachment' | 'control' | 'wait') => {
     await assertLocal()
     const exact = argv[0] === '--remote=false' ? argv : ['--remote=false', ...argv]
     if (exact.some(value => value.includes('\0'))) throw new Error('Invalid Job runtime argv')
     const binary = candidate.fingerprint.runtimeExecutable, env = candidate.controllerEnvironment
     if (!same(nativeAgentEnvironment(binary, candidate.runtimeRoot, env), env)) throw new Error('Protected Job runtime environment changed')
-    const scope = input.registry.reserveLaunch(owner)
+    const processOwner = purpose === 'attachment' ? owner : `${owner}:${purpose}`
+    const scope = input.registry.reserveLaunch(processOwner)
     if (!scope.launchId) throw new Error('Original Job native scope missing')
     const launch: { scope: NativeProcessRecovery; child?: ChildProcess; closed: boolean } = { scope, closed: false }
     launches.set(scope.launchId, launch)
     try {
-      await input.journal.jobReserveProcess(execution.operationId, { launchId: scope.launchId, binary, argv: exact })
+      await input.journal.jobReserveProcess(execution.operationId, { launchId: scope.launchId, processOwner, binary, argv: exact })
       const status = await input.journal.jobStatus(execution.operationId)
       if (exact.includes('create') || exact[1] === 'start') {
         if (Date.parse(measurementExpiresAt) <= Date.now()) throw new Error('Original Job qualification expired before native entry')
@@ -159,16 +165,25 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
       return { child, id: scope.launchId }
     } catch (error) { await closeLaunch(scope.launchId); throw error }
   }
+  let controlTail = Promise.resolve()
   const commands: PodmanCommandRunner = {
     async attach(argv) {
-      const { child, id } = await spawn(argv)
+      const { child, id } = await spawn(argv, 'attachment')
       // Physical closure is also joined by ownership.launchHelpers below.
       child.once('close', () => { void closeLaunch(id).catch(() => {}) })
       return child
     },
     async run(argv, timeoutMs = 30000) {
-      const { child, id } = await spawn(argv)
-      return new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
+      const purpose = argv[0] === 'wait' ? 'wait' : 'control'
+      let releaseControl: (() => void) | undefined
+      if (purpose === 'control') {
+        const previous = controlTail
+        controlTail = new Promise<void>(resolve => { releaseControl = resolve })
+        await previous
+      }
+      try {
+        const { child, id } = await spawn(argv, purpose)
+        return await new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
         let text = '', bytes = 0, interrupted = false
         const interrupt = (error: Error) => {
           if (interrupted) return
@@ -188,7 +203,8 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
             else resolve({ exitCode: exit.exitCode, stdout: text })
           }, reject)
         })
-      })
+        })
+      } finally { releaseControl?.() }
     },
   }
   const ownership: OCIContainerOwnership = {
@@ -203,8 +219,19 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
       // A stopped container must also join its original attached launcher. This
       // never kills a PID inferred from absence or borrowed from another owner.
       for (const [id, launch] of launches) if (!launch.closed && launch.child?.exitCode !== null && launch.child?.exitCode !== undefined) await closeLaunch(id)
-      const rows = input.registry.snapshot().launches.filter(row => row.owner === owner && row.lifecycle === 'active')
-      if (rows.some(row => !row.guardian || !row.boundary || row.bootId !== connection.bootId)) throw new Error('Original Job launcher boundary unavailable')
+      const retained = await input.journal.jobNativeOwner(execution.operationId)
+      for (const launch of retained?.launches ?? []) {
+        if (launch.closed || launches.has(launch.launchId)) continue
+        const processOwner = launch.processOwner ?? owner
+        if (!processOwners.includes(processOwner)) throw new Error('Original Job controller owner changed')
+        await input.registry.closeRegistration(input.registry.scope(processOwner), launch.launchId)
+        await input.journal.jobProcessClosed(execution.operationId, launch.launchId)
+      }
+      const rows = input.registry.snapshot().launches.filter(row => processOwners.includes(row.owner) && row.lifecycle === 'active')
+      if (rows.some(row => !row.guardian || !row.boundary || row.bootId !== connection.bootId
+        || !retained?.launches.some(launch => launch.launchId === row.launchId && (launch.processOwner ?? owner) === row.owner))) {
+        throw new Error('Original Job launcher boundary unavailable')
+      }
       return rows.map(row => ({ kind: 'launcher' as const, process: { ...row.guardian!, bootId: row.bootId }, boundary: row.boundary! }))
     },
     async closeHelpers() {
@@ -213,11 +240,14 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
         if (launch.closed) continue
         if (launches.has(launch.launchId)) await closeLaunch(launch.launchId)
         else {
-          await input.registry.closeRegistration(input.registry.scope(owner), launch.launchId)
+          const processOwner = launch.processOwner ?? owner
+          if (!processOwners.includes(processOwner)) throw new Error('Original Job controller owner changed')
+          await input.registry.closeRegistration(input.registry.scope(processOwner), launch.launchId)
           await input.journal.jobProcessClosed(execution.operationId, launch.launchId)
         }
       }
-      return input.registry.closeOwner(owner)
+      const closed = await Promise.all(processOwners.map(processOwner => input.registry.closeOwner(processOwner)))
+      return closed.every(Boolean)
     },
     async readCertificate(containerId) {
       const native = await input.journal.jobNativeOwner(execution.operationId)

@@ -13,7 +13,7 @@ export const JobOCICertificateSchema = z.object({
 /** Internal evidence in the existing fsynced worker journal, never a second owner ledger. */
 export const JobNativeOwnerSchema = z.object({
   operationId: z.string().min(1), qualificationOperationId: z.string().min(1).nullable().default(null), timedOut: z.boolean().default(false), connection: RemoteJobConnectionIdentitySchema,
-  launches: z.array(z.object({ launchId: z.uuid(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
+  launches: z.array(z.object({ launchId: z.uuid(), processOwner: z.string().min(1).optional(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
     exit: z.object({ exitCode: z.number().int().nullable(), signal: z.string().nullable() }).strict().nullable(), closed: z.boolean() }).strict()).max(512),
   container: z.object({ identity: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/), containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), deadlineAt: z.string().datetime().nullable().default(null), certificate: JobOCICertificateSchema.nullable() }).strict().nullable(),
 }).strict()
