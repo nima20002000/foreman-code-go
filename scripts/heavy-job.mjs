@@ -14,6 +14,10 @@ const common = realpathSync(commonResult.stdout.trim())
 const state = join(common, 'graphql-heavy-jobs')
 const queue = join(state, 'queue')
 const active = join(state, 'active')
+// Keep slot records outside active: an old wrapper removes that entire directory.
+const running = join(state, 'running')
+// Deliberately has no PID/token: old cleanup treats this gate as unknown/live.
+const gate = { common, multiSlotGate: true }
 const baseTmp = process.env.GRAPHQL_HEAVY_BASE_TMPDIR || tmpdir()
 const tempRoot = join(baseTmp, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -91,6 +95,12 @@ function cleanTemps() {
 }
 function cleanQueue() {
   mkdirSync(queue, { recursive: true })
+  mkdirSync(running, { recursive: true })
+  for (const name of readdirSync(running)) {
+    const path = join(running, name)
+    const record = readJson(path)
+    if (record?.common === common && ageMs(path) > 10_000 && !alive(record) && !groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)) rmSync(path, { force: true })
+  }
   const held = readJson(join(active, 'owner.json'))
   if (held?.common === common && ageMs(active) > 10_000 && !alive(held) && !groupUsed(held.pgid, true) && !tokenUsed(held.token, 0, true)) rmSync(active, { recursive: true, force: true })
   for (const name of readdirSync(queue)) {
@@ -98,6 +108,54 @@ function cleanQueue() {
     const record = readJson(path)
     if (record?.common === common && !alive(record) && !groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)) rmSync(path, { force: true })
   }
+}
+const slotRecords = () => readdirSync(running).map((name) => readJson(join(running, name)))
+const isGate = (record) => record?.common === common && record.multiSlotGate === true && !record.token
+function slotCount() {
+  try {
+    const value = readFileSync(join(state, 'slots'), 'utf8').trim()
+    return /^[1-8]$/.test(value) ? Number(value) : 1
+  } catch { return 1 }
+}
+function schedule(action, ticket, token) {
+  const result = spawnSync('flock', ['-x', join(state, 'register.lock'), process.execPath, import.meta.filename, '__schedule', action, ticket, token], { encoding: 'utf8' })
+  if (result.status !== 0) throw new Error(result.stderr || 'Slot scheduling failed')
+  return result.stdout.trim() === 'admitted'
+}
+if (process.argv[2] === '__schedule') {
+  const [, , , action, ticket, token] = process.argv
+  cleanQueue()
+  const path = join(running, ticket)
+  if (action === 'release') {
+    if (readJson(path)?.token === token) rmSync(path, { force: true })
+    const held = readJson(join(active, 'owner.json'))
+    if (held?.token === token || isGate(held)) {
+      if (readdirSync(running).length) writeFileSync(join(active, 'owner.json'), JSON.stringify(gate))
+      else rmSync(active, { recursive: true, force: true })
+    }
+  } else {
+    const records = slotRecords()
+    const held = readJson(join(active, 'owner.json'))
+    const legacy = existsSync(active) && !isGate(held) && !records.some((record) => record?.token && record.token === held?.token)
+    const occupied = records.length + Number(legacy)
+    // Running tickets stay in queue to fence old callers after their active
+    // directory disappears. Only skip those tickets when admitting new code.
+    const first = readdirSync(queue).sort().find((name) => {
+      const record = readJson(join(queue, name))
+      return !(record?.token && (records.some((slot) => slot?.token === record.token) || record.token === held?.token))
+    })
+    const record = readJson(join(queue, ticket))
+    if (first === ticket && record?.token === token && occupied < slotCount()) {
+      if (!existsSync(active)) {
+        // mkdir still arbitrates with old callers, which do not take this lock.
+        try { mkdirSync(active) } catch { process.exit(0) }
+        writeFileSync(join(active, 'owner.json'), JSON.stringify(records.length ? gate : record))
+      }
+      writeFileSync(path, JSON.stringify(record))
+      process.stdout.write('admitted')
+    } else if (!records.length && isGate(held)) rmSync(active, { recursive: true, force: true })
+  }
+  process.exit(0)
 }
 function register(token) {
   mkdirSync(queue, { recursive: true })
@@ -201,7 +259,8 @@ async function main() {
   const stopGraceMs = graceIndex >= 0 ? Number(options[graceIndex + 1]) : 30_000
   if (!Number.isSafeInteger(stopGraceMs) || stopGraceMs <= 0) throw new Error('Invalid stop grace')
   const command = process.argv.slice(divider + 1)
-  const inherited = readJson(join(active, 'owner.json'))
+  const inheritedToken = process.env.GRAPHQL_HEAVY_JOB_TOKEN
+  const inherited = [readJson(join(active, 'owner.json')), ...(existsSync(running) ? slotRecords() : [])].find((record) => inheritedToken && record?.token === inheritedToken)
   const nested = inherited?.token && process.env.GRAPHQL_HEAVY_JOB_COMMON === common && process.env.GRAPHQL_HEAVY_JOB_TOKEN === inherited.token
   mkdirSync(state, { recursive: true })
   if (nested) {
@@ -212,7 +271,6 @@ async function main() {
     if (buildKind && process.exitCode === 0) stampBuild(buildKind, freshness)
     return
   }
-  cleanQueue()
   cleanTemps()
   const token = randomUUID()
   const ticket = register(token)
@@ -232,17 +290,11 @@ async function main() {
   try {
     let announced = false
     while (!interrupted) {
-      cleanQueue()
-      const first = readdirSync(queue).sort()[0]
-      if (first === ticket && !existsSync(active)) {
-        try { mkdirSync(active) } catch { await sleep(200); continue }
-        break
-      }
+      if (schedule('admit', ticket, token)) break
       if (!announced) { console.log(`[heavy-job] queued ${ticket}; waiting for project test/build slot`); announced = true }
       await sleep(300)
     }
     if (interrupted) { exitCode = 130; return }
-    writeFileSync(join(active, 'owner.json'), JSON.stringify({ common, pid: process.pid, start: procStart(process.pid), pgid: null, namespace, token }))
     const freshness = buildKind ? freshBuild(buildKind) : null
     if (freshness?.fresh) { console.log(`[heavy-job] running ${ticket}`); console.log(`[heavy-job] ${buildKind} build is current in this worktree`); exitCode = 0; return }
     tempPath = join(tempRoot, randomUUID())
@@ -251,8 +303,8 @@ async function main() {
     const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })
     const pgid = child.pid
-    for (const path of [join(active, 'owner.json'), join(ticketPath), join(tempPath, 'owner.json')]) {
-      const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, ...(path === join(active, 'owner.json') ? { tempPath } : {}) }))
+    for (const path of [join(active, 'owner.json'), join(running, ticket), ticketPath, join(tempPath, 'owner.json')]) {
+      const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, ...([join(active, 'owner.json'), join(running, ticket)].includes(path) ? { tempPath } : {}) }))
     }
     console.log(`[heavy-job] running ${ticket}`)
     if (interrupted) stop('SIGTERM')
@@ -267,7 +319,7 @@ async function main() {
     clearTimeout(killTimer)
     process.off('SIGINT', stop); process.off('SIGTERM', stop)
     if (tempPath && readJson(join(tempPath, 'owner.json'))?.token === token) rmSync(tempPath, { recursive: true, force: true })
-    if (readJson(join(active, 'owner.json'))?.token === token) rmSync(active, { recursive: true, force: true })
+    schedule('release', ticket, token)
     if (readJson(ticketPath)?.token === token) rmSync(ticketPath, { force: true })
     process.exitCode = exitCode
   }
