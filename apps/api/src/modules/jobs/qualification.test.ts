@@ -128,12 +128,12 @@ it('requires exactly four original binds with measured RO/RW modes and rejects o
   const mounts=[{Type:'bind',Source:paths.sourceRoot,Destination:'/workspace',RW:true},
     {Type:'bind',Source:paths.inputRoot,Destination:'/workspace/.graphql-job-inputs',RW:false},
     {Type:'bind',Source:paths.gitDirectory,Destination:'/graphql-job-git',RW:false},
-    {Type:'bind',Source:paths.schedulerDirectory,Destination:'/graphql-job-git/graphql-heavy-jobs',RW:true},
-    {Type:'tmpfs',Source:'tmpfs',Destination:'/tmp',RW:true}]
-  expect(()=>validateJobQualificationMounts(mounts,paths)).not.toThrow()
-  expect(()=>validateJobQualificationMounts([mounts[0]!,mounts[1]!,mounts[4]!],paths)).toThrow()
-  expect(()=>validateJobQualificationMounts(mounts.map((item,index)=>index===2?{...item,RW:true}:item),paths)).toThrow()
-  expect(()=>validateJobQualificationMounts(mounts.map((item,index)=>index===3?{...item,Source:'/arbitrary/state'}:item),paths)).toThrow()
+    {Type:'bind',Source:paths.schedulerDirectory,Destination:'/graphql-job-git/graphql-heavy-jobs',RW:true}]
+  const tmpfs={'/tmp':'rw,nosuid,nodev,noexec,size=131072,rprivate,tmpcopyup'}
+  expect(()=>validateJobQualificationMounts(mounts,paths,tmpfs,131072)).not.toThrow()
+  expect(()=>validateJobQualificationMounts([mounts[0]!,mounts[1]!],paths,tmpfs,131072)).toThrow()
+  expect(()=>validateJobQualificationMounts(mounts.map((item,index)=>index===2?{...item,RW:true}:item),paths,tmpfs,131072)).toThrow()
+  expect(()=>validateJobQualificationMounts(mounts.map((item,index)=>index===3?{...item,Source:'/arbitrary/state'}:item),paths,tmpfs,131072)).toThrow()
 })
 it('invalidates historical two-mount qualification for the new layout without granting new capability',()=>{
   const request=candidate(),record={suite:'rootless-podman-ext4-volume-v1',candidate:request,fingerprint:jobQualificationFingerprint(request),outcome:'qualified',expiresAt:'2100-01-01T00:00:00Z'} as unknown as JobQualificationRecord

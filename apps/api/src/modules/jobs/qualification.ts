@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, 
 import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
-import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
+import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, JobRuntimeQualificationSpoolBytesSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@graphql/contracts/job-runtime'
 import type { JobSql } from './repository.js'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@graphql/contracts/job-inputs'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
@@ -405,11 +405,11 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     if (!measurement) throw new Error('Bounded model-free isolation probe did not return.')
-    const rows = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean }; Config: { Labels: Record<string, string> }; Mounts: QualificationMount[] }>
+    const rows = JSON.parse(await podman(['container', 'inspect', id])) as Array<{ Id: string; State: { Pid: number; Running: boolean }; Config: { Labels: Record<string, string> }; Mounts: QualificationMount[]; HostConfig?: { Tmpfs?: Record<string,string> } }>
     const row = rows[0]
     if (rows.length !== 1 || row?.Id !== id || row.Config.Labels['graphql.qualification.fingerprint'] !== fingerprint || !row.State.Running || row.State.Pid <= 0) throw new Error('Qualification container ownership mismatch.')
     await owner.enterContainer(identity, id)
-    validateJobQualificationMounts(row.Mounts,{sourceRoot,inputRoot,gitDirectory,schedulerDirectory})
+    validateJobQualificationMounts(row.Mounts,{sourceRoot,inputRoot,gitDirectory,schedulerDirectory},row.HostConfig?.Tmpfs,candidate.spoolBytes)
     const cgroup = (await readFile(`/proc/${row.State.Pid}/cgroup`, 'utf8')).trim()
     const relative = /^0::(\/[^\n]*)$/.exec(cgroup)?.[1]
     if (!relative || relative.split('/').includes('..') || !relative.includes(`libpod-${id}.scope`)) throw new Error('Owned cgroup identity unavailable.')
@@ -492,13 +492,17 @@ export function validateIsolationMeasurement(probe: Record<string, unknown>, can
 
 export interface QualificationMount {Type:string;Source:string;Destination:string;RW:boolean}
 /** Pure exact-layout verifier, reused only after genuine original OCI inspection. */
-export function validateJobQualificationMounts(mounts:QualificationMount[],paths:{sourceRoot:string;inputRoot:string;gitDirectory:string;schedulerDirectory:string}) {
+export function validateJobQualificationMounts(mounts:QualificationMount[],paths:{sourceRoot:string;inputRoot:string;gitDirectory:string;schedulerDirectory:string},tmpfs:unknown,spoolBytes:number) {
   const expected=[{source:paths.sourceRoot,destination:'/workspace',rw:true},
     {source:paths.inputRoot,destination:'/workspace/.graphql-job-inputs',rw:false},
     {source:paths.gitDirectory,destination:JOB_GIT_CONTAINER_DIRECTORY,rw:false},
     {source:paths.schedulerDirectory,destination:`${JOB_GIT_CONTAINER_DIRECTORY}/graphql-heavy-jobs`,rw:true}]
-  if(!Array.isArray(mounts)||mounts.length!==5||expected.some(value=>mounts.filter(item=>item.Type==='bind'&&item.Source===value.source&&item.Destination===value.destination&&item.RW===value.rw).length!==1)
-    ||mounts.filter(item=>item.Type==='tmpfs'&&item.Destination==='/tmp'&&item.RW===true).length!==1)
+  // Podman reports only binds in Mounts; its managed /tmp is in HostConfig.Tmpfs.
+  const configured=tmpfs&&typeof tmpfs==='object'&&!Array.isArray(tmpfs)&&Object.keys(tmpfs).length===1&&Object.keys(tmpfs)[0]==='/tmp'?Reflect.get(tmpfs,'/tmp'):undefined
+  const options=typeof configured==='string'?configured.split(','):[]
+  const required=['rw','nosuid','nodev','noexec',`size=${spoolBytes}`],allowed=new Set([...required,'rprivate','tmpcopyup'])
+  if(!Array.isArray(mounts)||mounts.length!==4||expected.some(value=>mounts.filter(item=>item.Type==='bind'&&item.Source===value.source&&item.Destination===value.destination&&item.RW===value.rw).length!==1)
+    ||!JobRuntimeQualificationSpoolBytesSchema.safeParse(spoolBytes).success||new Set(options).size!==options.length||required.some(value=>!options.includes(value))||options.some(value=>!allowed.has(value)))
     throw new Error('Unexpected private Git qualification mount rejected.')
 }
 /** Qualification-only app-owned diagnostic Git objects. Never a Job repository,
