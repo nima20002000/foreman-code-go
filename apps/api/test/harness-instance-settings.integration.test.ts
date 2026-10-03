@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 import { HostHarnessOverrideListSchema, HostHarnessOverrideSaveResultSchema, HostHarnessInstanceCheckResultSchema, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -17,15 +17,22 @@ import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/i
 import { harnessInstanceProfileEvidenceMigration } from '../src/modules/harnesses/instanceSettings/profileMigration.js'
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
 
-it('persists host overrides through actual buildApp authenticated MCP and HTTP with denial, CAS, replay, cold readback and canonical revocation', async () => {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
-  const schema = `harness_instances_${randomUUID().replaceAll('-', '')}`
+const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres' })
+const schema = `harness_instances_${randomUUID().replaceAll('-', '')}`
+const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
+beforeAll(async () => {
   await admin.query(`create schema "${schema}"`)
-  const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
+  await applyApplicationMigrations(pool)
+}, 60_000)
+afterAll(async () => {
+  await pool.end()
+  try { await admin.query(`drop schema if exists "${schema}" cascade`) } finally { await admin.end() }
+}, 60_000)
+
+it('persists host overrides through actual buildApp authenticated MCP and HTTP with denial, CAS, replay, cold readback and canonical revocation', async () => {
   let app: ReturnType<typeof buildApp> | undefined
   const clients: Client[] = []
   try {
-    await applyApplicationMigrations(pool)
     if (!(await pool.query("select to_regclass('device_registrations') as relation")).rows[0]?.relation) await pool.query(deviceIdentityMigration.sql)
     expect(migrations.some(migration => migration.version === harnessInstanceSettingsMigration.version)).toBe(true)
     expect((await pool.query("select to_regclass('harness_instance_settings') as relation")).rows[0]?.relation).toBeTruthy()
@@ -116,7 +123,6 @@ it('persists host overrides through actual buildApp authenticated MCP and HTTP w
     expect((await pool.query('select count(*)::int as count from harness_instance_settings')).rows[0].count).toBe(2)
     expect(JSON.stringify((await pool.query('select record from harness_instance_settings')).rows)).not.toContain('credential')
   } finally {
-    await Promise.all(clients.map(client => client.close())); await app?.close(); await pool.end()
-    await admin.query(`drop schema "${schema}" cascade`); await admin.end()
+    await Promise.all(clients.map(client => client.close())); await app?.close()
   }
 })

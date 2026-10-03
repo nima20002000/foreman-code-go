@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { mkdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture, ExecutableWorkflowV3Schema } from '@graphql/contracts/wave25'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
@@ -15,8 +15,10 @@ import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
 import { graphHarness } from './helpers/eng04A1GraphHarness.js'
 
+let database: Awaited<ReturnType<typeof agent3Database>>
+
 async function authoring(form: 'single' | 'parallel' = 'single') {
-  const db = await agent3Database()
+  const db = database
   const f = makeCurrentWorkflowFixture(randomUUID(), form)
   try {
     await seedAgent3(db.pool, db.directory, f, { run: false })
@@ -48,9 +50,19 @@ describe.skipIf(!postgresEnabled)('current execution regressions', () => {
       expect(errors).toEqual([])
     } finally { await f.close() }
   }, 90000)
+})
+
+describe.skipIf(!postgresEnabled)('current execution snapshots and authoring regressions', () => {
+  beforeEach(async () => {
+    database = await agent3Database()
+    const close = database.close
+    let closing: Promise<void> | undefined
+    database.close = () => closing ??= close()
+  }, 60_000)
+  afterEach(async () => { await database?.close() }, 60_000)
 
   it('keeps its accepted project directory when workspace settings later point elsewhere', async () => {
-    const db = await agent3Database()
+    const db = database
     try {
       const f = await currentRepositoryFixture(db)
       const accepted = f.f.run.executionLocation!
@@ -64,7 +76,7 @@ describe.skipIf(!postgresEnabled)('current execution regressions', () => {
   })
 
   it('rejects a replaced accepted inode before allowing any native work', async () => {
-    const db = await agent3Database()
+    const db = database
     const original = `${db.directory}-original`
     try {
       const f = await currentRepositoryFixture(db)
@@ -79,7 +91,7 @@ describe.skipIf(!postgresEnabled)('current execution regressions', () => {
   })
 
   it('rechecks the accepting Operator authority before any queued native launch', async () => {
-    const db = await agent3Database()
+    const db = database
     try {
       const f = await currentRepositoryFixture(db)
       await new PostgresAccessService(db.pool).revoke(f.issued.principal.id)
@@ -90,7 +102,7 @@ describe.skipIf(!postgresEnabled)('current execution regressions', () => {
   })
 
   it('does not steal live ownership and preserves the authorized Stop fence for the replacement owner', async () => {
-    const db = await agent3Database()
+    const db = database
     try {
       const f = await currentRepositoryFixture(db)
       const owner = await f.repository.acquireOwnership(f.f.run.id, () => undefined)
