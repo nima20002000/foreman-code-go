@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
 vi.mock('node:process', () => ({ loadEnvFile: () => undefined }))
 vi.mock('node:fs/promises', () => ({ mkdir: async () => undefined, realpath: async (path: string) => path }))
 vi.mock('../src/config.js', () => ({ loadConfig: () => ({ database: {}, checkpoints: { schema: 'test' }, harnesses: { workspaceRoot: '/fixture' }, host: '127.0.0.1', port: 0 }) }))
+vi.mock('../src/modules/byte-transfer/installedEntrypoints.js', () => ({ readMainRsyncEntrypoint: async () => ({ kind: 'unavailable', reason: 'Startup lifecycle fixture has no installed rsync selection.' }) }))
 vi.mock('../src/infrastructure/database.js', () => ({ createDatabase: () => ({
   pool: {}, ping: async () => undefined, migrate: async () => undefined,
   close: async () => { state.calls.push('database closed') },
