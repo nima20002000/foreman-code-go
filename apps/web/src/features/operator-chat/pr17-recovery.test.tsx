@@ -11,7 +11,7 @@ const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), create: vi.fn(), cl
 vi.mock('../../shared/api/client', async (original) => ({ ApiError: (await original<typeof import('../../shared/api/client')>()).ApiError, getOperatorConversation: api.get, createOperatorConversation: api.create, sendOperatorMessage: vi.fn(), cancelOperatorTurn: vi.fn(), respondOperatorInteraction: vi.fn() }))
 vi.mock('../../shared/api/operatorChatSummaries', () => ({ listOperatorConversationSummaries: api.list }))
 vi.mock('../../shared/api/operatorChatStream', () => ({ subscribeOperatorChat: () => () => {} }))
-vi.mock('../../shared/api/sessionBoundary', () => ({ sessionGeneration: () => 1, sessionIsSwitching: () => false }))
+vi.mock('../../shared/api/sessionBoundary', async (original) => ({ ...(await original<typeof import('../../shared/api/sessionBoundary')>()), sessionGeneration: () => 1, sessionIsSwitching: () => false }))
 vi.mock('./useOperatorChatVisibility', () => ({ useOperatorChatVisibility: () => true }))
 vi.mock('./operatorOutbox', () => ({ readPendingOperatorMessage: () => ({}), reserveOperatorMessage: vi.fn(), acknowledgeOperatorMessage: vi.fn(), assertOperatorMessageReserved: vi.fn() }))
 vi.mock('./OperatorComposer', () => ({ OperatorComposer: ({ conversationId }: { conversationId: string }) => <div data-testid="composer">Composer for {conversationId}</div> }))

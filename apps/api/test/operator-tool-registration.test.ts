@@ -25,7 +25,7 @@ const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['graph:read', []],
   ['graph:edit', []],
   ['graph:save', []],
-  ['harnesses:read', ['harness_get', 'harness_list']],
+  ['harnesses:read', ['claude_setup_options_get', 'harness_get', 'harness_list']],
   ['harnesses:update', ['harness_defaults_update']],
   ['interactions:read', ['interaction_get', 'interaction_list', 'interaction_summary']],
   ['runs:read', ['run_activities_get_v1', 'run_events_list', 'run_get', 'run_list']],

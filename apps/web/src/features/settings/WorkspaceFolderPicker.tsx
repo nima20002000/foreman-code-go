@@ -45,11 +45,14 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
   const pathRef = useRef<HTMLInputElement>(null)
   const pendingFocus = useRef<'path' | 'new-folder' | null>(null)
   const locked = remove.isPending || deleteAttempt.current.unresolved || undo.isPending || undoAttempt.current.unresolved || selecting || create.isPending || rename.isPending || attempt.current.unresolved || renameAttempt.current.unresolved || selectionUnconfirmed
-  const localQuery = useHarnessDirectories(location, open && !disabled && !directoryBinding)
+  const localQuery = useHarnessDirectories(directoryBinding ? {} : location, open && !disabled)
   const boundQuery = useBoundFolderDirectories(directoryBinding, location, open && !disabled)
   const query = directoryBinding ? boundQuery : localQuery
   const refreshFolders = () => { if (directoryBinding) void boundQuery.refetch() }
   const data = query.data
+  // Approved Main browse roots do not confer app-managed mutation authority.
+  const canMutatePath = (path: string | null | undefined, includeRoot = false) => Boolean(path && localQuery.data && !localQuery.isError
+    && localQuery.data.roots.some((root) => (includeRoot && path === root.path) || path.startsWith(root.path.replace(/\/$/, '') + '/')))
   const currentPath = data?.path ?? location.path
   const namingFolder = editingFolder ?? newFolder
   const destination = creating && namingFolder && name.trim()
@@ -113,7 +116,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
     : undefined
   const creationParent = locationsOpen ? creationRoot?.path : data?.path
   const createFolder = async () => {
-    if (inFlight.current || disabled || selectionUnconfirmed || creating || query.isFetching || query.isError || !creationParent) return
+    if (inFlight.current || disabled || selectionUnconfirmed || creating || query.isFetching || query.isError || !creationParent || !canMutatePath(creationParent, true)) return
     inFlight.current = true; setError(undefined)
     try {
       const input = attempt.current.input({ parentPath: creationParent })
@@ -130,7 +133,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
     } finally { inFlight.current = false }
   }
   const finishName = async (select: boolean) => {
-    if (inFlight.current || !namingFolder) return
+    if (inFlight.current || !namingFolder || !canMutatePath(namingFolder.path)) return
     const valid = WorkspaceFolderNameSchema.safeParse(name)
     if (!valid.success) { setError(valid.error.issues[0]?.message ?? 'Enter a folder name.'); return }
     inFlight.current = true; setError(undefined)
@@ -157,7 +160,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
   }
 
   const deleteFolders = async (paths: string[]) => {
-    if (!paths.length || inFlight.current || disabled || creating || selectionUnconfirmed) return
+    if (!paths.length || !paths.every(path => canMutatePath(path)) || inFlight.current || disabled || creating || selectionUnconfirmed) return
     inFlight.current = true; setError(undefined); setMarkedPaths(paths)
     try {
       const result = await remove.mutateAsync(deleteAttempt.current.input({ paths }))
@@ -175,7 +178,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
   }
 
   const undoCreation = async () => {
-    if (!newFolder || inFlight.current || disabled || remove.isPending || deleteAttempt.current.unresolved || selecting || create.isPending || rename.isPending
+    if (!newFolder || !canMutatePath(newFolder.path) || inFlight.current || disabled || remove.isPending || deleteAttempt.current.unresolved || selecting || create.isPending || rename.isPending
       || attempt.current.unresolved || renameAttempt.current.unresolved || selectionUnconfirmed) return
     inFlight.current = true; setError(undefined)
     try {
@@ -259,11 +262,11 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
           {markedPaths.length ? <Button variant="ghost" disabled={remove.isPending || (locked && !deleteAttempt.current.unresolved)} onClick={() => void deleteFolders(markedPaths)}>
             {deleteAttempt.current.unresolved && !remove.isPending ? 'Retry delete' : `Delete (${markedPaths.length})`}
           </Button> : null}
-          {newFolder ? <Button variant="ghost" data-skip-folder-blur aria-keyshortcuts="Control+z Meta+z"
+          {newFolder && canMutatePath(newFolder.path) ? <Button variant="ghost" data-skip-folder-blur aria-keyshortcuts="Control+z Meta+z"
             disabled={remove.isPending || deleteAttempt.current.unresolved || undo.isPending || selecting || create.isPending || rename.isPending || attempt.current.unresolved || renameAttempt.current.unresolved || selectionUnconfirmed}
             onClick={() => void undoCreation()}>{undo.isPending ? 'Undoing…' : undoAttempt.current.unresolved ? 'Retry undo' : 'Undo'}</Button> : null}
-          <Button ref={newFolderRef} variant="ghost" disabled={remove.isPending || deleteAttempt.current.unresolved || undo.isPending || undoAttempt.current.unresolved || !creationParent || disabled || creating || create.isPending || selecting || selectionUnconfirmed || renameAttempt.current.unresolved || query.isFetching || query.isError}
-            onClick={() => void createFolder()}>{attempt.current.unresolved && !create.isPending ? 'Retry creation' : 'New folder'}</Button>
+          {canMutatePath(creationParent, true) ? <Button ref={newFolderRef} variant="ghost" disabled={remove.isPending || deleteAttempt.current.unresolved || undo.isPending || undoAttempt.current.unresolved || !creationParent || disabled || creating || create.isPending || selecting || selectionUnconfirmed || renameAttempt.current.unresolved || query.isFetching || query.isError}
+            onClick={() => void createFolder()}>{attempt.current.unresolved && !create.isPending ? 'Retry creation' : 'New folder'}</Button> : null}
           </span>
         </div>
         {error && !creating ? <Alert tone="danger" live title={error} /> : null}
@@ -274,7 +277,7 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
           : data?.roots.length === 0
             ? <p className="workspace-folder-empty" role="status">No folders are available to browse.</p>
             : null)}
-        <p className="n-sr-only" id={id + '-help'}>Open a folder to browse. Control-click selects multiple folders; Delete removes selected empty folders. Select location confirms the destination. Control+Z undoes the latest folder creation.</p>
+        <p className="n-sr-only" id={id + '-help'}>Open a folder to browse. {canMutatePath(currentPath, true) ? 'Control-click selects multiple folders; Delete removes selected empty folders. ' : ''}Select location confirms the destination. {newFolder && canMutatePath(newFolder.path) ? 'Control+Z undoes the latest folder creation.' : ''}</p>
         {(!locationsOpen && creating) || (!query.isError && !query.isFetching && Boolean(entries?.length)) ? <ul className="workspace-folder-entries" aria-label={locationsOpen ? 'Locations' : 'Folders'}>
           {entries?.map((entry) => <li key={entry.path} className="workspace-folder-entry" data-selected={markedPaths.includes(entry.path) || (creating && namingFolder?.path === entry.path)}>
             {creating && namingFolder?.path === entry.path ? <div className="workspace-folder-name-editor">
@@ -295,13 +298,13 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
               aria-pressed={markedPaths.includes(entry.path)}
               aria-describedby={id + '-help'} leading={<Icon name="folder" size={16} />}
               onClick={(event) => {
-                if ((event.ctrlKey || event.metaKey) && !locationsOpen) {
+                if ((event.ctrlKey || event.metaKey) && !locationsOpen && canMutatePath(entry.path)) {
                   setMarkedPaths((paths) => paths.includes(entry.path) ? paths.filter((path) => path !== entry.path) : [...paths, entry.path])
                 } else if (canBrowse && entry.rootId) navigateFolder({ rootId: entry.rootId, path: entry.path })
               }}>
               {entry.name}
             </Button>}
-            {!locationsOpen ? <ActionMenu label={`Actions for ${entry.name}`} width={160} disabled={!canBrowse} items={[
+            {!locationsOpen && canMutatePath(entry.path) ? <ActionMenu label={`Actions for ${entry.name}`} width={160} disabled={!canBrowse} items={[
               { id: 'rename', label: 'Rename', onSelect: () => {
                 setEditingFolder({ ...entry, parentPath: currentPath!, ...(newFolder?.path === entry.path ? { creationCommandId: newFolder.creationCommandId } : {}) })
                 setName(entry.name); setError(undefined); setMarkedPaths([]); setCreating(true)
