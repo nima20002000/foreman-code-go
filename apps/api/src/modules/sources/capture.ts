@@ -75,6 +75,8 @@ async function captureBlobs(root: string, records: { path: string; mode: string;
     await finished
   } finally {
     if (!closed) child.kill('SIGTERM')
+    child.stdin.destroy()
+    child.stdout.destroy()
     await exited
   }
 }
