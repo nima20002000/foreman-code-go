@@ -1,4 +1,5 @@
 import js from '@eslint/js'
+import maintainability from '@graphql/eslint-config'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
@@ -16,5 +17,19 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-floating-promises': 'error',
     },
+  },
+  ...maintainability,
+  {
+    files: ['**/*.cjs'],
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
+  {
+    // These validators reject control characters in file names on purpose.
+    files: [
+      'src/modules/harnesses/codexFiles/bytes.ts',
+      'src/modules/harnesses/opencodeFiles/attachments.ts',
+      'src/modules/harnesses/opencodeFiles/host.ts',
+    ],
+    rules: { 'no-control-regex': 'off' },
   },
 )

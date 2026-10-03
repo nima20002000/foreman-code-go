@@ -68,6 +68,12 @@ corepack pnpm test:acceptance
 corepack pnpm db:down
 ```
 
+Lint enforces the maintainability rules in `packages/eslint-config`. Fix every
+violation in the code itself. Do not disable, weaken, narrow, or suppress those
+rules: inline `eslint-disable` comments are ignored and fail lint, and
+`eslint-suppressions.json` files are rejected. Work is not ready while
+`corepack pnpm lint` fails.
+
 Keep generated output, local environment files, caches, and credentials out of
 Git. Make focused changes and preserve unrelated worktree edits.
 
