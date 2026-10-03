@@ -2,7 +2,7 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, symlink, link, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, symlink, link, readdir, rename } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
@@ -12,9 +12,9 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const bundleDirectory = await mkdtemp('/var/tmp/job-cleanup-test-bundle-');
 after(() => rm(bundleDirectory, { recursive: true, force: true }));
 const exports = [
-  ['apps/worker/src/jobCancellationCleanup.mjs', ['cleanupJobBeforeEntry']],
+  ['apps/worker/src/jobCancellationCleanup.mjs', ['cleanupJobBeforeEntry', 'validateRestoredJobFilesystem']],
   ['apps/api/src/modules/runs/remote/operationJournal.ts', ['RemoteOperationJournal']],
-  ['apps/api/src/modules/sources/materialization.ts', ['PrivateSourceMaterializer']],
+  ['apps/api/src/modules/sources/materialization.ts', ['PrivateSourceMaterializer', 'releaseMaterializationClaimForCancellation']],
   ['apps/api/src/modules/sources/manifest.ts', ['createSourceManifest']],
   ['apps/api/src/modules/sources/bindingHash.ts', ['sourceBindingHash', 'sourceMaterializationDigest']],
   ['apps/api/src/modules/sources/privateFilesystem.ts', ['openPrivateRoot', 'identity']],
@@ -251,4 +251,97 @@ test('CLI returns only the signed closure and keeps failures and secrets off std
   assert.equal(expired.status, 1);
   assert.equal(expired.stdout, '');
   assert.equal(expired.stderr.trim(), 'job_cleanup_grant_expired');
+});
+
+function restoredVolumeObservation() {
+  // Explicit passive-observation unit fixture; this is not a mounted-volume or native qualification result.
+  const filesystemUuid = randomUUID();
+  const filesystem = { device: '1793', inode: '200', mountId: '41' };
+  const path = '/var/lib/graphql-ci/retained.ext4';
+  const context = { kind: 'restored-original-volume', bootId: randomUUID(), filesystemUuid, filesystem,
+    backingFile: { path, device: '2049', inode: '300', bytes: '4096' } };
+  const superblock = Buffer.alloc(1024);
+  superblock.writeUInt16LE(0xef53, 56);
+  Buffer.from(filesystemUuid.replaceAll('-', ''), 'hex').copy(superblock, 104);
+  const configuration = { root: { binding: { filesystem: { device: '1792', inode: '200', mountId: '40' } } },
+    backingFile: path, pins: { diskBytes: 4096 } };
+  const observed = { bootId: context.bootId, filesystem, backingPath: path, loopBackingPath: path,
+    loopOffset: '0', loopSizeLimit: '0', mountinfo: '41 10 7:1 / /retained rw - ext4 /dev/loop1 rw\n',
+    backingStat: { regular: true, ownerUid: 0, mode: 0o100440, links: 1, device: '2049', inode: '300', bytes: '4096' },
+    superblock };
+  return { context, configuration, observed };
+}
+
+test('restored-volume validation joins current boot, kernel mount, original backing identity and ext4 UUID', () => {
+  const { context, configuration, observed } = restoredVolumeObservation();
+  assert.equal(worker.validateRestoredJobFilesystem(context, configuration, observed), '7:1');
+});
+
+for (const kind of ['boot', 'root-inode', 'mount-id', 'non-loop', 'non-ext4', 'loop-source', 'duplicate-mount',
+  'backing-path', 'configured-path', 'loop-path', 'offset', 'size-limit', 'owner', 'writable', 'hardlink',
+  'backing-inode', 'backing-device', 'backing-size', 'configured-size', 'magic', 'uuid']) {
+  test(`restored-volume observations reject changed ${kind}`, () => {
+    const { context, configuration, observed } = restoredVolumeObservation();
+    if (kind === 'boot') observed.bootId = randomUUID();
+    if (kind === 'root-inode') observed.filesystem = { ...observed.filesystem, inode: '999' };
+    if (kind === 'mount-id') observed.mountinfo = observed.mountinfo.replace('41 ', '42 ');
+    if (kind === 'non-loop') observed.mountinfo = observed.mountinfo.replace('7:1', '8:1');
+    if (kind === 'non-ext4') observed.mountinfo = observed.mountinfo.replace('ext4', 'xfs');
+    if (kind === 'loop-source') observed.mountinfo = observed.mountinfo.replace('/dev/loop1', '/dev/loop2');
+    if (kind === 'duplicate-mount') observed.mountinfo += observed.mountinfo;
+    if (kind === 'backing-path') context.backingFile.path = '/var/lib/graphql-ci/replacement.ext4';
+    if (kind === 'configured-path') configuration.backingFile = '/var/lib/graphql-ci/replacement.ext4';
+    if (kind === 'loop-path') observed.loopBackingPath = '/var/lib/graphql-ci/replacement.ext4';
+    if (kind === 'offset') observed.loopOffset = '1024';
+    if (kind === 'size-limit') observed.loopSizeLimit = '2048';
+    if (kind === 'owner') observed.backingStat.ownerUid = 1000;
+    if (kind === 'writable') observed.backingStat.mode |= 0o020;
+    if (kind === 'hardlink') observed.backingStat.links = 2;
+    if (kind === 'backing-inode') observed.backingStat.inode = '301';
+    if (kind === 'backing-device') observed.backingStat.device = '2050';
+    if (kind === 'backing-size') observed.backingStat.bytes = '8192';
+    if (kind === 'configured-size') configuration.pins.diskBytes = 8192;
+    if (kind === 'magic') observed.superblock.writeUInt16LE(0, 56);
+    if (kind === 'uuid') observed.superblock[104] ^= 1;
+    assert.throws(() => worker.validateRestoredJobFilesystem(context, configuration, observed));
+  });
+}
+
+test('a signed filesystem context cannot turn the actual non-loop fixture root into an approved restored volume', async t => {
+  const f = await fixture(t);
+  const backingFile = join(f.directory, 'backing.ext4');
+  const installation = { schemaVersion: 1,
+    target: { hostRef: f.grant.execution.acceptedSpec.target.hostRef, registration: f.grant.root.registration,
+      mainInstallationId: f.pairing.mainId }, root: f.grant.root,
+    runtimeExecutable: '/usr/bin/true', ociExecutable: '/usr/bin/true', findmntExecutable: '/usr/bin/true',
+    runtimeRoot: f.grant.execution.acceptedSpec.target.destination.managedRuntimeRoot, backingFile,
+    controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: f.directory, LANG: 'C.UTF-8' },
+    pins: { bootId: randomUUID(), runtimeBinarySha256: '1'.repeat(64), ociBinarySha256: '2'.repeat(64),
+      findmntBinarySha256: '3'.repeat(64), configurationDigest: '4'.repeat(64), imageDigest: `sha256:${'5'.repeat(64)}`,
+      toolchainDigest: '6'.repeat(64), diskBytes: 4096 } };
+  await writeFile(join(f.state, 'job-runtime.json'), JSON.stringify(installation), { mode: 0o600 });
+  f.grant.filesystemRecovery = { kind: 'restored-original-volume', bootId: randomUUID(), filesystemUuid: randomUUID(),
+    filesystem: f.grant.root.binding.filesystem,
+    backingFile: { path: backingFile, device: '1', inode: '1', bytes: '4096' } };
+  await f.saveGrant();
+  await assert.rejects(worker.cleanupJobBeforeEntry(f.state, f.grantPath), { code: 'job_cleanup_original_volume_required' });
+  assert.deepEqual(await readFile(f.claimPath), f.claim);
+});
+
+test('the cancellation-specific archive rejects changed original source bytes', async t => {
+  const f = await fixture(t);
+  await writeFile(f.sourcePath, 'changed original source');
+  await assert.rejects(worker.releaseMaterializationClaimForCancellation(f.grant.materialization.receipt,
+    f.grant.root.binding.filesystem, async () => 'released'));
+  assert.deepEqual(await readFile(f.claimPath), f.claim);
+});
+
+test('the cancellation-specific archive rejects a replaced original namespace inode', async t => {
+  const f = await fixture(t);
+  const retained = `${f.namespace}-retained`;
+  await rename(f.namespace, retained);
+  await mkdir(f.namespace, { mode: 0o700 });
+  await assert.rejects(worker.releaseMaterializationClaimForCancellation(f.grant.materialization.receipt,
+    f.grant.root.binding.filesystem, async () => 'released'));
+  assert.deepEqual(await readFile(join(retained, `binding-${f.grant.root.binding.rootId}.lock`)), f.claim);
 });

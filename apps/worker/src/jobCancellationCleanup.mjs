@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { open, readFile, realpath } from 'node:fs/promises';
 import { dirname, basename, join } from 'node:path';
 import { createHash, createPrivateKey, createPublicKey, randomUUID, sign, verify } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -10,7 +10,10 @@ import { WorkerPairingConfigurationSchema } from '../../../packages/contracts/sr
 import { RemoteJobOperationReceiptSchema } from '../../../packages/contracts/src/remoteJobExecution.ts';
 import { publicKeyFingerprint } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { RemoteOperationJournal } from '../../../apps/api/src/modules/runs/remote/operationJournal.ts';
-import { releaseMaterializationClaim, preparationChildrenClosed } from '../../../apps/api/src/modules/sources/materialization.ts';
+import { releaseMaterializationClaim, releaseMaterializationClaimForCancellation,
+  preparationChildrenClosed } from '../../../apps/api/src/modules/sources/materialization.ts';
+import { InstalledJobRuntimeConfigurationSchema } from '../../../apps/api/src/modules/jobs/installedRuntimeHost.ts';
+import { ApprovedRootAllowlistSchema } from '../../../packages/contracts/src/workspaceRootPolicies.ts';
 import { sourceBindingHash, sourceMaterializationDigest } from '../../../apps/api/src/modules/sources/bindingHash.ts';
 import { anchored, identity as filesystemIdentity, openPrivateRoot,
   openChildDirectory } from '../../../apps/api/src/modules/sources/privateFilesystem.ts';
@@ -101,9 +104,91 @@ async function checkSourceRoot(grant, approved) {
     fail('job_cleanup_root_not_approved');
   const directory = await openPrivateRoot(root.binding.canonicalPath);
   try {
-    if (!isDeepStrictEqual(await filesystemIdentity(directory), root.binding.filesystem))
+    const expected = grant.filesystemRecovery?.filesystem ?? root.binding.filesystem;
+    if (expected.inode !== root.binding.filesystem.inode
+      || !isDeepStrictEqual(await filesystemIdentity(directory), expected))
       fail('job_cleanup_filesystem_changed');
   } finally { await directory.close(); }
+}
+
+/** Validate passive kernel/image observations; no historical filesystem UUID is inferred. */
+export function validateRestoredJobFilesystem(context, configuration, observed) {
+  if (observed.bootId !== context.bootId || observed.filesystem.inode !== configuration.root.binding.filesystem.inode
+    || !isDeepStrictEqual(observed.filesystem, context.filesystem)) fail('job_cleanup_filesystem_changed');
+  const matches = observed.mountinfo.split('\n').filter(line => line.split(' ')[0] === context.filesystem.mountId);
+  if (matches.length !== 1) fail('job_cleanup_mount_changed');
+  const [mount, filesystem] = matches[0].split(' - ');
+  const device = mount.split(' ')[2];
+  const [type, source] = filesystem?.split(' ') ?? [];
+  if (!/^7:\d+$/.test(device ?? '') || type !== 'ext4' || source !== `/dev/loop${device.slice(2)}`)
+    fail('job_cleanup_original_volume_required');
+  if (observed.backingPath !== configuration.backingFile || observed.backingPath !== context.backingFile.path
+    || observed.loopBackingPath !== observed.backingPath || observed.loopOffset !== '0' || observed.loopSizeLimit !== '0')
+    fail('job_cleanup_backing_file_changed');
+  const backing = observed.backingStat;
+  if (!backing.regular || backing.ownerUid !== 0 || backing.mode & 0o222 || backing.links !== 1
+    || backing.device !== context.backingFile.device || backing.inode !== context.backingFile.inode
+    || backing.bytes !== context.backingFile.bytes || backing.bytes !== String(configuration.pins.diskBytes))
+    fail('job_cleanup_backing_file_changed');
+  const superblock = observed.superblock;
+  if (superblock.length !== 1024 || superblock.readUInt16LE(56) !== 0xef53) fail('job_cleanup_original_volume_required');
+  const hex = superblock.subarray(104, 120).toString('hex');
+  const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  if (uuid !== context.filesystemUuid.toLowerCase()) fail('job_cleanup_filesystem_uuid_changed');
+  return device;
+}
+
+async function verifyRestoredVolume(state, grant, approved) {
+  const configuration = InstalledJobRuntimeConfigurationSchema.parse(JSON.parse(await readPrivateBytes(state, 'job-runtime.json')));
+  if (!isDeepStrictEqual(configuration.root, grant.root)
+    || configuration.runtimeRoot !== approved.managedRuntimeRoot) fail('job_cleanup_runtime_configuration_changed');
+  const runtime = await openPrivateRoot(approved.managedRuntimeRoot);
+  const namespace = await openPrivateRoot(grant.root.binding.canonicalPath);
+  try {
+    const current = await filesystemIdentity(namespace);
+    const currentRuntime = await filesystemIdentity(runtime);
+    if (currentRuntime.inode !== approved.runtimeFilesystem.inode || currentRuntime.device !== current.device
+      || currentRuntime.mountId !== current.mountId) fail('job_cleanup_runtime_directory_changed');
+    const mountinfo = await readFile('/proc/self/mountinfo', 'utf8');
+    const mount = mountinfo.split('\n').filter(line => line.split(' ')[0] === current.mountId);
+    if (mount.length !== 1 || !/^7:\d+$/.test(mount[0].split(' ')[2] ?? '')) fail('job_cleanup_original_volume_required');
+    const device = mount[0].split(' ')[2];
+    const loop = `/sys/dev/block/${device}/loop`;
+    const [loopBacking, loopOffset, loopSizeLimit, bootId] = await Promise.all([
+      readFile(`${loop}/backing_file`, 'utf8'), readFile(`${loop}/offset`, 'utf8'),
+      readFile(`${loop}/sizelimit`, 'utf8'), readFile('/proc/sys/kernel/random/boot_id', 'utf8'),
+    ]);
+    const backingPath = await realpath(configuration.backingFile);
+    if (backingPath !== configuration.backingFile) fail('job_cleanup_backing_file_changed');
+    const file = await open(backingPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = await file.stat({ bigint: true });
+      const superblock = Buffer.alloc(1024);
+      const { bytesRead } = await file.read(superblock, 0, superblock.length, 1024);
+      const after = await file.stat({ bigint: true });
+      if (bytesRead !== superblock.length || before.dev !== after.dev || before.ino !== after.ino
+        || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs)
+        fail('job_cleanup_backing_file_changed');
+      validateRestoredJobFilesystem(grant.filesystemRecovery, configuration, {
+        bootId: bootId.trim(), filesystem: current, mountinfo, backingPath,
+        loopBackingPath: loopBacking.trim(), loopOffset: loopOffset.trim(), loopSizeLimit: loopSizeLimit.trim(),
+        backingStat: { regular: before.isFile(), ownerUid: Number(before.uid), mode: Number(before.mode),
+          links: Number(before.nlink), device: before.dev.toString(), inode: before.ino.toString(), bytes: before.size.toString() },
+        superblock,
+      });
+    } finally { await file.close(); }
+  } finally { await namespace.close(); await runtime.close(); }
+}
+
+async function approvedRootsForCleanup(state, stateDirectory, grant, pairing) {
+  if (!grant.filesystemRecovery) return loadApprovedRoots(stateDirectory, pairing);
+  const approved = ApprovedRootAllowlistSchema.parse(JSON.parse(await readPrivateBytes(state, 'approved-roots.json', 131072)));
+  if (approved.hostRef.kind !== 'device' || approved.hostRef.mainId !== pairing.mainId
+    || approved.hostRef.deviceId !== pairing.deviceId || approved.applicationInstallationId !== pairing.workerInstallationId)
+    fail('job_cleanup_pairing_changed');
+  await checkSourceRoot(grant, approved);
+  await verifyRestoredVolume(state, grant, approved);
+  return approved;
 }
 
 function matchesReplay(receipt, grant, command, grantDigest) {
@@ -140,7 +225,7 @@ export async function cleanupJobBeforeEntry(stateDirectory, grantPath) {
       checkGrant(grant, localIdentity, pairing);
       if (!(await readPrivateBytes(state, 'identity.json')).equals(identityBytes)
         || !(await readPrivateBytes(state, 'pairing.json')).equals(pairingBytes)) fail('job_cleanup_identity_changed');
-      await checkSourceRoot(grant, await loadApprovedRoots(stateDirectory, pairing));
+      await checkSourceRoot(grant, await approvedRootsForCleanup(state, stateDirectory, grant, pairing));
     };
     await authority();
     const journalBytes = await readPrivateBytes(state, 'job-runtime-operations.json', 4 * 1024 * 1024);
@@ -181,7 +266,9 @@ export async function cleanupJobBeforeEntry(stateDirectory, grantPath) {
         || await journal.jobNativeOwner(grant.intent.operationId)) fail('job_cleanup_native_entry_requires_recovery');
       return await preparationChildrenClosed(grant.root.binding.canonicalPath) ? 'released' : 'uncertain';
     };
-    await releaseMaterializationClaim(grant.materialization.receipt, noEntry);
+    if (grant.filesystemRecovery) {
+      await releaseMaterializationClaimForCancellation(grant.materialization.receipt, grant.filesystemRecovery.filesystem, noEntry);
+    } else await releaseMaterializationClaim(grant.materialization.receipt, noEntry);
     const root = await openPrivateRoot(grant.root.binding.canonicalPath);
     let archiveBytes;
     try {
