@@ -85,17 +85,20 @@ async function captureBlobs(reader: ReturnType<typeof gitObjectReader>, records:
   signal: AbortSignal, write: (record: typeof records[number], bytes: Buffer) => Promise<void>) {
   const writes = new Set<Promise<void>>()
   const failure: { error?: unknown; failed: boolean } = { failed: false }
-  let total = 0
+  let total = 0, bufferedBytes = 0
   try {
     for (const record of records) {
       signal.throwIfAborted()
       if (failure.failed) throw failure.error
-      // At most four 16 MiB buffers; retain every private sink verification and durability barrier.
-      if (writes.size >= 4) await Promise.race(writes)
+      // Eight small writes can overlap, with the same 64 MiB maximum including
+      // the next 16 MiB read. Retain every sink verification and durability barrier.
+      while (writes.size >= 8 || bufferedBytes > 48 * 1024 * 1024) await Promise.race(writes)
       const bytes = await reader.read('blob', record.object, Math.min(SOURCE_LIMITS.fileBytes, SOURCE_LIMITS.bytes - total))
       if ((total += bytes.length) > SOURCE_LIMITS.bytes) throw new SourceError('SOURCE_CAPACITY', 'Source bytes exceed their separate source budget.')
       if (failure.failed) throw failure.error
+      bufferedBytes += bytes.length
       const pending = write(record, bytes).catch(error => { if (!failure.failed) { failure.failed = true; failure.error = error } throw error })
+        .finally(() => { bufferedBytes -= bytes.length })
       writes.add(pending)
       void pending.then(() => writes.delete(pending), () => writes.delete(pending))
     }

@@ -1,17 +1,29 @@
-import { constants } from 'node:fs'
-import { open, mkdir, realpath, readFile, type FileHandle } from 'node:fs/promises'
+import { constants, readFileSync, type BigIntStats } from 'node:fs'
+import { open, mkdir, realpath, type FileHandle } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { SourceError } from './manifest.js'
 import { DomainError } from '../errors.js'
 
 export const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 export function anchored(handle: FileHandle, name = ''): string { return `/proc/self/fd/${handle.fd}${name ? `/${name}` : ''}` }
-export async function identity(handle: FileHandle): Promise<{ device: string; inode: string; mountId: string }> {
-  const [stat, info] = await Promise.all([handle.stat({ bigint: true }), readFile(`/proc/self/fdinfo/${handle.fd}`, 'utf8')])
+// An open handle pins its device, inode and mount until it closes. Ownership
+// and permissions are deliberately checked afresh by each directory guard.
+const identities = new WeakMap<FileHandle, Promise<{ device: string; inode: string; mountId: string }>>()
+async function readIdentity(handle: FileHandle, checkedStat?: BigIntStats): Promise<{ device: string; inode: string; mountId: string }> {
+  // procfs is bounded kernel metadata, not source/disk bytes. Read it without
+  // four thread-pool round trips for every freshly opened directory handle.
+  const info = readFileSync(`/proc/self/fdinfo/${handle.fd}`, 'utf8'), stat = checkedStat ?? await handle.stat({ bigint: true })
   const mountId = /^mnt_id:\s*(\d+)$/m.exec(info)?.[1]
   if (!mountId) throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Linux mount identity cannot be qualified.', 422)
-  return { device: stat.dev.toString(), inode: stat.ino.toString(), mountId }
+  return Object.freeze({ device: stat.dev.toString(), inode: stat.ino.toString(), mountId })
 }
+function cachedIdentity(handle: FileHandle, checkedStat?: BigIntStats): Promise<{ device: string; inode: string; mountId: string }> {
+  if (handle.fd < 0) return readIdentity(handle)
+  let pending = identities.get(handle)
+  if (!pending) { pending = readIdentity(handle, checkedStat); identities.set(handle, pending) }
+  return pending
+}
+export function identity(handle: FileHandle): Promise<{ device: string; inode: string; mountId: string }> { return cachedIdentity(handle) }
 /** Linux procfs anchors every operation to an open directory, including ancestors.
  * The app-private root must exclude other principals; same-UID hostile processes
  * are outside this filesystem qualification, not secured by leaf O_NOFOLLOW.
@@ -47,10 +59,10 @@ export async function openPrivateRoot(path: string, privateOnly = true): Promise
 export async function openChildDirectory(parent: FileHandle, name: string, create = false): Promise<FileHandle> {
   if (create) { try { await mkdir(anchored(parent, name), { mode: 0o700 }) } catch (error) { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error } }
   const child = await open(anchored(parent, name), directoryFlags)
-  const stat = await child.stat()
-  if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) { await child.close(); throw new SourceError('SOURCE_DIRECTORY_NOT_PRIVATE', 'Materialization parents must be private worker directories.') }
+  const stat = await child.stat({ bigint: true })
+  if (stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n) { await child.close(); throw new SourceError('SOURCE_DIRECTORY_NOT_PRIVATE', 'Materialization parents must be private worker directories.') }
   try {
-    const [parentIdentity, childIdentity] = await Promise.all([identity(parent), identity(child)])
+    const [parentIdentity, childIdentity] = await Promise.all([identity(parent), cachedIdentity(child, stat)])
     if (parentIdentity.device !== childIdentity.device || parentIdentity.mountId !== childIdentity.mountId)
       throw new SourceError('SOURCE_MOUNT_CHANGED', 'Source entries cannot cross a filesystem or mount boundary.')
     return child
@@ -58,12 +70,16 @@ export async function openChildDirectory(parent: FileHandle, name: string, creat
 }
 export async function entryParent(root: FileHandle, path: string, create: boolean): Promise<{ parent: FileHandle; leaf: string }> {
   const components = path.split('/'); const leaf = components.pop()!
-  let parent = await open(anchored(root), directoryFlags & ~constants.O_NOFOLLOW)
+  // Borrow the caller's qualified handle for the first descent instead of
+  // reopening and qualifying the same inode. The returned parent is owned here.
+  let parent = root
   try {
     for (const component of components) {
       const child = await openChildDirectory(parent, component, create)
-      await parent.close(); parent = child
+      if (parent !== root) await parent.close()
+      parent = child
     }
+    if (parent === root) parent = await open(anchored(root), directoryFlags & ~constants.O_NOFOLLOW)
     return { parent, leaf }
-  } catch (error) { await parent.close(); throw error }
+  } catch (error) { if (parent !== root) await parent.close(); throw error }
 }
