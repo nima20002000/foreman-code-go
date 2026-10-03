@@ -4,6 +4,7 @@ import { webcrypto } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../mocks/server'
+import { ApiError } from '../../../shared/api/client'
 import { RunExecutionDetailSchema, type RepeatGraphScopeV3 } from '@graphql/contracts/wave25'
 import {
   assertExecutionVersion, digestCurrentValue, readRunExecution, readRunExecutionBindings,
@@ -40,7 +41,13 @@ describe('authenticated current-semantics Run inspection', () => {
     server.use(http.get(`${prefix(owner.scope)}/version`, () => HttpResponse.json({
       scope: owner.scope, version: fixture.after,
     })))
-    await expect(readRunInspectionVersion(owner.scope)).rejects.toThrow(/substitute|version/i)
+    const read = readRunInspectionVersion(owner.scope)
+    await expect(read).rejects.toBeInstanceOf(ApiError)
+    await expect(read).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+      status: 200,
+      details: { issues: [{ path: [], message: 'RUN_VERSION_SNAPSHOT_PIN_MISMATCH' }] },
+    })
   })
 
   it('does not invent ordinary occurrences from technical attempts', async () => {
