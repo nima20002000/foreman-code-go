@@ -6,7 +6,7 @@ import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
-import { ExecutionReadinessSchema, HarnessCatalogEntrySchema } from '@graphql/contracts/management'
+import { ExecutionReadinessSchema, HarnessCatalogEntrySchema, HarnessDefaultsUpdateResultSchema } from '@graphql/contracts/management'
 import { HostHarnessOverrideListSchema, HostHarnessOverrideSaveResultSchema, type HostHarnessProfileEvidence } from '@graphql/contracts/harness-registry'
 import { loadConfig } from '../src/config.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -19,7 +19,7 @@ import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { buildProductionApp } from '../src/production.js'
 
-it('reports unavailable API-key delivery through production authenticated MCP and preserves persisted settings and historical proof', async () => {
+it('saves Claude templates through authenticated MCP while unavailable API-key delivery blocks qualification and preserves historical proof', async () => {
   const connectionString = process.env.HRT_F14_ADMIN_DATABASE_URL
   if (!connectionString || !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(connectionString).hostname)) {
     throw new Error('Requires an explicit loopback HRT_F14_ADMIN_DATABASE_URL; only a fresh owned schema is modified.')
@@ -83,11 +83,32 @@ it('reports unavailable API-key delivery through production authenticated MCP an
     const proposed = await denied.callTool({ name: 'harness_configuration_check', arguments: { configuration: harness } })
     expect(proposed.isError).toBe(true)
     expect(JSON.stringify(proposed.content)).toContain('CLAUDE_API_KEY_DELIVERY_UNAVAILABLE')
-    const defaultsUpdate = await allowed.callTool({ name: 'harness_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: 1,
-      defaults: { ...DEFAULT_HARNESS_DEFAULTS, claude: { ...harness, model: 'changed' } } } })
-    expect(defaultsUpdate.isError).toBe(true)
-    expect(JSON.stringify(defaultsUpdate.content)).toContain('CLAUDE_API_KEY_DELIVERY_UNAVAILABLE')
+    const updateInput = { commandId: randomUUID(), expectedRevision: 1,
+      defaults: { ...DEFAULT_HARNESS_DEFAULTS, claude: { ...harness, model: 'changed' } } }
+    expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('harness_defaults_update')
+    await expect(denied.callTool({ name: 'harness_defaults_update', arguments: updateInput })).rejects.toThrow('not found')
+    const deniedUpdate = await production.app.inject({ method: 'PUT', url: '/api/management/harnesses/defaults',
+      headers: { authorization: `Bearer ${reader.token}` }, payload: updateInput })
+    expect(deniedUpdate.statusCode).toBe(403)
     expect(await new PostgresSettingsRepository(pool).getManagedHarnessDefaults()).toMatchObject({ revision: 1, defaults: { claude: harness } })
+    // Preset persistence is independent of exact-host native qualification.
+    const defaultsUpdate = await allowed.callTool({ name: 'harness_defaults_update', arguments: updateInput })
+    expect(defaultsUpdate.isError).not.toBe(true)
+    const updated = HarnessDefaultsUpdateResultSchema.parse(defaultsUpdate.structuredContent)
+    expect(updated).toEqual({ value: { revision: 2, defaults: updateInput.defaults }, replayed: false })
+    expect(HarnessDefaultsUpdateResultSchema.parse((await allowed.callTool({ name: 'harness_defaults_update', arguments: updateInput })).structuredContent))
+      .toEqual({ ...updated, replayed: true })
+    const staleUpdate = await allowed.callTool({ name: 'harness_defaults_update', arguments: { ...updateInput, commandId: randomUUID() } })
+    expect(staleUpdate.isError).toBe(true)
+    expect(JSON.stringify(staleUpdate.content)).toContain('REVISION_CONFLICT')
+    expect(await new PostgresSettingsRepository(pool).getManagedHarnessDefaults()).toEqual(updated.value)
+    expect(HarnessCatalogEntrySchema.parse((await denied.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })).structuredContent))
+      .toMatchObject({ defaults: updateInput.defaults.claude, defaultsRevision: 2, capability: null,
+        discoveryError: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE' } })
+    expect(ExecutionReadinessSchema.parse((await denied.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } })).structuredContent))
+      .toMatchObject({ status: 'blocked', defaultsRevision: 2, reason: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE' } })
+    expect((await pool.query("select source,action,outcome from management_audit where principal_id=$1 and action='harness.defaults.update'",
+      [writer.principal.id])).rows).toContainEqual({ source: 'mcp', action: 'harness.defaults.update', outcome: 'succeeded' })
     const target = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
       harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
     const saved = HostHarnessOverrideSaveResultSchema.parse((await allowed.callTool({ name: 'harness_instance_save', arguments: {
@@ -122,6 +143,7 @@ it('reports unavailable API-key delivery through production authenticated MCP an
     expect(await new HostHarnessProfileEvidenceRepository(pool).latest(saved.value.instanceId, 1)).toEqual(proof)
     expect((await pool.query('select count(*)::int as count from harness_instance_profile_evidence')).rows[0].count).toBe(1)
     expect(JSON.stringify((await pool.query('select record from harness_instance_settings')).rows)).not.toContain('synthetic-inherited-key')
+    expect(JSON.stringify((await pool.query('select record from application_settings')).rows)).not.toContain('synthetic-inherited-key')
   } finally {
     await Promise.all(clients.map(client => client.close()))
     await production?.app.close(); await checkpoints.close(); await pool.end()
