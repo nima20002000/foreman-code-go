@@ -1,3 +1,6 @@
+import { claudeNativeEvent } from './nativeEvents.js'
+import { createClaudeEventNormalizer } from './normalization.js'
+import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../../subagents/nativeReadback.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { AgentHarness, ExecutionResult, McpDetection, NativeHarnessEvent, NativeSessionReference } from '@graphql/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../port.js'
@@ -43,6 +46,7 @@ export interface ClaudeInitialTurnInput extends ClaudeMessageTurnInput {
 }
 
 export interface ClaudeNativeSessionManager extends NativeHarnessSessionManager, ResponseAvailabilityInspector {
+  observeSubagentHook?(sessionId: string, agentId: string, agentType: string, status: 'running' | 'unknown'): void
   /** Read-only SDK callback context from a proven root tool/message owner. */
   refreshInspectionCredentials(start: NativeSessionStart, servers: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<ClaudeMcpInspection>
   prepareInspection(start: NativeSessionStart, signal?: AbortSignal): Promise<ClaudeMcpInspection>
@@ -516,6 +520,11 @@ export function createClaudeNativeSessionManager(options: {
         || turn.nativeMessageId !== context.nativeMessageId || turn.terminal || !turn.authority) return undefined
       return { ...turn.authority }
     },
+    observeSubagentHook(sessionId, agentId, agentType, status) {
+      const runtime = resident.get(sessionId)
+      if (!runtime?.session || !agentId || agentId.length > 512 || runtime.closed || disposed) return
+      record(runtime, 'claude.subagent', { nativeSessionId: sessionId, agentId, agentType: agentType.slice(0, 512), status }, runtime.active)
+    },
     notifyPendingChanged(notification) {
       const runtime = resident.get(notification.nativeSessionId)
       const turn = runtime?.turns.get(notification.clientCorrelationId)
@@ -707,6 +716,31 @@ export function createClaudeNativeSessionManager(options: {
     },
     stopAutomaticResponses(session) { options.interactionPort?.stopAutomaticResponses?.(session); options.cancelPendingRequests?.() },
     async cancel() { return false },
+    async subagentHistory(session, cursor, signal) {
+      const runtime = runtimeFor(session)
+      qualified('history')
+      if (!options.runner.subagentHistory) throw new HarnessExecutionError('SUBAGENT_HISTORY_UNAVAILABLE', 'The exact SDK child history port is unavailable.')
+      const page = childHistoryCursor(session.nativeSessionId, cursor)
+      const history = await options.runner.subagentHistory({ ...options.scope, nativeSessionId: session.nativeSessionId }, options.scope,
+        page.target === session.nativeSessionId ? undefined : page.target, page.offset ?? 0, signal)
+      if (runtimeFor(session) !== runtime || runtime.closed || disposed) throw new HarnessExecutionError('SUBAGENT_HISTORY_OWNER_STALE', 'The exact SDK child history owner changed.')
+      if (!history.agentId) return { events: [], nextCursor: null }
+      const frames = history.messages.map(value => value && typeof value === 'object' ? value as Record<string, unknown> : {})
+      const spawn = frames.find(frame => typeof frame.parent_tool_use_id === 'string')?.parent_tool_use_id
+      const parentAgentId = frames.find(frame => typeof frame.parent_agent_id === 'string')?.parent_agent_id
+      if (frames.some(frame => frame.session_id !== session.nativeSessionId)) throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'SDK child transcript returned another root session.')
+      // The native transcript proves the Agent/tool join; task and agent IDs are never equated.
+      const task = typeof spawn === 'string' ? runtime.events.find(event => event.type === 'claude.task' && event.payload.taskType === 'local_agent' && event.payload.toolUseId === spawn) : undefined
+      const discovery = childHistoryEvent('claude.subagent', { nativeSessionId: session.nativeSessionId, agentId: history.agentId, ancestry: 'verified',
+        ...(typeof parentAgentId === 'string' ? { parentAgentId } : {}), ...(typeof spawn === 'string' ? { spawnToolUseId: spawn } : {}),
+        ...(typeof task?.payload.taskId === 'string' ? { taskId: task.payload.taskId } : {}), status: 'unknown' })
+      const decoded = createClaudeEventNormalizer({ owner: { ownerId: options.scope.deviceId, attemptId: session.nativeSessionId, generation: runtime.generation }, observedAt: now })
+      const events = [discovery, ...frames.flatMap(frame => decoded.ingest(frame).filter(event => ['text', 'tool'].includes(event.change.kind))
+        .map(event => { const native = claudeNativeEvent(event, 0); return childHistoryEvent(native.type, { ...native.payload, agentId: history.agentId, subagentNativeId: history.agentId }, native.occurredAt) }))]
+      const next = history.agentIds.find(id => id > history.agentId!)
+      return { events, nextCursor: history.hasMore ? encodeChildHistoryCursor({ root: page.root, target: history.agentId, cursor: null, offset: (page.offset ?? 0) + 50 })
+        : next ? encodeChildHistoryCursor({ root: page.root, target: next, cursor: null, offset: 0 }) : null }
+    },
     async history(session): Promise<NativeHistory> {
       const runtime = runtimeFor(session)
       return { events: [...runtime.events], pendingInteractions: [...(options.pendingInteractions?.(session) ?? [])], firstRetainedSequence: runtime.events[0]?.sequence ?? runtime.nextSequence, nextSequence: runtime.nextSequence }

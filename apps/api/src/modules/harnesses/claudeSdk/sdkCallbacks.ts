@@ -42,5 +42,11 @@ export function createClaudeSdkCallbacks(input: {
       return { hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision } }
     } catch { return deny }
   }
-  return { canUseTool, hooks: { PreToolUse: [{ hooks: [beforeToolUse] }] } }
+  const observeChild: HookCallback = async (hook) => {
+    if (hook.hook_event_name === 'SubagentStart' || hook.hook_event_name === 'SubagentStop') {
+      input.manager().observeSubagentHook?.(hook.session_id, hook.agent_id, hook.agent_type, hook.hook_event_name === 'SubagentStart' ? 'running' : 'unknown')
+    }
+    return {}
+  }
+  return { canUseTool, hooks: { PreToolUse: [{ hooks: [beforeToolUse] }], SubagentStart: [{ hooks: [observeChild] }], SubagentStop: [{ hooks: [observeChild] }] } }
 }

@@ -1,3 +1,4 @@
+import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { openCodePermissionTurnId } from './opencodeInteractions.js'
 import { createOpenCodeBoundFetch, OPENCODE_HTTP_BODY_LIMIT, type OpenCodeClientFactory } from './opencodeClient.js'
@@ -885,6 +886,49 @@ export class OpenCodeNativeSessionManager implements NativeHarnessSessionManager
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       // A general history page has no requested turn identity. Do not invent a terminal result.
     }
+  }
+
+  async subagentHistory(session: NativeSessionReference, cursor?: string, signal?: AbortSignal) {
+    const combined = this.signal(signal)
+    await this.exclusive(() => this.ready(combined))
+    const state = this.requireSession(session), generation = this.generation
+    const current = () => {
+      combined.throwIfAborted()
+      if (this.generation !== generation || this.sessions.get(session.nativeSessionId) !== state) throw new OpenCodeNativeDeliveryError('SUBAGENT_HISTORY_OWNER_STALE', 'The exact native history owner changed.', 'uncertain')
+    }
+    const page = childHistoryCursor(session.nativeSessionId, cursor)
+    const queue = [session.nativeSessionId], children = new Map<string, JsonObject>()
+    const events: NativeHarnessEvent[] = []
+    for (let index = 0; index < queue.length; index++) {
+      if (queue.length > 32) throw new HarnessExecutionError('SUBAGENT_HISTORY_LIMIT', 'The bounded native descendant tree is full.')
+      const parent = queue[index]!
+      const response = await this.json(`/session/${encodeURIComponent(parent)}/children`, state.directory, combined)
+      current()
+      if (!Array.isArray(response) || response.length > 32) throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Invalid bounded child roster.')
+      for (const raw of response) {
+        const child = object(raw)
+        if (typeof child.id !== 'string' || child.parentID !== parent || child.directory !== state.directory || child.id === parent || children.has(child.id)) {
+          throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'Child roster does not prove exact ancestry and directory.')
+        }
+        children.set(child.id, child); queue.push(child.id)
+        events.push(childHistoryEvent('session.created', { info: child }))
+      }
+    }
+    const ids = [...children.keys()].sort()
+    const target = page.target === session.nativeSessionId ? ids[0] : page.target
+    if (!target) return { events, nextCursor: null }
+    if (!children.has(target) || !await this.ownedSession(session.nativeSessionId, target, state, combined)) throw new HarnessExecutionError('SUBAGENT_ANCESTRY_INVALID', 'Requested child is not owned by its exact parent.')
+    current()
+    const messages = await this.messagePage(target, state.directory, page.cursor ?? undefined, combined)
+    current()
+    for (const event of normalizedHistory(messages.messages, false)) {
+      const id = eventSessionId({ type: event.type, properties: event.payload })
+      if (id !== target) throw new HarnessExecutionError('SUBAGENT_HISTORY_INVALID', 'Child history returned another native session.')
+      events.push(childHistoryEvent(event.type, { ...event.payload, subagentNativeId: target }, event.occurredAt))
+    }
+    const next = ids.find(id => id > target)
+    return { events, nextCursor: messages.nextCursor ? encodeChildHistoryCursor({ root: page.root, target, cursor: messages.nextCursor })
+      : next ? encodeChildHistoryCursor({ root: page.root, target: next, cursor: null }) : null }
   }
 
   async reconcileResponse(

@@ -22,6 +22,8 @@ export interface ClaudeSdkClient {
   query(input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: Readonly<Record<string, unknown>> }): ClaudeSdkQuery
   getSessionInfo(sessionId: string, options: { dir: string }): Promise<{ sessionId: string } | undefined>
   getSessionMessages(sessionId: string, options: { dir: string; limit?: number; offset?: number }): Promise<readonly unknown[]>
+  listSubagents?(sessionId: string, options: { dir: string }): Promise<string[]>
+  getSubagentMessages?(sessionId: string, agentId: string, options: { dir: string; limit: number; offset: number }): Promise<readonly unknown[]>
   forkSession(sessionId: string, options: { dir: string }): Promise<{ sessionId: string }>
 }
 
@@ -79,5 +81,6 @@ export interface ClaudeSdkRunner {
   open(input: ClaudeSdkOpenInput): Promise<ClaudeSdkSession>
   fork(source: ClaudePersistedSession, target: ClaudeSessionScope, signal?: AbortSignal): Promise<ClaudePersistedSession>
   history(session: ClaudePersistedSession, scope: ClaudeSessionScope, signal?: AbortSignal, page?: { offset: number; limit: number }): Promise<readonly unknown[]>
+  subagentHistory?(session: ClaudePersistedSession, scope: ClaudeSessionScope, agentId?: string, offset?: number, signal?: AbortSignal): Promise<{ agentIds: string[]; agentId?: string; messages: readonly unknown[]; hasMore: boolean }>
   dispose(): Promise<void>
 }

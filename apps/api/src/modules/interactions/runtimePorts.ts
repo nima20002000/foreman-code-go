@@ -127,6 +127,18 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     return entry.resolved
   }
 
+  /** Read-only descendant recovery never allocates or starts a manager. The original Run owner must still be current. */
+  residentForRead(executionId: string) {
+    const entry = this.entries.get(executionId)
+    if (!entry || this.disposed || entry.lifecycle !== 'resident' || !entry.admission.owner) return undefined
+    const assertCurrent = () => {
+      if (this.disposed || this.entries.get(executionId) !== entry || entry.lifecycle !== 'resident' || !entry.admission.owner) throw new Error('Original native history ownership changed.')
+      entry.admission.owner.assertOwned()
+    }
+    assertCurrent()
+    return { manager: entry.manager, context: structuredClone(entry.context), assertCurrent }
+  }
+
   release(context: NativeManagerResolutionContext, manager?: NativeHarnessSessionManager, state: 'released' | 'failed' = 'released'): void {
     const current = this.entries.get(context.executionId)
     if (current && current.context.agentId === context.agentId && (!manager || current.manager === manager)) {

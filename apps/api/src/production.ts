@@ -1027,7 +1027,14 @@ export function buildProductionApp(
     ...(harnessQualifications ? { harnessQualifications } : {}),
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances),
     workerExecution,
-    runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
+    runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction, async (executionId, session, cursor, signal) => {
+      const owned = managers.residentForRead(executionId)
+      if (!owned?.manager.subagentHistory || owned.context.harness !== session.harness) throw new DomainError('SUBAGENT_HISTORY_UNAVAILABLE', 'The original admitted parent history owner is unavailable.', 409)
+      owned.assertCurrent()
+      const page = await owned.manager.subagentHistory(session, cursor, signal)
+      owned.assertCurrent()
+      return page
+    }),
     commands,
     interactions: new OperatorInteractionService(interactions),
     // Reads and lifecycle mutations share the same canonical V3 journal.
@@ -1191,6 +1198,8 @@ export function buildProductionApp(
       await appRoutes.refresh()
       assertOpen()
       await harnessSettings.mcp.recover()
+      assertOpen()
+      await operatorServices.runs.recoverSubagentCommands()
       assertOpen()
       await harnessSettings.plugins.recover()
       assertOpen()

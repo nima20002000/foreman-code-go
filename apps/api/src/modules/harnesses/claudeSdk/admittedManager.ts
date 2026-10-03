@@ -17,6 +17,7 @@ export function createAdmittedClaudeManager(initialize: (signal: AbortSignal) =>
       return current?.nativeCallbackContext(sessionId, toolUseId)
     },
     callbackAuthority: context => current?.callbackAuthority(context),
+    observeSubagentHook: (sessionId, agentId, agentType, status) => current?.observeSubagentHook?.(sessionId, agentId, agentType, status),
     notifyPendingChanged: notification => current?.notifyPendingChanged(notification),
     waitNativeCallbackContext: async (toolUseId, signal, sessionId) => (await admitted.actual(signal)).waitNativeCallbackContext(toolUseId, signal, sessionId),
   }
