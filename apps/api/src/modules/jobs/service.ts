@@ -16,6 +16,7 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { canonical, JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 
 export const jobDigest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex')
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
@@ -25,9 +26,17 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
 }
 export class JobService {
   readonly repository = new JobRepository()
+  private readonly workerExecution: WorkerExecutionPolicy
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly ports: { preparation: JobPreparationPort; dispatch: JobDispatchPort; artifacts: JobArtifactPort },
-    private readonly clock: () => Date = () => new Date()) {}
+    private readonly ports: {
+      preparation: JobPreparationPort
+      dispatch: JobDispatchPort
+      artifacts: JobArtifactPort
+      workerExecution?: WorkerExecutionPolicy
+    },
+    private readonly clock: () => Date = () => new Date()) {
+    this.workerExecution = ports.workerExecution ?? new WorkerExecutionPolicy()
+  }
   private async wakeAccepted(execution:JobExecution):Promise<void> {
     try {await this.ports.dispatch.wake(execution.id)} catch(error) {
       if(error instanceof DomainError)throw error
@@ -147,6 +156,7 @@ export class JobService {
             return {definition,principal:live,identity:{executionId:existing.execution_id,attemptId:existing.attempt_id,operationId:existing.operation_id}}
           }
           const definition=await this.repository.definition(sql,workspaceId,input.definitionId,true)
+          this.workerExecution.requireEnabled(definition.spec.target.hostRef)
           if(definition.revision!==input.expectedRevision)throw new DomainError('REVISION_CONFLICT','The job definition changed since it was read.',409)
           const identity={executionId:randomUUID(),attemptId:randomUUID(),operationId:randomUUID()}
           await sql.query('insert into job_preparations(execution_id,attempt_id,operation_id,workspace_id,definition_version_id,principal_id,command_id,definition) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)',[identity.executionId,identity.attemptId,identity.operationId,workspaceId,definition.versionId,live.id,input.commandId,JSON.stringify(definition)])
@@ -180,10 +190,12 @@ export class JobService {
     return this.read(principal,workspaceId,'jobs:start',sql=>this.repository.execution(sql,workspaceId,execution.id),source)
   }
   prepareDefinition(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,identity:{executionId:string;attemptId:string;operationId:string}) {
+    this.workerExecution.requireEnabled(definition.spec.target.hostRef)
     return this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,identity)
   }
   /** Workflow adapter calls inside its own accepted-node transaction; no Operator token enters a build. */
   async admit(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow'],workflowInput:RunInput|null=null):Promise<JobExecution> {
+    this.workerExecution.requireEnabled(definition.spec.target.hostRef)
     if((workflow===null)!==(workflowInput===null))throw new DomainError('JOB_INPUT_BINDING_MISSING','A workflow job requires its exact accepted input snapshot.',409)
     const id=workflow?.nodeExecutionId??randomUUID(),attemptId=randomUUID(),operationId=randomUUID()
     const spec=await this.ports.preparation.accept(sql,principal,definition.workspaceId,definition.spec,{executionId:id,attemptId,operationId})
@@ -191,6 +203,7 @@ export class JobService {
   }
   /** Same admission writer after a workflow driver performs source I/O outside the Run-owner transaction. */
   async admitPrepared(sql:JobSql,principal:ManagementPrincipal,definition:JobDefinition,workflow:JobExecution['workflow'],workflowInput:RunInput|null,spec:PreparedJobSpec,identity:{executionId:string;attemptId:string;operationId:string}):Promise<JobExecution> {
+    this.workerExecution.requireEnabled(spec.target.hostRef)
     if((workflow===null)!==(workflowInput===null)||workflow&&workflow.nodeExecutionId!==identity.executionId)throw new DomainError('JOB_INPUT_BINDING_MISSING','The prepared job must match its exact workflow execution and input.',409)
     const {executionId:id,attemptId,operationId}=identity
     const request=definition.spec

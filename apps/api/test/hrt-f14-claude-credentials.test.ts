@@ -16,6 +16,7 @@ import { ProductionHostHarnessProfileQualifier } from '../src/modules/harnesses/
 import type { ProductionHarnessRegistry } from '../src/modules/harnesses/productionRegistry.js'
 import { input } from './fixtures/codex-test-helpers.js'
 import { commandInputHash } from '../src/modules/commands/postgres.js'
+import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 
 vi.mock('../src/app.js', async original => {
   const actual = await original<typeof import('../src/app.js')>()
@@ -92,7 +93,8 @@ describe('HRT-F14 production without an authorized Claude credential source', ()
     const refreshMain = vi.fn(async () => { throw new Error('Unexpected native inventory') })
     const endpoint = vi.fn(() => { throw new Error('Unexpected remote dispatch') })
     const qualifier = new ProductionHostHarnessProfileQualifier({ refreshMain } as unknown as ProductionHarnessRegistry,
-      {} as NativeHarnessFactories, endpoint, '/recorded/work')
+      {} as NativeHarnessFactories, endpoint, '/recorded/work', undefined,
+      new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
     const mainId = '00000000-0000-4000-8000-000000000001'
     const override: HostHarnessOverride = { instanceId: 'recorded-profile', instanceRevision: '1', revision: 1,
       target: { hostRef: host === 'main' ? { kind: 'main', mainId } : { kind: 'device', mainId, deviceId: '00000000-0000-4000-8000-000000000002' },

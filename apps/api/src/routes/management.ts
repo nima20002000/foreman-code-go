@@ -74,6 +74,10 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
+  if (services.workerExecution) {
+    app.get('/api/management/settings/worker-execution', request =>
+      services.workerExecution!.read(requirePrincipal(request)))
+  }
   if (services.harnessRegistry) registerHarnessRegistryRoutes(app, services.harnessRegistry, async request => requirePrincipal(request))
   if (services.devices) registerDeviceManagementRoutes(app, services.devices, async request => requirePrincipal(request))
   if (services.workspaceRoots) registerWorkspaceRootRoutes(app, services.workspaceRoots)

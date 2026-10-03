@@ -27,6 +27,7 @@ import type { WorkflowPhysicalArtifactsPort } from '../runs/remote/workflowPhysi
 import { DomainError } from '../errors.js'
 import { admitRemoteOwnerControl } from '../runs/remote/ownerControlAdmission.js'
 import { readOriginalInteractionDeliveryClaim } from '../interactions/originalDeliveryClaim.js'
+import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { transferContextForBinding } from '../byte-transfer/carrier.js'
 
 /** One Main owner and its actual authenticated worker sources. Allocation is
@@ -38,6 +39,7 @@ export function createProductionRemoteWorkflow(input: {
   producer(): AgentPlacementProducer | undefined
   execution(id: string): Promise<HarnessExecution | undefined>
   artifacts?: WorkflowPhysicalArtifactsPort
+  workerExecution?: WorkerExecutionPolicy
 }) {
   const bindings = new Map<string, AcceptedExecutionBinding | null>()
   const channel = createRemoteNativeSourceChannel()
@@ -105,6 +107,7 @@ export function createProductionRemoteWorkflow(input: {
       }
       const verifiedReceipts = new Map<string, { verified: VerifiedRemoteEvidence; assertCurrent(): void }>()
       return remoteNativeManager(context, binding, { carrier,
+        ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
         beforePrepare: (intent, _placement, connection) => {
           const owner = requireOwner()
           return owner.oneShotConnection().transaction(sql => reserveRemoteDispatchOrigin(sql, owner, intent, connection,

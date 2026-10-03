@@ -13,6 +13,7 @@ import type { RunOwnership } from '../runs/ownership.js'
 import type { RepeatNodeRef } from '../runs/repeatResolution.js'
 import { beforeGraphCommit, type GraphTransactionSql, withExclusiveGraphConnection } from '../run-graph/connection.js'
 import { requiredLocationAccess } from '../workspaces/location.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
@@ -26,7 +27,9 @@ import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from '.
 export class AgentPlacementProducer implements RunPlacementAdmissionPort {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly sources: SourceAdmissionPort, private readonly roots: WorkspaceRootPolicyPort,
-    private readonly installations: HarnessInstallationRegistry, private readonly qualificationSuites: Readonly<Record<CompatibilityHarness, string>>) {}
+    private readonly installations: HarnessInstallationRegistry,
+    private readonly qualificationSuites: Readonly<Record<CompatibilityHarness, string>>,
+    private readonly workerExecution = new WorkerExecutionPolicy()) {}
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal): Promise<PreparedRunPlacementAdmission | undefined> {
     return withExclusiveGraphConnection(this.pool, connection => connection.transaction(async sql => {
       const row = (await sql.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions
@@ -41,6 +44,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection }[] = []
       for (const node of nodes) {
         const saved = node.placement
+        if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
           || saved.relativeCwd.split('/').some(component => component === '..' || component === '.' || component === '' && saved.relativeCwd !== '')
           || saved.cwdPolicy === 'project-root' && saved.relativeCwd !== '' || saved.cwdPolicy === 'project-subdirectory' && saved.relativeCwd === '')) this.conflict()

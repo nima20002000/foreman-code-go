@@ -11,6 +11,7 @@ import { ComputerPairingForm } from './ComputerPairingForm'
 import { ConnectionSetupStatus } from './DeviceSetupGuide'
 import { HostHarnessOverrides } from './HostHarnessOverrides'
 import { HostHarnessInventory } from './HostHarnessInventory'
+import { WorkerExecutionSettings } from './WorkerExecutionSettings'
 import './computerSettings.css'
 
 /** Which main's Add computer panel is open, keyed by session generation and main so a new session or main starts closed. */
@@ -94,6 +95,7 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
     {host && (!registration || registration.status === 'paired') ? <Inventory key={`inventory:${host.mainId}:${deviceId ?? 'main'}`} host={host} applicationInstallationId={registration?.workerInstallationId ?? host.mainId} /> : null}
     {host && (!registration || registration.status === 'paired') ? <HostHarnessOverrides key={`overrides:${host.mainId}:${deviceId ?? 'main'}`} target={{ hostRef: host, applicationInstallationId: registration?.workerInstallationId ?? host.mainId }} /> : null}
     {registration?.status === 'revoked' ? <Alert tone="warning" title="This worker’s application access is revoked." /> : null}
+    {!deviceId ? <WorkerExecutionSettings /> : null}
     <h2 className="computers-title">Default execution computer</h2>
     <p className="computer-hint">Pick the computer and folder in a workspace’s settings. That choice is separate from this main and the browser connection; Runs keep the placement they were accepted with.</p>
   </section>

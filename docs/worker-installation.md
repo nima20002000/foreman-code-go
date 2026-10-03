@@ -1,5 +1,23 @@
 # Selected-main Ubuntu worker
 
+## Main execution setting
+
+Main defaults `GRAPHQL_LAPTOP_EXECUTION_ENABLED` to `0`. New workflow Agent steps
+and Jobs on connected Worker computers, including laptop execution, are disabled.
+Main execution remains available, as do existing history, reconciliation,
+cancellation and cleanup. Pairing a computer does not enable execution.
+
+A person may set `GRAPHQL_LAPTOP_EXECUTION_ENABLED=1` in Main's startup environment
+and restart Main after qualifying the intended Worker. Activation is human-only
+because it permits execution on another computer; neither HTTP nor Operator MCP
+can change the deployment environment. Normal placement, permissions, source and
+runtime qualification checks still apply when the setting is enabled.
+
+Settings > Computers shows the active value on Main. Authenticated readers with
+global `settings:read` can read the same value through
+`GET /api/management/settings/worker-execution` or Operator MCP's
+`worker_execution_settings_get`. Both return `{ enabled, managedBy: 'startup' }`.
+
 `apps/worker` is a worker-only composition. It loads W07 identity/pairing and
 starts the W07 connection supervisor. It does not import API startup, PostgreSQL,
 migrations, owner setup, workflow recovery or the schedule dispatcher. Dispatch

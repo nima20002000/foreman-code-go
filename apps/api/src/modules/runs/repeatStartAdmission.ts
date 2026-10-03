@@ -30,12 +30,14 @@ import { assertWorkflowRecovered } from './recoveryPolicy.js'
 import { repeatDigest } from './repeatResolution.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { validateReviewerBootstrap } from '../workflows/reviewerBootstrap.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
  * Install it only with the existing engine's complete v3 lifecycle composition.
  * A no-op producer cannot pass the mandatory same-transaction receipt readback. */
 export interface RepeatStartPublication {
+  readonly workerExecution?: WorkerExecutionPolicy
   readonly placementAdmission?: RunPlacementAdmissionPort
   /** Open existing G1 with historyCoverage='from_admission', publish the queued
    * v3 Run and empty/lazy occurrence projection, on THIS branded transaction.
@@ -258,6 +260,10 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       // principal to the helper; patching the caller snapshot's ID is not a proof.
       const snapshot = await readLockedRepeatStartSnapshot(client, authority.principal, input, prepared)
       const version = snapshot.executable.version
+      const workerExecution = publication.workerExecution ?? new WorkerExecutionPolicy()
+      for (const node of version.definition.nodes) {
+        if (node.kind !== 'job' && node.placement) workerExecution.requireEnabled(node.placement.hostRef)
+      }
       const run = AcceptedWorkflowRunV3Schema.parse({ id: `run-${randomUUID()}`, workspaceId: input.workspaceId,
         workflowId: input.workflowId, workflowVersionId: version.id, executionSemanticsVersion: 3,
         agentConfigurationVersionIds: version.agentConfigurationVersionIds, executionLocation: snapshot.workspace.location,

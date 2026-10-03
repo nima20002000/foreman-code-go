@@ -1,0 +1,68 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { loadConfig } from '../../config.js'
+import { JobService } from '../jobs/service.js'
+import { jobSpec } from '../../../test/helpers/jobFixture.js'
+import { WorkerExecutionPolicy } from './workerExecution.js'
+
+const reader: ManagementPrincipal = {
+  id: 'settings-reader',
+  name: 'Settings reader',
+  audience: 'operator',
+  expiresAt: '2099-01-01T00:00:00.000Z',
+  revokedAt: null,
+  grants: [{ actions: ['settings:read'], scope: {} }],
+}
+
+describe('Worker execution deployment setting', () => {
+  it('defaults off and leaves Main permitted', () => {
+    const policy = new WorkerExecutionPolicy()
+    expect(policy.read(reader)).toEqual({ enabled: false, managedBy: 'startup' })
+    expect(() => policy.requireEnabled({ kind: 'main' })).not.toThrow()
+    expect(() => policy.requireEnabled({ kind: 'device' })).toThrow('Execution on connected computers is disabled')
+  })
+
+  it('permits Worker execution only with explicit startup opt-in', () => {
+    const policy = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
+    expect(() => policy.requireEnabled({ kind: 'device' })).not.toThrow()
+    expect(policy.read(reader).enabled).toBe(true)
+  })
+
+  it('requires global settings read permission', () => {
+    const policy = new WorkerExecutionPolicy()
+    expect(() => policy.read({ ...reader, grants: [] })).toThrow()
+    expect(() => policy.read({ ...reader, grants: [
+      { actions: ['settings:read'], scope: { workspaceIds: ['workspace'] } },
+    ] })).toThrow()
+  })
+
+  it('parses only explicit deployment flag values', () => {
+    const environment = { DATABASE_URL: 'postgresql://example:example@127.0.0.1/test' }
+    expect(loadConfig(environment).workerExecution).toEqual({ enabled: false, managedBy: 'startup' })
+    expect(loadConfig({ ...environment, GRAPHQL_LAPTOP_EXECUTION_ENABLED: '1' }).workerExecution?.enabled).toBe(true)
+    expect(() => loadConfig({ ...environment, GRAPHQL_LAPTOP_EXECUTION_ENABLED: 'true' })).toThrow()
+  })
+
+  it('blocks Worker Job preparation before source work and preserves Main preparation', async () => {
+    const accept = vi.fn(async () => ({ prepared: true }))
+    const jobs = new JobService({} as never, {} as never, {
+      preparation: { accept } as never,
+      dispatch: {} as never,
+      artifacts: {} as never,
+    })
+    const spec = jobSpec()
+    const definition = { workspaceId: 'workspace', spec } as never
+    const identity = { executionId: 'execution', attemptId: 'attempt', operationId: 'operation' }
+    await jobs.prepareDefinition({} as never, reader, definition, identity)
+    expect(accept).toHaveBeenCalledOnce()
+    accept.mockClear()
+    const remoteSpec = { ...spec, target: { ...spec.target, hostRef: {
+      kind: 'device' as const,
+      mainId: spec.target.mainId,
+      deviceId: '11111111-1111-4111-8111-111111111112',
+    } } }
+    expect(() => jobs.prepareDefinition({} as never, reader,
+      { workspaceId: 'workspace', spec: remoteSpec } as never, identity)).toThrow()
+    expect(accept).not.toHaveBeenCalled()
+  })
+})

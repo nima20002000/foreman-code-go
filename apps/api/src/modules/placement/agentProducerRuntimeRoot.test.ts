@@ -24,6 +24,7 @@ import { verifyMaterializedWorkingDirectory } from '../sources/workingDirectory.
 import { SourceOperationWorkerService } from '../sources/operationWorker.js'
 import { attestInstalledWorkflowRuntimeLeaf } from '../runs/remote/installedWorkflowHost.js'
 import { repeatRuntimeDirectory } from '../runs/repeatRepositoryHost.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 
 const directories: string[] = []
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }) })
@@ -95,7 +96,8 @@ async function fixture() {
   const roots = { resolve: async () => ({ canonicalProjectRoot: project, managedRuntimeRoot: runtime, registration }) } as unknown as WorkspaceRootPolicyPort
   const sources = { resolveRootBinding: async () => sourceRoot } as unknown as SourceAdmissionPort
   const producer = new AgentPlacementProducer({ connect: async () => client } as unknown as pg.Pool, binding.mainId, sources, roots,
-    installations, { codex: 'codex-live-4', opencode: 'opencode-live-4' })
+    installations, { codex: 'codex-live-4', opencode: 'opencode-live-4' },
+    new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
   const prepared = await producer.prepare(RunStartV3InputSchema.parse({ workspaceId: version.workspaceId, workflowId: version.workflowId,
     workflowVersionId: version.id, expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds, commandId: 'root-admission',
     executionSemanticsVersion: 3, expectedWorkflowRevision: 1, expectedLocationRevision: 1, input: {} }),

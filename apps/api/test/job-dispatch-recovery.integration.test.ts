@@ -9,6 +9,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresJobDispatch } from '../src/modules/jobs/dispatch.js'
 import { JobService } from '../src/modules/jobs/service.js'
+import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 import { RemoteJobCarrierDispatch } from '../src/modules/runs/remote/jobCarrierDispatch.js'
 import { jobSpec } from './helpers/jobFixture.js'
 
@@ -34,10 +35,12 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL)('reports retained delivery/rec
       if ((raw as { method: string }).method === 'job-dispatch') throw new Error('transport rejected before a receipt; secret must not be exposed')
       return { payload: { status: 'unknown', reason: 'journal_absence_requires_reconciliation' } }
     })
+    const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
     dispatch = new PostgresJobDispatch(pool, new RemoteJobCarrierDispatch(pool, { request }, undefined), {
       revalidate: async () => {}, authorizeControl: async () => {}, observe: async () => { throw new Error('No receipt was returned.') },
-    })
+    }, workerExecution)
     const jobs = new JobService(pool, commands, {
+      workerExecution,
       preparation: { choices: async () => ({ targets: [], sources: [], policies: [] }), validate: async () => ({ valid: true, reasons: [], sideEffects: false }),
         revalidateAccepted: async () => {}, adoptFinalBinding: async () => {}, accept: async (_sql, _principal, _workspace, spec) => ({ ...spec, source: { ...spec.source, materializationId: randomUUID(), materializationDigest: '1'.repeat(64) } }) },
       dispatch, artifacts: { list: async () => [], read: async () => { throw new Error('No physical artifact.') } },

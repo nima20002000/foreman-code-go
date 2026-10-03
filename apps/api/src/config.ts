@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path'
 import { resolveLocalBrowserOrigin } from '@graphql/contracts/browser-origin'
 import { z } from 'zod'
+import type { WorkerExecutionSettings } from '@graphql/contracts/management'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
 import { readBrowserAuthConfig, type BrowserAuthConfig } from './modules/browser-auth/config.js'
 import { harnessBinaries } from './modules/harnesses/binaries.js'
@@ -25,9 +26,11 @@ const EnvironmentSchema = z.object({
   HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
   OPENCODE_BINARY: z.string().trim().min(1).default('opencode'),
+  GRAPHQL_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
 })
 
 export interface ApiConfig {
+  workerExecution?: WorkerExecutionSettings
   /** Trusted composition override for an isolated storage root; never a request field. */
   workspaceStorageRoot?: string
   /** App-managed durable upload storage; separate from workspace and harness directories. */
@@ -72,6 +75,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
     throw new Error('GRAPHQL_DEV_OPERATOR_PRINCIPAL_ID must be a valid principal ID.')
   }
   return {
+    workerExecution: {
+      enabled: parsed.GRAPHQL_LAPTOP_EXECUTION_ENABLED === '1',
+      managedBy: 'startup',
+    },
     ...(browserAuth ? { browserAuth } : {}),
     ...(localDevBrowserAccess ? { localDevBrowserAccess: {
       origin: browserOrigin!,

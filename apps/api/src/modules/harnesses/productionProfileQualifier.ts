@@ -2,6 +2,7 @@ import { HostHarnessProfileEvidenceSchema, type HostHarnessOverride, type HostHa
 import { withAdvancedDefaults } from '@graphql/contracts'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { HostHarnessProfileQualifier } from './instanceSettings/profileChecks.js'
 import { harnessHostKey } from './instanceSettings/repository.js'
@@ -16,8 +17,10 @@ import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productio
 export class ProductionHostHarnessProfileQualifier implements HostHarnessProfileQualifier {
   constructor(private readonly registry: ProductionHarnessRegistry, private readonly factories: NativeHarnessFactories,
     private readonly endpoint: () => DeviceEndpoint, private readonly workingDirectory: string,
-    private readonly claude?: HostHarnessProfileQualifier) {}
+    private readonly claude?: HostHarnessProfileQualifier,
+    private readonly workerExecution = new WorkerExecutionPolicy()) {}
   async qualify(value: HostHarnessOverride, input: { checkId: string; signal: AbortSignal }): Promise<HostHarnessProfileEvidence> {
+    this.workerExecution.requireEnabled(value.target.hostRef)
     input.signal.throwIfAborted()
     if (commandInputHash(withAdvancedDefaults(value.configuration)) !== value.configurationFingerprint) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The saved configuration fingerprint is invalid.', 409)
