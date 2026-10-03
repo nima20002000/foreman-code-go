@@ -159,9 +159,18 @@ export class CanonicalJobInputs {
     await this.recheck(execution,admission);this.assertChannel(execution,binding)
     return receipt
   }
+  async authorizedTransfer(transferId: string, context: TransferContext): Promise<TransferIntent> {
+    const { execution, transfer } = await this.acceptedTransfer(transferId)
+    if (!isDeepStrictEqual(outputTransferContext(this.binding(execution)), context)
+      || Date.parse(transfer.intent.expiresAt) <= this.clock().getTime()) {
+      throw new DomainError('JOB_INPUT_TRANSFER_DENIED', 'The input transfer or current recipient is not authorized.', 403)
+    }
+    return transfer.intent
+  }
   async authorizeTransfer(intent:TransferIntent,context:TransferContext) {
-    const {execution,admission}=await this.accepted(intent.executionId)
-    await this.recheck(execution,admission)
-    if(!admission.transfers.some(value=>inputHash(value.intent)===inputHash(intent))||inputHash(outputTransferContext(this.binding(execution)))!==inputHash(context)||Date.parse(intent.expiresAt)<=this.clock().getTime())throw new DomainError('JOB_INPUT_TRANSFER_DENIED','The exact input transfer or current recipient is not authorized.',403)
+    const original = await this.authorizedTransfer(intent.transferId, context)
+    if (!isDeepStrictEqual(original, intent)) {
+      throw new DomainError('JOB_INPUT_TRANSFER_DENIED', 'The input transfer differs from its accepted binding.', 403)
+    }
   }
 }

@@ -244,9 +244,7 @@ export function buildProductionApp(
       const operation = owners[0]!.operation
       if (operation === 'source.package.admit') return jobRuntime.transfers.intent(id, binding)
       if (operation === 'job.inputs.bind') {
-        const { transfer } = await jobRuntime.inputs.main.acceptedTransfer(id)
-        await jobRuntime.inputs.main.authorizeTransfer(transfer.intent, transferContextForBinding(binding))
-        return transfer.intent
+        return jobRuntime.inputs.main.authorizedTransfer(id, transferContextForBinding(binding))
       }
       const intent = await jobRuntime.outputs.admission.intentForTransfer(id)
       await jobRuntime.outputs.admission.authorizeTransfer(intent, transferContextForBinding(binding))

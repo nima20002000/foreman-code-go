@@ -7,7 +7,6 @@ import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'
 import type { PostgresJobDispatch } from '../../jobs/dispatch.js'
-import type { JobPreparationPort } from '../../jobs/ports.js'
 import { JobRepository, type JobSql } from '../../jobs/repository.js'
 import { PostgresFileReferenceAuthorization } from '../references/authorization.js'
 import { PostgresFileRepository } from '../postgres.js'
@@ -17,18 +16,26 @@ import { artifactPins, ensureDistinct, inputHash, workflowPins } from './manifes
 export class JobInputAuthority {
   private readonly jobs=new JobRepository()
   readonly files:PostgresFileRepository
-  constructor(private readonly pool:pg.Pool,private readonly runtime:PostgresJobDispatch,private readonly preparation:JobPreparationPort,
+  constructor(private readonly pool:pg.Pool,private readonly runtime:Pick<PostgresJobDispatch, 'require'>,
     private readonly clock:()=>Date=()=>new Date()){this.files=new PostgresFileRepository(pool)}
-  async recipient(sql:JobSql,expected:JobExecution) {
-    const current=await this.jobs.execution(sql,expected.workspaceId,expected.id,true)
-    if(current.attemptId!==expected.attemptId||!isDeepStrictEqual(current.owner,expected.owner)||!isDeepStrictEqual(current.acceptedSpec,expected.acceptedSpec)||current.process.phase==='terminal')throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Recipient differs from the actual admitted active job.',409)
-    const row=(await sql.query<{accepted_by:string}>('select accepted_by from job_executions where id=$1 and workspace_id=$2 for share',[current.id,current.workspaceId])).rows[0]
-    if(!row)throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Accepted input principal is missing.',409)
-    const principal=await readLiveManagementPrincipal(sql,row.accepted_by)
-    requireAuthorization(principal,current.workflow?'runs:start':'jobs:start',{workspaceId:current.workspaceId,...(current.workflow?{workflowId:current.workflow.workflowId,runId:current.workflow.runId}:{})})
-    await this.runtime.require(sql,current,{attemptId:current.attemptId,owner:current.owner})
-    await this.preparation.revalidateAccepted(sql,principal,current)
-    return {execution:JobExecutionSchema.parse(current),principal}
+  async recipient(sql: JobSql, expected: JobExecution) {
+    const current = await this.jobs.execution(sql, expected.workspaceId, expected.id, true)
+    const changed = current.attemptId !== expected.attemptId || !isDeepStrictEqual(current.owner, expected.owner)
+      || !isDeepStrictEqual(current.acceptedSpec, expected.acceptedSpec)
+    if (changed || current.process.phase === 'terminal' || current.cancelRequestedAt) {
+      throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT', 'The accepted job changed or is stopping.', 409)
+    }
+    const row = (await sql.query<{ accepted_by: string }>(
+      'select accepted_by from job_executions where id=$1 and workspace_id=$2 for share',
+      [current.id, current.workspaceId])).rows[0]
+    if (!row) throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT', 'Accepted input principal is missing.', 409)
+    const principal = await readLiveManagementPrincipal(sql, row.accepted_by)
+    requireAuthorization(principal, current.workflow ? 'runs:start' : 'jobs:start', {
+      workspaceId: current.workspaceId,
+      ...(current.workflow ? { workflowId: current.workflow.workflowId, runId: current.workflow.runId } : {}),
+    })
+    await this.runtime.require(sql, current, { attemptId: current.attemptId, owner: current.owner })
+    return { execution: JobExecutionSchema.parse(current), principal }
   }
   private async pin(sql:JobSql,execution:JobExecution|null,principal:ManagementPrincipal,pin:{fileId:string;revisionId:string;sha256:string;byteSize:number},relativePath:string,delegation:JobInputEntry['delegation']):Promise<JobInputEntry> {
     const stored=await this.files.read(pin.fileId,pin.revisionId,sql)
