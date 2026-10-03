@@ -121,6 +121,7 @@ function fixture(harness: AgentHarness = 'codex') {
     runtimeDirectory: candidate.runtimeDirectory!, configuration, input: candidate.input,
   }
   const captures = createWorkflowNativeCaptureChannel()
+  const capturedSourceKinds: string[] = []
   const executions = new Map<string, HarnessExecution>([[candidate.id, structuredClone(candidate)]])
   const records = new Map<string, DurableInteraction>()
   const updates: HarnessExecution[] = []
@@ -301,7 +302,10 @@ function fixture(harness: AgentHarness = 'codex') {
     },
   }
   const coordinator = new ApprovalExecutionCoordinator(runs, interactions, budgets, resolver, 60_000, credentials,
-    undefined, closures, undefined, captures.capture)
+    undefined, closures, undefined, { capture(input) {
+      capturedSourceKinds.push(input.source.type)
+      return captures.capture.capture(input)
+    } })
   const controller = new AbortController()
   const input = { execution: candidate, store, request, approval: { handler: 'user' as const }, workflowId: 'workflow-1',
     graphThreadId: candidate.runId, owner, signal: controller.signal }
@@ -322,13 +326,40 @@ function fixture(harness: AgentHarness = 'codex') {
   }
   return { candidate, configuration, request, input, executions, records, updates, revoked, prepared, waits, resumes, stops,
     store, negativeSettlements, stopFence() { stopRequested = true }, loseLaunch() { launch = false },
-    coordinator, manager, resolver, controller, owner, pending, snapshot, delivered, budgets, interactions, runs,
+    coordinator, manager, resolver, controller, owner, pending, snapshot, delivered, budgets, interactions, runs, capturedSourceKinds,
     failActivity(error: Error) { activityFailure = error },
     failPrepare(error: Error) { prepareFailure = error },
     failBudget(error: Error) { budgetFailure = error },
     failStop(error: Error) { stopFailure = error },
     cancelPendingCalls: () => cancelPendingCalls }
 }
+
+it('captures complete native history only when needed for a pending request or terminal proof', async () => {
+  const f = fixture()
+  f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
+  const result = await f.coordinator.observeExact(f.input)
+  assert.equal(result.state, 'completed')
+  assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)
+})
+
+it('commits complete exact terminal history while its original stream still has queued transcript', async () => {
+  const f = fixture()
+  let consumed = 0
+  const events = Array.from({ length: 8 }, (_, sequence) => ({ sequence, type: 'native.notification',
+    occurredAt: now, payload: { original: `queued-${sequence}` } }))
+  f.manager.snapshot = { events, pendingInteractions: [], terminalResult: success }
+  f.manager.startTurn = async function* (session, input, signal) {
+    f.manager.turns.push({ session, input, ...(signal ? { signal } : {}) })
+    for (const event of events) { consumed++; yield event }
+  }
+  const completed = await f.coordinator.observeExact(f.input)
+  assert.equal(completed.state, 'completed')
+  assert.equal(consumed, 1)
+  assert.equal(f.manager.turns.length, 1)
+  assert.deepEqual(f.executions.get(f.candidate.id)?.result, success)
+  assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)
+  assert.equal(f.manager.closed.length, 1)
+})
 
 it('continues observing normal native work after approval without replay or credential revocation', async () => {
   const f = fixture()

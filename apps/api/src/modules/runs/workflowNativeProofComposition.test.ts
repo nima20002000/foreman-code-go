@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import type { HarnessExecution } from '@graphql/contracts'
+import type { HarnessExecution, HarnessNativeEvent } from '@graphql/contracts'
 import type { AcceptedWorkflowRunV3 } from '@graphql/contracts/wave25'
 import type { WorkflowNativeCapture } from '../interactions/workflowNativeCapture.js'
 import { ExclusiveGraphConnection, assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -9,22 +9,36 @@ import type { RepeatNativeEvidence } from './repeatNativeRepository.js'
 import type { StoredRepeatExecution } from './repeatPostgres.js'
 import type { RepeatScope } from './repeatResolution.js'
 import { WorkflowNativeProofServices } from './workflowNativeProof.js'
+import { appendWorkflowNativeGraphEventLocked } from './workflowNativeGraph.js'
 vi.mock('../run-graph/publication.js', () => ({ currentRunGraphPublication: () => ({
   retainNativeSource: async () => ({ sourceDigest: 'original-proof-digest', sourceId: 'original-proof' }),
 }) }))
 vi.mock('../run-graph/repeatReceipts.js', () => ({ requireRepeatCanonicalReceiptBeforeCommit: vi.fn() }))
 vi.mock('./workflowNativeGraph.js', () => ({ appendWorkflowNativeGraphEventLocked: vi.fn() }))
 beforeEach(() => vi.clearAllMocks())
-function fixture(reject = false) {
+function fixture(reject = false, retained?: 'same' | 'missing' | 'changed' | 'lost') {
   // SQL/native validation ports are isolated here. This exercises actual proof
   // persistence ordering and G1 rollback, not database or physical ownership.
   const events: string[] = []
   const owner = { runId: 'run', assertOwned() {}, readOneShotFence: async () => ({ ownerId: 'owner', fence: '1' }) } as unknown as RunOwnership
   const execution = { id: 'execution', runId: 'run', workflowNodeId: 'node', agentId: 'agent',
     agentConfigurationVersionId: 'configuration', attempt: 1 } as HarnessExecution
-  const capture = { execution, owner, source: { type: 'event', event: { sequence: 1 } }, session: { harness: 'codex', nativeSessionId: 'session' },
-    lifetimeGeneration: 1, closureGeneration: '1', lane: null, observedAt: '2026-10-02T00:00:00.000Z' } as WorkflowNativeCapture
+  let current = true
+  const at = '2026-10-02T00:00:00.000Z'
+  const transcript: HarnessNativeEvent = { executionId: execution.id, connectionId: 'original-connection', sequence: 7,
+    type: 'native.notification', occurredAt: at, payload: { original: 'complete transcript' } }
+  const capture = { execution, owner, source: retained ? { type: 'history', history: { events: [transcript,
+    { ...transcript, sequence: 8, type: 'turn.completed', payload: { turnId: 'original-turn' } }], pendingInteractions: [] } }
+    : { type: 'event', event: { sequence: 1 } }, session: { harness: 'codex', nativeSessionId: 'session' },
+  lifetimeGeneration: 1, closureGeneration: '1', lane: null, observedAt: at,
+  assertCurrent() { if (!current) throw new Error('original lifetime lost') } } as WorkflowNativeCapture
   const raw = { query: vi.fn(async (text: string) => {
+    if (text.includes('from harness_native_events n join jsonb_to_recordset')) {
+      if (retained === 'lost') current = false
+      return { rows: retained === 'missing' ? [] : [{ connection_id: transcript.connectionId,
+        source_sequence: transcript.sequence, sequence: 31, record: { ...transcript, sequence: 31,
+          payload: retained === 'changed' ? { original: 'different bytes' } : transcript.payload } }], rowCount: 1 }
+    }
     if (text.startsWith('insert into workflow_native_proofs')) events.push('proof-stored')
     if (text === 'commit' || text === 'rollback') events.push(text)
     return { rows: [], rowCount: text.startsWith('insert') ? 1 : 0 }
@@ -45,7 +59,7 @@ function fixture(reject = false) {
     passedSql = sql
     return service.persistOriginalLocked(sql, { id: 'run' } as AcceptedWorkflowRunV3, {} as RepeatNativeEvidence, owner)
   })
-  return { events, callback, persist }
+  return { events, callback, persist, transcript }
 }
 it('admits context after storing the actual proof and before committing its original G1', async () => {
   const f = fixture(); await f.persist()
@@ -56,4 +70,26 @@ it('rolls back original proof publication when context admission fails', async (
   const f = fixture(true)
   await expect(f.persist()).rejects.toThrow('context denied')
   expect(f.events).toEqual(['proof-stored', 'context', 'rollback'])
+})
+
+it('retains complete original history while avoiding identical committed transcript replay', async () => {
+  const f = fixture(false, 'same'); await f.persist()
+  const append = vi.mocked(appendWorkflowNativeGraphEventLocked)
+  expect(append).toHaveBeenCalledOnce()
+  expect(append.mock.calls[0]![2].type).toBe('turn.completed')
+  expect(f.events).toEqual(['proof-stored', 'context', 'commit'])
+})
+
+for (const retained of ['missing', 'changed'] as const) it(`does not skip ${retained} original transcript rows`, async () => {
+  const f = fixture(false, retained); await f.persist()
+  const append = vi.mocked(appendWorkflowNativeGraphEventLocked)
+  expect(append).toHaveBeenCalledTimes(2)
+  expect(append.mock.calls[0]![2]).toEqual(f.transcript)
+})
+
+it('rolls back if the original coordinator lifetime changes while reading retained transcript rows', async () => {
+  const f = fixture(false, 'lost')
+  await expect(f.persist()).rejects.toThrow('original lifetime lost')
+  expect(appendWorkflowNativeGraphEventLocked).not.toHaveBeenCalled()
+  expect(f.events).toEqual(['proof-stored', 'rollback'])
 })
