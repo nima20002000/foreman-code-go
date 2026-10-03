@@ -52,8 +52,8 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
     } else if (value.harness === 'opencode') update({ ...value, model: next.id, variant: next.variants.includes(value.variant) ? value.variant : '' })
     else {
       const effort = ClaudeEffortSchema.safeParse(next.reasoningEfforts.includes(value.effort ?? '') ? value.effort
-        : next.reasoningEfforts.includes('medium') ? 'medium' : next.reasoningEfforts[0])
-      update({ ...value, model: next.id, ...(effort.success ? { effort: effort.data } : {}) })
+        : next.reasoningEfforts.includes('medium') ? 'medium' : next.reasoningEfforts.find((effort) => ClaudeEffortSchema.safeParse(effort).success))
+      update({ harness: 'claude', model: next.id, showThinking: value.showThinking, ...(effort.success ? { effort: effort.data } : {}) })
     }
     setChoosingModel(false)
   }

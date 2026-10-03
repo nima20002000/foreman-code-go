@@ -51,6 +51,15 @@ it('uses supported medium Claude effort on model selection and exposes its edita
   fireEvent.change(screen.getByRole('slider', { name: 'Effort' }), { target: { value: '2' } })
   expect(change).toHaveBeenCalledWith({ harness: 'claude', model: 'medium-claude-model', effort: 'high', showThinking: false })
 })
+it('omits the previous effort when switching a reasoning model to a native-default-only model', async () => {
+  const defaults = { ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }
+  const onChange = mount(defaults, { ...savedClaudeConfiguration, model: 'medium-claude-model', effort: 'medium' })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Agent settings: Medium Claude, medium' }))
+  await user.click(screen.getByRole('button', { name: /Medium Claude\s*Choose model/ }))
+  await user.click(screen.getByRole('button', { name: /Verified Claude\s*verified-claude-model/ }))
+  expect(onChange).toHaveBeenCalledWith({ harness: 'claude', model: 'verified-claude-model', showThinking: false })
+})
 it('disables choosing Claude when no actual provider preset exists', async () => {
   mount(DEFAULT_HARNESS_DEFAULTS)
   await userEvent.setup().click(screen.getByRole('button', { name: /Agent settings:/ }))

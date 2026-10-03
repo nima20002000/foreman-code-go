@@ -215,8 +215,10 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       tools: ['Read'], permissionRules: [], instructions: 'Keep the saved read-only policy.', mcpServers: {} }
     const configuration = applyOperatorChatSettings(base, { harness: 'claude', model: 'claude-haiku-4-5-20251001', showThinking: false })
     const validated: unknown[] = []
+    const prepared: unknown[] = []
     const service = new FoundationSettingsManagementService(defaults, commands, undefined, operators, {
       validateSelection: async (_principal, selected, harness) => { expect(selected).toEqual(selection); validated.push(harness) },
+      prepareOperatorConfiguration: async (_principal, source, harness) => { expect(source).toBe('mcp'); prepared.push(harness); return selection },
     })
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { settings: service, operatorChat: chat, commands } as unknown as OperatorServices } })
@@ -229,20 +231,23 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => issued.token } }))
         return client
       }
-      const client = await connect(['settings:read', 'settings:update', 'harnesses:read'])
+      const client = await connect(['settings:read', 'settings:update', 'harnesses:read', 'harnesses:update'])
       const read = async () => ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
       const before = await read()
       const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
-        operator: { ...before.value.operator, harness: configuration, harnessProfileSelection: selection } } }
+        operator: { ...before.value.operator, harness: configuration } } }
       const accepted = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
       expect((await read()).value.operator.harness).toEqual(configuration)
       expect((await read()).value.operator.harness).not.toHaveProperty('effort')
       expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'read-only', tools: ['Read'] })
       expect(validated).toEqual([configuration])
+      expect(prepared).toEqual([configuration])
+      expect((await read()).value.operator.harnessProfileSelection).toEqual(selection)
       const denied = await connect(['settings:read'])
       await expect(denied.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
       expect((await read()).revision).toBe(accepted.value.revision)
       expect(validated).toHaveLength(1)
+      expect(prepared).toHaveLength(1)
     } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close() }
   })
 

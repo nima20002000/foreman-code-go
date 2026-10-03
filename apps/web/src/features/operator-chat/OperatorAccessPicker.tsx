@@ -21,6 +21,7 @@ export function OperatorAccessPicker({ value, disabled, saving = false, saveErro
   const [rules, setRules] = useState<OpenCodeAdvancedConfiguration['permissionRules']>(value.harness === 'opencode' ? structuredClone(value.advanced?.permissionRules ?? []) : [])
   const [error, setError] = useState<string>()
   return <div className="operator-access-inline" role="group" aria-label="Operator access">
+    <small>Access changes apply to new chats and harness handoffs. Existing chats keep their accepted access policy.</small>
     {saving ? <small role="status">Saving Operator access…</small> : null}
     {saveError ? <p role="alert">{saveError}</p> : null}
     {value.harness === 'codex' || value.harness === 'claude' ? <Select label="Sandbox" value={value.sandbox} options={sandboxChoices} disabled={disabled}
