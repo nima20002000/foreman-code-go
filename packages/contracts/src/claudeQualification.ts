@@ -13,7 +13,7 @@ export const ClaudeQualificationCheckSchema = z.object({
 export const CLAUDE_QUALIFICATION_CHECKS = [
   'sdkInitialization', 'firstSecondTurn', 'exactMessageReceipt', 'idleClose', 'resultThenThrow', 'wakeCorrelation',
   'exactResume', 'forkPreservesSource', 'exactHistory', 'activeCancellation', 'workingDirectory', 'startupPrompt', 'settingsIsolation', 'backgroundTasksDisabled',
-  'alwaysAppliedToolHook', 'readOnlySandbox', 'workspaceWriteSandbox',
+  'alwaysAppliedToolHook', 'readOnlySandbox', 'workspaceWriteSandbox', 'fullAccessPolicy',
 ] as const;
 export const ClaudeQualificationPinSchema = z.object({
   sdkVersion: z.string().min(1), sdkIntegrity: z.string().min(1), cliVersion: z.string().min(1),
@@ -40,6 +40,6 @@ export function claudeQualificationCapabilities(proof: ClaudeQualificationProof)
   return {
     sdk, basicTurns, resume, cancellation: sdk && passed('activeCancellation'), workingDirectory: sdk && passed('workingDirectory'), startupPrompt: sdk && passed('startupPrompt'), fork: resume && passed('forkPreservesSource'), history: sdk && passed('exactHistory'),
     policy: { settingsIsolation: passed('settingsIsolation'), backgroundTasksDisabled: passed('backgroundTasksDisabled'),
-      alwaysAppliedToolHook: passed('alwaysAppliedToolHook'), readOnlySandbox: passed('readOnlySandbox'), workspaceWriteSandbox: passed('workspaceWriteSandbox') },
+      alwaysAppliedToolHook: passed('alwaysAppliedToolHook'), readOnlySandbox: passed('readOnlySandbox'), workspaceWriteSandbox: passed('workspaceWriteSandbox'), fullAccessPolicy: passed('fullAccessPolicy') },
   };
 }

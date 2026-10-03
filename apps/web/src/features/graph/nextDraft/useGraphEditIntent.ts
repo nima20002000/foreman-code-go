@@ -211,7 +211,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
     if (data.intent && !activeEditIntent(data.intent)
       && useGraphDraftStore.getState().nextDrafts[draftKey] !== beforeAcknowledgement) return data
     if (action !== 'discard' && !activeEditIntent(data.intent) && !retained) {
-      if (!nextDraftDirty(current)) { accept(data); return data }
+      if (!nextDraftDirty(current) && current.context.draft.baseWorkflowVersionId) { accept(data); return data }
       const operations = draftOperations(current.context, current.graph, current.agentEdits)
       assertDraftSubmission(current.graph, operations)
       const stagedAgents = stageAgentEdits(current)

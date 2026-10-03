@@ -19,7 +19,7 @@ export function SettingsChoice({ title, description, summary, onSelect, draftSta
     <span className="settings-choice-heading"><span className="settings-choice-icon"><Icon name={icon} size={21} /></span>
       <span><strong>{title}</strong><small>{description}</small></span><Icon name="chevron" size={17} /></span>
     <span className="settings-choice-summary">{summary.map((item) => <span className="settings-summary-row" key={item.label}><span>{item.label}</span><strong title={item.value}>{item.value}</strong></span>)}</span>
-    <span className="settings-choice-action">{draftStatus ? <span className="settings-draft-badge">{draftStatus}</span> : 'Edit defaults'} <span aria-hidden="true">→</span></span>
+    {draftStatus ? <span className="settings-choice-action"><span className="settings-draft-badge">{draftStatus}</span></span> : null}
   </button>
 }
 
@@ -27,7 +27,7 @@ export function SettingsChoice({ title, description, summary, onSelect, draftSta
 export function SettingsEditorLayout({ title, description, backLabel, onBack, section, onSectionChange,
   connections = false, plugins = false, children, feedback, footer, showBack = true,
 }: {
-  title: string; description: string; backLabel: string; onBack(): void;
+  title: string; description?: string; backLabel: string; onBack(): void;
   section: HarnessSettingsSection; onSectionChange(section: HarnessSettingsSection): void;
   showBack?: boolean; connections?: boolean; plugins?: boolean; children: ReactNode; feedback?: ReactNode; footer: ReactNode;
 }) {
@@ -46,7 +46,7 @@ export function SettingsEditorLayout({ title, description, backLabel, onBack, se
   return <section className="settings-editor-page" aria-label={title}>
     <header className="settings-experience-heading">
       {showBack ? <Button variant="ghost" size="sm" onClick={() => void leave(onBack)} leading={<span aria-hidden="true">←</span>}>{backLabel}</Button> : null}
-      <h1 ref={titleRef} tabIndex={-1}>{title}</h1><p>{description}</p>
+      <h1 ref={titleRef} tabIndex={-1}>{title}</h1>{description ? <p>{description}</p> : null}
     </header>
     {feedback}
     <div className="settings-editor-layout">
@@ -55,7 +55,7 @@ export function SettingsEditorLayout({ title, description, backLabel, onBack, se
           onClick={() => { if (item.id !== section) void leave(() => onSectionChange(item.id)) }}>{item.label}<span aria-hidden="true">›</span></button>)}
       </nav>
       <section className="settings-editor-content" aria-labelledby={`settings-section-${active.id}`}>
-        <header className="settings-section-heading"><h2 ref={sectionRef} tabIndex={-1} id={`settings-section-${active.id}`}>{active.label}</h2><p>{active.description}</p></header>
+        <header className="settings-section-heading"><h2 ref={sectionRef} tabIndex={-1} id={`settings-section-${active.id}`}>{active.label}</h2>{active.id !== 'permissions' ? <p>{active.description}</p> : null}</header>
         {children}
       </section>
     </div>

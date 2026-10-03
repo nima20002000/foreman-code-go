@@ -1,87 +1,57 @@
-// @vitest-environment jsdom
-import { render, screen, waitFor, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { OperatorAccessPicker } from './OperatorAccessPicker'
 
-describe('Operator access picker', () => {
-  it('shows Codex sandbox modes and clears incompatible writable settings', async () => {
+describe('Operator access in agent settings', () => {
+  it('changes Codex sandbox and clears incompatible writable settings', () => {
     const onChange = vi.fn().mockResolvedValue(true)
     const value = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' as const,
       advanced: { ...DEFAULT_HARNESS_DEFAULTS.codex.advanced!, additionalWritableDirectories: ['/tmp/project'] } }
     render(<OperatorAccessPicker value={value} disabled={false} onChange={onChange} />)
-    const user = userEvent.setup()
-    await user.hover(screen.getByRole('button', { name: 'Operator access: Workspace write' }))
-    expect(within(screen.getByRole('menu', { name: 'Operator access' })).getAllByRole('menuitem')).toHaveLength(2)
-    await user.hover(screen.getByRole('menuitem', { name: 'Codex sandbox' }))
-    await user.click(within(screen.getByRole('menu', { name: 'Codex sandbox' })).getByRole('menuitemradio', { name: 'Read only' }))
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sandbox: 'read-only',
-      advanced: expect.objectContaining({ additionalWritableDirectories: [] }) }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: 'danger-full-access' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sandbox: 'danger-full-access',
+      advanced: expect.objectContaining({ additionalWritableDirectories: [], approvalPolicy: 'on-request' }) }))
   })
 
-  it('requires an explicit confirmation before removing Codex sandbox limits', async () => {
+  it('saves approval routing separately from sandbox access', () => {
     const onChange = vi.fn().mockResolvedValue(true)
     render(<OperatorAccessPicker value={DEFAULT_HARNESS_DEFAULTS.codex} disabled={false} onChange={onChange} />)
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Operator access: Read only' }))
-    await user.hover(screen.getByRole('menuitem', { name: 'Codex sandbox' }))
-    await user.click(within(screen.getByRole('menu', { name: 'Codex sandbox' })).getByRole('menuitemradio', { name: 'Full access' }))
-    expect(onChange).not.toHaveBeenCalled()
-    await user.type(screen.getByRole('textbox', { name: 'Type “full access” to confirm' }), 'full access')
-    await user.click(screen.getByRole('button', { name: 'Use full access' }))
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sandbox: 'danger-full-access' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Approval requests' }), { target: { value: 'never' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sandbox: 'read-only', advanced: expect.objectContaining({ approvalPolicy: 'never' }) }))
   })
 
-  it('keeps Codex sandbox and approval policy as separate saved settings', async () => {
+  it('edits Claude access through its real supported configuration', () => {
     const onChange = vi.fn().mockResolvedValue(true)
-    render(<OperatorAccessPicker value={DEFAULT_HARNESS_DEFAULTS.codex} disabled={false} onChange={onChange} />)
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Operator access: Read only' }))
-    await user.hover(screen.getByRole('menuitem', { name: 'Approval requests' }))
-    await user.click(within(screen.getByRole('menu', { name: 'Approval requests' })).getByRole('menuitemradio', { name: 'Never request escalation' }))
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sandbox: 'read-only',
-      advanced: expect.objectContaining({ approvalPolicy: 'never' }) }))
+    render(<OperatorAccessPicker value={savedClaudeConfiguration} disabled={false} onChange={onChange} />)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: 'danger-full-access' } })
+    expect(onChange).toHaveBeenCalledWith({ ...savedClaudeConfiguration, sandbox: 'danger-full-access' })
+    expect(screen.queryByRole('button', { name: 'Add rule' })).not.toBeInTheDocument()
   })
 
-  it('opens the Codex submenu with the keyboard and returns to its row on Escape', async () => {
-    render(<OperatorAccessPicker value={DEFAULT_HARNESS_DEFAULTS.codex} disabled={false} onChange={vi.fn().mockResolvedValue(true)} />)
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Operator access: Read only' }))
-    const row = screen.getByRole('menuitem', { name: 'Codex sandbox' })
-    row.focus()
-    await user.keyboard('{ArrowRight}')
-    await waitFor(() => expect(screen.getByRole('menuitemradio', { name: 'Read only' })).toHaveFocus())
-    await user.keyboard('{Escape}')
-    expect(row).toHaveFocus()
-    expect(screen.queryByRole('menu', { name: 'Codex sandbox' })).not.toBeInTheDocument()
-  })
-
-  it('edits ordered OpenCode permission rules without calling them a sandbox', async () => {
+  it('validates and saves OpenCode rules without claiming a filesystem sandbox', () => {
     const onChange = vi.fn().mockResolvedValue(true)
     render(<OperatorAccessPicker value={DEFAULT_HARNESS_DEFAULTS.opencode} disabled={false} onChange={onChange} />)
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Operator access: 0 OpenCode rules' }))
-    expect(screen.getByText(/They are not a filesystem sandbox/)).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Add rule' }))
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Action 1' }), 'deny')
-    await user.click(screen.getByRole('button', { name: 'Save access rules' }))
+    expect(screen.getByText(/no filesystem sandbox/)).toBeVisible()
+    expect(screen.queryByRole('combobox', { name: 'Sandbox' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add rule' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Action 1' }), { target: { value: 'deny' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Permission 1' }), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save access rules' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a permission and pattern')
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Permission 1' }), { target: { value: 'shell' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save access rules' }))
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ advanced: expect.objectContaining({
-      permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }],
+      permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }], permissionHandling: 'graphql_routed',
     }) }))
   })
-})
 
-it('shows pinned Claude access without exposing another provider’s permission editor', async () => {
-  const onChange = vi.fn().mockResolvedValue(true)
-  render(<OperatorAccessPicker value={savedClaudeConfiguration} disabled={false} onChange={onChange} />)
-  await userEvent.setup().click(screen.getByRole('button', { name: 'Operator access: Claude · Read only' }))
-  expect(screen.getByRole('dialog', { name: 'Operator access' })).toBeVisible()
-  expect(screen.getByText('Claude access')).toBeVisible()
-  expect(screen.getByText('Read: allow')).toBeVisible()
-  expect(screen.getByText('Bash: ask')).toBeVisible()
-  expect(screen.queryByRole('button', { name: 'Add rule' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('menu', { name: 'Codex sandbox' })).not.toBeInTheDocument()
-  expect(onChange).not.toHaveBeenCalled()
+  it('locks access controls during an uncertain or pending settings operation', () => {
+    render(<OperatorAccessPicker value={DEFAULT_HARNESS_DEFAULTS.codex} disabled saving saveError="Read back this save first" onChange={vi.fn()} />)
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: 'Approval requests' })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Read back this save first')
+  })
 })

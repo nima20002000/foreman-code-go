@@ -55,7 +55,22 @@ export function createGraphGeometryAdapter(initial: GraphNode[]) {
   }
 
   function remember(change: GraphGeometryChange) {
-    pending.set(change.id, { ...pending.get(change.id), ...change })
+    const next = { ...pending.get(change.id), ...change }
+    const original = base.find((node) => node.id === change.id)
+    if (original) {
+      if (next.position && sameFields(original.position, next.position)) delete next.position
+      if (next.width !== undefined || next.height !== undefined) {
+        if ((next.width ?? original.width) === original.width && (next.height ?? original.height) === original.height) {
+          delete next.width; delete next.height
+        } else {
+          // Any authored resize pins both dimensions, even when only one edge moved.
+          // A later role refresh must not replace the untouched dimension with its default.
+          next.width ??= original.width; next.height ??= original.height
+        }
+      }
+    }
+    if (next.position || next.width !== undefined || next.height !== undefined) pending.set(change.id, next)
+    else pending.delete(change.id)
   }
 
   function reconcile(nextBase: GraphNode[], selectedIds: ReadonlySet<string>) {
@@ -71,8 +86,9 @@ export function createGraphGeometryAdapter(initial: GraphNode[]) {
         ...node,
         ...(before?.measured ? { measured: before.measured } : {}),
         ...(change?.position ? { position: change.position } : {}),
-        ...(change?.width !== undefined ? { width: change.width, height: change.height,
-          style: { ...node.style, width: change.width, height: change.height } } : {}),
+        ...(change?.width !== undefined || change?.height !== undefined ? {
+          width: change.width ?? node.width, height: change.height ?? node.height,
+          style: { ...node.style, width: change.width ?? node.width, height: change.height ?? node.height } } : {}),
         selected: selectedIds.has(node.id),
       }
       if (before && sameFields(before, candidate)) return before

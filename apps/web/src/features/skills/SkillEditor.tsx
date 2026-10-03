@@ -4,6 +4,7 @@ import { SkillCreateInputSchema, type SkillSummary, type SkillVersion } from '@g
 import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
+import { useFileDrop } from '../../shared/ui/useFileDrop'
 import { Alert, Button, Dialog, Icon, Select, Tabs, TextField, Textarea } from '../../shared/ui/nocturne'
 import type { SelectOption } from '../../shared/ui/nocturne/Fields'
 import { fieldMessage, focusFirstInvalid, validationIssues, type FieldIssue } from '../settings/fieldValidation'
@@ -47,6 +48,8 @@ export function SkillEditor({ saved, workspaceOptions, initialWorkspace, onSaved
   const [view, setView] = useState('write')
   const [imported, setImported] = useState<{ name: string; text: string }>()
   const [importError, setImportError] = useState<string>()
+  const [importing, setImporting] = useState(false)
+  const readingFile = useRef(false)
   const [justSaved, setJustSaved] = useState(false)
   const attempt = useRef(new CommandAttempt<Record<string, unknown>>())
   const pending = useRef<Record<string, unknown>>(undefined)
@@ -113,10 +116,15 @@ export function SkillEditor({ saved, workspaceOptions, initialWorkspace, onSaved
 
   async function chooseFile(file: File | undefined) {
     setImportError(undefined)
-    if (!file) return
-    const result = await readSkillFile(file)
-    if ('error' in result) setImportError(result.error); else setImported(result)
+    if (!file || readOnly || saving || uncertain || imported || readingFile.current) return
+    readingFile.current = true; setImporting(true)
+    try {
+      const result = await readSkillFile(file)
+      if ('error' in result) setImportError(result.error); else setImported(result)
+    } finally { readingFile.current = false; setImporting(false) }
   }
+  const drop = useFileDrop({ disabled: readOnly || saving || uncertain || importing || Boolean(imported), maxFiles: 1,
+    onFiles: (files) => { void chooseFile(files[0]) } })
 
   return <form ref={root} className="skill-editor" noValidate aria-label={base ? `Edit ${base.version.name}` : 'New skill'}
     onSubmit={(event) => { event.preventDefault(); void save() }}>
@@ -131,17 +139,21 @@ export function SkillEditor({ saved, workspaceOptions, initialWorkspace, onSaved
       <TextField label="Description" maxLength={1000} value={draft.description} readOnly={readOnly} disabled={uncertain}
         hint="Optional. Shown in the skills list and the Agent skill picker." error={fieldMessage(issues, 'description')}
         onChange={(event) => change({ description: event.target.value })} />
-      <div className="skill-instructions">
+      <div className="skill-instructions" {...drop.dropTargetProps}>
         <div className="skill-instructions-head">
           <span className="skill-instructions-label" id="skill-instructions-label">Instructions</span>
           {readOnly ? null : <>
             {/* eslint-disable-next-line no-restricted-syntax -- hidden single-file picker behind the Import button; FileDropzone is a full-page drop area. */}
             <input ref={fileInput} type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden
-              onChange={(event) => { void chooseFile(event.target.files?.[0]); event.target.value = '' }} />
-            <Button size="sm" variant="ghost" disabled={saving || uncertain} leading={<Icon name="plus" size={14} />} onClick={() => fileInput.current?.click()}>Import Markdown file</Button>
+              disabled={saving || uncertain || importing || Boolean(imported)}
+              onChange={(event) => { drop.clearDropError(); void chooseFile(event.target.files?.[0]); event.target.value = '' }} />
+            <Button size="sm" variant="ghost" disabled={saving || uncertain || importing || Boolean(imported)} leading={<Icon name="plus" size={14} />} onClick={() => fileInput.current?.click()}>Import Markdown file</Button>
           </>}
         </div>
         {importError ? <p className="n-field-error" role="alert">{importError}</p> : null}
+        {drop.dropError ? <p className="n-field-error" role="alert">{drop.dropError}</p> : null}
+        {importing && <p className="n-field-hint" role="status">Reading file…</p>}
+        {!readOnly && <p className="n-field-hint">{drop.isDragging ? 'Drop to preview imported instructions.' : 'Drop a Markdown or text file here to import.'}</p>}
         <Tabs label="Instructions view" value={view} onValueChange={setView} items={[
           { value: 'write', label: 'Write', content: <Textarea label="Instructions" className="skill-instructions-input" required rows={18}
             maxLength={MAX_SKILL_INSTRUCTIONS_CHARS} value={draft.instructions} readOnly={readOnly} disabled={uncertain} spellCheck={false}

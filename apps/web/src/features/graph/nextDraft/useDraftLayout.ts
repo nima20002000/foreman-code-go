@@ -74,9 +74,11 @@ export function useDraftLayout(draftKey: string) {
           continue
         }
         if (!journal) {
-          const moved = edit.graph.nodes.find((node) => node.position && draft.graph.nodes.some((base) =>
-            base.id === node.id && !sameWorkflowValue(base.position, node.position)))
-          if (!moved?.position) return // Newly authored nodes publish their initial position with Save.
+          const moved = edit.graph.nodes.find((node) => draft.graph.nodes.some((base) =>
+            base.id === node.id && !sameWorkflowValue(
+              { position: base.position, width: base.width, height: base.height },
+              { position: node.position, width: node.width, height: node.height })))
+          if (!moved) return // Newly authored nodes publish their initial geometry with Save.
           // Read the persisted meaning, never send locally staged executable edits.
           const saved = await nextDraftApi.layoutBase(draft.workspaceId, draft.workflowId)
           assertSession(generation)
@@ -84,7 +86,7 @@ export function useDraftLayout(draftKey: string) {
             throw new Error('The saved workflow changed. Reload before saving positions.')
           }
           const graph = { ...saved.draft.graph, nodes: saved.draft.graph.nodes.map((node) =>
-            node.id === moved.id ? { ...node, position: moved.position } : node) }
+            node.id === moved.id ? { ...node, position: moved.position, width: moved.width, height: moved.height } : node) }
           journal = { request: CurrentWorkflowSaveInputSchema.parse({ workspaceId: draft.workspaceId,
             workflowId: draft.workflowId, commandId: crypto.randomUUID(), executionSemanticsVersion: 3,
             expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
@@ -104,13 +106,14 @@ export function useDraftLayout(draftKey: string) {
             || result.value.revision !== request.expectedRevision || result.value.currentVersionId !== request.expectedWorkflowVersionId) {
             throw new Error('The layout acknowledgement does not match the exact saved workflow.')
           }
-          const position = request.graph.nodes.find((node) => node.id === nodeId)?.position
+          const acknowledged = request.graph.nodes.find((node) => node.id === nodeId)
           if (useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== instance) return
           // Acknowledge only presentation fields. Never replace meaning or a newer local drag.
           useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => ({ ...current,
             context: { ...current.context, draft: { ...current.context.draft,
               graph: { ...current.context.draft.graph, nodes: current.context.draft.graph.nodes.map((node) =>
-                node.id === nodeId ? { ...node, position } : node) } } } }))
+                node.id === nodeId && acknowledged ? { ...node, position: acknowledged.position,
+                  width: acknowledged.width, height: acknowledged.height } : node) } } } }))
           clear(draftKey, journal); journal = undefined
         } catch (error) {
           assertSession(generation)

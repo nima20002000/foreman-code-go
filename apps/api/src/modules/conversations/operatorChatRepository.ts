@@ -25,6 +25,7 @@ import { readOperatorActivitySnapshot } from './operatorActivitySnapshot.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
+import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -187,7 +188,14 @@ export class PostgresOperatorConversationRepository {
         then (select sequence::text from operator_conversation_activity where conversation_id=c.id order by sequence desc offset 99 limit 1) end as activity_cursor,
       coalesce((select jsonb_agg(retained.record order by retained.sequence) from (
         select recent.*,sum(octet_length(recent.record::text)) over (order by recent.sequence desc) as bytes
-        from (select m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text) || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end as record,m.sequence from operator_conversation_messages m
+        from (select m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text)
+            || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end
+            || case when accepted.id is null then '{}'::jsonb else jsonb_build_object('acceptedModel',
+              jsonb_build_object('harness',accepted.record->'harness'->>'harness','model',accepted.record->'harness'->>'model')) end as record,m.sequence
+          from operator_conversation_messages m
+          left join operator_conversation_turns turn on turn.conversation_id=m.conversation_id
+            and turn.request_id=coalesce(m.client_request_id,m.record->>'requestId')
+          left join operator_configuration_versions accepted on accepted.id=coalesce(turn.operator_configuration_version_id,turn.payload->>'acceptedConfigurationVersionId')
           where m.conversation_id=c.id order by m.sequence desc limit $2) recent
         ) retained where retained.bytes<=$3),'[]'::jsonb) as messages
       from operator_conversations c where c.id=$1`, [id, OPERATOR_SNAPSHOT_MESSAGE_LIMIT, OPERATOR_SNAPSHOT_MESSAGE_BYTES])
@@ -225,9 +233,16 @@ export class PostgresOperatorConversationRepository {
     }>(`with candidates as (
         select m.*,row_number() over (order by m.sequence desc) as ordinal,
           sum(octet_length(m.record::text)) over (order by m.sequence desc) as bytes
-        from (select sequence,record || jsonb_build_object('revision',activity_record_revision::text,'sequence',sequence::text) || case when client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',client_request_id) end as record,client_request_id from operator_conversation_messages
-          where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
-          order by sequence desc limit ($3::integer+1)) m
+        from (select m.sequence,m.record || jsonb_build_object('revision',m.activity_record_revision::text,'sequence',m.sequence::text)
+            || case when m.client_request_id is null then '{}'::jsonb else jsonb_build_object('requestId',m.client_request_id) end
+            || case when accepted.id is null then '{}'::jsonb else jsonb_build_object('acceptedModel',
+              jsonb_build_object('harness',accepted.record->'harness'->>'harness','model',accepted.record->'harness'->>'model')) end as record,m.client_request_id
+          from operator_conversation_messages m
+          left join operator_conversation_turns turn on turn.conversation_id=m.conversation_id
+            and turn.request_id=coalesce(m.client_request_id,m.record->>'requestId')
+          left join operator_configuration_versions accepted on accepted.id=coalesce(turn.operator_configuration_version_id,turn.payload->>'acceptedConfigurationVersionId')
+          where m.conversation_id=$1 and ($2::bigint is null or m.sequence<$2::bigint)
+          order by m.sequence desc limit ($3::integer+1)) m
       ), selected as (
         select * from candidates where ordinal<=$3 and (bytes<=$4 or ordinal=1)
       )
@@ -396,13 +411,7 @@ export class PostgresOperatorConversationRepository {
       const sourceSequence = count.rows[0]?.sequence ?? '0'
       const context = handoffContext(source.handoff_context, source.handoff_omitted_messages ?? 0,
         history.rows, Number(count.rows[0]?.count ?? 0))
-      await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
-      const version = await client.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [current.operatorId])
-      const showThinking = input.settings?.showThinking ?? current.showThinking ?? false
-      const next = OperatorConfigurationVersionSchema.parse({ ...current, id: randomUUID(), version: Number(version.rows[0]!.version),
-        harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
-      validate?.(next)
-      await client.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)', [next.id,next.operatorId,next.version,JSON.stringify(next)])
+      const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate)
       const now = new Date().toISOString()
       const parentTitle = conversation(source).title ?? 'Conversation'
       const record = ConversationSchema.parse({ id: childId, agentId: current.operatorId, scope: 'application',
@@ -471,28 +480,17 @@ export class PostgresOperatorConversationRepository {
         if (harness && harness.harness !== row.harness
           && (await client.query('select 1 from operator_conversation_messages where conversation_id=$1 limit 1', [id])).rowCount)
           throw new DomainError('HARNESS_HANDOFF_REQUIRED', 'A different harness must continue in a linked conversation.', 409)
-        if (harness) {
+        if (!prior) {
           const current = await this.configuration(row.operator_configuration_version_id, client)
           if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
-          const showThinking = input.settings?.showThinking ?? current.showThinking ?? false
-          if (JSON.stringify(current.harness) !== JSON.stringify(harness) || showThinking !== (current.showThinking ?? false)) {
-            await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
-            const versionRow = await client.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [current.operatorId])
-            const next = OperatorConfigurationVersionSchema.parse({ ...current, id: randomUUID(), version: Number(versionRow.rows[0]!.version),
-              harness, showThinking, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking })).digest('hex')}`, createdAt: new Date().toISOString() })
-            validate?.(next)
-            await client.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)', [next.id,next.operatorId,next.version,JSON.stringify(next)])
+          const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate)
+          if (next.id !== current.id) {
             await client.query(`update operator_conversations set operator_configuration_version_id=$2,harness=$3,
               native_session_id=case when harness=$3 then native_session_id else null end,
-              provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,harness.harness])
+              provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,next.harness.harness])
             row.operator_configuration_version_id = next.id
             row.record = { ...ConversationSchema.parse(row.record), operatorConfigurationVersionId: next.id }
-          } else validate?.(current)
-        }
-        if (!prior && !harness) {
-          const current = await this.configuration(row.operator_configuration_version_id, client)
-          if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
-          validate?.(current)
+          }
         }
         // Receipt-only replay above does not require still-live bytes. A fresh admission or
         // definitely-failed relaunch does; hold lifecycle locks through message/receipt commit.

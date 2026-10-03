@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { type HarnessDefaults, type AgentHarness, type ClaudeHarnessConfiguration, ClaudeHarnessConfigurationSchema, HarnessDefaultsSchema } from '@graphql/contracts'
 import { ManagementHarnessDefaultsSchema, type HarnessSettingsSection } from '@graphql/contracts/management'
-import { Button, ErrorState, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
+import { Button, Checkbox, ErrorState, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
 import { useManagedHarnessCatalogQuery, useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
 import { HarnessConfigurationFields } from './HarnessConfigurationFields'
 import { HarnessCompatibilityPanel } from './HarnessCompatibilityPanel'
@@ -13,9 +13,10 @@ import { useRevisionedForm, useSettingsDraftStatus } from './revisionedForm'
 import { SettingsChoice, SettingsEditorLayout, SettingsOverview } from './SettingsEditorLayout'
 import { harnessNames, harnessSummary } from './settingsPresentation'
 import { CodexPluginManager } from './CodexPluginManager'
+import { useClaudeSetupOptions } from '../../shared/api/harnessSettings'
 
 type Harness = AgentHarness
-type ClaudeSetup = Partial<Pick<ClaudeHarnessConfiguration, 'model' | 'configDirectory' | 'authMode' | 'sandbox'>>
+type ClaudeSetup = Partial<Pick<ClaudeHarnessConfiguration, 'model' | 'configDirectory' | 'authMode' | 'sandbox' | 'mcpServers'>>
 type DefaultsEditor = { codex: HarnessEditor; opencode: HarnessEditor; claude?: HarnessEditor; claudeSetup?: ClaudeSetup }
 function editable(value: HarnessDefaults, harness?: Harness): DefaultsEditor {
   return { codex: createHarnessEditor(value.codex), opencode: createHarnessEditor(value.opencode),
@@ -89,10 +90,10 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
       return { ...next, claude: { ...current.claude, configuration: { ...current.claude.configuration, ...claudeSetup } } }
     })
   }
-  return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`} description="Provider preset for new configurations. Existing agents and sessions keep their settings."
+  return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`}
     backLabel="All harnesses" onBack={onBack} section={activeSection} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
     feedback={<>{query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={{ ...form, reapply }} /></>}
-    footer={activeSection === 'connections' || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
+    footer={(activeSection === 'connections' && harness !== 'claude') || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
         const defaults = prepared(input.value)
         const response = await managedSave.mutateAsync({ defaults: ManagementHarnessDefaultsSchema.parse(defaults), expectedRevision: input.expectedRevision, commandId: input.commandId })
@@ -107,9 +108,10 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
 }
 
 function ClaudePresetSetup({ value, onChange, issues }: { value: ClaudeSetup; onChange(value: ClaudeSetup): void; issues: readonly FieldIssue[] }) {
+  const setup = useClaudeSetupOptions()
   return <div className="harness-basic-fields">
-    <p>Claude has no saved preset.</p><p>Enter an actual profile on the selected computer and a model to verify. Choose authentication and sandbox explicitly. New presets enable no tools or MCP servers; approvals use app routing.</p>
-    <TextField label="Model" value={value.model ?? ''} error={fieldMessage(issues, 'model')}
+    <p>Claude has no saved preset.</p><p>Enter an actual profile on the selected computer and choose a model, authentication and sandbox explicitly. New presets enable no tools; approvals use app routing.</p>
+    <TextField label="Model" value={value.model ?? ''} error={fieldMessage(issues, 'model')} className="harness-model-secondary"
       onChange={(event) => onChange({ ...value, model: event.target.value })} />
     <TextField label="Local Claude profile directory" value={value.configDirectory ?? ''} error={fieldMessage(issues, 'configDirectory')}
       onChange={(event) => onChange({ ...value, configDirectory: event.target.value })} />
@@ -119,6 +121,10 @@ function ClaudePresetSetup({ value, onChange, issues }: { value: ClaudeSetup; on
     <Select label="Sandbox" value={value.sandbox ?? ''} error={fieldMessage(issues, 'sandbox')}
       options={[{ value: '', label: 'Choose sandbox', disabled: true }, { value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }]}
       onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
-    <p>Saving verifies this exact configuration. A saved preset does not establish readiness on another computer.</p>
+    <Checkbox label="Include GraphQL MCP" checked={Boolean(value.mcpServers?.graphql)} disabled={!setup.data?.graphqlMcp}
+      hint="Uses this app’s endpoint. Tool access is selected separately after saving."
+      onChange={event => onChange({ ...value, mcpServers: event.target.checked && setup.data?.graphqlMcp ? { graphql: setup.data.graphqlMcp } : {} })} />
+    {setup.isError ? <p role="alert">Could not read the app MCP endpoint. <Button size="sm" onClick={() => void setup.refetch()}>Retry</Button></p> : null}
+    <p>Saving stores this preset. Check the saved profile in computer settings before execution. Authentication, tool policy and lifecycle evidence must match that exact profile.</p>
   </div>
 }

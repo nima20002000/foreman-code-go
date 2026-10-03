@@ -73,6 +73,51 @@ it('keeps cards on a load-more error and lets the sidebar retry the same cursor'
   expect(await screen.findByRole('link', { name: /Beta/ })).toBeVisible()
 })
 
+it('shows each durable workflow once when consecutive directory pages overlap', async () => {
+  server.use(http.get('/api/management/workspaces/workspace-1/workflows', ({ request }) => HttpResponse.json({
+    items: new URL(request.url).searchParams.has('cursor') ? [workflow('Alpha'), workflow('Beta')] : [workflow('Alpha')],
+    pageInfo: { nextCursor: new URL(request.url).searchParams.has('cursor') ? null : 'Alpha' },
+  })))
+  const user = userEvent.setup()
+  renderWithRouter(<WorkflowDirectory workspaceId="workspace-1" />)
+  await user.click(await screen.findByRole('button', { name: 'Show more workflows' }))
+  await screen.findByTestId('workflow-card-Beta')
+  expect(screen.getAllByTestId('workflow-card-Alpha')).toHaveLength(1)
+  expect(within(screen.getByTestId('workflow-card-list')).getAllByRole('listitem')).toHaveLength(2)
+})
+
+it('keeps confirmed batch deletion and prefix invalidation consistent across directory and sidebar caches', async () => {
+  let deleted = false
+  server.use(
+    http.get('/api/management/workspaces/workspace-1/workflows', () => HttpResponse.json({
+      items: deleted ? [workflow('Beta')] : [workflow('Alpha'), workflow('Beta')], pageInfo: { nextCursor: null },
+    })),
+    http.post('/api/management/workspaces/workspace-1/workflows/batch-archive', () => {
+      deleted = true
+      return HttpResponse.json({ value: { workflowIds: ['Alpha'] }, replayed: false })
+    }),
+  )
+  const user = userEvent.setup()
+  const { queryClient } = renderWithRouter(<><section aria-label="Directory"><WorkflowDirectory workspaceId="workspace-1" /></section>
+    <section aria-label="Sidebar"><WorkflowNavigation workspaceId="workspace-1" /></section></>)
+  const directory = within(await screen.findByRole('region', { name: 'Directory' }))
+  const sidebar = within(screen.getByRole('region', { name: 'Sidebar' }))
+  await directory.findByRole('link', { name: 'Alpha' })
+  await sidebar.findByRole('link', { name: /Alpha/ })
+  await user.click(directory.getByRole('button', { name: 'Select workflows' }))
+  await user.click(directory.getByRole('checkbox', { name: 'Select Alpha' }))
+  await user.click(directory.getByRole('button', { name: 'Delete selected (1)' }))
+  await user.click(screen.getByRole('button', { name: 'Delete 1 workflow' }))
+  await directory.findByText('1 workflow deleted.')
+  await waitFor(() => expect(sidebar.queryByRole('link', { name: /Alpha/ })).not.toBeInTheDocument())
+  for (const suffix of [[], ['directory']]) {
+    const cached = queryClient.getQueryData<{ pages: { items: ManagedWorkflow[] }[] }>([
+      'workbench', 'management', 'workspace', 'workspace-1', 'workflows', 'pages', ...suffix,
+    ])
+    expect(cached?.pages.flatMap((page) => page.items).map((item) => item.workflow.id)).toEqual(['Beta'])
+  }
+})
+
 it('cancels selection without deleting and reports a definitive batch rejection', async () => {
   server.use(
     http.get('/api/management/workspaces/workspace-1/workflows', () => HttpResponse.json({ items: [workflow('Alpha')], pageInfo: { nextCursor: null } })),
@@ -87,7 +132,8 @@ it('cancels selection without deleting and reports a definitive batch rejection'
   await user.click(screen.getByRole('button', { name: 'Delete 1 workflow' }))
   expect(await screen.findByText('A selected workflow changed. Nothing was deleted.')).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Cancel' }))
-  await user.click(screen.getByRole('button', { name: 'Cancel selection' }))
+  await user.click(screen.getByRole('button', { name: 'Selection options' }))
+  await user.click(screen.getByRole('menuitem', { name: 'Cancel selection' }))
   expect(screen.getByRole('link', { name: 'Alpha' })).toBeVisible()
 })
 

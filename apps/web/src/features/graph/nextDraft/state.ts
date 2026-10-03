@@ -45,7 +45,9 @@ export function newNextDraft(context: NextDraftContext, instanceId: string): Nex
 }
 
 export function editNextDraft(current: NextDraftEdit, update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3): NextDraftEdit {
-  const graph = update(current.graph)
+  const updated = update(current.graph)
+  // Server stamps are not authored changes. Geometry remains in history for intentional layout edits.
+  const graph = { ...updated, version: current.graph.version, createdAt: current.graph.createdAt, updatedAt: current.graph.updatedAt }
   if (sameValue(graph, current.graph)) return current
   return { ...current, graph, history: [...current.history.slice(-49), current.graph], future: [], validation: undefined,
     ...(current.agentHistory ? { agentEdits: referencedAgentEdits(graph, current.agentEdits),
@@ -76,8 +78,10 @@ export function redoNextDraft(current: NextDraftEdit): NextDraftEdit {
 }
 
 export function nextDraftDirty(edit: NextDraftEdit): boolean {
-  return hasLocalChanges(edit.context, edit.graph) || hasAgentEdits(edit) || !!edit.pending
-    || edit.context.draft.publishedRevision !== edit.context.draft.revision
+  const saved = edit.context.savedDraft
+  return hasLocalChanges(saved ? { ...edit.context, draft: saved } : edit.context, edit.graph)
+    || hasAgentEdits(edit) || !!edit.pending
+    || (!saved && edit.context.draft.publishedRevision !== edit.context.draft.revision)
 }
 
 export type NextDraftSlice = {

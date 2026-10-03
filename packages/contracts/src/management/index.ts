@@ -226,7 +226,7 @@ export const WorkspaceGetInputSchema = WorkspaceScopeSchema;
 export const WorkspaceCreateInputSchema = z.object({
   parentPath: z.string().trim().min(1).max(4096).refine((value) => !value.includes("\0"), "Invalid folder path").optional().describe("Existing parent folder on Local Runner. Pass workspace_defaults_get.value.parentPath to use the configured default; creates a new child named after the workspace. Omit only to leave execution location unconfigured."),
   ...MutationFields,
-  name: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(200).optional().describe("Omit to use the configured suggested name, adding (1), (2), etc. when a workspace name or project folder is already taken. An explicit name is used exactly and existing folders are rejected."),
   description: z.string().max(10_000).optional(),
 }).strict();
 export const WorkspaceUpdateInputSchema = z.object({
@@ -701,6 +701,7 @@ export const OperatorToolNameSchema = z.enum([
   "codex_plugins_list", "codex_plugin_get",
   "harness_configuration_check",
   "execution_readiness_get",
+  "claude_setup_options_get",
   "harness_options_get",
   "harness_options_refresh",
   "opencode_models_cache_update",
@@ -737,6 +738,7 @@ export const OperatorToolNameSchema = z.enum([
   "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update", "harness_qualifications_list", "harness_qualification_run",
   "agent_defaults_get", "agent_defaults_update", "workflow_defaults_get", "workflow_defaults_update",
   "workspace_folders_list", "workspace_folder_create", "workspace_folder_rename", "workspace_folder_undo", "workspace_folders_delete",
+  "workspace_storage_folders_list", "workspace_storage_folder_delete",
   "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive", "workspace_batch_archive",
   "workspace_location_validate", "workspace_location_set",
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive", "workflow_batch_archive",
@@ -784,3 +786,4 @@ export const OperatorCapabilitiesSchema = z.object({
 }).strict();
 
 export * from './executionReadiness.js'
+export * from './workspaceStorageFolders.js'

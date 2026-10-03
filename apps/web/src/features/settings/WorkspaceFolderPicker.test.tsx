@@ -8,6 +8,8 @@ import type { WorkspaceFolderCreateInput } from '@graphql/contracts/management'
 import { server } from '../../mocks/server'
 import { harnessSettingsKeys, type useHarnessDirectories } from '../../shared/api/harnessSettings'
 import { setMockScenario } from '../../shared/mocks/scenarios'
+import { mainRoot } from './workspaceBoundLocation.fixtures'
+import type { BoundFolderBrowser } from '../../shared/api/workspaceBoundLocation'
 import { WorkspaceFolderPicker } from './WorkspaceFolderPicker'
 
 type DirectoryPage = NonNullable<ReturnType<typeof useHarnessDirectories>['data']>
@@ -19,10 +21,10 @@ function page(overrides: Partial<DirectoryPage> = {}): DirectoryPage {
   }
 }
 const clients: QueryClient[] = []
-function mount(onSelect = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined), selectionUnconfirmed = false, value = '') {
+function mount(onSelect = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined), selectionUnconfirmed = false, value = '', directoryBinding?: BoundFolderBrowser) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
   clients.push(client)
-  render(<QueryClientProvider client={client}><WorkspaceFolderPicker disabled={false} value={value} onSelect={onSelect} selectionUnconfirmed={selectionUnconfirmed} /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><WorkspaceFolderPicker disabled={false} value={value} onSelect={onSelect} selectionUnconfirmed={selectionUnconfirmed} directoryBinding={directoryBinding} /></QueryClientProvider>)
   return { client, onSelect }
 }
 function deferred() {
@@ -54,6 +56,63 @@ beforeEach(() => {
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
 
 describe('WorkspaceFolderPicker Nocturne layout and interaction', () => {
+  it.each(['/external/projects', '/projects-adjacent'])('browses and selects bound Main roots outside app-managed storage without advertising mutations: %s', async (externalPath) => {
+    const user = userEvent.setup()
+    const expectedHost = { ...mainRoot, bases: [{ ...mainRoot.bases[0]!, canonicalPath: externalPath }] }
+    const input: BoundFolderBrowser['input'] = { workspaceId: 'workspace-1', hostRef: expectedHost.hostRef,
+      allowedBaseId: expectedHost.bases[0]!.baseId, configurationRevision: '1', relativePath: '', accessMode: 'read-write',
+      expectedLocationRevision: 0, expectedRootPolicyRevision: 0 }
+    const writes: unknown[] = []
+    server.use(
+      http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => {
+        const selection = await request.json() as typeof input
+        return HttpResponse.json({ workspaceId: 'workspace-1', selection,
+          browse: { relativePath: selection.relativePath, directories: selection.relativePath ? [] : [{ name: 'Project', relativePath: 'Project' }], truncated: false } })
+      }),
+      ...['', '/rename', '/undo', '/delete'].map(suffix => http.post('/api/management/harnesses/directories' + suffix, async ({ request }) => {
+        writes.push(await request.json()); return HttpResponse.json({}, { status: 403 })
+      })),
+    )
+    const { onSelect } = mount(undefined, false, externalPath, { input, expectedHost })
+    await openPicker(user)
+    const folder = await screen.findByRole('button', { name: 'Project' })
+    expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Actions for Project' })).not.toBeInTheDocument()
+    await user.keyboard('{Control>}'); await user.click(folder); await user.keyboard('{/Control}')
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveValue(externalPath + '/Project'))
+    await user.keyboard('{Delete}{Control>}z{/Control}')
+    expect(screen.queryByRole('button', { name: /Delete|Undo|New folder/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(externalPath + '/Project'))
+    expect(writes).toEqual([])
+  })
+
+  it('retains app-managed mutations for a bound Main root independently known to the folder service', async () => {
+    const user = userEvent.setup()
+    const input: BoundFolderBrowser['input'] = { workspaceId: 'workspace-1', hostRef: mainRoot.hostRef,
+      allowedBaseId: mainRoot.bases[0]!.baseId, configurationRevision: '1', relativePath: '', accessMode: 'read-write',
+      expectedLocationRevision: 0, expectedRootPolicyRevision: 0 }
+    const writes: unknown[] = []
+    server.use(
+      http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => HttpResponse.json({
+        workspaceId: 'workspace-1', selection: await request.json(),
+        browse: { relativePath: '', directories: [{ name: 'Project', relativePath: 'Project' }], truncated: false },
+      })),
+      http.post('/api/management/harnesses/directories', async ({ request }) => {
+        const body = await request.json() as { parentPath: string }
+        writes.push(body)
+        return HttpResponse.json({ value: { name: 'New folder', path: body.parentPath + '/New folder' }, replayed: false })
+      }),
+    )
+    mount(undefined, false, '/projects/shared', { input, expectedHost: mainRoot })
+    await openPicker(user)
+    expect(await screen.findByRole('button', { name: 'Actions for Project' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'New folder' }))
+    expect(await screen.findByRole('textbox', { name: 'Folder name' })).toHaveValue('New folder')
+    expect(writes).toEqual([{ parentPath: '/projects/shared', commandId: expect.any(String) }])
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeVisible()
+  })
+
   it('Ctrl-clicks multiple folders without browsing and Delete removes the selected folders', async () => {
     const user = userEvent.setup()
     let directories = [{ name: 'Alpha', path: '/projects/Alpha' }, { name: 'Beta', path: '/projects/Beta' }]

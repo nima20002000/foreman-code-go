@@ -17,6 +17,7 @@ import { readBoardStart } from './startOutbox'
 import { readBoardStop } from './stopOutbox'
 import { readEditOutbox } from '../graph/nextDraft/editIntentStorage'
 import { queryKeys } from '../../shared/api/query'
+import { boardDraftContextKey } from './keys'
 
 // The route tree, RootShell, sidebar, creation dialog, persisted boundary, Board,
 // canvas, form, Query hooks, Zustand store, HTTP clients and schemas are REAL.
@@ -145,21 +146,175 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
+  it('puts unavailable update reads in recovery rows without losing local edits or relaxing fresh Start reads', async () => {
+    const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
+    const mounted = await mount(mock)
+    const { id, key } = await create(mock, user)
+    stageShape(key, 'single', mock)
+    const saved = await save(mock, user, 1)
+    await waitFor(() => expect(control('Start saved version')).toBeEnabled())
+    let workspaceAvailable = false, draftAvailable = false
+    const unavailable = () => HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Updates unavailable.' } }, { status: 503 })
+    server.use(
+      http.get(`/api/workspaces/${mock.workspaceId}`, () => workspaceAvailable ? HttpResponse.json(mock.details()) : unavailable()),
+      http.get(`/api/management/workspaces/${mock.workspaceId}/workflows/${id}`, () => draftAvailable ? HttpResponse.json(mock.managed(id)) : unavailable()),
+    )
+    await mounted.query.invalidateQueries({ queryKey: queryKeys.workspaceDetails(mock.workspaceId) })
+    await mounted.query.invalidateQueries({ queryKey: boardDraftContextKey(mock.workspaceId, id) })
+    await mounted.query.invalidateQueries({ queryKey: ['workbench', 'board-start-preflight'] })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Workflow alerts, 2' })).toBeVisible())
+    expect(control('Start saved version')).toBeDisabled()
+    expect(readBoardStart(key)).toBeUndefined()
+    expect(mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))).toEqual([])
+    expect(screen.queryByText('Workspace updates are unavailable. The local draft is retained.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Draft updates are unavailable. Start requires a fresh verified saved read.')).not.toBeInTheDocument()
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, name: 'Retained through unavailable updates' })))
+    const local = useGraphDraftStore.getState().nextDrafts[key]!
+    await user.click(screen.getByRole('button', { name: 'Workflow alerts, 2' }))
+    const dialog = screen.getByRole('dialog', { name: 'Workflow alerts' })
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(dialog).getByText('Workspace updates unavailable. Local edits are kept.')).toBeVisible()
+    expect(within(dialog).getByText('Draft updates unavailable. Running requires a fresh saved read.')).toBeVisible()
+    workspaceAvailable = true
+    await user.click(within(dialog).getByRole('button', { name: 'Retry workspace updates' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Workflow alerts, 1' })).toBeVisible())
+    draftAvailable = true
+    await user.click(within(dialog).getByRole('button', { name: 'Retry draft updates' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Workflow alerts/ })).not.toBeInTheDocument())
+    expect(screen.queryByRole('dialog', { name: 'Workflow alerts' })).not.toBeInTheDocument()
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(local.graph)
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.context.draft.baseWorkflowVersionId).toBe(saved.id)
+    expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(true)
+    expect(mock.versions.size).toBe(1)
+    expect(mock.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/runs'))).toEqual([])
+  }, 20_000)
+
+  it('keeps real alerts outside the top toolbar and opens workflow history from an accessible Activities icon', async () => {
+    const mock = newBoardMock(), user = userEvent.setup()
+    const mounted = await mount(mock)
+    const { key } = await create(mock, user)
+    const alert = within(authoring()).getByRole('button', { name: /Workflow alerts, [1-9]/ })
+    expect(alert.closest('.board-alerts')?.parentElement).toHaveClass('workflow-graph-canvas')
+    expect(alert.closest('.board-topbar')).toBeNull()
+    expect(within(controls()).queryByRole('button', { name: /Workflow alerts/ })).not.toBeInTheDocument()
+    const activities = control('Activities')
+    expect(activities).toHaveClass('n-icon-button')
+    expect(activities).toHaveAttribute('title', 'Activities')
+    expect(activities.textContent).toBe('')
+    expect(activities.querySelector('svg')).toBeInTheDocument()
+    const selection = mounted.router.state.location.search
+    await user.click(activities)
+    const history = screen.getByRole('dialog', { name: 'Activities' })
+    expect(history).toHaveTextContent('No runs yet')
+    expect(mounted.router.state.location.search).toEqual(selection)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Activities' })).not.toBeInTheDocument()
+    expect(activities).toHaveFocus()
+    stageShape(key, 'single', mock)
+    await waitFor(() => expect(within(authoring()).queryByRole('button', { name: /Workflow alerts/ })).not.toBeInTheDocument())
+  }, 15_000)
+
+  it('keeps saved Board actions hidden for inspection and no-ops, and hides them again after Undo', async () => {
+    const mock = newBoardMock(), user = userEvent.setup()
+    await mount(mock)
+    const { key } = await create(mock, user)
+    stageShape(key, 'single', mock)
+    await save(mock, user, 1)
+    const initial = useGraphDraftStore.getState().nextDrafts[key]!
+    const assertClean = () => {
+      expect(screen.queryByRole('group', { name: 'Draft actions' })).not.toBeInTheDocument()
+      expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
+      expect(useGraphDraftStore.getState().nextDrafts[key]!.history).toHaveLength(initial.history.length)
+    }
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('Canceled title{Escape}')
+    assertClean()
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('{Enter}')
+    assertClean()
+    await user.click(control('Workflow actions'))
+    await user.keyboard('{Escape}')
+    assertClean()
+    await user.click(control('Workflow settings'))
+    await user.click(screen.getByRole('button', { name: 'Close panel' }))
+    assertClean()
+    const canvas = within(screen.getByLabelText('Editable workflow graph'))
+    fireEvent.click(canvas.getByRole('button', { name: new RegExp(`^${mock.agents[0]!.name},`) }))
+    await waitFor(() => expect(canvas.getByRole('button', { name: new RegExp(`^${mock.agents[0]!.name},`) })).toHaveAttribute('aria-pressed', 'true'))
+    assertClean()
+    act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...structuredClone(graph), updatedAt: '2026-10-02T00:00:00Z' })))
+    assertClean()
+    await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    await user.keyboard('Meaningful name{Enter}')
+    expect(screen.getByRole('group', { name: 'Draft actions' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Undo' }))
+    assertClean()
+    expect(screen.getByRole('button', { name: 'S3 mounted workflow' })).toBeVisible()
+    expect(mock.versions.size).toBe(1)
+  }, 20_000)
+
+  it('offers Save for an unpublished initial definition even without local edits', async () => {
+    const mock = newBoardMock(), user = userEvent.setup()
+    const workflowId = 'unpublished-initial'
+    const graph = shapeGraph({ id: workflowId, workspaceId: mock.workspaceId, name: 'Unpublished initial',
+      executionSemanticsVersion: 3, version: 1, nodes: [], edges: [], entryNodeId: null, executionCondition: { kind: 'manual' } }, 'single', mock)
+    mock.install(graph, false)
+    await mount(mock, `/workspaces/${mock.workspaceId}?workflowId=${workflowId}`)
+    const key = nextDraftKey(mock.workspaceId, workflowId)
+    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]).toBeDefined())
+    expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
+    expect(screen.getByRole('group', { name: 'Draft actions' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument()
+    const version = await save(mock, user, 1)
+    expect(version.definition.name).toBe(graph.name)
+    expect(version.definition.nodes).toEqual(graph.nodes)
+  }, 15_000)
+
   it('renames from the board title, cancels with Escape, and persists through Save beside Discard', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
     await mount(mock)
     const { key } = await create(mock, user)
     stageShape(key, 'single', mock)
+    const editor = authoring(), canvas = screen.getByLabelText('Editable workflow graph'), href = window.location.href
+    const title = screen.getByRole('heading', { name: 'S3 mounted workflow' })
     await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
+    expect(screen.getByRole('textbox', { name: 'Workflow name' })).toHaveFocus()
+    expect(screen.getByRole('heading', { name: 'S3 mounted workflow' })).toBe(title)
+    expect(authoring()).toBe(editor); expect(screen.getByLabelText('Editable workflow graph')).toBe(canvas)
+    expect(window.location.href).toBe(href)
     await user.keyboard('Canceled name{Escape}')
     expect(screen.getByRole('button', { name: 'S3 mounted workflow' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'S3 mounted workflow' })).toHaveFocus()
     await user.click(screen.getByRole('button', { name: 'S3 mounted workflow' }))
     await user.keyboard('Renamed board{Enter}')
     expect(screen.getByRole('button', { name: 'Renamed board' })).toBeVisible()
     const actions = within(screen.getByRole('group', { name: 'Draft actions' }))
     expect(actions.getByRole('button', { name: 'Save changes' })).toBeVisible()
+    expect(within(controls()).getByRole('button', { name: 'Workflow actions' })).toBeVisible()
+    expect(within(title.parentElement!).queryByRole('button', { name: 'Workflow actions' })).not.toBeInTheDocument()
     const version = await save(mock, user, 1)
     expect(version.definition.name).toBe('Renamed board')
+    await user.click(screen.getByRole('button', { name: 'Workflow actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    expect(screen.getByRole('textbox', { name: 'Workflow name' })).toHaveFocus()
+    await user.keyboard('Menu renamed board{Enter}')
+    const menuVersion = await save(mock, user, 2)
+    expect(menuVersion.definition.name).toBe('Menu renamed board')
+    await user.click(screen.getByRole('button', { name: 'Workflow actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove workflow' }))
+    const removal = screen.getByRole('dialog', { name: 'Remove Menu renamed board?' })
+    expect(removal).toHaveTextContent('Workflows with active runs cannot be removed.')
+    await user.click(within(removal).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Menu renamed board' })).toBeVisible()
+    server.use(http.delete(`/api/management/workspaces/${mock.workspaceId}/workflows/:workflowId`, () =>
+      HttpResponse.json({ error: { code: 'ACTIVE_RUN', message: 'Stop active runs before removing this workflow.' } }, { status: 409 })))
+    await user.click(screen.getByRole('button', { name: 'Workflow actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove workflow' }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Remove Menu renamed board?' })).getByRole('button', { name: 'Remove workflow' }))
+    expect(await screen.findByText('Stop active runs before removing this workflow.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Menu renamed board' })).toBeVisible()
   }, 15_000)
   it('saves before starting the exact newly published version from Save and run', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
@@ -299,7 +454,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     expect(mock.workflows.get(id)).not.toHaveProperty('repeat')
     // Current/past selection changes the URL, not the mounted local form.
     const editor = screen.getByRole('region', { name: 'Workflow authoring' })
-    await user.click(control('Runs'))
+    await user.click(control('Activities'))
     await user.click(await screen.findByRole('button', { name: new RegExp(`Open Run ${oldRun.id} ·`) }))
     await waitFor(() => expect(mounted.router.state.location.search.workflowVersionId).toBe(ordinary.id))
     expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(editor)

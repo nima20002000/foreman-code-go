@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createHash, randomUUID, webcrypto } from 'node:crypto'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HttpResponse, http } from 'msw'
@@ -11,6 +11,117 @@ import { beginSessionChange, finishSessionChange } from '../../shared/api/sessio
 import { ProjectFilesSection } from './ProjectFilesSection'
 import { projectFilesClient } from './projectFilesClient'
 import { projectFilesKeys } from './projectFilesQueries'
+
+it.each(['panel', 'heading', 'toolbar', 'Upload', 'hint', 'empty', 'list', 'row'])(
+  'drops on the %s through one workspace upload and persisted list readback', async (surface) => {
+    if (surface === 'list' || surface === 'row') rows.set(A, [fixture('existing')])
+    const view = mount()
+    await screen.findByText(surface === 'list' || surface === 'row' ? 'existing.md' : 'No files.')
+    const panel = screen.getByRole('region', { name: 'Project files' })
+    const targets: Record<string, Element> = {
+      panel, heading: screen.getByRole('heading', { name: 'Project files' }),
+      toolbar: panel.querySelector('header')!, Upload: screen.getByRole('button', { name: 'Upload' }),
+      hint: screen.getByText('Drop a file here or use Upload.'),
+      empty: screen.queryByText('No files.') ?? panel,
+      list: screen.queryByRole('list', { name: 'Project files' }) ?? panel,
+      row: screen.queryByText('existing.md') ?? panel,
+    }
+    expect(view.container.querySelector('.workspace-detail-content')!.firstElementChild).toBe(panel)
+    expect(Object.values(targets).every((target) => panel.contains(target))).toBe(true)
+    const selected = file('dropped-project.md', '# exact dropped bytes')
+    const event = createEvent.drop(targets[surface], { dataTransfer: { types: ['Files'], files: [selected] } })
+    fireEvent(targets[surface], event)
+    expect(event.defaultPrevented).toBe(true)
+    await screen.findByRole('button', { name: 'Download dropped-project.md' })
+    expect(calls.filter((call) => ['allocate', 'bytes', 'finalize'].includes(call.phase)).map((call) => call.phase))
+      .toEqual(['allocate', 'bytes', 'finalize'])
+    expect(calls.filter((call) => ['allocate', 'bytes', 'finalize'].includes(call.phase)).map((call) => call.workspaceId)).toEqual([A, A, A])
+    expect(calls.slice(calls.findIndex((call) => call.phase === 'finalize') + 1))
+      .toContainEqual({ phase: 'list', workspaceId: A })
+    const stored = rows.get(A)!.find((row) => row.revision.filename === 'dropped-project.md')!
+    expect(stored.file.state).toBe('ready')
+    expect(stored.revision.sha256).toBe(hash(new TextEncoder().encode('# exact dropped bytes')))
+  },
+)
+
+it('keeps whole-panel feedback stable across children and ignores text, URLs and ordinary clicks', async () => {
+  mount()
+  const panel = screen.getByRole('region', { name: 'Project files' })
+  const heading = screen.getByRole('heading', { name: 'Project files' })
+  const upload = screen.getByRole('button', { name: 'Upload' })
+  const dataTransfer = { types: ['Files'], files: [file()], dropEffect: 'none' }
+  fireEvent.dragEnter(panel, { dataTransfer })
+  fireEvent.dragEnter(heading, { dataTransfer })
+  fireEvent.dragLeave(heading, { dataTransfer })
+  fireEvent.dragEnter(upload, { dataTransfer })
+  fireEvent.dragLeave(upload, { dataTransfer })
+  expect(panel).toHaveAttribute('data-file-dragging', 'true')
+  expect(screen.getByText('Drop to upload')).toBeVisible()
+  fireEvent.dragLeave(panel, { dataTransfer })
+  expect(panel).not.toHaveAttribute('data-file-dragging')
+  for (const type of ['text/plain', 'text/uri-list']) {
+    const transfer = { types: [type], files: [] }
+    const enter = createEvent.dragEnter(heading, { dataTransfer: transfer })
+    const drop = createEvent.drop(upload, { dataTransfer: transfer })
+    fireEvent(heading, enter); fireEvent(upload, drop)
+    expect(enter.defaultPrevented).toBe(false); expect(drop.defaultPrevented).toBe(false)
+  }
+  fireEvent.click(heading); fireEvent.click(panel); fireEvent.click(upload)
+  expect(calls.filter((call) => call.phase === 'allocate')).toHaveLength(0)
+})
+
+it('blocks drops anywhere in the panel while an upload or removal dialog is pending', async () => {
+  const gate = deferred()
+  server.use(http.post(paths.finalize, async ({ request, params }) => {
+    await gate.promise
+    return finalize(request, String(params.workspaceId), String(params.requestId))
+  }))
+  mount()
+  const panel = screen.getByRole('region', { name: 'Project files' })
+  const upload = screen.getByRole('button', { name: 'Upload' })
+  fireEvent.drop(panel, { dataTransfer: { types: ['Files'], files: [file()] } })
+  await screen.findByRole('status', { name: 'Uploading notes.md' })
+  expect(upload).toBeDisabled()
+  const transfer = { types: ['Files'], files: [file('blocked.md')], dropEffect: 'copy' }
+  fireEvent.dragEnter(panel, { dataTransfer: transfer })
+  fireEvent.dragOver(upload, { dataTransfer: transfer })
+  expect(panel).not.toHaveAttribute('data-file-dragging')
+  expect(transfer.dropEffect).toBe('none')
+  const drop = createEvent.drop(upload, { dataTransfer: transfer }); fireEvent(upload, drop)
+  expect(drop.defaultPrevented).toBe(true)
+  await act(async () => gate.resolve())
+  await screen.findByRole('button', { name: 'Download notes.md' })
+  await userEvent.click(screen.getByRole('button', { name: 'Remove notes.md' }))
+  const lockedDrop = createEvent.drop(panel, { dataTransfer: transfer }); fireEvent(panel, lockedDrop)
+  expect(lockedDrop.defaultPrevented).toBe(true)
+  expect(calls.filter((call) => call.phase === 'allocate')).toHaveLength(1)
+  expect(calls.filter((call) => call.phase === 'finalize')).toHaveLength(1)
+  expect(rows.get(A)!.map((row) => row.revision.filename)).toEqual(['notes.md'])
+})
+
+it('retains server write denial for a file dropped on the heading', async () => {
+  server.use(http.post(paths.allocate, () => failure(403)))
+  mount()
+  await screen.findByText('No files.')
+  fireEvent.drop(screen.getByRole('heading', { name: 'Project files' }), {
+    dataTransfer: { types: ['Files'], files: [file('denied.md')] },
+  })
+  expect(await screen.findByRole('alert')).toHaveTextContent('Upload failed')
+  expect(calls.filter((call) => ['bytes', 'finalize'].includes(call.phase))).toHaveLength(0)
+  expect(rows.get(A)).toEqual([])
+  expect(screen.queryByRole('button', { name: 'Download denied.md' })).not.toBeInTheDocument()
+})
+
+it('reports unsupported multi-file/directory drops and keeps existing file validation', async () => {
+  const view = mount(), target = view.container.querySelector('.project-files')!
+  fireEvent.drop(target, { dataTransfer: { types: ['Files'], files: [file(), file()] } })
+  expect(screen.getByRole('alert')).toHaveTextContent('one file at a time')
+  fireEvent.drop(target, { dataTransfer: { types: ['Files'], files: [], items: [{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) }] } })
+  expect(screen.getByRole('alert')).toHaveTextContent('Folders are not supported')
+  fireEvent.drop(target, { dataTransfer: { types: ['Files'], files: [file('unsupported.exe')] } })
+  expect(screen.getByRole('alert')).toHaveTextContent('Unsupported')
+  expect(calls.filter((call) => call.phase === 'allocate')).toHaveLength(0)
+})
 
 const A = 'workspace-a'
 const B = 'workspace-b'
@@ -119,7 +230,7 @@ function mount(workspaceId = A) {
   } })
   clients.push(queryClient)
   const tree = (id: string) => <StrictMode><QueryClientProvider client={queryClient}>
-    <div style={{ width: 390 }}><ProjectFilesSection workspaceId={id} /></div>
+    <div className="settings-editor-content workspace-detail-content" style={{ width: 390 }}><ProjectFilesSection workspaceId={id} /></div>
   </QueryClientProvider></StrictMode>
   const view = render(tree(workspaceId))
   return { ...view, queryClient, switchTo: (id: string) => view.rerender(tree(id)) }

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useStore } from 'zustand'
-import { Icon, IconButton, Tooltip } from '../../shared/ui/nocturne'
+import { Icon, IconButton } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { createScheduleEditorStore } from './editorStore'
 import { ScheduleModal } from './ScheduleModal'
@@ -15,9 +15,9 @@ export interface ScheduleClockButtonProps {
 
 export function ScheduleClockButton(props: ScheduleClockButtonProps) {
   if (!props.isSaved || !props.workflowId || !props.workspaceId) {
-    return <Tooltip content="Save workflow first"><span className="schedule-clock-disabled" tabIndex={0} aria-label="Save workflow first">
+    return <span className="schedule-clock-disabled" tabIndex={0} aria-label="Save workflow first">
       <IconButton label="Save workflow first" size="sm" variant="ghost" disabled><Icon name="clock" size={16} /></IconButton>
-    </span></Tooltip>
+    </span>
   }
   // Drafts, dialogs, and in-flight callbacks can never migrate into another workflow.
   return <SavedScheduleClock key={JSON.stringify([sessionGeneration(), props.workspaceId, props.workflowId])}
@@ -30,10 +30,10 @@ function SavedScheduleClock({ workspaceId, workflowId }: { workspaceId: string; 
   const open = useStore(store, (state) => state.open)
   const trigger = useRef<HTMLButtonElement>(null)
   return <>
-    <Tooltip content="Schedule workflow"><IconButton ref={trigger} label="Schedule workflow" size="sm" variant="ghost"
+    <IconButton ref={trigger} label="Schedule workflow" size="sm" variant="ghost"
       aria-haspopup="dialog" aria-expanded={open} onClick={() => store.getState().show()}>
       <Icon name="clock" size={16} />
-    </IconButton></Tooltip>
+    </IconButton>
     <ScheduleModal scope={{ workspaceId, workflowId }} store={store} returnFocusRef={trigger} />
   </>
 }

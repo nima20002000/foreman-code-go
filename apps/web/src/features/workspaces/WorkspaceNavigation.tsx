@@ -18,6 +18,7 @@ import { WorkspaceFolderPicker } from '../settings/WorkspaceFolderPicker'
 import { LoadMore } from '../../shared/ui/LoadMore'
 import type { ComponentProps } from 'react'
 import type { Workspace } from '@graphql/contracts'
+import type { WorkspaceCreateInput } from '@graphql/contracts/management'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 
@@ -97,7 +98,7 @@ function NewWorkspaceControl() {
   const queryClient = useQueryClient()
   const createManagedWorkspace = useCreateManagedWorkspaceMutation()
   const inFlight = useRef(false)
-  const attempt = useRef(new CommandAttempt<{ name: string; parentPath: string }>())
+  const attempt = useRef(new CommandAttempt<Omit<WorkspaceCreateInput, 'commandId'>>())
   const uncertain = attempt.current.unresolved && !createManagedWorkspace.isPending
 
   const closeCreateDialog = useCallback(() => {
@@ -136,7 +137,7 @@ function NewWorkspaceControl() {
     setNameError(undefined)
     try {
       const workspace = (await createManagedWorkspace.mutateAsync(
-        attempt.current.input({ name: trimmedName, parentPath: parentPath.trim() }),
+        attempt.current.input({ ...(touched.current.name ? { name: trimmedName } : {}), parentPath: parentPath.trim() }),
       )).value.workspace
       assertSession(generation)
       attempt.current.succeeded()

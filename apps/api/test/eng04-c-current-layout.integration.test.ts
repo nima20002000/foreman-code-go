@@ -95,7 +95,9 @@ describe.skipIf(!postgresEnabled)('ENG04-C current geometry CAS HTTP/MCP', () =>
     const expectedGeometry = original.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
     const layout = { ...t.input, commandId: randomUUID(), expectedRevision: first.value.revision,
       expectedWorkflowVersionId: first.value.currentVersionId, expectedGeometry,
-      graph: { ...original, nodes: original.nodes.map((node, index) => index ? node : { ...node, position: { x: 901, y: 42 } }) } }
+      graph: { ...original, nodes: original.nodes.map((node, index) => index ? node : {
+        ...node, position: { x: 901, y: 42 }, width: 360, height: 280,
+      }) } }
     const moved = await t.call(CURRENT_WORKFLOW_TOOLS.save, layout)
     expect(moved.result?.isError, JSON.stringify(moved.result)).not.toBe(true)
     const saved = CurrentWorkflowSaveResultSchema.parse(graphRpcValue(moved.result))
@@ -112,6 +114,9 @@ describe.skipIf(!postgresEnabled)('ENG04-C current geometry CAS HTTP/MCP', () =>
     const read = await t.call('workflow_get', { workspaceId: t.input.workspaceId, workflowId: t.input.workflowId })
     expect(graphRpcValue(read.result)).toMatchObject({ revision: first.value.revision,
       currentVersionId: first.value.currentVersionId, workflow: { nodes: layout.graph.nodes } })
+    expect(graphRpcValue(read.result)).toMatchObject({ workflow: { nodes: [
+      { id: original.nodes[0]!.id, position: { x: 901, y: 42 }, width: 360, height: 280 }, expect.anything(),
+    ] } })
     const denied = await t.credential([{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [t.input.workspaceId] } }])
     expect((await t.call(CURRENT_WORKFLOW_TOOLS.save, layout, denied.token)).result?.isError).toBe(true)
     expect(await count(t, 'workflow_versions')).toBe(1)

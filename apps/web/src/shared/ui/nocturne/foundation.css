@@ -63,10 +63,11 @@
 .n-field-hint { display: block; color: var(--n-faint); font-size: 11px; line-height: 1.6; }
 .n-field-error { display: flex; gap: 6px; align-items: start; color: var(--n-danger); font-size: 12px; line-height: 1.6; }
 .n-field-error svg { margin-top: 2px; }
-.n-input { width: 100%; min-width: 0; min-height: 38px; padding: 9px 11px; border: 1px solid var(--n-control-border); border-radius: var(--n-radius-sm); background: var(--n-canvas); color: var(--n-text); font: 12px/1.6 var(--n-font); transition: border-color var(--n-fast), box-shadow var(--n-fast); }
+.n-input { width: 100%; min-width: 0; min-height: 38px; padding: 9px 11px; border: 1px solid var(--n-control-border); border-radius: var(--n-radius-sm); background: var(--n-canvas); color: var(--n-text); font: 12px/1.6 var(--n-font); transition: border-color var(--n-fast); }
 .n-input::placeholder { color: var(--n-faint); opacity: 1; }
 .n-input:hover:not(:disabled) { border-color: var(--n-faint); }
-.n-input:focus { border-color: var(--n-accent); }
+.n-input:focus { border-color: var(--n-control-border); box-shadow: none; }
+.n-theme .n-input:focus-visible { outline: 2px solid var(--n-muted); outline-offset: 1px; }
 .n-input[aria-invalid='true'], .n-input-wrap[data-invalid='true'] .n-input { border-color: var(--n-danger); }
 .n-input:disabled { opacity: .55; cursor: not-allowed; }
 .n-input[readonly] { background: var(--n-surface); }

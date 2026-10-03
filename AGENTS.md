@@ -45,6 +45,11 @@ Do not duplicate one state source in another layer without a documented reason.
 
 - Dismissible modals close when the user clicks their backdrop, outside the modal. Clicks inside the modal and drags that start inside must not dismiss it. Use the shared Dialog behavior; preserve pending-operation locks and unsaved-change guards. Any exception must have a concrete interaction reason.
 
+## Agent orchestration
+
+- Send related changes and follow-up issues to the existing agent that owns the feature or workstream. Message a running agent or resume an idle agent; do not spawn a new agent for every related issue.
+- Start a separate agent for distinct work, an explicitly requested separate assignment, or an independent review. Preserve clear ownership when coordinating shared files.
+
 ## Verification
 
 From the repository root, use the pinned pnpm runtime. Plain npm installs are

@@ -6,6 +6,7 @@ import { useGraphDraftStore } from '../store'
 import { apiClient } from '../../../shared/api/client'
 import { fixture } from './core.cases'
 import { nextDraftKey } from './state'
+import { nextDraftDirty } from './state'
 import { nextDraftApi } from './transport'
 import { clearCurrentLayoutJournals, useDraftLayout } from './useDraftLayout'
 
@@ -51,6 +52,39 @@ it('writes positions through current Save while keeping private executable edits
   expect(nativeNode(edit.graph.nodes[0])?.initialPrompt).toBe('private executable edit')
   expect(edit.context.draft.revision).toBe(7)
   expect(nativeNode(edit.context.draft.graph.nodes[0])?.position).toEqual({ x: 500, y: 20 })
+})
+it('persists a size-only resize and reloads it without a semantic revision or dirty Save', async () => {
+  const send = vi.spyOn(apiClient, 'request').mockResolvedValue(acknowledged)
+  const { result } = mount()
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
+    nodes: graph.nodes.map((node, index) => index ? node : { ...node, width: 360, height: 280 }) })))
+  await act(async () => { await result.current.mutateAsync() })
+  expect(send).toHaveBeenCalledOnce()
+  expect(send.mock.calls[0]![2]?.body).toMatchObject({ expectedRevision: 7,
+    graph: { nodes: [{ id: 'node-0', width: 360, height: 280 }, expect.anything()] } })
+  const edit = useGraphDraftStore.getState().nextDrafts[key]!
+  expect(edit.context.draft.graph.nodes[0]).toMatchObject({ width: 360, height: 280 })
+  expect(nextDraftDirty(edit)).toBe(false)
+  act(() => useGraphDraftStore.getState().installNextDraft(key, structuredClone(edit.context), true))
+  expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).toMatchObject({ width: 360, height: 280 })
+})
+
+it('replays a lost resize response exactly before preserving a newer size and position', async () => {
+  const send = vi.spyOn(apiClient, 'request').mockRejectedValueOnce(new Error('lost resize reply')).mockResolvedValue(acknowledged)
+  const { result } = mount()
+  const resize = (width: number, x: number) => act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph,
+    nodes: graph.nodes.map((node, index) => index ? node : { ...node, width, height: 280, position: { x, y: 20 } }) })))
+  resize(360, 100)
+  await act(async () => { await expect(result.current.mutateAsync()).rejects.toThrow('lost resize reply') })
+  const first = structuredClone(send.mock.calls[0]![2]?.body)
+  resize(400, 120)
+  await act(async () => { await result.current.mutateAsync() })
+  expect(send).toHaveBeenCalledTimes(3)
+  expect(send.mock.calls[1]![2]?.body).toEqual(first)
+  expect(send.mock.calls[2]![2]?.body).toMatchObject({ graph: { nodes: [
+    { width: 400, height: 280, position: { x: 120, y: 20 } }, expect.anything(),
+  ] } })
+  expect(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).toMatchObject({ width: 400, height: 280 })
 })
 it('replays the exact command after a lost reply before sending a newer position', async () => {
   const send = vi.spyOn(apiClient, 'request').mockRejectedValueOnce(new Error('lost reply')).mockResolvedValue(acknowledged)

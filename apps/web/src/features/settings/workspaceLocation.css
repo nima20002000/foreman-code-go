@@ -44,6 +44,8 @@
 }
 .workspace-folder-dialog .n-dialog-header > div { min-width: 0; text-align: center; }
 .workspace-folder-dialog .n-dialog-header h2 { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.workspace-folder-dialog--minimal-labels .n-dialog-header h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; padding: 0; border: 0; margin: -1px; }
+.workspace-folder-dialog--minimal-labels .workspace-folder-actions { margin-inline-start: auto; }
 .workspace-folder-dialog .n-dialog-header > button:first-child { justify-self: start; padding-inline: 8px; }
 .workspace-folder-dialog .n-dialog-header > button:last-child { justify-self: end; }
 .workspace-folder-dialog .n-button { min-height: 44px; font-size: 13px; }
@@ -107,3 +109,12 @@
 .workspace-location-card > .n-icon-button { position: absolute; top: 8px; right: 8px; z-index: 1; }
 
 .workspace-folder-actions { display: flex; align-items: center; gap: var(--space-2); }
+.workspace-location-form--compact { gap: var(--space-2); max-width: 100%; }
+.workspace-location-compact { display: flex; align-items: center; gap: var(--space-2); max-width: 100%; min-width: 0; color: var(--n-muted); font: 400 12px/1.5 var(--n-font); }
+.workspace-location-compact > svg { flex-shrink: 0; }
+.workspace-location-compact-path { flex: 0 1 auto; min-width: 0; max-width: 100%; min-height: 24px; padding: 2px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; user-select: text; }
+.workspace-location-compact-path > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-location-compact-path:hover { color: var(--n-text); }
+.workspace-location-compact-path:focus-visible { outline: 2px solid var(--n-accent); outline-offset: 4px; }
+.workspace-location-compact-path:disabled { cursor: default; }
+.workspace-location-compact:has(.workspace-location-compact-path:disabled) { opacity: .6; }

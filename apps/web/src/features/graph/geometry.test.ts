@@ -39,7 +39,29 @@ describe('gesture-local geometry', () => {
     expect(adapter.update([{ type: 'position', id: 'synthetic-node-0', position: { x: -20, y: -30 } }]).finished).toBe(false)
     adapter.update([{ type: 'dimensions', id: 'synthetic-node-0', dimensions: { width: 260, height: 160 }, resizing: true }])
     adapter.finishResize('synthetic-node-0', 10_000, 10, { x: -41, y: -51 })
-    expect(adapter.flush()).toEqual([{ id: 'synthetic-node-0', position: { x: -41, y: -51 }, width: 520, height: 112 }])
+    expect(adapter.flush()).toEqual([{ id: 'synthetic-node-0', position: { x: -41, y: -51 }, width: 520, height: 208 }])
+  })
+
+  it('does not author a resize that ends at its original geometry', () => {
+    const { adapter, graph } = setup(), node = graph.nodes[0]!
+    adapter.beginResize()
+    adapter.update([{ type: 'dimensions', id: node.id, dimensions: { width: 360, height: 280 }, resizing: true },
+      { type: 'position', id: node.id, position: { x: -30, y: -20 } }])
+    adapter.finishResize(node.id, node.width!, node.height!, node.position)
+    expect(adapter.flush()).toEqual([])
+    adapter.beginResize()
+    adapter.finishResize(node.id, node.width!, node.height!, node.position)
+    expect(adapter.flush()).toEqual([])
+  })
+
+  it('keeps a height-only resize while reconciling fresh node metadata', () => {
+    const { adapter, graph } = setup(), node = graph.nodes[0]!
+    adapter.beginResize()
+    adapter.update([{ type: 'dimensions', id: node.id, dimensions: { width: node.width!, height: 300 }, resizing: true }])
+    const rendered = adapter.reconcile(graph.nodes, new Set([node.id]))
+    expect(rendered[0]).toMatchObject({ width: node.width, height: 300, style: { height: 300 }, selected: true })
+    adapter.finishResize(node.id, node.width!, 300, node.position)
+    expect(adapter.flush()).toEqual([{ id: node.id, width: node.width, height: 300 }])
   })
 
   it('does not turn measurements, selection or invalid coordinates into an edit', () => {

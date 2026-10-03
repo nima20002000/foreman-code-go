@@ -1,18 +1,23 @@
+import { useId } from 'react'
 import { AgentEffortSchema, withAdvancedDefaults, type HarnessConfiguration } from '@graphql/contracts'
-import { Checkbox, Select, Textarea, TextField } from '../../shared/ui/nocturne'
+import { Select, Switch, Textarea, TextField } from '../../shared/ui/nocturne'
 import { HarnessSectionFields } from './HarnessSectionFields'
 import { HarnessTokenList } from './HarnessTokenList'
 import type { HarnessEditor } from './harnessEditor'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
+import { ClaudeMcpConfiguration } from './ClaudeMcpConfiguration'
+import './harnessModelFields.css'
 
 /** Configuration editing is passive. Native catalogs/checks are never queried on the API host. */
 export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
   editor: HarnessEditor; onChange(editor: HarnessEditor): void; issues?: readonly FieldIssue[];
 }) {
+  const serviceTierErrorId = useId()
+  const serviceTierError = fieldMessage(issues ?? [], 'serviceTier')
   const value = withAdvancedDefaults(editor.configuration)
   const change = (configuration: HarnessConfiguration) => onChange({ ...editor, configuration })
   if (value.harness === 'claude') return <div className="harness-form-stack">
-    <TextField label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')}
+    <TextField className="harness-model-secondary" label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')}
       onChange={event => change({ ...value, model: event.target.value })} />
     <TextField label="Local Claude profile directory" value={value.configDirectory} error={fieldMessage(issues ?? [], 'configDirectory')}
       hint="Sign in on this computer using this profile." onChange={event => change({ ...value, configDirectory: event.target.value })} />
@@ -20,7 +25,7 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
       options={[{ value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
       onChange={event => change({ ...value, authMode: event.target.value as typeof value.authMode })} />
     <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues ?? [], 'sandbox')}
-      options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }]}
+      options={[{ value: 'read-only', label: 'Read only' }, { value: 'workspace-write', label: 'Workspace write' }, { value: 'danger-full-access', label: 'Full access' }]}
       onChange={event => change({ ...value, sandbox: event.target.value as typeof value.sandbox })} />
     <p>These are explicit configuration values. Saving does not discover models, install, sign in or qualify a harness. Use the saved profile check on this computer.</p>
     <h4>Access and approvals</h4>
@@ -28,22 +33,27 @@ export function HostHarnessConfigurationFields({ editor, onChange, issues }: {
     {value.permissionRules.map(rule => <p key={rule.tool}>{rule.tool}: {rule.effect}</p>)}
     <h4>Session behavior</h4><p>Accepted instructions: {value.instructions || 'None'}</p>
     <h4>Pinned MCP policy</h4>
-    {Object.entries(value.mcpServers).map(([name, server]) => <p key={name}>{name}: {server.url}</p>)}
-    {!Object.keys(value.mcpServers).length ? <p>No MCP servers are configured.</p> : null}
+    <ClaudeMcpConfiguration value={value} onChange={change} appPreset={false} />
   </div>
   return <div className="harness-form-stack">
-    <TextField label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')} onChange={event => change({ ...value, model: event.target.value })} />
-    {value.harness === 'codex' ? <>
-      <Select label="Effort" value={value.reasoningEffort} options={AgentEffortSchema.options.map(item => ({ value: item, label: item }))}
-        onChange={event => change({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
-      <Select label="Service tier" value={value.serviceTier} options={[{ value: 'standard', label: 'Standard' }, { value: 'priority', label: 'Priority' }]}
-        onChange={event => change({ ...value, serviceTier: event.target.value as typeof value.serviceTier })} />
-    </> : <>
-      <TextField label="Provider variant" value={value.variant} error={fieldMessage(issues ?? [], 'variant')} onChange={event => change({ ...value, variant: event.target.value })} />
-      <TextField label="Native Agent" value={value.nativeAgent} error={fieldMessage(issues ?? [], 'nativeAgent')} onChange={event => change({ ...value, nativeAgent: event.target.value })} />
-      <Checkbox label="Show thinking" checked={value.thinking} onChange={event => change({ ...value, thinking: event.target.checked })} />
-    </>}
-    <p>These are explicit configuration values. Saving does not discover models, install, sign in or qualify a harness. Target-local admission validates provider support.</p>
+    <div className="harness-model-settings">
+      <div className="harness-model-fields">
+        <TextField label="Model" value={value.model} error={fieldMessage(issues ?? [], 'model')} onChange={event => change({ ...value, model: event.target.value })} />
+        {value.harness === 'codex' ? <Select label="Effort" value={value.reasoningEffort} error={fieldMessage(issues ?? [], 'reasoningEffort')}
+          options={AgentEffortSchema.options.map(item => ({ value: item, label: item }))}
+          onChange={event => change({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
+          : <TextField label="Provider variant" value={value.variant} error={fieldMessage(issues ?? [], 'variant')} onChange={event => change({ ...value, variant: event.target.value })} />}
+      </div>
+      <div className="harness-model-toggles">
+        {value.harness === 'codex' ? <div className="harness-model-toggle"><Switch label="Fast mode" checked={value.serviceTier === 'priority'}
+          aria-invalid={serviceTierError ? true : undefined} aria-describedby={serviceTierError ? serviceTierErrorId : undefined}
+          onChange={event => change({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' })} />
+          {serviceTierError ? <span className="n-field-error" id={serviceTierErrorId}>{serviceTierError}</span> : null}</div>
+          : <Switch label="Show thinking" checked={value.thinking} onChange={event => change({ ...value, thinking: event.target.checked })} />}
+      </div>
+    </div>
+    {value.harness === 'opencode' ? <TextField className="harness-model-secondary" label="Native Agent" value={value.nativeAgent}
+      error={fieldMessage(issues ?? [], 'nativeAgent')} onChange={event => change({ ...value, nativeAgent: event.target.value })} /> : null}
     <h4>Access and approvals</h4>
     <HarnessSectionFields editor={editor} onChange={onChange} section="permissions" issues={issues}
       writableDirectories={value.harness === 'codex' ? <HarnessTokenList label="Additional writable paths on this computer"

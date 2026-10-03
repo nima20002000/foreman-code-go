@@ -89,19 +89,28 @@ function contain(id, dir, owner, boot) {
 }
 let containmentFd
 let stopping=false,started=false,leader=false
+function killTree() {
+  // The cgroup includes detached descendants and is pinned by an open fd.
+  if(containmentFd!==undefined) {
+    try{fs.writeFileSync('/proc/self/fd/'+containmentFd+'/cgroup.kill','1');return}catch{}
+  }
+  // A failed boundary kill is never a close certificate. Recovery remains fenced.
+  try{process.kill(-process.pid,'SIGKILL')}catch{}
+}
 function stop() {
   if(stopping)return
   stopping=true
   if(!leader)process.exit(1) // No native child exists before leader qualification.
   try {process.kill(-process.pid,'SIGTERM')}catch{}
-  setTimeout(()=>{
-    // The cgroup includes detached descendants and is pinned by an open fd.
-    if(containmentFd!==undefined) {
-      try{fs.writeFileSync('/proc/self/fd/'+containmentFd+'/cgroup.kill','1');return}catch{}
-    }
-    // A failed boundary kill is never a close certificate. Recovery remains fenced.
-    try{process.kill(-process.pid,'SIGKILL')}catch{}
-  },1000)
+  setTimeout(killTree,1000)
+}
+function stopAfterNativeExit() {
+  if(stopping)return // A cancellation already owns its graceful cleanup deadline.
+  stopping=true
+  // The provider has exited and its receipt has flushed. No grace period is
+  // needed, but remaining descendants still require the same forced cleanup.
+  if(!leader)process.exit(1)
+  killTree()
 }
 process.on('SIGTERM',stop)
 process.on('SIGINT',stop)
@@ -182,9 +191,9 @@ process.on('message',input=>{
               guardian:{pid:live.pid,startTicks:live.startTicks},nativePid:native.pid,exitCode,exitSignal}
             // Flush the exact native outcome before cleanup kills this guardian too.
             // Pipe output stays unchanged; a disconnected manager cannot receive success.
-            if(process.connected)process.send(outcome,()=>stop())
-            else stop()
-          }catch{stop()}
+            if(process.connected)process.send(outcome,()=>stopAfterNativeExit())
+            else stopAfterNativeExit()
+          }catch{stopAfterNativeExit()}
         })
       }catch{stop()}
     })

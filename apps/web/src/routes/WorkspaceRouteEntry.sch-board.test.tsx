@@ -40,15 +40,18 @@ async function authoring() {
   return editor
 }
 async function choose(runId: string | null) {
+  if (runId === null) {
+    await userEvent.click(screen.getByRole('button', { name: 'Return to workflow' }))
+    return
+  }
   const controls = screen.getByRole('group', { name: 'Board controls' })
   await userEvent.click(within(controls).getByRole('button', { name: /^Runs$/ }))
   const menu = await screen.findByRole('menu', { name: 'Runs' })
-  const item = runId === null ? within(menu).getByRole('menuitemradio', { name: 'Current workflow' })
-    : await waitFor(() => {
-      const row = menu.querySelector<HTMLButtonElement>(`[data-run-id="${runId}"]`)
-      expect(row).not.toBeNull()
-      return row!
-    })
+  const item = await waitFor(() => {
+    const row = menu.querySelector<HTMLButtonElement>(`[data-run-id="${runId}"]`)
+    expect(row).not.toBeNull()
+    return row!
+  })
   await userEvent.click(item)
 }
 const savedY = () => screen.findByRole('img', { name: 'Y, saved agent, read only' })
@@ -218,13 +221,14 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     const clock = await within(group).findByRole('button', { name: 'Schedule workflow' })
     const selector = within(group).getByRole('button', { name: /^Runs$/ })
     const files = within(group).getByRole('button', { name: 'Files' })
-    expect(clock.compareDocumentPosition(selector) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(selector.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(selector.compareDocumentPosition(clock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(clock.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(group.closest('header')).toHaveStyle({ position: 'static', minWidth: '0', boxSizing: 'border-box' })
     expect(container.querySelector('.unified-workflow-board')).toHaveStyle({ flexDirection: 'column' })
     await userEvent.click(selector)
     const menu = await screen.findByRole('menu', { name: 'Runs' })
-    await waitFor(() => expect(menu).toHaveStyle({ width: '296px' }))
-    expect(within(menu).getByRole('menuitemradio', { name: 'Current workflow' })).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Runs' })).toHaveStyle({ width: '296px' }))
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(2)
+    expect(within(group).getByRole('button', { name: 'Return to workflow' })).toBeEnabled()
   })
 })

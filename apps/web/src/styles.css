@@ -131,9 +131,9 @@ h1 {
   min-height: 100vh;
   grid-template-columns: var(--navigation-width, 13.5rem) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  overflow: hidden;
+  /* Clip without creating a scroll container that would trap the sticky sidebar. */
+  overflow: clip;
   background: var(--color-canvas);
-  transition: grid-template-columns var(--motion-duration) var(--motion-ease);
 }
 
 .workspace-shell-navigation-collapsed {
@@ -141,55 +141,27 @@ h1 {
 }
 
 .shell-sidebar {
-  position: relative;
+  position: sticky;
+  min-width: 0;
+  top: 0;
   display: flex;
   height: 100vh;
+  height: 100dvh;
   max-height: 100vh;
-  min-height: 100vh;
+  max-height: 100dvh;
+  min-height: 0;
   grid-row: 1 / -1;
   flex-direction: column;
   gap: var(--space-6);
   padding: var(--space-4) var(--space-3);
   border-right: 1px solid var(--color-border);
   background: var(--color-sidebar);
-  transition:
-    padding var(--motion-duration) var(--motion-ease),
-    gap var(--motion-duration) var(--motion-ease);
 }
 
-.shell-sidebar .sidebar-collapse-button {
-  position: absolute;
-  z-index: 3;
-  top: 0.875rem;
-  right: 0.625rem;
-  display: grid;
-  width: 1.75rem;
-  height: 1.75rem;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-muted);
-  background: transparent;
-  cursor: pointer;
-}
-
-/* Collapsed, the rail is too narrow to share its top row: the button rides the edge. */
-.workspace-shell-navigation-collapsed .shell-sidebar .sidebar-collapse-button {
-  right: -0.875rem;
-  border-color: var(--color-border-strong);
-  background: var(--color-surface-raised);
-}
-
-.sidebar-collapse-button:hover {
-  border-color: var(--color-border-strong);
-  color: var(--color-text-strong);
-  background: var(--color-surface-subtle);
-}
-
-.sidebar-collapse-button:focus-visible {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 2px;
+.workspace-shell[data-navigation-motion='instant'] :is(.shell-sidebar, .sidebar-brand,
+  .sidebar-brand-name, .nav-item, .nav-item-primary, .nav-item-label, .nav-item-chevron),
+.workspace-shell[data-navigation-motion='instant'] .shell-navigation .nav-submenu {
+  transition: none !important;
 }
 
 .sidebar-resize-handle {
@@ -418,6 +390,13 @@ h1 {
 
 .sidebar-footer {
   display: grid;
+  flex-shrink: 0;
+  max-height: calc(100% - var(--space-6));
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  container-type: inline-size;
+  container-name: sidebar-footer;
   margin-top: auto;
   gap: var(--space-3);
 }
@@ -446,10 +425,6 @@ h1 {
   align-items: center;
   gap: var(--space-4);
   padding-inline: 0.5rem;
-}
-
-.workspace-shell-navigation-collapsed .sidebar-resize-handle {
-  display: none;
 }
 
 .workspace-shell-navigation-collapsed .nav-label,
@@ -488,6 +463,10 @@ h1 {
   padding-top: 1.25rem;
 }
 
+.workspace-shell-navigation-collapsed .sidebar-footer {
+  max-height: calc(100% - var(--space-4) - 1.25rem);
+}
+
 .workspace-shell-navigation-collapsed .shell-navigation .nav-submenu {
   padding-left: 0;
 }
@@ -506,17 +485,6 @@ h1 {
 .workspace-shell-navigation-collapsed .nav-item-primary {
   justify-content: center;
   gap: 0;
-}
-
-/* Harness status labels wrap in the narrow rail instead of clipping to one letter. */
-.workspace-shell-navigation-collapsed .sidebar-footer > :first-child { width: 100%; min-width: 0; }
-.workspace-shell-navigation-collapsed .sidebar-footer > :first-child :is(span, button, a, li, small) {
-  max-width: 100%;
-  overflow: visible;
-  font-size: 10px;
-  overflow-wrap: anywhere;
-  text-overflow: clip;
-  white-space: normal;
 }
 
 .workspace-shell-navigation-collapsed .theme-toggle {
@@ -1096,15 +1064,11 @@ h1 {
 
 @media (max-width: 860px) {
   .workspace-shell {
-    grid-template-columns: 11rem minmax(0, 1fr);
+    grid-template-columns: min(var(--navigation-width, 11rem), 40vw) minmax(0, 1fr);
   }
 
   .workspace-shell.workspace-shell-navigation-collapsed {
     grid-template-columns: 3.75rem minmax(0, 1fr);
-  }
-
-  .sidebar-resize-handle {
-    display: none;
   }
 
   .shell-header {
@@ -1119,15 +1083,11 @@ h1 {
     /* Keep the navigation controls legible on phone widths. The graph still
        owns the remaining column, but nested labels and action buttons never
        collapse into clipped text. */
-    grid-template-columns: min(13rem, 55vw) minmax(0, 1fr);
+    grid-template-columns: min(var(--navigation-width, 13rem), 55vw) minmax(0, 1fr);
   }
 
   .workspace-shell-navigation-collapsed {
     grid-template-columns: 3.75rem minmax(0, 1fr);
-  }
-
-  .shell-sidebar {
-    min-height: 100vh;
   }
 
   .sidebar-note {

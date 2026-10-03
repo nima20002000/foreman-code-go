@@ -75,7 +75,7 @@ describe('PR17 Operator interaction regressions', () => {
     const user = userEvent.setup()
     textarea.focus()
     await user.tab()
-    expect(screen.getByRole('button', { name: 'New chat' })).toHaveFocus()
+    expect(screen.getByRole('button', { name: /Agent settings:/ })).toHaveFocus()
   })
   it('keeps a rejected turn reason visible after reload without retrying it', async () => {
     const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')

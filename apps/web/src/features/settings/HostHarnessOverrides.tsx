@@ -10,6 +10,7 @@ import { useRevisionedForm } from './revisionedForm'
 import { createHarnessEditor, prepareHarnessEditor, type HarnessEditor } from './harnessEditor'
 import { HostHarnessProfileCheck } from './HostHarnessProfileCheck'
 import { HostHarnessConfigurationFields } from './HostHarnessConfigurationFields'
+import { compactIdentity } from '../../shared/ui/compactIdentity'
 
 type EditorValue = { enabled: boolean; editor: HarnessEditor }
 type Seed = { instanceId: string; target: z.infer<typeof HostHarnessOverrideTargetSchema>; presetId: string; value: EditorValue }
@@ -46,11 +47,9 @@ function OverrideEditor({ value, seed, onCreated, onCancelled }: { value?: HostH
         <div><dt>Harness installation</dt><dd>{target.harnessInstallationId} · {target.installationFingerprint}</dd></div>
       </dl>
     </details>
-    <p className="computer-hint">Changes apply to new admissions on this computer. Accepted Runs and sessions keep their pinned settings.</p>
     <Checkbox label="Enabled for new admissions" checked={draft.enabled} onChange={event => form.setDraft(current => current && ({ ...current, enabled: event.target.checked }))} />
     <HostHarnessConfigurationFields editor={draft.editor} issues={form.issues} onChange={editor => form.setDraft(current => current && ({ ...current, editor }))} />
     <SettingsFormFeedback form={form} />
-    <p className="computer-hint">Saving does not qualify this computer. New admissions still need current installation and qualification evidence.</p>
     {value ? <HostHarnessProfileCheck key={value.instanceId} value={value} draftDirty={form.isDirty || form.isSaving || form.uncertain} /> : null}
     <SettingsFormActions form={{ ...form, isDirty: Boolean(seed) || form.isDirty, reset: seed ? () => onCancelled?.() : form.reset }} saveLabel={value ? 'Save host override' : 'Create host override'} onSave={submit} />
   </section>
@@ -75,13 +74,22 @@ export function HostHarnessOverrides({ target }: { target: HostHarnessOverrideLi
   const choices = inventory.isSuccess ? inventory.data.installations.filter(installation => installation.installed && installation.installationFingerprint !== null).flatMap(installation => inventory.data.instances.filter(preset => preset.availability === 'available' && preset.configuration && preset.driverId === installation.driverId)
     .map(preset => ({ installation, preset, id: JSON.stringify([installation.harnessInstallationId, installation.installationFingerprint, preset.instanceId, preset.instanceRevision]) }))) : []
   const selected = choices.find(choice => choice.id === selection)
+  const presetIds = choices.map(choice => choice.preset.instanceId)
+  const installationIds = choices.map(choice => choice.installation.harnessInstallationId)
   return <section aria-label="Host instance settings"><h2 className="computers-title">Host instance settings</h2>
-    <p className="computer-hint">Overrides apply to this computer only. Global defaults stay unchanged.</p>
+    <p className="computer-hint">Overrides apply to new admissions on this computer only. Saving does not qualify the profile; accepted Runs and sessions keep their pinned settings. Login files and credentials are not copied.</p>
     {overrides.data.overrides.map(value => <OverrideEditor key={`${value.instanceId}:${value.target.installationFingerprint}`} value={value} />)}
     {!overrides.data.overrides.length ? <p className="computer-hint">No overrides yet. This computer uses the global presets until you create one.</p> : null}
     {seed ? <OverrideEditor key={seed.instanceId} seed={seed} onCreated={() => put(scope)} onCancelled={() => put(scope)} /> : <div className="computer-new-override">
-      <Select label="Installation and global preset for new override" value={selection ?? ''} options={[{ value: '', label: 'Choose an installation and preset' }, ...choices.map(choice => ({ value: choice.id, label: `${choice.preset.driverId} · ${choice.installation.harnessInstallationId} · ${choice.preset.instanceId}` }))]}
+      <Select label="Installation and global preset for new override" value={selection ?? ''} options={[{ value: '', label: 'Choose an installation and preset' }, ...choices.map(choice => ({ value: choice.id,
+        label: `${choice.preset.driverId} · ${compactIdentity(choice.preset.instanceId, presetIds)}${choices.some(other => other.id !== choice.id && other.preset.instanceId === choice.preset.instanceId) ? ` · ${compactIdentity(choice.installation.harnessInstallationId, installationIds)} · ${choice.preset.instanceRevision}` : ''}` }))]}
         onChange={event => select(scope, event.target.value)} />
+      {selected ? <details className="computer-details"><summary>Selected installation and preset</summary><dl className="computer-facts">
+        <div><dt>Harness installation</dt><dd>{selected.installation.harnessInstallationId}</dd></div>
+        <div><dt>Installation fingerprint</dt><dd>{selected.installation.installationFingerprint}</dd></div>
+        <div><dt>Preset source</dt><dd>{selected.preset.instanceId}</dd></div>
+        <div><dt>Preset revision</dt><dd>{selected.preset.instanceRevision}</dd></div>
+      </dl></details> : null}
       <Button disabled={!selected || !selected.preset.configuration || !selected.installation.installationFingerprint} onClick={() => {
         if (!selected?.preset.configuration || !selected.installation.installationFingerprint) return
         put(scope, { instanceId: crypto.randomUUID(), target: { ...target, harnessInstallationId: selected.installation.harnessInstallationId, installationFingerprint: selected.installation.installationFingerprint },
@@ -89,7 +97,6 @@ export function HostHarnessOverrides({ target }: { target: HostHarnessOverrideLi
       }}>Configure new host override</Button>
       {inventory.isError ? <Alert tone="danger" title="Installation choices could not be read. Reload this computer to try again." /> : null}
       {inventory.isSuccess && !choices.length ? <p className="computer-hint">No installed harness with an available global preset was reported for this computer, so there is nothing to override yet.</p> : null}
-      <p className="computer-hint">Creating an override copies the preset’s values for this computer. Login files and credentials are not copied.</p>
     </div>}
   </section>
 }

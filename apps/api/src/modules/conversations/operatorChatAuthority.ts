@@ -1,6 +1,7 @@
 import { APP_MCP_SERVER_NAME, APP_MCP_TOKEN, registerAppRoute } from '../harnesses/appMcpLauncher.js'
 import type pg from 'pg'
 import type { OperatorChatSetup, OperatorConfigurationVersion } from '@graphql/contracts'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { operatorChatGrants } from '../access/operatorChatDelegation.js'
@@ -19,7 +20,9 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
     private readonly rollout: NativeRollout, private readonly directory: string, private readonly endpoint: string,
     private readonly inspectorFor?: (manager: NativeHarnessSessionManager) => NativeMcpInspector,
     private readonly deliverClaudeCredential?: (manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion,
-      environment: ChildProcessEnvironment, signal: AbortSignal) => Promise<void>) {}
+      environment: ChildProcessEnvironment, signal: AbortSignal) => Promise<void>,
+    private readonly inspectClaudeConfiguration?: (principal: ManagementPrincipal, configuration: OperatorConfigurationVersion,
+      signal: AbortSignal) => Promise<OperatorChatSetup>) {}
 
   current(principalId: string) { return this.access.currentOperator(principalId) }
   assertConfiguration(configuration: OperatorConfigurationVersion) {
@@ -31,6 +34,22 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       return
     }
     this.rollout.assertChat(configuration)
+  }
+
+  async setupConfiguration(principal: ManagementPrincipal, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<OperatorChatSetup> {
+    const current = await this.access.currentHarnessInspectionPrincipal(principal.id)
+    requireAuthorization(current, 'harnesses:read')
+    signal.throwIfAborted()
+    this.assertConfiguration(configuration)
+    if (configuration.harness.harness !== 'claude' || !this.inspectClaudeConfiguration) throw new DomainError(
+      'OPERATOR_SETUP_INSPECTION_UNAVAILABLE', 'Claude installation inspection is unavailable.', 503)
+    const result = await this.inspectClaudeConfiguration(current, configuration, signal)
+    signal.throwIfAborted()
+    requireAuthorization(await this.access.currentHarnessInspectionPrincipal(principal.id), 'harnesses:read')
+    if (result.harness !== 'claude' || result.endpoint !== this.endpoint
+      || result.configurationVersionId && result.configurationVersionId !== configuration.id) throw new DomainError(
+      'MCP_INSPECTION_CONTEXT_MISMATCH', 'Native MCP inspection returned another Operator launch context.', 500)
+    return result
   }
 
   async setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup> {

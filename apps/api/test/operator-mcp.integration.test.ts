@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema } from '@graphql/contracts/wave25'
 import { ManagementActionSchema } from '@graphql/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 
 function value(result: { isError?: boolean | undefined; structuredContent?: unknown }) {
   // SDK optional properties can be present with undefined. Success retains its
@@ -15,6 +16,46 @@ function value(result: { isError?: boolean | undefined; structuredContent?: unkn
 }
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration', () => {
+  it('creates available default workspace names through authenticated MCP, replays and reads them back, and denies provisioning without grants', async () => {
+    const f = await currentOperatorIntegration()
+    try {
+      await new PostgresFoundationSettingsRepository(f.db.pool).updateWorkspaceDefaults({
+        suggestedName: 'New workspace', description: 'Default description', parentPath: f.db.directory,
+      }, 0)
+      const tools = (await f.client.listTools()).tools
+      const schema = tools.find((tool) => tool.name === 'workspace_create')!.inputSchema
+      expect(schema.required).not.toContain('name')
+      const create = (arguments_: Record<string, unknown>) => f.client.callTool({ name: 'workspace_create', arguments: arguments_ })
+      const base = value(await create({ commandId: randomUUID(), parentPath: f.db.directory }))
+      expect(base.value).toMatchObject({ workspace: { name: 'New workspace', description: 'Default description' } })
+      await mkdir(join(f.db.directory, 'New workspace (1)'))
+      const args = { commandId: randomUUID(), parentPath: f.db.directory, description: 'Override description' }
+      const created = value(await create(args))
+      const workspace = (created.value as { workspace: { id: string; name: string } }).workspace
+      expect(created.value).toMatchObject({ workspace: { name: 'New workspace (2)', description: 'Override description' },
+        executionLocation: { rootPath: join(f.db.directory, 'New workspace (2)') }, locationValidation: { status: 'ready' } })
+      expect(value(await create(args))).toEqual({ ...created, replayed: true })
+      expect(value(await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId: workspace.id } })))
+        .toMatchObject({ workspace, executionLocation: { rootPath: join(f.db.directory, 'New workspace (2)') },
+          locationRevision: 1, locationValidation: { status: 'ready' } })
+      const concurrent = await Promise.all([0, 1].map(() => create({ commandId: randomUUID(), parentPath: f.db.directory })))
+      expect(concurrent.map((result) => (value(result).value as { workspace: { name: string } }).workspace.name).sort())
+        .toEqual(['New workspace (3)', 'New workspace (4)'])
+      expect((await create({ commandId: randomUUID(), name: 'New workspace', parentPath: f.db.directory })).isError).toBe(true)
+      const folders = await readdir(f.db.directory)
+      const restricted = await f.access.issue({ name: 'No provisioning', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
+        grants: [{ actions: ['workspaces:create'], scope: {} }] })
+      const denied = await (await f.connect(restricted.token)).callTool({ name: 'workspace_create', arguments: {
+        commandId: randomUUID(), parentPath: f.db.directory,
+      } })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
+      expect(await readdir(f.db.directory)).toEqual(folders)
+      expect((await f.db.pool.query("select record from workspaces where record->>'name' like 'New workspace%'")).rowCount).toBe(4)
+      expect((await f.db.pool.query('select sequence from management_audit where principal_id=$1', [restricted.principal.id])).rowCount).toBeGreaterThan(0)
+    } finally { await f.close() }
+  }, 60000)
+
   it('discovers current tools and denies missing, worker, expired, revoked, wrong-scope and read-only callers', async () => {
     const f = await currentOperatorIntegration()
     try {

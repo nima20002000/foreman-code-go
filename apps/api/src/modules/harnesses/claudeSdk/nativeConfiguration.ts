@@ -12,8 +12,9 @@ export interface ClaudeNativeConfigurationPort {
 export function claudeSettingSupport(): HarnessOptions['settings'] {
   return [
     { field: 'model', support: 'conditional', detail: 'Only models observed from the selected local installation are selectable.' },
+    { field: 'effort', support: 'conditional', detail: 'The accepted effort is delivered through the SDK and must be advertised by the selected model.' },
     { field: 'permissions', support: 'conditional', detail: 'Default permission mode and routed approvals require qualified always-applied policy checks.' },
-    { field: 'sandbox', support: 'conditional', detail: 'Read-only and workspace-write require native OS enforcement proof; plan mode is not read-only.' },
+    { field: 'sandbox', support: 'conditional', detail: 'Read-only and workspace-write require native OS enforcement proof. Full access disables the native sandbox and requires qualified tool approval routing; plan mode is not read-only.' },
     { field: 'instructions', support: 'conditional', detail: 'Only accepted pinned instructions are delivered; ambient settings and plugins are excluded.' },
     { field: 'mcp', support: 'conditional', detail: 'Only explicitly approved endpoints; app and file authorization remain server-side.' },
   ]
@@ -32,7 +33,7 @@ export class ClaudeCheckedNativeConfigurationPort implements ClaudeNativeConfigu
     signal.throwIfAborted()
     // Explicit API-key provisioning is checked by the actual native host; this read-only path never delivers a key.
     const capabilities = requireClaudePolicyQualification(configuration, accepted)
-    const supportedSettings = ['model', 'permissions', 'sandbox', 'instructions', 'mcp']
+    const supportedSettings = ['model', 'effort', 'permissions', 'sandbox', 'instructions', 'mcp']
     return { harness: 'claude', version: accepted.currentBinding.pin.cliVersion, authenticated: accepted.persistedProof.authenticated === true, ready: capabilities.sdk && capabilities.basicTurns,
       structuredEvents: capabilities.basicTurns, supportsResume: capabilities.resume, supportsCancellation: capabilities.cancellation,
       supportsWorkingDirectory: capabilities.workingDirectory, supportsStartupPrompt: capabilities.startupPrompt,

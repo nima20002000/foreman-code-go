@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ScheduleConfiguration } from '@graphql/contracts/schedules'
-import { buildScheduleCommand, createDraft, createScheduleEditorStore, draftIdentity, timezoneOptions } from './editorStore'
+import { buildScheduleCommand, createDraft, createScheduleEditorStore, draftIdentity } from './editorStore'
 
 const scope = { workspaceId: 'workspace-test', workflowId: 'workflow-test' }
 const now = '2026-09-28T10:00:00.000Z'
@@ -43,7 +43,7 @@ describe('schedule form validation and draft ownership', () => {
     const store = editor()
     store.getState().edit({ weekdays: [], time: '', timezone: 'PST' })
     expect(buildScheduleCommand(scope, store.getState(), now).errors).toMatchObject({
-      weekdays: 'Choose a day.', time: 'Choose a time.', timezone: 'Choose a timezone.',
+      weekdays: 'Choose a day.', time: 'Choose a time.', timezone: 'Could not read the device timezone.',
     })
   })
   it.each(['2026-09-27', '2026-02-30', '0000-01-01'])('rejects invalid/past Once %s even disabled', (localDate) => {
@@ -65,10 +65,7 @@ describe('schedule form validation and draft ownership', () => {
     store.getState().edit({ time: '10:00' })
     expect(buildScheduleCommand(scope, store.getState(), now).errors?.localDate).toBeDefined()
   })
-  it('keeps saved aliases in the timezone select', () => {
-    expect(timezoneOptions('US/Eastern')).toEqual(expect.arrayContaining(['UTC', 'US/Eastern']))
-  })
-  it('keeps the browser zone available when Intl has no timezone list', () => {
+  it('uses the device zone without requiring Intl timezone choices', () => {
     const resolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions
     const localZone = 'Asia/Dushanbe'
     vi.stubGlobal('Intl', Object.assign(Object.create(Intl), { supportedValuesOf: undefined }))
@@ -77,18 +74,14 @@ describe('schedule form validation and draft ownership', () => {
     })
     try {
       const saved = editor()
-      expect(timezoneOptions(saved.getState().draft!.timezone)).toContain(localZone)
+      expect(saved.getState().draft?.timezone).toBe(localZone)
 
       const fresh = editor(null, 0)
       expect(fresh.getState().draft?.timezone).toBe(localZone)
-      fresh.getState().edit({ timezone: 'UTC' })
-      expect(timezoneOptions(fresh.getState().draft!.timezone)).toContain(localZone)
       const result = buildScheduleCommand(scope, fresh.getState(), now)
       if (result.command?.kind !== 'save') throw new Error('Expected save')
       const reopened = editor(result.command.input.schedule, 1)
-      expect(timezoneOptions(reopened.getState().draft!.timezone)).toContain(localZone)
-      reopened.getState().edit({ timezone: localZone })
-      expect(timezoneOptions(reopened.getState().draft!.timezone)).toContain('UTC')
+      expect(reopened.getState().draft?.timezone).toBe(localZone)
     } finally {
       vi.restoreAllMocks()
       vi.unstubAllGlobals()

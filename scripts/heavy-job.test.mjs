@@ -134,6 +134,111 @@ for (const [name, pgid, denied] of [
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
 
+test('a dead queued owner cannot retain FIFO behind unrelated unreadable environments', { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    mockProc(f, `function readFileSync(path, ...args) { if (path === '/proc/99999998/environ') throw Object.assign(new Error('unrelated fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998'] : actualReaddirSync(path, ...args) }`)
+    const ticket = join(f.state, 'queue', '000000000001-queued')
+    mkdirSync(dirname(ticket), { recursive: true })
+    writeFileSync(ticket, JSON.stringify({ common: f.common, pid: 99999999, start: '0', pgid: null, phase: 'queued', namespace, token: randomUUID() }))
+    const result = await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])
+    assert.equal(result.code, 0, result.output)
+    assert.equal(existsSync(ticket), false)
+    assert.equal(existsSync(join(f.state, 'active')), false)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
+for (const [name, phase, pid, pgid, identity] of [
+  ['live queued owner', 'queued', process.pid, null, namespace],
+  ['queued foreign ownership', 'queued', 99999999, null, { ...namespace, boot: 'foreign' }],
+  ['queued unreadable owner', 'queued', 99999998, null, namespace],
+  ['acquisition crash before the child PID is recorded', 'acquiring', 99999999, null, namespace],
+  ['running crash before the child PID is recorded', 'running', 99999999, null, namespace],
+  ['unknown phase', 'unknown', 99999999, null, namespace],
+  ['inconsistent queued process group', 'queued', 99999999, 99999998, namespace],
+]) test(`${name} remains reserved with unreadable evidence`, { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    mockProc(f, `function readFileSync(path, ...args) { if (path === '/proc/99999998/environ' || path === '/proc/99999998/stat') throw Object.assign(new Error('fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998'] : actualReaddirSync(path, ...args) }`)
+    const ticket = join(f.state, 'queue', '000000000001-reserved')
+    mkdirSync(dirname(ticket), { recursive: true })
+    const start = pid === process.pid ? readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19] : '0'
+    const record = JSON.stringify({ common: f.common, pid, start, pgid, phase, namespace: identity, token: randomUUID() })
+    writeFileSync(ticket, record)
+    const result = await probe(f)
+    assert.match(result.output, /queued .*waiting/)
+    assert.equal(result.ran, false)
+    assert.equal(readFileSync(ticket, 'utf8'), record)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
+for (const pgidRecorded of [false, true]) test(`detached worker retains a dead running owner with ${pgidRecorded ? 'recorded group' : 'unrecorded group/token evidence'}`, { timeout: 6000 }, async () => {
+  const f = fixture()
+  const token = randomUUID()
+  const worker = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore', env: { ...process.env, GRAPHQL_HEAVY_JOB_TOKEN: token } })
+  const exited = new Promise((resolve) => worker.once('exit', resolve))
+  try {
+    mockProc(f, `function readFileSync(...args) { return actualReadFileSync(...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? [${JSON.stringify(String(worker.pid))}] : actualReaddirSync(path, ...args) }`)
+    const ticket = join(f.state, 'queue', '000000000001-detached')
+    mkdirSync(dirname(ticket), { recursive: true })
+    const record = JSON.stringify({ common: f.common, pid: 99999999, start: '0', pgid: pgidRecorded ? worker.pid : null, phase: 'acquiring', namespace, token })
+    writeFileSync(ticket, record)
+    const result = await probe(f)
+    assert.match(result.output, /queued .*waiting/)
+    assert.equal(result.ran, false)
+    assert.equal(readFileSync(ticket, 'utf8'), record)
+  } finally {
+    worker.kill('SIGTERM')
+    await exited
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
+test('a coordinator crash at spawn leaves acquiring provenance in every marker', { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    const scriptPath = join(f.first, 'scripts/heavy-job.mjs')
+    const script = readFileSync(scriptPath, 'utf8')
+    const spawnLine = "    child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })"
+    assert.ok(script.includes(spawnLine))
+    writeFileSync(scriptPath, script.replace(spawnLine, "    process.kill(process.pid, 'SIGKILL')\n" + spawnLine))
+    const result = await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])
+    assert.equal(result.child.signalCode, 'SIGKILL', result.output)
+    const ticket = join(f.state, 'queue', readdirSync(join(f.state, 'queue'))[0])
+    const active = join(f.state, 'active', 'owner.json')
+    const temp = join(f.tempRoot, readdirSync(f.tempRoot)[0], 'owner.json')
+    for (const path of [ticket, active, temp]) {
+      const record = JSON.parse(readFileSync(path, 'utf8'))
+      assert.equal(record.phase, 'acquiring')
+      assert.equal(record.pgid, null)
+    }
+    copyFileSync(source, scriptPath)
+    mockProc(f, `function readFileSync(path, ...args) { if (path === '/proc/99999998/environ') throw Object.assign(new Error('fixture denied'), { code: 'EACCES' }); return actualReadFileSync(path, ...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? ['99999998'] : actualReaddirSync(path, ...args) }`)
+    const next = await probe(f)
+    assert.match(next.output, /queued .*waiting/)
+    assert.equal(next.ran, false)
+    for (const path of [ticket, active, temp]) assert.equal(existsSync(path), true)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
+test('marker publication failure stops the spawned group before releasing its slot', { timeout: 6000 }, async () => {
+  const f = fixture()
+  try {
+    const scriptPath = join(f.first, 'scripts/heavy-job.mjs')
+    const pidPath = join(f.home, 'unpublished-pid')
+    const script = readFileSync(scriptPath, 'utf8').replace('writeFileSync }', 'writeFileSync as actualWriteFileSync }')
+    writeFileSync(scriptPath, `${script}\nfunction writeFileSync(path, data, ...args) { if (path.startsWith(queue + '/') && JSON.parse(data).phase === 'running') { actualWriteFileSync(${JSON.stringify(pidPath)}, String(JSON.parse(data).pgid)); throw new Error('fixture marker publication failure') } return actualWriteFileSync(path, data, ...args) }\n`)
+    const result = await run(f.first, ['--stop-grace-ms', '100', '--', process.execPath, '-e', 'setInterval(()=>{},1000)'])
+    assert.equal(result.code, 1, result.output)
+    assert.match(result.output, /fixture marker publication failure/)
+    assert.equal(pidRunning(Number(readFileSync(pidPath, 'utf8'))), false)
+    assert.equal(existsSync(join(f.state, 'active')), false)
+    assert.deepEqual(readdirSync(join(f.state, 'queue')), [])
+    copyFileSync(source, scriptPath)
+    assert.equal((await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])).code, 0)
+  } finally { rmSync(f.home, { recursive: true, force: true }) }
+})
+
 test('malformed queue and missing active ownership remain reserved', { timeout: 6000 }, async () => {
   const f = fixture()
   try {
@@ -187,6 +292,7 @@ test('one stable token owns ticket, active slot, and temp; release preserves rep
       const record = JSON.parse(readFileSync(path, 'utf8'))
       assert.equal(record.token, owner.token)
       assert.deepEqual(record.namespace, namespace)
+      assert.equal(record.phase, 'running')
       writeFileSync(path, JSON.stringify({ ...record, token: replacement }))
     }
     writeFileSync(released, 'yes')
@@ -222,6 +328,8 @@ test('linked worktrees take one visible slot in ticket order', async () => {
     const second = run(f.second, ['--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(secondRan)},'yes')`])
     await new Promise((resolve) => setTimeout(resolve, 500))
     assert.equal(existsSync(secondRan), false)
+    const pending = readdirSync(join(f.state, 'queue')).sort().at(-1)
+    assert.equal(JSON.parse(readFileSync(join(f.state, 'queue', pending), 'utf8')).phase, 'queued')
     writeFileSync(released, 'yes')
     assert.equal(await new Promise((resolve) => first.once('exit', resolve)), 0)
     const result = await second

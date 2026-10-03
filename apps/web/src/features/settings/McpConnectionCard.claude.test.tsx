@@ -10,6 +10,7 @@ it('identifies Claude and exposes the native-check limitation without a fallback
   expect(await screen.findByRole('article', { name: 'Claude' })).toBeVisible()
   expect(screen.getByText('Claude workspace connection checks are not available here.')).toBeVisible()
   expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Configure Claude MCP' })).toHaveAttribute('href', '/settings/harnesses?harness=claude&section=connections')
   expect(screen.queryByRole('button', { name: /Check setup/ })).not.toBeInTheDocument()
   expect(request).not.toHaveBeenCalled()
 })

@@ -4,7 +4,6 @@ import type { JobExecution } from '@graphql/contracts/jobs'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
 import { JobsDirectory, JobRerun } from '../features/jobs/JobsDirectory'
 import { JobResult } from '../features/jobs/JobResult'
-import { Button } from '../shared/ui/nocturne'
 import '../features/jobs/jobs.css'
 
 export function JobsRouteEntry() {
@@ -21,7 +20,6 @@ export function JobExecutionRouteEntry() {
   const [rerun, setRerun] = useState<JobExecution | null>(null)
   const navigate = useNavigate()
   return <WorkspaceShell workspaceId={workspaceId} activeSection="jobs" slots={{ main: <>
-    <Button onClick={() => { void navigate({ to: `/workspaces/${encodeURIComponent(workspaceId)}/jobs` }) }}>Back to jobs</Button>
     <JobResult key={`${workspaceId}:${executionId}`} workspaceId={workspaceId} executionId={executionId} onRerun={setRerun} />
     {rerun?.id === executionId && rerun.workspaceId === workspaceId && <JobRerun workspaceId={workspaceId} execution={rerun} onClose={() => setRerun(null)} onAccepted={execution => { setRerun(null); void navigate({ to: `/workspaces/${encodeURIComponent(workspaceId)}/jobs/${encodeURIComponent(execution.id)}` }) }} />}
   </> }} />

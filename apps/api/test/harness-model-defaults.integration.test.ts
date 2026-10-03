@@ -1,0 +1,51 @@
+import { randomUUID } from 'node:crypto'
+import { expect, it } from 'vitest'
+import { operatorChatSettings } from '@graphql/contracts'
+import type { HarnessOptions } from '@graphql/contracts/management'
+import { AgentDefaultsUpdateResultSchema, ManagedAgentDefaultsSchema } from '@graphql/contracts/management'
+import { initializeNativeDefaults } from '../src/modules/harnesses/initializeDefaults.js'
+import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
+import { reviewAuthMcpDatabase } from './helpers/reviewAuthMcpDatabase.js'
+
+it('persists detected defaults once, preserves explicit pins and exposes the exact medium Claude effort through authenticated MCP', async () => {
+  const f = await reviewAuthMcpDatabase()
+  const options = async (harness: HarnessOptions['harness']): Promise<HarnessOptions> => ({ harness, providerVersion: 'observed-native',
+    authenticated: true, models: [{ id: harness === 'opencode' ? 'connected/latest' : `${harness}-latest`, defaultPriority: 0,
+      reasoningEfforts: ['low', 'medium', 'high'], variants: ['', 'medium'], serviceTiers: ['standard'] }], nativeAgents: ['build'], settings: [], restrictions: [], checkedAt: new Date().toISOString() })
+  try {
+    await initializeNativeDefaults({ pool: f.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
+    const harnesses = await new PostgresSettingsRepository(f.pool).getManagedHarnessDefaults()
+    expect(harnesses.defaults.codex).toMatchObject({ model: 'codex-latest', reasoningEffort: 'medium', sandbox: 'read-only' })
+    expect(harnesses.defaults.opencode).toMatchObject({ model: 'connected/latest', variant: 'medium' })
+    expect(harnesses.defaults.claude).toMatchObject({ model: 'claude-latest', effort: 'medium', authMode: 'subscription', sandbox: 'read-only' })
+    const initialized = await f.repository.getAgentDefaults()
+    expect(initialized.value.operator.harness).toMatchObject({ model: 'codex-latest', reasoningEffort: 'medium', sandbox: 'danger-full-access' })
+    await initializeNativeDefaults({ pool: f.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
+    expect(await f.repository.getAgentDefaults()).toEqual(initialized)
+    expect(await new PostgresSettingsRepository(f.pool).getManagedHarnessDefaults()).toEqual(harnesses)
+    const writer = await f.access.issue({ name: 'Native defaults owner', audience: 'operator',
+      grants: [{ actions: ['settings:read', 'settings:update', 'harnesses:read', 'harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
+    const profile = (await f.profiles.save(writer.principal, 'http', { commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0,
+      target: { hostRef: { kind: 'main', mainId: f.mainId }, applicationInstallationId: f.mainId, harnessInstallationId: 'actual-claude', installationFingerprint: 'actual-fingerprint' },
+      presetId: 'local-default:claude', enabled: true, configuration: { ...harnesses.defaults.claude!, sandbox: 'danger-full-access' } })).value
+    const input = { commandId: randomUUID(), expectedRevision: initialized.revision, value: { ...initialized.value, operator: {
+      ...initialized.value.operator, harness: profile.configuration, harnessProfileSelection: { target: profile.target, instanceId: profile.instanceId, instanceRevision: profile.instanceRevision },
+    } } }
+    const client = await f.connect(writer.token)
+    const saved = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
+    expect(operatorChatSettings(saved.value.value.operator.harness)).toMatchObject({ harness: 'claude', model: 'claude-latest', effort: 'medium' })
+    expect(AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)).toEqual({ ...saved, replayed: true })
+    const reader = await f.access.issue({ name: 'Read-only model caller', audience: 'operator', grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
+    const readClient = await f.connect(reader.token)
+    await expect(readClient.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).rejects.toThrow('not found')
+    expect(ManagedAgentDefaultsSchema.parse((await readClient.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)).toEqual(saved.value)
+    await initializeNativeDefaults({ pool: f.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
+    expect(await f.repository.getAgentDefaults()).toEqual(saved.value)
+    const historical = { ...harnesses.defaults.claude! }
+    delete historical.effort
+    await new PostgresSettingsRepository(f.pool).saveHarnessDefaults({ ...harnesses.defaults, claude: historical })
+    await initializeNativeDefaults({ pool: f.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
+    expect((await new PostgresSettingsRepository(f.pool).getHarnessDefaults()).claude).toEqual(historical)
+    expect(await f.repository.getAgentDefaults()).toEqual(saved.value)
+  } finally { await f.close() }
+}, 30_000)

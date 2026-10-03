@@ -25,7 +25,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'operator_chat_create', async () => ({ conversation: await context.services.operatorChat!.create(context.principal, input.title) })))
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_get')) server.registerTool('operator_chat_get', {
-    description: 'Read an owned Operator conversation, including its harness handoff parent and persisted messages. Requires operator_chat:read.',
+    description: 'Read an owned Operator conversation, including its harness handoff parent and persisted messages. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1) }).strict(), outputSchema: GetOperatorConversationResponseSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ conversationId }) => invokeOperatorTool(context, 'operator_chat_get', () => context.services.operatorChat!.get(conversationId, context.principal)))
@@ -42,14 +42,14 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ sourceConversationId, before }) => invokeOperatorTool(context, 'operator_handoff_history_get', () => context.services.operatorChat!.handoffHistory(context.principal, sourceConversationId, before)))
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_mcp_setup_get')) server.registerTool('operator_mcp_setup_get', {
-    description: 'Check the saved Operator harness for the required enabled graphql MCP launcher (automatic instance routing) or legacy endpoint and credential environment reference. This checks installation only; it does not install MCP, issue credentials, or prove provider authentication.',
+    description: 'Check the saved Operator GraphQL MCP installation, configured endpoint and managed credential arrangement. Claude uses a read-authorized, zero-input SDK inspection on its exact current profile. Native chat-derived callers must have a live submitted owner-bound turn and current parent grants. This checks installation only; it does not install MCP, issue credentials, grant execution authority or prove a per-turn connection.',
     inputSchema: z.object({}).strict(), outputSchema: OperatorChatSetupSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'operator_mcp_setup_get', () => context.services.operatorChat!.setup(context.principal)))
   const settings = context.services.settings
   if (!settings) return
   if (operatorToolAvailable(context, 'agent_defaults_get')) server.registerTool('agent_defaults_get', {
-    description: 'Read saved role defaults, including the Operator chat model, harness, Codex sandbox or OpenCode permission rules, effort, and thinking preferences. New Operator conversations inherit these settings. Operator UI enablement does not disable management MCP.',
+    description: 'Read saved role defaults, including the Operator chat model, harness, Codex or Claude sandbox, OpenCode native permission rules, effort, and thinking preferences. Unsaved Operator defaults use full access; existing saved settings remain authoritative. New Operator conversations inherit these settings. Operator UI enablement does not disable management MCP.',
     inputSchema: z.object({}).strict(), outputSchema: ManagedAgentDefaultsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'agent_defaults_get', () => settings.getAgentDefaults(context.principal)))
@@ -59,7 +59,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'workflow_defaults_get', () => settings.getWorkflowDefaults(context.principal)))
   if (operatorToolAvailable(context, 'agent_defaults_update')) server.registerTool('agent_defaults_update', {
-    description: 'Revision-check and replace role defaults, including the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update; changing Operator skills, harness or thinking settings also requires skills:read in every assigned skill workspace.',
+    description: 'Revision-check and replace role defaults, including the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. Codex and Claude support explicit danger-full-access; OpenCode permissions are not a filesystem sandbox. Access choices do not grant app authority or bypass native qualification and approval routing. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update; changing Operator skills, harness or thinking settings also requires skills:read in every assigned skill workspace. First local Claude preparation additionally requires harnesses:read and harnesses:update, and runs finite subscription diagnostics for the exact submitted configuration.',
     inputSchema: AgentDefaultsUpdateInputSchema, outputSchema: AgentDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'agent_defaults_update', () => settings.updateAgentDefaults(context.principal, 'mcp', input)))

@@ -15,6 +15,14 @@ describe('floating agent connections', () => {
   it('fans parallel connections out instead of overlapping them', () => {
     expect(new Set([0, 1, 2].map((index) => edgeBend(index, true))).size).toBe(3)
   })
+  it('uses the independently resized rims at either end of a handoff', () => {
+    const curve = floatingCurve({ x: 0, y: 0 }, { x: 600, y: 0 }, 0, undefined,
+      { width: 360, height: 208 }, { width: 272, height: 320 })
+    expect(curve.path).toBe('M 187,0 Q 300,0 457,0')
+    const vertical = floatingCurve({ x: 0, y: 0 }, { x: 0, y: 600 }, 0, undefined,
+      { width: 360, height: 208 }, { width: 272, height: 320 })
+    expect(vertical.path).toBe('M 0,111 Q 0,300 0,433')
+  })
 })
 
 describe('relationship lines', () => {

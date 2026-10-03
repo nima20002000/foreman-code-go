@@ -83,7 +83,7 @@ export class NativeConfigurationService {
     if (harness === 'claude') {
       const options = await this.claudePort().discover(this.directory, signal)
       return HarnessOptionsResultSchema.parse({ harness, ...options, settings: claudeSettingSupport(),
-        restrictions: ['Only the explicitly selected current host profile supplies discovery metadata.', 'Metadata discovery does not qualify execution or create a model turn.'], checkedAt: new Date().toISOString() })
+        restrictions: ['Metadata comes from this API host’s installed SDK and the saved or detected local profile. Execution requires an exact qualified host profile.', 'Metadata discovery does not qualify execution or create a model turn.'], checkedAt: new Date().toISOString() })
     }
     if (harness === 'codex') {
       const allocated = this.factories.allocate({ harness: 'codex', role: 'diagnostics',

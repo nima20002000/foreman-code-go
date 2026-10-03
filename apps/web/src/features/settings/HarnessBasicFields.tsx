@@ -5,6 +5,7 @@ import { useNativeHarnessOptions, useRefreshNativeHarness } from '../../shared/a
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import { ClaudeConfigurationFields } from './ClaudeConfigurationFields'
 import { nativeOptionsWithSaved, selectNativeModel, supportedEfforts } from './harnessModelSelection'
+import './harnessModelFields.css'
 
 type Props = { value: HarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[] }
 export function HarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string }) {
@@ -18,25 +19,26 @@ export function HarnessBasicFields({ value, onChange, issues = [], includeSandbo
     models={query.data?.models ?? []} qualified={qualified} pending={checking || query.isPending}
     error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} />
   return <div className="harness-basic-fields">
-    <Combobox label="Model" value={value.model} options={models} error={fieldMessage(issues, 'model')}
-      onValueChange={(id) => { const model = query.data?.models.find((item) => item.id === id); if (model) onChange(selectNativeModel(value, model)) }} />
+    <div className="harness-model-settings">
+      <div className="harness-model-fields">
+        <Combobox label="Model" value={value.model} options={models} error={fieldMessage(issues, 'model')}
+          onValueChange={(id) => { const model = query.data?.models.find((item) => item.id === id); if (model) onChange(selectNativeModel(value, model)) }} />
+        {value.harness === 'codex' ? <Select label="Effort" value={value.reasoningEffort} aria-label="Effort" error={fieldMessage(issues, 'reasoningEffort')}
+          options={nativeOptionsWithSaved(supportedEfforts(selected), value.reasoningEffort)}
+          onChange={(event) => onChange({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
+          : <Select label="Provider variant" value={value.variant} error={fieldMessage(issues, 'variant')}
+            options={nativeOptionsWithSaved(selected ? ['', ...selected.variants] : [], value.variant)} onChange={(event) => onChange({ ...value, variant: event.target.value })} />}
+      </div>
+      <div className="harness-model-toggles"><HarnessModelOptions value={value} onChange={onChange} issues={issues} /></div>
+    </div>
     {query.isPending ? <span className="harness-status" role="status">Loading native models…</span> : null}
-    {query.data ? <p className="harness-status">API host model catalog · {query.data.providerVersion} · checked <time dateTime={query.data.checkedAt}>
-      {new Date(query.data.checkedAt).toLocaleString()}</time></p> : null}
     {query.isError || refresh.isError ? <Alert live tone="danger" title={(refresh.error ?? query.error)?.message ?? 'Model discovery failed.'}
       action={<Button size="sm" disabled={refresh.isPending} onClick={() => refresh.mutate()}>Retry</Button>} /> : null}
-    {value.harness === 'codex' ? <div className="harness-two-columns">
-      <Select label="Effort" value={value.reasoningEffort} aria-label="Effort" error={fieldMessage(issues, 'reasoningEffort')}
-        options={nativeOptionsWithSaved(supportedEfforts(selected), value.reasoningEffort)}
-        onChange={(event) => onChange({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} />
-      {includeSandbox ? <HarnessSandboxField value={value} onChange={onChange} issues={issues} /> : null}
-    </div> : <div className="harness-two-columns">
-      <Select label="Provider variant" value={value.variant} error={fieldMessage(issues, 'variant')}
-        options={nativeOptionsWithSaved(selected ? ['', ...selected.variants] : [], value.variant)} onChange={(event) => onChange({ ...value, variant: event.target.value })} />
+    {value.harness === 'codex' && includeSandbox ? <div className="harness-model-secondary"><HarnessSandboxField value={value} onChange={onChange} issues={issues} /></div> : null}
+    {value.harness === 'opencode' ? <div className="harness-model-secondary">
       <Select label="Native Agent" value={value.nativeAgent} error={fieldMessage(issues, 'nativeAgent')}
         options={nativeOptionsWithSaved(query.data?.nativeAgents ?? [], value.nativeAgent)} onChange={(event) => onChange({ ...value, nativeAgent: event.target.value })} />
-    </div>}
-    <HarnessModelOptions value={value} onChange={onChange} issues={issues} />
+    </div> : null}
   </div>
 }
 function HarnessModelOptions({ value, onChange, issues = [] }: Props) {
@@ -46,7 +48,7 @@ function HarnessModelOptions({ value, onChange, issues = [] }: Props) {
   if (value.harness !== 'codex') return null
   const supported = query.data?.models.find((item) => item.id === value.model)?.serviceTiers.includes('priority') === true
   const error = fieldMessage(issues, 'serviceTier') ?? (query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)
-  return <div><Switch label="Fast mode" checked={value.serviceTier === 'priority'} disabled={!supported && value.serviceTier !== 'priority'}
+  return <div className="harness-model-toggle"><Switch label="Fast mode" checked={value.serviceTier === 'priority'} disabled={!supported && value.serviceTier !== 'priority'}
     aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined}
     onChange={(event) => onChange({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' })} />
     {error ? <span className="n-field-error" id={errorId}>{error}</span> : null}

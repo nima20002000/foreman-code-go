@@ -36,6 +36,7 @@ import { createPassiveTelemetryAuthorities } from './modules/resource-telemetry/
 import { registerResourceTelemetryRoutes } from './routes/resourceTelemetry.js'
 import { registerResourceTelemetrySelectorRoutes } from './routes/resourceTelemetrySelector.js'
 import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
+import { bootstrapLocalMainWorkspaceRoot } from './modules/workspace-roots/localMainBootstrap.js'
 import { registerWorkspaceRootRoutes } from './modules/workspace-roots/transports.js'
 import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
 import { RemoteJobMainRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
@@ -47,6 +48,9 @@ import { registerJobRoutes } from './routes/jobs.js'
 import { registerJobRuntimeProfileRoutes } from './routes/jobRuntimeProfiles.js'
 import { registerSourceRoutes } from './modules/sources/routes.js'
 import { createClaudeProductionDiscovery } from './modules/harnesses/claudeSdk/bootstrap.js'
+import { productionClaudeMetadata } from './modules/harnesses/claudeSdk/productionMetadata.js'
+import { initializeNativeDefaults } from './modules/harnesses/initializeDefaults.js'
+import { qualifyClaudeNativeProfile } from './modules/harnesses/claudeSdk/nativeProfileQualification.js'
 import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
 import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
@@ -60,7 +64,11 @@ import { currentOperatorAuthority } from './modules/access/runAuthority.js'
 import { requireAuthorization } from './modules/access/policy.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
 import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
-import { HarnessExecutionRequestSchema } from '@graphql/contracts'
+import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@graphql/contracts'
+import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
+import { requireClaudePolicyQualification } from './modules/harnesses/claudeSdk/configuration.js'
+import { qualificationError } from './modules/harnesses/qualificationErrors.js'
+import { authorizeOperatorConfigurationRead } from './modules/operators/configurationRead.js'
 import { operatorCodexFileAdmissions } from './modules/harnesses/operatorFiles/codex.js'
 import { adoptOperatorFilePublications, resolveOperatorOpenCodeFileAdmission } from './modules/harnesses/operatorFiles/postgres.js'
 import { OPERATOR_MCP_ENVIRONMENT_VARIABLE } from './modules/conversations/operatorChatAuthority.js'
@@ -509,6 +517,16 @@ export function buildProductionApp(
         if (!row?.principal_id) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The accepted Run principal is unavailable.', 409)
         const principal = (await currentOperatorAuthority(client, row.principal_id)).principal
         requireAuthorization(principal, 'runs:start', { workspaceId: current.run.workspaceId, workflowId: current.run.workflowId })
+      } else if (binding.kind === 'operator-inspection') {
+        const principal = await access.currentHarnessInspectionPrincipal(binding.principalId, client)
+        requireAuthorization(principal, 'harnesses:read')
+        await authorizeOperatorConfigurationRead(client, principal, binding.configurationVersionId)
+        const row = (await client.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1 and operator_id=$2',
+          [binding.configurationVersionId, 'application-operator'])).rows[0]
+        const configuration = row ? OperatorConfigurationVersionSchema.parse(row.record) : undefined
+        if (!configuration || configuration.contentHash !== binding.configurationHash || !isDeepStrictEqual(configuration.harnessProfileSelection, selector)) {
+          throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact saved Operator configuration changed before its read-only inspection.', 409)
+        }
       } else await new PostgresClaudeInteractionAuthority(client, binding, { nativeCallbackContext: () => undefined }).callbackAdmission()
       await assertDeviceHostInstallation(client, selector.target.hostRef, selector.target.applicationInstallationId)
       binding.admissionSignal?.throwIfAborted()
@@ -529,17 +547,38 @@ export function buildProductionApp(
   const selectedProfiles = new AcceptedHarnessProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
   const claudeProfiles = infrastructure?.claudeProfiles ?? new AcceptedClaudeProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
   const hostProfileChecks = new HostHarnessInstanceProfileChecks(hostSettings, hostProfileEvidence, commands, hostAuthority,
-    new ProductionHostHarnessProfileQualifier(harnessRegistry, nativeFactories, () => deviceRuntime.endpointForDomains(), config.harnesses.workspaceRoot))
+    new ProductionHostHarnessProfileQualifier(harnessRegistry, nativeFactories, () => deviceRuntime.endpointForDomains(), config.harnesses.workspaceRoot,
+      infrastructure?.mode === 'replay' ? undefined : { async qualify(value, input) {
+        const current = await claudeDiscovery.currentForConfiguration(value, input.signal)
+        const binding = harnessRegistry.pinOverride(value)
+        const recovery = processRegistry.reserveLaunch(`claude-profile-check:${input.checkId}`)
+        const close = async () => {
+          await processRegistry.abandonReservedLaunch(recovery)
+          if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude native profile qualification closure is unconfirmed.')
+        }
+        try { return await qualifyClaudeNativeProfile({ value, checkId: input.checkId, binding, pin: current.pin,
+          directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
+          assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
+        finally { await close() }
+      } }))
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
     requireClaudeProductionCredentialDelivery(value.configuration)
     const proof = await harnessRegistry.profileEvidence(value, client)
     return proof ? { target: proof.target, configurationFingerprint: proof.configurationFingerprint, qualified: proof.qualified } : null
-  }, hostProfileChecks)
-  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary, nativeFactories)
-  const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
+  }, hostProfileChecks, configuration => {
+    const binding = harnessRegistry.pinAccepted({ id: `operator-default-profile:${commandInputHash(configuration)}`, agentId: 'operator-default-setup', harness: configuration })
+    const hostRef = binding.selection.hostRef
+    if (hostRef.kind !== 'main' || !binding.installation.installationFingerprint) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The actual local Claude installation is unavailable.', 409)
+    return { hostRef, applicationInstallationId: hostRef.mainId, harnessInstallationId: binding.selection.harnessInstallationId,
+      installationFingerprint: binding.installation.installationFingerprint }
+  })
+  const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
+    processes: processRegistry, factories: nativeFactories, settings: hostSettings, defaults: () => settings.getHarnessDefaults(), current: claudeDiscovery.currentForConfiguration })
+  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary, nativeFactories, claudeMetadata)
+  const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot, appMcpEndpoint)
   const nativeConfigurations = new NativeConfigurationService(
     config.harnesses.codexBinary, config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, nativeFactories,
-    undefined, infrastructure?.auxiliary?.command,
+    claudeMetadata, infrastructure?.auxiliary?.command,
   )
   const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
   const harnessSettings = {
@@ -800,6 +839,25 @@ export function buildProductionApp(
       })
       if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Claude did not acknowledge the scoped Operator credential on its current query.', 409)
     },
+    async (principal, configuration, signal) => {
+      if (configuration.harness.harness !== 'claude' || !configuration.harnessProfileSelection) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Claude setup requires its exact saved host profile.', 409)
+      const owner: ClaudeProfileOwner = { kind: 'operator-inspection', principalId: principal.id,
+        configurationVersionId: configuration.id, configurationHash: configuration.contentHash, admissionSignal: signal }
+      const accepted = await claudeProfiles.admit(owner, configuration.harnessProfileSelection)
+      const binding = harnessRegistry.pinOverride(accepted.override), binary = binding.installation.launcher.resolvedLauncher
+      if (!binary || accepted.override.target.hostRef.kind !== 'main') throw new DomainError('HARNESS_HOST_MISMATCH', 'Claude setup must inspect its actual local installed profile.', 409)
+      const recovery = processRegistry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
+      const close = async () => {
+        await processRegistry.abandonReservedLaunch(recovery)
+        if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude read-only configuration inspection closure is unconfirmed.')
+      }
+      try { return await inspectClaudeOperatorConfiguration({ accepted, binary, workingDirectory: operatorWorkingDirectory,
+        endpoint: appMcpEndpoint, recovery, signal, ...(infrastructure?.claudeClient ? {
+          loadClient: (profilePath, processRecovery, selectedBinary) => infrastructure.claudeClient!({ profilePath, recovery: processRecovery, binary: selectedBinary }),
+        } : {}),
+        revalidate: async () => { await claudeProfiles.revalidate(owner, accepted); await nativeFactories.assertInstallationUnchanged(binding, signal) } }) }
+      finally { await close() }
+    },
   )
   const chat = new OperatorChatService(
     operatorConversations, operators,
@@ -902,10 +960,31 @@ export function buildProductionApp(
     devices: deviceRuntime.management,
     harnessInstances, harnessRegistry,
     fileRetention: new FileRetentionService(database.pool, commands),
-    executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
+    executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog, async (principal, configurationVersionId) => {
+      if (configurationVersionId) await authorizeOperatorConfigurationRead(database.pool,
+        await access.currentHarnessInspectionPrincipal(principal.id), configurationVersionId)
+      const defaults = configurationVersionId ? undefined : await foundationSettings.getAgentDefaults()
+      const configuration = configurationVersionId ? await operatorConversations.configuration(configurationVersionId)
+        : await operators.inspectionConfiguration(defaults!.revision)
+      if (!configuration || configuration.operatorId !== 'application-operator') throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The saved Operator configuration is unavailable.', 409)
+      try {
+        if (configuration.harnessProfileSelection) {
+          const owner: ClaudeProfileOwner = { kind: 'operator-inspection', principalId: principal.id,
+            configurationVersionId: configuration.id, configurationHash: configuration.contentHash }
+          if (configuration.harness.harness === 'claude') {
+            const accepted = await claudeProfiles.admit(owner, configuration.harnessProfileSelection)
+            requireClaudePolicyQualification(configuration.harness, accepted)
+          } else await selectedProfiles.admit(owner, configuration.harnessProfileSelection)
+        } else {
+          if (configuration.harness.harness === 'claude') throw new DomainError('HARNESS_PROFILE_REQUIRED', 'The saved Operator Claude configuration has no exact qualified host profile.', 409)
+          await harnessCatalog.checkConfiguration(principal, configuration.harness)
+        }
+      } catch (error) { throw qualificationError(error) }
+      return { configurationVersionId: configuration.id, harness: configuration.harness, defaultsRevision: defaults?.revision ?? null }
+    }),
     operatorChat: chat,
     agentChat,
-    workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
+    workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings, projectRoot),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
@@ -1152,6 +1231,8 @@ export function buildProductionApp(
       artifactComposition = { mainId: machine.installationId, authority: artifactAuthority,
         fence: new PostgresAcceptedArtifactAttemptFence(machine.installationId, artifactPorts) }
       mountArtifacts()
+      await bootstrapLocalMainWorkspaceRoot({ pool: database.pool, policies: jobRuntime.policies, mainId: machine.installationId,
+        runtimeRoot: config.harnesses.workspaceRoot, appStorageRoot: projectRoot })
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
@@ -1199,6 +1280,15 @@ export function buildProductionApp(
       if (qualificationRegistry && harnessQualifications) {
         await qualificationRegistry.load()
         installQualificationGate(qualificationRegistry, harnessQualifications)
+      }
+      if (infrastructure?.mode !== 'replay') {
+        await initializeNativeDefaults({ pool: database.pool, options: harness => nativeConfigurations.options(harness), appMcpEndpoint })
+        await harnessRegistry.refreshMain()
+        const initializedDefaults = await foundationSettings.getAgentDefaults()
+        const currentOperator = await operators.ensure()
+        if (!isDeepStrictEqual(currentOperator.configuration.harness, initializedDefaults.value.operator.harness)) {
+          await operators.update(initializedDefaults.value.operator.harness, currentOperator.operator.currentConfigurationVersionId)
+        }
       }
       harnessCompatibility.start()
       assertOpen()

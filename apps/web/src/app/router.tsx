@@ -31,6 +31,7 @@ import {
   WorkspaceApprovalsRouteEntry,
   WorkspaceLocationSettingsRouteEntry,
   SettingsRouteEntry,
+  ProjectFilesRouteEntry,
   WorkflowsRouteEntry,
   WorkspacesRouteEntry,
 } from '../routes/WorkspaceSectionRoutes'
@@ -122,7 +123,7 @@ function comingSoonRoute(
 const tasksRoute = comingSoonRoute('/workspaces/$workspaceId/tasks', 'tasks', 'Tasks')
 const runsRoute = comingSoonRoute('/workspaces/$workspaceId/runs', 'runs', 'Runs')
 const terminalRoute = comingSoonRoute('/workspaces/$workspaceId/terminal', 'terminal', 'Terminal')
-const filesRoute = comingSoonRoute('/workspaces/$workspaceId/files', 'files', 'Files')
+const filesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspaces/$workspaceId/files', component: ProjectFilesRouteEntry })
 const browsersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workspaces/$workspaceId/browsers',

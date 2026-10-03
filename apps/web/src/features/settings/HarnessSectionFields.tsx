@@ -10,6 +10,7 @@ import { HarnessPermissionRules } from './HarnessPermissionRules'
 import { HarnessMcpPolicies } from './HarnessMcpPolicies'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { McpDetectionSettings } from './McpDetectionSettings'
+import { ClaudeMcpConfiguration } from './ClaudeMcpConfiguration'
 
 export function HarnessSectionFields({ editor, onChange, section, issues = [], routedApproval = false, allowAutoReview = false, requiresResume = false, workspaceId, writableDirectories, qualified = false, checking = false, checkError }: {
   editor: HarnessEditor; onChange(editor: HarnessEditor): void; section: HarnessSettingsSection;
@@ -27,7 +28,8 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
       qualified={qualified} checking={checking} checkError={checkError} /> : section === 'session' ? <>
       <p>Claude sessions use the accepted profile. Native hooks, plugins and agents are excluded.</p>
       <p>Accepted instructions: {value.instructions || 'None'}</p>
-    </> : <>
+    </> : section === 'connections' ? <ClaudeMcpConfiguration value={value} onChange={change} />
+      : section === 'tools' ? <HarnessMcpPolicies editor={editor} onChange={onChange} /> : <>
       <p>Claude uses the tools, approval rules and MCP servers pinned in this configuration. App approval routing is preserved.</p>
       <p>Enabled tools: {value.tools.join(', ') || 'None'}</p>
       {value.permissionRules.map((rule) => <p key={rule.tool}>{rule.tool}: {rule.effect}</p>)}
@@ -72,8 +74,9 @@ export function HarnessSectionFields({ editor, onChange, section, issues = [], r
                 onChange={(event) => codex({ ...value.advanced!, sessionPersistence: event.target.value as CodexAdvancedConfiguration['sessionPersistence'] })} />
             </div> : null}
             {value.harness === 'opencode' && section === 'permissions' ? <>
-              <Select label="Permission handling" value={value.advanced!.permissionHandling} error={error('advanced.permissionHandling') ?? error('autoApprove')}
+              <Select className="harness-opencode-approvals" label="Permission handling" value={value.advanced!.permissionHandling} error={error('advanced.permissionHandling') ?? error('autoApprove')}
                 options={[{ value: 'graphql_routed', label: 'App approval routing' }, { value: 'native_auto', label: 'Native automatic handling (unavailable)', disabled: true }]}
+                hint={value.advanced!.permissionHandling === 'native_auto' ? 'Native automatic handling is unavailable. Choose app approval routing.' : undefined}
                 onChange={(event) => opencode({ ...value.advanced!, permissionHandling: event.target.value as OpenCodeAdvancedConfiguration['permissionHandling'] })} />
               <HarnessPermissionRules value={value.advanced!.permissionRules} issues={issues} onChange={(permissionRules) => opencode({ ...value.advanced!, permissionRules })} />
             </> : null}

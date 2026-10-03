@@ -106,7 +106,10 @@ function cleanQueue() {
   for (const name of readdirSync(queue)) {
     const path = join(queue, name)
     const record = readJson(path)
-    if (record?.common === common && !alive(record) && !groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)) rmSync(path, { force: true })
+    // A queued coordinator has not acquired a slot or spawned token-bearing work.
+    // The durable phase changes before acquisition, including its crash windows.
+    const neverLaunched = record?.phase === 'queued' && record.pgid === null
+    if (record?.common === common && !alive(record) && (neverLaunched || (!groupUsed(record.pgid, true) && !tokenUsed(record.token, 0, true)))) rmSync(path, { force: true })
   }
 }
 const slotRecords = () => readdirSync(running).map((name) => readJson(join(running, name)))
@@ -146,12 +149,14 @@ if (process.argv[2] === '__schedule') {
     })
     const record = readJson(join(queue, ticket))
     if (first === ticket && record?.token === token && occupied < slotCount()) {
+      const acquiring = { ...record, phase: 'acquiring' }
+      writeFileSync(join(queue, ticket), JSON.stringify(acquiring))
       if (!existsSync(active)) {
         // mkdir still arbitrates with old callers, which do not take this lock.
         try { mkdirSync(active) } catch { process.exit(0) }
-        writeFileSync(join(active, 'owner.json'), JSON.stringify(records.length ? gate : record))
+        writeFileSync(join(active, 'owner.json'), JSON.stringify(records.length ? gate : acquiring))
       }
-      writeFileSync(path, JSON.stringify(record))
+      writeFileSync(path, JSON.stringify(acquiring))
       process.stdout.write('admitted')
     } else if (!records.length && isGate(held)) rmSync(active, { recursive: true, force: true })
   }
@@ -168,7 +173,7 @@ if (process.argv[2] === '__ticket') {
   mkdirSync(queue, { recursive: true })
   const existing = readdirSync(queue).map((name) => Number(name.split('-')[0])).filter(Number.isFinite)
   const ticket = `${String(Math.max(0, ...existing) + 1).padStart(12, '0')}-${randomUUID()}`
-  writeFileSync(join(queue, ticket), JSON.stringify({ common, pid: Number(process.argv[3]), start: process.argv[4], worktree: process.argv[5], pgid: null, namespace: process.argv[6] ? JSON.parse(process.argv[6]) : undefined, token: process.argv[7] }))
+  writeFileSync(join(queue, ticket), JSON.stringify({ common, pid: Number(process.argv[3]), start: process.argv[4], worktree: process.argv[5], pgid: null, phase: 'queued', namespace: process.argv[6] ? JSON.parse(process.argv[6]) : undefined, token: process.argv[7] }))
   process.stdout.write(ticket)
   process.exit(0)
 }
@@ -291,20 +296,23 @@ async function main() {
     let announced = false
     while (!interrupted) {
       if (schedule('admit', ticket, token)) break
+
       if (!announced) { console.log(`[heavy-job] queued ${ticket}; waiting for project test/build slot`); announced = true }
       await sleep(300)
     }
     if (interrupted) { exitCode = 130; return }
+
     const freshness = buildKind ? freshBuild(buildKind) : null
     if (freshness?.fresh) { console.log(`[heavy-job] running ${ticket}`); console.log(`[heavy-job] ${buildKind} build is current in this worktree`); exitCode = 0; return }
     tempPath = join(tempRoot, randomUUID())
     mkdirSync(tempPath)
-    writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, namespace, token }))
+    writeFileSync(join(tempPath, 'owner.json'), JSON.stringify({ common, worktree: root, pid: process.pid, start: procStart(process.pid), pgid: null, phase: 'acquiring', namespace, token }))
     const environment = { ...process.env, TMPDIR: tempPath, TMP: tempPath, TEMP: tempPath, GRAPHQL_HEAVY_BASE_TMPDIR: baseTmp, GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: token }
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment, detached: true })
     const pgid = child.pid
     for (const path of [join(active, 'owner.json'), join(running, ticket), ticketPath, join(tempPath, 'owner.json')]) {
-      const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, ...([join(active, 'owner.json'), join(running, ticket)].includes(path) ? { tempPath } : {}) }))
+      const record = readJson(path); if (record?.token === token) writeFileSync(path, JSON.stringify({ ...record, pgid, phase: 'running', ...([join(active, 'owner.json'), join(running, ticket)].includes(path) ? { tempPath } : {}) }))
+
     }
     console.log(`[heavy-job] running ${ticket}`)
     if (interrupted) stop('SIGTERM')
@@ -314,6 +322,11 @@ async function main() {
     if (command.at(-1) === '__hold') while (tokenUsed(token)) await sleep(200)
     if (interrupted && exitCode === 0) exitCode = 124
     if (buildKind && exitCode === 0) stampBuild(buildKind, freshness)
+  } catch (error) {
+    // Marker publication can fail after spawn. Stop our group before releasing
+    // its reservations, just as cancellation does.
+    if (child?.pid) { stop('SIGTERM'); await waitGroup(child.pid, stopGraceMs) }
+    throw error
   } finally {
     clearTimeout(timer)
     clearTimeout(killTimer)

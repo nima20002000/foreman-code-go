@@ -1,18 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, type ReactNode, type SyntheticEvent } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { useLocation } from '@tanstack/react-router'
 import type { WorkflowRunSummary } from '@graphql/contracts'
 import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@graphql/contracts/wave25'
-import { Button, Dialog, Drawer, Icon, IconButton, Toolbar } from '../../shared/ui/nocturne'
+import { Button, Dialog, Drawer, Icon, IconButton } from '../../shared/ui/nocturne'
 import { WorkspaceExecutionLocationSettings } from '../settings/WorkspaceExecutionLocationSettings'
 import { RunBoardSlot } from '../run-board'
-import { RunsSelector, useSelectedRun } from '../runs-selector'
-import { ScheduleClockButton } from '../schedules'
-import { WorkflowFilesButton } from '../workflow-files'
+import { useSelectedRun } from '../runs-selector'
+import { BoardNavigationControls } from './BoardNavigationControls'
 import { AgentChatPanel } from '../graph/AgentPanels'
 import { CurrentRunObserver } from './CurrentRunObserver'
-import { nextDraftApi } from '../graph/nextDraft/transport'
-import { boardDraftContextKey } from './keys'
 import { WorkflowBoardContext } from './context'
 import { RunActivityPanel } from './RunActivityPanel'
 import { isActiveRun, useSelectedRunRecord } from './runFacts'
@@ -36,10 +32,6 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   const current = boardSelection.active && !boardSelection.invalid && boardSelection.identity.runId === null
   const currentRef = useRef(current)
   currentRef.current = current
-  // Shares the persisted-boundary query. Never infer saved-ness from a client id,
-  // an unsaved graph, or the selected historical snapshot's version.
-  const saved = useQuery({ queryKey: boardDraftContextKey(workspaceId, workflowId),
-    queryFn: ({ signal }) => nextDraftApi.context(workspaceId, workflowId, { signal }), staleTime: 3000, retry: false })
   const locationKey = JSON.stringify(['board-location-dialog', workspaceId, workflowId])
   const locationOpen = useInspectionPresentation((state) => !!state.open[locationKey])
   const setLocationOpen = useCallback((open: boolean) => {
@@ -47,14 +39,14 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   }, [locationKey])
   const runsKey = JSON.stringify(['board-run-drawer', workspaceId, workflowId])
   const runsOpen = useInspectionPresentation((state) => !!state.open[runsKey])
-  const toolbar = useRef<HTMLElement>(null)
+  const toolbar = useRef<HTMLDivElement>(null)
   const detailsTrigger = useRef<HTMLButtonElement>(null)
   const setRunsOpen = useCallback((open: boolean) => {
     if (open && !currentRef.current) return
     useInspectionPresentation.getState().setOpen(runsKey, open)
     if (!open) setTimeout(() => {
       if (!document.activeElement || document.activeElement === document.body) {
-        ;(detailsTrigger.current ?? toolbar.current?.querySelector<HTMLButtonElement>('button[aria-label="Runs"]'))?.focus()
+        ;(detailsTrigger.current ?? toolbar.current?.querySelector<HTMLButtonElement>('button[aria-label="Activities"]'))?.focus()
       }
     }, 0)
   }, [runsKey])
@@ -85,21 +77,18 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   // hidden editor/SelectedRunCanvas, or fabricate missing version/semantics pins.
   const value = useMemo(() => ({ workspaceId, workflowId, run: legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent,
     openLocation: () => setLocationOpen(true), openRuns: () => setRunsOpen(true), activeRuns,
-  }), [workspaceId, workflowId, legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns, setRunsOpen, setLocationOpen])
+    navigationControls: current ? <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} /> : undefined,
+  }), [workspaceId, workflowId, legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns, setRunsOpen, setLocationOpen, selectedRun, current])
   const authoringEvent = (event: SyntheticEvent) => {
     // React capture also covers descendants portalled outside the inert subtree.
     if (!currentRef.current) { event.preventDefault(); event.stopPropagation() }
   }
   return <WorkflowBoardContext.Provider value={value}>
-    <div className="unified-workflow-board" data-testid="unified-workflow-board" style={{ flexDirection: 'column' }}>
-      <header ref={toolbar} className="board-topbar" aria-label="Board toolbar"
+    <div ref={toolbar} className="unified-workflow-board" data-testid="unified-workflow-board" style={{ flexDirection: 'column' }}>
+      {!current ? <header className="board-topbar" aria-label="Board toolbar"
         style={{ position: 'static', flex: '0 0 auto', justifyContent: 'flex-end', padding: 'var(--space-2)', boxSizing: 'border-box', minWidth: 0 }}>
-        <Toolbar label="Board controls">
-          <ScheduleClockButton workspaceId={workspaceId} workflowId={workflowId} isSaved={Boolean(saved.data?.draft.baseWorkflowVersionId)} />
-          <RunsSelector selection={selectedRun} />
-          <WorkflowFilesButton workspaceId={workspaceId} workflowId={workflowId} readOnly={selectedRun.identity.runId !== null} />
-        </Toolbar>
-      </header>
+        <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} />
+      </header> : null}
       <RunBoardSlot selection={boardSelection}>
         <div className="workflow-board-authoring" onClickCapture={authoringEvent} onKeyDownCapture={authoringEvent} onSubmitCapture={authoringEvent}>
           {children}
@@ -110,7 +99,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
             <Button ref={detailsTrigger} size="sm" variant="ghost" onClick={() => setRunsOpen(true)}>Details</Button>
             <IconButton size="sm" variant="ghost" label="Stop showing this run" onClick={() => selectRun()}><Icon name="close" size={14} /></IconButton>
           </div> : null}
-          <Drawer open={current && runsOpen} onOpenChange={setRunsOpen} title="Runs" className="workflow-board-runs-dialog"
+          <Drawer open={current && runsOpen} onOpenChange={setRunsOpen} title="Activities" className="workflow-board-runs-dialog"
             closeLabel="Close runs" size="lg" closeOnOutsideClick returnFocusRef={detailsTrigger}>
             {current ? <RunActivityPanel summaries={summaries} /> : null}
           </Drawer>

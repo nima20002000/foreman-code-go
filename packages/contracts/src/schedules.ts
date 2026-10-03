@@ -40,13 +40,31 @@ export const ScheduleTimeZoneSchema = z.string().min(1).max(255).refine((value) 
   } catch {
     return false;
   }
-}, "Use a supported IANA Area/Location identifier, UTC or GMT");
+}, "Use a supported IANA Area/Location identifier, UTC or GMT")
+  .describe("Required source calendar timezone for weekly/local Once input. Use the caller device's IANA zone; anchorAt and occurrence instants are UTC, independent of the server timezone.");
 export const ScheduleTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
 export const ScheduleLocalDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const instant = Date.parse(`${value}T00:00:00.000Z`);
   return instant >= MIN_INSTANT && instant <= MAX_INSTANT
     && new Date(instant).toISOString().slice(0, 10) === value;
 }, "Use a real Gregorian date in YYYY-MM-DD form (years 0001–9999)");
+
+/** The same calendar/DST rule used by the scheduler, independent of the device's clock. */
+export function scheduleLocalTimeToUtc(localDate: string, time: string, timezone: string): string {
+  const value = z.object({ localDate: ScheduleLocalDateSchema, time: ScheduleTimeSchema, timezone: ScheduleTimeZoneSchema })
+    .parse({ localDate, time, timezone });
+  return ScheduleInstantSchema.parse(new Date(resolveWallTime(localTimestamp(value.localDate, value.time), formatter(value.timezone))).toISOString());
+}
+
+/** Format a persisted instant for a device without changing its schedule meaning. */
+export function scheduleUtcToLocalTime(instant: string, timezone: string): { localDate: string; time: string } {
+  const utc = ScheduleInstantSchema.parse(instant);
+  const zone = ScheduleTimeZoneSchema.parse(timezone);
+  const parts = formatter(zone).formatToParts(new Date(utc));
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((value) => value.type === type)?.value ?? "";
+  return { localDate: `${part("year").padStart(4, "0")}-${part("month")}-${part("day")}`,
+    time: `${part("hour")}:${part("minute")}` };
+}
 
 const Settings = {
   timezone: ScheduleTimeZoneSchema,
@@ -62,7 +80,7 @@ const Weekly = z.object({
 }).strict();
 const Interval = z.object({
   ...Settings, mode: z.literal("interval"), every: z.number().int().min(1),
-  unit: z.enum(["minute", "hour"]), anchorAt: ScheduleInstantSchema,
+  unit: z.enum(["second", "minute", "hour"]), anchorAt: ScheduleInstantSchema,
 }).strict();
 const Once = z.object({
   ...Settings, mode: z.literal("once"), localDate: ScheduleLocalDateSchema, time: ScheduleTimeSchema,
@@ -71,6 +89,17 @@ const Once = z.object({
 /** Editable settings only. The client cannot pin a version or supply revision/nextOccurrenceAt. */
 export const ScheduleConfigurationSchema = z.discriminatedUnion("mode", [Weekly, Interval, Once]);
 export type ScheduleConfiguration = z.infer<typeof ScheduleConfigurationSchema>;
+
+/** Normalize a newly saved one-off instant; weekly source-calendar metadata remains intact. */
+export function scheduleConfigurationToUtc(value: ScheduleConfiguration): ScheduleConfiguration {
+  if (value.mode !== "once") return value;
+  const instant = scheduleLocalTimeToUtc(value.localDate, value.time, value.timezone);
+  // Historical IANA offsets can contain seconds. Retain source components when
+  // the minute-only calendar contract cannot express the exact UTC instant.
+  if (!instant.endsWith(":00.000Z")) return value;
+  const utc = scheduleUtcToLocalTime(instant, "UTC");
+  return { ...value, ...utc, timezone: "UTC" };
+}
 const RecordFields = {
   ...Workflow, revision: z.number().int().positive(), nextOccurrenceAt: ScheduleInstantSchema.nullable(),
 };
@@ -177,7 +206,7 @@ function occurrenceInstants(schedule: ScheduleConfiguration, from: number, count
   if (!schedule.enabled || count === 0) return [];
   if (schedule.mode === "interval") {
     const anchor = Date.parse(schedule.anchorAt);
-    const step = schedule.every * (schedule.unit === "minute" ? MINUTE_MS : HOUR_MS);
+    const step = schedule.every * (schedule.unit === "second" ? 1_000 : schedule.unit === "minute" ? MINUTE_MS : HOUR_MS);
     const first = Math.max(0, Math.floor((from - anchor) / step) + 1);
     const result: number[] = [];
     for (let index = 0; index < count; index++) {

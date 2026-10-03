@@ -1,12 +1,13 @@
 import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@graphql/contracts'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
+import type { OperatorChatSetup, OperatorConversationState, OperatorConversationSummary, SendOperatorMessageRequest, RespondOperatorInteractionRequest } from '@graphql/contracts'
 import { BrowserAccessSessionSchema } from '@graphql/contracts/management'
 
 import { newerOperatorConversationState as newer } from './operatorConversationReadback'
 import { useConversationDraftStore } from '../conversations'
 import { ChatAttachmentControl, useConversationAttachments } from '../attachments'
+import { useFileDrop } from '../../shared/ui/useFileDrop'
 import { ChatAttachmentBoundary } from '../conversations/ChatAttachmentBoundary'
 import { containsAttachmentRefs, messageAttachmentRefs, prepareChatAttachments } from '../conversations/chatAttachmentAttempt'
 import { settingsExperienceKeys } from '../../shared/api/settingsExperience'
@@ -23,7 +24,7 @@ import { ActionMenu, Alert, Badge, Button, EmptyState, Icon, IconButton, Loading
 import { isNarrowOperatorChat, operatorChatNarrowQuery, useOperatorChatStore } from './operatorChatStore'
 import { useOperatorChatVisibility } from './useOperatorChatVisibility'
 import { useOperatorSettings } from './useOperatorSettings'
-import { useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
+import { operatorChatSetupKey, useOperatorChatSetup } from '../../shared/api/operatorChatSetup'
 import { pendingOperatorSetupTarget } from '../../shared/api/operatorSetupTarget'
 import { OperatorSetupNotice } from './OperatorSetupNotice'
 import { isMissingOperatorConversation, useMissingOperatorConversation } from './useMissingOperatorConversation'
@@ -120,8 +121,8 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     } } : null)
   const attachmentReceiptPending = Boolean(selectedId && attachmentReceipts.blocksSend(selectedId, attachments.readyRefs))
   const pending = selectedId && !accessDenied && enabled && !sessionIsSwitching() ? readPendingOperatorMessage(selectedId) : {}
-  const setup = useOperatorChatSetup(enabled && open && !pending.command, preferences.query.data?.revision,
-    { ...(selectedId ? { conversationId: selectedId } : {}), ...(preferences.settings ? { harness: preferences.settings.harness } : {}) })
+  const setup = useOperatorChatSetup(enabled && open && !pending.command && Boolean(preferences.settings), preferences.query.data?.revision,
+    { ...(preferences.settings ? { harness: preferences.settings.harness } : {}) })
   const retrySetup = useOperatorChatSetup(enabled && open && Boolean(pending.command) && !accessDenied, undefined,
     pendingOperatorSetupTarget(selectedId, pending.command))
   const shownSetup = pending.command ? retrySetup : setup
@@ -157,6 +158,12 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         select(conversation.id)
         if (isNarrowOperatorChat()) historyTriggerRef.current?.focus()
       }
+      // Pre-creation inspection has no accepted configuration pin. Once one
+      // exists, reuse its verified installation across every subsequent chat.
+      const cached = queryClient.getQueryState<OperatorChatSetup>(operatorChatSetupKey(preferences.query.data?.revision,
+        { ...(preferences.settings ? { harness: preferences.settings.harness } : {}) }))
+      const inspected = cached?.fetchStatus === 'fetching' ? await setup.refetch({ cancelRefetch: false }) : cached
+      if (inspected?.data?.status === 'configured' && !inspected.data.configurationVersionId) await setup.refetch()
       await queryClient.invalidateQueries({ queryKey: listKey })
     } })
   const send = useMutation({
@@ -343,16 +350,18 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     return () => { disposed = true; readback.dispose(); close() }
   }, [acceptState, accessDenied, enabled, open, queryClient, selectedId])
 
-  if (!enabled || sessionIsSwitching()) return null
   const conversation = accessDenied ? undefined : selected.data
+  const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
+  const archived = conversation?.conversation.status === 'archived'
+  const attachmentsDisabled = Boolean(archived || active || pending.command) || preparingId === selectedId
+  const fileDrop = useFileDrop({ disabled: attachmentsDisabled || !attachments.canAdd, onFiles: attachments.addFiles })
+  if (!enabled || sessionIsSwitching()) return null
   const settings = preferencesDenied ? undefined : preferences.settings
   const pendingHandoff = Boolean(settings && conversation?.settings && settings.harness !== conversation.settings.harness
     && (conversation.messages.length > 0 || conversation.hasEarlierMessages))
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
     && Boolean(setup.data.configurationVersionId)
   const settingsReady = Boolean(preferences.query.data) && !preferencesDenied && !preferences.form.isDirty && !preferences.form.isSaving && !preferences.form.uncertain
-  const active = Boolean(conversation && (conversation.activeRequestId || !['idle', 'error'].includes(conversation.turnState)))
-  const archived = conversation?.conversation.status === 'archived'
   const requestId = conversation?.activeRequestId
   const scopedSendError = send.variables?.id === selectedId && send.variables?.command.requestId === pending.command?.requestId
     && send.error instanceof Error ? send.error.message : undefined
@@ -486,11 +495,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
           {handoffNotice && handoffNotice.epoch === identityEpoch() ? <p role="status">Your continued chat is ready. <Button size="sm" variant="ghost"
             onClick={() => { select(handoffNotice.id); setHandoffNotice(undefined) }}>Open continued chat</Button></p> : null}
           {recoveredSelection ? <p role="status">The previous conversation is no longer available. Start a new chat. Any saved draft or pending message has been kept on this device.</p> : null}
-          {!missingSelection ? <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching || shownSetup.isPending} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} /> : null}
+          {!missingSelection ? <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} /> : null}
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
-          {!selectedId && !accessDenied ? <Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation} disabled={create.isPending} loading={create.isPending}>Start a new conversation</Button> : null}
+          {!selectedId && !accessDenied ? <div className="operator-chat-start"><EmptyState icon="chat" title="Chat with Operator"
+            description="Ask about your workspaces and workflows, or describe a change you need."
+            action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation}
+              disabled={create.isPending} loading={create.isPending} loadingLabel="Starting…">Start chat</Button>} /></div> : null}
           {selected.isLoading ? <LoadingState label="Loading conversation…" rows={4} /> : null}
           {selected.isError && !missingSelection ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
           {conversation ? <>
@@ -530,7 +542,6 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
             </div> : null}
             <footer className="operator-chat-controls">
               {attachmentReceiptPending && !pending.command ? <Button size="sm" onClick={attachmentReceipts.reconcile}>Check previous message</Button> : null}
-              <p className="operator-chat-handoff">Access edits apply to new chats and harness handoffs. This chat keeps its pinned access policy.</p>
               {pendingHandoff ? <p className="operator-chat-handoff" role="status">{attachments.hasAttachments ? 'Files stay in this chat. Start a new chat to attach files.' : <>Your next message starts {settings!.harness === 'opencode' ? 'an OpenCode' : 'a Codex'} chat with prior conversation context.</>}</p> : null}
               {preferences.query.isError ? <Alert tone={preferencesDenied ? 'danger' : 'warning'} title={preferencesDenied ? 'Operator settings access unavailable' : 'Could not refresh Operator settings'}
                 action={<Button size="sm" onClick={() => void preferences.query.refetch()}>Retry settings</Button>}>
@@ -545,13 +556,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
               {turnStatus && (conversation.messages.length > 0 || conversation.hasEarlierMessages || conversation.activeRequestId || conversation.turnState !== 'idle' || connectionState !== 'connected') ? <div className="operator-chat-turn-actions">
                 <p role="status">{turnStatus}</p>
               </div> : null}
-              <OperatorComposer context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
-                onChange={preferences.change} /> : undefined}
-                access={preferences.harness ? <OperatorAccessPicker value={preferences.harness} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
+              <OperatorComposer key={conversation.conversation.id} context={settings ? <OperatorComposerSettings value={settings} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
+                onChange={preferences.change}
+                access={preferences.harness ? <OperatorAccessPicker key={preferences.harness.harness} value={preferences.harness} disabled={Boolean(pending.command) || preparingId === selectedId || preferences.form.isSaving || preferences.form.uncertain || preferences.query.isError}
                   saving={preferences.form.isSaving} saveError={preferences.form.error}
-                  onChange={preferences.changeAccess} /> : undefined}
+                  onChange={preferences.changeAccess} /> : undefined} /> : undefined}
                 hasAttachments={attachments.hasAttachments}
-                attachmentControl={<ChatAttachmentControl draft={attachments} disabled={Boolean(archived || active || pending.command) || preparingId === selectedId} />}
+                fileDropProps={fileDrop.dropTargetProps}
+                attachmentControl={<ChatAttachmentControl draft={attachments} disabled={attachmentsDisabled} composerDrop={fileDrop} />}
                 onNewChat={() => void createConversation()} conversationId={conversation.conversation.id}
                 sendDisabled={attachmentReceiptPending || attachments.hasBlockingAttachments || (attachments.hasAttachments && pendingHandoff) || !setupReady || !settingsReady || archived || active || preparingId === selectedId || Boolean(pending.error) || Boolean(pending.command)}
                 isSending={preparingId === selectedId || (send.isPending && send.variables?.id === selectedId)} onSubmit={submit}

@@ -14,8 +14,9 @@ import {
   useUpdateManagedWorkflowMutation,
 } from '../../shared/api/query'
 import {
-  Alert, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
+  ActionMenu, Alert, Button, Dialog, EmptyState, ErrorState, Icon, IconButton, LoadingState, PageHeader, TextField,
 } from '../../shared/ui/nocturne'
+import { ResourceCard } from '../../shared/ui/ResourceCard'
 import { useDismissableSurface } from '../../shared/ui/useDismissableSurface'
 import { NewWorkflowAction } from './NewWorkflowAction'
 import './workflows.css'
@@ -38,10 +39,9 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
   useDismissableSurface({ open, onDismiss: close, surfaceRef, triggerRef })
 
   return (
-    <div className="workflow-card-actions-wrap">
+    <div>
       <IconButton
         ref={triggerRef}
-        className="workflow-card-more"
         label={`Open actions for ${name}`}
         variant="ghost"
         size="sm"
@@ -52,7 +52,7 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
         <Icon name="more" size={16} />
       </IconButton>
       {open ? (
-        <div ref={surfaceRef} className="workflow-card-actions" role="dialog" aria-label={`${name} actions`}>
+        <div ref={surfaceRef} className="resource-card-menu" role="dialog" aria-label={`${name} actions`}>
           <TextField
             ref={nameInputRef}
             label="Name"
@@ -80,16 +80,16 @@ function WorkflowCardActions({ name, onRename, onRemove }: {
   )
 }
 
-export function WorkflowDirectory({ workspaceId, headingLevel = 1 }: { workspaceId: string; headingLevel?: 1 | 2 }) {
-  return <WorkflowDirectoryContent key={workspaceId} workspaceId={workspaceId} headingLevel={headingLevel} />
+export function WorkflowDirectory({ workspaceId, headingLevel = 1, hideHeading = false }: { workspaceId: string; headingLevel?: 1 | 2; hideHeading?: boolean }) {
+  return <WorkflowDirectoryContent key={workspaceId} workspaceId={workspaceId} headingLevel={headingLevel} hideHeading={hideHeading} />
 }
 
-function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: string; headingLevel: 1 | 2 }) {
+function WorkflowDirectoryContent({ workspaceId, headingLevel, hideHeading }: { workspaceId: string; headingLevel: 1 | 2; hideHeading: boolean }) {
   const queryClient = useQueryClient()
-  const managedQuery = useWorkflowPages(workspaceId, true)
+  const managedQuery = useWorkflowPages(workspaceId, true, 'directory')
   const updateWorkflow = useUpdateManagedWorkflowMutation()
   const archiveWorkflow = useArchiveManagedWorkflowMutation()
-  const [selectionStore] = useState(createResourceSelection)
+  const [selectionStore] = useState(() => createResourceSelection())
   const selection = useStore(selectionStore)
   const count = Object.keys(selection.selected).length
   const attempt = useRef(new CommandAttempt<Omit<WorkflowBatchArchiveInput, 'commandId'>>())
@@ -106,7 +106,8 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
     onError: (error) => attempt.current.failed(error),
   })
   const locked = batch.isPending || attempt.current.unresolved
-  const managed = managedQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const managed = [...new Map((managedQuery.data?.pages.flatMap((page) => page.items) ?? [])
+    .map((item) => [item.workflow.id, item])).values()]
   const closeConfirmation = () => { if (!locked) { selection.confirm(false); batch.reset() } }
   const deleteSelected = async () => {
     if (inFlight.current) return
@@ -119,8 +120,8 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
       assertSession(generation)
       attempt.current.succeeded()
       const deleted = new Set(result.value.workflowIds)
-      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>>>(
-        [...queryKeys.managedWorkflows(workspaceId), 'pages'], (current) => current ? {
+      queryClient.setQueriesData<InfiniteData<Awaited<ReturnType<typeof apiClient.listManagedWorkflowPage>>>>(
+        { queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages'] }, (current) => current ? {
           ...current, pages: current.pages.map((page) => ({ ...page, items: page.items.filter((item) => !deleted.has(item.workflow.id)) })),
         } : current,
       )
@@ -134,51 +135,48 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
   const allShownSelected = selectable.length > 0 && selectable.every((item) => item.id in selection.selected)
   const managedById = new Map(managed.map((item) => [item.workflow.id, item]))
   const workflows = managed.map((item) => item.workflow)
+  const actions = workflows.length > 0 ? <div className="resource-directory-actions workflow-directory-controls" role="group" aria-label="Workflow actions">
+    {!selection.selecting ? <>
+      <NewWorkflowAction workspaceId={workspaceId} size="sm" />
+      <Button ref={selectRef} variant="ghost" size="sm" onClick={selection.start}>Select workflows</Button>
+    </> : <>
+      <Button variant="danger" size="sm" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
+      <ActionMenu label="Selection options" width={200} disabled={locked} items={[
+        { id: 'select-shown', label: allShownSelected ? 'Clear selection' : managed.length > 100 ? 'Select first 100 shown' : 'Select all shown',
+          disabled: !selectable.length, onSelect: () => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable) },
+        { id: 'cancel-selection', label: 'Cancel selection', onSelect: () => selection.clear() },
+      ]} />
+    </>}
+  </div> : undefined
 
   return (
-    <section className="workflow-directory resource-directory" aria-label="Workflows">
-      <PageHeader
+    <section className={`workflow-directory resource-directory${hideHeading ? ' workflow-directory--embedded' : ''}`} aria-label="Workflows">
+      {hideHeading ? actions && <div className="workflow-directory-toolbar">{actions}</div> : <PageHeader
         title="Workflows"
         headingLevel={headingLevel}
-        actions={workflows.length > 0 ? <div className="resource-directory-actions">
-          {!selection.selecting ? <>
-            <Button ref={selectRef} onClick={selection.start}>Select workflows</Button>
-            <NewWorkflowAction workspaceId={workspaceId} />
-          </> : <>
-            <span role="status">{count} selected</span>
-            <Button disabled={locked} onClick={() => allShownSelected ? selection.deselectAll() : selection.selectMany(selectable)}>
-              {allShownSelected ? 'Clear selection' : managed.length > 100 ? 'Select first 100 shown' : 'Select all shown'}
-            </Button>
-            <Button variant="danger" disabled={!count || locked} onClick={() => selection.confirm(true)}>Delete selected{count ? ` (${count})` : ''}</Button>
-            <Button disabled={locked} onClick={() => selection.clear()}>Cancel selection</Button>
-          </>}
-        </div> : undefined}
-      />
+        actions={actions}
+      />}
 
       {selection.notice ? <p role="status">{selection.notice}</p> : null}
-      {selection.selecting ? <p className="resource-selection-hint">Select workflows to delete. You can show more and keep your selection. Up to 100 at a time.</p> : null}
       {workflows.length > 0 ? (
         <ul className="workflow-card-list resource-card-list" data-testid="workflow-card-list">
           {workflows.map((workflow) => (
             <li
-              className="workflow-card-item"
               data-testid={`workflow-card-${workflow.id}`}
               key={workflow.id}
             >
-              <Card className={`workflow-card resource-card${workflow.id in selection.selected ? ' is-selected' : ''}`}>
-                {selection.selecting ? <Checkbox className="resource-card-select" label={workflow.name}
-                  aria-label={`Select ${workflow.name}`} checked={workflow.id in selection.selected}
-                  disabled={locked || (count >= 100 && !(workflow.id in selection.selected))}
-                  onChange={() => selection.toggle(workflow.id, managedById.get(workflow.id)!.revision)} /> : <><Link
+              <ResourceCard name={workflow.name} icon="workflow"
+                selection={selection.selecting ? {
+                  'aria-label': `Select ${workflow.name}`, checked: workflow.id in selection.selected,
+                  disabled: locked || (count >= 100 && !(workflow.id in selection.selected)),
+                  onChange: () => selection.toggle(workflow.id, managedById.get(workflow.id)!.revision),
+                } : undefined}
+                open={<Link
                   to="/workspaces/$workspaceId"
                   params={{ workspaceId }}
                   search={{ workflowId: workflow.id }}
-                  className="workflow-card-open resource-card-open"
-                >
-                  <Icon name="workflow" size={16} />
-                  <span className="resource-card-name">{workflow.name}</span>
-                </Link>
-                <WorkflowCardActions
+                />}
+                actions={<WorkflowCardActions
                   name={workflow.name}
                   onRename={(name) => {
                     const item = managedById.get(workflow.id)
@@ -194,8 +192,7 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
                       onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }),
                     })
                   }}
-                /></>}
-              </Card>
+                />} />
             </li>
           ))}
         </ul>
@@ -204,7 +201,7 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
       ) : managedQuery.isError ? (
         <ErrorState title="Workflows unavailable" description="The workflow list could not be loaded." onRetry={() => void managedQuery.refetch()} />
       ) : (
-        <div data-testid="workflow-directory-empty">
+        <div className="workflow-directory-empty" data-testid="workflow-directory-empty">
           <EmptyState
             icon="workflow"
             title="No workflows yet"
@@ -212,7 +209,7 @@ function WorkflowDirectoryContent({ workspaceId, headingLevel }: { workspaceId: 
           />
         </div>
       )}
-      <LoadMore label="workflows" query={managedQuery} />
+      <LoadMore loadAll label="workflows" query={managedQuery} />
       <Dialog open={selection.confirming} onOpenChange={(open) => { if (!open) closeConfirmation() }}
         title={`Delete ${count} ${count === 1 ? 'workflow' : 'workflows'}?`}
         description="Selected workflows will be removed from the list. Saved versions and run history are retained. Workflows with active runs cannot be deleted."

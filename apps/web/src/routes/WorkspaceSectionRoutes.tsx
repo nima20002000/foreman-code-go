@@ -1,8 +1,6 @@
 import { useCallback, useEffect, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
 
-import { useManagedWorkspaceQuery } from '../shared/api/query'
 import '../shared/ui/resourceDirectory.css'
 
 import { AgentsDirectory } from '../features/agents'
@@ -10,7 +8,7 @@ import { ProjectFilesSection } from '../features/project-files'
 import { WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
 import { useApprovalInboxStore } from '../features/approvals'
 import { WorkflowDirectory } from '../features/workflows'
-import { RemoveWorkspaceButton } from '../features/workspaces/RemoveWorkspaceButton'
+import { WorkspaceDetailPage } from '../features/workspaces/WorkspaceDetailPage'
 import { Badge, Card, EmptyState, Icon, PageHeader, SettingsSection, type IconName } from '../shared/ui/nocturne'
 import { WorkspaceShell, type WorkspaceSection } from '../shared/ui/WorkspaceShell'
 import {
@@ -69,7 +67,7 @@ export function WorkflowsRouteEntry() {
     <WorkspaceShell
       workspaceId={workspaceId}
       activeSection="workflows"
-      slots={{ main: <WorkflowDirectory workspaceId={workspaceId} /> }}
+      slots={{ main: <WorkspaceDetailPage workspaceId={workspaceId} section="workflows"><WorkflowDirectory workspaceId={workspaceId} hideHeading /></WorkspaceDetailPage> }}
     />
   )
 }
@@ -132,41 +130,22 @@ export function GlobalComingSoonRouteEntry({
 
 export function SettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings' })
-  const workspace = useManagedWorkspaceQuery(workspaceId)
-  const name = workspace.data?.workspace.id === workspaceId ? workspace.data.workspace.name : undefined
   return (
     <WorkspaceShell
       workspaceId={workspaceId}
       activeSection="settings"
       slots={{
-        main: (
-          <div className="settings-page workspace-overview">
-            <PageHeader
-              eyebrow={name ?? 'Workspace'}
-              title="Settings"
-              actions={workspace.data?.workspace.id === workspaceId ? <RemoveWorkspaceButton
-                key={workspaceId} workspaceId={workspaceId} name={workspace.data.workspace.name} revision={workspace.data.revision}
-              /> : undefined}
-            />
-            <ul className="settings-card-list">
-              <li>
-                <WorkspaceExecutionLocationSettings workspaceId={workspaceId} presentation="tile" />
-              </li>
-              <li>
-                <Card className="settings-card">
-                  <Link to="/workspaces/$workspaceId/browsers" params={{ workspaceId }} className="settings-card-open">
-                    <SettingsCardBody icon="globe" title="Browsers" description="Browser profiles and access" />
-                  </Link>
-                </Card>
-              </li>
-            </ul>
-            <ProjectFilesSection workspaceId={workspaceId} />
-            <WorkflowDirectory workspaceId={workspaceId} headingLevel={2} />
-          </div>
-        ),
+        main: <WorkspaceDetailPage workspaceId={workspaceId} section="settings" />,
       }}
     />
   )
+}
+
+export function ProjectFilesRouteEntry() {
+  const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/files' })
+  return <WorkspaceShell workspaceId={workspaceId} activeSection="files" slots={{ main:
+    <WorkspaceDetailPage workspaceId={workspaceId} section="files"><ProjectFilesSection workspaceId={workspaceId} /></WorkspaceDetailPage>,
+  }} />
 }
 
 function SettingsCardBody({ icon, title, description }: {
@@ -186,24 +165,14 @@ function SettingsCardBody({ icon, title, description }: {
   )
 }
 
-function SettingsBackLink() {
-  return (
-    <Link to="/settings" className="settings-back-link" aria-label="Back to settings">
-      <ArrowLeft aria-hidden="true" size={14} />Settings
-    </Link>
-  )
-}
-
-function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, backLink, children }: {
+function SettingsDetailPage({ eyebrow = 'GraphQL', title, description, children }: {
   eyebrow?: string
   title: string
   description: string
-  backLink: ReactNode
   children: ReactNode
 }) {
   return (
     <div className="settings-page workspace-detail">
-      {backLink}
       <PageHeader eyebrow={eyebrow} title={title} description={description} />
       {children}
     </div>
@@ -293,7 +262,6 @@ export function WorkflowSettingsRouteEntry() {
           <SettingsDetailPage
             title="Workflows"
             description="New workflows copy this handler. Existing and in-flight approvals do not change."
-            backLink={<SettingsBackLink />}
           >
             <WorkflowDefaultsSettings />
           </SettingsDetailPage>
@@ -323,10 +291,7 @@ export function BrowsersSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/browsers' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
     <SettingsDetailPage eyebrow={`Workspace · ${workspaceId}`} title="Browsers"
-      description="Browser profiles this workspace's agents are allowed to drive."
-      backLink={<Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
-        <ArrowLeft aria-hidden="true" size={14} />Settings
-      </Link>}>
+      description="Browser profiles this workspace's agents are allowed to drive.">
       <SettingsSection title="Browsers" description="Coming soon">
         <p>Browser profile management is planned but is not implemented yet.</p>
       </SettingsSection>
@@ -337,9 +302,6 @@ export function WorkspaceLocationSettingsRouteEntry() {
   const { workspaceId } = useParams({ from: '/workspaces/$workspaceId/settings/location' })
   return <WorkspaceShell workspaceId={workspaceId} activeSection="settings" slots={{ main:
     <div className="settings-page workspace-detail">
-      <Link to="/workspaces/$workspaceId/settings" params={{ workspaceId }} className="settings-back-link" aria-label="Back to settings">
-        <ArrowLeft aria-hidden="true" size={14} />Settings
-      </Link>
       <WorkspaceExecutionLocationSettings key={workspaceId} workspaceId={workspaceId} presentation="card" />
     </div> }} />
 }

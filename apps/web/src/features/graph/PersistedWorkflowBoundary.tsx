@@ -6,11 +6,12 @@ import { NextDraftEditor } from './nextDraft/NextDraftEditor'
 import { nextDraftApi } from './nextDraft/transport'
 import { nextDraftKey } from './nextDraft/state'
 import { useGraphDraftStore } from './store'
+import type { BoardUpdateFailure } from '../workflow-board/BoardAlerts'
 
 /** Persisted execution tags are explicit. No default, conversion, complexity
  * selector or fallback can open an executable editor for a retired record. */
-export function PersistedWorkflowBoundary({ workspaceId, workflowId, workflow }: {
-  workspaceId: string; workflowId: string; workflow: unknown
+export function PersistedWorkflowBoundary({ workspaceId, workflowId, workflow, updateFailures }: {
+  workspaceId: string; workflowId: string; workflow: unknown; updateFailures?: readonly BoardUpdateFailure[]
 }) {
   const parsed = WorkflowDefinitionV3Schema.safeParse(workflow)
   if (!parsed.success || parsed.data.workspaceId !== workspaceId || parsed.data.id !== workflowId) {
@@ -18,9 +19,9 @@ export function PersistedWorkflowBoundary({ workspaceId, workflowId, workflow }:
       <h2>Authoring unavailable</h2><p>The saved workflow is unavailable or has a retired or unsupported execution tag. No executable editor or Start was dispatched.</p>
     </section>
   }
-  return <AuthoringBoundary workspaceId={workspaceId} workflowId={workflowId} />
+  return <AuthoringBoundary workspaceId={workspaceId} workflowId={workflowId} updateFailures={updateFailures} />
 }
-function AuthoringBoundary({ workspaceId, workflowId }: { workspaceId: string; workflowId: string }) {
+function AuthoringBoundary({ workspaceId, workflowId, updateFailures = [] }: { workspaceId: string; workflowId: string; updateFailures?: readonly BoardUpdateFailure[] }) {
   const key = nextDraftKey(workspaceId, workflowId)
   const edit = useGraphDraftStore((state) => state.nextDrafts[key])
   const source = useQuery({ queryKey: boardDraftContextKey(workspaceId, workflowId),
@@ -34,8 +35,9 @@ function AuthoringBoundary({ workspaceId, workflowId }: { workspaceId: string; w
     const changed = edit && source.data && (source.data.draft.id !== edit.context.draft.id || source.data.draft.revision !== edit.context.draft.revision)
     return <>
       {changed ? <p role="status">The shared draft changed elsewhere. Your local edits and original revision are retained; reload explicitly before overwriting anything.</p> : null}
-      {source.isError ? <p role="status">Draft updates are unavailable. Start requires a fresh verified saved read.</p> : null}
-      <NextDraftEditor key={key} workspaceId={workspaceId} workflowId={workflowId} initialContext={source.data} />
+      <NextDraftEditor key={key} workspaceId={workspaceId} workflowId={workflowId} initialContext={source.data}
+        updateFailures={[...updateFailures, ...(source.isError ? [{ id: 'DRAFT_UPDATES_UNAVAILABLE',
+          message: 'Draft updates unavailable. Running requires a fresh saved read.', pending: source.isFetching, retry: () => void source.refetch() }] : [])]} />
     </>
   }
   if (source.isPending) return <section role="status">Loading workflow…</section>

@@ -46,7 +46,7 @@ function mount(client = makeClient()) {
 }
 async function open(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Schedule workflow' }))
-  await screen.findByRole('combobox', { name: 'Timezone' })
+  await screen.findByRole('switch', { name: 'Enabled' })
   return screen.getByRole('dialog', { name: 'Schedule' })
 }
 function deferred<T>() {
@@ -81,27 +81,60 @@ beforeEach(() => {
 afterEach(() => { for (const client of clients.splice(0)) client.clear(); vi.unstubAllGlobals() })
 
 describe('schedule clock and compact modal', () => {
-  it('disables an unsaved client-allocated workflow id with a keyboard-accessible tooltip', async () => {
+  it('keeps an unsaved workflow disabled and labeled without a hover popup', async () => {
     const { user, rerender } = mount()
     rerender(<ScheduleClockButton {...scope} isSaved={false} />)
     const button = screen.getByRole('button', { name: 'Save workflow first' })
     expect(button).toBeDisabled()
     await user.hover(button.parentElement!)
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Save workflow first')
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    act(() => button.parentElement!.focus())
+    expect(button.parentElement).toHaveAccessibleName('Save workflow first')
     expect(reads).toBe(0)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+  it('does not open a popup or load schedules on hover or focus', async () => {
+    const { user } = mount()
+    const button = screen.getByRole('button', { name: 'Schedule workflow' })
+    await user.hover(button)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    await user.unhover(button)
+    act(() => button.focus())
+    expect(button).toHaveFocus()
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(reads).toBe(0)
+  })
+  it.each(['{Enter}', ' '])('opens schedules only after keyboard activation with %s', async (key) => {
+    const { user } = mount()
+    const button = screen.getByRole('button', { name: 'Schedule workflow' })
+    act(() => button.focus())
+    await user.keyboard(key)
+    const dialog = await screen.findByRole('dialog', { name: 'Schedule' })
+    await screen.findByRole('switch', { name: 'Enabled' })
+    expect(dialog).toBeVisible()
+    expect(button).toHaveAttribute('aria-expanded', 'true')
+    expect(reads).toBeGreaterThan(0)
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(button).toHaveFocus()
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(saves).toHaveLength(0)
+    expect(disables).toHaveLength(0)
   })
   it('defaults to the browser timezone and saves Weekly with ISO weekdays', async () => {
     const { user } = mount()
     await open(user)
-    expect(screen.getByRole('combobox', { name: 'Timezone' })).toHaveValue(Intl.DateTimeFormat().resolvedOptions().timeZone)
+    expect(screen.queryByRole('combobox', { name: 'Timezone' })).not.toBeInTheDocument()
     for (const day of ['Tuesday', 'Wednesday', 'Thursday', 'Friday']) await user.click(screen.getByRole('button', { name: day }))
     fireEvent.change(screen.getByLabelText('Time'), { target: { value: '10:15' } })
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Timezone' }), 'UTC')
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(saves).toHaveLength(1)
-    expect(saves[0]).toMatchObject({ ...scope, expectedRevision: 0, schedule: { mode: 'weekly', weekdays: [1], time: '10:15', timezone: 'UTC', policy: 'latest_saved' } })
+    expect(saves[0]).toMatchObject({ ...scope, expectedRevision: 0, schedule: { mode: 'weekly', weekdays: [1], time: '10:15', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, policy: 'latest_saved' } })
   })
   it.each(['minute', 'hour'])('saves Interval in %s units', async (unit) => {
     const { user } = mount(); await open(user)
@@ -117,7 +150,6 @@ describe('schedule clock and compact modal', () => {
     await user.click(screen.getByRole('tab', { name: 'Once' }))
     fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2099-08-24' } })
     fireEvent.change(screen.getByLabelText('Time'), { target: { value: '13:45' } })
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Timezone' }), 'UTC')
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
     await waitFor(() => expect(saves).toHaveLength(1))
     expect(saves[0]?.schedule).toEqual({ mode: 'once', localDate: '2099-08-24', time: '13:45', timezone: 'UTC', enabled: true, policy: 'latest_saved' })
@@ -193,12 +225,11 @@ describe('schedule clock and compact modal', () => {
     expect(saves[0]).toMatchObject({ expectedRevision: 3, schedule: { enabled: true } })
     expect(disables).toHaveLength(0)
   })
-  it('shows only the server nextOccurrenceAt, even while editing time/zone/enabled', async () => {
+  it('shows only the server nextOccurrenceAt, even while editing time/enabled', async () => {
     persisted = { ...weekly }
     const { user } = mount(); const dialog = await open(user)
     expect(dialog.querySelector('time')).toHaveAttribute('datetime', next)
     fireEvent.change(screen.getByLabelText('Time'), { target: { value: '23:59' } })
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Timezone' }), 'America/New_York')
     await user.click(screen.getByRole('switch', { name: 'Enabled' }))
     expect(dialog.querySelector('time')).toHaveAttribute('datetime', next)
     expect(dialog.querySelector('time')?.title).toContain('UTC')

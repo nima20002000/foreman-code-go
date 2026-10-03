@@ -305,8 +305,8 @@ export class NativeHarnessFactories {
   }
 
   async qualifyConfiguration(configuration: HarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
-    if (configuration.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
-      'Claude settings checks require an explicit accepted host profile; default configuration checks cannot select one.', 409)
+    if (configuration.harness === 'claude') throw new DomainError('CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE',
+      'The Claude preset is saved, but native profile qualification is not available in this runtime. Execution still requires verified authentication, sandbox isolation and lifecycle evidence for the exact host profile.', 409)
     const selection = this.config.selectConfiguration?.(configuration)
     const allocation = this.allocate({ harness: configuration.harness, role: 'qualification',
       ...(selection ? { selection, configured: selection.instance } : {}), workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',

@@ -78,7 +78,7 @@ describe('PR17 provider editing recovery', () => {
     expect(screen.getByRole('button', { name: 'Move permission rule 1 up' })).toBeDisabled()
     expect(screen.getAllByText('Permission').length).toBe(2)
     expect(screen.getAllByText('Pattern').length).toBe(2)
-    expect(screen.getAllByText('Effect').length).toBe(2)
+    expect(screen.getAllByText('Decision').length).toBe(2)
   })
   it('serializes only the active provider, never its cached editor drafts', () => {
     const codex = createHarnessEditor(DEFAULT_HARNESS_DEFAULTS.codex)

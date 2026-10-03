@@ -20,7 +20,10 @@ import { claudeProductionMcpInspector } from './productionMcpInspector.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'
 
 /** Private lifetime signal is never serialized into accepted configuration or provenance. */
-export type ClaudeProfileOwner = ClaudeDomainBinding & { admissionSignal?: AbortSignal; purpose?: 'reviewer' }
+export type ClaudeProfileOwner = (ClaudeDomainBinding | {
+  /** Read-only setup has no conversation, accepted input or SDK callbacks. */
+  kind: 'operator-inspection'; principalId: string; configurationVersionId: string; configurationHash: string
+}) & { admissionSignal?: AbortSignal; purpose?: 'reviewer' }
 
 /** The role's immutable configuration/placement supplies the selector; the
  * existing admission reads its exact profile and current native proof. */
@@ -120,13 +123,14 @@ export function productionClaudeManager(input: {
       if (input.mode === 'replay' && !input.files.sdk) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude file replay requires its SDK server/tool port.', 500)
       const sdk = await (input.files.sdk ? input.files.sdk() : import('@anthropic-ai/claude-agent-sdk'))
       signal.throwIfAborted()
-      const allowMutation = compiled.configuration.sandbox === 'workspace-write'
+      const allowMutation = compiled.configuration.sandbox !== 'read-only'
       fileServer = createClaudeFileMcpServer({ sdk, service: input.files.service(), allowMutation,
         calls: createClaudeFileCallResolver({ manager: () => actual, signal }),
         admission: productionClaudeFileAdmission({ pool: input.pool, binding: input.binding, manager: () => actual, allowMutation }) })
     }
     const callbacks = createClaudeSdkCallbacks({ manager: () => actual!, bridge: domain.bridge })
     const options = { cwd: compiled.cwd, model: compiled.model, permissionMode: compiled.permissionMode,
+      ...(compiled.effort ? { effort: compiled.effort } : {}),
       tools: compiled.tools, allowedTools: compiled.allowedTools, disallowedTools: compiled.disallowedTools,
       strictMcpConfig: compiled.strictMcpConfig, settingSources: compiled.settingSources, systemPrompt: compiled.systemPrompt,
       mcpServers: { ...(input.appMcpAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers).filter(([name]) => name !== 'graphql')) : compiled.mcpServers),
