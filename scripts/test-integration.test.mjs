@@ -191,9 +191,10 @@ test('TEST_DATABASE_URL selects the server; slots get their own databases there'
 test('dedicated database gates use the current owned slot, overriding inherited destinations', () => {
   const slot = { databaseUrl: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_test_owned', directory: '/tmp/slot-1' }
   const inherited = { TEST_DATABASE_URL: 'postgresql://remote/live',
+    JOB_DISPATCH_DATABASE_URL: 'postgresql://remote/live',
     NIM2691_ADMIN_DATABASE_URL: 'postgresql://remote/live', HRT_F14_ADMIN_DATABASE_URL: 'postgresql://remote/live', TMPDIR: '/inherited' }
   const environment = integrationEnvironment(inherited, slot)
-  for (const name of ['TEST_DATABASE_URL', 'NIM2691_ADMIN_DATABASE_URL', 'HRT_F14_ADMIN_DATABASE_URL']) {
+  for (const name of ['TEST_DATABASE_URL', 'JOB_DISPATCH_DATABASE_URL', 'NIM2691_ADMIN_DATABASE_URL', 'HRT_F14_ADMIN_DATABASE_URL']) {
     assert.equal(environment[name], slot.databaseUrl)
   }
   assert.equal(environment.NIM2691_POSTGRES, '1')
@@ -201,6 +202,7 @@ test('dedicated database gates use the current owned slot, overriding inherited 
   assert.equal(inherited.HRT_F14_ADMIN_DATABASE_URL, 'postgresql://remote/live')
   const retest = integrationEnvironment(environment, { ...slot, databaseUrl: slot.databaseUrl + '_retest' })
   assert.equal(retest.HRT_F14_ADMIN_DATABASE_URL, slot.databaseUrl + '_retest')
+  assert.equal(retest.JOB_DISPATCH_DATABASE_URL, slot.databaseUrl + '_retest')
   for (const databaseUrl of ['postgresql://graphql:graphql@remote/graphql_test_owned',
     'postgresql://graphql:graphql@127.0.0.1/live', slot.databaseUrl + '?options=unsafe']) {
     assert.throws(() => integrationEnvironment(inherited, { ...slot, databaseUrl }), /loopback PostgreSQL database explicitly named for tests/)

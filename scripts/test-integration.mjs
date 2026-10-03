@@ -193,6 +193,7 @@ function requireLoopbackTestDatabase(url) {
 export function integrationEnvironment(environment, slot) {
   requireLoopbackTestDatabase(slot.databaseUrl)
   return { ...environment, TEST_DATABASE_URL: slot.databaseUrl,
+    JOB_DISPATCH_DATABASE_URL: slot.databaseUrl,
     NIM2691_POSTGRES: '1', NIM2691_ADMIN_DATABASE_URL: slot.databaseUrl,
     HRT_F14_ADMIN_DATABASE_URL: slot.databaseUrl,
     TMPDIR: slot.directory, TMP: slot.directory, TEMP: slot.directory }

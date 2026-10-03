@@ -119,6 +119,8 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         return current.process.phase==='terminal'&&!['pending','collecting'].includes(current.publication)
       })
       if(finished)await this.release(executionId)
+      if(status.status==='unknown')throw new DomainError('JOB_DISPATCH_PENDING','The original Worker journal has not confirmed this Job. Read its persisted state and retry the original command; absence does not prove nonexecution or cancellation closure.',503,
+        {retryable:true,executionId,attemptId:prepared.intent.attemptId,operationId:prepared.intent.operationId})
     } catch(error) {
       if(abort.signal.aborted)await this.release(executionId)
       throw error
