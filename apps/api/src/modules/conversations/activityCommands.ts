@@ -38,11 +38,9 @@ export function projectActivityCommands(conversationId: string, scope: ActivityS
 export async function readActivityCommands(query: Pick<pg.PoolClient, 'query'>, conversationId: string, scope: ActivityScope, scopeRevision: string) {
   const rows = (await query.query<Receipt>(`with candidates as materialized (
     select r.principal_id,r.operation,r.command_id,r.activity_record_revision::text as revision,r.created_at,
-      outcome.status,outcome."acceptedControl" as control,outcome."providerAcknowledgment" as acknowledgment
+      r.activity_status as status,r.activity_control as control,r.activity_acknowledgment as acknowledgment
     from management_command_receipts r
-    cross join lateral jsonb_to_record(r.result) as outcome(status text,"acceptedControl" jsonb,"providerAcknowledgment" jsonb)
     where r.target_key=$1 and r.operation in ('agent_chat_control','operator_chat_control')
-      and jsonb_typeof(r.result)='object'
   ), open as (
     select * from candidates where status in ('pending','uncertain')
       order by created_at desc,principal_id,command_id limit 201

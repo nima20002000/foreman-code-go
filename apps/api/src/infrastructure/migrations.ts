@@ -1,3 +1,4 @@
+import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
 import { activitySourcesMigration } from './activitySourcesMigration.js'
@@ -806,6 +807,7 @@ export const migrations = [
   remoteNativeArtifactOutputMigration,
   remoteOwnerControlAdmissionMigration,
   remoteNativeArtifactContextMigration,
+  compactCommandActivityMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

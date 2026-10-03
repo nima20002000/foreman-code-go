@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
+import { compactCommandActivityMigration } from '../src/infrastructure/compactCommandActivityMigration.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { readActivityCommands } from '../src/modules/conversations/activityCommands.js'
@@ -57,3 +58,23 @@ it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['pending', 'uncertain', 'c
       } finally { await app.close(); await chat.shutdown() }
     })
   }, 120000)
+
+
+it.skipIf(process.env.NIM2691_POSTGRES !== '1')('backfills compact receipt activity and follows result updates without changing stored outcomes', async () => {
+  await nim2691TaskDatabase(async pool => {
+    await pool.query('create table management_command_receipts (id integer primary key, result jsonb not null)')
+    const outcome = { status: 'pending', acceptedControl: { id: 'control' }, state: { retained: 'original snapshot' } }
+    await pool.query('insert into management_command_receipts values (1,$1::jsonb),(2,$2::jsonb)', [JSON.stringify(outcome), '["historical"]'])
+    await pool.query(compactCommandActivityMigration.sql)
+    const read = async () => (await pool.query(`select result,activity_status,activity_control,activity_acknowledgment
+      from management_command_receipts order by id`)).rows
+    expect(await read()).toEqual([
+      { result: outcome, activity_status: 'pending', activity_control: outcome.acceptedControl, activity_acknowledgment: null },
+      { result: ['historical'], activity_status: null, activity_control: null, activity_acknowledgment: null },
+    ])
+    const settled = { ...outcome, status: 'completed', providerAcknowledgment: { id: 'acknowledgment' } }
+    await pool.query('update management_command_receipts set result=$1::jsonb where id=1', [JSON.stringify(settled)])
+    expect((await read())[0]).toEqual({ result: settled, activity_status: 'completed', activity_control: outcome.acceptedControl,
+      activity_acknowledgment: settled.providerAcknowledgment })
+  })
+}, 120000)
