@@ -69,3 +69,21 @@ it('quiesces every bounded pending private write before quarantining a failed ca
     expect(active).toBe(0); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
   } finally { release?.(); vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
 })
+
+it('maps its expired preparation budget to a typed retryable failure after private-write quiescence', async () => {
+  const directory = await mkdtemp('/var/tmp/entrypoints-source-timeout-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
+  const store = new PrivateSourceSnapshotStore(storage), controller = new AbortController(), abort = vi.spyOn(store, 'abort'), publish = vi.spyOn(store, 'commit')
+  try {
+    await qualifiedGit(root, ['init', '-q']); await writeFile(join(root, 'source.txt'), 'Original source bytes.')
+    await qualifiedGit(root, ['add', '.']); await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Fixture'])
+    const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim(), timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal)
+    try {
+      await expect(captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths: ['source.txt'], executablePolicy: 'strip', sink: {
+        write: async (...args) => { await store.write(...args); controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')) },
+        commit: store.commit.bind(store), abort: store.abort.bind(store),
+      } })).rejects.toMatchObject({ code: 'SOURCE_CAPTURE_TIMEOUT', status: 503, details: { retryable: true, newCommandRequired: true } })
+      expect(timeout).toHaveBeenCalledWith(30_000); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
+    } finally { timeout.mockRestore() }
+  } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
+})

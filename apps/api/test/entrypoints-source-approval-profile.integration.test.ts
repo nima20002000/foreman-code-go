@@ -115,5 +115,29 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
     await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => denied.token } }))
     expect((await deniedClient.callTool({ name: 'source_approve', arguments: { ...input, commandId: randomUUID() } })).isError).toBe(true)
     expect(stages.totalMs).toBeLessThan(15_000)
+    for (const transport of ['http', 'mcp'] as const) {
+      const controller = new AbortController(), timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(controller.signal)
+      const fault = vi.spyOn(store, 'write').mockImplementation(async (...args) => {
+        await write(...args); controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+      })
+      const interrupted = { ...input, commandId: randomUUID() }
+      try {
+        if (transport === 'http') {
+          const failed = await app.inject({ method: 'POST', url: `/api/management/workspaces/${workspaceId}/sources/approve`, headers, payload: interrupted })
+          expect(failed.statusCode, failed.body).toBe(503)
+          expect(failed.json().error).toMatchObject({ code: 'SOURCE_CAPTURE_TIMEOUT', details: { retryable: true, newCommandRequired: true } })
+        } else {
+          const failed = await client.callTool({ name: 'source_approve', arguments: interrupted })
+          expect(failed.isError).toBe(true)
+          expect(JSON.parse((failed.content[0] as { text: string }).text)).toMatchObject({ error: { code: 'SOURCE_CAPTURE_TIMEOUT', details: { retryable: true, newCommandRequired: true } } })
+        }
+        expect(timeout).toHaveBeenCalledWith(30_000)
+        const row = (await db.pool.query('select state from source_approvals where command_id=$1', [interrupted.commandId])).rows[0]
+        expect(row.state).toBe('failed')
+        expect((await db.pool.query('select count(*)::int as count from source_snapshots')).rows[0].count).toBe(1)
+        const replay = await client.callTool({ name: 'source_approve', arguments: interrupted })
+        expect(replay.isError).toBe(true); expect(JSON.parse((replay.content[0] as { text: string }).text)).toMatchObject({ error: { code: 'SOURCE_CAPTURE_FAILED' } })
+      } finally { fault.mockRestore(); timeout.mockRestore() }
+    }
   } finally { metrics.active = false; await Promise.allSettled(clients.map(client => client.close())); await app.close(); vi.restoreAllMocks(); await db.close(); await rm(directory, { recursive: true, force: true }) }
 }, 60_000)

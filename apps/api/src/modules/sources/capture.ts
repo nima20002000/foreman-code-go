@@ -5,6 +5,7 @@ import { realpath } from 'node:fs/promises'
 import type { SourceManifest, SourceEntry } from '@graphql/contracts/source-materialization'
 import { createSourceManifest, SOURCE_LIMITS, SourceError, sourcePath, sourceSha256, verifySourceBytes } from './manifest.js'
 import type { ExclusiveSourceCapture } from './ports.js'
+import { DomainError } from '../errors.js'
 const execute = promisify(execFile)
 const gitEnvironment = { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' }
 export interface SourceSnapshotSink {
@@ -156,7 +157,16 @@ export async function captureGitSource(input: { root: string; approvedSourceId: 
     const manifest = createSourceManifest({ version: 1, snapshotId, approvedSourceId: input.approvedSourceId,
       capturePolicy: 'git-tree-v1', executablePolicy: input.executablePolicy, git: { commit, tree, objectFormat }, entries, deletions: [] })
     signal.throwIfAborted(); await input.sink.commit(manifest); return manifest
-  } catch (error) { await reader?.close(); await input.sink.abort(snapshotId); throw error }
+  } catch (error) {
+    const timedOut = signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
+    await reader?.close(); await input.sink.abort(snapshotId)
+    if (timedOut) {
+      const timeout = new DomainError('SOURCE_CAPTURE_TIMEOUT', 'Source preparation exceeded its bounded deadline. Retry with a new explicit approval command.', 503, { retryable: true, newCommandRequired: true })
+      timeout.cause = error
+      throw timeout
+    }
+    throw error
+  }
   finally { await reader?.close() }
 }
 export async function captureExplicitSource(input: { capture: ExclusiveSourceCapture; entries: readonly { path: string; executable: boolean }[];
@@ -181,5 +191,14 @@ export async function captureExplicitSource(input: { capture: ExclusiveSourceCap
       capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: input.executablePolicy, entries,
       deletions: [...input.deletions].sort(), ...(input.overlayBaseDigest ? { overlayBaseDigest: input.overlayBaseDigest } : {}) })
     signal.throwIfAborted(); await input.sink.commit(manifest); return manifest
-  } catch (error) { await input.sink.abort(snapshotId); throw error }
+  } catch (error) {
+    const timedOut = signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
+    await input.sink.abort(snapshotId)
+    if (timedOut) {
+      const timeout = new DomainError('SOURCE_CAPTURE_TIMEOUT', 'Source preparation exceeded its bounded deadline. Retry with a new explicit approval command.', 503, { retryable: true, newCommandRequired: true })
+      timeout.cause = error
+      throw timeout
+    }
+    throw error
+  }
 }
