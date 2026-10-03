@@ -30,7 +30,7 @@ import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
 import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
-import { repeatDigest, type RepeatNodeInput, type RepeatInputBinding } from '../../src/modules/runs/repeatResolution.js'
+import { repeatDigest, sameRepeatValue, type RepeatNodeInput, type RepeatInputBinding } from '../../src/modules/runs/repeatResolution.js'
 import { LangGraphWorkflowEngine } from '../../src/modules/runs/engine.js'
 import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
@@ -413,7 +413,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       && accepted.every((item) => {
         const sender = executions.find((execution) => execution.id === item.execution.executionId)
         const binding = bindings.find((candidate) => 'relationshipId' in candidate.source && candidate.source.relationshipId === item.relationshipId)
-        return sender?.result?.outcome === 'succeeded' && JSON.stringify(item.acceptedResult) === JSON.stringify(sender.result)
+        return sender?.result?.outcome === 'succeeded' && sameRepeatValue(item.acceptedResult, sender.result)
           && binding?.source.execution.executionId === sender.id && binding.recipient.executionId === reviewer.id
           && binding.ordinal === accepted.indexOf(item)
           && binding.source.acceptedResultDigest === repeatDigest(sender.result, 64 * 1024)
