@@ -5,13 +5,14 @@ import { WorkspaceRootListInputSchema, WorkspaceRootListResultSchema } from '@gr
 import { WorkspaceBoundLocationGetInputSchema, WorkspaceBoundLocationValidateInputSchema, WorkspaceBoundLocationBrowseInputSchema,
   WorkspaceBoundLocationSetInputSchema, WorkspaceBoundLocationValidationSchema, WorkspaceBoundLocationBrowseResultSchema,
   WorkspaceBoundLocationReadbackSchema, WorkspaceBoundLocationSetResultSchema } from '@graphql/contracts/workspace-bound-location'
+import { WorkspaceRootConfigurationAdoptSchema, WorkspaceRootConfigurationAdoptResultSchema } from '@graphql/contracts/workspace-bound-location'
 import { requirePrincipal } from '../access/http.js'
 import { DomainError } from '../errors.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { toolFailure, toolResult } from '../../mcp/shared/results.js'
 import type { WorkspaceBoundLocationService } from './service.js'
 
-const TOOLS = { choices: 'workspace_root_choices_list', get: 'workspace_root_location_get',
+const TOOLS = { adopt: 'workspace_root_configuration_adopt', choices: 'workspace_root_choices_list', get: 'workspace_root_location_get',
   validate: 'workspace_root_location_validate', browse: 'workspace_root_directories_list', set: 'workspace_root_location_set' } as const
 function scoped(workspaceId: string, raw: unknown) {
   if (raw === undefined) return { workspaceId }
@@ -25,6 +26,7 @@ function scoped(workspaceId: string, raw: unknown) {
 export function registerWorkspaceRootRoutes(app: FastifyInstance, service: WorkspaceBoundLocationService): void {
   type Request = { Params: { workspaceId: string }; Body: unknown; Querystring: Record<string, unknown> }
   const base = '/api/management/workspaces/:workspaceId'
+  app.post<Request>(`${base}/root-configurations/adopt`, request => service.adopt(requirePrincipal(request), 'http', scoped(request.params.workspaceId, request.body)))
   app.get<Request>(`${base}/root-policies`, async (request, reply) => {
     reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
     return service.choices(requirePrincipal(request), scoped(request.params.workspaceId, request.query))
@@ -46,7 +48,11 @@ export function registerWorkspaceRootTools(server: McpServer, service: Workspace
       return toolFailure(error)
     }
   }
-  server.registerTool(TOOLS.choices, { description: 'List persisted human-approved computer/base/root policies for an existing workspace, without filesystem probing. Requires scoped source_roots:read and workspace_locations:read. No Agent or workflow is required; metadata-only is not worker readiness.',
+  server.registerTool(TOOLS.adopt, { description: 'Adopt the original human-approved root configuration from the selected authenticated host installation. Requires scoped source_roots:read/bind and workspace_locations:read/validate/update. No caller paths or new approval; persists the exact configuration with an idempotent command receipt and audit. Then list, validate and bind its root choices.',
+    inputSchema: WorkspaceRootConfigurationAdoptSchema, outputSchema: WorkspaceRootConfigurationAdoptResultSchema,
+    annotations: { ...read, readOnlyHint: false } }, input => invoke(TOOLS.adopt, () => service.adopt(principal, 'mcp', input)))
+  server.registerTool(TOOLS.choices, { description: 'List persisted computer/base/root policies for an existing workspace, including Main app-managed Workspaces storage and explicitly owner-approved additional roots, without filesystem probing. Requires scoped source_roots:read and workspace_locations:read. No Agent or workflow is required; metadata-only is not worker readiness.',
+
     inputSchema: WorkspaceRootListInputSchema, outputSchema: WorkspaceRootListResultSchema, annotations: read }, input => invoke(TOOLS.choices, () => service.choices(principal, input)))
   server.registerTool(TOOLS.get, { description: 'Read the current exact workspace root binding and location revision. Requires scoped source_roots:read and workspace_locations:read. Legacy locations explicitly lack root evidence; never infer a host from a path.',
     inputSchema: WorkspaceBoundLocationGetInputSchema, outputSchema: WorkspaceBoundLocationReadbackSchema, annotations: read }, input => invoke(TOOLS.get, () => service.get(principal, input)))
@@ -60,6 +66,7 @@ export function registerWorkspaceRootTools(server: McpServer, service: Workspace
 }
 export function workspaceRootCapabilityLimit(composed: boolean) {
   return { feature: 'workspace_registered_roots', state: composed ? 'limited' as const : 'unsupported' as const,
-    detail: composed ? 'Independent workspace roots expose exact schemas through tools/list: workspace_root_choices_list/location_get require source_roots:read and workspace_locations:read; directories_list/location_validate additionally require workspace_locations:validate; location_set additionally requires source_roots:bind and workspace_locations:update. Main persists revision-fenced bindings; native roots come from human-approved host configuration.'
+    detail: composed ? 'Independent workspace roots expose exact schemas through tools/list: workspace_root_configuration_adopt persists the original authenticated human-approved host configuration with source_roots:read/bind and workspace_locations:read/validate/update; workspace_root_choices_list/location_get require source_roots:read and workspace_locations:read; directories_list/location_validate additionally require workspace_locations:validate; location_set additionally requires source_roots:bind and workspace_locations:update. Main persists revision-fenced bindings; Main app-managed Workspaces storage is initialized by the installation, while additional and device roots require explicit owner-approved host configuration.'
+
       : 'Registered workspace root services are not composed.' }
 }

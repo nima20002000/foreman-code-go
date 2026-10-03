@@ -17,6 +17,9 @@ import { admitted, clients, context, envelope, execution, historicalState, insta
   scope, selectedRoute, snapshot, snapshotRoute } from '../conversations/agentChat/sch10.testSupport'
 import { boardDraftContextKey } from './keys'
 import { WorkflowBoard } from './WorkflowBoard'
+import { useWorkflowBoard } from './context'
+
+function CurrentNavigation() { return useWorkflowBoard()?.navigationControls }
 
 vi.mock('../schedules', () => ({ ScheduleClockButton: () => null }))
 vi.mock('../workflow-files', () => ({ WorkflowFilesButton: () => null }))
@@ -58,6 +61,7 @@ it('opens saved Agent chat for a selected past Run and returns to Current chat',
   const root = createRootRoute({ component: Outlet })
   const route = createRoute({ getParentRoute: () => root, path: '/workspaces/$workspaceId', validateSearch: RunsSelectorSearchSchema,
     component: () => <WorkflowBoard {...scope} inspection={{}} selectInspection={() => undefined} selectRun={() => undefined} summaries={[]}>
+      <CurrentNavigation />
       <AgentChatPanel name="Current Agent" context={context()} />
     </WorkflowBoard> })
   const router = createRouter({ routeTree: root.addChildren([route]),
@@ -82,7 +86,8 @@ it('opens saved Agent chat for a selected past Run and returns to Current chat',
   expect(source.current.calls.filter((call) => call.method === 'POST')).toHaveLength(0)
 
   await userEvent.click(screen.getByRole('button', { name: 'Runs' }))
-  await userEvent.click(within(await screen.findByRole('menu', { name: 'Runs' })).getByRole('menuitemradio', { name: 'Current workflow' }))
+  await screen.findByRole('menu', { name: 'Runs' })
+  await userEvent.click(screen.getByRole('button', { name: 'Return to workflow' }))
   await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument())
   expect(screen.getByTestId('agent-conversation')).toHaveAttribute('data-chat-key', agentChatContextKey(context()))
   expect(screen.queryByText('To saved Agent')).not.toBeInTheDocument()

@@ -230,6 +230,23 @@ afterEach(async () => {
 })
 
 describe('FIL-13 real chat mounts', () => {
+  it.each(['operator', 'agent'] as const)('accepts a file dropped onto the %s composer with exact upload scope and send pins', async (kind) => {
+    const initial = idleAgent()
+    if (kind === 'agent') installAgent(initial)
+    render(kind === 'operator' ? operatorTree() : tree(panel(initial)))
+    await screen.findByRole('textbox', { name: 'Message' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Attach files' })).toBeEnabled())
+    fireEvent.drop(screen.getByRole('textbox', { name: 'Message' }), { dataTransfer: {
+      types: ['Files'], files: [new File(['# dropped chat'], 'dropped-chat.md', { type: 'text/markdown' })],
+    } })
+    await uploaded('dropped-chat.md')
+    const expectedScope = kind === 'operator' ? operatorScope() : agentScope(initial)
+    expect(uploadPaths).toEqual([`${root(expectedScope)}/uploads`])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(kind === 'operator' ? sendCalls : agentCalls).toHaveLength(1))
+    expect((kind === 'operator' ? sendCalls : agentCalls)[0].attachments).toEqual(messageAttachmentRefs({ attachments: [...staged.values()] }))
+  })
   it('sends an Operator file with exact pins and renders its persisted card after acceptance', async () => {
     render(operatorTree())
     await upload(); await uploaded()

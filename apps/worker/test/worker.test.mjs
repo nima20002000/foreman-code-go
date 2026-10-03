@@ -173,6 +173,9 @@ test('service absolute paths, controlled environment and bounded cgroup shutdown
   const fields = { node: '/usr/bin/node', app: '/home/user/.local/lib/graphql-worker', state: '/home/user/.local/state/graphql-worker', home: '/home/user', path: '/usr/bin:/bin' };
   assert.match(template, /UnsetEnvironment=NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED/);
   const rendered = renderUserService(template, fields);
+  assert.match(rendered, /^Delegate=cpu memory pids$/m);
+  assert.match(rendered, /^NoNewPrivileges=yes$/m);
+  assert.match(rendered, /^UMask=0077$/m);
   assert.match(rendered, /KillMode=control-group/); assert.match(rendered, /TimeoutStopSec=15/); assert.doesNotMatch(rendered, /@|sudo|linger/);
   assert.throws(() => renderUserService(template, { ...fields, home: '/home/%u' }), /service_path_invalid/);
 });

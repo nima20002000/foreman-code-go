@@ -14,6 +14,7 @@ import { nativeCompatibilityProbe, type CompatibilityProbe, type CompatibilityPr
 import { runAsQualificationCandidate } from './qualification/gate.js'
 import { withNativeQualificationOwnership, type NativeQualificationSuiteInput } from './qualification/nativeOwnership.js'
 import { codexQualificationSuite } from './qualification/suites/codex.js'
+import { qualificationRevisionWithIdentity } from './qualification/identity.js'
 import { QUALIFICATION_TARGET_PROFILE, normalizeHarnessVersion } from './qualification/profiles.js'
 import type { QualificationSuite } from './qualification/types.js'
 import type { NativeProcessRecovery, NativeProcessRegistry } from './recovery/processRegistry.js'
@@ -41,7 +42,7 @@ export function createInstalledCodexNativeQualifier(input: {
   const binding = DeviceSessionBindingSchema.parse(input.binding)
   const suite = input.suite ?? codexQualificationSuite
   // The adapter performs the same actual installation guards as identity-v1.
-  const suiteRevision = `${suite.revision}+identity-v1`
+  const suiteRevision = qualificationRevisionWithIdentity(suite.revision)
   if (!isAbsolute(input.workingRoot) || suite.harness !== 'codex') denied()
   const stopping = new AbortController(), flights = new Set<Promise<HostHarnessProfileEvidence>>()
   const cleanups = new Set<() => Promise<void>>(), directories = new Set<string>()

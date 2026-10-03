@@ -1,7 +1,7 @@
 import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { JobRuntimeApprovalSchema, JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, JobRuntimeNativeAdmissionSchema, JobRuntimeProfileSchema, JobRuntimeProfileSaveSchema,
+import { JobRuntimeApprovalSchema, JobRuntimeFingerprintSchema, JobRuntimeMeasurementSchema, JobRuntimeNativeAdmissionSchema, JobRuntimeProfileInputSchema, JobRuntimeProfileSchema, JobRuntimeProfileSaveSchema,
   JobRuntimeQualificationRequestSchema, type JobRuntimeProfile, type JobRuntimeProfileSave, type JobRuntimeApproval } from '@graphql/contracts/job-runtime'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import type { SourceRootRecord } from '@graphql/contracts/source-admission'
@@ -50,7 +50,8 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         const readiness=profile.status==='qualified'&&profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()?await this.producer.revalidate(sql,profile):{ready:false,reasons:[`RUNTIME_${profile.status.toUpperCase().replaceAll('-','_')}`]}
         return {profile,...readiness,sideEffects:false as const}
       }))
-      await this.authorize(sql,principal,workspaceId);return {profiles}
+      const approvals=(await sql.query<{record:unknown}>(`select record from job_runtime_qualification_approvals where workspace_id=$1 and record->>'status' in ('awaiting-approval','approved') order by id limit 100`,[workspaceId])).rows.map(row=>JobRuntimeApprovalSchema.parse(row.record))
+      await this.authorize(sql,principal,workspaceId);return {profiles,approvals}
     })
   }
   async save(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobRuntimeProfileSave) {
@@ -83,6 +84,9 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       prepare:async()=>{
         const profile=await this.transaction(async sql=>{await this.authorize(sql,principal,workspaceId,true);return this.record(sql,workspaceId,input.profileId)})
         if(profile.revision!==input.expectedRevision)throw new DomainError('REVISION_CONFLICT','The runtime profile changed.',409)
+        const {isolationPolicyId,isolationPolicyRevision,...policy}=profile.policy
+        JobRuntimeProfileInputSchema.parse({rootId:profile.root.binding.rootId,bindingRevision:profile.root.binding.bindingRevision,limits:profile.limits,policy})
+        if(isolationPolicyId!==profile.id||isolationPolicyRevision!==profile.revision)throw new DomainError('JOB_RUNTIME_PROFILE_SCOPE_CONFLICT','The policy differs from its exact profile revision.',409)
         const fingerprint=JobRuntimeFingerprintSchema.parse(await this.producer.capture(profile))
         if(fingerprint.profileId!==profile.id||fingerprint.profileRevision!==profile.revision||fingerprint.specDigest!==profile.specDigest||canonical(fingerprint.root)!==canonical(profile.root)||canonical(fingerprint.hostRef)!==canonical(profile.root.selection.hostRef)||canonical(fingerprint.registration)!==canonical(profile.root.registration)||canonical(fingerprint.limits)!==canonical(profile.limits))throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT','Installed metadata does not match this profile revision.',409)
         captured={profile,fingerprint}
@@ -110,7 +114,8 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
   async qualify(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,commandId:string,approvalId:string) {
     let measurement:ReturnType<typeof JobRuntimeMeasurementSchema.parse>|undefined
     let result:JobRuntimeQualificationResult|undefined
-    return (await this.commands.execute({principal,source,operation:'job.runtime-profile.qualify',commandId,targetKey:workspaceId,payload:{approvalId},dedicatedConnection:true,
+    let claimed=false
+    try {return (await this.commands.execute({principal,source,operation:'job.runtime-profile.qualify',commandId,targetKey:workspaceId,payload:{approvalId},dedicatedConnection:true,
       authorize:sql=>this.authorize(sql,principal,workspaceId,true).then(()=>undefined),prepare:async()=>{
         const approval=await this.transaction(async sql=>{
           await this.authorize(sql,principal,workspaceId,true)
@@ -125,6 +130,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
           await sql.query('update job_runtime_qualification_approvals set run_command_id=$2,run_principal_id=$3 where id=$1',[approvalId,commandId,principal.id])
           const next={...value,status:'qualifying' as const};await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',[approvalId,JSON.stringify(next)]);await this.put(sql,{...profile,status:'qualifying'});return next
         })
+        claimed=true
         result??=await this.producer.run(approval,AbortSignal.timeout(240000))
         if(result.outcome==='qualified') {
           measurement=JobRuntimeMeasurementSchema.parse(result.measurement)
@@ -148,7 +154,22 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         const current=await this.producer.revalidate(sql,qualified)
         if(!current.ready)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The actual approved host/root/runtime fingerprint changed.',409,{reasons:current.reasons})
         await this.put(sql,qualified);await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb,measurement=$3::jsonb where id=$1',[approvalId,JSON.stringify({...approval,status:'complete'}),JSON.stringify(measurement)]);return qualified
-      }})).value
+      }})).value} catch(error) {
+      if(claimed) {
+        try {await this.transaction(async sql=>{
+          await this.authorize(sql,principal,workspaceId,true)
+          const approval=await this.approval(sql,workspaceId,approvalId,true)
+          const owner=(await sql.query<{run_command_id:string|null;run_principal_id:string|null;measurement:unknown;run_result:JobRuntimeQualificationResult|null}>('select run_command_id,run_principal_id,measurement,run_result from job_runtime_qualification_approvals where id=$1 for update',[approvalId])).rows[0]!
+          if(approval.status!=='qualifying'||owner.run_command_id!==commandId||owner.run_principal_id!==principal.id)return
+          // A thrown producer cannot prove physical closure. Retain ownership and any original evidence; never launch a replacement.
+          if(!owner.run_result&&!owner.measurement)await sql.query('update job_runtime_qualification_approvals set run_result=$2::jsonb where id=$1',[approvalId,JSON.stringify({outcome:'denied',closure:'unconfirmed',reasons:['JOB_RUNTIME_QUALIFICATION_FAILED']})])
+          await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',[approvalId,JSON.stringify({...approval,status:'recovery-required'})])
+          const profile=await this.record(sql,workspaceId,approval.profileId,true)
+          if(profile.status==='qualifying'&&profile.revision===approval.profileRevision&&profile.specDigest===approval.fingerprint.specDigest)await this.put(sql,{...profile,status:'recovery-required',measurement:null,updatedAt:new Date().toISOString()})
+        })} catch(settlementError) {throw new AggregateError([error,settlementError],'Qualification failed and its recovery state could not be persisted.',{cause:settlementError})}
+      }
+      throw error
+    }
   }
   async getQualification(principal:ManagementPrincipal,workspaceId:string,id:string) {
     return this.transaction(async sql=>{

@@ -13,6 +13,8 @@ const workspace = (id: string): ManagedWorkspace => ({ workspace: { id, name: id
 it('loads pages only on request, retains selection across pages, and sends one batch with safe retry', async () => {
   const cursors: (string | null)[] = [], bodies: unknown[] = []
   let deleted = false, fail = true
+  let releaseFailure!: () => void
+  const firstResponse = new Promise<void>((resolve) => { releaseFailure = resolve })
   server.use(
     http.get('/api/management/workspaces', ({ request }) => {
       const url = new URL(request.url), cursor = url.searchParams.get('cursor')
@@ -22,7 +24,7 @@ it('loads pages only on request, retains selection across pages, and sends one b
     }),
     http.post('/api/management/workspaces/batch-archive', async ({ request }) => {
       bodies.push(await request.json())
-      if (fail) { fail = false; return HttpResponse.error() }
+      if (fail) { await firstResponse; fail = false; return HttpResponse.error() }
       deleted = true
       return HttpResponse.json({ value: { workspaceIds: ['Alpha', 'Beta'] }, replayed: true })
     }),
@@ -31,7 +33,6 @@ it('loads pages only on request, retains selection across pages, and sends one b
   renderWithRouter(<WorkspaceDirectory />)
   await screen.findByRole('link', { name: 'Alpha' })
   expect(cursors).toEqual([null])
-  await user.click(screen.getByRole('button', { name: 'Select workspaces' }))
   const alpha = screen.getByRole('checkbox', { name: 'Select Alpha' })
   alpha.focus(); await user.keyboard(' ')
   expect(alpha).toBeChecked()
@@ -44,7 +45,18 @@ it('loads pages only on request, retains selection across pages, and sends one b
   const dialog = screen.getByRole('dialog', { name: 'Delete 2 workspaces?' })
   expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
   await user.click(within(dialog).getByRole('button', { name: 'Delete 2 workspaces' }))
-  await user.click(await screen.findByRole('button', { name: 'Retry deletion' }))
+  expect(within(dialog).getByRole('button', { name: 'Deleting…' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Selection options' })).toBeDisabled()
+  expect(alpha).toBeChecked()
+  expect(alpha).toBeDisabled()
+  releaseFailure()
+  const retry = await screen.findByRole('button', { name: 'Retry deletion' })
+  expect(screen.getByRole('button', { name: 'Selection options' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Delete selected (2)' })).toBeDisabled()
+  expect(alpha).toBeChecked()
+  expect(alpha).toBeDisabled()
+  expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+  await user.click(retry)
   await screen.findByText('2 workspaces deleted.')
   expect(bodies).toHaveLength(2)
   expect(bodies[1]).toEqual(bodies[0])
@@ -61,13 +73,13 @@ it('cancels selection without deleting and reports a definitive batch rejection'
   )
   const user = userEvent.setup()
   renderWithRouter(<WorkspaceDirectory />)
-  await user.click(await screen.findByRole('button', { name: 'Select workspaces' }))
-  expect(screen.getByRole('button', { name: 'Delete selected' })).toBeDisabled()
-  await user.click(screen.getByRole('checkbox', { name: 'Select Alpha' }))
+  expect(screen.queryByRole('button', { name: 'Delete selected' })).not.toBeInTheDocument()
+  await user.click(await screen.findByRole('checkbox', { name: 'Select Alpha' }))
   await user.click(screen.getByRole('button', { name: 'Delete selected (1)' }))
   await user.click(screen.getByRole('button', { name: 'Delete 1 workspace' }))
   expect(await screen.findByText('A selected workspace changed. Nothing was deleted.')).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Cancel' }))
-  await user.click(screen.getByRole('button', { name: 'Cancel selection' }))
+  await user.click(screen.getByRole('button', { name: 'Selection options' }))
+  await user.click(screen.getByRole('menuitem', { name: 'Cancel selection' }))
   expect(screen.getByRole('link', { name: 'Alpha' })).toBeVisible()
 })

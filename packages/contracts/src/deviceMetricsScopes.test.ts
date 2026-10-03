@@ -39,6 +39,7 @@ describe('explicit telemetry grants', () => {
     expect(ManagementActionSchema.parse('devices:metrics:read')).toBe('devices:metrics:read')
     expect(DEFAULT_MANAGEMENT_ACTIONS).toContain('devices:read')
     expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('devices:metrics:read')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).toEqual(ManagementActionSchema.options.filter(action => action !== 'devices:metrics:read'))
+    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('devices:provision')
+    expect(DEFAULT_MANAGEMENT_ACTIONS).toEqual(ManagementActionSchema.options.filter(action => action !== 'devices:metrics:read' && action !== 'devices:provision'))
   })
 })

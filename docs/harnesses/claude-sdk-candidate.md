@@ -73,6 +73,56 @@ Primary source references:
 - [Official streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode)
 - [Official session resume and fork](https://code.claude.com/docs/en/agent-sdk/sessions)
 
+## App settings and MCP setup
+
+Claude presets are explicit configuration templates. In Settings → Harnesses →
+Claude, choose the host-local profile directory, model, authentication and sandbox.
+The optional **Include GraphQL MCP** action copies this API's HTTP endpoint into
+the preset. After saving, **MCP connections** can add/remove validated HTTP
+endpoints, and **Tool permissions** can enable exact tool names and approval rules.
+New tools default to app-routed `ask`. Adding a connection grants no tools.
+Native login files and ambient CLI MCP configuration are not modified or imported.
+Only future configurations copy preset edits; existing Agent/WorkflowVersion/Run
+pins retain their exact values.
+
+`claude_setup_options_get` and its authenticated HTTP equivalent read the owning
+API endpoint. `harness_defaults_update` and `harness_instance_save` preserve their
+existing permissions, revisions, idempotency and audit contracts. Preset saves
+validate configuration but cannot themselves produce native qualification.
+Installed subscription metadata is discovered through an owned zero-input SDK
+control query. Missing model selections initialize from the native recommended
+canonical model with advertised medium effort; explicit model, effort and access
+choices remain authoritative. Native discovery preference, installation,
+authentication, configuration and execution qualification remain separate facts.
+Claude's local rollout switch is
+`GRAPHQL_ENABLE_EXPERIMENTAL_CLAUDE_SDK`, independent of OpenCode.
+
+The explicit `harness_instance_check` operation now has a real local Claude
+producer. A first Operator Claude default selection reuses an exact qualified
+local profile or prepares and checks one through the same revisioned, authenticated
+HTTP/MCP services. This requires both harness read and update authority and can
+consume subscription capacity. The producer records real SDK initialization,
+first/second turn receipts, two queued inputs and their positive UUID echoes,
+idle closure, exact resume/history/source-preserving fork, tool hook allow/deny
+on owned disposable Write fixtures, and a transparently injected transport fault
+after an actual native result. The background-disable check covers the delivered
+disable setting and the observed absence of child/background tools; it does not
+claim a separate Bash-background-attempt scenario. Production rejects unexpected
+background/deferred frames instead of settling their parent result as success.
+It stores the evidence file identity and SHA-256
+in the exact host/profile proof; it never supplies synthetic native results.
+
+Only explicit full-access profiles with an available Write tool can currently
+prove the tool/OS policy scenario. Read-only, workspace-write, exact cancellation
+and startup-prompt checks remain unverified and do not acquire capabilities from
+metadata. The broader four-owner-path, callback race, publication and restart
+qualification below remains separate from this bounded default-chat path.
+An installed and signed-in PATH CLI does not satisfy native proof or substitute
+for the application's exact SDK executable pin. Scoped GraphQL HTTP credentials are
+delivered only by the existing admitted execution owner, never stored in the
+preset. [Official MCP configuration](https://code.claude.com/docs/en/agent-sdk/mcp)
+describes direct `mcpServers` configuration, HTTP transport and exact tool names.
+
 ## Required production proof and remaining gates
 
 The root-owned **zero-input initialization probe** on

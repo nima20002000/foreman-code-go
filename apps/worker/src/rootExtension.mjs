@@ -24,6 +24,7 @@ export async function approvedRootExtensions(stateDirectory, pairing, bootId) {
           || currentPairing.mainId !== pairing.mainId || currentPairing.deviceId !== pairing.deviceId || currentPairing.workerInstallationId !== pairing.workerInstallationId
           || currentPairing.mainPublicKeyFingerprint !== pairing.mainPublicKeyFingerprint
           || Date.parse(currentPairing.expiresAt) <= Date.now() || (context.bytes?.byteLength ?? 0) !== 0) throw new WorkerError('workspace_root_authentication_required');
+        if (request.operation === 'workspace-roots.configuration') return;
         const selection = request.operation === 'workspace-roots.source-namespace' ? request.policy : request.selection;
         const base = approved.bases.find((base) => base.baseId === selection.allowedBaseId);
         if (selection.hostRef.kind !== 'device' || selection.hostRef.mainId !== currentPairing.mainId || selection.hostRef.deviceId !== currentPairing.deviceId

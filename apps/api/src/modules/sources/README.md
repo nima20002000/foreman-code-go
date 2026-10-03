@@ -25,3 +25,31 @@ The generic `PostgresWorkspaceRootPolicies` authority is independent of source/W
 `RegisteredWorkspaceSourceRoots` links source snapshots to this one generic authority. `sourceBindingHash` freezes pre-materialization source/root/actual-attempt pins, while the final W08/job dispatch digest is adopted separately on the real main transaction. `verifyPreparation` provides the actual clone stamp for spec construction; `verifyExecution` requires final dispatch adoption. Source-ready is never native entry. `InstalledSourceExecutionHosts` supplies the original-main implementation with mandatory actual-attempt/current-host authorization; remote composition uses W07/B verified bytes and the same materializer.
 
 Additive migrations are source metadata285001 and generic roots285002. No historical root/source/Run fact is synthesized. Root owns the shared export/grant/catalog/migration-index mounts, C owns generic location adapters, HRT-C owns production DI and W08-A owns Run serialization. Source HTTP/MCP adapters share the domain service; a root-only authenticated database fixture is committed at `apps/api/test/source-admission-mcp.integration.test.ts` and was not run by this worker.
+# Failed Job preparation reconciliation
+
+Operator HTTP and MCP share the audited domain service:
+
+- `POST /api/management/workspaces/:workspaceId/source-preparations/get` or
+  `source_preparation_get`: supply either `operationId` or the original Job Start
+  command as `startCommandId`. Requires `sources:read` and `source_roots:read` in
+  the same workspace. Missing or ambiguous original commands fail closed.
+- `POST /api/management/workspaces/:workspaceId/source-preparations/reconcile`
+  or `source_preparation_reconcile`: supply `operationId` and a new `commandId`.
+  Also requires explicit `sources:reconcile`. Retry that exact command after an
+  unknown acknowledgment, then use the read operation for persisted results.
+
+The original Start must be inactive and never admitted, with a recorded failure,
+expired preparation deadline, or lost principal authority. Main persists a
+cleanup fence before contacting the original worker. The worker checks its
+protected native journal, active preparation tasks, original filesystem, and
+source/native producer processes. Live or uncertain ownership stays reserved.
+
+Closure archives only the original claim and retains source trees, private Git,
+transfer evidence and receipts. Main records closure and changes the reservation
+to `retained`, freeing active materialization/preparing slots. Retained evidence
+continues to count against the aggregate disk budget; no evidence is deleted and
+no limits are raised. Reconciled preparations cannot regain execution authority.
+
+This operation requires the original installed worker closure journal. Main-host
+preparations are explicitly unsupported here. Already-admitted Jobs must use
+their original execution cancellation/reconciliation path.

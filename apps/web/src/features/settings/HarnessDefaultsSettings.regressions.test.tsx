@@ -23,6 +23,7 @@ vi.mock('../../shared/api/harnessSettings', () => ({
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: true, result: { isFetching: false, isSuccess: true, isError: false } }),
   useHarnessSessionEpoch: () => 0,
+  useClaudeSetupOptions: () => ({ data: {}, isError: false, refetch: vi.fn() }),
 }))
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 
@@ -35,6 +36,13 @@ function renderSettings(defaults: HarnessDefaults=DEFAULT_HARNESS_DEFAULTS, sele
 beforeEach(()=>{saveDefaults.mockReset();saveDefaults.mockImplementation(async(input)=>({value:{defaults:input.defaults,revision:1},replayed:false}))})
 afterEach(()=>{cleanup();clearRevisionedFormPersistence();for(const client of clients.splice(0))client.clear()})
 describe('Harness overview and draft regressions',()=>{
+  it.each(['codex', 'opencode'] as const)('shows %s model settings without routine preset or catalog prose', async (harness) => {
+    renderSettings(DEFAULT_HARNESS_DEFAULTS, harness)
+    expect(await screen.findByRole('combobox', { name: 'Model' })).toBeVisible()
+    expect(screen.queryByText('Provider preset for new configurations. Existing agents and sessions keep their settings.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/API host model catalog/)).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1 }).parentElement?.querySelector('p')).toBeNull()
+  })
   it.each(['Codex','OpenCode'] as const)('shows %s installation diagnostics only in App connection',async(name)=>{
     renderSettings();const user=userEvent.setup()
     expect(screen.queryByRole('region',{name:`${name} installation`})).not.toBeInTheDocument()

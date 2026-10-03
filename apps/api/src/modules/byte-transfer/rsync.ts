@@ -43,6 +43,8 @@ export interface RsyncTransferWriters {
   /** Existing W07 prepare response identifies the actual one-use remote server reservation.
    * Node/entrypoint are protected installed selection, never RPC-controlled paths. */
   remote(intent: TransferIntent, signal: AbortSignal): Promise<RsyncRemoteWriter>
+  /** Existing W07 control admits the actual waiting wrapper while the local client runs. */
+  activate(intent: TransferIntent, remote: RsyncRemoteWriter, signal: AbortSignal): Promise<void>
   /** Both actual process trees, independently. A local child close does not prove remote closure. */
   quiescent(intent: TransferIntent, signal: AbortSignal): Promise<void>
   stop(intent: TransferIntent, signal: AbortSignal): Promise<void>
@@ -78,7 +80,7 @@ export function rsyncCommand(endpoint: RsyncEndpoint, intent: TransferIntent, re
   const remoteCommand = remote ? (() => {
     safePath(remote.nodeBinary); safePath(remote.entryPoint); hash(remote.ownerDigest)
     if (remote.transferId !== intent.transferId || !/^[a-f0-9-]{36}$/.test(remote.ownerId)) throw new Error('Invalid remote rsync owner')
-    return `${remote.nodeBinary} ${remote.entryPoint} --rsync-transfer ${intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`
+    return `${remote.nodeBinary} ${remote.entryPoint} --rsync-root ${endpoint.remoteRoot} --rsync-transfer ${intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`
   })() : endpoint.remoteBinary
   return { executable: endpoint.localBinary, args: ['--protect-args', '--checksum', '--partial',
     '--partial-dir=.rsync-partial', '--no-whole-file', '--no-links', '--no-devices', '--no-specials',
@@ -208,7 +210,11 @@ export class RsyncStagingTransport {
       const remote = await writers.remote(intent, controller.signal)
       const command = rsyncCommand(this.endpoint, intent, remote)
       command.owner = await writers.local(intent, command, controller.signal)
-      await this.executor.run(command, controller.signal)
+      const admitted = [
+        Promise.resolve().then(() => this.executor.run(command, controller.signal)),
+        Promise.resolve().then(() => writers.activate(intent, remote, controller.signal)),
+      ].map(task => task.catch(error => { controller.abort(error); throw error }))
+      await wait(Promise.all(admitted))
       await writers.quiescent(intent, controller.signal)
       await snapshot.verify(controller.signal); await check('finish')
       const staged = await lease.verify(controller.signal)
@@ -229,14 +235,13 @@ export class RsyncStagingTransport {
       } }
     } finally {
       clearTimeout(deadline); clearInterval(poll); signal?.removeEventListener('abort', abort)
-      try {
-        if (writerPrepared && !completed) {
-          const cleanup = AbortSignal.timeout(5000)
-          await this.ports.writers!.stop(intent, cleanup)
-          await this.ports.writers!.quiescent(intent, cleanup)
-        }
-        await lease?.interrupt()
-      } finally { await snapshot?.close() }
+      if (writerPrepared && !completed) {
+        const cleanup = AbortSignal.timeout(5000)
+        await this.ports.writers!.stop(intent, cleanup)
+        await this.ports.writers!.quiescent(intent, cleanup)
+      }
+      try { await lease?.interrupt() }
+      finally { await snapshot?.close() }
     }
   }
 }

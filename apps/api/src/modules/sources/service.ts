@@ -23,6 +23,9 @@ import { PostgresSourceReservations, type SourceReservation } from './reservatio
 import type { RegisteredSourceRootPort, SourceAdmissionPort, SourceClosureProofPort } from './admissionPorts.js'
 import type { MaterializationAttempt } from './ports.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
+import { PostgresSourcePreparationReconciliation } from './preparationReconciliation.js'
+import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
+import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
 
 export interface SourceExecutionHostPort {
   /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
@@ -34,6 +37,7 @@ export interface SourceExecutionHostPort {
   verify(record: SourceMaterializationRecord): Promise<string>
   releaseClaim(record: SourceMaterializationRecord): Promise<void>
   authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
+  reconcilePreparation?(reconciliationId: string, owner: SourceOperationOwner): Promise<SourcePreparationClosure>
 }
 type Transport = 'http' | 'mcp'
 type Sql = GraphSqlClient
@@ -42,10 +46,17 @@ interface ApprovalRow { approved_source_id: string; snapshot_id: string; input_h
 
 export class PostgresSourceService implements SourceAdmissionPort {
   readonly reservations = new PostgresSourceReservations()
+  preparationGet(principal: ManagementPrincipal, source: Transport, input: unknown) {
+    return new PostgresSourcePreparationReconciliation(this.pool, this.commands, this.executions).get(principal, source, input)
+  }
+  preparationReconcile(principal: ManagementPrincipal, source: Transport, input: unknown) {
+    return new PostgresSourcePreparationReconciliation(this.pool, this.commands, this.executions).reconcile(principal, source, input)
+  }
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly locations: WorkspaceLocationService, private readonly store: PrivateSourceSnapshotStore,
     private readonly mainId: string, private readonly roots: RegisteredSourceRootPort,
-    private readonly executions: SourceExecutionHostPort, private readonly closure: SourceClosureProofPort) {}
+    private readonly executions: SourceExecutionHostPort, private readonly closure: SourceClosureProofPort,
+    private readonly adopted?: (record: SourceMaterializationRecord) => Promise<void>) {}
   private async transaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     const sql = await this.pool.connect()
     try { await sql.query('begin'); const result = await work(sql); await sql.query('commit'); return result }
@@ -249,6 +260,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
     const state = await this.transaction(async sql => {
       const root = await this.resolveRootBinding(sql, input.principal, input)
       const source = await this.resolveApprovedSource(sql, input.principal, input.workspaceId, input.source)
+      if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [input.operationId])).rowCount)
+        throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original preparation is fenced for reconciliation and cannot regain execution authority.', 409)
       if (input.attempt.placementHash !== sourceBindingHash(root, input.attempt, input.operationId)
         || (root.registration === null ? input.attempt.keyRevision !== null || input.attempt.authorizationRevision !== null
           : input.attempt.keyRevision !== root.registration.keyRevision || input.attempt.authorizationRevision !== root.registration.authorizationRevision))
@@ -265,7 +278,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         ownerKind: 'materialization', ownerId: input.operationId, reservedBytes: source.manifest.totalBytes * 3 + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024 })
       return { root, source, record: null, reservation }
     })
-    if (state.record) return state.record
+    if (state.record) { await this.adopted?.(state.record); return state.record }
     // No main SQL transaction spans carrier/native filesystem I/O.
     const receipt = await this.executions.prepare(state.source.manifest, state.root, input.attempt)
     if (!isDeepStrictEqual(receipt.binding, state.root.binding) || receipt.executionId !== input.attempt.executionId
@@ -276,7 +289,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Materialization did not attest the accepted original execution/attempt.', 409)
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: state.root.selection.rootPolicyId,
       rootPolicyRevision: state.root.selection.rootPolicyRevision, operationId: input.operationId, reservationId: state.reservation!.reservationId, sourceBindingHash: input.attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
-    return this.transaction(async sql => {
+    const committed = await this.transaction(async sql => {
       await this.resolveRootBinding(sql, input.principal, input)
       await this.executions.authorize(sql, input.principal, { ...input, root: state.root })
       await sql.query(`insert into source_execution_materializations(materialization_id,workspace_id,execution_id,attempt_id,operation_id,root_id,binding_revision,reservation_id,record,state)
@@ -284,6 +297,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         input.rootId, input.bindingRevision, state.reservation!.reservationId, JSON.stringify(record)])
       await this.reservations.retain(sql, state.reservation!, 'owned'); return record
     })
+    await this.adopted?.(committed); return committed
   }
   async verifyPreparation(input: { principal: ManagementPrincipal; record: SourceMaterializationRecord }): Promise<string> {
     return this.verifyPrepared(input, false)

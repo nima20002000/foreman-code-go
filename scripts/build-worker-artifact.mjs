@@ -47,7 +47,7 @@ if (runtime && (runtime.format !== 1 || runtime.runtime !== 'node' || runtime.pl
   || !/^[A-F0-9]{40}$/.test(runtime.trustedRelease?.primarySignerFingerprint))) throw new Error('Reviewed runtime does not match target');
 // Fresh directories only: never mix files from another release or ship credentials.
 const output = resolve(outputDirectory); await mkdir(output, { mode: 0o700 }); await mkdir(join(output, 'src'));
-const built = await build({ absWorkingDir: root, entryPoints: { cli: 'apps/worker/src/cli.mjs', worker: 'apps/worker/src/workerFactory.mjs' }, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle', external: ['sharp'],
+const buildOptions = { absWorkingDir: root, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle', external: ['sharp'],
   alias: Object.fromEntries(Object.entries(JSON.parse(snapshotSource('packages/contracts/package.json')).exports).map(([key, value]) => [
     key === '.' ? '@graphql/contracts' : `@graphql/contracts/${key.slice(2)}`,
     `./packages/contracts/${(typeof value === 'string' ? value : value.import).replace('./dist/', './src/').replace(/\.js$/, '.ts')}`,
@@ -61,12 +61,16 @@ const built = await build({ absWorkingDir: root, entryPoints: { cli: 'apps/worke
     });
   } }],
   define: { 'process.env.WS_NO_BUFFER_UTIL': '"1"', 'process.env.WS_NO_UTF_8_VALIDATE': '"1"' },
-  banner: { js: "import { createRequire as workerCreateRequire } from 'node:module'; const require = workerCreateRequire(import.meta.url);" } });
-for (const source of Object.keys(built.metafile.inputs)) {
+  banner: { js: "import { createRequire as workerCreateRequire } from 'node:module'; const require = workerCreateRequire(import.meta.url);" } };
+const writerEntrypoint = 'apps/api/src/modules/byte-transfer/rsyncWriterCli.ts';
+const built = await build({ ...buildOptions, entryPoints: { cli: 'apps/worker/src/cli.mjs', worker: 'apps/worker/src/workerFactory.mjs' } });
+if (writerEntrypoint in built.metafile.inputs) throw new Error('Standalone rsync writer imported by normal worker graph');
+const writer = await build({ ...buildOptions, entryPoints: { 'rsync-writer': writerEntrypoint } });
+for (const source of new Set([...Object.keys(built.metafile.inputs), ...Object.keys(writer.metafile.inputs)])) {
   if (!source.startsWith('node_modules/') && !source.includes('/node_modules/')) snapshotSource(source);
   if (source.startsWith('apps/api/') && !allowedApiModules.has(source)) throw new Error(`Forbidden control-plane import: ${source}`);
 }
-for (const entry of Object.values(built.metafile.outputs)) for (const dependency of entry.imports) {
+for (const entry of [...Object.values(built.metafile.outputs), ...Object.values(writer.metafile.outputs)]) for (const dependency of entry.imports) {
   if (dependency.external && !isBuiltin(dependency.path) && dependency.path !== 'sharp') throw new Error(`Unbundled dependency: ${dependency.path}`);
 }
 for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs', 'setup.mjs', 'companion.mjs', 'setupInput.mjs', 'companionServer.mjs', 'companionService.mjs', 'harnessPath.mjs']) {
@@ -87,7 +91,7 @@ try {
 } finally { database.close(); }
 const files = await artifactFiles(output);
 const pkg = JSON.parse(snapshotSource('apps/worker/package.json').toString('utf8'));
-const manifest = { format: 1, version: pkg.version, commit, lockfileSha256: hash(snapshotSource('pnpm-lock.yaml')), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, nativePackages, workerApiModules: Object.keys(built.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), sourceSnapshot: { commit, files: [...snapshot.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, { gitBlobSha1, sha256 }]) => ({ path, gitBlobSha1, sha256 })) },
+const manifest = { format: 1, version: pkg.version, commit, lockfileSha256: hash(snapshotSource('pnpm-lock.yaml')), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, nativePackages, workerApiModules: Object.keys(built.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), rsyncWriterApiModules: Object.keys(writer.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), sourceSnapshot: { commit, files: [...snapshot.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, { gitBlobSha1, sha256 }]) => ({ path, gitBlobSha1, sha256 })) },
   ...(runtime ? { runtime: { metadataPath: 'artifacts/node-runtime.json', version: runtime.version, archiveSha256: runtime.archive.sha256, executableSha256: runtime.nodeExecutable.sha256, qualification: 'future installation requires actual target readback' } } : {}), files };
 await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
 console.log(JSON.stringify({ manifestSha256: hash(await readFile(join(output, 'manifest.json'))), version: pkg.version, commit: manifest.commit, files: files.length }));

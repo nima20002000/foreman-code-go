@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, type KeyboardEvent } from 'react'
-import { Button } from '../../shared/ui/nocturne/Button'
+import { Button, IconButton } from '../../shared/ui/nocturne/Button'
 import { Icon } from '../../shared/ui/nocturne/Icon'
-import { useFloatingSurface } from '../../shared/ui/nocturne/useFloatingSurface'
+import { sessionGeneration } from '../../shared/api/sessionBoundary'
+import { RunsWindow } from './RunsWindow'
 import { labelRuns, RUNS_MAX_PAGES } from './presentation'
 import { isRunAccessError, runReadErrorLabel, useRunSummaries, useSelectedRunSnapshot } from './query'
 import { useRunsSelectorUi } from './uiStore'
@@ -16,7 +17,6 @@ export function RunsSelector({ selection, className = '' }: RunsSelectorProps) {
   const { identity } = selection
   const openId = JSON.stringify([id, identity.workspaceId, identity.workflowId])
   const open = useRunsSelectorUi((state) => state.openId === openId)
-  const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const surface = useRef<HTMLDivElement>(null)
   const initialFocus = useRef<'first' | 'last'>('first')
@@ -31,7 +31,7 @@ export function RunsSelector({ selection, className = '' }: RunsSelectorProps) {
   const selectedMessage = selection.invalid ? 'Invalid Run' : identity.runId === null ? null
     : selected.isError ? runReadErrorLabel(selected.error) : selected.isPending ? 'Loading…' : null
 
-  useFloatingSurface(open, trigger, surface, 296, 'end')
+  const geometryScope = JSON.stringify([sessionGeneration(), identity.workspaceId, identity.workflowId])
   function buttons() {
     return Array.from(surface.current?.querySelectorAll<HTMLButtonElement>('button[role^="menuitem"]:not([disabled])') ?? [])
   }
@@ -51,23 +51,18 @@ export function RunsSelector({ selection, className = '' }: RunsSelectorProps) {
 
   useEffect(() => {
     if (!open) return
+    const active = document.activeElement
+    if (active && active !== document.body && active !== trigger.current && active !== surface.current) return
     const items = Array.from(surface.current?.querySelectorAll<HTMLButtonElement>('button[role^="menuitem"]:not([disabled])') ?? [])
-    ;(initialFocus.current === 'last' ? items.at(-1) : items[0])?.focus()
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !root.current?.contains(event.target)
-        && useRunsSelectorUi.getState().openId === openId) useRunsSelectorUi.getState().setOpen(null)
-    }
-    document.addEventListener('pointerdown', outside, true)
-    return () => document.removeEventListener('pointerdown', outside, true)
-  }, [open, openId])
+    ;((initialFocus.current === 'last' ? items.at(-1) : items[0]) ?? surface.current)?.focus()
+  }, [open, openId, rows.length])
   useEffect(() => () => {
-    // History navigation, scope changes, and unmount close only this menu.
+    // History navigation, scope changes, and unmount close only this window.
     if (useRunsSelectorUi.getState().openId === openId) useRunsSelectorUi.getState().setOpen(null)
   }, [openId, selection.generation.id])
 
   function keyboard(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); return }
-    if (event.key === 'Tab') { close(true); return }
     const items = buttons()
     if (items.length === 0) return
     const index = items.indexOf(document.activeElement as HTMLButtonElement)
@@ -90,24 +85,20 @@ export function RunsSelector({ selection, className = '' }: RunsSelectorProps) {
     if (next >= 0) { event.preventDefault(); items[next]?.focus() }
   }
 
-  return <div ref={root} className={`n-menu runs-selector ${className}`} onBlur={(event) => {
-    if (!event.currentTarget.contains(event.relatedTarget)) close()
-  }}>
+  return <div className={`n-menu runs-selector ${className}`}>
     <Button ref={trigger} size="sm" variant="ghost" className="runs-selector-trigger" aria-label="Runs" title="Runs"
-      aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} disabled={!selection.active}
+      aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} disabled={!selection.active}
       onClick={() => open ? close() : show()} onKeyDown={(event) => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowUp') }
       }}>
       Runs <Icon name="down" size={13} />
     </Button>
+    {identity.runId !== null || selection.invalid ? <IconButton label="Return to workflow" size="sm" variant="ghost"
+      disabled={!selection.active} onClick={() => choose(null)}><Icon name="arrow" size={14} style={{ transform: 'rotate(180deg)' }} /></IconButton> : null}
     {selectedMessage && <span role="status" className="runs-selector-selection-status">{selectedMessage}</span>}
-    {open && <div id={id} ref={surface} popover="manual" role="menu" aria-label="Runs" className="n-menu-list runs-selector-menu"
+    {open && <RunsWindow id={id} scope={geometryScope} anchor={trigger} close={() => close(true)}>
+      <div ref={surface} role="menu" tabIndex={-1} aria-label="Runs" className="n-menu-list runs-selector-menu"
       aria-busy={history.isPending || history.isFetchingNextPage} onKeyDown={keyboard}>
-      <button type="button" role="menuitemradio" aria-label="Current workflow" aria-checked={identity.runId === null && !selection.invalid}
-        className="runs-selector-option" tabIndex={-1} onClick={() => choose(null)}>
-        <span className="runs-selector-mark" aria-hidden="true">{identity.runId === null && !selection.invalid ? '✓' : ''}</span>
-        <span>Current workflow</span>
-      </button>
       {rows.map(({ run, time, status, showShortId, label }) => <button key={run.runId} type="button" role="menuitemradio"
         aria-label={label} aria-checked={identity.runId === run.runId} tabIndex={-1} className="runs-selector-option"
         data-run-id={run.runId} onClick={() => choose(run.runId)}>
@@ -131,6 +122,7 @@ export function RunsSelector({ selection, className = '' }: RunsSelectorProps) {
         {history.isFetchingNextPage ? 'Loading…' : capped ? 'Limit reached' : brokenCursor ? 'More unavailable'
           : history.isFetchNextPageError ? 'Retry more' : history.hasNextPage ? 'More' : 'No more'}
       </button>}
-    </div>}
+      </div>
+    </RunsWindow>}
   </div>
 }

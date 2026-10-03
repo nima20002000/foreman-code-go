@@ -18,6 +18,8 @@ vi.mock('../../shared/api/harnessSettings', () => ({
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useAutomaticHarnessCheck: () => ({ current: false, result: { isFetching: false, isSuccess: false, isError: false } }),
   useHarnessSessionEpoch: () => 0,
+  useClaudeSetupOptions: () => ({ data: { graphqlMcp: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } }, isError: false }),
+  useNativeMcpServers: () => ({ data: undefined }),
 }))
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 const clients: QueryClient[] = []
@@ -49,6 +51,29 @@ function setup(defaults: HarnessDefaults, conflicted = false) {
     } }
 }
 describe('Claude defaults through the HTTP boundary', () => {
+  it('saves an explicitly added Claude MCP connection through the revisioned preset boundary', async () => {
+    const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: {} } })
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
+    await user.click(screen.getByRole('button', { name: 'MCP connections' }))
+    await user.click(screen.getByRole('button', { name: 'Add GraphQL MCP' }))
+    await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(state.submitted()?.defaults.claude).toEqual({ ...savedClaudeConfiguration, mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } })
+    expect((await getManagedHarnessCatalog()).find(entry => entry.harness === 'claude')?.defaults).toEqual(state.submitted()?.defaults.claude)
+  })
+  it('requires an explicit new tool choice and pins app-routed approval for it', async () => {
+    const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
+    await user.click(screen.getByRole('button', { name: 'Tool permissions' }))
+    await user.type(screen.getByRole('textbox', { name: 'Enabled Claude tools' }), 'mcp__graphql__harness_get')
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+    await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(state.submitted()?.defaults.claude?.permissionRules).toContainEqual({ tool: 'mcp__graphql__harness_get', effect: 'ask' })
+    expect(state.submitted()?.defaults.claude?.tools).toEqual([...savedClaudeConfiguration.tools, 'mcp__graphql__harness_get'])
+  })
   it.each(['Codex', 'OpenCode'] as const)('keeps exact Claude settings in persisted readback after saving %s', async (name) => {
     setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
     const user = userEvent.setup()
@@ -81,7 +106,7 @@ describe('Claude defaults through the HTTP boundary', () => {
     const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }, true)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
-    expect(screen.getByText('Claude is awaiting native qualification')).toBeVisible()
+    expect(screen.getByText('Claude profile is not verified')).toBeVisible()
     expect(screen.queryByText('Ready')).not.toBeInTheDocument()
     const field = screen.getByRole('textbox', { name: 'Local Claude profile directory' })
     await user.clear(field)

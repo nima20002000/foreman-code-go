@@ -1,10 +1,10 @@
-import { useEffect, useId, useMemo, useRef, type RefObject } from 'react'
+import { useEffect, useId, useRef, type RefObject } from 'react'
 import { useStore } from 'zustand'
 import type { ScheduleGetInput } from '@graphql/contracts/schedules'
 import { Button, Dialog, Select, Switch, TextField, Tooltip } from '../../shared/ui/nocturne'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import {
-  buildScheduleCommand, draftIdentity, timezoneOptions,
+  buildScheduleCommand, draftIdentity, weeklyCalendarChanged,
   type ScheduleEditorStore, type ScheduleMode,
 } from './editorStore'
 import { useScheduleCommand, useWorkflowSchedule } from './queries'
@@ -23,7 +23,6 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
   const id = useId()
   const form = useRef<HTMLFormElement>(null)
   const draft = state.draft
-  const zones = useMemo(() => timezoneOptions(draft?.timezone ?? 'UTC').map((zone) => ({ value: zone, label: zone })), [draft?.timezone])
   const locked = write.pending || write.unconfirmed
   const conflict = write.conflict && state.expectedRevision === write.command?.input.expectedRevision
   const dirty = !!draft && draftIdentity(draft) !== state.initialIdentity
@@ -91,7 +90,8 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
   const persisted = query.data?.schedule
   const nextAt = !query.isError ? persisted?.nextOccurrenceAt : null
   const nextLabel = nextAt && persisted ? new Intl.DateTimeFormat(undefined, {
-    timeZone: persisted.timezone, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    ...(persisted.mode === 'interval' && persisted.unit === 'second' ? { second: '2-digit' as const } : {}), timeZoneName: 'short',
   }).format(new Date(nextAt)) : null
   const failure = write.unconfirmed ? 'Save unconfirmed.' : conflict ? 'Schedule changed.'
     : write.error && write.command?.input.expectedRevision === state.expectedRevision ? 'Not saved.' : null
@@ -124,6 +124,10 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
         </div>
         <div id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-${draft.mode}`} className="schedule-panel">
           {draft.mode === 'weekly' && <>
+            {draft.weeklyOriginal && draft.weeklyOriginal.timezone !== draft.timezone && <p className="schedule-note">
+              Saved: {draft.weeklyOriginal.weekdays.map((day) => weekdays[day - 1]?.slice(0, 2)).join(', ')} at {draft.weeklyOriginal.time} ({draft.weeklyOriginal.timezone}).
+              {' '}{weeklyCalendarChanged(draft) ? `Changes use this device (${draft.timezone}).` : 'Time shown for the next occurrence. Editing days or time uses this device.'}
+            </p>}
             <fieldset className="schedule-days" aria-invalid={!!state.errors.weekdays} aria-describedby={state.errors.weekdays ? `${id}-days-error` : undefined}>
               <legend>Days</legend>
               <div className="schedule-day-grid">{weekdays.map((day, index) => {
@@ -139,8 +143,11 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
           {draft.mode === 'interval' && <div className="schedule-pair">
             <TextField label="Every" type="number" inputMode="numeric" min={1} step={1} value={draft.every} error={state.errors.every}
               onChange={(event) => state.edit({ every: event.currentTarget.value })} />
-            <Select label="Unit" value={draft.unit} options={[{ value: 'minute', label: 'Minutes' }, { value: 'hour', label: 'Hours' }]}
-              onChange={(event) => state.edit({ unit: event.currentTarget.value === 'minute' ? 'minute' : 'hour' })} />
+            <Select label="Unit" value={draft.unit} options={[{ value: 'second', label: 'Seconds' }, { value: 'minute', label: 'Minutes' }, { value: 'hour', label: 'Hours' }]}
+              onChange={(event) => {
+                const unit = event.currentTarget.value
+                if (unit === 'second' || unit === 'minute' || unit === 'hour') state.edit({ unit })
+              }} />
           </div>}
           {draft.mode === 'once' && <div className="schedule-pair schedule-once">
             <TextField label="Date" type="date" value={draft.localDate} error={state.errors.localDate}
@@ -149,12 +156,11 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
               onChange={(event) => state.edit({ time: event.currentTarget.value })} />
           </div>}
         </div>
-        <Select label="Timezone" value={draft.timezone} options={zones} error={state.errors.timezone}
-          onChange={(event) => state.edit({ timezone: event.currentTarget.value })} />
+        {state.errors.timezone && <p role="alert" className="n-field-error">{state.errors.timezone}</p>}
         <Switch label="Enabled" checked={draft.enabled} onChange={(event) => state.edit({ enabled: event.currentTarget.checked })} />
       </fieldset>}
       <p className="schedule-next" role="status">Next {query.isError ? 'unavailable' : nextAt
-        ? <time dateTime={nextAt} title={`${nextLabel} · ${persisted?.timezone}`}>{nextLabel}</time>
+        ? <time dateTime={nextAt} title={nextLabel ?? undefined}>{nextLabel}</time>
         : query.isFetching && !query.data ? '…' : '—'}</p>
       <Tooltip content="Runs latest saved workflow"><span className="schedule-policy" tabIndex={0}>Runs latest saved workflow</span></Tooltip>
       {(failure || state.errors.form) && <div className="schedule-feedback"><p role="alert">{state.errors.form ?? failure}</p>

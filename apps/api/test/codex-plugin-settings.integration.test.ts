@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterEach, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 import { CodexPluginDetailResultSchema, CodexPluginListResultSchema, type CodexPluginSummary } from '@graphql/contracts/management'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -16,14 +16,21 @@ import type { CodexPluginAdapter } from '../src/modules/harnesses/codexPlugins.j
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/postgres'
+const admin = new pg.Pool({ connectionString })
+const schema = `codex_plugins_${randomUUID().replaceAll('-', '')}`
+const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+beforeAll(async () => {
+  await admin.query(`create schema "${schema}"`)
+  await applyApplicationMigrations(pool)
+}, 60_000)
+afterAll(async () => {
+  await pool.end()
+  try { await admin.query(`drop schema if exists "${schema}" cascade`) } finally { await admin.end() }
+}, 60_000)
 const clients: Client[] = []
 afterEach(async () => { for (const client of clients.splice(0)) await client.close() })
 
 it('lists and reads Codex plugins through authenticated MCP while browser-only changes retain native readback', async () => {
-  const admin = new pg.Pool({ connectionString })
-  const schema = `codex_plugins_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create schema "${schema}"`)
-  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const item: CodexPluginSummary = { pluginId: 'notes@trusted', name: 'notes', marketplaceName: 'trusted', version: '1.0.0',
     installed: false, enabled: false, sourceType: 'remote', installPolicy: 'AVAILABLE', authPolicy: 'ON_INSTALL' }
   let installed = false
@@ -47,7 +54,6 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services } })
   try {
-    await applyApplicationMigrations(pool)
     const owner = await access.issue({ name: 'Plugin owner', audience: 'operator', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
       expiresAt: new Date(Date.now() + 120_000) })
     const delegated = await access.issue({ name: 'Plugin requester', audience: 'operator', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
@@ -94,7 +100,6 @@ it('lists and reads Codex plugins through authenticated MCP while browser-only c
     expect((await plugins.change(owner.principal, uncertainInput)).status).toBe('uncertain')
     expect(changes).toBe(3)
   } finally {
-    await plugins.shutdown(); await app.close(); await pool.end(); await rm(home, { recursive: true, force: true })
-    await admin.query(`drop schema if exists "${schema}" cascade`); await admin.end()
+    await plugins.shutdown(); await app.close(); await rm(home, { recursive: true, force: true })
   }
 })

@@ -1,9 +1,17 @@
 import { z } from 'zod'
 
-export const ExecutionReadinessInputSchema = z.object({ harness: z.enum(['codex', 'opencode', 'claude']) }).strict()
+export const ExecutionReadinessScopeSchema = z.enum(['saved-harness-defaults', 'operator-configuration'])
+export const ExecutionReadinessInputSchema = z.object({
+  harness: z.enum(['codex', 'opencode', 'claude']),
+  scope: ExecutionReadinessScopeSchema.default('saved-harness-defaults'),
+  configurationVersionId: z.string().min(1).optional(),
+}).strict().refine(value => !value.configurationVersionId || value.scope === 'operator-configuration', {
+  message: 'An Operator configuration pin requires Operator readiness scope.', path: ['configurationVersionId'],
+})
 export const ExecutionReadinessSchema = z.object({
   harness: z.enum(['codex', 'opencode', 'claude']),
-  scope: z.literal('saved-harness-defaults'),
+  scope: ExecutionReadinessScopeSchema,
+  configurationVersionId: z.string().min(1).optional(),
   status: z.enum(['blocked', 'unverified', 'eligible']),
   rolloutEnabled: z.boolean(),
   defaultsRevision: z.number().int().nonnegative().nullable(),

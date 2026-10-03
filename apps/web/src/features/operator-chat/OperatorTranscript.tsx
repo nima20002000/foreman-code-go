@@ -1,12 +1,21 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import type { Message, OperatorActivity } from '@graphql/contracts'
 import { Button, Icon } from '../../shared/ui/nocturne'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { identityEpoch } from '../../shared/api/protectedChatStorage'
 import { getOperatorActivity, mergeOperatorActivity } from '../../shared/api/operatorActivity'
+import { useNativeHarnessOptions } from '../../shared/api/harnessSettings'
 import { OperatorMessages } from './OperatorMessages'
 import { OperatorHistory } from './OperatorHistory'
 import type { OperatorTextProjection } from './operatorTextProjection'
+
+function AcceptedModelMessages(props: ComponentProps<typeof OperatorMessages>) {
+  const harnesses = new Set(props.messages.map((message) => message.acceptedModel?.harness))
+  const codex = useNativeHarnessOptions('codex', harnesses.has('codex'))
+  const opencode = useNativeHarnessOptions('opencode', harnesses.has('opencode'))
+  const claude = useNativeHarnessOptions('claude', harnesses.has('claude'))
+  return <OperatorMessages {...props} modelCatalogs={{ codex: codex.data?.models, opencode: opencode.data?.models, claude: claude.data?.models }} />
+}
 
 /** Follow meaningful new output, never the identity of a freshly created React element. */
 export function OperatorTranscript({ messages, partialText, thinkingText = '', hasEarlierMessages = false, working = false,
@@ -60,7 +69,7 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
     if (scrollRef.current) observer.observe(scrollRef.current)
     return () => observer.disconnect()
   }, [])
-  const renderMessages = (older: Message[]) => <OperatorMessages messages={[...older, ...messages]} activities={entries}
+  const renderMessages = (older: Message[]) => <AcceptedModelMessages messages={[...older, ...messages]} activities={entries}
     activeRequestId={activeRequestId} parts={parts} timeline={timeline} working={working} partialText={partialText}
     thinkingText={thinkingText} onBrowse={onBrowse} />
   return <div className="operator-chat-transcript">

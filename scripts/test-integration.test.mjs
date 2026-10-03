@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, integrationLogPath, integrationShardLimit, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
+import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationShardLimit, isIntegrationTestPath, isRegularIntegrationFile, parseVitestCases, scheduleFiles, selectFiles, signalOwnedChildren } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -186,4 +186,56 @@ test('lists failing case names from a Vitest log', () => {
 test('TEST_DATABASE_URL selects the server; slots get their own databases there', () => {
   assert.equal(adminDatabaseUrl(undefined), 'postgresql://graphql:graphql@127.0.0.1:5432/postgres')
   assert.equal(adminDatabaseUrl('postgresql://u:p@127.0.0.1:5433/my_test'), 'postgresql://u:p@127.0.0.1:5433/postgres')
+})
+
+test('dedicated database gates use the current owned slot, overriding inherited destinations', () => {
+  const slot = { databaseUrl: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_test_owned', directory: '/tmp/slot-1' }
+  const inherited = { TEST_DATABASE_URL: 'postgresql://remote/live',
+    JOB_DISPATCH_DATABASE_URL: 'postgresql://remote/live',
+    NIM2691_ADMIN_DATABASE_URL: 'postgresql://remote/live', HRT_F14_ADMIN_DATABASE_URL: 'postgresql://remote/live', TMPDIR: '/inherited' }
+  const environment = integrationEnvironment(inherited, slot)
+  for (const name of ['TEST_DATABASE_URL', 'JOB_DISPATCH_DATABASE_URL', 'NIM2691_ADMIN_DATABASE_URL', 'HRT_F14_ADMIN_DATABASE_URL']) {
+    assert.equal(environment[name], slot.databaseUrl)
+  }
+  assert.equal(environment.NIM2691_POSTGRES, '1')
+  assert.equal(environment.TMPDIR, slot.directory)
+  assert.equal(inherited.HRT_F14_ADMIN_DATABASE_URL, 'postgresql://remote/live')
+  const retest = integrationEnvironment(environment, { ...slot, databaseUrl: slot.databaseUrl + '_retest' })
+  assert.equal(retest.HRT_F14_ADMIN_DATABASE_URL, slot.databaseUrl + '_retest')
+  assert.equal(retest.JOB_DISPATCH_DATABASE_URL, slot.databaseUrl + '_retest')
+  for (const databaseUrl of ['postgresql://graphql:graphql@remote/graphql_test_owned',
+    'postgresql://graphql:graphql@127.0.0.1/live', slot.databaseUrl + '?options=unsafe']) {
+    assert.throws(() => integrationEnvironment(inherited, { ...slot, databaseUrl }), /loopback PostgreSQL database explicitly named for tests/)
+  }
+})
+
+
+test('admission recognizes legacy and secondary slots and rejects forged, stale and foreign records', () => {
+  const common = mkdtempSync(join(tmpdir(), 'integration-admission-'))
+  try {
+    const state = join(common, 'graphql-heavy-jobs')
+    const legacy = join(state, 'active', 'owner.json')
+    const running = join(state, 'running')
+    mkdirSync(join(state, 'active'), { recursive: true })
+    mkdirSync(running)
+    const start = readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]
+    const owner = { common, token: 'owned-token', pid: process.pid, start }
+    const environment = { GRAPHQL_HEAVY_JOB_COMMON: common, GRAPHQL_HEAVY_JOB_TOKEN: owner.token }
+    writeFileSync(legacy, JSON.stringify(owner))
+    assert.equal(hasHeavyJobAdmission(environment, common), true)
+    writeFileSync(legacy, JSON.stringify({ ...owner, token: 'another-slot' }))
+    const secondary = join(running, '000000000002-secondary')
+    writeFileSync(secondary, JSON.stringify(owner))
+    writeFileSync(join(running, '000000000001-malformed'), '{')
+    assert.equal(hasHeavyJobAdmission(environment, common), true)
+    assert.equal(hasHeavyJobAdmission({ ...environment, GRAPHQL_HEAVY_JOB_TOKEN: 'forged' }, common), false)
+    assert.equal(hasHeavyJobAdmission({ ...environment, GRAPHQL_HEAVY_JOB_COMMON: '/other/common' }, common), false)
+    for (const invalid of [{ ...owner, start: 'stale' }, { ...owner, common: '/other/common' }, { ...owner, pid: 0 }]) {
+      writeFileSync(secondary, JSON.stringify(invalid))
+      assert.equal(hasHeavyJobAdmission(environment, common), false)
+    }
+    writeFileSync(secondary, JSON.stringify(owner))
+    rmSync(legacy)
+    assert.equal(hasHeavyJobAdmission(environment, common), true)
+  } finally { rmSync(common, { recursive: true, force: true }) }
 })

@@ -41,7 +41,7 @@ it('records exact identity while every explicitly requested live run still execu
     payloadFingerprints: f.installation.launcher.payloadFingerprints })
 })
 
-it('rejects a pending result after inventory changes and rejects another launcher before dispatch', async () => {
+it('rejects a pending result after explicit inventory invalidation and rejects another launcher before dispatch', async () => {
   const f = fixture()
   const gate = new ReplayGate<void>()
   const entered = new ReplayGate<void>()
@@ -49,7 +49,7 @@ it('rejects a pending result after inventory changes and rejects another launche
   const suite = withQualificationIdentity({ harness: 'codex', revision: 'suite-1', run }, f.registry, f.pin)
   const running = suite.run(f.input)
   await entered.promise
-  f.registry.refresh([f.installation])
+  f.registry.invalidate()
   gate.release()
   await expect(running).rejects.toThrow('stale')
   await expect(suite.run({ ...f.input, binary: '/another/codex' })).rejects.toThrow('exact selected')

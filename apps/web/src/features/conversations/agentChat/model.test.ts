@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { agentChatFixtures, openCodeChatCapabilities, type AgentChatState } from '@graphql/contracts/agent-chat'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, mergeChatMessages, stateBelongsToContext } from './model'
+import type { Message } from '@graphql/contracts'
 import { approvalState } from './testSupport'
+
+it('refreshes an accepted model projection at the same message revision without accepting changed content', () => {
+  const previous: Message = { id: 'accepted-message', conversationId: 'operator-chat', requestId: 'accepted-turn',
+    role: 'assistant', revision: '1', content: 'Recorded answer', nativeMessageComplete: true }
+  const projected: Message = { ...previous, acceptedModel: { harness: 'claude', model: 'claude-opus-5-5' } }
+  expect(mergeChatMessages([previous], [projected])).toEqual([projected])
+  expect(mergeChatMessages([projected], [previous])).toEqual([projected])
+  expect(mergeChatMessages([previous], [{ ...projected, content: 'Changed answer' }])).toEqual([previous])
+})
 
 describe('Agent chat identity and state projection', () => {
   it.each(Object.entries(agentChatFixtures))('accepts the exact context of fixture %s', (_name, state) => {

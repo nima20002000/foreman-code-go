@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { File as FileIcon, Paperclip, RotateCcw, X } from 'lucide-react'
 import { IconButton, TextField } from '../../shared/ui/nocturne'
+import { useFileDrop } from '../../shared/ui/useFileDrop'
 import { ATTACHMENT_ACCEPT } from './attachmentFiles'
 import type { AttachmentItem, ConversationAttachments } from './useConversationAttachments'
 import './attachments.css'
@@ -19,14 +20,18 @@ function AttachmentThumbnail({ item }: { item: AttachmentItem }) {
     : <FileIcon size={18} aria-hidden="true" className="attachment-file-icon" />
 }
 
-export function ChatAttachmentControl({ draft, disabled = false }: { draft: ConversationAttachments; disabled?: boolean }) {
+export function ChatAttachmentControl({ draft, disabled = false, composerDrop }: {
+  draft: ConversationAttachments; disabled?: boolean; composerDrop?: Pick<ReturnType<typeof useFileDrop>, 'dropError' | 'clearDropError'>
+}) {
   const input = useRef<HTMLInputElement>(null)
   const button = useRef<HTMLButtonElement>(null)
   const pickerTarget = useRef<ConversationAttachments['addFiles'] | null>(null)
-  return <div className="attachment-control">
+  const drop = useFileDrop({ disabled: disabled || !draft.canAdd, onFiles: draft.addFiles })
+  return <div className="attachment-control" {...(composerDrop ? {} : drop.dropTargetProps)}>
     <TextField ref={input} type="file" label="Choose attachments" className="attachment-picker"
       accept={ATTACHMENT_ACCEPT} multiple tabIndex={-1} disabled={disabled || !draft.canAdd}
       onChange={(event) => {
+        drop.clearDropError(); composerDrop?.clearDropError()
         const files = Array.from(event.currentTarget.files ?? [])
         event.currentTarget.value = '' // Choosing the same file again must fire change.
         const addFiles = pickerTarget.current ?? draft.addFiles
@@ -60,6 +65,7 @@ export function ChatAttachmentControl({ draft, disabled = false }: { draft: Conv
         </li>)}
       </ul>}
       {draft.pickerIssue && <span className="attachment-picker-issue" role="alert">{draft.pickerIssue}</span>}
+      {(drop.dropError || composerDrop?.dropError) && <span className="attachment-picker-issue" role="alert">{drop.dropError || composerDrop?.dropError}</span>}
     </div>
   </div>
 }

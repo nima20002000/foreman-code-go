@@ -1,3 +1,4 @@
+import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { deviceIdentityMigration } from '../modules/devices/migration.js'
 import { activitySnapshotMigration } from './activitySnapshotMigration.js'
 import { activitySourcesMigration } from './activitySourcesMigration.js'
@@ -26,6 +27,7 @@ import { jobInputAdmissionMigration } from './jobInputAdmissionMigration.js'
 import { agentPlacementProducerMigration } from './agentPlacementProducerMigration.js'
 import { sourceMetadataMigration } from '../modules/sources/migration.js'
 import { workspaceRootPoliciesMigration } from '../modules/sources/rootPoliciesMigration.js'
+import { sourcePreparationReconciliationMigration } from './sourcePreparationReconciliationMigration.js'
 import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
 import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
 import { runInspectionMigration } from './runInspectionMigration.js'
@@ -780,6 +782,7 @@ export const migrations = [
   harnessQualificationMigration,
   sourceMetadataMigration,
   workspaceRootPoliciesMigration,
+  sourcePreparationReconciliationMigration,
   deviceIdentityMigration,
   activitySnapshotMigration,
   activitySourcesMigration,
@@ -806,6 +809,7 @@ export const migrations = [
   remoteNativeArtifactOutputMigration,
   remoteOwnerControlAdmissionMigration,
   remoteNativeArtifactContextMigration,
+  compactCommandActivityMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

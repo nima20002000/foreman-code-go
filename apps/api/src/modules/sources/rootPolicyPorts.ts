@@ -7,6 +7,7 @@ export interface AuthorizedWorkspaceRoot {
 }
 /** C supplies existing commands/HTTP/MCP around this one generic root authority. */
 export interface WorkspaceRootPolicyPort {
+  adopt?(sql: GraphSqlClient, principal: ManagementPrincipal, workspaceId: string, host: ApprovedRootAllowlist['hostRef']): Promise<ApprovedRootAllowlist>
   list(sql: GraphSqlClient, principal: ManagementPrincipal, workspaceId: string): Promise<{ workspaceId: string; policies: WorkspaceRootPolicy[]; allowlists: ApprovedRootAllowlist[]; readiness: 'metadata-only' }>
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal, selection: WorkspaceRootSelection): Promise<AuthorizedWorkspaceRoot>
   attest(root: AuthorizedWorkspaceRoot): Promise<WorkspaceRootAttestation>
@@ -18,6 +19,8 @@ export interface WorkspaceRootPolicyPort {
   read(sql: GraphSqlClient, principal: ManagementPrincipal, workspaceId: string): Promise<WorkspaceRootPolicy[]>
 }
 export interface WorkspaceRootHostPort {
+  /** Read the original protected human-approved host configuration over its authenticated carrier. */
+  configuration?(sql: GraphSqlClient, host: ApprovedRootAllowlist['hostRef']): Promise<ApprovedRootAllowlist>
   /** Main SQL authority calls W07's existing device/main authorizer before host I/O. */
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal, host: ApprovedRootAllowlist['hostRef'], installationId: string): Promise<WorkspaceRootPolicy['registration']>
   /** Persisted human-approved host configuration only; no probe/browse on list. */

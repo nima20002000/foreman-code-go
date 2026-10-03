@@ -1,6 +1,7 @@
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { ActivityNativeIdentitySchema, ActivitySnapshotV1Schema } from './activity.js';
-import { ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
+import { ClaudeEffortSchema, ClaudeHarnessConfigurationSchema, NativeMessageSubmissionSchema } from './claude.js';
+import { changeCodexSandbox } from './harnessEditing.js';
 export * from './claude.js';
 export * from './claudeQualification.js';
 import { RunStartV3InputSchema } from "./wave25/startRequest.js";
@@ -396,9 +397,17 @@ export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = AgentDefaultsSchema.parse({
   },
   operator: {
     role: "operator", boardAddable: false, uiEnabled: true, showThinking: true,
-    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
+    harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: "danger-full-access" },
   },
 });
+
+/** New Operator provider selections use full access, without changing board presets or approval routing. */
+export function operatorHarnessDefaults(base: HarnessConfiguration): HarnessConfiguration {
+  if (base.harness === "codex") return changeCodexSandbox(base, "danger-full-access");
+  if (base.harness === "claude") return { ...base, sandbox: "danger-full-access" };
+  // OpenCode has native tool permissions, not an OS filesystem sandbox.
+  return structuredClone(base);
+}
 
 /** A designated Orchestrator is selected when a workflow is created. */
 export const DEFAULT_WORKFLOW_APPROVAL_HANDLER: ApprovalHandler = "orchestrator";
@@ -802,6 +811,8 @@ export const MessageSchema = z
     id: IdSchema,
     conversationId: IdSchema,
     requestId: IdSchema.optional(),
+    /** Read projection of this message's immutable accepted turn configuration. */
+    acceptedModel: z.object({ harness: AgentHarnessSchema, model: z.string().trim().min(1) }).strict().optional(),
     activityChannel: z.enum(["assistant", "user", "reasoning"]).optional(),
     activityNative: ActivityNativeIdentitySchema.optional(),
     revision: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
@@ -1416,11 +1427,11 @@ export const OperatorChatSettingsSchema = z.discriminatedUnion("harness", [
     serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
   z.object({ harness: z.literal("opencode"), model: z.string().trim().min(1), variant: z.string(),
     showThinking: z.boolean() }).strict(),
-  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), showThinking: z.boolean() }).strict(),
+  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
 ]);
 export type OperatorChatSettings = z.infer<typeof OperatorChatSettingsSchema>;
 export function operatorChatSettings(harness: HarnessConfiguration, showThinking = false): OperatorChatSettings {
-  if (harness.harness === "claude") return { harness: "claude", model: harness.model, showThinking };
+  if (harness.harness === "claude") return { harness: "claude", model: harness.model, ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
   return harness.harness === "codex"
     ? { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort, serviceTier: harness.serviceTier, showThinking }
     : { harness: "opencode", model: harness.model, variant: harness.variant, showThinking: harness.thinking };
@@ -1428,7 +1439,12 @@ export function operatorChatSettings(harness: HarnessConfiguration, showThinking
 /** Apply chat controls without replacing the accepted execution permissions. */
 export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
   if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
-  if (settings.harness === "claude") return HarnessConfigurationSchema.parse({ ...base, model: settings.model });
+  if (settings.harness === "claude") {
+    const configuration = ClaudeHarnessConfigurationSchema.parse({ ...base, model: settings.model });
+    delete configuration.effort;
+    if (settings.effort) configuration.effort = settings.effort;
+    return configuration;
+  }
   return HarnessConfigurationSchema.parse(settings.harness === "codex"
     ? { ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier }
     : { ...base, model: settings.model, variant: settings.variant, thinking: settings.showThinking });
@@ -1680,3 +1696,7 @@ export * from "./trustedDeviceConnection.js";
 export * from './workflowArtifactDeclarations.js'
 
 export * from './workerNativeOutput.js'
+export * from './byteTransfer.js'
+export * from './jobInputs.js'
+
+export * from './deviceProvisioning.js'

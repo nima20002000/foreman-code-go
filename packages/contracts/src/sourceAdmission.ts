@@ -3,8 +3,8 @@ import { IdSchema } from './schemaPrimitives.js'
 import { SourceManifestSchema, SourceHashSchema, RootBindingSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 
-export const SourceActionSchema = z.enum(['sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind'])
-export const SourceToolNameSchema = z.enum(['source_list', 'source_get', 'source_approve', 'source_root_bind', 'source_root_get', 'source_root_list'])
+export const SourceActionSchema = z.enum(['sources:read', 'sources:approve', 'sources:reconcile', 'source_roots:read', 'source_roots:bind'])
+export const SourceToolNameSchema = z.enum(['source_list', 'source_get', 'source_approve', 'source_root_bind', 'source_root_get', 'source_root_list', 'source_preparation_get', 'source_preparation_reconcile'])
 export type SourceAction = z.infer<typeof SourceActionSchema>
 export type SourceToolName = z.infer<typeof SourceToolNameSchema>
 export const SourcePinSchema = z.object({ approvedSourceId: z.uuid(), snapshotId: z.uuid(), manifestDigest: SourceHashSchema }).strict()
@@ -58,6 +58,28 @@ export const SourceMaterializationRecordSchema = z.object({ receipt: Materializa
   reservationId: z.uuid(), sourceBindingHash: SourceHashSchema, finalDispatchBindingHash: SourceHashSchema.nullable(), state: z.enum(['prepared', 'running', 'uncertain', 'closed']),
 }).strict()
 export type SourceMaterializationRecord = z.infer<typeof SourceMaterializationRecordSchema>
+
+export const SourcePreparationGetInputSchema = z.object({ workspaceId: IdSchema, operationId: z.uuid().optional(),
+  startCommandId: z.string().min(8).max(200).optional() }).strict().refine(input => (input.operationId !== undefined) !== (input.startCommandId !== undefined),
+  { message: 'Supply exactly one original operationId or Job Start commandId.' })
+export const SourcePreparationReconcileInputSchema = z.object({ workspaceId: IdSchema, operationId: z.uuid(), commandId: z.string().min(8).max(200) }).strict()
+/** Closure of an expired, never-admitted Job preparation, observed on its exact
+ * worker. Retained source/transfer evidence is never deleted by reconciliation. */
+export const SourcePreparationClosureSchema = z.object({ version: z.literal(1), reconciliationId: z.uuid(),
+  operationId: z.uuid(), executionId: IdSchema, attemptId: IdSchema, rootId: z.uuid(), bindingRevision: z.number().int().positive(),
+  materializationId: z.uuid().nullable(), mainId: z.uuid(), deviceId: z.uuid().nullable(), workerInstallationId: z.uuid().nullable(),
+  keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable(),
+  filesystem: RootFilesystemIdentitySchema, admissionClosed: z.literal(true), childrenClosed: z.literal(true),
+  claimReleased: z.literal(true), evidencePreserved: z.literal(true), observedAt: z.string().datetime(),
+}).strict()
+export type SourcePreparationClosure = z.infer<typeof SourcePreparationClosureSchema>
+export const SourcePreparationSchema = z.object({ workspaceId: IdSchema, operationId: z.uuid(), executionId: IdSchema, attemptId: IdSchema,
+  hostRef: SourceHostSchema,
+  reservationId: z.uuid(), reservationState: z.enum(['preparing', 'owned', 'uncertain', 'retained', 'reclaimed']),
+  reservedBytes: z.number().int().nonnegative(), materializationId: z.uuid().nullable(), closure: SourcePreparationClosureSchema.nullable(),
+}).strict()
+export type SourcePreparation = z.infer<typeof SourcePreparationSchema>
+export const SourcePreparationReconcileResultSchema = z.object({ value: SourcePreparationSchema, replayed: z.boolean() }).strict()
 
 export const SourceRootListInputSchema = z.object({ workspaceId: IdSchema, limit: z.number().int().positive().max(100).default(100) }).strict()
 export const SourceRootListResultSchema = z.object({ items: z.array(SourceRootRecordSchema).max(100), readiness: z.literal('metadata-only') }).strict()

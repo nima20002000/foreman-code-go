@@ -1,9 +1,10 @@
+import { JOB_PRIVATE_GIT_LAYOUT, type VerifiedJobGitMounts } from '../../jobs/privateGitMounts.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import pg from 'pg'
@@ -29,7 +30,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   const root = await mkdtemp(join(tmpdir(),'w08-job-')); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
   const execution = jobExecution()
-  const sourceRoot=join(root,'source');await mkdir(sourceRoot,{mode:0o700})
+  const sourceRoot=join(root,execution.acceptedSpec.source.materializationId,'tree');await mkdir(dirname(sourceRoot),{mode:0o700});await mkdir(sourceRoot,{mode:0o700})
   const sourceHandle=await open(sourceRoot,constants.O_RDONLY|constants.O_DIRECTORY),sourceIdentity=await identity(sourceHandle);await sourceHandle.close()
   Object.assign(execution.acceptedSpec.target.destination,{canonicalProjectRoot:sourceRoot,canonicalCwd:sourceRoot,directoryIdentityHash:createHash('sha256').update(JSON.stringify(sourceIdentity)).digest('hex')})
   execution.acceptedSpec.target.destination.managedRuntimeRoot=join(root,'runtime');await mkdir(execution.acceptedSpec.target.destination.managedRuntimeRoot,{mode:0o700})
@@ -38,21 +39,24 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     subject:{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId},executionId:execution.id,
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
   const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true }
+  let started = false, released = false
+  const waiting: Array<() => void> = []
   const cid='c'.repeat(64),policy=execution.acceptedSpec.policy
-  const profile: QualifiedJobProfile = { policyId:policy.isolationPolicyId,policyRevision:policy.isolationPolicyRevision,imageDigest:policy.imageDigest,toolchainDigest:policy.toolchainDigest,
+  const profile: QualifiedJobProfile = {workspaceLayout:JOB_PRIVATE_GIT_LAYOUT, policyId:policy.isolationPolicyId,policyRevision:policy.isolationPolicyRevision,imageDigest:policy.imageDigest,toolchainDigest:policy.toolchainDigest,
     runtimeVersion:'unit',ociRuntimeVersion:'unit',kernelVersion:'unit',qualificationId:'unit-qualified',rootless:true,cgroupV2:true,filesystemBounded:true,descendantContainment:true,network:'none',cpuLimit:1,memoryBytes:1048576,pidsLimit:64,diskBytes:1048576 }
   const runner: PodmanCommandRunner = { run:async argv => {
     if(argv.includes('create')){state.creates++;return{exitCode:0,stdout:cid}}
-    if(argv[0]==='wait')return{exitCode:0,stdout:'7'}
-    return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:false,Pid:0,ExitCode:7,Status:'exited'}}])}
-  },attach:()=>{const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough()});queueMicrotask(()=>{child.stdout.end('build exit7');child.stderr.end();child.emit('close',7)});return child as unknown as ReturnType<PodmanCommandRunner['attach']>} }
+    if(argv[0]==='wait')return new Promise(resolve => { waiting.push(() => resolve({exitCode:0,stdout:'7'})) })
+    if(argv[0]==='exec'){released=true;for(const finish of waiting.splice(0))finish();return{exitCode:0,stdout:''}}
+    return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:started&&!released,Pid:started&&!released?100:0,ExitCode:7,Status:released?'exited':started?'running':'created'}}])}
+  },attach:async()=>{started=true;const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough()});waiting.push(()=>{child.stdout.end('build exit7');child.stderr.end();child.emit('close',7)});return child as unknown as Awaited<ReturnType<PodmanCommandRunner['attach']>>} }
   // OCI boundary authority is a unit double; this suite proves journal/input sequencing, not physical qualification.
   const ownership={reserveContainerIntent:vi.fn(),assertCurrent:vi.fn(),bindContainer:vi.fn(),launchHelpers:vi.fn(),readCertificate:vi.fn(),publish:vi.fn()} as unknown as OCIContainerOwnership
   vi.spyOn(OwnedOCIContainer.prototype,'entered').mockResolvedValue(undefined as never)
   vi.spyOn(OwnedOCIContainer.prototype,'close').mockResolvedValue(true)
   const supervisor=new PodmanJobSupervisor(profile,runner,async()=>ownership)
   const host=new RemoteJobExecutionHost({journal,connection:{kind:'main',mainId:intent.mainId,mainInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},incarnationId:randomUUID(),supervisor,
-    source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024})},
+    source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts:mountFixture(execution,sourceIdentity)})},
     inputs:{prepare:async current=>{
       const spec=current.acceptedSpec,hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex')
       const manifest=Buffer.from(JSON.stringify(JobBuildInputManifestSchema.parse({version:1,inputSnapshotDigest:jobInputSnapshotDigest(current),workflowInput:spec.workflowInput,files:[]}))),workflow=Buffer.from(JSON.stringify(spec.workflowInput))
@@ -161,3 +165,13 @@ describe('SQL-only current accepted job closure receipts',()=>{
     await expect(f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).rejects.toMatchObject({code:expect.stringMatching(/^JOB_CLOSURE_/)})
   })
 })
+
+// Structured source authority double; real receipt/inode guards are tested in sources/repository.test.ts.
+function mountFixture(execution:JobExecution,filesystem={device:'1',inode:'2',mountId:'3'}):VerifiedJobGitMounts {
+  const spec=execution.acceptedSpec,parent=dirname(spec.target.destination.canonicalProjectRoot),digest='a'.repeat(64)
+  return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
+    git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}
+}
+
+// This suite models OCI/native boundaries; original filesystem receipts are independently tested.
+vi.mock('../../jobs/privateGitMounts.js',async original=>{const actual=await original<typeof import('../../jobs/privateGitMounts.js')>();return {...actual,verifyJobGitMounts:vi.fn(async()=>{})}})

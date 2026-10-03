@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { it, expect, vi } from 'vitest'
@@ -28,9 +28,33 @@ it('offers only qualified authoritative choices and preserves exact selected pin
   await user.selectOptions(screen.getByRole('combobox', { name: 'Computer and validated root' }), 'target-a')
   await user.selectOptions(screen.getByRole('combobox', { name: 'Pinned source snapshot' }), `${definition.spec.source.snapshotId}:${definition.spec.source.manifestDigest}`)
   await user.selectOptions(screen.getByRole('combobox', { name: 'Qualified isolation and toolchain policy' }), `${definition.spec.policy.isolationPolicyId}:${definition.spec.policy.isolationPolicyRevision}:${definition.spec.policy.toolchainDigest}`)
+  expect(screen.getByRole('option', { name: `Commit ${definition.spec.source.commit.slice(0, 8)}…` })).toBeInTheDocument()
+  expect(screen.getByText(`Selected policy: network ${definition.spec.policy.network}; execution limit ${definition.spec.policy.executionTimeoutMs} ms.`)).toBeVisible()
+  const details = screen.getByText('Review exact saved specification').closest('details')!
+  await user.click(within(details).getByText('Review exact saved specification'))
+  expect(within(details).getByText(/"snapshotId"/)).toHaveTextContent(definition.spec.source.snapshotId)
+  expect(within(details).getByText(/"snapshotId"/)).toHaveTextContent(definition.spec.source.commit)
+  expect(within(details).getByText(/"snapshotId"/)).toHaveTextContent(`"isolationPolicyRevision": ${definition.spec.policy.isolationPolicyRevision}`)
   await user.click(screen.getByRole('button', { name: 'Save job definition' }))
   expect(saved).toHaveLength(1)
   expect(saved[0]).toMatchObject({ expectedRevision: null, name: definition.name, spec: { ...definition.spec, outputs: [] } })
+})
+it('disambiguates repeated commit and policy labels and exposes exact pins before the form is complete', async () => {
+  const secondSource = { ...definition.spec.source, snapshotId: '33333333-3333-4333-8333-333333333333' }
+  const secondPolicy = { ...definition.spec.policy, toolchainDigest: 'd'.repeat(64) }
+  server.use(http.get(`${root}/choices`, () => HttpResponse.json({ targets: [], sources: [definition.spec.source, secondSource], policies: [definition.spec.policy, secondPolicy] })))
+  render(<QueryClientProvider client={new QueryClient()}><JobEditor workspaceId={definition.workspaceId} onClose={vi.fn()} /></QueryClientProvider>)
+  const user = userEvent.setup()
+  const sourceChoice = await screen.findByRole('option', { name: `Commit ${secondSource.commit.slice(0, 8)}… · ${secondSource.snapshotId.slice(0, 8)}…` })
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Pinned source snapshot' }), sourceChoice)
+  const policyChoice = screen.getByRole('option', { name: `${secondPolicy.isolationPolicyId} · rev ${secondPolicy.isolationPolicyRevision} · dddddddd…` })
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Qualified isolation and toolchain policy' }), policyChoice)
+  await user.click(screen.getByText('Review selected configuration'))
+  const specification = screen.getByText(/"snapshotId"/)
+  expect(specification).toHaveTextContent(secondSource.snapshotId)
+  expect(specification).toHaveTextContent(secondPolicy.toolchainDigest)
+  expect(specification).toHaveTextContent(`"network": "${secondPolicy.network}"`)
+  expect(screen.getByRole('button', { name: 'Save job definition' })).toBeDisabled()
 })
 it('edits a saved definition without changing historic accepted facts', async () => {
   const oldSource = JSON.stringify(definition.spec.source)

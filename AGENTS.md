@@ -45,6 +45,11 @@ Do not duplicate one state source in another layer without a documented reason.
 
 - Dismissible modals close when the user clicks their backdrop, outside the modal. Clicks inside the modal and drags that start inside must not dismiss it. Use the shared Dialog behavior; preserve pending-operation locks and unsaved-change guards. Any exception must have a concrete interaction reason.
 
+## Agent orchestration
+
+- Send related changes and follow-up issues to the existing agent that owns the feature or workstream. Message a running agent or resume an idle agent; do not spawn a new agent for every related issue.
+- Start a separate agent for distinct work, an explicitly requested separate assignment, or an independent review. Preserve clear ownership when coordinating shared files.
+
 ## Verification
 
 From the repository root, use the pinned pnpm runtime. Plain npm installs are
@@ -140,3 +145,5 @@ PROJECT RULE: DO NOT WORK AROUND SECURITY OR SANDBOX LIMITS BY ADDING TOOLS, WRI
 PROJECT RULE: For browser interaction in this application, use the built-in computer-use tool. Do not use Browser Use, agent-browser, or isolated-browser tooling unless the user explicitly requests it for the current task. Work in the existing app tab when appropriate; do not create a separate browser environment on your own initiative.
 
 PROJECT RULE: This application is in a local demo phase. The local application database and browser-authentication records are disposable and may be reset, recreated, or deleted when needed to bring up and test the app interface. This authorization does not extend to unrelated local data, external services, production data, SSH/VPS security, or router settings.
+
+PROJECT RULE: Worktree cleanup is the orchestrator's responsibility and part of task completion. Once a worktree's work is complete and integrated into its destination branch, merged into main, or otherwise finished and safely retained, the orchestrator must promptly remove the unused worktree with `git worktree remove` and run `git worktree prune` to free disk space. Before removal, verify that no active agent or process still needs it, preserve any unintegrated or uncommitted work, and retain required evidence. Do not leave completed worktrees accumulating as an optional follow-up.

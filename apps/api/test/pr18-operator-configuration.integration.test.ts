@@ -28,6 +28,7 @@ it('pins the full cross-harness Operator configuration and preserves it on exact
     const defaults = new PostgresFoundationSettingsRepository(pool)
     const saved = await defaults.getAgentDefaults()
     const updated = await defaults.updateAgentDefaults({ ...saved.value, operator: { ...saved.value.operator, harness: intended } }, saved.revision)
+    await operators.update(intended, (await operators.ensure()).configuration.id)
     const input = { requestId: randomUUID(), content: 'Inspect without writes', settings: operatorChatSettings(intended),
       configurationVersionId: initial.configuration.id, defaultsRevision: updated.revision }
     const harness = await repository.harnessForMessage(initial.configuration, input)

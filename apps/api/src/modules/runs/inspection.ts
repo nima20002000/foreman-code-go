@@ -28,7 +28,7 @@ import {
   type StoredRepeatExecution,
 } from './repeatPostgres.js'
 import {
-  assertRepeatRef, repeatDigest, repeatExecutionIdentity, repeatId, repeatSlotId, sameRepeatValue,
+  assertRepeatRef, repeatDigest, repeatExecutionIdentity, repeatId, repeatSlotId, sameRepeatValue, workActivationSlotId,
   type RepeatScope,
 } from './repeatResolution.js'
 import { INSPECTION_OCCURRENCE_COLUMNS, inspectionExecutionsQuery } from './inspectionPageQuery.js'
@@ -104,12 +104,19 @@ interface ExecutionRow extends OccurrenceRow {
   page_created_at: string; identity: unknown; identity_run_id: string | null;
   identity_occurrence_id: string | null; technical_attempt: number | null;
   slot_id: string | null; slot_run_id: string | null; slot_node_id: string | null; slot_occurrence_id: string | null;
+  work_activation_id?: string | null; native_work_activation_id?: string | null; attempt_work_activation_id?: string | null;
 }
 export function inspectionExecutionRowSummary(row: ExecutionRow, snapshot: AcceptedRepeatRunSnapshot): RunExecutionSummary {
   const summary = RunExecutionSummarySchema.parse(row.summary)
   const occurrence = row.repeat_occurrence_id === null ? null : occurrenceOf(row, snapshot)
   const ref = { nodeId: summary.workflowNodeId, occurrence }, scope = scopeOf(snapshot)
   assertRepeatRef(snapshot.version, scope, ref)
+  const activationId = row.work_activation_id ?? null
+  evidence(snapshot.version.definition.handoffs
+    ? summary.kind !== 'job' && activationId !== null && activationId.length > 0 && occurrence === null
+      && row.native_work_activation_id === activationId && row.attempt_work_activation_id === activationId
+    : activationId === null && (row.native_work_activation_id ?? null) === null && (row.attempt_work_activation_id ?? null) === null)
+  const slotId = activationId ? workActivationSlotId(scope.runId, activationId) : repeatSlotId(scope.runId, ref)
   const node = snapshot.version.definition.nodes.find((item) => item.id === ref.nodeId)!
   const identity = summary.kind === 'job'
     ? { kind: summary.kind, executionId: summary.executionId, workflowNodeId: summary.workflowNodeId,
@@ -125,7 +132,7 @@ export function inspectionExecutionRowSummary(row: ExecutionRow, snapshot: Accep
   evidence(row.run_id === scope.runId && row.id === identity.executionId && row.workflow_node_id === identity.workflowNodeId
     && row.attempt === identity.attempt
     && row.identity_run_id === scope.runId && row.slot_run_id === scope.runId && row.slot_node_id === ref.nodeId
-    && row.slot_id === repeatSlotId(scope.runId, ref) && row.technical_attempt === identity.attempt
+    && row.slot_id === slotId && row.technical_attempt === identity.attempt
     && row.slot_occurrence_id === row.repeat_occurrence_id && row.identity_occurrence_id === row.repeat_occurrence_id
     && (occurrence?.occurrenceId ?? null) === row.repeat_occurrence_id
     && sameRepeatValue(row.identity, occurrence ? { ...identity, occurrence } : identity)

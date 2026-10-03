@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from '@graphql/contracts'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings, type HarnessConfiguration } from '@graphql/contracts'
+import { AgentDefaultsUpdateInputSchema } from '@graphql/contracts/management'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
 import { ApiError, getManagedAgentDefaults, updateManagedAgentDefaults } from '../../shared/api/client'
@@ -14,17 +15,23 @@ import { useOperatorChatStore } from './operatorChatStore'
 import { operatorState } from './pr17-test-fixtures'
 import { summarizeOperatorConversation } from './operatorChatStatus'
 import { parseChatPreferences } from '../../shared/api/protectedChatStorage'
-import { clearRevisionedFormPersistence } from '../settings/revisionedForm'
+import { clearRevisionedFormPersistence, useRevisionedForm } from '../settings/revisionedForm'
 import { useConversationDraftStore } from '../conversations'
+
+type AgentDefaultsUpdateInput = ReturnType<typeof AgentDefaultsUpdateInputSchema.parse>
+type ManagedAgentDefaults = Awaited<ReturnType<typeof getManagedAgentDefaults>>
 
 const api = vi.hoisted(() => ({ create: vi.fn(), get: vi.fn(), list: vi.fn(), send: vi.fn(), remove: vi.fn(), restore: vi.fn() }))
 vi.mock('../../shared/api/client', async (original) => ({ ...await original<typeof import('../../shared/api/client')>(),
   createOperatorConversation: api.create, getOperatorConversation: api.get, sendOperatorMessage: api.send }))
 vi.mock('../../shared/api/operatorChatSummaries', () => ({ listOperatorConversationSummaries: api.list, deleteOperatorConversation: api.remove, restoreOperatorConversation: api.restore }))
 vi.mock('../../shared/api/operatorChatStream', () => ({ subscribeOperatorChat: () => () => {} }))
-vi.mock('../../shared/api/harnessSettings', () => ({ useNativeHarnessOptions: () => ({ isSuccess: true, data: { models: [
+vi.mock('../../shared/api/harnessSettings', async (original) => ({ ...await original<typeof import('../../shared/api/harnessSettings')>(), useNativeHarnessOptions: () => ({ isSuccess: true, data: { models: [
   { id: 'model-a', name: 'Model A', reasoningEfforts: ['low', 'high'], serviceTiers: ['standard', 'priority'], variants: ['high'] },
   { id: 'model-b', name: 'Model B', reasoningEfforts: ['low'], serviceTiers: ['standard'], variants: [] },
+  { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', reasoningEfforts: ['low', 'medium', 'high'], serviceTiers: [], variants: [] },
+  { id: 'claude-opus-5-5', name: 'Opus 5.5', reasoningEfforts: ['low', 'medium', 'high'], serviceTiers: [], variants: [] },
+  { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', reasoningEfforts: [], serviceTiers: [], variants: [] },
 ] } }) }))
 vi.mock('../../shared/api/query', async (original) => ({ ...await original<typeof import('../../shared/api/query')>(), useHarnessDefaultsQuery: () => ({ data: { defaults: DEFAULT_HARNESS_DEFAULTS } }) }))
 let client: QueryClient
@@ -45,6 +52,48 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks() })
 function chat() { render(<QueryClientProvider client={client}><OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider></QueryClientProvider>) }
 describe('Operator chat UX', () => {
+  it('reuses its verified MCP installation when starting another chat', async () => {
+    let checks = 0
+    server.use(http.get('/api/operator/setup', ({ request }) => {
+      expect(new URL(request.url).searchParams.has('conversationId')).toBe(false)
+      checks++
+      return HttpResponse.json(configuredOperatorSetup('codex'))
+    }))
+    chat()
+    await screen.findByRole('textbox', { name: 'Message' })
+    await waitFor(() => expect(checks).toBe(1))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+    await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toBeVisible()
+    expect(screen.queryByText('Checking GraphQL MCP installation…')).not.toBeInTheDocument()
+    expect(checks).toBe(1)
+  })
+
+  it('resolves the first accepted configuration when chat creation races an initial installation check', async () => {
+    useOperatorChatStore.getState().select(undefined)
+    let finishInitial!: () => void
+    const initial = new Promise<void>((resolve) => { finishInitial = resolve })
+    let checks = 0
+    server.use(http.get('/api/operator/setup', async () => {
+      checks++
+      if (checks === 1) {
+        await initial
+        return HttpResponse.json({ ...configuredOperatorSetup('codex'), configurationVersionId: undefined })
+      }
+      return HttpResponse.json(configuredOperatorSetup('codex'))
+    }))
+    chat()
+    await waitFor(() => expect(checks).toBe(1))
+    fireEvent.click(await screen.findByRole('button', { name: 'Start chat' }))
+    const input = await screen.findByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: 'Draft only' } })
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    finishInitial()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(checks).toBe(2)
+    expect(api.send).not.toHaveBeenCalled()
+  })
+
   it('recovers a stale selected chat without showing an MCP failure', async () => {
     api.get.mockRejectedValue(new ApiError({ code: 'CONVERSATION_NOT_FOUND', message: 'Missing conversation' }, 404))
     const setupTargets: Array<string | null> = []
@@ -138,22 +187,141 @@ describe('Operator chat UX', () => {
     expect(screen.getByRole('switch', { name: 'Show thinking' })).toBeInTheDocument()
   })
 
+  it('saves Haiku without inherited effort through the mounted chat picker and restores supported efforts without changing pinned chat access', async () => {
+    const harness = { harness: 'claude' as const, model: 'claude-sonnet-5-5', effort: 'medium' as const,
+      authMode: 'subscription' as const, configDirectory: '/unit/profile', permissionMode: 'default' as const,
+      sandbox: 'danger-full-access' as const, tools: ['Read', 'Write'], permissionRules: [], instructions: 'Keep the saved policy.', mcpServers: {} }
+    let saved: ManagedAgentDefaults = { revision: 6, versionId: null, value: { ...DEFAULT_AGENT_DEFAULTS,
+      operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness } } }
+    const requests: AgentDefaultsUpdateInput[] = []
+    const pinned = operatorState({ turnState: 'idle', activeRequestId: null, settings: operatorChatSettings({ ...harness, model: 'claude-opus-5-5' }),
+      messages: [{ id: 'original-answer', conversationId: 'conversation-one', requestId: 'original-turn', role: 'assistant', content: 'Hello!',
+        acceptedModel: { harness: 'claude', model: 'claude-opus-5-5' } }] })
+    api.get.mockResolvedValue(pinned)
+    server.use(
+      http.get('/api/management/settings/agents', () => HttpResponse.json(saved)),
+      http.put('/api/management/settings/agents', async ({ request }) => {
+        const input = AgentDefaultsUpdateInputSchema.parse(await request.json())
+        requests.push(input)
+        if (input.value.operator.harness.harness === 'claude' && input.value.operator.harness.model === 'claude-haiku-4-5-20251001'
+          && Object.hasOwn(input.value.operator.harness, 'effort')) return HttpResponse.json({ error: { code: 'CLAUDE_DEFAULT_SETUP_UNQUALIFIED',
+            message: 'The accepted model and effort are absent from the exact native catalog.' } }, { status: 409 })
+        saved = { ...saved, revision: saved.revision + 1, value: input.value }
+        return HttpResponse.json({ value: saved, replayed: false })
+      }),
+      http.get('/api/operator/setup', () => HttpResponse.json(configuredOperatorSetup('claude'))),
+    )
+    chat()
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent settings: Sonnet 5.5, medium' }))
+    const choose = async (name: string, id: string) => {
+      fireEvent.click(screen.getByRole('button', { name: /Choose model/ }))
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(`${name}.*${id}`) }))
+    }
+    await choose('Haiku 4.5', 'claude-haiku-4-5-20251001')
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]!.value.operator.harness).not.toHaveProperty('effort')
+    await waitFor(() => expect(saved.value.operator.harness.model).toBe('claude-haiku-4-5-20251001'))
+    const nativeDefault: HarnessConfiguration = { ...harness, model: 'claude-haiku-4-5-20251001' }
+    delete nativeDefault.effort
+    expect(saved.value.operator.harness).toEqual(nativeDefault)
+    expect(screen.queryByText('Changes were not saved')).not.toBeInTheDocument()
+    expect(screen.queryByRole('slider', { name: 'Effort' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /Choose model/ })).toBeEnabled())
+    await choose('Sonnet 5.5', 'claude-sonnet-5-5')
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[1]!.value.operator.harness).toEqual(harness)
+    await waitFor(() => expect(screen.getByRole('slider', { name: 'Effort' })).toBeEnabled())
+    fireEvent.change(screen.getByRole('slider', { name: 'Effort' }), { target: { value: '2' } })
+    await waitFor(() => expect(requests).toHaveLength(3))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Choose model/ })).toBeEnabled())
+    await choose('Opus 5.5', 'claude-opus-5-5')
+    await waitFor(() => expect(requests).toHaveLength(4))
+    expect(requests[3]!.value.operator.harness).toMatchObject({ model: 'claude-opus-5-5', effort: 'high', sandbox: harness.sandbox,
+      tools: harness.tools, instructions: harness.instructions })
+    expect(screen.getByRole('article', { name: 'Message from Opus 5.5' })).toHaveTextContent('Hello!')
+    expect(api.send).not.toHaveBeenCalled()
+    await expect(api.get.mock.results[0]!.value).resolves.toEqual(pinned)
+  })
+
+  it.each(['retry settings', 'select a supported model', 'retry a frozen request'])('handles an older Haiku draft when choosing to %s', async (action) => {
+    const harness = { harness: 'claude' as const, model: 'claude-sonnet-5-5', effort: 'medium' as const,
+      authMode: 'subscription' as const, configDirectory: '/unit/profile', permissionMode: 'default' as const,
+      sandbox: 'danger-full-access' as const, tools: ['Read', 'Write'], permissionRules: [], instructions: 'Keep the saved policy.', mcpServers: {} }
+    let saved: ManagedAgentDefaults = { revision: 6, versionId: null, value: { ...DEFAULT_AGENT_DEFAULTS,
+      operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harness } } }
+    const draft = renderHook(() => useRevisionedForm(saved, 'operator-chat:defaults'))
+    await waitFor(() => expect(draft.result.current.draft).toBeDefined())
+    act(() => draft.result.current.setDraft({ ...saved.value, operator: { ...saved.value.operator,
+      harness: { ...harness, model: 'claude-haiku-4-5-20251001' } } }))
+    let frozenRequest: AgentDefaultsUpdateInput | undefined
+    await act(async () => { await draft.result.current.save(async (input) => {
+      frozenRequest = structuredClone(input)
+      throw new ApiError({ code: action === 'retry a frozen request' ? 'UNAVAILABLE' : 'CLAUDE_DEFAULT_SETUP_UNQUALIFIED',
+        message: 'The accepted model and effort are absent from the exact native catalog.' }, action === 'retry a frozen request' ? 503 : 409)
+    }) })
+    draft.unmount()
+    const requests: AgentDefaultsUpdateInput[] = []
+    server.use(
+      http.get('/api/management/settings/agents', () => HttpResponse.json(saved)),
+      http.put('/api/management/settings/agents', async ({ request }) => {
+        const input = AgentDefaultsUpdateInputSchema.parse(await request.json())
+        requests.push(input)
+        if (action === 'retry a frozen request') return HttpResponse.json({ error: { code: 'CLAUDE_DEFAULT_SETUP_UNQUALIFIED',
+          message: 'The accepted model and effort are absent from the exact native catalog.' } }, { status: 409 })
+        saved = { ...saved, revision: saved.revision + 1, value: input.value }
+        return HttpResponse.json({ value: saved, replayed: false })
+      }),
+      http.get('/api/operator/setup', () => HttpResponse.json(configuredOperatorSetup('claude'))),
+    )
+    chat()
+    if (action === 'retry a frozen request') expect(await screen.findByText(/The previous save may have committed/)).toBeVisible()
+    else expect(await screen.findByText('Changes were not saved')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Agent settings: Haiku 4.5, medium' })).toBeVisible()
+    if (action !== 'select a supported model') fireEvent.click(screen.getByRole('button', { name: 'Retry settings save' }))
+    else {
+      fireEvent.click(screen.getByRole('button', { name: 'Agent settings: Haiku 4.5, medium' }))
+      fireEvent.click(screen.getByRole('button', { name: /Choose model/ }))
+      fireEvent.click(screen.getByRole('button', { name: /Sonnet 5.5.*claude-sonnet-5-5/ }))
+    }
+    await waitFor(() => expect(requests).toHaveLength(1))
+    if (action === 'retry a frozen request') {
+      expect(requests[0]).toEqual(frozenRequest)
+      expect(requests[0]!.value.operator.harness).toMatchObject({ model: 'claude-haiku-4-5-20251001', effort: 'medium' })
+      expect(saved.revision).toBe(6)
+      expect(await screen.findByText('Changes were not saved')).toBeVisible()
+      expect(api.send).not.toHaveBeenCalled()
+      return
+    }
+    if (action === 'retry settings') expect(requests[0]!.value.operator.harness).not.toHaveProperty('effort')
+    else expect(requests[0]!.value.operator.harness).toEqual(harness)
+    expect(requests[0]!.expectedRevision).toBe(6)
+    expect(requests[0]!.value.operator.harness).toMatchObject({ model: action === 'retry settings' ? 'claude-haiku-4-5-20251001' : harness.model, sandbox: harness.sandbox,
+      tools: harness.tools, instructions: harness.instructions })
+    await waitFor(() => expect(screen.queryByText('Changes were not saved')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: action === 'retry settings' ? 'Agent settings: Haiku 4.5' : 'Agent settings: Sonnet 5.5, medium' })).toBeVisible()
+    expect(api.send).not.toHaveBeenCalled()
+  })
+
   it('saves the Codex sandbox to Operator defaults and keeps it for a new chat', async () => {
     chat()
-    const trigger = await screen.findByRole('button', { name: 'Operator access: Read only' })
-    fireEvent.click(trigger)
-    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: 'Codex sandbox' }))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Codex sandbox' })).getByRole('menuitemradio', { name: 'Workspace write' }))
+    await screen.findByRole('textbox', { name: 'Message' })
+    expect(screen.queryByText('Access changes apply to new chats and harness handoffs. Existing chats keep their accepted access policy.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Access edits apply to new chats and harness handoffs. This chat keeps its pinned access policy.')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    expect(within(screen.getByRole('group', { name: 'Operator access' })).getByText('Access changes apply to new chats and harness handoffs. Existing chats keep their accepted access policy.')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('danger-full-access')
+    expect(screen.queryByText('Saved to Operator defaults for your next message and future chats.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Operator access:/ })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: 'workspace-write' } })
     await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness).toMatchObject({ harness: 'codex', sandbox: 'workspace-write' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Operator access: Workspace write' })).toBeEnabled())
-    fireEvent.click(screen.getByRole('button', { name: 'Operator access: Workspace write' }))
-    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: 'Approval requests' }))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Approval requests' })).getByRole('menuitemradio', { name: 'Never request escalation' }))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Approval requests' })).toBeEnabled())
+    fireEvent.change(screen.getByRole('combobox', { name: 'Approval requests' }), { target: { value: 'never' } })
     await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness).toMatchObject({ sandbox: 'workspace-write',
       advanced: { approvalPolicy: 'never' } }))
-    fireEvent.click(within(screen.getByRole('form', { name: 'Conversation composer' })).getByRole('button', { name: 'New chat' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
-    expect(await screen.findByRole('button', { name: 'Operator access: Workspace write' })).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue('workspace-write')
   })
 
   it('saves OpenCode permission rules from the composer to future Operator chats', async () => {
@@ -161,15 +329,16 @@ describe('Operator chat UX', () => {
     await updateManagedAgentDefaults({ commandId: 'choose-opencode-for-access-test', expectedRevision: before.revision,
       value: { ...before.value, operator: { ...before.value.operator, harness: DEFAULT_HARNESS_DEFAULTS.opencode } } })
     chat()
-    fireEvent.click(await screen.findByRole('button', { name: 'Operator access: 0 OpenCode rules' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Add rule' }))
     fireEvent.change(screen.getByRole('combobox', { name: 'Action 1' }), { target: { value: 'deny' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save access rules' }))
     await waitFor(async () => expect((await getManagedAgentDefaults()).value.operator.harness).toMatchObject({ harness: 'opencode',
       advanced: { permissionRules: [{ permission: 'shell', pattern: '*', effect: 'deny' }] } }))
-    fireEvent.click(within(screen.getByRole('form', { name: 'Conversation composer' })).getByRole('button', { name: 'New chat' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
-    expect(await screen.findByRole('button', { name: 'Operator access: 1 OpenCode rule' })).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: /Agent settings:/ }))
+    expect(screen.getByRole('combobox', { name: 'Action 1' })).toHaveValue('deny')
   })
 
   it('starts a linked child on the first send after changing harness', async () => {
@@ -390,7 +559,7 @@ describe('PR19 receipt recovery and navigation fencing', () => {
     chat()
     const retry = await screen.findByRole('button', { name: 'Retry pending message' })
     expect(retry).toBeEnabled()
-    expect(await screen.findByRole('button', { name: /Operator access:/ })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: /Agent settings:/ })).toBeDisabled()
     fireEvent.click(retry)
     await waitFor(() => expect(api.send).toHaveBeenCalledWith('conversation-one', { ...command, recovery: 'receipt' }))
     await waitFor(() => expect(outbox.readPendingOperatorMessage('conversation-one').command).toBeUndefined())
@@ -420,7 +589,7 @@ describe('PR19 receipt recovery and navigation fencing', () => {
     expect(command.configurationVersionId).toBe('source-config')
     expect(command.defaultsRevision).toBe(before.revision + 1)
     if (destination === 'new chat') {
-      fireEvent.click(composer.getByRole('button', { name: 'New chat' }))
+      fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
       await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
     } else act(() => {
       useOperatorChatStore.getState().select('another-chat')

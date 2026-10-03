@@ -1,3 +1,4 @@
+import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
 import { ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
@@ -37,7 +38,7 @@ export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
-  "sources:read", "sources:approve", "source_roots:read", "source_roots:bind",
+  "sources:read", "sources:approve", "sources:reconcile", "source_roots:read", "source_roots:bind",
   "job_definitions:read", "job_definitions:write", "jobs:start", "jobs:read", "jobs:cancel", "job_logs:read", "job_artifacts:read",
   "agents:create",
   "agents:update",
@@ -66,6 +67,7 @@ export const ManagementActionSchema = z.enum([
   "harnesses:read",
   "harnesses:update",
   "devices:read",
+  "devices:provision",
   "devices:metrics:read",
   "settings:read",
   "settings:update",
@@ -92,9 +94,9 @@ export const ManagementActionSchema = z.enum([
 ]);
 export type ManagementAction = z.infer<typeof ManagementActionSchema>;
 
-/** Host telemetry requires a separately selected grant, including for broad presets. */
+/** Host telemetry and provisioning require separately selected grants, including for broad presets. */
 export const DEFAULT_MANAGEMENT_ACTIONS = ManagementActionSchema.options.filter(
-  (action) => action !== "devices:metrics:read",
+  (action) => action !== "devices:metrics:read" && action !== "devices:provision",
 );
 
 export const ManagementScopeSchema = z
@@ -224,7 +226,7 @@ export const WorkspaceGetInputSchema = WorkspaceScopeSchema;
 export const WorkspaceCreateInputSchema = z.object({
   parentPath: z.string().trim().min(1).max(4096).refine((value) => !value.includes("\0"), "Invalid folder path").optional().describe("Existing parent folder on Local Runner. Pass workspace_defaults_get.value.parentPath to use the configured default; creates a new child named after the workspace. Omit only to leave execution location unconfigured."),
   ...MutationFields,
-  name: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(200).optional().describe("Omit to use the configured suggested name, adding (1), (2), etc. when a workspace name or project folder is already taken. An explicit name is used exactly and existing folders are rejected."),
   description: z.string().max(10_000).optional(),
 }).strict();
 export const WorkspaceUpdateInputSchema = z.object({
@@ -647,8 +649,40 @@ export const REPEAT_OPERATOR_TOOL_NAMES = [
 ] as const;
 export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
 
+/** API catalog/availability must consume these global requirements without implicitly granting them. */
+export const DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES = [
+  "device_pairing_install_create", "device_readiness_get", "device_readiness_check", "device_repair_plan", "device_repair_start",
+  "device_provisioning_operation_get", "device_resources_get", "device_resources_update", "device_resources_apply_now",
+  "device_runtime_approval_get", "device_runtime_approval_request", "device_runtime_approval_revoke",
+] as const;
+export type DeviceProvisioningOperatorToolName = typeof DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES[number];
+export const DEVICE_PROVISIONING_OPERATOR_METADATA = [
+  { name: "device_pairing_install_create", action: "create-install-pairing", actions: ["settings:update", "devices:provision"], scope: "global", readOnly: false, humanOnly: false, detail: "Create one short-lived single-use install/pair command; pairing grants no execution approval." },
+  { name: "device_readiness_get", action: "read-readiness", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read persisted summary and full readiness without probing or repairing the computer." },
+  { name: "device_readiness_check", action: "check-readiness", actions: ["settings:update", "devices:provision"], scope: "global", readOnly: false, humanOnly: false, detail: "Schedule bounded diagnostics for the exact device generation; never remote sudo." },
+  { name: "device_repair_plan", action: "plan-repair", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read a server-generated plan for advertised enum actions; no execution." },
+  { name: "device_repair_start", action: "start-repair", actions: ["settings:update", "devices:provision"], scope: "global", readOnly: false, humanOnly: false, detail: "Start the exact approved plan; local administrator and human steps remain unavailable to MCP." },
+  { name: "device_provisioning_operation_get", action: "read-operation", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read durable operation progress for this target." },
+  { name: "device_resources_get", action: "read-resource-limits", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read measured capacity and separate desired/effective revisions." },
+  { name: "device_resources_update", action: "update-resource-limits", actions: ["settings:update"], scope: "global", readOnly: false, humanOnly: false, detail: "Save exact revision/capacity-bound limits. stop-jobs-and-apply additionally requires jobs:cancel and explicit confirmation." },
+  { name: "device_resources_apply_now", action: "stop-jobs-and-apply", actions: ["settings:update", "jobs:cancel"], scope: "global", readOnly: false, humanOnly: false, detail: "Explicitly stop current Jobs and drain owned work before applying the already saved revision." },
+  { name: "device_runtime_approval_get", action: "read-runtime-approval", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read the revocable device-wide human runtime approval." },
+  { name: "device_runtime_approval_request", action: "request-runtime-approval", actions: ["settings:update"], scope: "global", readOnly: false, humanOnly: false, detail: "Request the once-per-device browser approval. MCP cannot grant it or substitute pairing." },
+  { name: "device_runtime_approval_revoke", action: "revoke-runtime-approval", actions: ["settings:update"], scope: "global", readOnly: false, humanOnly: false, detail: "Revoke the exact approval revision and fence new work." },
+] as const satisfies readonly { name: DeviceProvisioningOperatorToolName; action: string; actions: readonly ManagementAction[];
+  scope: "global"; readOnly: boolean; humanOnly: boolean; detail: string }[];
+export const DEVICE_PROVISIONING_OPERATOR_CONDITIONAL_REQUIREMENTS = [{
+  name: "device_resources_update", field: "applyMode", equals: "stop-jobs-and-apply", actions: ["jobs:cancel"], scope: "global",
+}] as const;
+export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
+  { feature: "device-runtime-approval-grant", state: "protected", detail: "Only an authenticated human browser can grant once-per-device runtime approval; MCP may request, read and revoke it." },
+  { feature: "device-system-setup", state: "protected", detail: "System packages and quota setup require local administrator consent; MCP cannot execute sudo or alter host security." },
+] as const;
+
 export const OperatorToolNameSchema = z.enum([
-  "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list",
+  ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
+  ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
+  "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get",
   "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_start","job_get","job_list","job_cancel","job_logs_read","job_artifacts_list","job_artifact_read",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
@@ -667,6 +701,7 @@ export const OperatorToolNameSchema = z.enum([
   "codex_plugins_list", "codex_plugin_get",
   "harness_configuration_check",
   "execution_readiness_get",
+  "claude_setup_options_get",
   "harness_options_get",
   "harness_options_refresh",
   "opencode_models_cache_update",
@@ -703,6 +738,7 @@ export const OperatorToolNameSchema = z.enum([
   "operator_get_capabilities", "harness_list", "harness_get", "harness_defaults_update", "harness_qualifications_list", "harness_qualification_run",
   "agent_defaults_get", "agent_defaults_update", "workflow_defaults_get", "workflow_defaults_update",
   "workspace_folders_list", "workspace_folder_create", "workspace_folder_rename", "workspace_folder_undo", "workspace_folders_delete",
+  "workspace_storage_folders_list", "workspace_storage_folder_delete",
   "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive", "workspace_batch_archive",
   "workspace_location_validate", "workspace_location_set",
   "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive", "workflow_batch_archive",
@@ -750,3 +786,4 @@ export const OperatorCapabilitiesSchema = z.object({
 }).strict();
 
 export * from './executionReadiness.js'
+export * from './workspaceStorageFolders.js'

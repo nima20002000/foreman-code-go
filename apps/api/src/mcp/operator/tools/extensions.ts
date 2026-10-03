@@ -14,7 +14,7 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'harness_configuration_check', () => context.services.harnesses.checkConfiguration(context.principal, input.configuration)))
   if (operatorToolAvailable(context, 'harness_options_get')) server.registerTool('harness_options_get', {
-    description: "Discover native model IDs, efforts/variants, native Agents, authentication evidence, and field support. No secrets or native configuration are returned.", inputSchema: contracts.HarnessOptionsInputSchema, outputSchema: contracts.HarnessOptionsResultSchema,
+    description: "Discover authenticated native model IDs, release dates or native default preference, supported efforts/variants, native Agents and field support. Claude uses an owned zero-input SDK control query without a model turn; installation and execution qualification remain separate. No secrets are returned.", inputSchema: contracts.HarnessOptionsInputSchema, outputSchema: contracts.HarnessOptionsResultSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'harness_options_get', async () => {
     requireAuthorization(context.principal, 'harnesses:read')

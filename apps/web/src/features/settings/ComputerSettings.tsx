@@ -6,6 +6,7 @@ import { useRuntimeIdentityQuery } from '../../shared/api/runtimeIdentity'
 import { useHostHarnessRegistryQuery, useRegisteredComputersQuery, useSelectedMainQuery } from '../../shared/api/computerSettings'
 import { Alert, Button, LoadingState } from '../../shared/ui/nocturne'
 import { ComputerRevokeButton } from './ComputerRevokeButton'
+import { ComputerRuntimeApprovals } from '../runtime-qualification/ComputerRuntimeApprovals'
 import { ComputerPairingForm } from './ComputerPairingForm'
 import { ConnectionSetupStatus } from './DeviceSetupGuide'
 import { HostHarnessOverrides } from './HostHarnessOverrides'
@@ -63,7 +64,8 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
     <h2 className="computers-title">{deviceId ? 'Worker registration' : 'Your computers'}</h2>
     {deviceId ? !currentMain ? <p>Read the selected main before inspecting workers.</p> : computers.isPending ? <LoadingState label="Loading registered computers…" />
       : computers.isError ? <><Alert tone="danger" title="Registered computers could not be read." /><Button onClick={() => void computers.refetch()}>Retry registered computers</Button></>
-        : registration ? <><RegistrationFacts registration={registration} /><ComputerRevokeButton key={`${registration.mainId}:${registration.deviceId}`} registration={registration} /></> : <Alert tone="warning" title="This device is not registered with the selected main." />
+        : registration ? <><RegistrationFacts registration={registration} /><ComputerRevokeButton key={`${registration.mainId}:${registration.deviceId}`} registration={registration} />
+          {registration.status === 'paired' ? <ComputerRuntimeApprovals key={`runtime:${registration.mainId}:${registration.deviceId}`} registration={registration} /> : null}</> : <Alert tone="warning" title="This device is not registered with the selected main." />
       : <ul className="computer-rows">
         <li className="computer-row"><div className="computer-row-body"><strong>This computer</strong>
           <span>Runs the app and schedules workflows. It is not a remote worker.</span></div></li>

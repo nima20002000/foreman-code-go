@@ -1,13 +1,14 @@
+import type { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { DeviceConnectionIdentitySchema } from '@graphql/contracts/device-identity'
-import { SOURCE_OPERATION_EXTENSION, SourceOperationRequestSchema, SourceOperationResponseSchema,
+import { SOURCE_OPERATION_EXTENSION, SourceOperationRequestSchema, SourceOperationResponseSchema, SourceTransferStatusRequestSchema, SourceTransferStatusResponseSchema,
   type SourceFilesystemOperation, type SourceOperationOwner, type SourcePreparationIdentitySchema } from '@graphql/contracts/source-operations'
 import type { z } from 'zod'
 import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@graphql/contracts/source-admission'
 import type { SourceManifest } from '@graphql/contracts/source-materialization'
 import type { MainWorkerCarrier } from '../placement/workerCarrier.js'
-import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
+import { DeviceApplicationError, type DeviceExtensionRegistration, type DeviceExtensionContext } from '../devices/deviceApplicationChannel.js'
 import { DomainError } from '../errors.js'
 import type { RemoteSourceMaterializationHost } from './executionHosts.js'
 import type { MaterializationAttempt } from './ports.js'
@@ -26,6 +27,11 @@ export interface AcceptedSourcePackageSender {
 export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMaterializationHost {
   constructor(private readonly carrier: MainWorkerCarrier, private readonly owners: Pick<PostgresSourceOperationAuthority, 'prepareIdentity' | 'resolve'>,
     private readonly packages: AcceptedSourcePackageSender) {}
+  async reconcilePreparation(reconciliationId: string, owner: SourceOperationOwner) {
+    const response = await this.call(owner.root, { version: 1, operation: 'sources.reconcile-preparation', reconciliationId })
+    if (response.operation !== 'sources.reconcile-preparation') throw new DomainError('SOURCE_RESPONSE_INVALID', 'Expected original preparation closure proof.', 409)
+    return response.closure
+  }
   private connection(root: SourceRootRecord) {
     if (root.selection.hostRef.kind !== 'device' || !root.registration) throw new DomainError('SOURCE_DEVICE_REQUIRED', 'Source operation requires its actual accepted worker registration.', 409)
     const channel = this.carrier.capture(root.selection.hostRef.deviceId), identity = DeviceConnectionIdentitySchema.parse(channel.identity)
@@ -38,7 +44,17 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     const connection = this.connection(root)
     // RootWorkerClient uses the same captured W07 request closure; this namespace
     // changes only the domain schema, never transport/connection authority.
-    const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request)
+    const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request).catch((error: unknown) => {
+      if (request.operation === 'sources.reconcile-preparation' && error instanceof DeviceApplicationError)
+        throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The worker did not positively confirm preparation closure. Retry the original reconciliation command.', 409)
+      if (request.operation === 'sources.private-repository' && error instanceof DeviceApplicationError) {
+        if (error.code === 'timeout' || error.code === 'source-repository-timeout')
+          throw new DomainError('SOURCE_REPOSITORY_TIMEOUT', 'Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.', 503, { retryable: true })
+        if (error.code === 'source-repository-uncertain')
+          throw new DomainError('SOURCE_REPOSITORY_UNCERTAIN', 'The original private repository is incomplete; reconcile this exact attempt before retry.', 409)
+      }
+      throw error
+    })
     if (response.bytes !== undefined) throw new DomainError('SOURCE_RESPONSE_INVALID', 'Source control replies contain no inline binary bytes.', 409)
     const value = SourceOperationResponseSchema.parse(response.payload)
     if (value.operation !== request.operation) throw new DomainError('SOURCE_RESPONSE_INVALID', 'Source response belongs to another operation.', 409)
@@ -99,11 +115,19 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
   }
 }
 /** Main accepts only owner lookup from the authenticated worker. */
-export function createMainSourceOperationExtension(owners: Pick<PostgresSourceOperationAuthority, 'resolve'>, transfers: Pick<PostgresSourcePackageTransfers, 'intent'>): DeviceExtensionRegistration {
+export function createMainSourceOperationExtension(owners: Pick<PostgresSourceOperationAuthority, 'resolve'>, transfers: Pick<PostgresSourcePackageTransfers, 'intent'>,
+  lifecycle?: Pick<PostgresSourceRsyncLifecycle, 'status'>): DeviceExtensionRegistration {
   return { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(raw, context) {
-    const request = SourceOperationRequestSchema.parse(raw)
+    const request = raw && typeof raw === 'object' && 'operation' in raw && raw.operation === 'sources.transfer-status'
+      ? SourceTransferStatusRequestSchema.parse(raw) : SourceOperationRequestSchema.parse(raw)
     if ((context.bytes?.byteLength ?? 0) !== 0) throw new DomainError('SOURCE_ROLE_DENIED', 'Workers cannot invoke Main filesystem source operations.', 403)
     context.signal.throwIfAborted()
+    if (request.operation === 'sources.transfer-status') {
+      if (!lifecycle) throw new DomainError('SOURCE_TRANSFER_STATUS_UNAVAILABLE', 'Original committed source status is unavailable.', 409)
+      const result = await lifecycle.status(request.transferId, context.binding)
+      context.signal.throwIfAborted()
+      return { payload: SourceTransferStatusResponseSchema.parse({ version: 1, operation: request.operation, ...result }) }
+    }
     if (request.operation === 'sources.transfer-authorize') {
       const intent = await transfers.intent(request.transferId, context.binding)
       context.signal.throwIfAborted(); return { payload: SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, intent }) }

@@ -1,15 +1,15 @@
 import { createStore } from 'zustand'
 
-/** Local selection only; revisions are captured when the user selects a card. */
-export function createResourceSelection() {
+/** Local selection only; revision/identity snapshots are captured when a card is selected. */
+export function createResourceSelection<T = number>() {
   return createStore<{
     selecting: boolean
-    selected: Record<string, number>
+    selected: Record<string, T>
     confirming: boolean
     notice: string
     start: () => void
-    toggle: (id: string, revision: number) => void
-    selectMany: (items: readonly { id: string; revision: number }[]) => void
+    toggle: (id: string, revision: T) => void
+    selectMany: (items: readonly { id: string; revision: T }[]) => void
     deselectAll: () => void
     confirm: (open: boolean) => void
     clear: (notice?: string) => void

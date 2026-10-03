@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceArchiveInput } from '@graphql/contracts/management'
@@ -8,13 +8,16 @@ import { queryKeys, useArchiveManagedWorkspaceMutation } from '../../shared/api/
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Alert, Button, Dialog, Icon, IconButton } from '../../shared/ui/nocturne'
 
-export function RemoveWorkspaceButton({ workspaceId, name, revision }: {
+export function RemoveWorkspaceButton({ workspaceId, name, revision, renderTrigger }: {
   workspaceId: string
   name: string
   revision: number
+  renderTrigger?: (open: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const [baseRevision, setBaseRevision] = useState(revision)
+  const latestRevision = useRef(revision)
+  useLayoutEffect(() => { latestRevision.current = revision }, [revision])
   const mutation = useArchiveManagedWorkspaceMutation()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -41,10 +44,12 @@ export function RemoveWorkspaceButton({ workspaceId, name, revision }: {
     void navigate({ to: '/workspaces', replace: true })
   }
 
+  const show = () => {
+      // A preceding unsaved-name Save may have advanced the revision before this action opens.
+      setBaseRevision(latestRevision.current); mutation.reset(); setOpen(true)
+  }
   return <>
-    <IconButton label="Remove workspace" variant="ghost" className="workspace-remove-button" onClick={() => {
-      setBaseRevision(revision); mutation.reset(); setOpen(true)
-    }}><Icon name="trash" size={16} /></IconButton>
+    {renderTrigger ? renderTrigger(show) : <IconButton label="Remove workspace" variant="ghost" className="workspace-remove-button" onClick={show}><Icon name="trash" size={16} /></IconButton>}
     <Dialog open={open} onOpenChange={(value) => { if (!value) close() }}
       title={`Remove ${name}?`}
       description="This workspace will be removed from the list. App-created project folders and their contents will be deleted. Existing folders you selected are kept. Workflow and run history is retained. Workspaces with active runs cannot be removed."

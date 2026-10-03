@@ -1,3 +1,5 @@
+import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { PostgresSourceRsyncLifecycle } from './rsyncTransferLifecycle.js'
 import { AgentSourceAttemptAuthority, installedSourceAttemptAuthority } from './agentSourceAuthority.js'
 import { readAcceptedPlacement, readDispatchIntent, readNativePlacement } from '../placement/persistence.js'
 import { readReconciledDispatchIntent, readRemoteReceipts } from '../runs/remote/persistence.js'
@@ -6,6 +8,8 @@ import { sourceMaterializationDigest } from './bindingHash.js'
 import { sameWorkflowValue } from '@graphql/contracts/wave25'
 import { SOURCE_OPERATION_EXTENSION } from '@graphql/contracts/source-operations'
 import type { GraphSqlClient } from '../run-graph/connection.js'
+import type { ManagementPrincipal } from '@graphql/contracts/management'
+import { SourceRootRecordSchema, type SourceRootRecord } from '@graphql/contracts/source-admission'
 import { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
 import { ExistingByteTransferSourcePackageSender, type SourcePackageTransferAdmission } from './operationSender.js'
@@ -19,7 +23,8 @@ import type { WorkspaceRootHostPort } from './rootPolicyPorts.js'
 import { PostgresWorkspaceRootPolicies, workspaceRootHostScope } from './rootPolicies.js'
 import { InstalledWorkspaceRootHosts } from './rootHosts.js'
 import { RegisteredWorkspaceSourceRoots } from './registeredSourceRoots.js'
-import { InstalledSourceExecutionHosts, type RemoteSourceMaterializationHost, type SourceActiveNativeSessionReader, type SourceNativeSessionCaptureReader } from './executionHosts.js'
+import type { RegisteredSourceRootPort } from './admissionPorts.js'
+import { InstalledSourceExecutionHosts, type SourceAttemptAuthority, type RemoteSourceMaterializationHost, type SourceActiveNativeSessionReader, type SourceNativeSessionCaptureReader } from './executionHosts.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { PostgresSourceService } from './service.js'
 import { JobSourceAttemptAuthority } from '../jobs/sourceAuthority.js'
@@ -30,6 +35,9 @@ import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
+import { isDeepStrictEqual } from 'node:util'
+import { DeviceRegistrationSchema } from '@graphql/contracts/device-identity'
+import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
@@ -37,9 +45,27 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; endpoint(): DeviceEndpoint;
   dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost;
   activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader;
-  transferSender?: SourcePackageTransferAdmission['sender'] }) {
+  transferSender?: SourcePackageTransferAdmission['sender'];
+  transferAcknowledged?: (intent: TransferIntent) => Promise<void> }) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
   const hosts: WorkspaceRootHostPort = {
+    async configuration(sql, host) {
+      if (host.kind === 'main') return readInstalledRootConfiguration(join(input.runtimeRoot, 'approved-roots.json'))
+      const row = (await sql.query<{ record: unknown }>('select record from device_registrations where id=$1 and main_id=$2 for share', [host.deviceId, host.mainId])).rows[0]
+      if (!row) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The selected root host is not registered.', 403)
+      const registration = DeviceRegistrationSchema.parse(row.record)
+      await assertDeviceHostInstallation(sql, host, registration.workerInstallationId)
+      const endpoint = input.endpoint(), captured = endpoint.captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
+      if (!captured || captured.binding.mainId !== host.mainId || captured.binding.workerInstallationId !== registration.workerInstallationId
+        || captured.binding.keyRevision !== registration.keyRevision || captured.binding.authorizationRevision !== registration.authorizationRevision) unavailable()
+      const reply = await captured!.request({ version: 1, operation: 'workspace-roots.configuration' }, { signal: AbortSignal.timeout(10_000) })
+      if (reply.bytes !== undefined || !isDeepStrictEqual(endpoint.currentBinding(host.deviceId), captured!.binding))
+        throw new DomainError('ROOT_DEVICE_CONFLICT', 'The authenticated root configuration channel changed during adoption.', 409)
+      const configuration = ApprovedRootAllowlistSchema.parse(reply.payload)
+      if (!isDeepStrictEqual(configuration.hostRef, host) || configuration.applicationInstallationId !== registration.workerInstallationId)
+        throw new DomainError('ROOT_CONFIGURATION_CONFLICT', 'The approved configuration belongs to another host installation.', 409)
+      return configuration
+    },
     authorize: async (sql, _principal, host, installationId) => {
       const registration = await assertDeviceHostInstallation(sql, host, installationId)
       return registration ? { workerInstallationId: registration.workerInstallationId,
@@ -70,7 +96,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     } })
   }
   const policies = new PostgresWorkspaceRootPolicies(input.mainId, hosts)
-  const roots = new RegisteredWorkspaceSourceRoots(policies, hosts)
+  const roots: RegisteredSourceRootPort = new RegisteredWorkspaceSourceRoots(policies, hosts)
   const root = join(input.runtimeRoot, 'source-snapshots')
   await mkdir(root, { recursive: true, mode: 0o700 })
   const snapshots = new PrivateSourceSnapshotStore(root)
@@ -80,7 +106,31 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   }
   const jobs = new JobSourceAttemptAuthority(input.pool, installationFence)
   const agents = new AgentSourceAttemptAuthority(input.pool, installationFence)
-  const attempts = installedSourceAttemptAuthority(input.pool, agents, jobs)
+  const originalAttempts = installedSourceAttemptAuthority(input.pool, agents, jobs)
+  const assertRootPolicy = async (sql: GraphSqlClient, principal: ManagementPrincipal, root: SourceRootRecord) => {
+    const current = await roots.authorize(sql, principal, { workspaceId: root.binding.workspaceId, selection: root.selection, accessMode: root.binding.accessMode })
+    if (current.ownerPrincipalId !== root.ownerPrincipalId || current.mainId !== root.binding.mainId || current.deviceId !== root.binding.deviceId
+      || current.workerInstallationId !== root.binding.workerInstallationId || current.keyRevision !== (root.registration?.keyRevision ?? null)
+      || current.authorizationRevision !== (root.registration?.authorizationRevision ?? null)
+      || current.canonicalPath !== root.binding.canonicalPath) throw new DomainError('SOURCE_ROOT_CONFLICT', 'Current root authority differs from the exact accepted source namespace.', 409)
+  }
+  const readRoot = async (sql: GraphSqlClient, record: Parameters<SourceAttemptAuthority['revalidateMaterialization']>[0]) => {
+    const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share',
+      [record.receipt.binding.rootId, record.receipt.binding.bindingRevision])).rows[0]
+    return SourceRootRecordSchema.parse(row?.record)
+  }
+  const attempts: SourceAttemptAuthority = {
+    async authorize(sql, principal, value) { await originalAttempts.authorize(sql, principal, value); await assertRootPolicy(sql, principal, value.root) },
+    async authorizeFinal(sql, principal, record, hash) { await originalAttempts.authorizeFinal(sql, principal, record, hash); await assertRootPolicy(sql, principal, await readRoot(sql, record)) },
+    async revalidate(root, attempt) { await owners.prepareIdentity(root, attempt) },
+    async revalidateMaterialization(record) {
+      const sql = await input.pool.connect()
+      let root: SourceRootRecord
+      try { root = await readRoot(sql, record) } finally { sql.release() }
+      await originalAttempts.revalidateMaterialization(record)
+      await owners.prepareIdentity(root, record.receipt)
+    },
+  }
   const confirmedClosed = async (sql: GraphSqlClient, record: import('@graphql/contracts/source-admission').SourceMaterializationRecord) => {
     const original = await readDispatchIntent(sql, record.receipt.executionId)
     if (original) {
@@ -110,6 +160,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   }
   const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed, input.activeNativeSession)
   const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint, input.transferSender)
+  const lifecycle = new PostgresSourceRsyncLifecycle(input.pool, transfers)
   const carrier: MainWorkerCarrier = { capture(deviceId) {
     const channel = input.endpoint().captureRequest(deviceId, SOURCE_OPERATION_EXTENSION.namespace)
     if (!channel) return unavailable()
@@ -129,7 +180,14 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
         return await confirmedClosed(sql, record)
       } finally { sql.release() }
     },
-  })
-  return { sources, policies, executions, snapshots, attempts, owners, transfers,
-    sourceExtension: createMainSourceOperationExtension(owners, transfers) }
+  }, input.transferAcknowledged ? async record => {
+    const deviceId = record.receipt.binding.deviceId
+    if (!deviceId) return
+    const channel = input.endpoint().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)
+    if (!channel) unavailable()
+    const intent = await lifecycle.forMaterialization(record, channel!.binding)
+    await input.transferAcknowledged!(intent)
+  } : undefined)
+  return { sources, policies, executions, snapshots, attempts, owners, transfers, lifecycle,
+    sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle) }
 }

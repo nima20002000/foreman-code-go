@@ -2,6 +2,7 @@ import { AcceptedChatResponseControlSchema, ChatResponseAcknowledgmentSchema, ty
 import type pg from 'pg'
 
 import type { ManagementPrincipal } from '@graphql/contracts/management'
+import type { ActivityScope, NativeSessionReference } from '@graphql/contracts'
 
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
@@ -18,6 +19,14 @@ function unconfirmed(requestId: string, prefix: string) {
   return new DomainError(`${prefix}_CONTROL_UNCONFIRMED`,
     'This control was recorded but its outcome is unconfirmed. Read the conversation; do not submit it again with a new request ID.',
     409, { requestId })
+}
+
+function exactAcknowledgment(control: AcceptedChatResponseControl, raw: unknown): ChatResponseAcknowledgment | undefined {
+  const proof = ChatResponseAcknowledgmentSchema.safeParse(raw)
+  return proof.success && proof.data.harness === control.native.harness && proof.data.providerVersion === control.native.providerVersion
+    && proof.data.nativeSessionId === control.native.sessionId && proof.data.nativeRequestId === control.native.requestId
+    && proof.data.nativeRequestType === control.native.requestType && proof.data.optionId === control.choice.optionId
+    && proof.data.semantic === control.choice.semantic ? proof.data : undefined
 }
 
 /**
@@ -50,6 +59,36 @@ export class NativeConversationControlCommands<State> {
   async drain(): Promise<void> {
     this.closing = true
     await Promise.allSettled([...this.pending])
+  }
+
+  /** Observation may settle the original fence, never replay the native effect or change its accepted choice. */
+  async reconcileResponses(conversationId: string, modelRequestId: string, scope: ActivityScope,
+    session: NativeSessionReference, nativeTurnId: string, proofs: readonly ChatResponseAcknowledgment[], state: State): Promise<void> {
+    const rows = (await this.pool.query<{ principal_id: string; command_id: string; result: Outcome<State>; source: 'http' | 'mcp' }>(`
+      select r.principal_id,r.command_id,r.result,a.source from management_command_receipts r
+      join lateral (select source from management_audit where principal_id=r.principal_id and action=r.operation
+        and target_key=r.target_key and details->>'commandId'=r.command_id and details->>'phase'='reserved'
+        order by sequence limit 1) a on true
+      where r.target_key=$1 and r.operation=$2 and r.result->>'status' in ('pending','uncertain')
+        and r.result#>>'{acceptedControl,modelRequestId}'=$3`, [conversationId, this.contract.operation, modelRequestId])).rows
+    for (const row of rows) {
+      const parsed = AcceptedChatResponseControlSchema.safeParse(row.result.acceptedControl)
+      if (!parsed.success) continue
+      const control = parsed.data
+      if (control.conversationId !== conversationId || JSON.stringify(control.scope) !== JSON.stringify(scope)
+        || control.native.harness !== session.harness || control.native.providerVersion !== session.providerVersion
+        || control.native.sessionId !== session.nativeSessionId || control.native.turnId !== nativeTurnId) continue
+      const relevant = proofs.filter((proof) => proof.nativeSessionId === session.nativeSessionId && proof.nativeRequestId === control.native.requestId)
+      const acknowledgments = relevant.map((proof) => exactAcknowledgment(control, proof))
+      if (!acknowledgments.length || acknowledgments.some((proof) => !proof)) continue
+      const outcome = { ...row.result, status: 'completed', state: this.contract.parse(state), providerAcknowledgment: acknowledgments[0] }
+      await this.pool.query(`with reconciled as (
+        update management_command_receipts set result=$5::jsonb
+        where principal_id=$1 and operation=$2 and command_id=$3 and target_key=$4 and result=$6::jsonb returning target_key
+      ) insert into management_audit(principal_id,source,action,target_key,outcome,details)
+        select $1,$7,$2,target_key,'succeeded',jsonb_build_object('commandId',$3::text,'phase','reconciled') from reconciled`,
+      [row.principal_id, this.contract.operation, row.command_id, conversationId, JSON.stringify(outcome), JSON.stringify(row.result), row.source])
+    }
   }
 
   private async reserve(principal: ManagementPrincipal, source: 'http' | 'mcp', conversationId: string, requestId: string,
@@ -107,25 +146,24 @@ export class NativeConversationControlCommands<State> {
     }
     if (control) {
       outcome = { ...outcome, acceptedControl: control }
-      const evidence = responseEvidence?.()
-      const parsed = evidence ? ChatResponseAcknowledgmentSchema.safeParse(evidence) : undefined
-      if (parsed?.success && parsed.data.harness === control.native.harness && parsed.data.providerVersion === control.native.providerVersion && parsed.data.nativeSessionId === control.native.sessionId
-        && parsed.data.nativeRequestId === control.native.requestId && parsed.data.nativeRequestType === control.native.requestType
-        && parsed.data.optionId === control.choice.optionId && parsed.data.semantic === control.choice.semantic) {
-        outcome.providerAcknowledgment = parsed.data
-      }
+      const acknowledgment = exactAcknowledgment(control, responseEvidence?.())
+      if (acknowledgment) outcome.providerAcknowledgment = acknowledgment
     }
-    try {
-      const saved = await this.pool.query(`with settled as (
+    const save = () => this.pool.query(`with settled as (
         update management_command_receipts set result=$4::jsonb
         where principal_id=$1 and operation=$2 and command_id=$3 and result->>'status'='pending' returning target_key
       ) insert into management_audit (principal_id,source,action,target_key,outcome,details)
         select $1,$5,$2,target_key,$6,jsonb_build_object('commandId',$3::text) from settled returning 1`,
       [...key, JSON.stringify(outcome), source, outcome.status === 'completed' ? 'succeeded' : outcome.status === 'rejected' ? 'failed' : 'uncertain'])
+    try {
+      const saved = await save()
       if (saved.rowCount !== 1) throw unconfirmed(requestId, this.contract.prefix)
     } catch {
-      // The durable reservation remains the fence even when saving the outcome fails.
-      throw unconfirmed(requestId, this.contract.prefix)
+      // A qualified ACK permits one storage-only retry even when the turn has
+      // finished. The pending receipt remains the fence; perform is never repeated.
+      if (outcome.status !== 'completed' || !outcome.providerAcknowledgment) throw unconfirmed(requestId, this.contract.prefix)
+      try { if ((await save()).rowCount !== 1) throw unconfirmed(requestId, this.contract.prefix) }
+      catch { throw unconfirmed(requestId, this.contract.prefix) }
     }
     if (outcome.status === 'completed') return this.contract.parse(
       readCurrent ? await readCurrent() : outcome.state)

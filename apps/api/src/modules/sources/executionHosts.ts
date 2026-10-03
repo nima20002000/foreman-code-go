@@ -9,6 +9,8 @@ import { createPrivateSourceRepository } from './repository.js'
 import type { MaterializationAttempt, SourceByteReader } from './ports.js'
 import type { SourceExecutionHostPort } from './service.js'
 import type { SourceActiveNativeSession } from '@graphql/contracts/source-operations'
+import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
+import type { SourcePreparationClosure } from '@graphql/contracts/source-admission'
 
 /** Installed lifetime capture only: never accepted from filesystem requests. */
 export interface SourceNativeSessionCapture {
@@ -42,6 +44,7 @@ export interface RemoteSourceMaterializationHost {
   verify(record: SourceMaterializationRecord): Promise<string>
   releaseClaim(record: SourceMaterializationRecord): Promise<void>
   privateRepository(record: SourceMaterializationRecord, manifest: SourceManifest): Promise<{ workTree: string; gitDirectory: string; generatedCommit: string; sourceCommit: string | null }>
+  reconcilePreparation?(reconciliationId: string, owner: SourceOperationOwner): Promise<SourcePreparationClosure>
 }
 /** Concrete original-main source copy. Remote carries exactly the same approved
  * operation through W07/B verified source bytes, never a second scheduler. */
@@ -49,6 +52,14 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
   constructor(private readonly mainId: string, private readonly bytes: SourceByteReader,
     private readonly authority: SourceAttemptAuthority, private readonly remote: RemoteSourceMaterializationHost,
     private readonly captureNativeSession?: SourceNativeSessionCaptureReader) {}
+  async reconcilePreparation(reconciliationId: string, owner: SourceOperationOwner) {
+    if (owner.root.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source cleanup belongs to another Main.', 403)
+    if (owner.root.binding.deviceId !== null) {
+      if (!this.remote.reconcilePreparation) throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'The original worker does not support preparation reconciliation.', 409)
+      return this.remote.reconcilePreparation(reconciliationId, owner)
+    }
+    throw new DomainError('SOURCE_RECONCILIATION_UNAVAILABLE', 'Preparation reconciliation requires the installed worker closure journal; Main-host cleanup is not supported by this operation.', 409)
+  }
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }) {
     return this.authority.authorize(sql, principal, input)
   }

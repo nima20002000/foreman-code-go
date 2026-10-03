@@ -4,7 +4,7 @@ import type { JobSourcePort } from '../../jobs/executor.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 import type { WorkerJobApplicationSink } from './workerJobApplicationSink.js'
 import { PrivateSourceMaterializer } from '../../sources/materialization.js'
-import { verifyPrivateSourceRepository } from '../../sources/repository.js'
+import { verifyPrivateSourceRepository, preparePrivateJobRepositoryMounts } from '../../sources/repository.js'
 import { verifyMaterializedWorkingDirectory } from '../../sources/workingDirectory.js'
 import { verifyApprovedRootAllowlist } from '../../sources/rootAttestation.js'
 import type { ApprovedRootAllowlist } from '@graphql/contracts/workspace-root-policies'
@@ -17,8 +17,10 @@ export function createInstalledJobSource(input: { journal: RemoteOperationJourna
     signal.throwIfAborted()
     const matches = (await input.journal.jobOperations()).filter(receipt => same(receipt.execution.acceptedSpec, spec))
     if (matches.length !== 1) throw new Error('Unique original Job source owner missing')
-    const original = matches[0]!, binding = input.currentBinding()
+    const original = matches[0]!, binding = { ...input.currentBinding() }
     const accepted = await input.application.resolveAcceptedSource(original.intent)
+    if(accepted.execution.id!==original.execution.id||accepted.execution.attemptId!==original.execution.attemptId
+      ||accepted.execution.operationId!==original.execution.operationId||!same(accepted.execution.owner,original.execution.owner))throw new Error('Original accepted Job source owner changed')
     if (!same(accepted.execution.acceptedSpec, original.execution.acceptedSpec) || accepted.execution.workspaceId !== original.execution.workspaceId
       || !same(accepted.execution.workflow, original.execution.workflow)) throw new Error('Original accepted Job execution changed')
     const roots = await input.approvedRoots(), record = accepted.materialization, receipt = record.receipt
@@ -31,6 +33,8 @@ export function createInstalledJobSource(input: { journal: RemoteOperationJourna
     const recheck = async () => {
       signal.throwIfAborted()
       const refreshed = await input.application.resolveAcceptedSource(original.intent)
+      if(refreshed.execution.id!==accepted.execution.id||refreshed.execution.attemptId!==accepted.execution.attemptId
+        ||refreshed.execution.operationId!==accepted.execution.operationId||!same(refreshed.execution.owner,accepted.execution.owner))throw new Error('Original accepted Job source owner changed')
       if (!same(refreshed.materialization, accepted.materialization) || !same(refreshed.root, accepted.root) || refreshed.diskQuotaBytes !== accepted.diskQuotaBytes
         || !same(input.currentBinding(), binding) || !same(await input.approvedRoots(), roots)
         || !same(refreshed.execution.acceptedSpec, accepted.execution.acceptedSpec)) throw new Error('Original Job source authority changed')
@@ -43,8 +47,10 @@ export function createInstalledJobSource(input: { journal: RemoteOperationJourna
     if (repository.workTree !== spec.target.destination.canonicalProjectRoot || repository.sourceCommit !== spec.source.commit
       || working.canonicalCwd !== spec.target.destination.canonicalCwd)
       throw new Error('Original private Job repository or working directory changed')
+    const gitMounts=await preparePrivateJobRepositoryMounts({record,execution:accepted.execution,attempt,
+      materializer:new PrivateSourceMaterializer(null,recheck),reauthorize:recheck})
     await recheck()
     return { privateRepositoryRoot: repository.workTree, directoryIdentityHash: spec.target.destination.directoryIdentityHash,
-      privateGit: true, diskQuotaBytes: accepted.diskQuotaBytes }
+      privateGit: true, diskQuotaBytes: accepted.diskQuotaBytes,gitMounts }
   } }
 }

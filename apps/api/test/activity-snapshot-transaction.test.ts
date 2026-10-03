@@ -17,7 +17,7 @@ describe('activity persistence transaction boundaries', () => {
     const client = { query: async (text: string) => {
       const sql = text.replace(/\s+/g, ' ').trim(); statements.push(sql)
       if (sql.startsWith('select * from operator_conversations')) return { rows: [{ id: 'conversation', workspace_id: 'ws', workflow_id: 'wf', workflow_node_id: 'node', agent_id: 'agent', revision: '0', active_request_id: null, origin_run_id: null, harness: 'codex', native_session_id: null }], rowCount: 1 }
-      if (sql.startsWith('with candidates')) return { rows: [{ messages: [], has_earlier: false }], rowCount: 1 }
+      if (sql.startsWith('with candidates as (')) return { rows: [{ messages: [], has_earlier: false }], rowCount: 1 }
       if (sql.startsWith('select (select started_at')) return { rows: [{ started_at: null, latest_request_id: null }], rowCount: 1 }
       return { rows: [], rowCount: 0 }
     }, release() {} }
@@ -56,7 +56,7 @@ describe('activity persistence transaction boundaries', () => {
     const client = { query: async (text: string) => {
       const sql = text.replace(/\s+/g, ' ').trim(); statements.push(sql)
       if (sql.startsWith('select * from operator_conversations')) return { rows: [owner], rowCount: 1 }
-      if (sql.startsWith('with candidates')) return { rows: [{ messages: [message], has_earlier: false }], rowCount: 1 }
+      if (sql.startsWith('with candidates as (')) return { rows: [{ messages: [message], has_earlier: false }], rowCount: 1 }
       if (sql.includes('jsonb_to_recordset')) return { rows: [file], rowCount: 1 }
       if (sql.startsWith('select (select started_at')) return { rows: [{ started_at: null, latest_request_id: null }], rowCount: 1 }
       return { rows: [], rowCount: 0 }

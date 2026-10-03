@@ -22,6 +22,9 @@ import type { NativeGraphProjectionGuard } from '../run-graph/records.js'
 import { createRequestLocked } from '../interactions/wave25/decisions.js'
 import { nativeApprovalContext } from '../interactions/nativeApprovalContext.js'
 import { appendWorkflowNativeGraphEventLocked, type WorkflowApprovalCorrelation, type WorkflowContinuationProof, type WorkflowNativeLease } from './workflowNativeGraph.js'
+import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
+import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
+import { OPENCODE_RECONCILIATION_EVENT } from '../harnesses/opencodeReconciliation.js'
 
 /** Durable private ORIGINAL-source record. No payload/session/token reaches the
  * graph feed: G1 publishes only its immutable digest and ordinary graph facts. */
@@ -92,29 +95,46 @@ export class WorkflowNativeProofServices {
     await assertRepeatCanonicalReceiptLocked(sql, { scope,
       evidence: { sourceKind: 'execution', sourceId: entry.source_id, sourceRevision: '1' },
       sourceDigest: entry.source_digest, effect: null })
-    const sessionRow = (await sql.query<{ reference: unknown }>(
-      'select reference from execution_native_sessions where execution_id=$1 for update', [stored.execution.id])).rows[0]
-    if (sessionRow ? !sameRepeatValue(NativeSessionReferenceSchema.parse(sessionRow.reference), capture.session)
-      : capture.source.type !== 'session_created') return fail()
-    if (stored.execution.nativeSessionId !== undefined && stored.execution.nativeSessionId !== capture.session.nativeSessionId) return fail()
-    const configuration = (await sql.query<{ harness: string }>(
-      "select record#>>'{harness,harness}' as harness from agent_configuration_versions where id=$1 and agent_id=$2 and workspace_id=$3 for share",
-      [stored.execution.agentConfigurationVersionId, stored.execution.agentId, scope.workspaceId])).rows[0]
-    if (configuration?.harness !== capture.session.harness) return fail()
-    if (!capture.closureGeneration && capture.source.type !== 'boundary') return fail()
-    const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed: boolean }>(
-      `select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed from execution_native_closures
-       where execution_id=$1 order by generation desc limit 1 for update`, [stored.execution.id])).rows[0]
-    if (capture.closureGeneration && (!closure || closure.generation !== capture.closureGeneration || closure.closed
-      || closure.expected_reference !== null && !sameRepeatValue(closure.expected_reference, capture.session))) return fail('NATIVE_LIFETIME_CHANGED')
-    if (capture.lane) {
-      const lane = (await sql.query<{ owner_agent_id: string; harness: string; native_session_id: string;
-        generation: string; token: string | null; correlation: string | null; provider_id: string | null; held: boolean }>(
-        `select owner_agent_id,harness,native_session_id,record->>'connectionGeneration' as generation,
+    // Read and lock the same physical guards in one round trip. Nothing is
+    // cached between calls: lease expiry and every immutable identity are still
+    // revalidated at each original boundary and immediately before commit.
+    const physical = (await sql.query<{
+      session: { reference: unknown } | null; configuration: { harness: string } | null
+      closure: { generation: string; expected_reference: unknown; closed: boolean } | null
+      lane: { owner_agent_id: string; harness: string; native_session_id: string; generation: string;
+        token: string | null; correlation: string | null; provider_id: string | null; held: boolean } | null
+    }>(`with current_session as materialized (
+        select reference from execution_native_sessions where execution_id=$1 for update
+      ), current_configuration as materialized (
+        select record#>>'{harness,harness}' as harness from agent_configuration_versions
+        where id=$2 and agent_id=$3 and workspace_id=$4 for share
+      ), current_closure as materialized (
+        select generation::text,expected_reference,(closed_at is not null or detached_at is not null) as closed
+        from execution_native_closures where execution_id=$1 order by generation desc limit 1 for update
+      ), current_lane as materialized (
+        select owner_agent_id,harness,native_session_id,record->>'connectionGeneration' as generation,
           record->>'leaseToken' as token,record->>'correlationId' as correlation,
           record->>'currentTurnOrMessageId' as provider_id,
           coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
-         from native_session_lanes where id=$1 for update`, [capture.lane.id])).rows[0]
+        from native_session_lanes where id=$5 for update
+      ) select (select row_to_json(s) from current_session s) as session,
+        (select row_to_json(c) from current_configuration c) as configuration,
+        (select row_to_json(c) from current_closure c) as closure,
+        (select row_to_json(l) from current_lane l) as lane`,
+    [stored.execution.id, stored.execution.agentConfigurationVersionId, stored.execution.agentId,
+      scope.workspaceId, capture.lane?.id ?? null])).rows[0]!
+    const sessionRow = physical.session
+    if (sessionRow ? !sameRepeatValue(NativeSessionReferenceSchema.parse(sessionRow.reference), capture.session)
+      : capture.source.type !== 'session_created') return fail()
+    if (stored.execution.nativeSessionId !== undefined && stored.execution.nativeSessionId !== capture.session.nativeSessionId) return fail()
+    const configuration = physical.configuration
+    if (configuration?.harness !== capture.session.harness) return fail()
+    if (!capture.closureGeneration && capture.source.type !== 'boundary') return fail()
+    const closure = physical.closure
+    if (capture.closureGeneration && (!closure || closure.generation !== capture.closureGeneration || closure.closed
+      || closure.expected_reference !== null && !sameRepeatValue(closure.expected_reference, capture.session))) return fail('NATIVE_LIFETIME_CHANGED')
+    if (capture.lane) {
+      const lane = physical.lane
       if (!lane || lane.owner_agent_id !== stored.execution.agentId || lane.harness !== capture.session.harness
         || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane.token || !lane.held
         || lane.generation !== String(capture.lane.connectionGeneration)
@@ -241,7 +261,10 @@ export class WorkflowNativeProofServices {
         live: capture.kind === 'live', ...(capture.lane.providerId ? { providerId: capture.lane.providerId } : {}) } : undefined
       const events = capture.source.type === 'event' ? [capture.source.event]
         : history?.events.map((event) => ({ ...event, executionId: stored.execution.id })) ?? []
+      const retainedTranscripts = history && !approval
+        ? await this.retainedTranscriptsLocked(sql, stored.execution.id, events, capture) : new Set<HarnessNativeEvent>()
       for (const event of events) {
+        if (retainedTranscripts.has(event)) { capture.assertCurrent(); continue }
         await this.physical(sql, scope, stored, capture, owner)
         await appendWorkflowNativeGraphEventLocked(sql, owner, event, lease, approval, continuation)
       }
@@ -257,6 +280,51 @@ export class WorkflowNativeProofServices {
       await this.afterPersistOriginalLocked?.(sql, evidence, structuredClone(record))
       return structuredClone(record)
     } catch (error) { poisonGraphTransaction(sql); throw error }
+  }
+
+  /** A full original history retains all bytes in its private proof. Replaying
+   * an already committed, identical transcript has no semantic effect. Compare
+   * every complete normalized raw row by its exact source tuple before skipping
+   * that no-op; missing/conflicting rows and all authoritative evidence still
+   * use the normal guarded append. No raw insert or source receipt is inferred. */
+  private async retainedTranscriptsLocked(sql: GraphTransactionSql, executionId: string,
+    events: HarnessNativeEvent[], capture: WorkflowNativeCapture): Promise<Set<HarnessNativeEvent>> {
+    const candidates = new Map<string, { normalized: HarnessNativeEvent; originals: HarnessNativeEvent[] }>()
+    const conflicted = new Set<string>()
+    const key = (connection: string | null, sequence: number) => JSON.stringify([connection, sequence])
+    for (const event of events) {
+      const normalized = normalizeNativeProducerEvent(event)
+      if (normalized.rejected || event.type === 'transport.disconnected' || event.type === OPENCODE_RECONCILIATION_EVENT
+        || event.payload.nativeMessageId !== undefined
+        || selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind !== 'ignored') continue
+      const identity = key(event.connectionId ?? null, event.sequence)
+      const previous = candidates.get(identity)
+      if (previous && !sameRepeatValue(previous.normalized, normalized.event)) conflicted.add(identity)
+      if (previous) previous.originals.push(event)
+      else candidates.set(identity, { normalized: normalized.event, originals: [event] })
+    }
+    for (const identity of conflicted) candidates.delete(identity)
+    if (!candidates.size) return new Set()
+    capture.assertCurrent()
+    const rows = await sql.query<{ connection_id: string | null; source_sequence: number | null;
+      sequence: number; record: HarnessNativeEvent }>(`select n.connection_id,n.source_sequence,n.sequence,n.record
+      from harness_native_events n join jsonb_to_recordset($2::jsonb)
+        as original(connection_id text,source_sequence integer)
+        on n.connection_id is not distinct from original.connection_id
+        and case when n.connection_id is null then n.sequence else n.source_sequence end=original.source_sequence
+      where n.execution_id=$1`, [executionId, JSON.stringify([...candidates.values()].map(({ normalized }) => ({
+      connection_id: normalized.connectionId ?? null, source_sequence: normalized.sequence })))])
+    capture.assertCurrent()
+    const retained = new Set<HarnessNativeEvent>()
+    for (const row of rows.rows) {
+      const sourceSequence = row.connection_id === null ? row.sequence : row.source_sequence
+      if (sourceSequence === null) continue
+      const candidate = candidates.get(key(row.connection_id, sourceSequence))
+      if (candidate && sameRepeatValue({ ...row.record, sequence: sourceSequence }, candidate.normalized)) {
+        for (const event of candidate.originals) retained.add(event)
+      }
+    }
+    return retained
   }
 
   async appendEventLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, event: HarnessNativeEvent,

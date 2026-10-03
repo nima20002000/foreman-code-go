@@ -1,7 +1,9 @@
 import { z } from 'zod'
-import { JobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs.js'
+import { DeviceExecutionAdmissionFields, HistoricalDeviceExecutionAdmissionFields, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
+import { JobExecutionSchema, CurrentJobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs.js'
 import { MachineReferenceSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
+import { DeviceSessionBindingSchema } from './deviceConnection.js'
 import { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
 import { SourceMaterializationRecordSchema, SourceRootRecordSchema } from './sourceAdmission.js'
 
@@ -15,11 +17,15 @@ export type RemoteExecutionSubject = z.infer<typeof RemoteExecutionSubjectSchema
 export const RemoteJobDispatchIntentSchema = z.object({
   schemaVersion: z.literal(1), protocolVersion: z.literal(1), mainId: z.uuid(), subject: RemoteExecutionSubjectSchema,
   executionId: z.string().min(1), attemptId: z.string().min(1), operationId: z.string().min(1),
+  ...HistoricalDeviceExecutionAdmissionFields,
   bindingHash: PlacementDigestSchema, inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   owner: z.object({ grantId: z.string().min(1), epoch: z.string().regex(/^[1-9][0-9]*$/) }).strict(),
 }).strict().superRefine((intent, context) => {
+  validateHistoricalDeviceExecutionAdmission(intent, context)
   if (intent.subject.kind === 'manual-job' && intent.subject.jobExecutionId !== intent.executionId) context.addIssue({ code: 'custom', message: 'Manual job subject must name its actual execution.' })
 })
+export const CurrentRemoteJobDispatchIntentSchema = RemoteJobDispatchIntentSchema.safeExtend(DeviceExecutionAdmissionFields)
+export type CurrentRemoteJobDispatchIntent = z.infer<typeof CurrentRemoteJobDispatchIntentSchema>
 export type RemoteJobDispatchIntent = z.infer<typeof RemoteJobDispatchIntentSchema>
 export const RemoteJobNativeIdentitySchema = z.object({
   containerId: z.string().min(1), supervisorIdentity: z.string().min(1), processIdentityDigest: PlacementDigestSchema, startedAt: z.string().datetime().optional(),
@@ -39,7 +45,9 @@ export const RemoteJobTerminalEvidenceSchema = z.object({
   outputCollectionError: z.boolean(), artifactDigests: z.array(PlacementDigestSchema).max(128),
 }).strict()
 export type RemoteJobTerminalEvidence = z.infer<typeof RemoteJobTerminalEvidenceSchema>
-export const RemoteJobConnectionIdentitySchema = z.union([DeviceConnectionIdentitySchema, z.object({ kind: z.literal('main'), mainId: z.uuid(), mainInstallationId: z.string().min(1), bootId: z.uuid() }).strict()])
+// Installed Jobs retain the full authenticated epoch. Original historical
+// receipts without an epoch remain readable for status/control, never rewritten.
+export const RemoteJobConnectionIdentitySchema = z.union([DeviceSessionBindingSchema, DeviceConnectionIdentitySchema, z.object({ kind: z.literal('main'), mainId: z.uuid(), mainInstallationId: z.string().min(1), bootId: z.uuid() }).strict()])
 export type RemoteJobConnectionIdentity = z.infer<typeof RemoteJobConnectionIdentitySchema>
 export const RemoteJobOperationReceiptSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('job'), intent: RemoteJobDispatchIntentSchema, execution: z.lazy(() => JobExecutionSchema),
@@ -76,3 +84,16 @@ export const RemoteJobAcceptedSourceReadoutSchema = z.object({
  root: SourceRootRecordSchema, diskQuotaBytes: z.number().int().positive(),
 }).strict()
 export type RemoteJobAcceptedSourceReadout = z.infer<typeof RemoteJobAcceptedSourceReadoutSchema>
+
+/** Required at new Job dispatch. Control/status of original historical Jobs remain readable/stoppable. */
+export const CurrentRemoteJobDispatchRequestSchema = z.object({ method: z.literal('job-dispatch'),
+  intent: CurrentRemoteJobDispatchIntentSchema, execution: CurrentJobExecutionSchema,
+}).strict().superRefine((value, ctx) => {
+  const spec = value.execution.acceptedSpec
+  if (value.intent.mainId !== spec.target.mainId || value.intent.subject.workspaceId !== value.execution.workspaceId
+    || value.intent.executionId !== value.execution.id || value.intent.operationId !== value.execution.operationId
+    || value.intent.attemptId !== value.execution.attemptId || value.intent.bindingHash !== spec.bindingHash
+    || Object.keys(DeviceExecutionAdmissionFields).some(field =>
+      value.intent[field as keyof typeof DeviceExecutionAdmissionFields] !== spec[field as keyof typeof DeviceExecutionAdmissionFields]))
+    ctx.addIssue({ code: 'custom', message: 'Job dispatch must retain original execution and resource/approval admission.' })
+})

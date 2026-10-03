@@ -39,8 +39,8 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     if (!isDeepStrictEqual(configuration.hostRef, host)) throw new DomainError('ROOT_CONFIGURATION_CONFLICT', 'Persisted root host facts changed.', 409)
     return configuration
   }
-  /** Trusted W07-C/HRT-C configuration adoption only. No HTTP/MCP input can
-   * publish paths. The carrier/bootstrap verifies the actual approved config
+  /** Trusted W07-C/HRT-C configuration or Main app-storage adoption only. No
+   * HTTP/MCP input can publish paths. The carrier/bootstrap verifies the config
    * signature/provenance and supplies these exact matching host/digest facts.
    */
   async publishApprovedHostConfiguration(sql: Sql, raw: ApprovedRootAllowlist, evidence: {
@@ -81,6 +81,20 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
       allowlists.push(configuration)
     }
     return { workspaceId, policies: await this.read(sql, principal, workspaceId), allowlists, readiness: 'metadata-only' as const }
+  }
+  async adopt(sql: Sql, principal: ManagementPrincipal, workspaceId: string, host: ApprovedRootAllowlist['hostRef']) {
+    const live = await this.authorizeWorkspace(sql, principal, workspaceId, true)
+    requireAuthorization(principal, 'workspace_locations:update', { workspaceId })
+    requireAuthorization(live.principal, 'workspace_locations:update', { workspaceId })
+    if (host.mainId !== this.mainId) throw new DomainError('ROOT_WRONG_MAIN', 'Select a host on this Main installation.', 403)
+    if (!this.hosts.configuration) throw new DomainError('ROOT_CONFIGURATION_UNAVAILABLE', 'Protected host configuration adoption is unavailable.', 409)
+    const configuration = ApprovedRootAllowlistSchema.parse(await this.hosts.configuration(sql, host))
+    await this.hosts.authorize(sql, live.principal, host, configuration.applicationInstallationId)
+    await this.authorizeWorkspace(sql, principal, workspaceId, true)
+    await this.publishApprovedHostConfiguration(sql, configuration, { mainId: this.mainId, hostRef: host,
+      applicationInstallationId: configuration.applicationInstallationId, configurationRevision: configuration.configurationRevision,
+      configurationDigest: sourceSha256(Buffer.from(JSON.stringify(configuration))) })
+    return configuration
   }
   async authorize(sql: Sql, principal: ManagementPrincipal, raw: WorkspaceRootSelection): Promise<AuthorizedWorkspaceRoot> {
     const selection = WorkspaceRootSelectionSchema.parse(raw), live = await this.authorizeWorkspace(sql, principal, selection.workspaceId)

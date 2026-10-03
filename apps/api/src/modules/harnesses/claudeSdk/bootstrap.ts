@@ -55,7 +55,7 @@ export function createClaudeProductionDiscovery(input: {
       return await discoverInstalledClaudeSdk({ ...sdk, selectedExecutable }, { harnessInstallationId, environment }, signal)
     } catch { signal?.throwIfAborted(); return null }
   }
-  const current: AcceptedProfileAuthority<ClaudeProfileOwner>['current'] = async (owner, value) => {
+  const currentForConfiguration = async (value: Parameters<AcceptedProfileAuthority<ClaudeProfileOwner>['current']>[1], signal?: AbortSignal) => {
     if (value.configuration.harness !== 'claude' || value.target.hostRef.kind !== 'main') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
       'The current Claude pin must come from its actual authenticated execution host.', 409)
     const binding = input.registry().pinOverride(value)
@@ -78,12 +78,13 @@ export function createClaudeProductionDiscovery(input: {
     }
     const observed = await resolve({ hostGeneration: binding.installation.connectionGeneration,
       harnessInstallationId: binding.selection.harnessInstallationId, environment: binding.installation.launcher.environment,
-      instanceRevision: value.instanceRevision, profilePath: value.configuration.configDirectory }, owner.admissionSignal)
+      instanceRevision: value.instanceRevision, profilePath: value.configuration.configDirectory }, signal)
     if (observed.status !== 'available') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', observed.reason, 409)
     if (observed.launcher.fingerprint !== binding.selection.installationFingerprint) throw new DomainError('HARNESS_INSTALLATION_CHANGED',
       'The installed SDK and native payload changed after profile selection.', 409)
     input.registry().installations.assertCurrent(binding)
     return { registry: binding, applicationInstallationId: value.target.hostRef.mainId, suiteRevision: 'claude-profile-check-v1', pin: observed.pin }
   }
-  return { discover, current }
+  const current: AcceptedProfileAuthority<ClaudeProfileOwner>['current'] = (owner, value) => currentForConfiguration(value, owner.admissionSignal)
+  return { discover, current, currentForConfiguration }
 }

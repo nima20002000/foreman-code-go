@@ -8,14 +8,18 @@ import { ExecutionReadinessNotice } from './ExecutionReadinessNotice'
 
 const clients: QueryClient[] = []
 afterEach(() => { clients.splice(0).forEach(client => client.clear()) })
-function mount(status: ExecutionReadiness['status'] | 'error') {
-  server.use(http.get('*/api/management/harnesses/codex/execution-readiness', () => status === 'error'
+function mount(status: ExecutionReadiness['status'] | 'error', scope: ExecutionReadiness['scope'] = 'operator-configuration') {
+  server.use(http.get('*/api/management/harnesses/codex/execution-readiness', ({ request }) => {
+    expect(new URL(request.url).searchParams.get('scope')).toBe('operator-configuration')
+    expect(new URL(request.url).searchParams.get('configurationVersionId')).toBe('accepted-operator-config')
+    return status === 'error'
     ? HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Unavailable' } }, { status: 503 })
-    : HttpResponse.json({ harness: 'codex', scope: 'saved-harness-defaults', status, rolloutEnabled: status === 'eligible',
-      defaultsRevision: 3, checkedAt: new Date().toISOString(), reason: status === 'eligible' ? null : { code: 'NATIVE_ROLLOUT_DISABLED', message: 'Explicit opt-in is required.' }, limitation: 'Run checks remain authoritative.' })))
+    : HttpResponse.json({ harness: 'codex', scope, configurationVersionId: 'accepted-operator-config', status, rolloutEnabled: status === 'eligible',
+      defaultsRevision: null, checkedAt: new Date().toISOString(), reason: status === 'eligible' ? null : { code: 'NATIVE_ROLLOUT_DISABLED', message: 'Explicit opt-in is required.' }, limitation: 'Run checks remain authoritative.' })
+  }))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
-  render(<QueryClientProvider client={client}><ExecutionReadinessNotice harness="codex" /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><ExecutionReadinessNotice harness="codex" configurationVersionId="accepted-operator-config" /></QueryClientProvider>)
 }
 describe('execution readiness notice', () => {
   it('makes a missing rollout visible without blocking browsing', async () => {
@@ -33,5 +37,9 @@ describe('execution readiness notice', () => {
     mount('error')
     expect(await screen.findByText('Execution eligibility is unverified')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
+  })
+  it('does not use a workflow preset response as Operator readiness evidence', async () => {
+    mount('eligible', 'saved-harness-defaults')
+    expect(await screen.findByText('Execution eligibility is unverified')).toBeVisible()
   })
 })

@@ -2,7 +2,7 @@ import type pg from 'pg'
 import { z } from 'zod'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import {
-  nextOccurrences, parseScheduleSaveInput, ScheduleDisableInputSchema, ScheduleDisableResultSchema,
+  nextOccurrences, parseScheduleSaveInput, scheduleConfigurationToUtc, ScheduleDisableInputSchema, ScheduleDisableResultSchema,
   ScheduleGetInputSchema, ScheduleGetResultSchema, ScheduleSaveInputSchema, ScheduleSaveResultSchema,
   WorkflowScheduleSchema, type ScheduleConfiguration, type ScheduleGetInput, type ScheduleGetResult,
   type ScheduleSaveResult, type WorkflowSchedule,
@@ -119,9 +119,10 @@ export class WorkflowScheduleService {
         // After receipt lookup AND after waiting for the workflow lock. Never use the caller's clock.
         const now = this.clock().toISOString()
         const accepted = parseRequest(() => parseScheduleSaveInput(input, now))
-        const value = WorkflowScheduleSchema.parse({ ...accepted.schedule,
+        const settings = scheduleConfigurationToUtc(accepted.schedule)
+        const value = WorkflowScheduleSchema.parse({ ...settings,
           workspaceId: input.workspaceId, workflowId: input.workflowId, revision: nextRevision(slot),
-          nextOccurrenceAt: nextOccurrences(accepted.schedule, now, 1)[0] ?? null,
+          nextOccurrenceAt: nextOccurrences(settings, now, 1)[0] ?? null,
         })
         await this.repository.put(client, value, principal.id)
         await captureScheduleAuthority(client, value, principal.id)

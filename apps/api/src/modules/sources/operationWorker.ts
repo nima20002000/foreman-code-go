@@ -14,7 +14,7 @@ import type { SourceManifest, MaterializationReceipt } from '@graphql/contracts/
 import { SourceError, verifySourceManifest } from './manifest.js'
 import { anchored, openPrivateRoot, openChildDirectory } from './privateFilesystem.js'
 import { verifyApprovedRootAllowlist } from './rootAttestation.js'
-import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
+import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
 import { createPrivateSourceRepository } from './repository.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
 import { assertSourceNativeSession, verifyMaterializedWorkingDirectory } from './workingDirectory.js'
@@ -36,6 +36,8 @@ export interface SourceOperationWorkerOptions {
   transferContext(context: SourceOperationWorkerContext): Promise<TransferContext>
   /** Actual original installed native manager/session; no caller-supplied flag. */
   nativeOwnerFor?: SourceInstalledNativeOwnerReader
+  /** Original protected installed Job journal. Missing evidence fails closed. */
+  preparationNativeClosed?(operationId: string): Promise<boolean>
 }
 function attemptOf(record: NonNullable<SourceOperationOwner['record']>) {
   const r = record.receipt
@@ -52,6 +54,8 @@ function checkOwner(request: SourceFilesystemOperation, raw: SourceOperationOwne
   if (request.operation === 'sources.prepare') {
     if (!isDeepStrictEqual(request.root, root) || !isDeepStrictEqual(request.attempt, owner.attempt) || !isDeepStrictEqual(request.identity, owner.identity))
       throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Preparation cannot change the accepted original source/root/owner identity.')
+  } else if (request.operation === 'sources.reconcile-preparation') {
+    if (owner.preparationClosed !== true) throw new SourceError('source-reconciliation-unconfirmed', 'Original Main preparation admission is not closed.')
   } else if (!owner.record || !isDeepStrictEqual(request.record, owner.record) || request.record.operationId !== owner.identity.operationId
     || !isDeepStrictEqual(request.record.receipt.binding, root.binding) || !isDeepStrictEqual(attemptOf(request.record), owner.attempt))
     throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Source operation does not match the actual persisted materialization owner.')
@@ -81,6 +85,7 @@ async function localManifest(receipt: MaterializationReceipt): Promise<SourceMan
 }
 export class SourceOperationWorkerService {
   private active = 0
+  private readonly preparing = new Set<string>()
   constructor(private readonly options: SourceOperationWorkerOptions) {}
   private async authority(request: SourceFilesystemOperation, context: SourceOperationWorkerContext) {
     context.signal.throwIfAborted(); await this.options.authenticate(context)
@@ -94,8 +99,14 @@ export class SourceOperationWorkerService {
     if (this.active >= SOURCE_OPERATION_EXTENSION.maxPending) throw new SourceError('SOURCE_CAPACITY', 'Source operation capacity is exhausted.')
     this.active++
     let packageReader: VerifiedSourcePackageReader | undefined
+    let preparation: string | undefined
     try {
       const owner = await this.authority(request, context)
+      if (['sources.prepare', 'sources.private-repository', 'sources.reconcile-preparation'].includes(request.operation)) {
+        preparation = owner.identity.operationId
+        if (this.preparing.has(preparation)) { preparation = undefined; throw new SourceError('source-reconciliation-unconfirmed', 'Original source preparation is still active.') }
+        this.preparing.add(preparation)
+      }
       // Authenticate and resolve the actual owner before local config or target IO.
       const allowlist = ApprovedRootAllowlistSchema.parse(await this.options.approvedRoots())
       if (allowlist.hostRef.kind !== 'device' || allowlist.hostRef.mainId !== context.binding.mainId || allowlist.hostRef.deviceId !== context.binding.deviceId
@@ -106,6 +117,12 @@ export class SourceOperationWorkerService {
       const reauthorize = async () => { const current = await this.authority(request, context)
         if (!isDeepStrictEqual(current, owner)) throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Current source ownership changed during the filesystem operation.') }
       const reader = null
+      if (request.operation === 'sources.reconcile-preparation') {
+        if (!this.options.preparationNativeClosed) throw new SourceError('source-reconciliation-unconfirmed', 'Original native closure evidence is unavailable.')
+        const closure = await reconcileSourcePreparation(request.reconciliationId, owner,
+          () => this.options.preparationNativeClosed!(owner.identity.operationId), reauthorize)
+        await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, closure })
+      }
       if (request.operation === 'sources.prepare') {
         const materializer = new PrivateSourceMaterializer(reader, reauthorize)
         const recovered = await materializer.recover(owner.root.binding, owner.attempt)
@@ -158,7 +175,13 @@ export class SourceOperationWorkerService {
       if (request.operation === 'sources.private-repository') {
         const manifest = await localManifest(record.receipt)
         if (manifest.approvedSourceId !== owner.source.approvedSourceId) throw new SourceError('SOURCE_PIN_CONFLICT', 'Private repository is bound to a different approved source.')
-        const repository = await createPrivateSourceRepository({ receipt: record.receipt, manifest, materializer, attempt: owner.attempt })
+        const repository = await createPrivateSourceRepository({ receipt: record.receipt, manifest, materializer, attempt: owner.attempt, signal: context.signal }).catch((error: unknown) => {
+          // W07 only sends bounded lowercase domain codes, never Error messages,
+          // paths or child-process handles. Main maps this exact operation code.
+          if ((error as { code?: string }).code === 'SOURCE_REPOSITORY_TIMEOUT') throw new SourceError('source-repository-timeout', 'Private source preparation timed out.')
+          if ((error as { code?: string }).code === 'SOURCE_REPOSITORY_UNCERTAIN') throw new SourceError('source-repository-uncertain', 'Original private source preparation requires reconciliation.')
+          throw error
+        })
         await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, repository })
       }
       await reauthorize()
@@ -167,7 +190,7 @@ export class SourceOperationWorkerService {
         return current.physicalClosureConfirmed ? 'released' : 'uncertain'
       })
       return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, materializationId: record.receipt.materializationId, operationId: record.operationId, released: true })
-    } finally { packageReader?.close(); this.active-- }
+    } finally { if (preparation) this.preparing.delete(preparation); packageReader?.close(); this.active-- }
   }
 }
 export function createSourceOperationWorkerHandler(options: SourceOperationWorkerOptions) {

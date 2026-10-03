@@ -31,7 +31,7 @@ export function McpConnectionCard({ workspaceId, harness, location, returnTo }: 
   if (harness === 'claude') return <article className="mcp-connection-card" aria-label="Claude">
     <div className="mcp-provider-heading"><h3>Claude</h3></div>
     <Alert title="Claude workspace connection checks are not available here.">This native workspace check supports Codex and OpenCode. Claude uses MCP servers pinned in its accepted configuration.</Alert>
-    <Link className="n-button n-button--secondary n-button--sm" to="/settings/harnesses" search={{ harness: 'claude', section: 'tools' }}>Inspect Claude configuration</Link>
+    <Link className="n-button n-button--secondary n-button--sm" to="/settings/harnesses" search={{ harness: 'claude', section: 'connections' }}>Configure Claude MCP</Link>
   </article>
   return <SupportedMcpConnectionCard workspaceId={workspaceId} harness={harness} location={location} returnTo={returnTo} />
 }

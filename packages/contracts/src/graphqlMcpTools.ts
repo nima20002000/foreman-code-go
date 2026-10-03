@@ -17,6 +17,11 @@ export const GRAPHQL_AGENT_TOOLS = {
   interaction_respond: { label: "Respond to approvals", description: "Answer approval requests it reviews.", roles: ["orchestrator"] },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;
 
+/** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */
+export const GRAPHQL_OPERATOR_TOOLS = {
+  workspace_root_configuration_adopt: { label: "Adopt protected root configuration", description: "Audit adoption of the selected host's existing approved roots; no caller paths or execution authority.", roles: ["operator"], action: "adopt-workspace-root-configuration", actions: ["source_roots:bind", "workspace_locations:update"], scope: "workspace", readOnly: false },
+} as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[]; action: string; actions: readonly string[]; scope: "run" | "workspace"; readOnly: boolean }>;
+
 export const GraphqlAgentToolSchema = z.enum(
   Object.keys(GRAPHQL_AGENT_TOOLS) as [keyof typeof GRAPHQL_AGENT_TOOLS, ...(keyof typeof GRAPHQL_AGENT_TOOLS)[]],
 );
@@ -39,7 +44,8 @@ export const GraphqlToolOverrideSchema = z.object({
 export type GraphqlToolOverride = z.infer<typeof GraphqlToolOverrideSchema>;
 
 export function graphqlToolRoles(name: string): readonly GraphqlMcpRole[] {
-  return (GRAPHQL_AGENT_TOOLS as Record<string, { roles: readonly GraphqlMcpRole[] }>)[name]?.roles ?? ["operator"];
+  return (GRAPHQL_AGENT_TOOLS as Record<string, { roles: readonly GraphqlMcpRole[] }>)[name]?.roles
+    ?? (GRAPHQL_OPERATOR_TOOLS as Record<string, { roles: readonly GraphqlMcpRole[] }>)[name]?.roles ?? ["operator"];
 }
 
 /** The Agent tools a product role may be given, in catalog order. */

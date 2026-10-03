@@ -5,6 +5,7 @@ import { Badge, EmptyState, Alert } from './Feedback'
 import { SearchField, Checkbox } from './Fields'
 import { fileSelectionErrors } from './advancedUtils'
 import { type Tone } from './utils'
+import { useFileDrop } from '../useFileDrop'
 
 export function FilterChips({ filters, onRemove, onClear }: { filters: readonly { id: string; label: string }[]; onRemove: (id: string) => void; onClear?: () => void }) {
   if (!filters.length) return null
@@ -28,10 +29,9 @@ export function MultiSelect({ label, options, values, onValuesChange, disabled, 
 export function FileDropzone({ label = 'Add context files', onFiles, disabled = false, maxFiles = 5, maxBytes = 5 * 1024 * 1024, extensions = ['.txt', '.md', '.json'], hint }:
   { label?: string; onFiles: (files: readonly File[]) => void; disabled?: boolean; maxFiles?: number; maxBytes?: number; extensions?: readonly string[]; hint?: string }) {
   const [errors, setErrors] = useState<string[]>([])
-  const [dragging, setDragging] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const id = useId()
-  function accept(list: FileList | null) {
+  function accept(list: FileList | readonly File[] | null) {
     if (disabled || !list?.length) return
     const files = Array.from(list)
     const failures = fileSelectionErrors(files, maxFiles, maxBytes, extensions)
@@ -39,14 +39,15 @@ export function FileDropzone({ label = 'Add context files', onFiles, disabled = 
     if (!failures.length) onFiles(files)
     if (input.current) input.current.value = ''
   }
-  return <div className="n-stack"><div className="n-dropzone" data-dragging={dragging && !disabled || undefined} aria-disabled={disabled}
-    onDragOver={event => { event.preventDefault(); if (!disabled) setDragging(true) }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }}
-    onDrop={event => { event.preventDefault(); setDragging(false); accept(event.dataTransfer.files) }}>
+  const drop = useFileDrop({ disabled, onFiles: accept })
+  return <div className="n-stack"><div className="n-dropzone" data-dragging={drop.isDragging || undefined} aria-disabled={disabled}
+    {...drop.dropTargetProps}>
     <Icon name="folder" size={28} /><h3>{label}</h3><p id={`${id}-hint`}>{hint ?? `Choose or drop up to ${maxFiles} files. Each file must be ${Math.round(maxBytes / 1024)} KB or smaller.`}</p>
     <Button disabled={disabled} onClick={() => input.current?.click()}>Choose files</Button><input ref={input} id={id} className="n-sr-only" type="file" aria-label={label} aria-describedby={`${id}-hint`} disabled={disabled}
-      multiple={maxFiles > 1} accept={extensions.join(',')} onChange={event => accept(event.currentTarget.files)} />
+      multiple={maxFiles > 1} accept={extensions.join(',')} onChange={event => { drop.clearDropError(); accept(event.currentTarget.files) }} />
     <small>Selection only. No upload or execution happens here.</small>
-  </div>{errors.length > 0 && <Alert tone="danger" title="Files were not added" live><ul>{errors.map((error, index) => <li key={index}>{error}</li>)}</ul></Alert>}</div>
+  </div>{drop.dropError && <Alert tone="danger" title="Files were not added" live>{drop.dropError}</Alert>}
+    {errors.length > 0 && <Alert tone="danger" title="Files were not added" live><ul>{errors.map((error, index) => <li key={index}>{error}</li>)}</ul></Alert>}</div>
 }
 export interface NotificationItem { id: string; title: string; description: string; time: string; dateTime?: string; unread?: boolean; tone?: Tone; actionLabel?: string }
 export function NotificationCenter({ items, onRead, onOpen, onClearRead }: { items: readonly NotificationItem[]; onRead: (id: string) => void; onOpen?: (id: string) => void; onClearRead?: () => void }) {

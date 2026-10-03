@@ -1,5 +1,15 @@
-import { createProductionRsyncComposition } from './modules/byte-transfer/productionComposition.js'
-import { RSYNC_STAGE_EXTENSION } from '@graphql/contracts/byte-transfer'
+import { WORKSPACE_ROOT_EXTENSION } from '@graphql/contracts/workspace-root-policies'
+import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
+import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
+import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from './modules/devices/trustedConnectionHumanAuthority.js'
+import { registerTrustedConnectionRoutes } from './modules/devices/trustedConnectionManagement.js'
+import { requirePrincipal } from './modules/access/http.js'
+import { RsyncTransferAuthorizeRequestSchema } from '@graphql/contracts/byte-transfer'
+import type { AcceptedTransferAuthority } from './modules/byte-transfer/carrier.js'
+import type { InstalledMainRsyncProviders } from './modules/byte-transfer/productionComposition.js'
+import { createInstalledRsyncComposition } from './modules/byte-transfer/productionComposition.js'
+import { RSYNC_STAGE_EXTENSION, type TransferIntent } from '@graphql/contracts/byte-transfer'
+import { transferContextForBinding } from './modules/byte-transfer/carrier.js'
 import { JOB_RUNTIME_QUALIFICATION_EXTENSION } from '@graphql/contracts/job-runtime'
 import { interactionConnection } from './modules/interactions/connection.js'
 import { createProductionRemoteWorkflow } from './modules/placement/productionRemoteWorkflow.js'
@@ -26,6 +36,7 @@ import { createPassiveTelemetryAuthorities } from './modules/resource-telemetry/
 import { registerResourceTelemetryRoutes } from './routes/resourceTelemetry.js'
 import { registerResourceTelemetrySelectorRoutes } from './routes/resourceTelemetrySelector.js'
 import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
+import { bootstrapLocalMainWorkspaceRoot } from './modules/workspace-roots/localMainBootstrap.js'
 import { registerWorkspaceRootRoutes } from './modules/workspace-roots/transports.js'
 import type { OpenCodeServerController } from './modules/harnesses/opencodeTransport.js'
 import { RemoteJobMainRpcRequestSchema } from '@graphql/contracts/remote-job-execution'
@@ -37,10 +48,14 @@ import { registerJobRoutes } from './routes/jobs.js'
 import { registerJobRuntimeProfileRoutes } from './routes/jobRuntimeProfiles.js'
 import { registerSourceRoutes } from './modules/sources/routes.js'
 import { createClaudeProductionDiscovery } from './modules/harnesses/claudeSdk/bootstrap.js'
+import { productionClaudeMetadata } from './modules/harnesses/claudeSdk/productionMetadata.js'
+import { initializeNativeDefaults } from './modules/harnesses/initializeDefaults.js'
+import { qualifyClaudeNativeProfile } from './modules/harnesses/claudeSdk/nativeProfileQualification.js'
 import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
 import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
 import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harnesses/claudeSdk/production.js'
+import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/claudeSdk/productionCredentials.js'
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
 import { credentialAuthority } from './modules/interactions/wave25/credentialAuthority.js'
@@ -49,7 +64,11 @@ import { currentOperatorAuthority } from './modules/access/runAuthority.js'
 import { requireAuthorization } from './modules/access/policy.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from './modules/harnesses/instanceSettings/acceptedProfile.js'
 import type { AcceptedProfileSelector } from './modules/harnesses/instanceSettings/acceptedProfile.js'
-import { HarnessExecutionRequestSchema } from '@graphql/contracts'
+import { HarnessExecutionRequestSchema, OperatorConfigurationVersionSchema } from '@graphql/contracts'
+import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
+import { requireClaudePolicyQualification } from './modules/harnesses/claudeSdk/configuration.js'
+import { qualificationError } from './modules/harnesses/qualificationErrors.js'
+import { authorizeOperatorConfigurationRead } from './modules/operators/configurationRead.js'
 import { operatorCodexFileAdmissions } from './modules/harnesses/operatorFiles/codex.js'
 import { adoptOperatorFilePublications, resolveOperatorOpenCodeFileAdmission } from './modules/harnesses/operatorFiles/postgres.js'
 import { OPERATOR_MCP_ENVIRONMENT_VARIABLE } from './modules/conversations/operatorChatAuthority.js'
@@ -209,11 +228,70 @@ export function buildProductionApp(
   let workflowPhysicalArtifacts: PostgresWorkflowPhysicalArtifacts | undefined
   let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
-  const rsync = createProductionRsyncComposition({ side: 'main', providers: infrastructure?.rsync,
+  let trustedConnections: PostgresTrustedConnectionSetup | undefined
+  const inputAcknowledgements = new Map<string, TransferIntent>()
+  const acceptedRsync: AcceptedTransferAuthority = {
+    async intent(id, binding) {
+      if (!jobRuntime) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Original Main source and Job transfer services have not initialized.', 503)
+      if (!isDeepStrictEqual(deviceRuntime.endpointForDomains().captureRequest(binding.deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding, binding))
+        throw new DomainError('RSYNC_CONNECTION_CONFLICT', 'Transfer lookup requires the actual current rsync channel.', 403)
+      const owners = (await database.pool.query<{ operation: string }>(`select operation from management_command_receipts where
+        (operation in ('source.package.admit','job.output.admit') and result #>> '{intent,transferId}'=$1)
+        or (operation='job.inputs.bind' and exists(select 1 from jsonb_array_elements(result->'transfers') item where item #>> '{intent,transferId}'=$1))`, [id])).rows
+      if (owners.length !== 1) throw new DomainError('RSYNC_TRANSFER_DENIED', 'Exactly one original source or Job admission must own the transfer.', 403)
+      const operation = owners[0]!.operation
+      if (operation === 'source.package.admit') return jobRuntime.transfers.intent(id, binding)
+      if (operation === 'job.inputs.bind') {
+        const { transfer } = await jobRuntime.inputs.main.acceptedTransfer(id)
+        await jobRuntime.inputs.main.authorizeTransfer(transfer.intent, transferContextForBinding(binding))
+        return transfer.intent
+      }
+      const intent = await jobRuntime.outputs.admission.intentForTransfer(id)
+      await jobRuntime.outputs.admission.authorizeTransfer(intent, transferContextForBinding(binding))
+      return intent
+    },
+    async authorize(intent, context) {
+      const binding = deviceRuntime.endpointForDomains().captureRequest(intent.deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding
+      if (!binding || !isDeepStrictEqual(transferContextForBinding(binding), context) || !isDeepStrictEqual(await acceptedRsync.intent(intent.transferId, binding), intent))
+        throw new DomainError('RSYNC_TRANSFER_DENIED', 'The original accepted transfer or authenticated generation changed.', 403)
+    },
+  }
+  const entrypoint = infrastructure?.rsyncInstallation?.kind === 'configured' && !infrastructure.rsync
+    ? createMainRsyncEntrypoint({ installation: infrastructure.rsyncInstallation, endpoint: () => deviceRuntime.endpointForDomains(), accepted: acceptedRsync,
+      setup: { checkAcceptedTransfer: (...args) => {
+        if (!trustedConnections) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The original Main trusted connection authority has not initialized.', 503)
+        return trustedConnections.checkAcceptedTransfer(...args)
+      } },
+      ownership: () => rsync.kind === 'configured' ? rsync.ownership : undefined }) : undefined
+  const installedRsync: InstalledMainRsyncProviders | undefined = infrastructure?.rsync ?? entrypoint?.providers
+  const rsyncProviders: InstalledMainRsyncProviders | undefined=installedRsync?{...installedRsync,acknowledged:async(...args:Parameters<NonNullable<InstalledMainRsyncProviders['acknowledged']>>)=>{
+    const [intent,context]=args
+    const binding=deviceRuntime.endpointForDomains().captureRequest(intent.deviceId,RSYNC_STAGE_EXTENSION.namespace)?.binding
+    if(!binding||!isDeepStrictEqual(transferContextForBinding(binding),context))throw new DomainError('RSYNC_CONNECTION_CONFLICT','Canonical ACK requires the original actual Main capture.',403)
+    if(intent.byteClass==='source'&&intent.direction==='to-worker'){
+      if(!jobRuntime)throw new DomainError('SOURCE_RUNTIME_UNAVAILABLE','The original committed source lifecycle is unavailable.',503)
+      await jobRuntime.lifecycle.acknowledged(intent,context)
+    }else if(intent.byteClass==='artifact'&&intent.direction==='to-main'&&jobRuntime&&await jobRuntime.outputs.ownsTransfer(intent.transferId)){
+      await jobRuntime.outputs.admission.authorizeTransfer(intent,context)
+      await jobRuntime.outputs.lifecycle.acknowledged(intent)
+    }else if(isDeepStrictEqual(inputAcknowledgements.get(intent.transferId),intent)){
+      if(!jobRuntime)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The original input delivery authority is unavailable.',503)
+      await jobRuntime.inputs.main.acknowledged(intent.transferId,binding)
+    }else await installedRsync.acknowledged(...args)
+  }}:undefined
+  const rsync: ReturnType<typeof createInstalledRsyncComposition> = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
     current: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding })
   const deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
     extensions: [
-      ...rsync.extensions,
+      ...rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const, async handle(raw: unknown, context: import('./modules/devices/deviceApplicationChannel.js').DeviceExtensionContext) {
+        context.signal.throwIfAborted()
+        if (context.bytes !== undefined) throw new DomainError('RSYNC_TRANSFER_DENIED', 'Transfer authorization accepts metadata only.', 403)
+        const request = RsyncTransferAuthorizeRequestSchema.parse(raw)
+        const intent = await acceptedRsync.intent(request.transferId, context.binding)
+        context.signal.throwIfAborted()
+        return { payload: intent }
+      } })),
+      { namespace: WORKSPACE_ROOT_EXTENSION.namespace, version: WORKSPACE_ROOT_EXTENSION.version, role: 'client', maxJsonBytes: WORKSPACE_ROOT_EXTENSION.maxPayloadBytes, maxBinaryBytes: 0 },
       { ...JOB_RUNTIME_QUALIFICATION_EXTENSION, role: 'duplex', async handle(payload, context) {
         const handler = jobRuntime?.qualificationExtension.handle
         if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual diagnostic qualification authority is unavailable.', 503)
@@ -237,7 +315,7 @@ export function buildProductionApp(
         return handler(payload, context)
       } },
       createMainWorkflowArtifactTransferExtension(() => workflowArtifacts?.receiver,
-        infrastructure?.deviceDomains?.extensions.find(value => value.namespace === BYTE_TRANSFER_NAMESPACE)),
+        infrastructure?.deviceDomains?.extensions.find(value => value.namespace === BYTE_TRANSFER_NAMESPACE),()=>jobRuntime?.outputs),
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
@@ -258,6 +336,13 @@ export function buildProductionApp(
         } },
       ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE].includes(value.namespace)) ?? []),
     ],
+    async bindingLost(binding) {
+      const tasks: Promise<unknown>[] = []
+      try { if (rsync.kind === 'configured') tasks.push(rsync.rsyncWriters.bindingLost(binding)) } catch (error) { tasks.push(Promise.reject(error)) }
+      try { const task = infrastructure?.deviceDomains?.bindingLost?.(binding); if (task) tasks.push(task) } catch (error) { tasks.push(Promise.reject(error)) }
+      const results = await Promise.allSettled(tasks), failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      if (failures.length) throw new AggregateError(failures, 'Original device domain binding cleanup remains incomplete')
+    },
     async reconcile(binding, signal, endpoint) {
       if (endpoint.capabilities(binding.deviceId).some((item) => item.namespace === 'harness-discovery-v1' && item.mainCanRequest)) {
         const result = await endpoint.request(binding.deviceId, 'harness-discovery-v1',
@@ -432,12 +517,23 @@ export function buildProductionApp(
         if (!row?.principal_id) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The accepted Run principal is unavailable.', 409)
         const principal = (await currentOperatorAuthority(client, row.principal_id)).principal
         requireAuthorization(principal, 'runs:start', { workspaceId: current.run.workspaceId, workflowId: current.run.workflowId })
+      } else if (binding.kind === 'operator-inspection') {
+        const principal = await access.currentHarnessInspectionPrincipal(binding.principalId, client)
+        requireAuthorization(principal, 'harnesses:read')
+        await authorizeOperatorConfigurationRead(client, principal, binding.configurationVersionId)
+        const row = (await client.query<{ record: unknown }>('select record from operator_configuration_versions where id=$1 and operator_id=$2',
+          [binding.configurationVersionId, 'application-operator'])).rows[0]
+        const configuration = row ? OperatorConfigurationVersionSchema.parse(row.record) : undefined
+        if (!configuration || configuration.contentHash !== binding.configurationHash || !isDeepStrictEqual(configuration.harnessProfileSelection, selector)) {
+          throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact saved Operator configuration changed before its read-only inspection.', 409)
+        }
       } else await new PostgresClaudeInteractionAuthority(client, binding, { nativeCallbackContext: () => undefined }).callbackAdmission()
       await assertDeviceHostInstallation(client, selector.target.hostRef, selector.target.applicationInstallationId)
       binding.admissionSignal?.throwIfAborted()
     },
     async current(binding, value, client) {
       if (value.driverId === 'claude') {
+        requireClaudeProductionCredentialDelivery(value.configuration)
         const current = infrastructure?.claudeCurrentProfile ?? (infrastructure?.mode === 'replay' ? undefined : claudeDiscovery.current)
         if (!current) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude replay requires its current installed profile metadata port.', 500)
         return current(binding, value, client)
@@ -451,16 +547,38 @@ export function buildProductionApp(
   const selectedProfiles = new AcceptedHarnessProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
   const claudeProfiles = infrastructure?.claudeProfiles ?? new AcceptedClaudeProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
   const hostProfileChecks = new HostHarnessInstanceProfileChecks(hostSettings, hostProfileEvidence, commands, hostAuthority,
-    new ProductionHostHarnessProfileQualifier(harnessRegistry, nativeFactories, () => deviceRuntime.endpointForDomains(), config.harnesses.workspaceRoot))
+    new ProductionHostHarnessProfileQualifier(harnessRegistry, nativeFactories, () => deviceRuntime.endpointForDomains(), config.harnesses.workspaceRoot,
+      infrastructure?.mode === 'replay' ? undefined : { async qualify(value, input) {
+        const current = await claudeDiscovery.currentForConfiguration(value, input.signal)
+        const binding = harnessRegistry.pinOverride(value)
+        const recovery = processRegistry.reserveLaunch(`claude-profile-check:${input.checkId}`)
+        const close = async () => {
+          await processRegistry.abandonReservedLaunch(recovery)
+          if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude native profile qualification closure is unconfirmed.')
+        }
+        try { return await qualifyClaudeNativeProfile({ value, checkId: input.checkId, binding, pin: current.pin,
+          directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
+          assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
+        finally { await close() }
+      } }))
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
+    requireClaudeProductionCredentialDelivery(value.configuration)
     const proof = await harnessRegistry.profileEvidence(value, client)
     return proof ? { target: proof.target, configurationFingerprint: proof.configurationFingerprint, qualified: proof.qualified } : null
-  }, hostProfileChecks)
-  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary, nativeFactories)
-  const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot)
+  }, hostProfileChecks, configuration => {
+    const binding = harnessRegistry.pinAccepted({ id: `operator-default-profile:${commandInputHash(configuration)}`, agentId: 'operator-default-setup', harness: configuration })
+    const hostRef = binding.selection.hostRef
+    if (hostRef.kind !== 'main' || !binding.installation.installationFingerprint) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The actual local Claude installation is unavailable.', 409)
+    return { hostRef, applicationInstallationId: hostRef.mainId, harnessInstallationId: binding.selection.harnessInstallationId,
+      installationFingerprint: binding.installation.installationFingerprint }
+  })
+  const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
+    processes: processRegistry, factories: nativeFactories, settings: hostSettings, defaults: () => settings.getHarnessDefaults(), current: claudeDiscovery.currentForConfiguration })
+  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, config.harnesses.openCodeBinary, nativeFactories, claudeMetadata)
+  const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot, appMcpEndpoint)
   const nativeConfigurations = new NativeConfigurationService(
     config.harnesses.codexBinary, config.harnesses.openCodeBinary, config.harnesses.workspaceRoot, nativeFactories,
-    undefined, infrastructure?.auxiliary?.command,
+    claudeMetadata, infrastructure?.auxiliary?.command,
   )
   const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
   const harnessSettings = {
@@ -500,6 +618,7 @@ export function buildProductionApp(
         harnessInstallationId: placement.payload.harnessInstallationId, installationFingerprint: placement.payload.installationFingerprint } }
     }
     if (configuration.harness === 'claude') {
+      requireClaudeProductionCredentialDelivery(configuration)
       if (!context.runId || !context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE',
         'Claude requires the persisted Run and execution attempt.', 409)
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
@@ -681,6 +800,7 @@ export function buildProductionApp(
     },
     createClaude: (configuration, conversationId, fileInputs, recovery) => {
       if (configuration.harness.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude requires the pinned Claude configuration.', 409)
+      requireClaudeProductionCredentialDelivery(configuration.harness)
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
         profiles: claudeProfiles,
         ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
@@ -719,6 +839,25 @@ export function buildProductionApp(
       })
       if (checked.detection.state !== 'connected' || checked.detection.credentialArrangement?.kind !== 'scoped_http_header') throw new DomainError('OPERATOR_MCP_SETUP_REQUIRED', 'Claude did not acknowledge the scoped Operator credential on its current query.', 409)
     },
+    async (principal, configuration, signal) => {
+      if (configuration.harness.harness !== 'claude' || !configuration.harnessProfileSelection) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Claude setup requires its exact saved host profile.', 409)
+      const owner: ClaudeProfileOwner = { kind: 'operator-inspection', principalId: principal.id,
+        configurationVersionId: configuration.id, configurationHash: configuration.contentHash, admissionSignal: signal }
+      const accepted = await claudeProfiles.admit(owner, configuration.harnessProfileSelection)
+      const binding = harnessRegistry.pinOverride(accepted.override), binary = binding.installation.launcher.resolvedLauncher
+      if (!binary || accepted.override.target.hostRef.kind !== 'main') throw new DomainError('HARNESS_HOST_MISMATCH', 'Claude setup must inspect its actual local installed profile.', 409)
+      const recovery = processRegistry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
+      const close = async () => {
+        await processRegistry.abandonReservedLaunch(recovery)
+        if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude read-only configuration inspection closure is unconfirmed.')
+      }
+      try { return await inspectClaudeOperatorConfiguration({ accepted, binary, workingDirectory: operatorWorkingDirectory,
+        endpoint: appMcpEndpoint, recovery, signal, ...(infrastructure?.claudeClient ? {
+          loadClient: (profilePath, processRecovery, selectedBinary) => infrastructure.claudeClient!({ profilePath, recovery: processRecovery, binary: selectedBinary }),
+        } : {}),
+        revalidate: async () => { await claudeProfiles.revalidate(owner, accepted); await nativeFactories.assertInstallationUnchanged(binding, signal) } }) }
+      finally { await close() }
+    },
   )
   const chat = new OperatorChatService(
     operatorConversations, operators,
@@ -733,6 +872,7 @@ export function buildProductionApp(
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
     const harness = configuration.harness
     if (harness.harness === 'claude') {
+      requireClaudeProductionCredentialDelivery(harness)
       const { manager } = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
         profiles: claudeProfiles,
         ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
@@ -820,10 +960,31 @@ export function buildProductionApp(
     devices: deviceRuntime.management,
     harnessInstances, harnessRegistry,
     fileRetention: new FileRetentionService(database.pool, commands),
-    executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog),
+    executionReadiness: new ExecutionReadinessService(rollout, harnessCatalog, async (principal, configurationVersionId) => {
+      if (configurationVersionId) await authorizeOperatorConfigurationRead(database.pool,
+        await access.currentHarnessInspectionPrincipal(principal.id), configurationVersionId)
+      const defaults = configurationVersionId ? undefined : await foundationSettings.getAgentDefaults()
+      const configuration = configurationVersionId ? await operatorConversations.configuration(configurationVersionId)
+        : await operators.inspectionConfiguration(defaults!.revision)
+      if (!configuration || configuration.operatorId !== 'application-operator') throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'The saved Operator configuration is unavailable.', 409)
+      try {
+        if (configuration.harnessProfileSelection) {
+          const owner: ClaudeProfileOwner = { kind: 'operator-inspection', principalId: principal.id,
+            configurationVersionId: configuration.id, configurationHash: configuration.contentHash }
+          if (configuration.harness.harness === 'claude') {
+            const accepted = await claudeProfiles.admit(owner, configuration.harnessProfileSelection)
+            requireClaudePolicyQualification(configuration.harness, accepted)
+          } else await selectedProfiles.admit(owner, configuration.harnessProfileSelection)
+        } else {
+          if (configuration.harness.harness === 'claude') throw new DomainError('HARNESS_PROFILE_REQUIRED', 'The saved Operator Claude configuration has no exact qualified host profile.', 409)
+          await harnessCatalog.checkConfiguration(principal, configuration.harness)
+        }
+      } catch (error) { throw qualificationError(error) }
+      return { configurationVersionId: configuration.id, harness: configuration.harness, defaultsRevision: defaults?.revision ?? null }
+    }),
     operatorChat: chat,
     agentChat,
-    workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings),
+    workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings, projectRoot),
     locations,
     workflows: new WorkflowManagementService(database.pool, commands),
     agents: new AgentManagementService(database.pool),
@@ -898,6 +1059,7 @@ export function buildProductionApp(
   const lifecycle = new RuntimeShutdown({
     stop: [
       { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
+      { name: 'original rsync byte ownership', run: () => rsync.kind === 'configured' ? rsync.rsyncWriters.close() : undefined },
       { name: 'device admission and channels', run: async () => { deviceRuntime.stop() } },
       { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
@@ -921,6 +1083,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
@@ -990,6 +1153,13 @@ export function buildProductionApp(
       const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
       assertOpen()
+      const connectionAuthority = new PostgresTrustedConnectionHumanAuthority(database.pool, machine.installationId)
+      trustedConnections = new PostgresTrustedConnectionSetup(database.pool, machine.installationId,
+        { verifyOwnerApproval: connectionAuthority.verifyOwnerApproval })
+      runtimeServices.trustedConnections = trustedConnections
+      registerTrustedConnectionRoutes(app, trustedConnections,
+        async request => request.reauthorizeOperator ? request.reauthorizeOperator() : requirePrincipal(request))
+      registerTrustedConnectionApprovalRoutes(app, connectionAuthority)
       const activeNativeSession: SourceActiveNativeSessionReader = (sql, record) =>
         readSourceCurrentNativeSession(sql, record, approvals.passiveOwnedNativeSessions())
       const captureNativeSession: SourceNativeSessionCaptureReader = async record => {
@@ -1015,7 +1185,28 @@ export function buildProductionApp(
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         activeNativeSession, captureNativeSession,
-        ...(infrastructure?.rsync ? { transferSender: source => rsync.sender(source) } : {}),
+        ...(installedRsync ? { transferSender: source => rsync.sender(source),
+          transferReceiver:installedRsync.receiver,
+          outputRsync:{stage:async(intent,signal)=>{
+            if(rsync.kind!=='configured')throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE','The selected original rsync lifecycle is unavailable.',409)
+            return rsync.backend.send(intent,undefined,signal)
+          },acknowledge:async(intent,signal)=>{
+            if(rsync.kind!=='configured')throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE','The selected original rsync lifecycle is unavailable.',409)
+            await rsync.backend.acknowledge(intent,signal)
+          }},
+          inputRsync: { stage: async (intent, source, signal) => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
+            return rsync.backend.send(intent, source, signal)
+          }, acknowledge: async (intent, signal) => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
+            if (inputAcknowledgements.has(intent.transferId)) throw new DomainError('JOB_INPUT_ACK_BUSY', 'Original input delivery ACK is already coordinating.', 409)
+            inputAcknowledgements.set(intent.transferId, structuredClone(intent))
+            try { await rsync.backend.acknowledge(intent, signal) } finally { inputAcknowledgements.delete(intent.transferId) }
+          } },
+          transferAcknowledged: async intent => {
+            if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The selected original rsync lifecycle is unavailable.', 409)
+            await rsync.backend.acknowledge(intent)
+          } } : {}),
         ...(processRegistry instanceof NativeProcessRegistry ? { nativeRegistry: processRegistry } : {}),
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
       if (selectedSuites) {
@@ -1024,13 +1215,14 @@ export function buildProductionApp(
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
       }
-      mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app))
       const artifactPorts: NativeArtifactAuthorityPorts = { locations,
         producer: { assertPinsCurrent: (...args) => {
           if (!agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual artifact placement producer is unavailable.', 503)
           return agentPlacement.assertPinsCurrent(...args)
         } } }
       const artifactAuthority = new PostgresArtifactPublicationAuthority(machine.installationId, database.pool, artifactPorts)
+      mainWorkerMcp = new MainWorkerMcpRelay(machine.installationId, database.pool, access, selectedMainMcpForward(app),
+        infrastructure?.nativeOutputAuthorization?.(artifactAuthority))
       artifactOutputsGate = createWorkflowArtifactOutputsGate(machine.installationId, artifactAuthority)
       artifactResultSource = createProductionWorkflowArtifactResultSource({ captures: workflowCapture.verify,
         physical: remoteWorkflow, authority: artifactAuthority })
@@ -1039,6 +1231,8 @@ export function buildProductionApp(
       artifactComposition = { mainId: machine.installationId, authority: artifactAuthority,
         fence: new PostgresAcceptedArtifactAttemptFence(machine.installationId, artifactPorts) }
       mountArtifacts()
+      await bootstrapLocalMainWorkspaceRoot({ pool: database.pool, policies: jobRuntime.policies, mainId: machine.installationId,
+        runtimeRoot: config.harnesses.workspaceRoot, appStorageRoot: projectRoot })
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
@@ -1064,7 +1258,7 @@ export function buildProductionApp(
           getRemoteNativeOwners: () => remoteWorkflow.getRemoteNativeOwners(),
           getNativeOwners: () => approvals.passiveOwnedNativeSessions().flatMap(owned => {
             const captured = launchScopes.get(owned.manager)
-            return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, assertCurrent: owned.assertCurrent, nativeOwner: captured.owner }] : []
+            return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, generation:owned.generation, assertCurrent: owned.assertCurrent, nativeOwner: captured.owner }] : []
           }) })
         telemetry = await createResourceTelemetryRuntime({ localContext: mainTelemetryContext, registry, ...authorities,
           wholeHostVisible: false, signal: telemetryLifetime.signal })
@@ -1086,6 +1280,15 @@ export function buildProductionApp(
       if (qualificationRegistry && harnessQualifications) {
         await qualificationRegistry.load()
         installQualificationGate(qualificationRegistry, harnessQualifications)
+      }
+      if (infrastructure?.mode !== 'replay') {
+        await initializeNativeDefaults({ pool: database.pool, options: harness => nativeConfigurations.options(harness), appMcpEndpoint })
+        await harnessRegistry.refreshMain()
+        const initializedDefaults = await foundationSettings.getAgentDefaults()
+        const currentOperator = await operators.ensure()
+        if (!isDeepStrictEqual(currentOperator.configuration.harness, initializedDefaults.value.operator.harness)) {
+          await operators.update(initializedDefaults.value.operator.harness, currentOperator.operator.currentConfigurationVersionId)
+        }
       }
       harnessCompatibility.start()
       assertOpen()

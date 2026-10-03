@@ -1,10 +1,12 @@
-import { lstat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { randomUUID, createHash } from 'node:crypto'
+import { lstat, open, mkdir, rmdir, rename, readdir, type FileHandle } from 'node:fs/promises'
 import { relative, isAbsolute } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
-import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import type { DispatchIntent } from '@graphql/contracts/node-placement'
-import type { NativeSessionReference } from '@graphql/contracts'
+import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@graphql/contracts/device-connection'
+import { DispatchIntentSchema, type DispatchIntent } from '@graphql/contracts/node-placement'
+import { NativeSessionReferenceSchema, type NativeSessionReference } from '@graphql/contracts'
 import { MAX_FILE_BYTES } from '@graphql/contracts/files'
 import { BYTE_TRANSFER_POLICY } from '@graphql/contracts/byte-transfer'
 import { anchored, identity, openPrivateRoot } from '../../sources/privateFilesystem.js'
@@ -127,4 +129,109 @@ export async function createInstalledNativeOutputStorage(input: InstalledNativeO
       }
     },
   }
+}
+
+const BudgetOwner = z.object({ intent: DispatchIntentSchema, binding: DeviceSessionBindingSchema,
+  session: NativeSessionReferenceSchema, nativeTurnId: z.string().min(1).max(500), runtimeGeneration: z.number().int().positive() }).strict()
+const BudgetRecord = z.object({ artifactId: ArtifactId, owner: BudgetOwner, requested: Limits, released: z.boolean() }).strict()
+const Installation = DeviceSessionBindingSchema.pick({ mainId: true, deviceId: true, workerInstallationId: true })
+const BudgetJournal = z.object({ version: z.literal(1), installation: Installation, limits: Limits,
+  records: z.array(BudgetRecord).max(BYTE_TRANSFER_POLICY.maxRecords).refine(records => new Set(records.map(record => record.artifactId)).size === records.length) }).strict()
+
+/** Concrete worker-private ledger. The installation supplies explicit caps and
+ * an established protected root. No age/TTL reclaim, new turn rebinding or
+ * in-memory aggregate counter; crash-left reservations and locks stay charged. */
+export async function createNativeOutputBudgetLedger(input: {
+  rootDirectory: string
+  installation: z.infer<typeof Installation>
+  limits: NativeOutputStorageLimits
+  initializeNewStore?: true
+}): Promise<NativeOutputBudgetLedger> {
+  const installation = Installation.parse(input.installation), limits = Limits.parse(input.limits)
+  if (limits.maxDiskBytes > BYTE_TRANSFER_POLICY.maxStagingBytes || limits.maxSnapshotBytes > BYTE_TRANSFER_POLICY.maxStagingBytes
+    || limits.maxCommandRecords > BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal) throw unavailable()
+  const initial = await openPrivateRoot(input.rootDirectory)
+  let pinned: Awaited<ReturnType<typeof identity>>
+  try { pinned = await identity(initial) } finally { await initial.close() }
+  const locked = async <T>(operation: (root: FileHandle, files: Set<FileHandle>) => Promise<T>) => {
+    const root = await openPrivateRoot(input.rootDirectory), files = new Set<FileHandle>()
+    let acquired = false
+    try {
+      if (!isDeepStrictEqual(await identity(root), pinned)) throw unavailable()
+      await mkdir(anchored(root, '.native-output-budget.lock'), { mode: 0o700 }); acquired = true; await root.sync()
+      return await operation(root, files)
+    } finally {
+      try { if (acquired && files.size === 0) { await rmdir(anchored(root, '.native-output-budget.lock')); await root.sync() } }
+      finally { await root.close() }
+    }
+  }
+  const close = async (file: FileHandle, files: Set<FileHandle>) => { await file.close(); files.delete(file) }
+  const read = async (root: FileHandle, files: Set<FileHandle>) => {
+    const file = await open(anchored(root, '.native-output-budget.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    files.add(file)
+    try {
+      const stat = await file.stat()
+      if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.uid !== process.getuid?.()
+        || stat.size > BYTE_TRANSFER_POLICY.maxRecords * 16_384) throw unavailable()
+      const envelope = z.object({ checksum: z.string().regex(/^[a-f0-9]{64}$/), payload: BudgetJournal }).strict().parse(JSON.parse(await file.readFile('utf8')))
+      if (createHash('sha256').update(JSON.stringify(envelope.payload)).digest('hex') !== envelope.checksum) throw unavailable()
+      const journal = envelope.payload
+      if (!isDeepStrictEqual(journal.installation, installation) || !isDeepStrictEqual(journal.limits, limits)) throw unavailable()
+      return journal
+    } finally { await close(file, files) }
+  }
+  const save = async (root: FileHandle, files: Set<FileHandle>, journal: z.infer<typeof BudgetJournal>) => {
+    const name = `.native-output-budget-${randomUUID()}.tmp`, payload = BudgetJournal.parse(journal)
+    const encoded = JSON.stringify({ checksum: createHash('sha256').update(JSON.stringify(payload)).digest('hex'), payload })
+    if (Buffer.byteLength(encoded) > BYTE_TRANSFER_POLICY.maxRecords * 16_384) throw unavailable()
+    const file = await open(anchored(root, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+    files.add(file)
+    try { await file.writeFile(encoded); await file.sync() } finally { await close(file, files) }
+    await rename(anchored(root, name), anchored(root, '.native-output-budget.json')); await root.sync()
+  }
+  await locked(async (root, files) => {
+    try { await read(root, files) }
+    catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') || !input.initializeNewStore) throw error
+      const entries = await readdir(anchored(root))
+      if (!isDeepStrictEqual(entries, ['.native-output-budget.lock'])) throw unavailable()
+      await save(root, files, { version: 1, installation, limits, records: [] })
+    }
+  })
+  return { reserve: async (raw, signal) => {
+    const owner = BudgetOwner.parse(raw.owner), requested = Limits.parse(raw.requested), artifactId = ArtifactId.parse(raw.artifactId)
+    if (owner.session.harness !== 'codex' || owner.intent.mainId !== installation.mainId
+      || !isDeepStrictEqual({ mainId: owner.binding.mainId, deviceId: owner.binding.deviceId, workerInstallationId: owner.binding.workerInstallationId }, installation) || !isDeepStrictEqual(raw.limits, limits)) throw unavailable()
+    const exact = (record: z.infer<typeof BudgetRecord> | undefined) => {
+      if (!record || record.released || !isDeepStrictEqual(record.owner, owner) || !isDeepStrictEqual(record.requested, requested)) throw unavailable()
+      return record
+    }
+    signal?.throwIfAborted()
+    await locked(async (root, files) => {
+      const journal = await read(root, files), existing = journal.records.find(record => record.artifactId === artifactId)
+      if (existing) { exact(existing); return }
+      if (journal.records.length >= BYTE_TRANSFER_POLICY.maxRecords) throw unavailable()
+      for (const key of ['maxDiskBytes', 'maxSnapshotBytes', 'maxCommandRecords'] as const) {
+        const reserved = journal.records.filter(record => !record.released).reduce((sum, record) => sum + record.requested[key], 0)
+        if (reserved + requested[key] > limits[key]) throw unavailable()
+      }
+      signal?.throwIfAborted()
+      journal.records.push({ artifactId, owner, requested, released: false }); await save(root, files, journal)
+      signal?.throwIfAborted()
+    })
+    return {
+      assertCurrent: async bounded => {
+        bounded?.throwIfAborted()
+        await locked(async (root, files) => { exact((await read(root, files)).records.find(record => record.artifactId === artifactId)); bounded?.throwIfAborted() })
+      },
+      release: async () => {
+        await locked(async (root, files) => {
+          const journal = await read(root, files), record = journal.records.find(record => record.artifactId === artifactId)
+          if (!record || !isDeepStrictEqual(record.owner, owner) || !isDeepStrictEqual(record.requested, requested)) throw unavailable()
+          if (record.released) return
+          record.released = true; await save(root, files, journal)
+        })
+      },
+    }
+  } }
 }

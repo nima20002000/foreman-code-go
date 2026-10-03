@@ -1,5 +1,7 @@
+import { buildApp } from '../src/app.js'
+import { toolFailure } from '../src/mcp/shared/results.js'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, rm, stat } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { openPrivateRoot, identity } from '../src/modules/sources/privateFilesystem.js'
@@ -41,4 +43,18 @@ it('keeps root fixtures private with genuine filesystem identities despite an un
       expect(attestation.runtimeFilesystem).toEqual(allowlist.runtimeFilesystem)
     } finally { await rm(fixture, { recursive: true, force: true }) }
   } finally { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }) }
+})
+
+it('reports a guarded unsafe source root through HTTP and MCP without granting filesystem access', async () => {
+  const directory = await mkdtemp('/var/tmp/entrypoints-guard-'), root = join(directory, 'private')
+  await mkdir(root, { mode: 0o700 }); await chmod(directory, 0o775)
+  const app = buildApp({logger:false,readiness:{database:{ping:async()=>{}},checkpoints:{ping:async()=>{}}}})
+  app.post('/guarded-source', async () => { const handle = await openPrivateRoot(root); await handle.close() })
+  try {
+    const response = await app.inject({method:'POST',url:'/guarded-source'})
+    expect(response.statusCode).toBe(422)
+    expect(response.json().error).toMatchObject({code:'SOURCE_FILESYSTEM_UNSUPPORTED',message:expect.stringContaining('Root ancestors')})
+    const error = await openPrivateRoot(root).catch(error => error)
+    expect(JSON.parse((toolFailure(error).content![0] as {text:string}).text).error).toMatchObject({code:'SOURCE_FILESYSTEM_UNSUPPORTED'})
+  } finally { await app.close();await rm(directory,{recursive:true,force:true}) }
 })

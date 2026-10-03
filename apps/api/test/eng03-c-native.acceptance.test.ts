@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, DurableInteractionSchema, HarnessExecutionSchema,
   type NativeSessionReference } from '@graphql/contracts'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { cgroupBoundary, killCgroup } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
 import { bootIdentity, identityAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
@@ -16,6 +16,7 @@ import { repeatDigest, type RepeatNodeInput, type RepeatInputBinding } from '../
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
 import { runEng03NativeScenario, type Eng03NativeControl } from './helpers/eng03NativeAcceptance.js'
+import { qualifyEng03OpenCode } from './helpers/eng03OpenCodeQualification.js'
 
 async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeControl) {
   const deadline = Date.now() + 120_000
@@ -38,6 +39,9 @@ async function startedBranches({ pool, runId, nodeIds, runs }: Eng03NativeContro
 
 /** Paid-provider, task-owned internal qualification. Public app acceptance is separate. */
 describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live native lifecycle', () => {
+  let closeQualification: (() => Promise<void>) | undefined
+  beforeAll(async () => { closeQualification = await qualifyEng03OpenCode() }, 360_000)
+  afterAll(async () => { await closeQualification?.() }, 30_000)
   it('E03-L01 stops two positively started Codex branches without starting Reviewer', async () => {
     let started: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L01', 'codex', 'codex', {
@@ -61,10 +65,12 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
 
   it('E03-L02 fails the Run when one active task-owned process closes, then settles its sibling', async () => {
     let interruptedExecutionId = ''
+    let originalBranches: Array<{ execution_id: string; native_session_id: string }> = []
     const result = await runEng03NativeScenario('E03-L02', 'codex', 'codex', {
       control: async (context) => {
         const { pool, runId, nodeIds, registry, runs, startTask } = context
         const started = await startedBranches(context)
+        originalBranches = started
         interruptedExecutionId = started[0]!.execution_id
         await registry.closeOwner(`execution:${interruptedExecutionId}`)
         await startTask.catch(() => undefined)
@@ -74,24 +80,31 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
       },
     })
     const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
-      runOutcome: string; cleanup: boolean; executions: Array<{ id: string; result?: { outcome: string } }>
+      runOutcome: string; cleanup: boolean; activeCredentialCount: number
+      executions: Array<{ id: string; nativeSessionId?: string; result?: { outcome: string; error?: { code: string; retryable: boolean } } }>
     }
     expect(artifact.runOutcome).toBe('failed')
     expect(artifact.cleanup).toBe(true)
-    // The provider reports this interrupted turn as canceled. The saved
-    // selected-path policy fails the Run and cancels the sibling; it cannot
-    // turn either canceled branch into accepted success.
+    // The interrupted turn has a genuine native canceled source. Without a
+    // persisted Stop, closure without an accepted terminal is EXECUTION_INTERRUPTED.
     expect(artifact.executions.find((item) => item.id === interruptedExecutionId)?.result?.outcome).toBe('canceled')
-    expect(artifact.executions.filter((item) => item.result?.outcome === 'canceled')).toHaveLength(2)
+    const sibling = originalBranches.find((item) => item.execution_id !== interruptedExecutionId)!
+    expect(artifact.executions.find((item) => item.id === sibling.execution_id)?.result).toMatchObject({
+      outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: false },
+    })
+    for (const original of originalBranches) expect(artifact.executions.find((item) => item.id === original.execution_id)?.nativeSessionId).toBe(original.native_session_id)
+    expect(artifact.activeCredentialCount).toBe(0)
   }, 180_000)
 
   it('E03-L02 fails after an exact task-owned native cgroup exits abnormally', async () => {
     let interruptedExecutionId = ''
+    let originalBranches: Array<{ execution_id: string; native_session_id: string }> = []
     let fault: { registrationId: string; guardianPid: number; guardianStartTicks: string; cgroup: string; at: string } | undefined
     const result = await runEng03NativeScenario('E03-L02', 'codex', 'codex', {
       control: async (context) => {
         const { pool, runId, nodeIds, runtimeDirectory, registry, runs, startTask } = context
         const started = await startedBranches(context)
+        originalBranches = started
         interruptedExecutionId = started[0]!.execution_id
         const owner = `execution:${interruptedExecutionId}`
         const scope = registry.scope(owner)
@@ -121,15 +134,19 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
     })
     const artifact = JSON.parse(await readFile(result.artifactPath, 'utf8')) as {
       runId: string; runOutcome: string; cleanup: boolean; activeCredentialCount: number
-      executions: Array<{ id: string; result?: { outcome: string } }>
+      executions: Array<{ id: string; nativeSessionId?: string; result?: { outcome: string; error?: { code: string; retryable: boolean } } }>
     }
     expect(artifact.runOutcome).toBe('failed')
     expect(artifact.cleanup).toBe(true)
     expect(artifact.activeCredentialCount).toBe(0)
-    // An abruptly killed provider turn was observed as canceled. The selected
-    // path fails the Run, and the sibling is canceled without a Reviewer launch.
+    // Native canceled is distinct from closure without an accepted terminal.
+    // The latter stays failed/nonretryable unless the Run has a persisted Stop.
     expect(artifact.executions.find((item) => item.id === interruptedExecutionId)?.result?.outcome).toBe('canceled')
-    expect(artifact.executions.filter((item) => item.result?.outcome === 'canceled')).toHaveLength(2)
+    const sibling = originalBranches.find((item) => item.execution_id !== interruptedExecutionId)!
+    expect(artifact.executions.find((item) => item.id === sibling.execution_id)?.result).toMatchObject({
+      outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: false },
+    })
+    for (const original of originalBranches) expect(artifact.executions.find((item) => item.id === original.execution_id)?.nativeSessionId).toBe(original.native_session_id)
     expect(fault).toBeDefined()
     await writeFile(result.artifactPath.replace('.json', '-fault.json'), JSON.stringify({
       scenario: 'E03-L02', mode: 'native internal abnormal task-owned cgroup exit',
@@ -294,6 +311,9 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
           }
           expect(delivered.deliveryState).toBe('delivered')
           await startTask.catch(() => undefined)
+          // The original Start may already have finished at the waiting
+          // checkpoint. Join the exact current resumed/reconciled Run task.
+          await engine.start(runId)
           expect((await runs.get(runId))?.outcome).toBe('succeeded')
           const effects = await pool.query<{ effect_kind: string; count: number }>(
             `select effect_kind,count(*)::int as count from run_graph_effects where run_id=$1
@@ -411,6 +431,7 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
           const next = await restartRecoverableRuntime()
           expect((await next.runs.getExecution(cutExecutionId))?.nativeSessionId).toBe(cutNativeSessionId)
           await next.engine.reconcile()
+          await next.engine.start(runId)
           expect((await next.runs.get(runId))?.outcome).toBe('succeeded')
           expect((await next.runs.getExecution(cutExecutionId))?.result).toEqual(cutResult)
           const after = await pool.query<{ accepted: boolean }>('select accepted from harness_executions where id=$1', [cutExecutionId])

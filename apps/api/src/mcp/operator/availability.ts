@@ -131,15 +131,22 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'run_start') scope = 'workflow'
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name === 'operator_get_capabilities') scope = 'caller'
-  if (['operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'codex_plugins_list', 'codex_plugin_get'].includes(name)) scope = 'global'
+  if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'codex_plugins_list', 'codex_plugin_get'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
+  if (name === 'workspace_storage_folders_list' || name === 'workspace_storage_folder_delete') {
+    result[0]!.scope = 'global'
+    result.push({ action: 'workspace_locations:read', scope: 'global' })
+    if (name === 'workspace_storage_folder_delete') result.push({ action: 'workspace_locations:provision', scope: 'global' })
+  }
   if (name.startsWith('workspace_root_')) {
     if (entry.action !== 'source_roots:read') result.push({ action: 'source_roots:read', scope: 'workspace' })
     if (entry.action !== 'workspace_locations:read') result.push({ action: 'workspace_locations:read', scope: 'workspace' })
     if (name === 'workspace_root_location_set') result.push({ action: 'source_roots:bind', scope: 'workspace' }, { action: 'workspace_locations:validate', scope: 'workspace' })
   }
   if (name === 'source_approve') result.push({action:'sources:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
+  if (name.startsWith('source_preparation_')) result.push({action:'source_roots:read',scope:'workspace'})
+  if (name === 'source_preparation_reconcile') result.push({action:'sources:read',scope:'workspace'})
   if (name.startsWith('source_root_')) result.push({action:'sources:read',scope:'workspace'})
   if (name === 'source_root_bind') result.push({action:'source_roots:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
   // Every chat command returns protected state. Discovery requires overlapping
@@ -206,6 +213,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if ((name === 'operator_mcp_setup_get' || name.startsWith('operator_chat_') || name === 'operator_handoff_history_get')
     && !service.operatorChat) return false
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name) && !service.harnessSettings) return false
+  if (['workspace_storage_folders_list', 'workspace_storage_folder_delete'].includes(name) && !service.workspaces?.storageFolders) return false
   if (['harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get'].includes(name) && !service.harnessSettings) return false
   if (['codex_plugins_list', 'codex_plugin_get'].includes(name) && !service.harnessSettings?.plugins) return false
   if (name.startsWith('interaction_') && !service.interactions) return false

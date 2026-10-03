@@ -1,7 +1,13 @@
-import { ExecutionReadinessSchema } from '@graphql/contracts/management'
+import { ExecutionReadinessSchema, type ExecutionReadiness } from '@graphql/contracts/management'
 import type { AgentHarness } from '@graphql/contracts'
 import { apiClient } from '../../shared/api/client'
 
-export function getExecutionReadiness(harness: AgentHarness, signal?: AbortSignal) {
-  return apiClient.request(`/api/management/harnesses/${harness}/execution-readiness`, ExecutionReadinessSchema, { signal })
+export function getExecutionReadiness(harness: AgentHarness, signal?: AbortSignal,
+  scope: ExecutionReadiness['scope'] = 'saved-harness-defaults', configurationVersionId?: string) {
+  const query = new URLSearchParams({ scope, ...(configurationVersionId ? { configurationVersionId } : {}) })
+  const response = ExecutionReadinessSchema.refine(value => value.harness === harness && value.scope === scope
+    && (!configurationVersionId || value.configurationVersionId === configurationVersionId), {
+    message: 'Execution readiness does not match the selected configuration.',
+  })
+  return apiClient.request(`/api/management/harnesses/${harness}/execution-readiness?${query}`, response, { signal })
 }

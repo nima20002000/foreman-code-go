@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { HarnessExecutionSchema, HarnessNativeEventSchema, WorkflowRunSchema, type HarnessNativeEvent } from '@graphql/contracts'
 import pg from 'pg'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { applyApplicationMigrations, migrations } from '../src/infrastructure/migrations.js'
 import { nativeEventSequenceMigration } from '../src/infrastructure/nativeEventSequenceMigration.js'
@@ -12,7 +12,7 @@ import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 const timestamp = '2026-09-17T00:00:00.000Z'
 
-async function database(test: (pool: pg.Pool) => Promise<void>, existingPR17 = false) {
+async function createDatabase(existingPR17 = false) {
   const schema = `event_allocation_${randomUUID().replaceAll('-', '')}`
   const admin = new pg.Pool({ connectionString })
   await admin.query(`create schema "${schema}"`)
@@ -41,11 +41,20 @@ async function database(test: (pool: pg.Pool) => Promise<void>, existingPR17 = f
       await applyApplicationMigrations(pool)
     }
     await seed(pool)
-    await test(pool)
-  } finally {
+    return { pool, close }
+  } catch (error) {
+    await close()
+    throw error
+  }
+  async function close() {
     await pool.end()
     try { await admin.query(`drop schema "${schema}" cascade`) } finally { await admin.end() }
   }
+}
+
+async function database(test: (pool: pg.Pool) => Promise<void>, existingPR17 = false) {
+  const fixture = await createDatabase(existingPR17)
+  try { await test(fixture.pool) } finally { await fixture.close() }
 }
 
 async function seed(pool: pg.Pool) {
@@ -127,6 +136,14 @@ async function forcedRace(pool: pg.Pool, first: HarnessNativeEvent, second: Harn
 }
 
 describe('PR17 F10 PostgreSQL event allocation', () => {
+  let fixture: Awaited<ReturnType<typeof createDatabase>> | undefined
+  beforeEach(async () => { fixture = await createDatabase() }, 60_000)
+  afterEach(async () => {
+    const current = fixture; fixture = undefined
+    await current?.close()
+  }, 60_000)
+  const database = (test: (pool: pg.Pool) => Promise<void>) => test(fixture!.pool)
+
   it('forces the stale-snapshot race; stores both events and their Activity references exactly once', async () => {
     await database(async (pool) => {
       const first = event(17); const second = event(18)

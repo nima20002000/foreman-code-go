@@ -84,6 +84,8 @@ export interface OperatorChatAuthority {
   current(principalId: string): Promise<ManagementPrincipal>
   assertConfiguration(configuration: OperatorConfigurationVersion): void
   setup(manager: NativeHarnessSessionManager, signal: AbortSignal, configuration?: OperatorConfigurationVersion): Promise<OperatorChatSetup>
+  /** Installation inspection has read authority and no accepted native turn. */
+  setupConfiguration?(principal: ManagementPrincipal, configuration: OperatorConfigurationVersion, signal: AbortSignal): Promise<OperatorChatSetup>
   prepare(manager: NativeHarnessSessionManager, configuration: OperatorConfigurationVersion, conversationId: string,
     principalId: string, signal: AbortSignal): Promise<ChildProcessEnvironment>
   release(conversationId: string): Promise<void>
@@ -180,19 +182,33 @@ export class OperatorChatService {
     if (!configuration && row && (!input.harness || input.harness === row.harness)) {
       configuration = await this.repository.configuration(row.operator_configuration_version_id)
     }
+    // Before admission, a cross-harness command pins its source conversation
+    // and the reviewed destination defaults. A persisted receipt wins above.
+    if (!accepted && configuration && row && input.requestId && input.harness && configuration.harness.harness !== input.harness) {
+      if (input.expectedDefaultsRevision === undefined || input.configurationVersionId !== row.operator_configuration_version_id) throw new DomainError(
+        'OPERATOR_CONFIGURATION_CONFLICT', 'The pending harness change no longer matches its reviewed source configuration.', 409)
+      configuration = await this.operators.inspectionConfiguration(input.expectedDefaultsRevision)
+    }
     configuration ??= await this.operators.inspectionConfiguration(input.expectedDefaultsRevision)
     if ((input.harness && configuration.harness.harness !== input.harness)
       || (row && configuration.operatorId !== 'application-operator')) {
       throw new DomainError('OPERATOR_CONFIGURATION_CONFLICT', 'The requested message configuration does not match its Operator harness.', 409)
     }
     const selected = configuration
-    const configurationId = `${selected.id}:${selected.contentHash}`
+    const configurationId = `${principal.id}:${selected.id}:${selected.contentHash}`
     if (this.setupCheck?.configurationId === configurationId) return this.setupCheck.promise
     const check = (async () => {
+      const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
+      if (selected.harness.harness === 'claude') {
+        if (!this.authority.setupConfiguration) throw new DomainError('OPERATOR_SETUP_INSPECTION_UNAVAILABLE',
+          'Claude installation inspection is unavailable.', 503)
+        const result = await this.authority.setupConfiguration(principal, selected, signal)
+        return { ...result, ...(selected.id === 'application-operator-inspection' ? {} : { configurationVersionId: selected.id }) }
+      }
       const id = `operator-setup:${randomUUID()}`
       const manager = this.managers(selected, id)
       try {
-        const result = await this.authority.setup(manager, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]), selected)
+        const result = await this.authority.setup(manager, signal, selected)
         return { ...result, ...(selected.id === 'application-operator-inspection' ? {} : { configurationVersionId: selected.id }) }
       } finally { try { await manager.dispose?.() } finally { this.managers.release?.(id) } }
     })()
@@ -715,6 +731,11 @@ export class OperatorChatService {
     if (!currentOwner || currentOwner.active_request_id !== requestId || currentOwner.native_session_id !== row.native_session_id) return
     const pending = pendingInteractionAfterHistory(currentOwner.pending_interaction, history)
     await this.repository.pending(id, requestId, pending)
+    if (!this.responding.has(id) && history.nativeTurnId && history.responseDeliveries?.length) {
+      const state = await this.repository.get(id)
+      if (state) await this.receipts().reconcileResponses(id, requestId, { kind: 'operator_chat', conversationId: id },
+        runtime.session, history.nativeTurnId, history.responseDeliveries, state)
+    }
     if (history.terminalResult && !pending && (!messageIdentity || history.terminalTurn?.correlationId === correlationId
       && history.terminalTurn.providerId === receipt!.nativeMessageId)) {
       await this.complete(id, requestId, history.terminalResult, history.nativeMessageId)

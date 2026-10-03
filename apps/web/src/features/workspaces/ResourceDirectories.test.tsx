@@ -19,13 +19,13 @@ function workspace(locationValidation: ManagedWorkspace['locationValidation']): 
 }
 
 describe('compact workspace and workflow cards', () => {
-  it('shows the destination under the workspace name and keeps actions separate from opening', async () => {
+  it('shows compact workspace names without routine destination text and keeps actions separate from opening', async () => {
     server.use(http.get('/api/management/workspaces', () => HttpResponse.json({
       items: [workspace({ status: 'ready', checkedAt: '2026-09-19T00:00:00Z' })], pageInfo: { nextCursor: null },
     })))
     const { router } = renderWithRouter(<WorkspaceDirectory />)
     const card = await screen.findByTestId('workspace-card-workspace-1')
-    expect(within(card).getByText('/projects/website')).toBeVisible()
+    expect(within(card).queryByText('/projects/website')).not.toBeInTheDocument()
     const open = within(card).getByRole('link', { name: 'A workspace with a long, meaningful project name' })
     expect(open).toHaveAttribute('href', '/workspaces/workspace-1/settings')
     const actions = within(card).getByRole('button', { name: /Open actions/ })
@@ -41,7 +41,7 @@ describe('compact workspace and workflow cards', () => {
       items: [workspace({ status: 'restricted' })], pageInfo: { nextCursor: null },
     })))
     renderWithRouter(<WorkspaceDirectory />)
-    expect(await screen.findByText('Location restricted')).toBeVisible()
+    expect(await screen.findByRole('img', { name: 'Location restricted' })).toBeVisible()
     expect(screen.queryByText('Choose a destination')).not.toBeInTheDocument()
     expect(screen.queryByText('/projects/website')).not.toBeInTheDocument()
   })

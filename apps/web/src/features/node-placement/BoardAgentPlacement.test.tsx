@@ -1,8 +1,9 @@
 import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
+import { ApiError } from '../../shared/api/client'
 import { BoardAgentSettings } from '../workflow-board/AgentControls'
 import { fixture } from '../graph/nextDraft/core.cases'
 import { useGraphDraftStore } from '../graph/store'
@@ -60,5 +61,30 @@ it('keeps computer selection on the clicked node when two nodes share one Agent'
   expect(nativeNode(applied.graph.nodes.find(node => node.id === sibling.id))?.placement).toEqual(placement)
   expect(nativeNode(applied.graph.nodes.find(node => node.id === original.id))?.placement).toBeUndefined()
   expect(nativeNode(applied.context.draft.graph.nodes.find(node => node.id === sibling.id))?.placement).toBeUndefined()
+  view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
+})
+
+it('keeps unrelated Agent edits when placement choices are denied for a saved placed node', async () => {
+  const context = fixture(), key = 'placement-denied-retains-edits'
+  context.draft.graph = { ...context.draft.graph, nodes: context.draft.graph.nodes.map((node, index) => index ? node : { ...nativeNode(node)!, placement }) }
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  let deny!: () => void
+  const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(() => new Promise((_, reject) => { deny = () => reject(new ApiError({ code: 'FORBIDDEN', message: 'Forbidden' }, 403)) }))
+  function Board() {
+    const edit = useGraphDraftStore((state) => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Name' }))
+  await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), 'Renamed')
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.agentForms?.['node-0']?.name).toBe('Renamed')
+  await act(async () => { deny() })
+  await screen.findByText('Computer choices are unavailable.')
+  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Renamed')
+  await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), '!')
+  const form = useGraphDraftStore.getState().nextDrafts[key]?.agentForms?.['node-0']
+  expect(form).toMatchObject({ name: 'Renamed!' })
+  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Renamed!')
   view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
 })

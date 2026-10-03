@@ -9,17 +9,20 @@ import type { ProductionHarnessRegistry } from './productionRegistry.js'
 import type { NativeHarnessFactories } from './runtimeFactory.js'
 import { harnessProfile } from './qualification/profiles.js'
 import { qualificationError } from './qualificationErrors.js'
+import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
 
 /** Explicit profile checks enter through real role-isolated adapters. A saved
  * config, filesystem inventory, worker heartbeat or fixture never grants trust. */
 export class ProductionHostHarnessProfileQualifier implements HostHarnessProfileQualifier {
   constructor(private readonly registry: ProductionHarnessRegistry, private readonly factories: NativeHarnessFactories,
-    private readonly endpoint: () => DeviceEndpoint, private readonly workingDirectory: string) {}
+    private readonly endpoint: () => DeviceEndpoint, private readonly workingDirectory: string,
+    private readonly claude?: HostHarnessProfileQualifier) {}
   async qualify(value: HostHarnessOverride, input: { checkId: string; signal: AbortSignal }): Promise<HostHarnessProfileEvidence> {
     input.signal.throwIfAborted()
     if (commandInputHash(withAdvancedDefaults(value.configuration)) !== value.configurationFingerprint) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The saved configuration fingerprint is invalid.', 409)
     }
+    requireClaudeProductionCredentialDelivery(value.configuration)
     if (value.target.hostRef.kind === 'device') {
       const endpoint = this.endpoint()
       if (!endpoint.capabilities(value.target.hostRef.deviceId).some((item) => item.namespace === 'host-harness-check-v1' && item.mainCanRequest)) {
@@ -46,6 +49,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
     if (harnessHostKey(binding.selection.hostRef) !== harnessHostKey(value.target.hostRef)) throw new DomainError(
       'HARNESS_PROFILE_EVIDENCE_MISMATCH', 'The native check must run on the exact selected host.', 409)
     const configuration = value.configuration
+    if (configuration.harness === 'claude' && this.claude) return this.claude.qualify(value, input)
     if (configuration.harness !== 'codex' && configuration.harness !== 'opencode') throw new DomainError(
       'HARNESS_DRIVER_UNAVAILABLE', 'This host has no qualified implementation for the selected driver.', 409)
     const allocation = this.factories.allocate({ harness: configuration.harness, role: 'qualification', selection: binding,

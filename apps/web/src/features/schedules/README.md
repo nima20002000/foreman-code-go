@@ -59,7 +59,7 @@ command variables. Zustand owns open state, editable form strings, field errors,
 and draft comparison/concurrency tokens. A background read cannot overwrite an
 initialized draft. Opening performs a fresh read; a failed read is never treated
 as an absent schedule. The next-run line always comes from server readback in
-that record's timezone, never from a client recurrence preview or an edited form.
+the viewing device's timezone, never from a client recurrence preview or an edited form.
 
 A command has no automatic retries/offline resume. Synchronous mutation-cache
 checks fence double clicks and a second control for the same workflow. A network,
@@ -99,14 +99,18 @@ a GET after such a forced reset.
 - Shared Dialog implements backdrop/Escape/focus behavior. Dirty dismissal goes
   through the shared unsaved-change guard. Pending/unconfirmed operations lock
   editing and dismissal, with an explicit same-command Retry for uncertainty.
-- Timezone choices use the browser's IANA list, with UTC and the persisted alias
-  retained. Older runtimes without `Intl.supportedValuesOf` offer UTC and the
-  browser/current zone; no incomplete hardcoded world-zone list is substituted.
+- Native date/time fields use the browser device's IANA timezone; no timezone
+  selector is needed. New Once settings normalize to UTC and reopen locally.
+  Weekly settings retain their saved source calendar until days/time are edited;
+  on a different device, the fields show the next occurrence in local time with
+  the saved source intent disclosed. A days/time edit intentionally uses the
+  editing device's calendar. Viewing, unchanged saves and enabled-only edits
+  preserve the original recurrence, including daylight-saving behavior.
 
 ## Verification
 
 Tests use Vitest, Testing Library, and the existing MSW server, not mocked client
-methods. They cover Weekly, both Interval units, Once, validation, conflict and
+methods. They cover Weekly, second/minute/hour Interval units, Once, validation, conflict and
 error preservation, disable/re-enable, fresh reopen, server-only next-run display,
 backdrop versus inside drag, focus return, the unsaved guard, keyboard tabs,
 unknown/malformed responses, same-command replay after remount, later 403 after

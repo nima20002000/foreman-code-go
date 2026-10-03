@@ -1,8 +1,8 @@
 import { createStore } from 'zustand/vanilla'
 import { ZodError } from 'zod'
 import {
-  parseScheduleSaveInput, ScheduleTimeZoneSchema,
-  type ScheduleConfiguration, type ScheduleGetInput,
+  nextOccurrences, parseScheduleSaveInput, scheduleLocalTimeToUtc, scheduleUtcToLocalTime, ScheduleTimeZoneSchema,
+  type ScheduleConfiguration, type ScheduleGetInput, type WorkflowSchedule,
 } from '@graphql/contracts/schedules'
 import type { NewScheduleCommand } from './queries'
 
@@ -13,8 +13,12 @@ export interface ScheduleDraft {
   weekdays: number[]
   time: string
   every: string
-  unit: 'minute' | 'hour'
+  unit: Extract<ScheduleConfiguration, { mode: 'interval' }>['unit']
   anchorAt?: string
+  onceInstant?: string
+  // Original calendar intent plus its displayed comparison token, not a server cache.
+  weeklyOriginal?: Extract<ScheduleConfiguration, { mode: 'weekly' }>
+  weeklyLocalIdentity?: string
   localDate: string
   timezone: string
   enabled: boolean
@@ -27,13 +31,6 @@ export function browserTimezone(): string {
     return ScheduleTimeZoneSchema.safeParse(zone).success ? zone : 'UTC'
   } catch { return 'UTC' }
 }
-export function timezoneOptions(current: string): string[] {
-  const intl = Intl as typeof Intl & { supportedValuesOf?: (key: 'timeZone') => string[] }
-  let zones: string[] = []
-  try { zones = intl.supportedValuesOf?.('timeZone') ?? [] } catch { /* Browser zone and UTC remain usable. */ }
-  // Intl's canonical list can omit aliases already persisted by the service.
-  return [...new Set(['UTC', browserTimezone(), current, ...zones])].sort()
-}
 function tomorrow(timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en', {
     timeZone, calendar: 'iso8601', numberingSystem: 'latn', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -41,17 +38,43 @@ function tomorrow(timeZone: string): string {
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((value) => value.type === type)?.value ?? ''
   return `${part('year').padStart(4, '0')}-${part('month')}-${part('day')}`
 }
-export function createDraft(value: ScheduleConfiguration | null): ScheduleDraft {
-  const timezone = value?.timezone ?? browserTimezone()
+export function createDraft(value: ScheduleConfiguration | WorkflowSchedule | null): ScheduleDraft {
+  const timezone = browserTimezone()
+  const onceInstant = value?.mode === 'once' ? scheduleLocalTimeToUtc(value.localDate, value.time, value.timezone) : undefined
+  const onceLocal = onceInstant ? scheduleUtcToLocalTime(onceInstant, timezone) : undefined
+  let weeklyLocal: { time: string; weekdays: number[] } | undefined
+  if (value?.mode === 'weekly' && value.timezone !== timezone) {
+    const instant = ('nextOccurrenceAt' in value ? value.nextOccurrenceAt : null)
+      ?? nextOccurrences({ ...value, enabled: true }, new Date().toISOString(), 1)[0]
+    if (instant) {
+      const source = scheduleUtcToLocalTime(instant, value.timezone)
+      const local = scheduleUtcToLocalTime(instant, timezone)
+      const dayShift = Math.round((Date.parse(`${local.localDate}T00:00:00Z`) - Date.parse(`${source.localDate}T00:00:00Z`)) / 86_400_000)
+      weeklyLocal = { time: local.time, weekdays: value.weekdays.map((day) => ((day - 1 + dayShift + 7) % 7) + 1).sort((a, b) => a - b) }
+    }
+  }
+  const days = weeklyLocal?.weekdays ?? (value?.mode === 'weekly' ? [...value.weekdays].sort((a, b) => a - b) : [1, 2, 3, 4, 5])
+  const time = weeklyLocal?.time ?? (value?.mode === 'weekly' ? value.time : onceLocal?.time ?? '09:00')
   return {
     mode: value?.mode ?? 'weekly', timezone, enabled: value?.enabled ?? true,
-    weekdays: value?.mode === 'weekly' ? [...value.weekdays].sort((a, b) => a - b) : [1, 2, 3, 4, 5],
-    time: value?.mode === 'weekly' || value?.mode === 'once' ? value.time : '09:00',
+    weekdays: days, time,
     every: value?.mode === 'interval' ? String(value.every) : '1',
     unit: value?.mode === 'interval' ? value.unit : 'hour',
     anchorAt: value?.mode === 'interval' ? value.anchorAt : undefined,
-    localDate: value?.mode === 'once' ? value.localDate : tomorrow(timezone),
+    onceInstant,
+    weeklyOriginal: value?.mode === 'weekly' ? { mode: value.mode, timezone: value.timezone, weekdays: [...value.weekdays], time: value.time,
+      enabled: value.enabled, policy: value.policy } : undefined,
+    weeklyLocalIdentity: value?.mode === 'weekly' ? weeklySettingsIdentity(days, time) : undefined,
+    localDate: onceLocal?.localDate ?? tomorrow(timezone),
   }
+}
+
+function weeklySettingsIdentity(days: number[], time: string): string {
+  return JSON.stringify({ weekdays: [...days].sort((a, b) => a - b), time })
+}
+
+export function weeklyCalendarChanged(draft: ScheduleDraft): boolean {
+  return draft.weeklyLocalIdentity !== weeklySettingsIdentity(draft.weekdays, draft.time)
 }
 
 /** Ignore inactive tab fields; changing tabs back does not manufacture a settings edit. */
@@ -108,14 +131,22 @@ export function buildScheduleCommand(
   if (draft.mode === 'interval' && (!Number.isSafeInteger(every) || every < 1)) {
     return { errors: { every: 'Use a whole number ≥ 1.' } }
   }
-  const newAnchor = Date.parse(nowUtc) + every * (draft.unit === 'minute' ? 60_000 : 3_600_000)
+  const newAnchor = Date.parse(nowUtc) + every * (draft.unit === 'second' ? 1_000 : draft.unit === 'minute' ? 60_000 : 3_600_000)
   if (draft.mode === 'interval' && !draft.anchorAt && (!Number.isFinite(newAnchor) || newAnchor > Date.parse('9999-12-31T23:59:59.999Z'))) {
     return { errors: { every: 'Interval is too large.' } }
   }
-  const schedule = draft.mode === 'weekly' ? { ...common, mode: draft.mode, weekdays: draft.weekdays, time: draft.time }
-    : draft.mode === 'once' ? { ...common, mode: draft.mode, localDate: draft.localDate, time: draft.time }
-      : { ...common, mode: draft.mode, every, unit: draft.unit, anchorAt: draft.anchorAt ?? new Date(newAnchor).toISOString() }
   try {
+    // A saved instant can be the later side of a DST overlap. An unchanged local
+    // display must retain that exact instant rather than resolve the earlier fold.
+    const originalOnce = draft.onceInstant ? scheduleUtcToLocalTime(draft.onceInstant, draft.timezone) : null
+    const onceAt = draft.mode === 'once' ? originalOnce?.localDate === draft.localDate && originalOnce.time === draft.time
+      ? draft.onceInstant! : scheduleLocalTimeToUtc(draft.localDate, draft.time, draft.timezone) : null
+    const onceUtc = onceAt ? scheduleUtcToLocalTime(onceAt, 'UTC') : null
+    const schedule = draft.mode === 'weekly' ? draft.weeklyOriginal && !weeklyCalendarChanged(draft)
+      ? { ...draft.weeklyOriginal, enabled: draft.enabled }
+      : { ...common, mode: draft.mode, weekdays: draft.weekdays, time: draft.time }
+      : draft.mode === 'once' ? { ...common, mode: draft.mode, timezone: 'UTC', localDate: onceUtc!.localDate, time: onceUtc!.time }
+        : { ...common, mode: draft.mode, every, unit: draft.unit, anchorAt: draft.anchorAt ?? new Date(newAnchor).toISOString() }
     // This browser clock is only an early validation hint. The service validates its
     // own clock, after replay lookup. No occurrence preview is presented as server truth.
     const parsed = parseScheduleSaveInput({
@@ -126,12 +157,13 @@ export function buildScheduleCommand(
     if (!(error instanceof ZodError)) return { errors: { form: 'Check schedule.' } }
     const errors: DraftErrors = {}
     for (const issue of error.issues) {
-      switch (issue.path[1]) {
+      const field = issue.path[0] === 'schedule' ? issue.path[1] : issue.path[0]
+      switch (field) {
         case 'weekdays': errors.weekdays = 'Choose a day.'; break
         case 'time': errors.time = 'Choose a time.'; break
         case 'every': errors.every = 'Use a whole number ≥ 1.'; break
         case 'localDate': errors.localDate = 'Choose a future date and time.'; break
-        case 'timezone': errors.timezone = 'Choose a timezone.'; break
+        case 'timezone': errors.timezone = 'Could not read the device timezone.'; break
         default: errors.form = 'Check schedule.'
       }
     }

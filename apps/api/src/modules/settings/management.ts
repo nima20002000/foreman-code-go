@@ -16,7 +16,7 @@ export class FoundationSettingsManagementService {
     private readonly commands: PostgresCommandCoordinator,
     private readonly harnesses?: Pick<HarnessCatalogService, 'qualifyConfiguration'>,
     private readonly operators?: PostgresOperatorRepository,
-    private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'>,
+    private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'> & Partial<Pick<HostHarnessOverrideService, 'selectionForConfiguration' | 'prepareOperatorConfiguration'>>,
   ) {}
 
   getWorkspaceDefaults(principal: ManagementPrincipal) {
@@ -61,16 +61,29 @@ export class FoundationSettingsManagementService {
         if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {
           const configuration = value[role].harness
-          const selection = value[role].harnessProfileSelection
-          if (selection) {
-            if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
-            await this.profiles.validateSelection(principal, selection, configuration, client)
-            continue
+          if (role === 'operator' && configuration.harness === 'claude'
+            && value[role].harnessProfileSelection?.target.hostRef.kind === 'main'
+            && isDeepStrictEqual(value[role].harnessProfileSelection, previous.value[role].harnessProfileSelection)
+            && !isDeepStrictEqual(withAdvancedDefaults(configuration), withAdvancedDefaults(previous.value[role].harness))) {
+            // A newly edited default cannot reuse its previous exact proof.
+            // Accepted conversations and the saved source profile stay pinned.
+            delete value[role].harnessProfileSelection
           }
+          if (role === 'operator' && configuration.harness === 'claude' && !value[role].harnessProfileSelection) {
+            const resolved = await this.profiles?.selectionForConfiguration?.(principal, configuration, client)
+              ?? await this.profiles?.prepareOperatorConfiguration?.(principal, source, configuration, input.commandId)
+            if (resolved) value[role].harnessProfileSelection = resolved
+          }
+          const selection = value[role].harnessProfileSelection
           // Even unchanged legacy defaults must satisfy Operator chat's resumability boundary.
           // Validate before the unchanged-configuration shortcut or any persistent write.
           if (role === 'operator' && configuration.harness === 'codex') {
             CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
+          }
+          if (selection) {
+            if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
+            await this.profiles.validateSelection(principal, selection, configuration, client)
+            continue
           }
           if (isDeepStrictEqual(withAdvancedDefaults(previous.value[role].harness), withAdvancedDefaults(configuration))) continue
           if (!this.harnesses) throw new DomainError('HARNESS_QUALIFICATION_UNAVAILABLE', 'Native qualification is unavailable; changed configurations were not saved.', 503)

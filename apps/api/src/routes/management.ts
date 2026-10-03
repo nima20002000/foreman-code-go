@@ -37,6 +37,7 @@ import {
   WorkspaceCreateInputSchema,
   WorkspaceGetInputSchema,
   WorkspaceListInputSchema,
+  WorkspaceStorageFoldersListInputSchema, WorkspaceStorageFolderDeleteInputSchema,
   WorkspaceUpdateInputSchema,
   WorkspaceLocationSetInputSchema,
   WorkspaceLocationValidateInputSchema,
@@ -99,6 +100,10 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   }
   app.get<{ Querystring: Query }>('/api/management/workspaces', async (request) =>
     services.workspaces.list(requirePrincipal(request), WorkspaceListInputSchema.parse(page(request.query))))
+  app.get<{ Querystring: Query }>('/api/management/workspace-storage/folders', async (request) =>
+    services.workspaces.storageFolders.list(requirePrincipal(request), WorkspaceStorageFoldersListInputSchema.parse(page(request.query))))
+  app.post<{ Body: unknown }>('/api/management/workspace-storage/folders/delete', async (request) =>
+    services.workspaces.storageFolders.delete(requirePrincipal(request), 'http', WorkspaceStorageFolderDeleteInputSchema.parse(request.body)))
   app.post<{ Body: unknown }>('/api/management/workspaces', async (request, reply) => {
     const input = WorkspaceCreateInputSchema.parse(request.body)
     if (input.parentPath) requireBrowserSession(request)

@@ -107,7 +107,7 @@ function sqlFixture(openCount: number, prior?: ReturnType<typeof receipt>, state
         content: (JSON.parse(String(values[2])) as { content: string }).content }, openCount + 1, values[5] as AgentChatTurn['delivery'])], rowCount: 1 }
     }
     if (sql.startsWith('update operator_conversations set revision=')) return { rows: [], rowCount: 1 }
-    if (sql.startsWith('with open as ( select principal_id,operation,command_id')) return { rows: [], rowCount: 0 }
+    if (sql.startsWith('with candidates as materialized ( select r.principal_id,r.operation,r.command_id')) return { rows: [], rowCount: 0 }
     if (sql.startsWith('with open as (')) return { rows: stateRows, rowCount: stateRows.length }
     if (sql.startsWith('with candidates as (')) return { rows: [{ messages: [], has_earlier: false }], rowCount: 1 }
     if (sql.startsWith('select record,sequence::text')) return { rows: [], rowCount: 0 }

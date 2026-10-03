@@ -10,7 +10,8 @@ export function referencedAgentEdits(graph: WorkflowDefinitionV3, edits: DraftAg
   return Object.fromEntries(Object.entries(edits).filter(([id]) => ids.has(id)))
 }
 export function hasAgentEdits(edit: NextDraftEdit): boolean {
-  return Object.keys(referencedAgentEdits(edit.graph, edit.agentEdits)).length > 0
+  return Object.values(referencedAgentEdits(edit.graph, edit.agentEdits)).some((agent) =>
+    !sameAgentContent(draftAgents(edit.context).find((item) => item.id === agent.id), agent))
 }
 export function editorAgents(edit: NextDraftEdit): Agent[] {
   return [...new Map([...draftAgents(edit.context), ...Object.values(edit.agentEdits ?? {})].map((agent) => [agent.id, agent])).values()]
@@ -18,6 +19,18 @@ export function editorAgents(edit: NextDraftEdit): Agent[] {
 function content(agent: Agent) {
   return { prompt: agent.prompt ?? {}, assignedSkills: agent.assignedSkills ?? [], description: agent.description ?? null, role: agent.role ?? null,
     ...(agent.graphqlTools ? { graphqlTools: agent.graphqlTools } : {}) }
+}
+/** Compare the fields the existing Agent writer persists, including its defaults. */
+function sameAgentContent(before: Agent | undefined, after: Agent): boolean {
+  const authored = (agent: Agent) => {
+    const value = { ...agent, ...content(agent) }
+    // Saved pins and runtime projections are not editable Agent settings.
+    for (const key of ['configurationVersionId', 'createdAt', 'updatedAt', 'status', 'executionState', 'activeRunId', 'harnessSummary'] as const) delete value[key]
+    // These display fields are derived from the complete harness configuration.
+    if (agent.harnessConfiguration) for (const key of ['harness', 'model', 'effort', 'fastMode'] as const) delete value[key]
+    return value
+  }
+  return !!before && sameValue(authored(before), authored(after))
 }
 function configuration(agent: Agent) {
   if (!agent.harnessConfiguration) throw new Error('Reload the complete Agent configuration before editing it.')
@@ -53,10 +66,10 @@ export function configureAgentOperations(context: NextDraftContext, graph: Workf
 export function changeDraftAgent(edit: NextDraftEdit, agent: Agent, graph: WorkflowDefinitionV3): NextDraftEdit {
   if (edit.busy || edit.pending) throw new Error('Reconcile the pending draft command before editing Agent settings.')
   const before = editorAgents(edit).find((item) => item.id === agent.id)
-  if (sameValue(before, agent) && sameValue(graph, edit.graph)) return edit
+  if (sameAgentContent(before, agent) && sameValue(graph, edit.graph)) return edit
   const history = edit.agentHistory ?? edit.history.map(() => ({}))
   const edits = { ...edit.agentEdits, [agent.id]: agent }
-  if (sameValue(draftAgents(edit.context).find((item) => item.id === agent.id), agent)) delete edits[agent.id]
+  if (sameAgentContent(draftAgents(edit.context).find((item) => item.id === agent.id), agent)) delete edits[agent.id]
   return { ...edit, graph, agentEdits: referencedAgentEdits(graph, edits), future: [],
     history: [...edit.history.slice(-49), edit.graph], agentHistory: [...history.slice(-49), edit.agentEdits ?? {}], validation: undefined }
 }

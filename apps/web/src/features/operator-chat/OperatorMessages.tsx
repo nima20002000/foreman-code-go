@@ -1,4 +1,5 @@
 import type { Message, OperatorActivity } from '@graphql/contracts'
+import type { HarnessOptions } from '@graphql/contracts/management'
 import { ChatMessageFiles } from '../conversations/ChatMessageFiles'
 import { MessageBubble } from '../../shared/ui/nocturne'
 import { OperatorActivityList } from './OperatorActivityList'
@@ -6,9 +7,10 @@ import { OperatorThinking } from './OperatorThinking'
 import { operatorTextPartKey, type OperatorTextProjection } from './operatorTextProjection'
 
 /** Allocate activity once over the complete loaded message sequence. */
-export function OperatorMessages({ messages, activities, activeRequestId, working = false, partialText = '', thinkingText = '', parts, timeline, onBrowse }: {
+export function OperatorMessages({ messages, activities, activeRequestId, working = false, partialText = '', thinkingText = '', parts, timeline, modelCatalogs, onBrowse }: {
   messages: Message[]; activities: OperatorActivity[]; activeRequestId?: string | null; working?: boolean;
   partialText?: string; thinkingText?: string; parts?: Record<string, string>; timeline?: OperatorTextProjection; onBrowse(): void;
+  modelCatalogs?: Partial<Record<HarnessOptions['harness'], HarnessOptions['models']>>;
 }) {
   // Reasoning stays at its original position: it follows the nearest earlier
   // ordinary message (or leads the list when none precedes it).
@@ -24,6 +26,8 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
   const partKey = (message: Message) => message.activityNative ? operatorTextPartKey(message.activityNative, message.activityChannel) : message.nativeMessageId
   const rows: Array<{ key: string; message?: Message; requestId?: string; live?: boolean; reasoning?: Message }> = []
   for (const message of leadingReasoning) rows.push({ key: message.id, reasoning: message })
+  const acceptedModels = new Map<string, NonNullable<Message['acceptedModel']>>()
+  for (const message of messages) if (message.requestId && message.acceptedModel) acceptedModels.set(message.requestId, message.acceptedModel)
   const lastAssistant = new Map<string, Message>()
   const assistantCounts = new Map<string, number>()
   for (const message of messages) if (message.role === 'assistant' && message.requestId) lastAssistant.set(message.requestId, message)
@@ -63,6 +67,8 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
       if (reasoning) return <li key={key}><OperatorThinking text={reasoning.content} onBrowse={onBrowse} /></li>
       const role = message?.role ?? 'assistant'
       const assistant = role === 'assistant'
+      const model = message?.acceptedModel ?? (requestId ? acceptedModels.get(requestId) : undefined)
+      const author = model ? modelCatalogs?.[model.harness]?.find((entry) => entry.id === model.model)?.name || model.model : 'Assistant'
       const active = Boolean(requestId === activeRequestId && (live || message?.nativeMessageComplete === false))
       const priorActivity = requestId ? lastActivity.get(requestId) ?? -1n : -1n
       const boundary = message?.afterActivitySequence === undefined ? undefined : BigInt(message.afterActivitySequence)
@@ -91,7 +97,7 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
       if (!content && !entries.length && !active && !orderedTimeline?.length && !message?.attachments?.length) return null
       return <li key={key} data-message-role={role}>
         <div aria-label={active ? 'Assistant response in progress' : undefined}>
-          <MessageBubble author={assistant ? 'Assistant' : role === 'user' ? 'You' : role} role={assistant ? 'assistant' : role === 'user' ? 'user' : 'system'}>
+          <MessageBubble author={assistant ? author : role === 'user' ? 'You' : role} role={assistant ? 'assistant' : role === 'user' ? 'user' : 'system'}>
             {assistant ? <>
               <OperatorActivityList entries={placed ? entries.filter((entry) => !placed.has(entry.id)) : entries} activeRequestId={activeRequestId} parts={parts} onBrowse={onBrowse} />
               {live && thinkingText && !entries.some((entry) => entry.kind === 'thinking') ? <OperatorThinking text={thinkingText} onBrowse={onBrowse} /> : null}

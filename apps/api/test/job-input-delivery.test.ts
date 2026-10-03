@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, mkdir, stat, readFile, writeFile, symlink, rm, chmod } from 'node:fs/promises'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, mkdir, stat, readFile, writeFile, symlink, rm, chmod, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -17,7 +17,7 @@ async function fixture(){
  execution.acceptedSpec.target.destination.directoryIdentityHash=digest(Buffer.from(JSON.stringify({device:String(statValue.dev),inode:String(statValue.ino),mountId:mount})))
  const manifest=makeManifest(execution,[]),admission=JobInputAdmissionSchema.parse({version:1,manifest,principalId:'actor',principalGrantsDigest:'1'.repeat(64),issuedAt:'2026-10-01T00:00:00.000Z',transfers:[]})
  let denied=false
- const source:JobInputDeliverySource={admit:async()=>admission,recheck:async()=>{if(denied)throw new Error('revoked')},read:async(_execution,_admission,path,offset,length)=>{const bytes=path==='manifest.json'?manifestBytes(manifest):Buffer.from('null');return bytes.subarray(offset,offset+length)}}
+ const source:JobInputDeliverySource={admit:async()=>admission,accepted:async()=>admission,recheck:async()=>{if(denied)throw new Error('revoked')},read:async(_execution,_admission,path,offset,length)=>{const bytes=path==='manifest.json'?manifestBytes(manifest):Buffer.from('null');return bytes.subarray(offset,offset+length)}}
  const verified={privateRepositoryRoot:project,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true as const,diskQuotaBytes:1024*1024}
  return {root,project,execution,manifest,verified,source,deny:()=>{denied=true},delivery:new ReadonlyJobInputDelivery(source,join(root,'receipts'))}
 }
@@ -30,8 +30,84 @@ describe('immutable job input copies',()=>{
   expect(await f.delivery.prepare(f.execution,f.verified,new AbortController().signal)).toEqual(receipt)
  })
  it('rejects changed retained bytes on original receipt retry',async()=>{const f=await fixture();await f.delivery.prepare(f.execution,f.verified,new AbortController().signal);await chmod(join(f.project,'.graphql-job-inputs/workflow-input.json'),0o600);await writeFile(join(f.project,'.graphql-job-inputs/workflow-input.json'),'evil');await expect(f.delivery.prepare(f.execution,f.verified,new AbortController().signal)).rejects.toThrow('hash differs')})
+ it('does not recreate a missing detached directory when the original receipt remains',async()=>{
+  const f=await fixture(),signal=new AbortController().signal;await f.delivery.prepare(f.execution,f.verified,signal)
+  const path=join(f.project,'.graphql-job-inputs');await chmod(path,0o700);await rm(path,{recursive:true});const read=vi.spyOn(f.source,'read')
+  await expect(f.delivery.prepare(f.execution,f.verified,signal)).rejects.toMatchObject({code:'ENOENT'});await expect(stat(path)).rejects.toMatchObject({code:'ENOENT'});expect(read).not.toHaveBeenCalled()
+ })
  it('reauthorizes original copies after revocation',async()=>{const f=await fixture();await f.delivery.prepare(f.execution,f.verified,new AbortController().signal);f.deny();await expect(f.delivery.prepare(f.execution,f.verified,new AbortController().signal)).rejects.toThrow('revoked')})
  it('rejects a source supplied reserved symlink',async()=>{const f=await fixture();await symlink(f.root,join(f.project,'.graphql-job-inputs'));await expect(f.delivery.prepare(f.execution,f.verified,new AbortController().signal)).rejects.toThrow('reserved input directory')})
  it('rejects a symlinked host-private receipt',async()=>{const f=await fixture();await mkdir(join(f.root,'receipts'),{mode:0o700});const destination=join(f.root,'external');await writeFile(destination,'{}');await symlink(destination,join(f.root,'receipts',`${f.manifest.bindingId}.json`));await expect(f.delivery.prepare(f.execution,f.verified,new AbortController().signal)).rejects.toThrow()})
  it('rejects accepted directory identity changes',async()=>{const f=await fixture();f.verified.directoryIdentityHash='0'.repeat(64);await expect(f.delivery.prepare(f.execution,f.verified,new AbortController().signal)).rejects.toThrow('previously verified')})
+})
+describe('read-only prepared job input verification',()=>{
+ it('returns the original receipt without changing retained files or reading transfer bytes',async()=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal)
+  const paths=[f.project,join(f.project,'.graphql-job-inputs'),join(f.project,'.graphql-job-inputs/manifest.json'),join(f.project,'.graphql-job-inputs/workflow-input.json'),join(f.root,'receipts'),join(f.root,'receipts',`${f.manifest.bindingId}.json`)]
+  const attributes=async()=>Promise.all(paths.map(async path=>{const value=await stat(path);return {ino:value.ino,mode:value.mode,size:value.size,mtime:value.mtimeMs}}))
+  const before=await attributes(),read=vi.spyOn(f.source,'read'),admit=vi.spyOn(f.source,'admit'),recheck=vi.spyOn(f.source,'recheck')
+  expect(await f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).toEqual(receipt)
+  expect(await attributes()).toEqual(before);expect(read).not.toHaveBeenCalled();expect(admit).not.toHaveBeenCalled();expect(recheck).toHaveBeenCalledTimes(2)
+ })
+ it.each(['receipts','receipt','directory','file'] as const)('rejects missing %s without repairing it',async missing=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal)
+  const path=missing==='receipts'?join(f.root,'receipts'):missing==='receipt'?join(f.root,'receipts',`${f.manifest.bindingId}.json`):missing==='directory'?join(f.project,'.graphql-job-inputs'):join(f.project,'.graphql-job-inputs/workflow-input.json')
+  await chmod(join(f.project,'.graphql-job-inputs'),0o700);await rm(path,{recursive:true})
+  const read=vi.spyOn(f.source,'read');await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).rejects.toThrow()
+  await expect(stat(path)).rejects.toMatchObject({code:'ENOENT'});expect(read).not.toHaveBeenCalled()
+ })
+ it('rejects tampered retained bytes',async()=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),path=join(f.project,'.graphql-job-inputs/workflow-input.json')
+  await chmod(path,0o600);await writeFile(path,'evil')
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).rejects.toThrow('hash differs')
+ })
+ it.each(['caller','persisted'] as const)('rejects a substituted %s receipt',async replacement=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),changed={...receipt,manifestByteSize:receipt.manifestByteSize+1}
+  if(replacement==='persisted'){const path=join(f.root,'receipts',`${f.manifest.bindingId}.json`);await chmod(path,0o600);await writeFile(path,JSON.stringify(changed))}
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,replacement==='caller'?changed:receipt,signal)).rejects.toThrow('differs from the original')
+ })
+ it('rejects a receipt that consistently substitutes manifest facts in memory and on disk',async()=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),changed={...receipt,manifestByteSize:receipt.manifestByteSize+1},path=join(f.root,'receipts',`${f.manifest.bindingId}.json`)
+  await chmod(path,0o600);await writeFile(path,JSON.stringify(changed))
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,changed,signal)).rejects.toThrow('different accepted data')
+ })
+ it.each(['source','inputs'] as const)('rejects a substituted %s directory',async replacement=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),path=replacement==='source'?f.project:join(f.project,'.graphql-job-inputs')
+  await chmod(join(f.project,'.graphql-job-inputs'),0o700);await rename(path,`${path}-original`);await mkdir(path)
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).rejects.toThrow(replacement==='source'?'Actual private source identity':'Original input directory identity')
+ })
+ it.each(['receipt','receipts','file','inputs'] as const)('rejects a substituted %s symlink',async replacement=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal)
+  const path=replacement==='receipt'?join(f.root,'receipts',`${f.manifest.bindingId}.json`):replacement==='receipts'?join(f.root,'receipts'):replacement==='file'?join(f.project,'.graphql-job-inputs/workflow-input.json'):join(f.project,'.graphql-job-inputs')
+  await chmod(join(f.project,'.graphql-job-inputs'),0o700);await rename(path,`${path}-original`);await symlink(`${path}-original`,path)
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).rejects.toThrow()
+ })
+ it('rejects a substituted accepted execution',async()=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),changed=structuredClone(f.execution)
+  changed.attemptId='different-attempt'
+  await expect(f.delivery.verifyPrepared(changed,f.verified,receipt,signal)).rejects.toThrow('replace accepted job input')
+ })
+ it('rejects revoked authority before and after retained file verification',async()=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal)
+  vi.spyOn(f.source,'recheck').mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('revoked'))
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).rejects.toThrow('revoked')
+  f.deny();await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).rejects.toThrow('revoked')
+ })
+ it('rejects cancellation before and during verification',async()=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),controller=new AbortController()
+  controller.abort();const admit=vi.spyOn(f.source,'admit')
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,controller.signal)).rejects.toThrow();expect(admit).not.toHaveBeenCalled()
+  const during=new AbortController();vi.spyOn(f.source,'recheck').mockImplementation(async()=>{during.abort()})
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,during.signal)).rejects.toThrow()
+ })
+ it('fails closed when the read-only admission accessor is unavailable',async()=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),admit=vi.spyOn(f.source,'admit')
+  delete f.source.accepted
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,receipt,signal)).rejects.toThrow('Read-only original input admission is unavailable');expect(admit).not.toHaveBeenCalled()
+ })
+ it.each(['device','mountId'] as const)('rejects substituted retained directory %s facts',async key=>{
+  const f=await fixture(),signal=new AbortController().signal,receipt=await f.delivery.prepare(f.execution,f.verified,signal),changed={...receipt,directory:{...receipt.directory,[key]:`${receipt.directory[key]}0`}},path=join(f.root,'receipts',`${f.manifest.bindingId}.json`)
+  await chmod(path,0o600);await writeFile(path,JSON.stringify(changed))
+  await expect(f.delivery.verifyPrepared(f.execution,f.verified,changed,signal)).rejects.toThrow('Original input directory identity changed')
+ })
 })

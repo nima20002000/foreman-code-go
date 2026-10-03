@@ -20,8 +20,8 @@ export function Button({ variant = 'secondary', size = 'md', loading = false, lo
   </button>
 }
 
-export function IconButton({ label, children, className, ...props }: Omit<ButtonProps, 'leading' | 'trailing'> & { label: string }) {
-  return <Button {...props} aria-label={label} title={label} className={cx('n-icon-button', className)}>{children}</Button>
+export function IconButton({ label, title = label, children, className, ...props }: Omit<ButtonProps, 'leading' | 'trailing'> & { label: string }) {
+  return <Button {...props} aria-label={label} title={title} className={cx('n-icon-button', className)}>{children}</Button>
 }
 
 export function LinkButton({ variant = 'secondary', className, children, ...props }:

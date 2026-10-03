@@ -193,7 +193,7 @@ export function validateRepeatDecisionV1(versionValue: unknown, decisionValue: u
       ? exit.kind!=='job'||decision.exitExecution.jobDefinitionId!==exit.jobDefinitionId||decision.exitExecution.jobDefinitionVersionId!==exit.jobDefinitionVersionId
       : exit.kind==='job'||decision.exitExecution.agentId!==exit.agentId||decision.exitExecution.agentConfigurationVersionId!==version.agentConfigurationVersionIds[exit.agentId])
 ) throw new Error('REPEAT_EXIT_EXECUTION_PIN_INVALID')
-  const envelope = parseRepeatExitResultV1(acceptedResult, exit.choice!)
+  const envelope = parseRepeatExitResultV1(acceptedResult, exit.choice!, exit.kind === 'job' ? undefined : exit.artifactOutputs)
   if (decision.outcome !== envelope.routing.outcome || canonicalGraphJson(decision.resultData) !== canonicalGraphJson(envelope.data)) throw new Error('REPEAT_ACCEPTED_RESULT_MISMATCH')
   const early = decision.outcome === block.earlyExitOutcome
   const reason = early ? 'early_exit' : occurrenceIndex === block.maxOccurrences ? 'limit_exit' : 'repeat'

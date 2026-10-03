@@ -1,17 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, statfs } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
-test('packaged GUI serves the actual CSP page and invokes real read-only doctor without creating identity or enabling service', { skip: !artifact }, async (t) => {
+for (const [storage, directory, persistent] of [['tmpfs', '/dev/shm', false], ['persistent', '/var/tmp', true]]) {
+test(`packaged GUI serves CSP and keeps doctor read-only on ${storage} storage`, { skip: !artifact }, async (t) => {
   const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
   assert.equal((await stat(join(artifact, 'install'))).mode & 0o777, 0o700);
   const { createCompanionServer } = await import(pathToFileURL(join(artifact, 'src/companionServer.mjs')).href);
-  const state = await mkdtemp(join(tmpdir(), 'packaged-companion-'));
-  const home = await mkdtemp(join(tmpdir(), 'packaged-harness-home-'));
+  if (!persistent) assert.equal((await statfs(directory)).type, 0x01021994);
+  const state = await mkdtemp(join(directory, 'packaged-companion-'));
+  const home = await mkdtemp(join('/var/tmp', 'packaged-harness-home-'));
   const bin = join(home, '.nvm/versions/node/v22.17.1/bin');
   await mkdir(bin, { recursive: true });
   await writeFile(join(bin, 'codex'), '#!/usr/bin/env node\nconsole.log(process.version)', { mode: 0o700 });
@@ -34,11 +35,20 @@ test('packaged GUI serves the actual CSP page and invokes real read-only doctor 
   assert.equal(status.pairing, 'unpaired');
   assert.equal(status.executables.codex, true);
   assert.equal(status.service.active, false);
+  assert.equal(status.persistentState, persistent);
+  await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
   assert.deepEqual(status.compatibility.required, manifest.target);
   assert.deepEqual(status.compatibility.actual, Object.fromEntries(['os', 'osRelease', 'arch', 'libc', 'node'].map((key) => [key, status.versions[key]])));
   assert.equal(status.compatibility.supported, status.compatibility.mismatches.length === 0);
   assert.equal((await post('/api/service-enable', { confirm: true, planSha256: 'a'.repeat(64) })).status, 400);
-  // This deliberately unqualified tmpfs state cannot initialize a durable identity.
-  assert.equal((await post('/api/identity-request')).status, 400);
-  await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
+  // Identity also requires the package's exact approved target runtime.
+  const canInitialize = persistent && status.compatibility.supported;
+  const identity = await post('/api/identity-request');
+  assert.equal(identity.status, canInitialize ? 200 : 400);
+  if (canInitialize) assert.equal((await stat(join(state, 'identity.json'))).mode & 0o777, 0o600);
+  else {
+    if (persistent) assert.deepEqual(await identity.json(), { error: 'target_runtime_mismatch' });
+    await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
+  }
 });
+}

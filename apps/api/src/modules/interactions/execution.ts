@@ -1317,6 +1317,9 @@ export class ApprovalExecutionCoordinator {
 
       const observePending = async (history: NativeHistory, sourceEvent?: NativeHarnessEvent,
         sourceLease?: WorkflowNativeLease): Promise<ApprovalExecutionObservation | undefined> => {
+        signal.throwIfAborted()
+        input.owner.assertOwned()
+        if (!history.pendingInteractions.length) return undefined
         const originalHistory = this.captureNative(input.owner, execution,
           { type: 'history', history: safeValue(history) }, sourceLease?.live ? 'live' : 'recovery',
           manager!.capturedLease(session!))
@@ -1324,7 +1327,6 @@ export class ApprovalExecutionCoordinator {
           safeValue({ ...event, executionId: execution.id })).event) }
         signal.throwIfAborted()
         input.owner.assertOwned()
-        if (!history.pendingInteractions.length) return undefined
         const pendingExecution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
         await this.runs.updateExecution(pendingExecution, input.owner, originalHistory)
         execution = (await repeat.readExecution(pendingExecution.id)).execution
@@ -1378,6 +1380,7 @@ export class ApprovalExecutionCoordinator {
             (_native, lane) => persistObservedSession(observed, lane))
         }
         let nativeEvents: AsyncIterable<NativeHarnessEvent>
+        let liveTerminalCommitted = false
         let rejectObserved: ((error: unknown) => void) | undefined
         try {
           if (manager.startInitialTurn) {
@@ -1405,11 +1408,44 @@ export class ApprovalExecutionCoordinator {
             const originalEvent = safeValue({ ...event, executionId: execution.id })
             await this.runs.appendNativeEvent(originalEvent, input.owner, lease, undefined, undefined,
               this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'live', manager.capturedLease(session!)))
-            const waiting = await observePending(await manager.history(session!, signal), event, lease)
+            const history = await manager.history(session!, signal)
+            const waiting = await observePending(history, event, lease)
             if (waiting) return waiting
+            // The provider can finish while this consumer is still draining
+            // queued transcript frames. Reobserve that exact turn, then commit
+            // its COMPLETE original history through the same guarded terminal
+            // writer. A convenience terminal hint cannot settle an execution.
+            if (context.harness === 'codex' && history.terminalResult && !history.pendingInteractions.length) {
+              const observed = await manager.reconcile(session!, `execution:${execution.id}`, signal)
+              const terminal = observed.terminalTurn
+              if (terminal?.correlationId === `execution:${execution.id}`
+                && observed.correlationId === terminal.correlationId && terminal.providerId
+                && terminal.providerId === observed.nativeTurnId
+                && !observed.pendingInteraction && !observed.pendingInteractions.length) {
+                const lane = manager.capturedLease(session!)
+                if (!lane || lane.providerId && lane.providerId !== terminal.providerId) throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH',
+                  'The terminal differs from the original streaming writer.', 409)
+                lane.providerId = terminal.providerId
+                const captured = this.captureNative(input.owner, execution,
+                  { type: 'history', history: safeValue(observed) }, 'live', lane)
+                await this.runs.updateExecution(HarnessExecutionSchema.parse({ ...execution, state: 'completed',
+                  result: safeValue(terminal.result), finishedAt: capturedWorkflowNativeTime(captured) }), input.owner, captured)
+                execution = (await repeat.readExecution(execution.id)).execution
+                ownedSession.execution = execution
+                liveTerminalCommitted = true
+                break
+              }
+            }
           }
         } catch (error) { rejectObserved?.(error); throw error }
         finally { if (!session) rejectObserved?.(new Error('Initial input has no observed native session.')) }
+        if (liveTerminalCommitted) {
+          assertSameRepeatExecution(ensured.execution, execution)
+          if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
+            'REPEAT_BOUNDARY_PENDING', 'The exact original native terminal has not committed.', 409)
+          await this.finishRepeatExecution(execution, repeat, input.owner, signal)
+          return { state: 'completed', execution, result: execution.result }
+        }
       } else {
         if (!session) throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Recovery requires the exact saved session.', 409)
         ownedSession.session = session

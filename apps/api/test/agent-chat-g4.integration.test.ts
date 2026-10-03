@@ -193,8 +193,24 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
       assert.notEqual(mcpCanceled.isError, true)
       assert.equal(AgentChatStateResponseSchema.parse(mcpCanceled.structuredContent).state.hasMoreTurns, true)
       assert.equal((await f.repository.turn(f.id, 'g4-106'))?.delivery, 'canceled')
+      const receipt = async () => (await pool.query(`select target_key,input_hash,result from management_command_receipts
+        where principal_id=$1 and operation='agent_chat_control' and command_id=$2`, [writer.id, command.requestId])).rows
+      const audit = async () => (await pool.query(`select source,action,outcome,details from management_audit
+        where principal_id=$1 and action='agent_chat_control' and details->>'commandId'=$2 order by sequence`, [writer.id, command.requestId])).rows
+      const originalReceipt = await receipt(), originalAudit = await audit()
+      const originalTurn = await f.repository.turn(f.id, command.turnRequestId)
+      // A different real control advances state before this request is replayed.
+      const advanced = await f.app.inject({ method: 'POST', url: `${f.url}/conversations/${f.id}/turns/g4-3/cancel`,
+        headers: f.headers, payload: { requestId: 'g4-advance-before-replay' } })
+      assert.equal(advanced.statusCode, 200)
       const replay = await f.mcp.callTool({ name: 'agent_chat_cancel_queued', arguments: command })
-      assert.deepEqual(replay.structuredContent, mcpCanceled.structuredContent)
+      assert.notEqual(replay.isError, true)
+      const replayState = AgentChatStateResponseSchema.parse(replay.structuredContent).state
+      assert.ok(replayState.revision > AgentChatStateResponseSchema.parse(mcpCanceled.structuredContent).state.revision)
+      assert.equal(replayState.conversation!.id, f.id)
+      assert.deepEqual(await receipt(), originalReceipt)
+      assert.deepEqual(await audit(), originalAudit)
+      assert.deepEqual(await f.repository.turn(f.id, command.turnRequestId), originalTurn)
       const stopped = await f.mcp.callTool({ name: 'agent_chat_interrupt', arguments: {
         workspaceId: f.workspaceId, conversationId: f.id, requestId: 'g4-stop', expectedNativeTurnId: 'turn-g4' } })
       assert.notEqual(stopped.isError, true)

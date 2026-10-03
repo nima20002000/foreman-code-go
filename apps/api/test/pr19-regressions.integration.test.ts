@@ -89,7 +89,10 @@ async function idle(id: string) {
 }
 async function setDefaults(harness: HarnessConfiguration) {
   const current = await defaults.getAgentDefaults()
-  return defaults.updateAgentDefaults({ ...current.value, operator: { ...current.value.operator, harness } }, current.revision)
+  const saved = await defaults.updateAgentDefaults({ ...current.value, operator: { ...current.value.operator, harness } }, current.revision)
+  const operators = new PostgresOperatorRepository(pool)
+  await operators.update(harness, (await operators.ensure()).configuration.id)
+  return saved
 }
 beforeEach(async () => {
   schema = `pr19_${randomUUID().replaceAll('-', '')}`

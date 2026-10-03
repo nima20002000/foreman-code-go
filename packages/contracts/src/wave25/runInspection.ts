@@ -8,6 +8,7 @@ import { AcceptedCurrentNodeResultSchema, CurrentRunScopeSchema } from './curren
 import { RepeatExecutionIdentityV1Schema, RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema } from './repeat.js'
 import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import { canonicalGraphJson } from './json.js'
+import { WorkActivationInputSchema } from './handoffs.js'
 
 /** Private, authenticated inspection. These bodies NEVER enter graph snapshots/deltas. */
 export const RUN_INSPECTION_TOOLS = {
@@ -88,13 +89,17 @@ export const RunInputCarrySchema = z.object({
   acceptedResultDigest: GraphDigestSchema, acceptedResult: AcceptedCurrentNodeResultSchema,
 }).strict()
 /** The exact non-recursive input snapshot already accepted by the current engine. */
-export const RunAcceptedInputValueSchema = z.object({
+const RepeatInspectionInputSchema = z.object({
   executionSemanticsVersion: z.literal(3), runInput: RunInputSchema,
   occurrence: RepeatOccurrenceV1Schema.nullable(),
   entry: z.object({ runInput: RunInputSchema, external: z.array(RunInputSourceSchema).max(8000),
     carry: RunInputCarrySchema.nullable() }).strict().nullable(),
   predecessors: z.array(RunInputSourceSchema).max(8000),
-}).strict().superRefine((value, context) => {
+}).strict()
+export const RunAcceptedInputValueSchema = z.union([
+  RepeatInspectionInputSchema,
+  WorkActivationInputSchema.safeExtend({ runInput: RunInputSchema }),
+]).superRefine((value, context) => {
   try { canonicalGraphJson(value, RUN_INSPECTION_LIMITS.inputBytes) }
   catch { context.addIssue({ code: 'custom', message: 'Inspection input exceeds its exact-value bound.' }) }
 })

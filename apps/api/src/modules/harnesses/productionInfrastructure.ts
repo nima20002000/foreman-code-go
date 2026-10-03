@@ -1,4 +1,7 @@
-import type { ProductionMainRsyncProviders } from '../byte-transfer/productionComposition.js'
+import type { WorkerNativeOutputAuthorizationPort } from '../placement/workerMcpRelay.js'
+import type { PostgresArtifactPublicationAuthority } from '../runs/remote/nativeArtifactAuthority.js'
+import type { InstalledMainRsyncProviders } from '../byte-transfer/productionComposition.js'
+import type { MainRsyncEntrypoint } from '../byte-transfer/installedEntrypoints.js'
 import type { AcceptedClaudeProfileAdmission, AcceptedProfileAuthority } from './instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from './claudeSdk/production.js'
 import type { ProductionJobInfrastructure } from '../jobs/production.js'
@@ -35,7 +38,11 @@ export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
   claudeClient?: Parameters<typeof productionClaudeManager>[0]['loadClient']
   claudeFileSdk?: () => Promise<ClaudeFileSdk>
   /** Complete protected original transfer ports; absent means the existing byte carrier. */
-  rsync?: ProductionMainRsyncProviders
+  rsync?: InstalledMainRsyncProviders
+  rsyncInstallation?: MainRsyncEntrypoint
+  /** Root supplies original accepted context resolution; omission keeps native
+   * output authorization unavailable on the existing authenticated MCP relay. */
+  nativeOutputAuthorization?: (authority: PostgresArtifactPublicationAuthority) => WorkerNativeOutputAuthorizationPort
   jobs?: ProductionJobInfrastructure
   deviceListener?: DeviceListenerConfig
   deviceDomains?: DeviceDomainComposition

@@ -12,6 +12,8 @@ import { buildProductionApp } from './production.js'
 import { readDeviceListenerConfig } from './modules/devices/productionConfig.js'
 import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
 import { opencodeQualificationSuite } from './modules/harnesses/qualification/suites/opencode.js'
+import { join } from 'node:path'
+import { readMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 
 const lifecycle = componentLogger('lifecycle')
 // First, before configuration or infrastructure can fail: nothing may end silently.
@@ -32,6 +34,8 @@ async function main() {
   const config = loadConfig(process.env)
   const deviceListener = readDeviceListenerConfig(process.env, config.port)
   const database = createDatabase(config.database)
+  const rsyncInstallation = await readMainRsyncEntrypoint(join(config.harnesses.workspaceRoot, 'rsync-selection.json'))
+  if (rsyncInstallation.kind === 'unavailable') lifecycle.info({ reason: rsyncInstallation.reason }, 'rsync unavailable')
   const checkpoints = createCheckpointStore(
     config.database.connectionString,
     config.checkpoints.schema,
@@ -40,7 +44,7 @@ async function main() {
   const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, undefined,
     { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
-    { mode: 'native', ...(deviceListener ? { deviceListener } : {}) })
+    { mode: 'native', rsyncInstallation, ...(deviceListener ? { deviceListener } : {}) })
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')

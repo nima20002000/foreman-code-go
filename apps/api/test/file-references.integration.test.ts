@@ -290,27 +290,28 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     await rejected
     assert.equal((await repository.read(allocated.value.file.fileId, allocated.value.revision.revisionId))?.value.file.state, 'pending')
   })
-  it('MCP: add/list/range read/remove/readback share HTTP persistence, retries and audit', async () => {
+  for (const kind of ['workspace_reference', 'workflow_reference'] as const) it(`MCP ${kind}: add/list/range read/remove/readback share HTTP persistence, retries and audit`, async () => {
+    const scope = kind === 'workspace_reference' ? workspace : workflow
     const capabilities = await tool(owner.token, 'operator_get_capabilities', {})
     assert.ok((capabilities.result.structuredContent as { runtimeLimits: { feature: string; detail: string }[] }).runtimeLimits
       .some((limit) => limit.feature === 'permanent_reference_files' && limit.detail.includes('tools/list')))
-    const args = { scope: workspace, upload: { requestId: randomUUID(), ...metadata() }, contentBase64: text.toString('base64') }
+    const args = { scope, upload: { requestId: randomUUID(), ...metadata() }, contentBase64: text.toString('base64') }
     const added = await tool(owner.token, 'reference_file_add', args)
     assert.equal(added.result.isError, undefined, JSON.stringify(added))
     const result = added.result.structuredContent as { value: FileWithRevision; replayed: boolean }
     const row = FileWithRevisionSchema.parse(result.value); assert.equal(row.file.state, 'ready')
     const replay = await tool(owner.token, 'reference_file_add', args)
     assert.equal((replay.result.structuredContent as { replayed: boolean }).replayed, true)
-    const list = await tool(reader.token, 'reference_files_list', { scope: workspace })
+    const list = await tool(reader.token, 'reference_files_list', { scope })
     assert.ok(FilePageSchema.parse(list.result.structuredContent).items.some((item) => item.file.fileId === row.file.fileId))
-    const readInput = { scope: workspace, fileId: row.file.fileId, revisionId: row.revision.revisionId, offset: 2, length: 8 }
+    const readInput = { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId, offset: 2, length: 8 }
     const read = await tool(reader.token, 'reference_file_read', readInput)
     const value = (read.result.structuredContent as { value: { status: string; contentBase64: string; byteLength: number } }).value
     assert.equal(value.status, 'ready'); assert.equal(value.byteLength, 8)
     assert.deepEqual(Buffer.from(value.contentBase64, 'base64'), text.subarray(2, 10))
-    const http = await app.inject({ method: 'GET', url: `${pinned(workspace, row)}/content`, headers: headers(reader.token) })
+    const http = await app.inject({ method: 'GET', url: `${pinned(scope, row)}/content`, headers: headers(reader.token) })
     assert.deepEqual(http.rawPayload, text)
-    const removeInput = { scope: workspace, fileId: row.file.fileId, revisionId: row.revision.revisionId, commandId: randomUUID() }
+    const removeInput = { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId, commandId: randomUUID() }
     const removed = await tool(owner.token, 'reference_file_remove', removeInput)
     assert.equal((removed.result.structuredContent as { value: FileWithRevision }).value.file.state, 'removed')
     assert.equal(((await tool(owner.token, 'reference_file_remove', removeInput)).result.structuredContent as { replayed: boolean }).replayed, true)
@@ -320,23 +321,24 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     assert.ok(audit.rows.some((item) => item.action === 'reference_file.add'))
     assert.equal(audit.rows.filter((item) => item.action === 'reference_file.remove').length, 1)
     const refreshed = new FileReferenceService(new PostgresFileRepository(database.pool), new FileByteStorage(root, MAX_FILE_BYTES), new PostgresFileReferenceAuthorization(database.pool), commands)
-    assert.equal((await refreshed.read(reader.principal, workspace, readInputWithoutScope(readInput))).status, 'unavailable')
+    assert.equal((await refreshed.read(reader.principal, scope, readInputWithoutScope(readInput))).status, 'unavailable')
   })
   function readInputWithoutScope(input: { fileId: string; revisionId: string; offset: number; length: number }) {
     return { fileId: input.fileId, revisionId: input.revisionId, offset: input.offset, length: input.length }
   }
-  it('MCP: denies read-only writes and foreign reads, including direct unlisted tool calls', async () => {
+  for (const kind of ['workspace_reference', 'workflow_reference'] as const) it(`MCP ${kind}: denies read-only writes and foreign reads, including direct unlisted tool calls`, async () => {
+    const scope = kind === 'workspace_reference' ? workspace : workflow
     const listed = await rpc(reader.token, 'tools/list', {})
     const names = listed.result.tools?.map((entry) => entry.name) ?? []
     assert.ok(names.includes('reference_files_list')); assert.ok(names.includes('reference_file_read'))
     assert.equal(names.includes('reference_file_add'), false); assert.equal(names.includes('reference_file_remove'), false)
-    const { row } = await add(workspace)
-    const args = { scope: workspace, upload: { requestId: randomUUID(), ...metadata() }, contentBase64: text.toString('base64') }
+    const { row } = await add(scope)
+    const args = { scope, upload: { requestId: randomUUID(), ...metadata() }, contentBase64: text.toString('base64') }
     const denied = await tool(reader.token, 'reference_file_add', args)
     assert.equal(denied.result.isError, true); assert.equal(errorCode(denied.result), 'ACCESS_DENIED')
-    const remove = await tool(reader.token, 'reference_file_remove', { scope: workspace, fileId: row.file.fileId, revisionId: row.revision.revisionId, commandId: randomUUID() })
+    const remove = await tool(reader.token, 'reference_file_remove', { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId, commandId: randomUUID() })
     assert.equal(errorCode(remove.result), 'ACCESS_DENIED')
-    const other = await tool(foreign.token, 'reference_file_read', { scope: workspace, fileId: row.file.fileId, revisionId: row.revision.revisionId })
+    const other = await tool(foreign.token, 'reference_file_read', { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId })
     assert.equal(errorCode(other.result), 'ACCESS_DENIED')
     assert.equal((await repository.read(row.file.fileId, row.revision.revisionId))?.value.file.state, 'ready')
     const audit = await database.pool.query("select 1 from management_audit where principal_id=$1 and source='mcp' and outcome='denied' and action='reference_file_add'", [reader.principal.id])

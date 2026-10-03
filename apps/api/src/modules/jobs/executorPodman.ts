@@ -1,3 +1,4 @@
+import { JOB_GIT_ENVIRONMENT, JOB_GIT_CONTAINER_DIRECTORY, JOB_PRIVATE_GIT_LAYOUT, requireJobGitMounts, verifyJobGitMounts } from './privateGitMounts.js'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
 import { mkdir, open, readdir, realpath, stat } from 'node:fs/promises'
@@ -19,7 +20,18 @@ export interface PodmanIsolationInput {
   spoolBytes: number
   labels: Record<string, string>
   inputRoot: string
+  gitDirectory:string
+  schedulerDirectory:string
 }
+const JOB_COMMAND_GATE='/tmp/graphql-job-start'
+// The qualified image already contains Node. Its original PID/cgroup remains
+// alive until the controller durably captures ownership and releases user argv.
+const JOB_COMMAND_BOOTSTRAP=`const fs=require('node:fs'),cp=require('node:child_process'),os=require('node:os');
+const [gate,...argv]=process.argv.slice(1);let child;
+for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>{if(child)child.kill(signal);else process.exit(128+os.constants.signals[signal])});
+const timer=setInterval(()=>{if(!fs.existsSync(gate))return;clearInterval(timer);child=cp.spawn(argv[0],argv.slice(1),{shell:false,stdio:['ignore','inherit','inherit']});
+child.once('error',error=>{console.error(error.message);process.exitCode=127});child.once('exit',(code,signal)=>{process.exitCode=code??(128+(os.constants.signals[signal]??0))})},10);`
+const JOB_COMMAND_RELEASE="require('node:fs').writeFileSync(process.argv[1],'',{flag:'wx',mode:0o600})"
 /** Shared by actual jobs and explicitly admitted model-free qualification. */
 export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[] {
   const relative = input.cwd.slice(input.sourceRoot.length)
@@ -31,6 +43,8 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     input.runtimeRoot.startsWith(`${input.sourceRoot}/`) || !Number.isSafeInteger(input.spoolBytes) || input.spoolBytes < 8) {
     throw new Error('Invalid noninteractive container plan.')
   }
+  if (input.gitDirectory!==join(input.sourceRoot,'..','repository')||input.schedulerDirectory!==join(input.sourceRoot,'..','job-heavy-jobs')
+    ||[input.gitDirectory,input.schedulerDirectory].some(path=>path.includes(',')||path.includes('\0')))throw new Error('Original bounded Git/scheduler siblings required.')
   if (input.inputRoot !== join(input.sourceRoot, JOB_INPUT_DIRECTORY)) throw new Error('Exact retained immutable input directory required.')
   return ['--remote=false', `--hooks-dir=${join(input.runtimeRoot, 'ci-empty-oci-hooks')}`, 'create', '--name', input.identity, '--pull=never', '--restart=no', '--read-only', '--read-only-tmpfs=false',
     '--image-volume=ignore', '--http-proxy=false', '--network=none', '--stop-signal=SIGTERM',
@@ -42,9 +56,11 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     '--log-opt', `path=${input.runtimeRoot}/${input.identity}.oci.log`,
     '--mount', `type=bind,src=${input.sourceRoot},dst=/workspace,rw`,
     '--mount', `type=bind,src=${input.inputRoot},dst=/workspace/${JOB_INPUT_DIRECTORY},ro`,
+    '--mount', `type=bind,src=${input.gitDirectory},dst=${JOB_GIT_CONTAINER_DIRECTORY},ro`,
+    '--mount', `type=bind,src=${input.schedulerDirectory},dst=${JOB_GIT_CONTAINER_DIRECTORY}/graphql-heavy-jobs,rw`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=67108864',
     '--workdir', `/workspace${relative}`, '--unsetenv-all', '--env', 'HOME=/tmp/job-home', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin',
-    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', '--env', `GRAPHQL_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--entrypoint', input.argv[0]!,
+    '--env', 'LANG=C.UTF-8', '--env', 'CI=1', ...Object.entries(JOB_GIT_ENVIRONMENT).flatMap(([key,value])=>['--env',`${key}=${value}`]), '--env', `GRAPHQL_JOB_INPUT_MANIFEST=${JOB_INPUT_MANIFEST_CONTAINER_PATH}`, '--entrypoint', input.argv[0]!,
     input.profile.imageDigest, ...input.argv.slice(1)]
 }
 
@@ -65,10 +81,14 @@ export async function ensureEmptyPodmanHooks(runtimeRoot: string) {
 /** No pulling, setup, host networking, home, socket or credentials are implied. */
 export function podmanCreateArgv(plan: JobLaunchPlan): string[] {
   if (plan.stdin !== 'closed' || plan.pty) throw new Error('Noninteractive job required.')
+  if(!plan.argv[0])throw new Error('Invalid noninteractive container plan.')
+  if(plan.profile.workspaceLayout!==JOB_PRIVATE_GIT_LAYOUT)throw new Error('Qualified private Git workspace layout unavailable.')
+  const mounts=requireJobGitMounts(plan.execution,plan.verifiedSource)
   return podmanIsolationCreateArgv({ identity: plan.identity, sourceRoot: plan.privateRepositoryRoot,
-    runtimeRoot: plan.execution.acceptedSpec.target.destination.managedRuntimeRoot, cwd: plan.cwd, argv: plan.argv,
+    runtimeRoot: plan.execution.acceptedSpec.target.destination.managedRuntimeRoot, cwd: plan.cwd,
+    argv: ['node','-e',JOB_COMMAND_BOOTSTRAP,'--',JOB_COMMAND_GATE,...plan.argv],
     profile: plan.profile, spoolBytes: plan.execution.acceptedSpec.policy.maxWorkerSpoolBytes,
-    inputRoot: join(plan.privateRepositoryRoot, JOB_INPUT_DIRECTORY),
+    inputRoot: join(plan.privateRepositoryRoot, JOB_INPUT_DIRECTORY),gitDirectory:mounts.git.directory,schedulerDirectory:mounts.scheduler.directory,
     labels: { 'graphql.job.identity': plan.identity, 'graphql.job.spec': plan.execution.acceptedSpec.specDigest, 'graphql.job.attempt': plan.execution.attemptId } })
 }
 
@@ -188,7 +208,8 @@ export class PodmanJobSupervisor implements JobSupervisor {
   }
 
   async launch(plan: JobLaunchPlan) {
-    if (!this.qualifiedProfile || plan.profile !== this.qualifiedProfile) throw new Error('Qualified isolation unavailable.')
+    if (!this.qualifiedProfile || this.qualifiedProfile.workspaceLayout!==JOB_PRIVATE_GIT_LAYOUT || plan.profile !== this.qualifiedProfile) throw new Error('Qualified isolation unavailable.')
+    await verifyJobGitMounts(plan.execution,plan.verifiedSource)
     await verifyJobInputDirectory(plan.execution, plan.verifiedSource, plan.inputs, AbortSignal.timeout(plan.execution.acceptedSpec.policy.preparationTimeoutMs))
     const ownership = await this.ownership(plan.execution)
     await ownership.reserveContainerIntent(plan.identity, plan.execution.acceptedSpec.specDigest)
@@ -231,7 +252,23 @@ export class PodmanJobSupervisor implements JobSupervisor {
       return { exitCode: row.State.ExitCode, signal: null, ...(await this.timing?.isTimedOut() ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
     })
     void exited.catch(() => {})
-    try { await owned.entered() } catch (error) { await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => false); throw error }
+    try {
+      const entryDeadline=Math.min(end,Date.now()+plan.execution.acceptedSpec.policy.preparationTimeoutMs)
+      while(true){
+        const row=await inspect()
+        if(row.State.Running&&row.State.Pid>0)break
+        if(row.State.Status==='exited'||Date.now()>=entryDeadline)throw new Error('Original gated container did not enter before its deadline.')
+        await new Promise(resolve=>setTimeout(resolve,10))
+      }
+      await owned.entered()
+      await ownership.assertCurrent()
+      if(Date.now()>=end||await this.timing?.isTimedOut())throw new Error('Original Job execution deadline exceeded before command release.')
+      const release=await this.commands.run(['exec',containerId,'node','-e',JOB_COMMAND_RELEASE,'--',JOB_COMMAND_GATE],Math.min(plan.execution.acceptedSpec.policy.preparationTimeoutMs,Math.max(1,end-Date.now())))
+      if(release.exitCode!==0)throw new Error('Original Job command release unconfirmed.')
+    } catch (error) {
+      if(await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => false))this.clearWatch(plan.execution)
+      throw error
+    }
     return { containerId, stdout, stderr, exited, proveStopped, stop }
   }
 }

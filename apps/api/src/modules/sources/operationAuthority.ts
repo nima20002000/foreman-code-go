@@ -11,6 +11,7 @@ import type { SourceAttemptAuthority, SourceActiveNativeSessionReader } from './
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import type { MaterializationAttempt } from './ports.js'
+import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
 
 /** Actual Main allocation/source facts; workers receive no database credentials. */
 export class PostgresSourceOperationAuthority {
@@ -34,6 +35,8 @@ export class PostgresSourceOperationAuthority {
   }
   async authorizePreparation(sql: GraphSqlClient, root: SourceRootRecord, attempt: MaterializationAttempt,
     identity: { operationId: string; ownerPrincipalId: string; expiresAt: string }) {
+    if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [identity.operationId])).rowCount)
+      throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original source transfer is fenced for reconciliation.', 409)
     const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
     if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== principal.id || Date.parse(identity.expiresAt) > Date.parse(principal.expiresAt)
       || Date.parse(identity.expiresAt) <= Date.now()) throw new DomainError('SOURCE_OWNER_CONFLICT', 'The original source package allocation owner is expired or differs.', 403)
@@ -43,12 +46,22 @@ export class PostgresSourceOperationAuthority {
   async prepareIdentity(root: SourceRootRecord, attempt: MaterializationAttempt) {
     return this.transaction(async sql => {
       const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
+      if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [allocated.operation_id])).rowCount)
+        throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original preparation is fenced for reconciliation.', 409)
       await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
       return { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
     })
   }
   async resolve(raw: SourceFilesystemOperation, binding: Readonly<DeviceConnectionIdentity>): Promise<SourceOperationOwner> {
     const request = SourceFilesystemOperationSchema.parse(raw)
+    if (request.operation === 'sources.reconcile-preparation') return this.transaction(async sql => {
+      const owner = await resolvePreparationReconciliationOwner(sql, request.reconciliationId), root = owner.root
+      if (root.selection.hostRef.kind !== 'device' || !root.registration || root.binding.mainId !== binding.mainId
+        || root.binding.deviceId !== binding.deviceId || root.binding.workerInstallationId !== binding.workerInstallationId
+        || root.registration.keyRevision !== binding.keyRevision || root.registration.authorizationRevision !== binding.authorizationRevision)
+        throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Cleanup requires the exact original authenticated worker registration.', 403)
+      return owner
+    })
     return this.transaction(async sql => {
       const receipt = request.operation === 'sources.prepare' ? null : request.record.receipt
       const attempt = request.operation === 'sources.prepare' ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
@@ -56,6 +69,8 @@ export class PostgresSourceOperationAuthority {
       const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
       if (request.operation === 'sources.verify') await assertAcceptedSourceRelativeCwd(sql, attempt.executionId, request.relativeCwd)
       const requestedBinding = request.operation === 'sources.prepare' ? request.root.binding : receipt!.binding
+      if (request.operation !== 'sources.release' && (await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [allocated.operation_id])).rowCount)
+        throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original preparation is fenced for reconciliation.', 409)
       const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share', [requestedBinding.rootId, requestedBinding.bindingRevision])).rows[0]
       const root = SourceRootRecordSchema.parse(row?.record)
       if (!isDeepStrictEqual(root.binding, requestedBinding) || root.selection.hostRef.kind !== 'device' || root.binding.deviceId !== binding.deviceId

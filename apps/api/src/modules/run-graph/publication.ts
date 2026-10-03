@@ -16,7 +16,7 @@ import {
   type RepeatGraphEventV3, type RepeatGraphEffectV3,
 } from '@graphql/contracts/wave25'
 import {
-  assertGraphTransaction, beforeGraphCommit, didGraphTransactionCommit, poisonGraphTransaction,
+  assertGraphTransaction, beforeGraphCommit, beforeGraphCommitChecks, didGraphTransactionCommit, poisonGraphTransaction,
   type ExclusiveGraphConnection, type GraphTransactionSql,
 } from './connection.js'
 import { RunGraphError } from './errors.js'
@@ -134,6 +134,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
   #bytes = 0
   #busy = false
   #admissionOnly = false
+  readonly #ownerCommitChecks = new WeakMap<RunOwnership, (expected: readonly { ownerId: string; fence: string }[]) => Promise<void>>()
   #finalized = false
   #receipt: GraphPublicationReceipt = { sequence: null, batchId: null, kind: 'none' }
   constructor(key: symbol, sql: GraphTransactionSql, scope: S) {
@@ -611,7 +612,16 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       await checkOwner()
       // Registered after the existing publication finalizer. A caught owner
       // failure cannot commit either domain rows or the staged batch/receipts.
-      beforeGraphCommit(this.sql, checkOwner)
+      let verifyCommit = this.#ownerCommitChecks.get(owner)
+      if (!verifyCommit) {
+        verifyCommit = async (expected) => {
+          owner.assertOwned()
+          const current = canonicalGraphJson(await owner.readOneShotFence(this.sql))
+          if (expected.some((fence) => canonicalGraphJson(fence) !== current)) throw new RunGraphError('GRAPH_OWNER_LOST')
+        }
+        this.#ownerCommitChecks.set(owner, verifyCommit)
+      }
+      beforeGraphCommitChecks(this.sql, owner, ownerFence, verifyCommit)
       return { replayed, semanticDigest, ...(!replayed && value !== undefined ? { value } : {}) }
     } catch (error) {
       poisonGraphTransaction(this.sql)

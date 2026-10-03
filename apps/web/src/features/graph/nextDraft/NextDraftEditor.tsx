@@ -10,7 +10,7 @@ import { flushSync } from 'react-dom'
 import { Inbox, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV3Schema, staysOnWorkflowBoard, sameExecutableWorkflow, type WorkflowDefinitionV3 } from '@graphql/contracts/wave25'
-import { AgentFacts, Alert, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
+import { ActionMenu, AgentFacts, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentationStore } from '../useGraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
@@ -25,7 +25,7 @@ import { useGraphEditIntent } from './useGraphEditIntent'
 import { WorkflowSaveError } from './WorkflowSaveError'
 import { EditIntentStatus } from './EditIntentStatus'
 import { draftFailure } from './writer'
-import { useInteractionsQuery, useManagedWorkspaceQuery } from '../../../shared/api/query'
+import { useInteractionsQuery, useManagedWorkspaceQuery, useManagedWorkflowQuery } from '../../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { ApprovalFields, AttachAgentField, EntryFields, NodeConnections, NodeWorkflowFields } from './AuthoringFields'
 import { DraftCanvas, type AgentPanels, type DraftCanvasHandle, type OpenAgentPanel } from './DraftCanvas'
@@ -35,7 +35,9 @@ import { runNodeView, useSelectedRunRecord } from '../../workflow-board/runFacts
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
 import { AgentPickerPanel } from '../../workflow-board/AgentPickerPanel'
-import { WorkflowName } from '../../workflow-board/WorkflowName'
+import { WorkflowName, type WorkflowNameHandle } from '../../workflow-board/WorkflowName'
+import { BoardAlerts, type BoardUpdateFailure } from '../../workflow-board/BoardAlerts'
+import { RemoveWorkflowButton } from '../../workflows/RemoveWorkflowButton'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
 import { useApprovalInboxStore } from '../../approvals'
 import { RepeatEditor } from '../../repeats/RepeatEditor'
@@ -47,17 +49,17 @@ import '../graph.css'
 import './nextDraft.css'
 
 /** Authoring adapter within the workspace board. Selected Run is NOT an editor key. */
-export function NextDraftEditor({ workspaceId, workflowId, initialContext }: {
-  workspaceId: string; workflowId: string; initialContext?: AuthoringContext
+export function NextDraftEditor({ workspaceId, workflowId, initialContext, updateFailures }: {
+  workspaceId: string; workflowId: string; initialContext?: AuthoringContext; updateFailures?: readonly BoardUpdateFailure[]
 }) {
   const key = nextDraftKey(workspaceId, workflowId)
-  return <GraphPresentationProvider key={key}><DraftLoader draftKey={key} workspaceId={workspaceId} workflowId={workflowId} initialContext={initialContext} /></GraphPresentationProvider>
+  return <GraphPresentationProvider key={key}><DraftLoader draftKey={key} workspaceId={workspaceId} workflowId={workflowId} initialContext={initialContext} updateFailures={updateFailures} /></GraphPresentationProvider>
 }
 
 const kindName = (kind: 'execution' | 'approval') => kind === 'approval' ? 'Approval' : 'Handoff'
 
-function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
-  draftKey: string; workspaceId: string; workflowId: string; initialContext?: AuthoringContext
+function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, updateFailures }: {
+  draftKey: string; workspaceId: string; workflowId: string; initialContext?: AuthoringContext; updateFailures?: readonly BoardUpdateFailure[]
 }) {
   const edit = useGraphDraftStore((state) => state.nextDrafts[draftKey])
   const [storageError, setStorageError] = useState<string>()
@@ -89,7 +91,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
       }
     } catch (error) { setStorageError(error instanceof Error ? error.message : 'Retained edits are unavailable.') }
   }, [draftKey, source.data, source.isError])
-  if (edit) return <EditorForm draftKey={draftKey} edit={edit} />
+  if (edit) return <EditorForm draftKey={draftKey} edit={edit} updateFailures={updateFailures} />
   if (storageError || source.isError) return <section className="workflow-graph-state" role="alert">
     <h2>Authoring unavailable</h2><p>{storageError ?? source.error?.message}</p>
     <p>No retained command was deleted, retagged or replaced.</p>
@@ -98,13 +100,14 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext }: {
   return <LoadingState label="Loading the current workflow draft…" rows={2} />
 }
 
-type Panel = 'workflow' | 'agents' | 'readiness' | 'repeat' | null
-function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit }) {
+type Panel = 'workflow' | 'agents' | 'repeat' | null
+function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit: NextDraftEdit; updateFailures?: readonly BoardUpdateFailure[] }) {
   const graph = edit.graph, context = edit.context, board = useWorkflowBoard()
   const editIntent = useGraphEditIntent(draftKey, edit)
   const guard = useContext(UnsavedChangesContext)
   const [panel, setPanel] = useState<Panel>(null)
   const settingsPanel = useRef<HTMLElement>(null)
+  const workflowName = useRef<WorkflowNameHandle>(null)
   const openSaveField = (path: (string | number)[]) => {
     flushSync(() => setPanel('workflow'))
     const field = path[0] === 'approval' ? (path[1] === 'designatedOrchestratorAgentId' ? 'orchestrator' : 'approval')
@@ -140,6 +143,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     return () => window.clearTimeout(timer)
   }, [message])
   const workspace = useManagedWorkspaceQuery(graph.workspaceId)
+  const managedWorkflow = useManagedWorkflowQuery(graph.workspaceId, graph.id)
   const approvals = useInteractionsQuery({ workspaceId: graph.workspaceId, workflowId: graph.id, status: 'pending', limit: 100 })
   const pendingApprovals = approvals.data?.items.filter((item) => item.approval.handler === 'user').length
   const queryClient = useQueryClient()
@@ -392,7 +396,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
     const run = runNodeView(runRecord, Boolean(board?.run), node.id, node.agentId)
     const unsavedChat = !pinned && !board?.run && (!context.draft.baseWorkflowVersionId || !agent?.configurationVersionId)
     const chat = unsavedChat ? <EmptyState icon="chat" title="Save this Agent and workflow to chat"
-      description="Save the Agent settings and workflow changes, then reopen chat. The Board’s Before you run panel lists any missing setup." />
+      description="Save the Agent settings and workflow changes, then reopen chat. Workflow alerts list any missing setup." />
       : <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}
       context={{ workspaceId: graph.workspaceId, workflowId: graph.id, workflowNodeId: node.id, agentId: node.agentId,
         ...(board?.run ? { runId: board.run.runId } : {}) }}
@@ -438,7 +442,7 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
   const rawErrorText = edit.error ? edit.error.message : startOutbox.error ?? localError
   // The save alert already shows the edit-intent failure; do not repeat it.
   const errorText = rawErrorText && rawErrorText === editIntent.mutation.error?.message ? undefined : rawErrorText
-  const panelTitle = panel === 'workflow' ? 'Workflow settings' : panel === 'agents' ? 'Add node' : panel === 'readiness' ? 'Before you run' : ''
+  const panelTitle = panel === 'workflow' ? 'Workflow settings' : panel === 'agents' ? 'Add node' : ''
   return <section className="workflow-graph board-typed-editor" aria-label="Workflow authoring">
     <div className="workflow-graph-canvas">
       <DraftCanvas ref={canvas} draftKey={draftKey} graph={graph} agents={agents} kind="execution"
@@ -452,13 +456,11 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
         action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={() => openPanel('agents')}>Add node</Button>} /></div> : null}
       <header className="board-topbar">
         <div className="board-title">
-          <WorkflowName name={graph.name} disabled={saveBusy || starting || editIntent.locked}
+          <WorkflowName ref={workflowName} name={graph.name} disabled={saveBusy || starting || editIntent.locked}
             onRename={(name) => change((current) => ({ ...current, name }))} />
-          {hints.length ? <Button size="sm" variant="ghost" leading={<Icon name="warning" size={14} />} onClick={() => openPanel('readiness')}>
-            {hints.length} {hints.length === 1 ? 'thing' : 'things'} to fix</Button> : null}
         </div>
         <div className="board-control-cluster">
-          {dirty || edit.pending || editIntent.locked ? <Toolbar label="Draft actions">
+          {needsSave || edit.pending || editIntent.locked ? <Toolbar label="Draft actions">
             {dirty ? <>
               <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || !edit.history.length}
                 onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton>
@@ -469,19 +471,34 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
               {affectedRuns.length ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button>
               : <IconButton label="Save changes" disabled={saveBusy || starting || !!editIntent.storageError} onClick={requestSave}><Save aria-hidden="true" size={16} /></IconButton>}
           </Toolbar> : null}
+        {board?.navigationControls}
         <Toolbar label="Workflow controls">
+          <RemoveWorkflowButton workspaceId={graph.workspaceId} workflowId={graph.id} name={graph.name}
+            revision={managedWorkflow.data?.revision ?? context.draft.publishedRevision}
+            renderTrigger={(remove) => <ActionMenu label="Workflow actions" icon="gear" width={220} disabled={saveBusy || starting || editIntent.locked} items={[
+              { id: 'rename', label: 'Rename', onSelect: () => workflowName.current?.begin() },
+              { id: 'remove', label: 'Remove workflow', icon: 'trash', danger: true, disabled: !managedWorkflow.isSuccess || dirty,
+                description: dirty ? 'Save or discard draft changes first.' : undefined,
+                onSelect: () => void prepare(remove) },
+            ]} />} />
           <IconButton label="Add agent or job to graph" onClick={() => openPanel('agents')}><Icon name="plus" size={16} /></IconButton>
           <IconButton label="Workflow settings" onClick={() => openPanel('workflow')}><Icon name="settings" size={16} /></IconButton>
           <Button variant="secondary" className="n-icon-button workflow-approval-inbox" aria-label={`Open human approval inbox${pendingApprovals ? `, ${pendingApprovals} pending` : ''}`}
             title="Approval inbox" onClick={() => useApprovalInboxStore.getState().openInbox({ workspaceId: graph.workspaceId, workflowId: graph.id })}><Inbox aria-hidden="true" size={16} />
             {pendingApprovals ? <span className="workflow-approval-inbox-badge" aria-hidden="true">{pendingApprovals}</span> : null}</Button>
           {!graph.handoffs ? <Button size="sm" variant="ghost" onClick={() => openPanel('repeat')}>Repeats</Button> : null}
-          {board ? <IconButton label="Runs" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
+          {board ? <IconButton label="Activities" onClick={board.openRuns}><Icon name="history" size={16} /></IconButton> : null}
           <Button variant="primary" leading={<Icon name="play" size={14} />} aria-label={pendingStart ? 'Reconcile Start' : needsSave ? 'Save and run' : 'Start saved version'}
             title={startReason} disabled={startDisabled} loading={starting} onClick={() => void (pendingStart ? start() : prepare(() => needsSave ? startMutation.mutateAsync({ saveFirst: true }) : start())).catch(report)}>{pendingStart ? 'Confirm start' : needsSave ? 'Save and run' : 'Run'}</Button>
         </Toolbar>
         </div>
       </header>
+      <BoardAlerts scope={draftKey} hints={hints} validation={edit.validation} error={editIntent.mutation.error ?? undefined} updateFailures={updateFailures}
+        pending={editIntent.mutation.isPending} openField={openSaveField} openIssue={(issue) => {
+          if (issue.nodeId) openAgent(issue.nodeId)
+          else if (issue.relationshipId) inspect(() => presentation.getState().setFocusedEdgeId(issue.relationshipId))
+          else openPanel(issue.code === 'ENTRY_REQUIRED' && !graph.nodes.length ? 'agents' : 'workflow')
+        }} />
       <div className="board-notices" aria-live="polite">
         {layout.isError || layout.retained || layout.journalError ? <BoardNotice tone="warning" title="Positions are retained locally.">{layout.journalError ?? layout.error?.message}
           <Button size="sm" disabled={layout.isPending || !!layout.journalError} onClick={() => layout.mutate()}>Reconcile layout</Button></BoardNotice> : null}
@@ -542,13 +559,6 @@ function EditorForm({ draftKey, edit }: { draftKey: string; edit: NextDraftEdit 
               }}>Reload saved draft</Button>
             </section>
           </> : null}
-          {panel === 'readiness' ? <section className="next-draft-section" aria-label="Validation">
-            {hints.length ? <ul className="board-hints">{hints.map((issue, i) => <li key={i}><Icon name="warning" size={14} />{issue.message}</li>)}</ul>
-              : <p>Nothing to fix here. Saving runs the full check.</p>}
-            {hints.length ? <Button size="sm" onClick={() => setPanel('workflow')}>Open workflow settings</Button> : null}
-            {edit.validation ? <Alert tone={edit.validation.valid ? 'success' : 'warning'} title={edit.validation.valid ? 'The last save passed all checks.' : 'The last save needs a few fixes.'}>
-              {edit.validation.issues.length ? <ul>{edit.validation.issues.map((issue, i) => <li key={i}>{issue.message}</li>)}</ul> : null}</Alert> : null}
-          </section> : null}
         </fieldset>
       </aside> : null}
       <nav className="board-keyboard-list" aria-label="Agents and connections">

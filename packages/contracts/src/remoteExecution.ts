@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DeviceExecutionAdmissionFields, HistoricalDeviceExecutionAdmissionFields, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
 import { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
 export { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
 import { ExecutionResultSchema } from './index.js'
@@ -34,16 +35,23 @@ export const RemoteInteractionTargetSchema = z.object({ interactionId: z.string(
 export type RemoteInteractionTarget = z.infer<typeof RemoteInteractionTargetSchema>
 export const RemoteOperationReceiptSchema = z.object({
   schemaVersion: z.literal(1), intent: DispatchIntentSchema,
+  ...HistoricalDeviceExecutionAdmissionFields,
   connection: DeviceConnectionIdentitySchema, workerIncarnationId: z.uuid(),
   sequence: z.number().int().positive(), phase: RemoteOperationPhaseSchema,
   interaction: RemoteInteractionTargetSchema.optional(), native: RemoteNativeIdentitySchema.optional(), terminal: RemoteTerminalEvidenceSchema.optional(),
   entryAttempted: z.boolean(), turnEntryAttempted: z.boolean(), turnInput: z.object({ correlationId: z.string().min(1), promptDigest: PlacementDigestSchema }).strict().optional(), stopFence: z.boolean(), controls: z.array(RemoteOwnerControlSchema).max(128),
   uncertainty: z.string().max(500).optional(),
 }).strict().superRefine((value, context) => {
+  validateHistoricalDeviceExecutionAdmission(value, context)
+  if (Object.keys(DeviceExecutionAdmissionFields).some(field => value[field as keyof typeof DeviceExecutionAdmissionFields] !== undefined
+    && value[field as keyof typeof DeviceExecutionAdmissionFields] !== value.intent[field as keyof typeof DeviceExecutionAdmissionFields]))
+    context.addIssue({ code: 'custom', message: 'Receipt retains the original admission policy and device approval.' })
   if (value.native && !value.entryAttempted) context.addIssue({ code: 'custom', message: 'Native evidence requires an entry reservation.' })
   if ((value.phase === 'confirmed_terminal') !== (value.terminal !== undefined)) context.addIssue({ code: 'custom', message: 'Terminal phase requires exact closure evidence.' })
   if (['start_acknowledged', 'running'].includes(value.phase) && !value.native) context.addIssue({ code: 'custom', message: 'Acknowledged/running requires native ownership.' })
 })
+export const CurrentRemoteOperationReceiptSchema = RemoteOperationReceiptSchema.safeExtend(DeviceExecutionAdmissionFields)
+export type CurrentRemoteOperationReceipt = z.infer<typeof CurrentRemoteOperationReceiptSchema>
 export type RemoteOperationReceipt = z.infer<typeof RemoteOperationReceiptSchema>
 export type RemoteOperationStatus = { status: 'known'; receipt: RemoteOperationReceipt }
   | { status: 'unknown'; reason: 'journal_absence_requires_reconciliation' }

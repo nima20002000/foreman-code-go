@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { JobRuntimeNativeAdmissionSchema } from './jobRuntime.js'
+import { JobRuntimeNativeAdmissionSchema, CurrentJobRuntimeNativeAdmissionSchema } from './jobRuntime.js'
 
 const mainId='00000000-0000-4000-8000-000000000001'
 const qualificationId='00000000-0000-4000-8000-000000000002'
@@ -17,6 +17,13 @@ const remote={...admission,hostRef:{kind:'device',mainId,deviceId},registration:
     connectionGeneration:3,connectionEpoch:'00000000-0000-4000-8000-000000000008'}}
 
 describe('runtime qualification admission identity',()=>{
+  it('requires device policy and revocable approval on new diagnostic entry, retaining old history',()=>{
+    expect(CurrentJobRuntimeNativeAdmissionSchema.safeParse(admission).success).toBe(false)
+    const current={...admission,schemaVersion:2,resourcePolicyRevision:1,resourcePolicyDigest:'a'.repeat(64),
+      runtimeApprovalId:admission.approvalId,runtimeApprovalRevision:1}
+    expect(CurrentJobRuntimeNativeAdmissionSchema.parse(current)).toEqual(current)
+    expect(JobRuntimeNativeAdmissionSchema.safeParse({...current,resourcePolicyDigest:undefined}).success).toBe(false)
+  })
   it('retains a distinct diagnostic subject for local and authenticated remote hosts',()=>{
     expect(JobRuntimeNativeAdmissionSchema.parse(admission)).toEqual(admission)
     expect(JobRuntimeNativeAdmissionSchema.parse(remote)).toEqual(remote)

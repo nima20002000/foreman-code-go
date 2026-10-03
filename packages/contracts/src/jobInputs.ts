@@ -46,3 +46,7 @@ export const JobInputDeliveryAckRequestSchema=z.object({method:z.literal('delive
   receipt:JobInputDeliveryReceiptSchema}).strict()
 export type JobInputStageRequest=z.infer<typeof JobInputStageRequestSchema>
 export type JobInputDeliveryAckRequest=z.infer<typeof JobInputDeliveryAckRequestSchema>
+/** Read the original durable detached-delivery ACK on job-inputs-v1. Response:
+ * JobInputDeliveryReceiptSchema. Authorize alone is not delivery readback. */
+export const JobInputDeliveryStatusRequestSchema=z.object({method:z.literal('delivery-status'),transferId:z.uuid()}).strict()
+export type JobInputDeliveryStatusRequest=z.infer<typeof JobInputDeliveryStatusRequestSchema>

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   canonicalGraphJson, RepeatGraphPageV3Schema, reduceRepeatGraphPageV3, RUN_GRAPH_LIMITS,
   type RepeatGraphFactV3,
@@ -8,7 +8,7 @@ import {
   graphFixture, graphPosition, ownedGraph, changeRunState, privateCanary,
   type GraphFixture, type GraphTestDatabase,
 } from './eng04-graph-composition-fixture.js'
-import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { beforeGraphCommit, withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { openRunGraphPublication, graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
 import { publishRepeatStoppedRunLocked, repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
@@ -116,6 +116,24 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     expect((await snapshot(t)).state.run.executionState).toBe('queued')
   })
 
+  it('rolls back after actual owner loss in an intervening commit finalizer', async () => {
+    const t = await fixture(), before = await snapshot(t)
+    await expect(ownedGraph(db, t, owner => owner.oneShotConnection().transaction(async sql => {
+      const publication = await openRunGraphPublication(sql, t.scope)
+      await sql.query(`update runs set execution_state='running',record=jsonb_set(record,'{executionState}','"running"') where id=$1`, [t.run.id])
+      await publishRepeatRunStateLocked(publication, owner)
+      beforeGraphCommit(sql, async () => {
+        expect((await sql.query<{ unlocked: boolean }>('select pg_advisory_unlock(810002,hashtext($1)) as unlocked', [t.run.id])).rows[0]?.unlocked).toBe(true)
+      })
+      await publication.repeatRunReadback({ evidence: { sourceKind: 'run', sourceId: 'after-finalizer', sourceRevision: '1' },
+        sourceDigest: graphSourceDigest('after-finalizer') }, owner,
+      async () => [{ type: 'repeat.run.state', state: { ...before.state.run, executionState: 'running' } }])
+    }))).rejects.toMatchObject({ code: 'RUN_OWNERSHIP_LOST' })
+    expect(await graphPosition(db, t)).toBe('1')
+    expect((await snapshot(t)).state.run.executionState).toBe('queued')
+    expect((await db.pool.query("select 1 from run_graph_sources where run_id=$1 and source_id='after-finalizer'", [t.run.id])).rowCount).toBe(0)
+  })
+
   it('cannot borrow a real owner on a different PostgreSQL session', async () => {
     const t = await fixture()
     await expect(ownedGraph(db, t, (owner) => withExclusiveGraphConnection(db.pool, (connection) => connection.transaction(async (sql) => {
@@ -125,8 +143,11 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     expect(await graphPosition(db, t)).toBe('1')
   })
 
-  it('uses one bounded reset for an oversized atomic change and retains every source after pruning its batch', async () => {
-    const t = await fixture(), before = await snapshot(t)
+  describe('oversized atomic publication fixture', () => {
+    let t: GraphFixture
+    let before: Awaited<ReturnType<typeof snapshot>>
+    beforeEach(async () => { t = await fixture(); before = await snapshot(t) })
+    it('uses one bounded reset for an oversized atomic change and retains every source after pruning its batch', async () => {
     const fact: RepeatGraphFactV3 = { type: 'repeat.run.state', state: before.state.run }
     const count = RUN_GRAPH_LIMITS.batchEvents + 1
     // White-box journal capacity test: distinct test source identities point to
@@ -157,6 +178,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     expect(await receiptCount()).toBe(count)
     expect(await events(t, '1')).toMatchObject({ kind: 'reset', reason: 'history_expired' })
     expect(await events(t, '2')).toMatchObject({ kind: 'page', batches: [], throughSequence: '2', hasMore: false })
+    })
   })
 
   it('rejects a reordered complete source group via its permanent ordered-envelope receipt', async () => {

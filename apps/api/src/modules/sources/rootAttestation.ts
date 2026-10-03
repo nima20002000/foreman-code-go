@@ -138,6 +138,7 @@ export function createWorkspaceRootWorkerHandler(readApproved: () => Promise<App
     const request = WorkspaceRootWorkerRequestSchema.parse(raw)
     await authorize(request)
     const allowlist = ApprovedRootAllowlistSchema.parse(await readApproved())
+    if (request.operation === 'workspace-roots.configuration') return allowlist
     if (request.operation === 'workspace-roots.attest') return attestWorkspaceRoot(allowlist, request.selection)
     if (request.operation === 'workspace-roots.browse') return browseApprovedRoot(allowlist, request.selection, request.relativePath)
     return attestSourceNamespace(allowlist, request.policy)

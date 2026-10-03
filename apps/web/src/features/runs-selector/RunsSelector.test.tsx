@@ -61,7 +61,7 @@ const deniedResponse = (status: number) => HttpResponse.json({ error: { code: st
 
 beforeEach(() => {
   latest = undefined
-  useRunsSelectorUi.getState().setOpen(null)
+  useRunsSelectorUi.setState({ openId: null, geometry: null })
   server.use(
     http.get(listRoute, () => HttpResponse.json(page([runA, runB, runC]))),
     http.get(snapshotRoute, ({ params }) => HttpResponse.json(snapshot(String(params.runId), undefined,
@@ -75,20 +75,19 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
-  it('puts Current workflow first, preserves server order, and disambiguates only the shared date', async () => {
+describe('Runs window and URL selection (real HTTP boundary + MSW)', () => {
+  it('contains only saved runs, preserves server order, and disambiguates only the shared date', async () => {
     await mount()
     const menu = await openMenu()
     const labels = labelRuns([runA, runB, runC])
     await within(menu).findByRole('menuitemradio', { name: labels[2]!.label })
     const rows = within(menu).getAllByRole('menuitemradio')
-    expect(rows[0]).toHaveTextContent('Current workflow')
-    expect(rows[0]).toHaveAttribute('aria-checked', 'true')
-    expect(rows.slice(1).map((row) => row.getAttribute('data-run-id'))).toEqual(['run-a', 'run-b', 'run-c'])
-    expect(rows[1]).toHaveTextContent('short-A')
-    expect(rows[2]).toHaveTextContent('short-B')
-    expect(rows[3]).not.toHaveTextContent('short-C')
-    await userEvent.click(rows[2]!)
+    expect(within(menu).queryByText('Current workflow')).not.toBeInTheDocument()
+    expect(rows.map((row) => row.getAttribute('data-run-id'))).toEqual(['run-a', 'run-b', 'run-c'])
+    expect(rows[0]).toHaveTextContent('short-A')
+    expect(rows[1]).toHaveTextContent('short-B')
+    expect(rows[2]).not.toHaveTextContent('short-C')
+    await userEvent.click(rows[1]!)
     await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-b')))
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Runs$/ })).toHaveFocus()
@@ -101,12 +100,13 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     expect(queued).not.toHaveTextContent('short-A')
   })
 
-  it('shows loading, empty, transient error and retry without losing Current workflow', async () => {
+  it('shows concise loading, empty, transient error and retry without a redundant current-workflow section', async () => {
     const pending = deferred<ReturnType<typeof page>>()
     server.use(http.get(listRoute, async () => HttpResponse.json(await pending.promise)))
     await mount(); const menu = await openMenu()
     expect(within(menu).getByText('Loading…')).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitemradio', { name: 'Current workflow' })).toBeEnabled()
+    expect(within(menu).queryByText('Current workflow')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Return to workflow' })).not.toBeInTheDocument()
     pending.resolve(page([]))
     await within(menu).findByText('No runs')
     server.use(http.get(listRoute, () => HttpResponse.json({ error: { code: 'OFFLINE', message: 'Offline' } }, { status: 500 })))
@@ -126,7 +126,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     server.use(http.get(listRoute, () => HttpResponse.json(page([newer, runA, runB, runC]))))
     await act(async () => { await client.invalidateQueries({ queryKey: runsSelectorKeys.list(scope) }) })
     await within(menu).findByRole('menuitemradio', { name: labelRuns([newer, runA, runB, runC])[0]!.label })
-    expect(within(menu).getAllByRole('menuitemradio')[1]).toHaveAttribute('data-run-id', 'run-new')
+    expect(within(menu).getAllByRole('menuitemradio')[0]).toHaveAttribute('data-run-id', 'run-new')
     expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-a'))
     expect(router.history.location.href).toBe(href)
     expect(latest!.isCurrent(ticket)).toBe(true)
@@ -147,13 +147,13 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-b')))
     const trigger = screen.getByRole('button', { name: /^Runs$/ })
     expect(trigger).toBeEnabled()
-    const menu = await openMenu()
-    await userEvent.click(within(menu).getByRole('menuitemradio', { name: 'Current workflow' }))
+    await openMenu()
+    await userEvent.click(screen.getByRole('button', { name: 'Return to workflow' }))
     await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity(null)))
     trigger.focus()
     await userEvent.keyboard('{ArrowDown}')
     expect(await screen.findByRole('menu', { name: 'Runs' })).toBeInTheDocument()
-    expect(within(screen.getByRole('menu', { name: 'Runs' })).getByRole('menuitemradio', { name: 'Current workflow' })).toHaveFocus()
+    await waitFor(() => expect(within(screen.getByRole('menu', { name: 'Runs' })).getAllByRole('menuitemradio')[0]).toHaveFocus())
     expect(localStorage.getItem('selectedRunId')).toBeNull()
   })
 
@@ -201,8 +201,8 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     expect(screen.getByLabelText('Snapshot identity')).toHaveTextContent('none')
     expect(router.history.location.href).toContain('selectedRunId=absent-run')
     const menu = await openMenu()
-    const current = within(menu).getByRole('menuitemradio', { name: 'Current workflow' })
-    expect(current).toHaveAttribute('aria-checked', 'false')
+    expect(within(menu).queryByText('Current workflow')).not.toBeInTheDocument()
+    const current = screen.getByRole('button', { name: 'Return to workflow' })
     await userEvent.click(current)
     await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity(null)))
     expect(router.history.location.href).not.toContain('selectedRunId')
@@ -224,7 +224,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     server.use(http.get(listRoute, () => deniedResponse(403)))
     await act(async () => { await client.invalidateQueries({ queryKey: runsSelectorKeys.list(scope) }) })
     await within(menu).findByText('No access')
-    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(1)
+    expect(within(menu).queryAllByRole('menuitemradio')).toHaveLength(0)
     expect(within(menu).queryByRole('menuitem', { name: 'More' })).not.toBeInTheDocument()
   })
 
@@ -242,7 +242,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     await within(menu).findByRole('menuitemradio', { name: labelRuns([runA, runB])[1]!.label })
     expect(calls).toHaveLength(2)
     expect(calls[1]!.searchParams.get('cursor')).toBe('opaque:/+?=&')
-    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(3)
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(2)
     expect(within(menu).getByRole('menuitem', { name: 'No more' })).toHaveAttribute('aria-disabled', 'true')
   })
 
@@ -266,7 +266,7 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
     expect(calls).toBe(RUNS_MAX_PAGES)
   })
 
-  it('supports keyboard entry, arrows, Home/End, typeahead, Escape and outside dismissal at 320px', async () => {
+  it('supports keyboard navigation and explicit dismissal, leaving the board usable at 320px', async () => {
     const width = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
     try {
@@ -275,23 +275,28 @@ describe('Runs dropdown and URL selection (real HTTP boundary + MSW)', () => {
       trigger.focus(); await user.keyboard('{ArrowDown}')
       const menu = await screen.findByRole('menu', { name: 'Runs' })
       await within(menu).findByRole('menuitemradio', { name: labelRuns([runA, runB, runC])[2]!.label })
-      expect(within(menu).getByRole('menuitemradio', { name: 'Current workflow' })).toHaveFocus()
-      expect(Number.parseFloat(menu.style.width)).toBeLessThanOrEqual(296)
+      expect(within(menu).getAllByRole('menuitemradio')[0]).toHaveFocus()
+      expect(screen.getByRole('dialog', { name: 'Runs' })).toHaveStyle({ width: '296px' })
       await user.keyboard('{End}')
       expect(within(menu).getAllByRole('menuitemradio').at(-1)).toHaveFocus()
-      await user.keyboard('c')
-      expect(within(menu).getByRole('menuitemradio', { name: 'Current workflow' })).toHaveFocus()
-      await user.keyboard('{ArrowDown}{Enter}')
+      await user.keyboard('{Home}')
+      expect(within(menu).getAllByRole('menuitemradio')[0]).toHaveFocus()
+      await user.keyboard('{Enter}')
       await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-a')))
       expect(trigger).toHaveFocus()
       await user.keyboard('{ArrowDown}{Escape}')
       expect(screen.queryByRole('menu')).not.toBeInTheDocument()
       expect(trigger).toHaveFocus()
       await user.keyboard('{ArrowDown}{Tab}')
-      expect(screen.getByRole('button', { name: 'After selector' })).toHaveFocus()
-      await user.click(trigger)
+      expect(screen.getByRole('button', { name: 'Resize Runs window' })).toHaveFocus()
+      expect(screen.getByRole('dialog', { name: 'Runs' })).toBeInTheDocument()
       fireEvent.pointerDown(document.body)
-      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+      expect(screen.getByRole('dialog', { name: 'Runs' })).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'After selector' }))
+      expect(screen.getByRole('dialog', { name: 'Runs' })).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Close Runs' }))
+      expect(screen.queryByRole('dialog', { name: 'Runs' })).not.toBeInTheDocument()
+      expect(trigger).toHaveFocus()
     } finally { Object.defineProperty(window, 'innerWidth', { configurable: true, value: width }) }
   })
 })

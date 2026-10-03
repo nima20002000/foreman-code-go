@@ -127,8 +127,9 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
           run={run} selectRun={selectRun} summaries={details.runs} selectInspection={selectInspection}
           selectedAgentId={search.agentId} selectDraftAgent={selectDraftAgent}
           inspection={{ runNodeId: search.runNodeId, runRelationshipId: search.runRelationshipId, runExchangeKey: search.runExchangeKey }}>
-          {workspace.isError ? <p role="status">Workspace updates are unavailable. The local draft is retained.</p> : null}
-          <PersistedWorkflowBoundary workspaceId={workspaceId} workflowId={workflowId} workflow={workflow} />
+          <PersistedWorkflowBoundary workspaceId={workspaceId} workflowId={workflowId} workflow={workflow}
+            updateFailures={workspace.isError ? [{ id: 'WORKSPACE_UPDATES_UNAVAILABLE', message: 'Workspace updates unavailable. Local edits are kept.',
+              pending: workspace.isFetching, retry: () => void workspace.refetch() }] : []} />
         </WorkflowBoard>
       </BoardHistoryNavigationBoundary>
     ) : undefined }} />

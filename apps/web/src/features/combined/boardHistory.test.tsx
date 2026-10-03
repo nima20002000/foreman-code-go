@@ -137,7 +137,7 @@ describe('FIL-17 + SCH selected Board', () => {
     const clock = within(controls).getByRole('button', { name: 'Schedule workflow' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
     const files = within(controls).getByRole('button', { name: 'Files' })
-    expect(clock.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(runs.compareDocumentPosition(clock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(runs.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(controls.closest('header')).toHaveStyle({ minWidth: '0', boxSizing: 'border-box' })
     await userEvent.click(files)

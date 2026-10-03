@@ -1,0 +1,16 @@
+FROM docker.io/library/node@sha256:17b7fd60fd812617654c64b95f9b2dde94f103313073b672bc40fdad6dccbaa2
+WORKDIR /opt/graphql-ci/source-lock
+COPY source-lock/ ./
+RUN test "$(node --version)" = v22.23.3 \
+ && test "$(corepack --version)" = 0.36.0 \
+ && git --version && flock --version \
+ && COREPACK_HOME=/opt/graphql-ci/corepack-cache corepack install --global pnpm@11.27.0 \
+ && COREPACK_HOME=/opt/graphql-ci/corepack-cache corepack pnpm fetch --frozen-lockfile --store-dir /opt/graphql-ci/pnpm-store \
+ && rm /usr/local/bin/corepack
+COPY corepack /usr/local/bin/corepack
+RUN chmod 0755 /usr/local/bin/corepack \
+ && chmod -R a+rX /opt/graphql-ci/corepack-cache /opt/graphql-ci/pnpm-store \
+ && test "$(corepack pnpm --version)" = 11.27.0
+WORKDIR /workspace
+ENTRYPOINT []
+CMD ["node"]

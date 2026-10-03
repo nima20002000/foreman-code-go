@@ -1,9 +1,46 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DEFAULT_HARNESS_DEFAULTS } from '@graphql/contracts'
 import { it, expect, vi } from 'vitest'
 import { HostHarnessConfigurationFields } from './HostHarnessConfigurationFields'
 import { createHarnessEditor, prepareHarnessEditor } from './harnessEditor'
 import { validationIssues } from './fieldValidation'
+import { savedClaudeConfiguration } from './claudeSettings.fixtures'
+
+function renderClaudeFields(props: Parameters<typeof HostHarnessConfigurationFields>[0]) {
+  const client = new QueryClient()
+  return render(<HostHarnessConfigurationFields {...props} />, {
+    wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+  })
+}
+
+it.each([
+  ['read-only', 'Read only'],
+  ['workspace-write', 'Workspace write'],
+  ['danger-full-access', 'Full access'],
+] as const)('shows the exact stored Claude sandbox %s without modifying the profile', (sandbox, label) => {
+  const configuration = { ...savedClaudeConfiguration, sandbox }
+  const editor = createHarnessEditor(configuration)
+  const onChange = vi.fn()
+  renderClaudeFields({ editor, onChange })
+  const field = screen.getByRole('combobox', { name: 'Sandbox' })
+  expect(field).toHaveValue(sandbox)
+  expect(field).toHaveDisplayValue(label)
+  expect(onChange).not.toHaveBeenCalled()
+  expect(prepareHarnessEditor(editor)).toEqual(configuration)
+})
+
+it('retains the explicit supported Claude sandbox selection through prepared save and readback', () => {
+  const onChange = vi.fn()
+  const view = renderClaudeFields({ editor: createHarnessEditor(savedClaudeConfiguration), onChange })
+  for (const sandbox of ['danger-full-access', 'workspace-write', 'read-only'] as const) {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: sandbox } })
+    const saved = prepareHarnessEditor(onChange.mock.calls.at(-1)![0])
+    expect(saved).toEqual({ ...savedClaudeConfiguration, sandbox })
+    view.rerender(<HostHarnessConfigurationFields editor={createHarnessEditor(saved)} onChange={onChange} />)
+    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue(sandbox)
+  }
+})
 
 it.each([
   ['codex', 'Model', 'model'],

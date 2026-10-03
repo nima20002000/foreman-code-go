@@ -1,13 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, mkdtemp, rm, statfs } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
+test('packaged rsync writer has separate source/output receipts and keeps diagnostics off protocol stdout', { skip: !artifact }, async () => {
+  const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
+  const entrypoint = 'apps/api/src/modules/byte-transfer/rsyncWriterCli.ts';
+  assert.ok(!manifest.workerApiModules.includes(entrypoint));
+  assert.ok(manifest.rsyncWriterApiModules.includes(entrypoint));
+  assert.ok(manifest.sourceSnapshot.files.some(file => file.path === entrypoint));
+  const output = manifest.files.find(file => file.path === 'src/rsync-writer.mjs');
+  assert.ok(output);
+  assert.equal(createHash('sha256').update(await readFile(join(artifact, output.path))).digest('hex'), output.sha256);
+  const invalid = spawnSync(process.execPath, [join(artifact, output.path), '--invalid'], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(invalid.status, 1);
+  assert.equal(invalid.stdout, '');
+  assert.equal(invalid.stderr.trim(), 'Rsync writer failed; original ownership retained');
+});
+
 test('built worker factory accepts supplied real registration and rejects placeholder servers', { skip: !artifact }, async () => {
   const { createWorkerConnection } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
   const pairing = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://package-check.example/device/connect', credential: 'a'.repeat(64), mainPublicKeyFingerprint: 'b'.repeat(64) };
@@ -24,7 +38,8 @@ test('packaged bytes match manifest and doctor import creates no worker authorit
   const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
   assert.ok(manifest.files.some((file) => file.path === 'src/worker.mjs'));
   for (const file of manifest.files) assert.equal(createHash('sha256').update(await readFile(join(artifact, file.path))).digest('hex'), file.sha256);
-  const state = await mkdtemp(join(tmpdir(), 'worker-artifact-probe-'));
+  assert.equal((await statfs('/dev/shm')).type, 0x01021994);
+  const state = await mkdtemp(join('/dev/shm', 'worker-artifact-probe-'));
   t.after(() => rm(state, { recursive: true, force: true }));
   const result = JSON.parse(execFileSync(process.execPath, [join(artifact, 'src/cli.mjs'), 'doctor', '--state', state], { encoding: 'utf8', timeout: 5000 }));
   assert.equal(result.versions.commit, manifest.commit);
@@ -32,7 +47,7 @@ test('packaged bytes match manifest and doctor import creates no worker authorit
   assert.equal(result.service.active, false);
   assert.equal(result.pairing, 'unpaired');
   await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
-  // This test's tmpfs root is intentionally unqualified; it is not a laptop boot test.
+  // This verified tmpfs state is intentionally unqualified.
   assert.equal(result.persistentState, false);
   const run = spawnSync(process.execPath, [join(artifact, 'src/cli.mjs'), 'run', '--state', state], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 1);

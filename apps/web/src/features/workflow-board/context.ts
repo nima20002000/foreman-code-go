@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react'
+import { createContext, useContext, type ReactNode } from 'react'
 import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@graphql/contracts/wave25'
 
 /** Callbacks and presentation context only; neither drafts nor Run facts live here. */
@@ -10,6 +10,7 @@ export const WorkflowBoardContext = createContext<{
   selectRun(scope?: RepeatGraphScopeV3): void
   openLocation(): void
   openRuns(): void
+  navigationControls?: ReactNode
   /** Active or recovering Runs in the workspace; saving meaningful edits may stop them. */
   activeRuns: number
 } | null>(null)
