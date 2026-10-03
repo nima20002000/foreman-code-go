@@ -1,3 +1,4 @@
+import { registerSubagentTools } from './tools/subagents.js'
 import { operatorToolAvailable } from './availability.js'
 import { registerHarnessRegistryTools } from '../../modules/harnesses/registryManagement.js'
 import { registerWorkspaceRootTools } from '../../modules/workspace-roots/transports.js'
@@ -64,6 +65,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerWorkflowScheduleTools(server, context)
   registerAgentTools(server, context)
   registerRunTools(server, context)
+  registerSubagentTools(server, context)
   registerRunInspectionTools(server, context)
   if (context.services.runGraph) registerRunGraphTools(server, context, context.services.runGraph)
   registerInteractionTools(server, context)

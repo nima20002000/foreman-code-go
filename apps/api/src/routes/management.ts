@@ -1,3 +1,4 @@
+import { registerRunSubagentRoutes } from './runSubagents.js'
 import { registerHarnessRegistryRoutes } from '../modules/harnesses/registryManagement.js'
 import { registerDeviceManagementRoutes } from '../modules/devices/management.js'
 import { registerWorkspaceRootRoutes } from '../modules/workspace-roots/transports.js'
@@ -87,6 +88,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   registerCurrentWorkflowRoutes(app, services.workflows, services.runs)
   registerCurrentVersionReadRoutes(app, services)
   registerRunInspectionRoutes(app, services)
+  registerRunSubagentRoutes(app, services)
   registerWorkspaceDefaultsRoutes(app, services)
   registerHarnessSettingsRoutes(app, services)
   // Board authoring creates and edits Agents through the same service as the
