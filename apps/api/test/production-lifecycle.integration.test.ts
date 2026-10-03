@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
-import { mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { mkdir, rename, rm } from 'node:fs/promises'
 
 import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@graphql/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -27,6 +25,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { FixtureServer } from './opencode-fixtures.js'
 import { buildProductionApp } from '../src/production.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 const connectionString = process.env.TEST_DATABASE_URL ?? 'postgresql://graphql:graphql@127.0.0.1:5432/graphql_nim2601'
 let schema: string, root: string, project: string, address: string
@@ -70,8 +69,8 @@ async function mcp(token: string, input: Record<string, unknown>) {
 }
 beforeEach(async () => {
   schema = `production_lifecycle_${randomUUID().replaceAll('-', '')}`
-  root = await mkdtemp(join(tmpdir(), 'pr15-runtime-'))
-  project = await mkdtemp(join(tmpdir(), 'pr15-project-'))
+  root = await privateFixtureDirectory('pr15-runtime-')
+  project = await privateFixtureDirectory('pr15-project-')
   admin = new pg.Pool({ connectionString })
   await admin.query(`create schema "${schema}"`)
   const url = new URL(connectionString)
