@@ -39,7 +39,10 @@ export async function loadWorkerRsyncEntrypoint(input: { path: string; pairing: 
       if (!isDeepStrictEqual(current(), binding)) unavailable('The original rsync authorization generation changed.')
       const reply = await input.request(RsyncTransferAuthorizeRequestSchema.parse({ kind: 'rsync-stage-v1', method: 'transfer-authorize', transferId: id }), AbortSignal.timeout(10_000))
       const intent = TransferIntentSchema.parse(reply.payload)
-      if (reply.bytes !== undefined || intent.transferId !== id || Object.entries(transferContextForBinding(binding)).some(([key, value]) => Reflect.get(intent, key) !== value)
+      // Admission keeps its original epoch; Main reauthorizes it on this live channel.
+      const identityChanged = (['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const)
+        .some(key => intent[key] !== binding[key])
+      if (reply.bytes !== undefined || intent.transferId !== id || identityChanged
         || !isDeepStrictEqual(current(), binding)) unavailable('Main rsync authorization returned another original transfer or generation.')
       return intent
     },

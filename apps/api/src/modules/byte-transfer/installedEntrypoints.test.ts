@@ -62,3 +62,51 @@ it('refuses a different packaged writer path and changed protected bytes', async
   await chmod(f.entryPoint, 0o500)
   await expect(loadWorkerRsyncEntrypoint(input)).rejects.toThrow('changed before verification')
 })
+
+it('reauthorizes an original admission after reconnect without replacing its epoch or expiry', async () => {
+  const f = await fixture()
+  const binding = { ...f.binding, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 2 }
+  const request = vi.fn(async () => ({ payload: f.intent }))
+  const loaded = await loadWorkerRsyncEntrypoint({ ...f, current: () => binding, ownership: () => undefined, request })
+  if (loaded.kind !== 'configured') throw new Error('not mounted')
+  try {
+    expect(await loaded.providers.accepted.intent(f.intent.transferId, binding)).toEqual(f.intent)
+    await loaded.providers.accepted.authorize(f.intent, transferContextForBinding(binding), 'read')
+    request.mockRejectedValueOnce(new Error('Original transfer expired'))
+    await expect(loaded.providers.accepted.authorize(f.intent, transferContextForBinding(binding), 'read'))
+      .rejects.toThrow('Original transfer expired')
+  } finally {
+    await loaded.close()
+  }
+})
+
+it.each(['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const)(
+  'rejects a reconnect that changes the admitted %s', async key => {
+    const f = await fixture()
+    const changed = typeof f.intent[key] === 'number' ? 2 : randomUUID()
+    const request = vi.fn(async () => ({ payload: { ...f.intent, [key]: changed } }))
+    const loaded = await loadWorkerRsyncEntrypoint({ ...f, current: () => f.binding, ownership: () => undefined, request })
+    if (loaded.kind !== 'configured') throw new Error('not mounted')
+    try {
+      await expect(loaded.providers.accepted.intent(f.intent.transferId, f.binding)).rejects.toThrow('another original transfer')
+    } finally {
+      await loaded.close()
+    }
+  },
+)
+
+it('rejects a connection change while Main authorizes the transfer', async () => {
+  const f = await fixture()
+  let binding = f.binding
+  const request = vi.fn(async () => {
+    binding = { ...binding, connectionEpoch: randomUUID(), connectionGeneration: 2 }
+    return { payload: f.intent }
+  })
+  const loaded = await loadWorkerRsyncEntrypoint({ ...f, current: () => binding, ownership: () => undefined, request })
+  if (loaded.kind !== 'configured') throw new Error('not mounted')
+  try {
+    await expect(loaded.providers.accepted.intent(f.intent.transferId, f.binding)).rejects.toThrow('another original transfer')
+  } finally {
+    await loaded.close()
+  }
+})
