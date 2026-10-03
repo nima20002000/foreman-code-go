@@ -1,3 +1,4 @@
+import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { createWorkerSourceRsyncAcknowledgement } from '../sources/rsyncTransferLifecycle.js'
 import { createInstalledRsyncComposition, type InstalledRsyncProviders } from '../byte-transfer/productionComposition.js'
@@ -183,6 +184,9 @@ export async function createInstalledWorkerDomains(input: {
   })()
   const execution = extensions.find(extension => extension.namespace === 'execution-v1')
   if (input.jobConfiguration && approved) {
+    if (!extensions.some(extension => extension.namespace === JOB_OUTPUT_NAMESPACE)) {
+      extensions.push({ namespace: JOB_OUTPUT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16384, maxBinaryBytes: 8192 })
+    }
     extensions.push({namespace:JOB_INPUT_NAMESPACE,version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192})
     const workflow = execution?.handle
     const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
