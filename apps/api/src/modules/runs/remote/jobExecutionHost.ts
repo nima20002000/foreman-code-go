@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { componentLogger } from '../../../infrastructure/logger.js'
 import { isDeepStrictEqual } from 'node:util'
 import { JobExecutionSchema, type JobExecution } from '@graphql/contracts/jobs'
 import { canonicalGraphJson } from '@graphql/contracts/wave25'
@@ -99,7 +100,8 @@ export class RemoteJobExecutionHost {
     if (this.tasks.has(intent.operationId)) return status
     if (status.receipt.phase !== 'received') return this.reconcile(status.receipt)
     const controller = new AbortController()
-    const task = this.execute(intent, execution, controller.signal).catch(async () => {
+    const task = this.execute(intent, execution, controller.signal).catch(async error => {
+      componentLogger('jobs').error({ err: error, operationId: intent.operationId }, 'Job execution or publication needs reconciliation')
       try { await this.ports.journal.jobUncertain(intent.operationId, 'Original OCI execution requires reconciliation') } catch { /* Faulted journal already blocks new entry. */ }
     })
     this.tasks.set(intent.operationId, { controller, task })

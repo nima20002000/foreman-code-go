@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { VerifiedTransferReceiptSchema, type TransferIntent, type TransferContext } from '@graphql/contracts/byte-transfer'
+import { VerifiedTransferReceiptSchema, BYTE_TRANSFER_POLICY, type TransferIntent, type TransferContext } from '@graphql/contracts/byte-transfer'
 import { JobArtifactSchema } from '@graphql/contracts/jobs'
 import { JobOutputStageRequestSchema, JobOutputStatusRequestSchema } from '@graphql/contracts/job-output-transfer'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
@@ -16,7 +16,7 @@ import type { WorkerJobOutputRsyncPort } from './workerJobOutputs.js'
 /** Actual closed Job journal, original quota and current W07 carrier. */
 export async function createInstalledJobOutputRsync(input:{providers:InstalledRsyncProviders;journal:RemoteOperationJournal;
   current():Readonly<DeviceSessionBinding>;
-  request(namespace:string,payload:unknown,options:{signal:AbortSignal}):Promise<{payload:unknown;bytes?:Uint8Array}>}){
+  request(namespace:string,payload:unknown,options:{signal:AbortSignal;timeoutMs?:number}):Promise<{payload:unknown;bytes?:Uint8Array}>}){
   const context=async(signal?:AbortSignal)=>{signal?.throwIfAborted();return transferContextForBinding(input.current())}
   const store=await createInstalledJobOutputRsyncStore({rootDirectory:input.providers.stagingRoot,quota:input.providers.receiver,current:context,
     authorize:async(intent,current,signal)=>{signal?.throwIfAborted();await input.providers.accepted.authorize(intent,current,'read');signal?.throwIfAborted()},
@@ -45,7 +45,10 @@ export async function createInstalledJobOutputRsync(input:{providers:InstalledRs
     return artifact
   }
   const collector:WorkerJobOutputRsyncPort={published,register:(...args)=>source.register(...args),stage:async(intent,signal)=>{
-    const reply=await input.request(JOB_OUTPUT_NAMESPACE,JobOutputStageRequestSchema.parse({method:'job-output-stage',transferId:intent.transferId}),{signal})
+    signal.throwIfAborted()
+    const timeoutMs = Math.min(BYTE_TRANSFER_POLICY.maxIdleMs, Date.parse(intent.expiresAt) - Date.now())
+    if (timeoutMs <= 0) throw new DomainError('JOB_OUTPUT_TRANSFER_EXPIRED', 'The original output transfer has expired.', 409)
+    const reply=await input.request(JOB_OUTPUT_NAMESPACE,JobOutputStageRequestSchema.parse({method:'job-output-stage',transferId:intent.transferId}),{signal,timeoutMs})
     if(reply.bytes!==undefined)throw new DomainError('JOB_OUTPUT_METADATA_INVALID','Staging status contains no peer bytes.',400)
     const receipt=VerifiedTransferReceiptSchema.parse(reply.payload)
     if(!isDeepStrictEqual(receipt.intent,intent)||receipt.transferId!==intent.transferId||receipt.sha256!==intent.sha256||receipt.byteSize!==intent.byteSize)

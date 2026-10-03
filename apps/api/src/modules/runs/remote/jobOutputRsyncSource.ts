@@ -29,7 +29,6 @@ export class JobOutputRsyncSource {
     if(status.status!=='known')throw new DomainError('JOB_OUTPUT_CLOSURE_MISSING','The original worker closure journal is unavailable.',409)
     const receipt=status.receipt,execution=receipt.execution,input=record.input,intent=record.intent
     if(receipt.phase!=='confirmed_terminal'||!receipt.entryAttempted||!receipt.native||!receipt.terminal?.processStopped
-      ||execution.process.phase!=='terminal'||!execution.process.processStopped||execution.finishedAt!==receipt.terminal.finishedAt
       ||receipt.terminal.closureEvidenceDigest!==record.closureEvidenceDigest||receipt.intent.operationId!==record.operationId
       ||execution.operationId!==record.operationId||execution.id!==input.executionId||execution.workspaceId!==input.workspaceId
       ||receipt.intent.executionId!==execution.id||receipt.intent.attemptId!==execution.attemptId

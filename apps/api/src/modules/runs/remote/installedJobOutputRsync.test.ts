@@ -48,13 +48,30 @@ describe('installed original closed Job rsync composition, no physical acceptanc
     const recovered=await createInstalledJobOutputRsync(f.ports),reader=await recovered.resolveSource(f.intent,f.signal)
     expect(await reader.read(f.intent,0,2,f.signal)).toEqual(Buffer.from('{}'))
     await recovered.collector.stage(f.intent,f.signal)
-    expect(f.request).toHaveBeenCalledWith('byte-transfer-v1',{method:'job-output-stage',transferId:f.intent.transferId},{signal:f.signal})
+    expect(f.request).toHaveBeenCalledWith('byte-transfer-v1',{method:'job-output-stage',transferId:f.intent.transferId},
+      expect.objectContaining({signal:f.signal,timeoutMs:expect.any(Number)}))
     f.request.mockRejectedValueOnce(new DeviceApplicationError('job-publication-pending'))
     await expect(recovered.acknowledged(f.intent,f.context)).rejects.toMatchObject({code:'JOB_PUBLICATION_PENDING'})
     expect(await readFile(join(f.stagingRoot,`${f.intent.transferId}.retained.bytes`),'utf8')).toBe('{}')
     await recovered.acknowledged(f.intent,f.context);await recovered.acknowledged(f.intent,f.context)
     await expect(readFile(join(f.stagingRoot,`${f.intent.transferId}.retained.bytes`))).rejects.toMatchObject({code:'ENOENT'})
     expect(f.quiescent).toHaveBeenCalledTimes(2);expect(f.release).not.toHaveBeenCalled()
+  })
+  it('bounds a stage request by the original transfer lifetime and honors cancellation before dispatch', async () => {
+    const f = await fixture()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.intent.expiresAt) - 45000)
+    try {
+      await f.mounted.collector.stage(f.intent, f.signal)
+      expect(f.request).toHaveBeenCalledWith('byte-transfer-v1',
+        { method: 'job-output-stage', transferId: f.intent.transferId }, { signal: f.signal, timeoutMs: 45000 })
+      clock.mockReturnValue(Date.parse(f.intent.expiresAt))
+      await expect(f.mounted.collector.stage(f.intent, f.signal)).rejects.toMatchObject({ code: 'JOB_OUTPUT_TRANSFER_EXPIRED' })
+      f.request.mockClear()
+      const aborted = new AbortController()
+      aborted.abort(new Error('cancelled by owner'))
+      await expect(f.mounted.collector.stage(f.intent, aborted.signal)).rejects.toThrow('cancelled by owner')
+      expect(f.request).not.toHaveBeenCalled()
+    } finally { clock.mockRestore() }
   })
   it('preserves revoked authority and changed native/connection/publication pins',async()=>{
     const f=await fixture()

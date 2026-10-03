@@ -64,10 +64,11 @@ export async function createInstalledWorkerDomains(input: {
       throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The current original paired Main connection is unavailable.', 409)
     return binding
   }
-  const request = async (namespace: string, payload: unknown, options?: { signal?: AbortSignal; bytes?: Uint8Array }) => {
+  const request = async (namespace: string, payload: unknown, options?: { signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number }) => {
     const binding = current(), captured = input.connection()?.captureRequest(namespace)
     if (!captured || !isDeepStrictEqual(captured.binding, binding)) throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The exact original Main channel is unavailable.', 409)
-    const reply = await captured.request(payload, { signal: options?.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal, ...(options?.bytes ? { bytes: options.bytes } : {}) })
+    const reply = await captured.request(payload, { ...options,
+      signal: options?.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal })
     if (!isDeepStrictEqual(current(), binding)) throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The authenticated Main generation changed.', 409)
     return reply
   }
