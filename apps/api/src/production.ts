@@ -21,6 +21,7 @@ import type { SourceActiveNativeSessionReader, SourceNativeSessionCaptureReader 
 import { EXECUTION_AUTHORITY_EXTENSION } from '@graphql/contracts/execution-authority'
 import { WORKER_MCP_EXTENSION } from '@graphql/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
+import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
 import { MainWorkerMcpRelay, selectedMainMcpForward } from './modules/placement/workerMcpRelay.js'
@@ -205,6 +206,7 @@ export function buildProductionApp(
   qualificationSuites?: Record<CompatibilityHarness, QualificationSuite>,
   infrastructure?: ProductionHarnessInfrastructure,
 ) {
+  const workerExecution = new WorkerExecutionPolicy(config.workerExecution)
   if (infrastructure?.mode === 'replay' && (!infrastructure.auxiliary
     || !infrastructure.auxiliary.compatibility || !infrastructure.auxiliary.plugins
     || !infrastructure.auxiliary.mcp?.codex || !infrastructure.auxiliary.mcp.opencode
@@ -410,6 +412,7 @@ export function buildProductionApp(
       catch (error) { app.log.warn({ err: error }, 'Original remote metadata acknowledgment remains pending') }
     })
   const remoteWorkflow = createProductionRemoteWorkflow({ pool: database.pool, locations, endpoint: () => deviceRuntime.endpointForDomains(),
+    workerExecution,
     producer: () => agentPlacement, execution: id => runs.getExecution(id), artifacts: {
       assertPublications: (sql, readout, binding) => {
         if (!workflowPhysicalArtifacts) throw new DomainError('REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE', 'The original canonical artifact physical composition is unavailable.', 503)
@@ -560,7 +563,7 @@ export function buildProductionApp(
           directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
-      } }))
+      } }, workerExecution))
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
     requireClaudeProductionCredentialDelivery(value.configuration)
     const proof = await harnessRegistry.profileEvidence(value, client)
@@ -943,7 +946,7 @@ export function buildProductionApp(
       'The native runtime has not acquired ownership or is shutting down.', 503)
   }
   const currentProduction: CurrentRunProductionBinding = Object.freeze({
-    startPublication: { ...binding.startPublication, ...(selectedSuites ? { placementAdmission: {
+    startPublication: { ...binding.startPublication, workerExecution, ...(selectedSuites ? { placementAdmission: {
       prepare: (...args: Parameters<AgentPlacementProducer['prepare']>) => {
         if (!agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual saved-placement admission producer is unavailable.', 503)
         return agentPlacement.prepare(...args)
@@ -991,6 +994,7 @@ export function buildProductionApp(
     harnesses: harnessCatalog,
     ...(harnessQualifications ? { harnessQualifications } : {}),
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances),
+    workerExecution,
     runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction),
     commands,
     interactions: new OperatorInteractionService(interactions),
@@ -1183,6 +1187,7 @@ export function buildProductionApp(
         } }
       }
       jobRuntime = await createProductionJobs({ pool: database.pool, commands, locations, mainId: machine.installationId,
+        workerExecution,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         activeNativeSession, captureNativeSession,
         ...(installedRsync ? { transferSender: source => rsync.sender(source),
@@ -1211,7 +1216,8 @@ export function buildProductionApp(
         ...(infrastructure?.jobs ? { infrastructure: infrastructure.jobs } : {}) })
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
-          harnessRegistry.installations, { codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision })
+          harnessRegistry.installations, { codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision },
+          workerExecution)
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
       }

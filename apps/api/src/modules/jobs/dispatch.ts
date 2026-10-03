@@ -5,6 +5,7 @@ import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { RemoteJobDispatchIntentSchema, RemoteJobOperationReceiptSchema, type RemoteJobDispatchPort, type RemoteJobOperationReceipt } from '@graphql/contracts/remote-job-execution'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { JobExecutionSchema, type AcceptedJobSpec, type JobExecution } from '@graphql/contracts/jobs'
 import type { ManagementPrincipal } from '@graphql/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -27,8 +28,11 @@ export interface JobDispatchHost {
 export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority {
   private readonly repository=new JobRepository()
   private readonly owners=new Map<string,{owner:JobOwnership;abort:AbortController}>()
-  constructor(private readonly pool:pg.Pool,private readonly remote:RemoteJobDispatchPort,private readonly host:JobDispatchHost) {}
+  constructor(private readonly pool: pg.Pool, private readonly remote: RemoteJobDispatchPort,
+    private readonly host: JobDispatchHost,
+    private readonly workerExecution = new WorkerExecutionPolicy()) {}
   async accept(sql:JobSql,input:{workspaceId:string;executionId:string;attemptId:string;operationId:string;spec:AcceptedJobSpec;workflow:JobExecution['workflow'];principal:ManagementPrincipal}) {
+    this.workerExecution.requireEnabled(input.spec.target.hostRef)
     const intent=RemoteJobDispatchIntentSchema.parse({schemaVersion:1,protocolVersion:1,mainId:input.spec.target.mainId,
       subject:input.workflow?{kind:'workflow-node',workspaceId:input.workspaceId,...input.workflow}:{kind:'manual-job',workspaceId:input.workspaceId,jobExecutionId:input.executionId,definitionId:input.spec.definitionId},
       executionId:input.executionId,attemptId:input.attemptId,operationId:input.operationId,bindingHash:input.spec.bindingHash,inputDigest:`sha256:${input.spec.specDigest}`,owner:{grantId:randomUUID(),epoch:'1'}})
@@ -101,6 +105,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
           await this.repository.putExecution(sql,execution)
           return {execution,intent:RemoteJobDispatchIntentSchema.parse(row.intent),action:'none' as const,cancelCommandId:row.cancel_command_id}
         }
+        if (!row.delivery_attempted) this.workerExecution.requireEnabled(execution.acceptedSpec.target.hostRef)
         await sql.query('update job_dispatch_intents set delivery_attempted=true where execution_id=$1',[executionId])
         return {execution,intent:RemoteJobDispatchIntentSchema.parse(row.intent),action:row.delivery_attempted?'reconcile' as const:'deliver' as const,cancelCommandId:row.cancel_command_id}
       })

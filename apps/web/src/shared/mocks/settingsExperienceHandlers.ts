@@ -16,6 +16,7 @@ function failure() {
     ? HttpResponse.json({ error: { code: 'MOCK_READ_FAILED', message: 'The selected mock scenario fails read requests.' } }, { status: 503 }) : undefined
 }
 export const settingsExperienceHandlers = [
+  http.get('/api/management/settings/worker-execution', () => HttpResponse.json({ enabled: false, managedBy: 'startup' })),
   http.get('/api/management/settings/workspaces', () => failure() ?? HttpResponse.json(defaults)),
   http.get('/api/management/settings/workspaces/creation', () => failure() ?? HttpResponse.json(defaults.value)),
   http.put('/api/management/settings/workspaces', async ({ request }) => {

@@ -28,6 +28,7 @@ import type { ResumableByteTransferService } from '../byte-transfer/service.js'
 import type { MainJobOutputRsyncPorts } from '../files/jobs/rsyncProduction.js'
 import type { TrustedJobOutputReader } from '../files/jobs/port.js'
 import { JobService } from './service.js'
+import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { JobWorkerService } from './worker.js'
 import { projectJobReceiptLocked } from './receiptProjection.js'
 import { publishWorkflowJobReceiptLocked } from './workflowReceiptPublication.js'
@@ -51,6 +52,7 @@ export interface ProductionJobInfrastructure {
 export async function createProductionJobs(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; storageRoot: string;
   endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure;
+  workerExecution?: WorkerExecutionPolicy;
   activeNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['activeNativeSession']>;
   captureNativeSession?: NonNullable<Parameters<typeof createProductionSources>[0]['captureNativeSession']>; nativeRegistry?: NativeProcessRegistry;
   transferSender?: NonNullable<Parameters<typeof createProductionSources>[0]['transferSender']>;
@@ -81,7 +83,13 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
         },
       })
     } })
-  const qualification = createJobQualificationCarrier({ pool: input.pool, sources: source.sources, endpoint: input.endpoint, local: localHost })
+  const qualification = createJobQualificationCarrier({
+    pool: input.pool,
+    sources: source.sources,
+    endpoint: input.endpoint,
+    local: localHost,
+    ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
+  })
   const host = qualification.host
   const profiles = createJobRuntimeProfileService({ pool: input.pool, commands: input.commands, sources: source.sources, host })
   const preparationPort: JobPreparationPort = {
@@ -105,7 +113,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
         await publishWorkflowJobReceiptLocked(await openRunGraphPublication(sql, scope), execution, receipt, artifacts)
       } else await projectJobReceiptLocked(sql, execution, receipt, artifacts)
     },
-  })
+  }, input.workerExecution)
   const canonicalInputs = createCanonicalJobInputPorts({ pool: input.pool, storageRoot: input.storageRoot, runtime: dispatch,
     preparation: preparationPort, endpoint: { currentBinding: deviceId => input.endpoint().currentBinding(deviceId) }, receiptRoot: join(input.runtimeRoot, 'job-input-receipts') })
   const inputs = { ...canonicalInputs, extension: createMainJobInputRsyncExtension(canonicalInputs.main, canonicalInputs.extension, input.inputRsync) }
@@ -132,7 +140,12 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     ...(input.infrastructure?.outputReader?{reader:input.infrastructure.outputReader}:{}),
     ...(input.transferReceiver?{receiver:input.transferReceiver}:{}),...(input.outputRsync?{rsync:input.outputRsync}:{})})
   const artifacts = outputs.artifacts
-  const jobs = new JobService(input.pool, input.commands, { preparation, dispatch, artifacts })
+  const jobs = new JobService(input.pool, input.commands, {
+    preparation,
+    dispatch,
+    artifacts,
+    ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
+  })
   const workers = new JobWorkerService(input.pool, { require: dispatch.require.bind(dispatch),
     verifyPublication: (sql, execution) => artifacts.verifyRequiredOutputs(sql, execution) })
   const application = new JobApplicationBridge(input.pool, dispatch, workers, publication)

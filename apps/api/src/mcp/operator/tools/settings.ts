@@ -6,6 +6,7 @@ import { OperatorChatSetupSchema, CreateOperatorConversationRequestSchema, Creat
 import { OperatorHandoffHistoryPageSchema, OperatorHistoryCursorSchema } from '@graphql/contracts/operator-chat'
 
 import {
+  WorkerExecutionSettingsSchema,
   AgentDefaultsUpdateInputSchema,
   AgentDefaultsUpdateResultSchema,
   ManagedAgentDefaultsSchema,
@@ -18,6 +19,15 @@ import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
 
 export function registerSettingsTools(server: McpServer, context: OperatorRequestContext): void {
+  if (context.services.workerExecution && operatorToolAvailable(context, 'worker_execution_settings_get')) {
+    server.registerTool('worker_execution_settings_get', {
+      description: 'Read whether Main permits execution on connected Worker computers. Requires global settings:read. This deployment setting is controlled at startup by a person; MCP cannot change it. History, cancellation and cleanup remain available through their existing permissions.',
+      inputSchema: z.object({}).strict(),
+      outputSchema: WorkerExecutionSettingsSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    }, () => invokeOperatorTool(context, 'worker_execution_settings_get', async () =>
+      context.services.workerExecution!.read(context.principal)))
+  }
   registerOperatorControlTools(server, context)
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_create')) server.registerTool('operator_chat_create', {
     description: 'Create an owner-bound Operator conversation using the current saved Operator defaults. Requires operator_chat:write.',

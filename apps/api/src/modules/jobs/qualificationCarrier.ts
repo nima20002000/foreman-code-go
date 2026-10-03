@@ -9,15 +9,19 @@ import { assertInstalledJobQualification } from './runtimeQualificationAdmission
 import type { PostgresSourceService } from '../sources/service.js'
 import type { InstalledJobRuntimeHost } from './runtimeProfileFactory.js'
 import { DomainError } from '../errors.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 
 /** Main retains only a response from the exact authenticated installed worker.
  * Passive/native IO stays outside admission SQL; SQL readback uses this capture. */
 export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: PostgresSourceService;
-  endpoint(): DeviceEndpoint; local: InstalledJobRuntimeHost }) {
+  endpoint(): DeviceEndpoint; local: InstalledJobRuntimeHost; workerExecution?: WorkerExecutionPolicy }) {
+  const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
   const snapshots = new Map<string, Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseSchema.parse>, { operation: 'inspect' }>>()
   const key = (profile: JobRuntimeProfile) => `${profile.id}:${profile.revision}`
   const exchange = async (profile: JobRuntimeProfile, payload: unknown, signal?: AbortSignal) => {
     const target = profile.root.selection.hostRef
+    const request = JobRuntimeQualificationRpcRequestSchema.parse(payload)
+    if (request.operation === 'run') workerExecution.requireEnabled(target)
     if (target.kind !== 'device' || !profile.root.registration) throw new DomainError('JOB_RUNTIME_HOST_MISMATCH', 'The real installed worker is required.', 409)
     const endpoint = input.endpoint(), captured = endpoint.captureRequest(target.deviceId, JOB_RUNTIME_QUALIFICATION_EXTENSION.namespace)
     const check = () => {

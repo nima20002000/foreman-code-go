@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { rootWorkerCarrier } from './workerCarrier.js'
+import { remoteNativeManager, rootWorkerCarrier } from './workerCarrier.js'
+import type { AcceptedExecutionBinding } from './nativeComposition.js'
+import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
+import { input } from '../../../test/fixtures/codex-test-helpers.js'
 
 function fixture() {
   const mainId = randomUUID(), deviceId = randomUUID(), workerInstallationId = randomUUID(), host = { kind: 'device' as const, mainId, deviceId }
@@ -28,4 +31,36 @@ describe('selected-main signed root carrier composition', () => {
     const capture = () => ({ ...f.capture(), request })
     await expect(rootWorkerCarrier({ capture }).request(f.host, f.registration, f.payload)).rejects.toMatchObject({ code: 'REMOTE_ROOT_RESPONSE_INVALID' })
   })
+})
+
+it('blocks a new remote native session before capturing a Worker connection', async () => {
+  const { request } = input('/approved-project')
+  const context = {
+    agentId: request.configuration.agentId,
+    configuration: request.configuration,
+    harness: 'codex',
+  } as NativeManagerResolutionContext
+  const binding = {
+    intent: { executionId: request.executionId },
+    placement: {
+      hostRef: { kind: 'device' },
+      payload: {
+        kind: 'agent',
+        agentId: context.agentId,
+        agentConfigurationVersionId: context.configuration.id,
+      },
+    },
+  } as AcceptedExecutionBinding
+  const capture = vi.fn()
+  const beforePrepare = vi.fn()
+  const manager = remoteNativeManager(context, binding, {
+    carrier: { capture },
+    beforePrepare,
+    commit: vi.fn(),
+    controlFor: vi.fn(),
+  })
+  await expect(manager.createSession({ request, correlationId: `execution:${request.executionId}` }))
+    .rejects.toMatchObject({ code: 'WORKER_EXECUTION_DISABLED' })
+  expect(capture).not.toHaveBeenCalled()
+  expect(beforePrepare).not.toHaveBeenCalled()
 })

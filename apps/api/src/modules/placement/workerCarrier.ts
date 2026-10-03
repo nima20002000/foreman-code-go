@@ -7,6 +7,7 @@ import { sameWorkflowValue, canonicalGraphJson } from '@graphql/contracts/wave25
 import { RemoteNativeSessionManager, type RemoteNativeManagerOptions } from '../runs/remote/nativeManagerProxy.js'
 import { VerifiedRemoteEvidence, type RemoteResultCommitPort } from '../runs/remote/resultBridge.js'
 import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import type { AcceptedExecutionBinding } from './nativeComposition.js'
 
@@ -51,17 +52,22 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
   beforePrepare(intent: AcceptedExecutionBinding['intent'], placement: AcceptedExecutionBinding['placement'], authenticated: DeviceConnectionIdentity): Promise<void>;
   controlFor: RemoteNativeManagerOptions['controlFor']
   observeOriginalSource?: NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>
+  workerExecution?: WorkerExecutionPolicy
 }): RemoteNativeSessionManager {
   if (binding.placement.payload.kind !== 'agent' || binding.placement.payload.agentId !== context.agentId
     || binding.placement.payload.agentConfigurationVersionId !== context.configuration.id) {
     throw new DomainError('REMOTE_BINDING_CONFLICT', 'Native manager allocation requires the accepted Agent configuration.', 409)
   }
   const sources = new Map<string, { connection: DeviceConnectionIdentity; response: unknown }>()
+  const workerExecution = options.workerExecution ?? new WorkerExecutionPolicy()
   const receiptKey = (receipt: RemoteOperationReceipt) => canonicalGraphJson(receipt)
   return new RemoteNativeSessionManager({ intent: binding.intent, placement: binding.placement, harness: context.harness,
     configuration: context.configuration, controlFor: options.controlFor,
     ...(options.observeOriginalSource ? { observeOriginalSource: options.observeOriginalSource } : {}),
     transport: { async request(method, raw, signal) {
+      if (method === 'prepare' || method === 'start-turn') {
+        workerExecution.requireEnabled(binding.placement.hostRef)
+      }
       const request = RemoteExecutionRpcRequestSchema.parse(['prepare', 'capabilities', 'inspect-mcp'].includes(method) && binding.executionPlacement && raw && typeof raw === 'object'
         ? { ...raw, executionPlacement: binding.executionPlacement } : raw)
       if (request.method !== method || !sameWorkflowValue(request.placement, binding.placement)
