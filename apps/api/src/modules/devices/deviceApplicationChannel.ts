@@ -1,3 +1,4 @@
+import { componentLogger } from '../../infrastructure/logger.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   DEVICE_APPLICATION_BUFFER_BYTES, DEVICE_APPLICATION_CHUNK_BYTES, DEVICE_APPLICATION_IN_FLIGHT,
@@ -219,6 +220,7 @@ export class DeviceApplicationChannel {
         await this.authorized()
       } catch (error) {
         if (assembly.abort.signal.aborted || this.abort.signal.aborted) return
+        componentLogger('devices').error({ err: error, namespace: assembly.namespace }, 'Device extension request failed')
         const proposed = (error as { code?: unknown })?.code
         const code = typeof proposed === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(proposed) ? proposed : 'extension-rejected'
         await this.sendPacket(id, assembly.namespace, registration.version, 'error', { code }, undefined, assembly.abort.signal); return
