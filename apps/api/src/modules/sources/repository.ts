@@ -1,7 +1,11 @@
 import { isDeepStrictEqual } from 'node:util'
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { mkdir, open, readdir, type FileHandle } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import type { MaterializationReceipt, SourceManifest } from '@graphql/contracts/source-materialization'
 import { z } from 'zod'
 import type { JobExecution } from '@graphql/contracts/jobs'
@@ -9,9 +13,29 @@ import { JOB_RUNTIME_WORKSPACE_LAYOUT } from '@graphql/contracts/job-runtime'
 import type { SourceMaterializationRecord } from '@graphql/contracts/source-admission'
 import { sourceMaterializationDigest } from './bindingHash.js'
 import { qualifiedGit } from './capture.js'
-import { anchored, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
-import { SourceError, sourceSha256, verifySourceBytes, verifySourceManifest } from './manifest.js'
+import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+import { SOURCE_LIMITS, SourceError, sourceSha256, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import type { MaterializationAttempt, SourceMaterializationPort } from './ports.js'
+
+/** Drain bounded Git output while streaming input. Waiting for writes before
+ * reading a child's output can deadlock both pipes on a realistic source tree. */
+async function importSnapshot(gitDirectory: string, input: AsyncIterable<Buffer>) {
+  let child: ReturnType<typeof execFile>
+  const finished = new Promise<void>((resolve, reject) => {
+    child = execFile('/usr/bin/git', ['--no-replace-objects', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+      '-C', gitDirectory, 'fast-import', '--quiet', '--done', '--date-format=raw'], {
+      encoding: 'buffer', maxBuffer: 2 * 1024 * 1024, timeout: SOURCE_LIMITS.preparationMs, killSignal: 'SIGKILL',
+      env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' },
+    }, error => error ? reject(error) : resolve())
+  })
+  void finished.catch(() => {})
+  try { await Promise.all([pipeline(Readable.from(input), child!.stdin!), finished]) }
+  finally {
+    if (child!.exitCode === null && child!.signalCode === null) child!.kill('SIGKILL')
+    child!.stdin?.destroy()
+    await finished.catch(() => {})
+  }
+}
 
 /** CI gets a freshly generated object database and explicit Git environment.
  * It contains this approved snapshot only, with no source hooks/config/helpers,
@@ -47,14 +71,41 @@ export async function createPrivateSourceRepository(input: {
   // Every Git subprocess uses only this new store, qualified system Git, no
   // global/system config, no replace refs, no hooks and no interactive prompts.
   await qualifiedGit(gitDirectory, ['init', '--bare', '--template=', `--object-format=${manifest.git?.objectFormat ?? 'sha1'}`])
-  for (const entry of manifest.entries) {
-    const object = (await qualifiedGit(gitDirectory, ['hash-object', '-w', '--no-filters', '--', join(workTree, entry.path)])).toString().trim()
-    verifySourceBytes(entry, await qualifiedGit(gitDirectory, ['cat-file', 'blob', object], entry.byteSize + 1))
-    await qualifiedGit(gitDirectory, ['update-index', '--add', '--cacheinfo', entry.executable ? '100755' : '100644', object, entry.path])
-  }
-  const tree = (await qualifiedGit(gitDirectory, ['write-tree'])).toString().trim()
-  const generatedCommit = (await qualifiedGit(gitDirectory, ['-c', 'user.name=GraphQL Source', '-c', 'user.email=source@graphql.invalid', 'commit-tree', tree, '-m', `Source snapshot ${manifest.snapshotId}\nManifest ${manifest.manifestDigest}`])).toString().trim()
+  const expectedTree: Buffer[] = [], message = Buffer.from(`Source snapshot ${manifest.snapshotId}\nManifest ${manifest.manifestDigest}\n`)
+  await importSnapshot(gitDirectory, (async function* () {
+    yield Buffer.from(`commit refs/heads/source\ncommitter GraphQL Source <source@graphql.invalid> 0 +0000\ndata ${message.length}\n`)
+    yield message; yield Buffer.from('\n')
+    const tree = await openPrivateRoot(workTree)
+    try {
+      for (const entry of manifest.entries) {
+        const { parent, leaf } = await entryParent(tree, entry.path, false)
+        let bytes: Buffer
+        try {
+          const file = await open(anchored(parent, leaf), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+          try {
+            const stat = await file.stat()
+            if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.byteSize || !!(stat.mode & 0o111) !== entry.executable)
+              throw new SourceError('SOURCE_TREE_INVALID', 'Materialized kind, size, link count or executable policy changed.')
+            bytes = await file.readFile(); verifySourceBytes(entry, bytes)
+          } finally { await file.close() }
+        } finally { await parent.close() }
+        const mode = entry.executable ? '100755' : '100644'
+        const object = createHash(manifest.git?.objectFormat ?? 'sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
+        expectedTree.push(Buffer.from(`${mode} blob ${object}\t${entry.path}\0`))
+        yield Buffer.from(`M ${mode} inline ${JSON.stringify(entry.path)}\ndata ${bytes.length}\n`)
+        yield bytes; yield Buffer.from('\n')
+      }
+    } finally { await tree.close() }
+    yield Buffer.from('\ndone\n')
+  })())
+  const generatedCommit = (await qualifiedGit(gitDirectory, ['rev-parse', 'refs/heads/source'])).toString().trim()
+  // Git orders trees by directory components, which differs from manifest path
+  // order. Compare the complete exact path/mode/object set before publication.
+  const actualTree = (await qualifiedGit(gitDirectory, ['ls-tree', '-r', '-z', generatedCommit])).toString().split('\0').filter(Boolean).sort()
+  const expectedObjects = Buffer.concat(expectedTree).toString().split('\0').filter(Boolean).sort()
+  if (!isDeepStrictEqual(actualTree, expectedObjects)) throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Imported private Git objects differ from the complete approved snapshot.')
   await qualifiedGit(gitDirectory, ['update-ref', 'HEAD', generatedCommit])
+  await qualifiedGit(gitDirectory, ['read-tree', generatedCommit])
   await qualifiedGit(gitDirectory, ['config', 'core.bare', 'false'])
   await qualifiedGit(gitDirectory, ['config', 'core.worktree', workTree])
   await input.materializer.verify(receipt, expected)
