@@ -57,8 +57,8 @@ test('an idle owned group fails, retains its log, and frees the slot for the nex
         onTimeout: (error) => timeouts.push(error.message),
         resetAfterTimeout: async () => {
           assert.equal(groupUsed(child.pid), false, 'no database callers may survive before reset')
-          resets.push(slot.index)
           await new Promise((done) => setTimeout(done, 20))
+          resets.push(slot.index)
         },
       })
       assert.equal(groupUsed(child.pid), false, 'a slot must be drained before reuse')

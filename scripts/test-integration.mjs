@@ -373,9 +373,11 @@ async function main() {
     }
     const firstStartup = selected.includes(startupFile)
     if (firstStartup) {
+      phase = 'startup (exclusive)'
       await runSafely(slots[0], startupFile)
       if (interrupted) { skipped = selected.length - 1; return }
     }
+    phase = 'first pass'
     const parallel = selected.filter((file) => file !== startupFile)
     const result = await scheduleFiles(parallel, slots, runSafely, () => Boolean(interrupted))
     skipped = result.skipped
@@ -402,7 +404,11 @@ async function main() {
         phase = 'retest'
         reportProgress()
         const retestStartup = toRetest.includes(startupFile)
-        if (retestStartup) await runSafely(retestSlots[0], startupFile, 'retest')
+        if (retestStartup) {
+          phase = 'retest startup (exclusive)'
+          await runSafely(retestSlots[0], startupFile, 'retest')
+        }
+        phase = 'retest'
         const retestParallel = toRetest.filter((file) => file !== startupFile)
         const retestResult = await scheduleFiles(retestParallel, retestSlots, (slot, file) => runSafely(slot, file, 'retest'), () => Boolean(interrupted))
         retest.skipped = retestResult.skipped
