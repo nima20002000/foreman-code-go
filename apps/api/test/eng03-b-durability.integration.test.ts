@@ -1,7 +1,7 @@
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { AgentConfigurationVersionSchema } from '@graphql/contracts'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reduceRepeatGraphPageV3, makeCurrentWorkflowFixture, ExecutableWorkflowV3Schema } from '@graphql/contracts/wave25'
 import { readRepeatGraphPage, readRepeatGraphSnapshot } from '../src/modules/run-graph/repeatReader.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
@@ -48,10 +48,14 @@ function fanInFixture() {
 /** ENG-03 durability assertions now run through the current V3 engine and real
  * private native captures. The provider is deterministic, not a live binary. */
 describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durability', () => {
-  it('persists six-node unequal-depth selected inputs in relationship order and keeps the slow sibling open', async () => {
-    const t = await checkpointRuntimeFixture(1, 1, { fixture: fanInFixture(), approvalNodeIds: ['slow2'],
-      outputFor: (node) => node === 'slow1' ? { routing: { outcome: 'selected' }, data: { exact: node } } : { exact: node } })
-    try {
+  describe('six-node routing fixture', () => {
+    let t: Awaited<ReturnType<typeof checkpointRuntimeFixture>>
+    beforeEach(async () => {
+      t = await checkpointRuntimeFixture(1, 1, { fixture: fanInFixture(), approvalNodeIds: ['slow2'],
+        outputFor: (node) => node === 'slow1' ? { routing: { outcome: 'selected' }, data: { exact: node } } : { exact: node } })
+    })
+    afterEach(async () => { await t?.close() })
+    it('persists six-node unequal-depth selected inputs in relationship order and keeps the slow sibling open', async () => {
       const snapshot = () => readRepeatGraphSnapshot(t.db.pool, { scope: t.f.scope, protocolVersion: 1 }, async () => undefined)
       const baseline = await snapshot()
       await t.engine.start(t.f.run.id)
@@ -89,8 +93,8 @@ describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durabi
       }
       expect(replay).toEqual(current)
       expect(await graphHead(t.db.pool, t.f.run.id)).toBe(current.asOfSequence)
-    } finally { await t.close() }
-  }, 60000)
+    }, 60000)
+  })
   it('a cold engine closes the waiting native lifetime without replaying the completed predecessor', async () => {
     const t = await checkpointRuntimeFixture(1, 1, { recoverNativeProcesses: async (executionId, signal) => {
       signal.throwIfAborted()

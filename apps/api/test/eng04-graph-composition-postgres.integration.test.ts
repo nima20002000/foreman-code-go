@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   canonicalGraphJson, RepeatGraphPageV3Schema, reduceRepeatGraphPageV3, RUN_GRAPH_LIMITS,
   type RepeatGraphFactV3,
@@ -143,8 +143,11 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     expect(await graphPosition(db, t)).toBe('1')
   })
 
-  it('uses one bounded reset for an oversized atomic change and retains every source after pruning its batch', async () => {
-    const t = await fixture(), before = await snapshot(t)
+  describe('oversized atomic publication fixture', () => {
+    let t: GraphFixture
+    let before: Awaited<ReturnType<typeof snapshot>>
+    beforeEach(async () => { t = await fixture(); before = await snapshot(t) })
+    it('uses one bounded reset for an oversized atomic change and retains every source after pruning its batch', async () => {
     const fact: RepeatGraphFactV3 = { type: 'repeat.run.state', state: before.state.run }
     const count = RUN_GRAPH_LIMITS.batchEvents + 1
     // White-box journal capacity test: distinct test source identities point to
@@ -175,6 +178,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     expect(await receiptCount()).toBe(count)
     expect(await events(t, '1')).toMatchObject({ kind: 'reset', reason: 'history_expired' })
     expect(await events(t, '2')).toMatchObject({ kind: 'page', batches: [], throughSequence: '2', hasMore: false })
+    })
   })
 
   it('rejects a reordered complete source group via its permanent ordered-envelope receipt', async () => {
