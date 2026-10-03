@@ -65,6 +65,7 @@ async function fixture(device = false) {
     else if (text.startsWith('select principal_id,workspace_id,definition,created_at')) rows = values?.[0] === executionId && values?.[1] === attemptId ? [{ principal_id: principal.id, workspace_id: workspaceId, definition, created_at: new Date() }] : []
     else if (text.startsWith('select version_id from job_definitions')) rows = [{ version_id: definition.versionId }]
     else if (text.startsWith('select 1 from job_executions')) rows = [{ known: true }]
+    else if (text === 'select 1 from source_preparation_reconciliations where operation_id=$1') rows = []
     else if (text.startsWith('select id,name,audience,grants')) rows = values?.[0] === principal.id ? [{ id: principal.id, name: principal.name, audience: 'operator', grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : []
     else if (text.startsWith('with recursive owners')) rows = [{ id: principal.id }]
     else if (text.startsWith('select id from application_installation')) rows = [{ id: mainId }]

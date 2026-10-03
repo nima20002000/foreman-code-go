@@ -27,6 +27,11 @@ export interface AcceptedSourcePackageSender {
 export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMaterializationHost {
   constructor(private readonly carrier: MainWorkerCarrier, private readonly owners: Pick<PostgresSourceOperationAuthority, 'prepareIdentity' | 'resolve'>,
     private readonly packages: AcceptedSourcePackageSender) {}
+  async reconcilePreparation(reconciliationId: string, owner: SourceOperationOwner) {
+    const response = await this.call(owner.root, { version: 1, operation: 'sources.reconcile-preparation', reconciliationId })
+    if (response.operation !== 'sources.reconcile-preparation') throw new DomainError('SOURCE_RESPONSE_INVALID', 'Expected original preparation closure proof.', 409)
+    return response.closure
+  }
   private connection(root: SourceRootRecord) {
     if (root.selection.hostRef.kind !== 'device' || !root.registration) throw new DomainError('SOURCE_DEVICE_REQUIRED', 'Source operation requires its actual accepted worker registration.', 409)
     const channel = this.carrier.capture(root.selection.hostRef.deviceId), identity = DeviceConnectionIdentitySchema.parse(channel.identity)
@@ -40,6 +45,8 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     // RootWorkerClient uses the same captured W07 request closure; this namespace
     // changes only the domain schema, never transport/connection authority.
     const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request).catch((error: unknown) => {
+      if (request.operation === 'sources.reconcile-preparation' && error instanceof DeviceApplicationError)
+        throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The worker did not positively confirm preparation closure. Retry the original reconciliation command.', 409)
       if (request.operation === 'sources.private-repository' && error instanceof DeviceApplicationError) {
         if (error.code === 'timeout' || error.code === 'source-repository-timeout')
           throw new DomainError('SOURCE_REPOSITORY_TIMEOUT', 'Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.', 503, { retryable: true })

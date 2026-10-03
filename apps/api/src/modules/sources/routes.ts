@@ -22,4 +22,6 @@ export function registerSourceRoutes(app: FastifyInstance, service: PostgresSour
   app.get<{ Params: Params }>('/api/management/workspaces/:workspaceId/source-roots', request => service.rootList(requirePrincipal(request), 'http', request.params))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/source-roots/get', request => service.rootGet(requirePrincipal(request), 'http', merge(request.params, request.body)))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/source-roots/bind', request => service.bindRoot(requirePrincipal(request), 'http', merge(request.params, request.body)))
+  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/source-preparations/get', request => service.preparationGet(requirePrincipal(request), 'http', merge(request.params, request.body)))
+  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/source-preparations/reconcile', request => service.preparationReconcile(requirePrincipal(request), 'http', merge(request.params, request.body)))
 }

@@ -1,24 +1,26 @@
 import { constants } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { open, mkdir, rename, statfs, readdir, type FileHandle } from 'node:fs/promises'
+import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest } from '@graphql/contracts/source-materialization'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
+import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@graphql/contracts/source-admission'
+import type { SourceOperationOwner } from '@graphql/contracts/source-operations'
 
 const equal = isDeepStrictEqual
 /** Lock the anchored directory inode, never a replaceable lock pathname. Linux
  * flock is shared across processes and automatically released on process death. */
-async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>): Promise<T> {
+async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>, nonBlocking = false): Promise<T> {
   const guard = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
   try {
     await new Promise<void>((resolve, reject) => {
       // The child locks the inherited open file description; our guard keeps
       // that same kernel lock alive after flock exits until the critical section ends.
-      const child = spawn('/usr/bin/flock', ['--exclusive', '3'], { stdio: ['ignore', 'ignore', 'ignore', guard.fd] })
+      const child = spawn('/usr/bin/flock', ['--exclusive', ...(nonBlocking ? ['--nonblock'] : []), '3'], { stdio: ['ignore', 'ignore', 'ignore', guard.fd] })
       child.once('error', reject)
       child.once('close', code => code === 0 ? resolve() : reject(new SourceError('SOURCE_CLAIM_LOCK_FAILED', 'Source ownership serialization failed.')))
     })
@@ -256,5 +258,111 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
         } finally { await lock.close() }
       } finally { await directory.close() }
     })
+  } finally { await root.close() }
+}
+
+/** A new worker generation cannot infer closure from its empty in-memory task
+ * set. Look for same-UID processes using the original private namespace, without
+ * exposing argv or accepting PID/path assertions from the caller. */
+async function preparationChildrenClosed(namespace: string): Promise<boolean> {
+  const entries = await readdir('/proc')
+  if (entries.length > 32768) return false
+  const inside = (path: string) => path === namespace || path.startsWith(namespace + '/')
+  for (const pid of entries.filter(value => /^\d+$/.test(value) && Number(value) !== process.pid)) {
+    const directory = `/proc/${pid}`
+    try {
+      if ((await stat(directory)).uid !== process.getuid?.()) continue
+      // Only binaries used by installed source/native producers can own this
+      // preparation. Unrelated protected login/database daemons are not its
+      // children; requiring ptrace access to them would invent host authority.
+      const comm = (await readFile(`${directory}/comm`, 'utf8')).trim()
+      if (!['git', 'flock', 'node', 'rsync', 'podman', 'crun'].includes(comm)) continue
+      if (inside(await readlink(`${directory}/cwd`))) return false
+      const args = await open(`${directory}/cmdline`, constants.O_RDONLY)
+      try {
+        const bytes = Buffer.alloc(65536), result = await args.read(bytes, 0, bytes.length, 0)
+        if (result.bytesRead === bytes.length || bytes.subarray(0, result.bytesRead).toString().split('\0').some(inside)) return false
+      } finally { await args.close() }
+      const descriptors = await readdir(`${directory}/fd`)
+      if (descriptors.length > 8192) return false
+      for (const fd of descriptors) if (inside(await readlink(`${directory}/fd/${fd}`))) return false
+    } catch (error) {
+      if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return false
+    }
+  }
+  return true
+}
+
+/** Archive only this original binding claim. Source trees, private repositories,
+ * transfer evidence and receipts remain intact, including incomplete copies. */
+export async function reconcileSourcePreparation(reconciliationId: string, owner: SourceOperationOwner,
+  nativeClosed: () => Promise<boolean>, reauthorize: () => Promise<void>): Promise<SourcePreparationClosure> {
+  SourcePreparationClosureSchema.shape.reconciliationId.parse(reconciliationId)
+  if (owner.preparationClosed !== true) throw new SourceError('source-reconciliation-unconfirmed', 'Main preparation admission closure is not confirmed.')
+  await reauthorize()
+  const binding = RootBindingSchema.parse(owner.root.binding), root = await openPrivateRoot(binding.canonicalPath)
+  try {
+    if (!equal(await identity(root), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Original source cleanup root changed.')
+    return await withClaimLock(root, async () => {
+      const proofName = `closed-preparation-${reconciliationId}.json`, archiveName = `closed-preparation-${reconciliationId}.claim.json`
+      const readRecord = async (name: string) => {
+        const file = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        try {
+          const stat = await file.stat()
+          if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.nlink !== 1 || (stat.mode & 0o077) || stat.size > 16384)
+            throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid original preparation cleanup record.')
+          return JSON.parse(await file.readFile('utf8')) as unknown
+        } finally { await file.close() }
+      }
+      const optionalRecord = async (name: string) => readRecord(name).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      })
+      const prior = await optionalRecord(proofName)
+      if (prior) {
+        const proof = SourcePreparationClosureSchema.parse(prior)
+        if (proof.reconciliationId !== reconciliationId || proof.operationId !== owner.identity.operationId || proof.executionId !== owner.attempt.executionId
+          || proof.attemptId !== owner.attempt.attemptId || proof.rootId !== binding.rootId || proof.bindingRevision !== binding.bindingRevision
+          || !equal(proof.filesystem, binding.filesystem)) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Closure proof belongs to another original preparation.')
+        await reauthorize(); return proof
+      }
+      if (!await nativeClosed() || !await preparationChildrenClosed(binding.canonicalPath))
+        throw new SourceError('source-reconciliation-unconfirmed', 'A native owner or source process is live or uncertain.')
+      await reauthorize()
+      const lockName = `binding-${binding.rootId}.lock`, archive = await optionalRecord(archiveName), current = archive ?? await optionalRecord(lockName)
+      let materializationId = owner.record?.receipt.materializationId ?? null
+      if (current) {
+        const claim = current as { version: number; materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
+        if (claim.version !== 1 || !equal(claim.binding, binding)) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'The original binding claim changed.')
+        MaterializationReceiptSchema.shape.materializationId.parse(claim.materializationId)
+        if (equal(claim.attempt, owner.attempt)) {
+          if (materializationId !== null && materializationId !== claim.materializationId) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'The original materialization claim changed.')
+          materializationId = claim.materializationId
+          if (!archive) await rename(anchored(root, lockName), anchored(root, archiveName))
+        } else if (archive || materializationId !== null) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Cleanup cannot release another preparation claim.')
+        // A pre-activation failure may never have acquired this binding; retain
+        // an unrelated current claim and every copy while closing that failure.
+      } else if (materializationId !== null) {
+        const directory = await openChildDirectory(root, materializationId)
+        try {
+          const file = await open(anchored(directory, 'released-claim.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+          try {
+            const stat = await file.stat()
+            if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Original release evidence is invalid.')
+            const released = JSON.parse(await file.readFile('utf8')) as { materializationId: string; binding: RootBinding; attempt: MaterializationAttempt }
+            if (released.materializationId !== materializationId || !equal(released.binding, binding) || !equal(released.attempt, owner.attempt))
+              throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Original release evidence belongs to another attempt.')
+          } finally { await file.close() }
+        } finally { await directory.close() }
+      }
+      const proof = SourcePreparationClosureSchema.parse({ version: 1, reconciliationId, operationId: owner.identity.operationId,
+        executionId: owner.attempt.executionId, attemptId: owner.attempt.attemptId, rootId: binding.rootId, bindingRevision: binding.bindingRevision,
+        materializationId, mainId: binding.mainId, deviceId: binding.deviceId, workerInstallationId: binding.workerInstallationId,
+        keyRevision: owner.attempt.keyRevision, authorizationRevision: owner.attempt.authorizationRevision, filesystem: binding.filesystem,
+        admissionClosed: true, childrenClosed: true, claimReleased: true, evidencePreserved: true, observedAt: new Date().toISOString() })
+      const file = await open(anchored(root, proofName), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+      try { await file.writeFile(JSON.stringify(proof)); await file.sync() } finally { await file.close() }
+      await root.sync(); await reauthorize(); return proof
+    }, true)
   } finally { await root.close() }
 }

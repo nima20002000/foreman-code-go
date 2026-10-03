@@ -6,6 +6,7 @@ import {
   SourceApproveInputSchema, SourceApproveResultSchema, SourceGetInputSchema, ApprovedSourceSchema,
   SourceListInputSchema, SourceListResultSchema, SourceRootBindInputSchema, SourceRootBindResultSchema,
   SourceRootGetInputSchema, SourceRootRecordSchema, SourceRootListInputSchema, SourceRootListResultSchema,
+  SourcePreparationGetInputSchema, SourcePreparationSchema, SourcePreparationReconcileInputSchema, SourcePreparationReconcileResultSchema,
 } from '@graphql/contracts/source-admission'
 import type { PostgresSourceService } from './service.js'
 
@@ -13,6 +14,10 @@ export function registerSourceTools(server: McpServer, context: OperatorRequestC
   const service = context.services.sources
   if (!service) return
   const annotations = (write: boolean) => ({ readOnlyHint: !write, destructiveHint: false, idempotentHint: true, openWorldHint: false })
+  if (operatorToolAvailable(context, 'source_preparation_get')) server.registerTool('source_preparation_get', { description: 'Read the exact original Job source preparation reservation and persisted reconciliation evidence in its workspace, using either operationId or the original Start commandId as startCommandId. Requires sources:read and source_roots:read. Missing or ambiguous commands fail without substitution. No filesystem probe or closure assertion is accepted.',
+    inputSchema: SourcePreparationGetInputSchema, outputSchema: SourcePreparationSchema, annotations: annotations(false) }, input => invokeOperatorTool(context, 'source_preparation_get', () => service.preparationGet(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'source_preparation_reconcile')) server.registerTool('source_preparation_reconcile', { description: 'Audit reconciliation of a failed, expired or owner-fenced, never-admitted Job preparation on its original worker. Requires sources:reconcile, sources:read and source_roots:read. Worker verifies original native/process closure and archives only the original claim. Retains all evidence and its disk charge while releasing active capacity. No paths, PIDs, force flags or client closure assertions. Retry the same commandId after an unknown acknowledgment. Main-host and already-admitted Jobs require their original cleanup paths.',
+    inputSchema: SourcePreparationReconcileInputSchema, outputSchema: SourcePreparationReconcileResultSchema, annotations: annotations(true) }, input => invokeOperatorTool(context, 'source_preparation_reconcile', () => service.preparationReconcile(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'source_list')) server.registerTool('source_list', { description: 'List retained or explicitly unavailable immutable approved workspace source snapshots. No filesystem probe, latest substitution or Run/Agent is required.',
     inputSchema: SourceListInputSchema, outputSchema: SourceListResultSchema, annotations: annotations(false) }, input => invokeOperatorTool(context, 'source_list', () => service.list(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'source_get')) server.registerTool('source_get', { description: 'Read one exact approvedSourceId/snapshotId/manifestDigest in its workspace. Unavailable bytes fail; a newer snapshot is never substituted.',

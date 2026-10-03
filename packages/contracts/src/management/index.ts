@@ -38,7 +38,7 @@ export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
-  "sources:read", "sources:approve", "source_roots:read", "source_roots:bind",
+  "sources:read", "sources:approve", "sources:reconcile", "source_roots:read", "source_roots:bind",
   "job_definitions:read", "job_definitions:write", "jobs:start", "jobs:read", "jobs:cancel", "job_logs:read", "job_artifacts:read",
   "agents:create",
   "agents:update",
@@ -682,7 +682,7 @@ export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
 export const OperatorToolNameSchema = z.enum([
   ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
   ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
-  "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list",
+  "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get",
   "job_choices_get","job_workflow_execution_get","job_definition_list","job_definition_get","job_definition_version_get","job_definition_save","job_validate","job_start","job_get","job_list","job_cancel","job_logs_read","job_artifacts_list","job_artifact_read",
   "device_main_identity_get", "devices_list", "device_pairing_grant_create", "device_revoke",
