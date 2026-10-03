@@ -5,7 +5,7 @@ import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema } from '@graphql/contracts/management'
 import { WorkspaceBoundLocationSetResultSchema } from '@graphql/contracts/workspace-bound-location'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
@@ -27,6 +27,18 @@ const home = vi.hoisted(() => ({ path: '' }))
 vi.mock('node:os', async importOriginal => ({ ...await importOriginal<typeof import('node:os')>(), homedir: () => home.path }))
 
 describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstrap', () => {
+  let fixtureHome: string
+
+  beforeEach(async () => {
+    fixtureHome = await workspaceRootDirectory()
+    home.path = fixtureHome
+  })
+
+  afterEach(async () => {
+    home.path = ''
+    await rm(fixtureHome, { recursive: true, force: true })
+  })
+
   it('adopts actual app storage once and supports authenticated HTTP/MCP browse, bind and persisted replay without widening grants', async () => {
     const db = await currentDatabase(), app = Fastify(), clients: Client[] = [], directory = await workspaceRootDirectory()
     try {
