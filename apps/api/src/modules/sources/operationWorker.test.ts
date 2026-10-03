@@ -161,6 +161,20 @@ it('verifies and creates genuine detached private Git, replays repository receip
   f.owner.physicalClosureConfirmed = true
   expect((await f.service.handle({ version: 1, operation: 'sources.release', record }, f.context)).operation).toBe('sources.release')
 })
+it('reports bounded repository deadline and incomplete-owner codes without publishing or rebuilding', async () => {
+  const f = await fixture(), prepared = await f.service.handle(f.request, f.context)
+  if (prepared.operation !== 'sources.prepare') throw new Error('wrong fixture operation')
+  const record: SourceMaterializationRecord = { receipt: prepared.receipt, operationId: f.owner.identity.operationId, reservationId: randomUUID(), rootPolicyId: f.root.selection.rootPolicyId,
+    rootPolicyRevision: '1', sourceBindingHash: f.owner.attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' }
+  f.owner.record = record
+  const request = { version: 1 as const, operation: 'sources.private-repository' as const, record }
+  const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(AbortSignal.abort(new DOMException('private /source/path', 'TimeoutError')))
+  try { await expect(f.service.handle(request, f.context)).rejects.toMatchObject({ code: 'source-repository-timeout', message: 'Private source preparation timed out.' }) }
+  finally { timeout.mockRestore() }
+  await mkdir(join(f.namespace, record.receipt.materializationId, 'repository'), { mode: 0o700 })
+  await expect(f.service.handle(request, f.context)).rejects.toMatchObject({ code: 'source-repository-uncertain' })
+  await expect(readFile(join(f.namespace, record.receipt.materializationId, 'repository-receipt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+})
 it('denies stale auth/expired ownership before local config or source package IO', async () => {
   const f = await fixture(); f.owner.identity.expiresAt = new Date(Date.now() - 1).toISOString()
   await expect(f.service.handle(f.request, f.context)).rejects.toThrow('current exact')

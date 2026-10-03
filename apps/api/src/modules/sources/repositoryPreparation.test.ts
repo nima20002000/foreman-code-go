@@ -14,6 +14,19 @@ import { qualifiedGit } from './capture.js'
 
 const execute = promisify(execFile)
 const phases = vi.hoisted(() => new Map<string, { count: number; ms: number }>())
+const importer = vi.hoisted(() => ({ onSpawn: null as ((pid: number) => void) | null }))
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return { ...actual, execFile: new Proxy(actual.execFile, { apply(target, receiver, args) {
+    const child: ReturnType<typeof actual.execFile> = Reflect.apply(target, receiver, args)
+    if (args[0] === '/usr/bin/git' && args[1]?.includes('fast-import')) {
+      const start = performance.now()
+      child.once('spawn', () => importer.onSpawn?.(child.pid!))
+      child.once('close', () => phases.set('fast-import', { count: 1, ms: performance.now() - start }))
+    }
+    return child
+  } }) }
+})
 vi.mock('./capture.js', async importOriginal => {
   const actual = await importOriginal<typeof import('./capture.js')>()
   return { ...actual, qualifiedGit: vi.fn(async (...args: Parameters<typeof actual.qualifiedGit>) => {
@@ -23,7 +36,7 @@ vi.mock('./capture.js', async importOriginal => {
   }) }
 })
 const roots: string[] = []
-afterEach(async () => { phases.clear(); vi.clearAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => { importer.onSpawn = null; phases.clear(); vi.restoreAllMocks(); vi.clearAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function fixture(files: Map<string, { bytes: Buffer; executable: boolean }>, git?: SourceManifest['git']) {
   const root = await mkdtemp('/tmp/jobprep-repository-'); roots.push(root)
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
@@ -62,6 +75,33 @@ it('rejects changed bytes before publishing a repository receipt and retains the
     const tree = await resolve(...args); await writeFile(join(tree, 'source.txt'), 'modified'); return tree
   })
   await expect(createPrivateSourceRepository(f)).rejects.toMatchObject({ code: 'SOURCE_BYTES_INVALID' })
+  expect(await readdir(join(f.root, f.receipt.materializationId))).not.toContain('repository-receipt.json')
+})
+
+it('honors an already canceled worker request before private repository creation', async () => {
+  const f = await fixture(new Map([['source.txt', { bytes: Buffer.from('original'), executable: false }]]))
+  await expect(createPrivateSourceRepository({ ...f, signal: AbortSignal.abort() })).rejects.toMatchObject({ name: 'AbortError' })
+  expect(await readdir(join(f.root, f.receipt.materializationId))).not.toContain('repository')
+})
+
+it('cancels the active importer and retains incomplete ownership without publishing or reinitializing', async () => {
+  const f = await fixture(new Map([['source.txt', { bytes: Buffer.from('original'), executable: false }]])), controller = new AbortController()
+  let pid = 0
+  importer.onSpawn = current => { pid = current; controller.abort() }
+  await expect(createPrivateSourceRepository({ ...f, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
+  expect(pid).toBeGreaterThan(0)
+  expect(() => process.kill(pid, 0)).toThrow()
+  expect(await readdir(join(f.root, f.receipt.materializationId))).not.toContain('repository-receipt.json')
+  await expect(createPrivateSourceRepository(f)).rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_UNCERTAIN' })
+})
+
+it('maps total-deadline expiration during import to a retryable sanitized error after positive child closure', async () => {
+  const f = await fixture(new Map([['source.txt', { bytes: Buffer.from('original'), executable: false }]])), deadline = new AbortController()
+  vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(deadline.signal)
+  let pid = 0
+  importer.onSpawn = current => { pid = current; deadline.abort(new DOMException('private /source/path', 'TimeoutError')) }
+  await expect(createPrivateSourceRepository(f)).rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_TIMEOUT', status: 503, details: { retryable: true } })
+  expect(pid).toBeGreaterThan(0); expect(() => process.kill(pid, 0)).toThrow()
   expect(await readdir(join(f.root, f.receipt.materializationId))).not.toContain('repository-receipt.json')
 })
 

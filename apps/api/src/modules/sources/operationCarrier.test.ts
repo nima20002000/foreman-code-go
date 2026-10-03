@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { TransferIntentSchema } from '@graphql/contracts/byte-transfer'
-import { SourceMaterializationRecordSchema } from '@graphql/contracts/source-admission'
+import { SourceMaterializationRecordSchema, type SourceRootRecord } from '@graphql/contracts/source-admission'
 import type { DeviceSessionBinding } from '@graphql/contracts/device-connection'
-import { createMainSourceOperationExtension } from './operationCarrier.js'
+import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationChannel.js'
 
 function fixture() {
   const binding: DeviceSessionBinding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
@@ -50,4 +51,20 @@ describe('original Main committed source-status carrier', () => {
     const missing = createMainSourceOperationExtension(f.owners, f.transfers)
     await expect(missing.handle!(request, f.context)).rejects.toMatchObject({ code: 'SOURCE_TRANSFER_STATUS_UNAVAILABLE' })
   })
+})
+
+it.each(['timeout', 'source-repository-timeout'])('maps %s from the exact repository request to a sanitized retryable domain error', async code => {
+  const f = fixture(), request = vi.fn(async () => { throw new DeviceApplicationError(code) })
+  const root: SourceRootRecord = { version: 1, binding: f.record.receipt.binding,
+    source: { approvedSourceId: randomUUID(), snapshotId: f.record.receipt.binding.snapshotId, manifestDigest: f.record.receipt.verifiedManifestDigest },
+    selection: { hostRef: { kind: 'device', mainId: f.binding.mainId, deviceId: f.binding.deviceId }, rootPolicyId: f.record.rootPolicyId, rootPolicyRevision: '1', locationRevision: '1' },
+    registration: { workerInstallationId: f.binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', attestationId: randomUUID(), attestationDigest: 'd'.repeat(64), boundAt: new Date().toISOString() }
+  const { connectionEpoch: _epoch, ...identity } = f.binding
+  void _epoch
+  const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity, request }) },
+    { prepareIdentity: async () => { throw new Error('No new owner') }, resolve: async () => ({ root }) as never },
+    { send: async () => { throw new Error('No new transfer') } })
+  await expect(host.privateRepository(f.record, {} as never)).rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_TIMEOUT', status: 503, details: { retryable: true } })
+  expect(request).toHaveBeenCalledOnce()
 })

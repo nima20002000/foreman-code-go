@@ -16,24 +16,27 @@ import { qualifiedGit } from './capture.js'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SOURCE_LIMITS, SourceError, sourceSha256, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import type { MaterializationAttempt, SourceMaterializationPort } from './ports.js'
+import { DomainError } from '../errors.js'
 
 /** Drain bounded Git output while streaming input. Waiting for writes before
  * reading a child's output can deadlock both pipes on a realistic source tree. */
-async function importSnapshot(gitDirectory: string, input: AsyncIterable<Buffer>) {
+async function importSnapshot(gitDirectory: string, input: AsyncIterable<Buffer>, signal: AbortSignal) {
   let child: ReturnType<typeof execFile>
   const finished = new Promise<void>((resolve, reject) => {
     child = execFile('/usr/bin/git', ['--no-replace-objects', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
       '-C', gitDirectory, 'fast-import', '--quiet', '--done', '--date-format=raw'], {
-      encoding: 'buffer', maxBuffer: 2 * 1024 * 1024, timeout: SOURCE_LIMITS.preparationMs, killSignal: 'SIGKILL',
+      encoding: 'buffer', maxBuffer: 2 * 1024 * 1024, timeout: SOURCE_LIMITS.preparationMs, killSignal: 'SIGKILL', signal,
       env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' },
     }, error => error ? reject(error) : resolve())
   })
   void finished.catch(() => {})
-  try { await Promise.all([pipeline(Readable.from(input), child!.stdin!), finished]) }
+  const closed = new Promise<void>(resolve => child!.once('close', () => resolve()))
+  try { await Promise.all([pipeline(Readable.from(input), child!.stdin!, { signal }), finished]) }
   finally {
     if (child!.exitCode === null && child!.signalCode === null) child!.kill('SIGKILL')
     child!.stdin?.destroy()
     await finished.catch(() => {})
+    await closed
   }
 }
 
@@ -43,12 +46,26 @@ async function importSnapshot(gitDirectory: string, input: AsyncIterable<Buffer>
  */
 export async function createPrivateSourceRepository(input: {
   receipt: MaterializationReceipt; manifest: SourceManifest; materializer: SourceMaterializationPort;
-  attempt: MaterializationAttempt;
+  attempt: MaterializationAttempt; signal?: AbortSignal;
 }): Promise<{ workTree: string; gitDirectory: string; generatedCommit: string; sourceCommit: string | null }> {
+  const deadline = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
+  const signal = AbortSignal.any([deadline, ...(input.signal ? [input.signal] : [])])
+  try { signal.throwIfAborted(); const result = await buildPrivateSourceRepository({ ...input, signal }); signal.throwIfAborted(); return result }
+  catch (error) {
+    if (deadline.aborted && signal.aborted && (error === signal.reason || (error as Error)?.name === 'AbortError'))
+      throw new DomainError('SOURCE_REPOSITORY_TIMEOUT', 'Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.', 503, { retryable: true })
+    throw error
+  }
+}
+async function buildPrivateSourceRepository(input: {
+  receipt: MaterializationReceipt; manifest: SourceManifest; materializer: SourceMaterializationPort;
+  attempt: MaterializationAttempt; signal: AbortSignal;
+}): Promise<{ workTree: string; gitDirectory: string; generatedCommit: string; sourceCommit: string | null }> {
+  const signal = input.signal
   const manifest = verifySourceManifest(input.manifest), receipt = input.receipt
   if (manifest.snapshotId !== receipt.binding.snapshotId || manifest.manifestDigest !== receipt.verifiedManifestDigest)
     throw new SourceError('SOURCE_PIN_CONFLICT', 'Repository generation requires the accepted complete source snapshot.')
-  const expected = { binding: receipt.binding, attempt: input.attempt }
+  const expected = { binding: receipt.binding, attempt: input.attempt, signal }
   const workTree = await input.materializer.resolve(receipt, expected)
   const root = await openPrivateRoot(receipt.binding.canonicalPath)
   let gitDirectory: string
@@ -61,16 +78,21 @@ export async function createPrivateSourceRepository(input: {
         throw error
       })
       if (prior) {
-        return await readPrivateRepository(prior, reservation, receipt, manifest, workTree)
+        return await readPrivateRepository(prior, reservation, receipt, manifest, workTree, signal)
       }
-      await mkdir(anchored(reservation, 'repository'), { mode: 0o700 })
+      signal.throwIfAborted()
+      await mkdir(anchored(reservation, 'repository'), { mode: 0o700 }).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new DomainError('SOURCE_REPOSITORY_UNCERTAIN', 'The original private repository is incomplete; reconcile this exact attempt before retry.', 409)
+        throw error
+      })
     }
     finally { await reservation.close() }
     gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
   } finally { await root.close() }
   // Every Git subprocess uses only this new store, qualified system Git, no
   // global/system config, no replace refs, no hooks and no interactive prompts.
-  await qualifiedGit(gitDirectory, ['init', '--bare', '--template=', `--object-format=${manifest.git?.objectFormat ?? 'sha1'}`])
+  const git = (args: string[]) => qualifiedGit(gitDirectory, args, 2 * 1024 * 1024, signal)
+  await git(['init', '--bare', '--template=', `--object-format=${manifest.git?.objectFormat ?? 'sha1'}`])
   const expectedTree: Buffer[] = [], message = Buffer.from(`Source snapshot ${manifest.snapshotId}\nManifest ${manifest.manifestDigest}\n`)
   await importSnapshot(gitDirectory, (async function* () {
     yield Buffer.from(`commit refs/heads/source\ncommitter GraphQL Source <source@graphql.invalid> 0 +0000\ndata ${message.length}\n`)
@@ -78,6 +100,7 @@ export async function createPrivateSourceRepository(input: {
     const tree = await openPrivateRoot(workTree)
     try {
       for (const entry of manifest.entries) {
+        signal.throwIfAborted()
         const { parent, leaf } = await entryParent(tree, entry.path, false)
         let bytes: Buffer
         try {
@@ -86,7 +109,7 @@ export async function createPrivateSourceRepository(input: {
             const stat = await file.stat()
             if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.byteSize || !!(stat.mode & 0o111) !== entry.executable)
               throw new SourceError('SOURCE_TREE_INVALID', 'Materialized kind, size, link count or executable policy changed.')
-            bytes = await file.readFile(); verifySourceBytes(entry, bytes)
+            bytes = await file.readFile({ signal }); verifySourceBytes(entry, bytes)
           } finally { await file.close() }
         } finally { await parent.close() }
         const mode = entry.executable ? '100755' : '100644'
@@ -97,17 +120,17 @@ export async function createPrivateSourceRepository(input: {
       }
     } finally { await tree.close() }
     yield Buffer.from('\ndone\n')
-  })())
-  const generatedCommit = (await qualifiedGit(gitDirectory, ['rev-parse', 'refs/heads/source'])).toString().trim()
+  })(), signal)
+  const generatedCommit = (await git(['rev-parse', 'refs/heads/source'])).toString().trim()
   // Git orders trees by directory components, which differs from manifest path
   // order. Compare the complete exact path/mode/object set before publication.
-  const actualTree = (await qualifiedGit(gitDirectory, ['ls-tree', '-r', '-z', generatedCommit])).toString().split('\0').filter(Boolean).sort()
+  const actualTree = (await git(['ls-tree', '-r', '-z', generatedCommit])).toString().split('\0').filter(Boolean).sort()
   const expectedObjects = Buffer.concat(expectedTree).toString().split('\0').filter(Boolean).sort()
   if (!isDeepStrictEqual(actualTree, expectedObjects)) throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Imported private Git objects differ from the complete approved snapshot.')
-  await qualifiedGit(gitDirectory, ['update-ref', 'HEAD', generatedCommit])
-  await qualifiedGit(gitDirectory, ['read-tree', generatedCommit])
-  await qualifiedGit(gitDirectory, ['config', 'core.bare', 'false'])
-  await qualifiedGit(gitDirectory, ['config', 'core.worktree', workTree])
+  await git(['update-ref', 'HEAD', generatedCommit])
+  await git(['read-tree', generatedCommit])
+  await git(['config', 'core.bare', 'false'])
+  await git(['config', 'core.worktree', workTree])
   await input.materializer.verify(receipt, expected)
   const owner = await openPrivateRoot(receipt.binding.canonicalPath)
   try {
@@ -119,6 +142,7 @@ export async function createPrivateSourceRepository(input: {
         const config = await open(anchored(repository, 'config'), constants.O_RDONLY | constants.O_NOFOLLOW)
         try { configDigest = sourceSha256(await config.readFile()) } finally { await config.close() }
       } finally { await repository.close() }
+      signal.throwIfAborted()
       const record = await open(anchored(reservation, 'repository-receipt.json'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
       try { await record.writeFile(JSON.stringify({ materializationId: receipt.materializationId, manifestDigest: manifest.manifestDigest,
         receiptDigest: sourceSha256(Buffer.from(JSON.stringify(receipt))), generatedCommit, configDigest })); await record.sync() }
@@ -158,7 +182,7 @@ export async function verifyPrivateSourceRepository(input: {
   } finally { await root.close() }
 }
 
-async function readPrivateRepository(prior: FileHandle, reservation: FileHandle, receipt: MaterializationReceipt, manifest: SourceManifest, workTree: string) {
+async function readPrivateRepository(prior: FileHandle, reservation: FileHandle, receipt: MaterializationReceipt, manifest: SourceManifest, workTree: string, signal?: AbortSignal) {
   try {
     const stat = await prior.stat()
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Invalid private repository receipt.')
@@ -173,9 +197,10 @@ async function readPrivateRepository(prior: FileHandle, reservation: FileHandle,
       } finally { await config.close() }
     } finally { await repository.close() }
     const gitDirectory = join(receipt.binding.canonicalPath, receipt.materializationId, 'repository')
+    const head = () => signal ? qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'], 2 * 1024 * 1024, signal) : qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'])
     if (saved.materializationId !== receipt.materializationId || saved.manifestDigest !== manifest.manifestDigest
       || saved.receiptDigest !== sourceSha256(Buffer.from(JSON.stringify(receipt))) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(saved.generatedCommit)
-      || (await qualifiedGit(gitDirectory, ['rev-parse', 'HEAD'])).toString().trim() !== saved.generatedCommit)
+      || (await head()).toString().trim() !== saved.generatedCommit)
       throw new SourceError('SOURCE_REPOSITORY_INVALID', 'Private repository no longer matches the original materialization.')
     return { workTree, gitDirectory, generatedCommit: saved.generatedCommit, sourceCommit: manifest.git?.commit ?? null }
   } finally { await prior.close() }
