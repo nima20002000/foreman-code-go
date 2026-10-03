@@ -83,36 +83,62 @@ export async function inspectOpenCodeMcpConfiguration(input: {
   }
   const first = parseEntry(baseline)
   if (!first) return undefined
+  // Newer qualified releases redact token/header values in debug output. A
+  // mask proves nothing about their origin. Read the provider's actual resolved
+  // configuration over its authenticated, task-owned server instead, with the
+  // same unset/nonce comparison and exact binary/process ownership checks.
+  const masked = (first.environment as JsonObject | undefined)?.[credentialVariable] === '***'
+    || authorization(first)?.value === '***'
+  const resolvedEntry = async (marker?: string): Promise<JsonObject | undefined> => {
+    const { ManagedOpenCodeServer } = await import('./opencodeTransport.js')
+    const owner = 'graphql-mcp-configuration-probe'
+    const server = new ManagedOpenCodeServer({ binary: input.binary, workingDirectory: input.workingDirectory,
+      ownerAgentId: owner, ...(input.pure ? { pure: true } : {}),
+      ...(input.processRecovery ? { processRecovery: input.processRecovery } : {}),
+      ...(input.assertInstallation ? { assertInstallation: input.assertInstallation } : {}),
+      ...(marker ? { environment: { agentId: owner, variables: { [credentialVariable]: marker } } } : {}) })
+    try {
+      const response = await server.request('/config', {}, input.signal)
+      if (!response.ok) throw new HarnessExecutionError('OPENCODE_MCP_INSPECTION_FAILED',
+        'OpenCode could not inspect its effective MCP configuration.')
+      const config = object(server.redact(await response.json()))
+      const entry = object(object(config?.mcp)?.[input.serverName])
+      await input.assertInstallation?.(input.signal)
+      input.signal?.throwIfAborted()
+      return entry
+    } finally { await server.dispose() }
+  }
+  const initial = masked ? await resolvedEntry() : first
+  if (!initial) return undefined
   const common: NativeMcpEntryEvidence = {
     name: input.serverName,
-    transport: first.type === 'remote' ? 'streamable-http' : first.type === 'local' ? 'stdio' : 'unknown',
-    ...(typeof first.url === 'string' ? { endpoint: first.url } : {}),
-    enabled: first.enabled !== false,
-    status: first.enabled === false ? 'disabled' : 'status_unavailable',
+    transport: initial.type === 'remote' ? 'streamable-http' : initial.type === 'local' ? 'stdio' : 'unknown',
+    ...(typeof initial.url === 'string' ? { endpoint: initial.url } : {}),
+    enabled: initial.enabled !== false,
+    status: initial.enabled === false ? 'disabled' : 'status_unavailable',
   }
-  const launcher = input.serverName === APP_MCP_SERVER_NAME && isAppLauncher('opencode', first)
-  const initialAuthorization = authorization(first)
+  const launcher = input.serverName === APP_MCP_SERVER_NAME && isAppLauncher('opencode', initial)
+  const initialAuthorization = authorization(initial)
   // The App endpoint uses GraphQL-issued bearer auth, never provider OAuth.
-  if (!launcher && (first.type !== 'remote' || first.oauth !== false || !initialAuthorization
+  if (!launcher && (initial.type !== 'remote' || initial.oauth !== false || !initialAuthorization
     || !/^Bearer $/i.test(initialAuthorization.value))) return common
-  if (launcher && (first.environment as JsonObject)[credentialVariable] !== '') return common
+  if (launcher && (initial.environment as JsonObject)[credentialVariable] !== '') return common
 
   const owner = 'graphql-mcp-configuration-probe'
   const marker = `graphql_probe_${randomBytes(32).toString('hex')}`
-  const checked = await run(args, {
+  const second = masked ? await resolvedEntry(marker) : parseEntry(await run(args, {
     expectedAgentId: owner,
     beforeSpawn: async () => ({ agentId: owner, variables: { [credentialVariable]: marker } }),
-  })
-  const second = parseEntry(checked)
+  }))
   if (launcher && second && isAppLauncher('opencode', second)
     && (second.environment as JsonObject)[credentialVariable] === '[REDACTED]'
-    && isDeepStrictEqual({ ...first, environment: null }, { ...second, environment: null })) {
+    && isDeepStrictEqual({ ...initial, environment: null }, { ...second, environment: null })) {
     return { ...common, credentialEnvironmentVariable: credentialVariable, automaticEndpoint: true }
   }
   const markedAuthorization = second ? authorization(second) : undefined
   if (!second || !markedAuthorization || !/^Bearer \[REDACTED\]$/i.test(markedAuthorization.value)
     || markedAuthorization.key !== initialAuthorization?.key
-    || !isDeepStrictEqual(withoutAuthorization(first), withoutAuthorization(second))) return common
+    || !isDeepStrictEqual(withoutAuthorization(initial), withoutAuthorization(second))) return common
   return { ...common, credentialEnvironmentVariable: credentialVariable }
 }
 
