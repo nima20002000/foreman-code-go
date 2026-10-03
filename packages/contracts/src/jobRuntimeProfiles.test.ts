@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { JobRuntimeProfileListSchema } from './jobRuntime.js'
+import { JobRuntimeProfileInputSchema, JobRuntimeProfileListSchema } from './jobRuntime.js'
 const id = '11111111-1111-4111-8111-111111111111', digest = 'a'.repeat(64), now = '2026-10-02T18:00:00.000Z'
 const limits = { cpuLimit: 1, memoryBytes: 67108864, pidsLimit: 64, diskBytes: 2097152 }
 const hostRef = { kind: 'main', mainId: id }
@@ -23,6 +23,21 @@ const profile = { schemaVersion: 1, id, workspaceId: id, revision: 1, name: 'Run
   status: 'awaiting-approval', measurement: null, createdAt: now, updatedAt: now }
 const result = { profiles: [{ profile, ready: false, reasons: ['approval_required'], sideEffects: false }], approvals: [approval] }
 describe('runtime profile metadata and pending approval discovery', () => {
+  it('requires save-time spool and resource bounds that the qualification candidate can accept', () => {
+    const { isolationPolicyId, isolationPolicyRevision, ...policy } = profile.policy
+    expect(isolationPolicyId).toBe(id); expect(isolationPolicyRevision).toBe(1)
+    const input = { rootId: id, bindingRevision: 1, limits: { ...limits, diskBytes: 134217728 }, policy }
+    for (const maxWorkerSpoolBytes of [131072, 67108864]) {
+      expect(JobRuntimeProfileInputSchema.safeParse({ ...input, policy: { ...policy, maxWorkerSpoolBytes } }).success).toBe(true)
+    }
+    for (const maxWorkerSpoolBytes of [131071, 67108865, 134217729]) {
+      expect(JobRuntimeProfileInputSchema.safeParse({ ...input, policy: { ...policy, maxWorkerSpoolBytes } }).success).toBe(false)
+    }
+    for (const change of [{ cpuLimit: 257 }, { pidsLimit: 0 }, { memoryBytes: Number.MAX_SAFE_INTEGER + 1 }, { diskBytes: 131071 }]) {
+      expect(JobRuntimeProfileInputSchema.safeParse({ ...input, limits: { ...input.limits, ...change }, policy: { ...policy, maxWorkerSpoolBytes: 131072 } }).success).toBe(false)
+    }
+  })
+
   it('preserves scoped profile and pending approval facts without side effects', () => {
     expect(JobRuntimeProfileListSchema.parse(result)).toEqual(result)
     expect(JobRuntimeProfileListSchema.parse({ profiles: [], approvals: [] })).toEqual({ profiles: [], approvals: [] })

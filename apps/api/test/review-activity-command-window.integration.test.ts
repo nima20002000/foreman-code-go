@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -22,6 +23,7 @@ it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['pending', 'uncertain', 'c
         })
       const conversation = await chat.create(caller.principal)
       const scope = { kind: 'operator_chat' as const, conversationId: conversation.id }
+      const retainedState = { privateSnapshot: Array.from({ length: 2048 }, () => randomUUID()).join('') }
       for (let i = 0; i <= 200; i++) {
         const control = { schemaVersion: 1, kind: 'respond', conversationId: scope.conversationId,
           modelRequestId: `model-${i}`, scope,
@@ -30,7 +32,7 @@ it.skipIf(process.env.NIM2691_POSTGRES !== '1').each(['pending', 'uncertain', 'c
         await pool.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result,created_at)
           values($1,'operator_chat_control',$2,$3,'hash',$4::jsonb,'2026-10-02T00:00:00Z'::timestamptz+$5*interval '1 second')`,
         [caller.principal.id, `command-${i}`, scope.conversationId,
-          JSON.stringify({ status: i === 200 ? status : 'completed', acceptedControl: control }), i])
+          JSON.stringify({ status: i === 200 ? status : 'completed', acceptedControl: control, state: retainedState }), i])
       }
       const result = await readActivityCommands(pool, scope.conversationId, scope, '9')
       expect(result.hasMore).toBe(true)

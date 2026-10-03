@@ -1,6 +1,9 @@
 import { WORKSPACE_ROOT_EXTENSION } from '@graphql/contracts/workspace-root-policies'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
+import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from './modules/devices/trustedConnectionHumanAuthority.js'
+import { registerTrustedConnectionRoutes } from './modules/devices/trustedConnectionManagement.js'
+import { requirePrincipal } from './modules/access/http.js'
 import { RsyncTransferAuthorizeRequestSchema } from '@graphql/contracts/byte-transfer'
 import type { AcceptedTransferAuthority } from './modules/byte-transfer/carrier.js'
 import type { InstalledMainRsyncProviders } from './modules/byte-transfer/productionComposition.js'
@@ -217,6 +220,7 @@ export function buildProductionApp(
   let workflowPhysicalArtifacts: PostgresWorkflowPhysicalArtifacts | undefined
   let artifactComposition: { mainId: string; authority: PostgresArtifactPublicationAuthority; fence: PostgresAcceptedArtifactAttemptFence } | undefined
   let mainWorkerMcp: MainWorkerMcpRelay | undefined
+  let trustedConnections: PostgresTrustedConnectionSetup | undefined
   const inputAcknowledgements = new Map<string, TransferIntent>()
   const acceptedRsync: AcceptedTransferAuthority = {
     async intent(id, binding) {
@@ -246,8 +250,10 @@ export function buildProductionApp(
   }
   const entrypoint = infrastructure?.rsyncInstallation?.kind === 'configured' && !infrastructure.rsync
     ? createMainRsyncEntrypoint({ installation: infrastructure.rsyncInstallation, endpoint: () => deviceRuntime.endpointForDomains(), accepted: acceptedRsync,
-      setup: new PostgresTrustedConnectionSetup(database.pool, infrastructure.rsyncInstallation.selected.registration.mainId,
-        { verifyOwnerApproval: async () => { throw new DomainError('RSYNC_SELECTION_UNAVAILABLE', 'Only existing human owner consent may select rsync.', 403) } }),
+      setup: { checkAcceptedTransfer: (...args) => {
+        if (!trustedConnections) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The original Main trusted connection authority has not initialized.', 503)
+        return trustedConnections.checkAcceptedTransfer(...args)
+      } },
       ownership: () => rsync.kind === 'configured' ? rsync.ownership : undefined }) : undefined
   const installedRsync: InstalledMainRsyncProviders | undefined = infrastructure?.rsync ?? entrypoint?.providers
   const rsyncProviders: InstalledMainRsyncProviders | undefined=installedRsync?{...installedRsync,acknowledged:async(...args:Parameters<NonNullable<InstalledMainRsyncProviders['acknowledged']>>)=>{
@@ -1068,6 +1074,13 @@ export function buildProductionApp(
       const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
       assertOpen()
+      const connectionAuthority = new PostgresTrustedConnectionHumanAuthority(database.pool, machine.installationId)
+      trustedConnections = new PostgresTrustedConnectionSetup(database.pool, machine.installationId,
+        { verifyOwnerApproval: connectionAuthority.verifyOwnerApproval })
+      runtimeServices.trustedConnections = trustedConnections
+      registerTrustedConnectionRoutes(app, trustedConnections,
+        async request => request.reauthorizeOperator ? request.reauthorizeOperator() : requirePrincipal(request))
+      registerTrustedConnectionApprovalRoutes(app, connectionAuthority)
       const activeNativeSession: SourceActiveNativeSessionReader = (sql, record) =>
         readSourceCurrentNativeSession(sql, record, approvals.passiveOwnedNativeSessions())
       const captureNativeSession: SourceNativeSessionCaptureReader = async record => {
