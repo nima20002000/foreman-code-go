@@ -1,3 +1,4 @@
+import { vitestResultOptions } from '../../scripts/test-results.mjs'
 import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
@@ -7,5 +8,6 @@ export default defineConfig({
     maxWorkers: 12,
     // Ignore compiled tests left by older builds.
     exclude: [...configDefaults.exclude, '**/dist/**'],
+    ...vitestResultOptions(),
   },
 })

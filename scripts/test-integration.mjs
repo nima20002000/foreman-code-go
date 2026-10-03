@@ -13,6 +13,13 @@ const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const { Pool } = require('pg')
 
+// When CI collects results for scripts/check-test-results.mjs, each file also writes a JSON report.
+function resultReporterArgs() {
+  const directory = process.env.TEST_RESULTS_DIR
+  if (!directory) return []
+  return ['--reporter=json', `--outputFile.json=${join(directory, `vitest-${randomUUID()}.json`)}`]
+}
+
 export function isIntegrationTestPath(file) {
   if (!file.startsWith('apps/api/test/') || !file.endsWith('.integration.test.ts')) return false
   return posix.normalize(file) === file && file.split('/').every((part) => part && part !== '.' && part !== '..')
@@ -323,7 +330,7 @@ async function main() {
       const fd = openSync(log, 'w', 0o600)
       const environment = integrationEnvironment(process.env, slot)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
-      const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
+      const child = spawn('corepack', ['pnpm', '--filter', '@graphql/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', ...resultReporterArgs(), '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
       closeSync(fd)
       const progress = integrationProcessProgress()
       active.set(slot.index, { child, file, progress })

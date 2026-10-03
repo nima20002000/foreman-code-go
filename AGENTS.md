@@ -82,6 +82,12 @@ never keep or add slop to satisfy them. Never skip, weaken, or delete a test to
 get a green run. A removed test needs a replacement that covers the same
 behavior.
 
+Every test must run in CI: a test skipped in every CI run, or a test file no
+CI run executes, fails the build. Only the opt-in suites in `test-policy.json`,
+which need external tools, are exempt. A pull request that removes or renames
+tests fails the Change review check until the maintainer reviews the list and
+adds the `test-removal-approved` label.
+
 Lint, test, type, and CI configuration, package manifests, and this file are
 protected. A pull request that changes them fails the Protected configuration
 check until the maintainer reviews it and adds the `protected-config-approved`
