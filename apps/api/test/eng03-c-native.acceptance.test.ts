@@ -311,6 +311,9 @@ describe.skipIf(process.env.RUN_ENG03_C_NATIVE_TESTS !== '1')('ENG-03 C live nat
           }
           expect(delivered.deliveryState).toBe('delivered')
           await startTask.catch(() => undefined)
+          // The original Start may already have finished at the waiting
+          // checkpoint. Join the exact current resumed/reconciled Run task.
+          await engine.start(runId)
           expect((await runs.get(runId))?.outcome).toBe('succeeded')
           const effects = await pool.query<{ effect_kind: string; count: number }>(
             `select effect_kind,count(*)::int as count from run_graph_effects where run_id=$1
