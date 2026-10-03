@@ -4,7 +4,7 @@ import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistr
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { reserveInstalledJobQualification } from './installedRuntimeQualification.js'
 import { createJobQualificationCarrier } from './qualificationCarrier.js'
-import { SourceRootRecordSchema } from '@graphql/contracts/source-admission'
+import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@graphql/contracts/source-admission'
 import type { SourceManifest } from '@graphql/contracts/source-materialization'
 import type pg from 'pg'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
@@ -104,6 +104,14 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     authorizeControl: async (sql, execution) => {
       const target = execution.acceptedSpec.target
       await assertDeviceHostInstallation(sql, target.hostRef, target.hostRef.kind === 'main' ? target.hostRef.mainId : target.registration!.workerInstallationId)
+    },
+    async settleSource(executionId) {
+      const row = (await input.pool.query<{ record: unknown; state: string }>(
+        `select record,state from source_execution_materializations where execution_id=$1`,
+        [executionId])).rows[0]
+      if (!row) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original Job source materialization is missing.', 409)
+      if (row.state === 'closed') return
+      await source.sources.confirmClosed(SourceMaterializationRecordSchema.parse(row.record))
     },
     async observe(sql, execution, receipt) {
       if (execution.workflow) {

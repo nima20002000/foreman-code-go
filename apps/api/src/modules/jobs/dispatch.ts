@@ -23,6 +23,7 @@ export interface JobDispatchHost {
   revalidate(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<void>
   authorizeControl(sql:JobSql,execution:JobExecution,principal:ManagementPrincipal):Promise<void>
   observe(sql:JobSql,execution:JobExecution,receipt:RemoteJobOperationReceipt):Promise<void>
+  settleSource?(executionId: string): Promise<void>
 }
 /** Durable job intent is consumed by the same W08 carrier/journal, never a new scheduler. */
 export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority {
@@ -109,7 +110,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         await sql.query('update job_dispatch_intents set delivery_attempted=true where execution_id=$1',[executionId])
         return {execution,intent:RemoteJobDispatchIntentSchema.parse(row.intent),action:row.delivery_attempted?'reconcile' as const:'deliver' as const,cancelCommandId:row.cancel_command_id}
       })
-      if(prepared.action==='none') {await this.release(executionId);return}
+      if(prepared.action==='none') {await this.settle(executionId);return}
       abort.signal.throwIfAborted();owner.assertOwned()
       let status=prepared.action==='deliver'?await this.remote.deliver(prepared.intent,prepared.execution):await this.remote.reconcile(prepared.intent)
       if(prepared.cancelCommandId&&prepared.execution.process.phase!=='terminal') status=await this.remote.control({schemaVersion:1,protocolVersion:1,commandId:prepared.cancelCommandId,operationId:prepared.intent.operationId,attemptId:prepared.intent.attemptId,executionId,subject:prepared.intent.subject,bindingHash:prepared.intent.bindingHash,owner:prepared.intent.owner,action:{kind:'stop'}})
@@ -123,7 +124,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         const current=await this.repository.execution(sql,prepared.execution.workspaceId,executionId)
         return current.process.phase==='terminal'&&!['pending','collecting'].includes(current.publication)
       })
-      if(finished)await this.release(executionId)
+      if(finished)await this.settle(executionId)
       if(status.status==='unknown')throw new DomainError('JOB_DISPATCH_PENDING','The original Worker journal has not confirmed this Job. Read its persisted state and retry the original command; absence does not prove nonexecution or cancellation closure.',503,
         {retryable:true,executionId,attemptId:prepared.intent.attemptId,operationId:prepared.intent.operationId})
     } catch(error) {
@@ -144,7 +145,7 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       const current=await this.repository.execution(sql,workspaceId,executionId)
       return current.process.phase==='terminal'&&!['pending','collecting'].includes(current.publication)
     })
-    if(terminal)await this.release(executionId)
+    if(terminal)await this.settle(executionId)
   }
   async importCancellationClosure(workspaceId: string, executionId: string, receipt: RemoteJobOperationReceipt,
     authorizeAndRelease: (sql: GraphTransactionSql, execution: JobExecution) => Promise<void>): Promise<void> {
@@ -229,6 +230,10 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       throw new DomainError('JOB_CLOSURE_HOST_CONFLICT','Closure belongs to a different accepted main installation.',409)
     }
     return receipt
+  }
+  private async settle(executionId: string): Promise<void> {
+    await this.host.settleSource?.(executionId)
+    await this.release(executionId)
   }
   private async release(executionId:string) {const active=this.owners.get(executionId);if(!active)return;this.owners.delete(executionId);await active.owner.release()}
   async close():Promise<void> {await Promise.allSettled([...this.owners.keys()].map(id=>this.release(id)))}
