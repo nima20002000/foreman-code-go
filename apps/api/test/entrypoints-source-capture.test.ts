@@ -41,3 +41,31 @@ it('joins the actual Git child after cancellation with unread batch output', asy
     } finally { timeout.mockRestore() }
   } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
 })
+
+it('quiesces every bounded pending private write before quarantining a failed capture', async () => {
+  const directory = await mkdtemp('/var/tmp/entrypoints-source-pipeline-'), root = join(directory, 'repo'), storage = join(directory, 'storage')
+  await mkdir(root, { mode: 0o700 }); await mkdir(storage, { mode: 0o700 })
+  let release!: () => void, entered!: () => void
+  const held = new Promise<void>(resolve => { release = resolve }), allEntered = new Promise<void>(resolve => { entered = resolve })
+  let active = 0, peak = 0, count = 0
+  const store = new PrivateSourceSnapshotStore(storage), abort = vi.spyOn(store, 'abort'), publish = vi.spyOn(store, 'commit')
+  try {
+    await qualifiedGit(root, ['init', '-q'])
+    const paths = Array.from({ length: 12 }, (_, index) => `entry-${index}.txt`)
+    for (const path of paths) await writeFile(join(root, path), 'Original bounded source bytes.\n')
+    await qualifiedGit(root, ['add', '.']); await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Fixture'])
+    const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
+    const captured = captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths: paths, executablePolicy: 'strip', sink: {
+      write: async (...args) => {
+        active++; peak = Math.max(peak, active)
+        try { if (++count === 4) { entered(); throw new Error('Private source writer failed.') } await held; await store.write(...args) }
+        finally { active-- }
+      }, commit: store.commit.bind(store), abort: async id => { expect(active).toBe(0); await store.abort(id) },
+    } })
+    void captured.catch(() => {})
+    await allEntered
+    expect(peak).toBe(4); expect(abort).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled()
+    release(); await expect(captured).rejects.toThrow('Private source writer failed.')
+    expect(active).toBe(0); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
+  } finally { release?.(); vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
+})

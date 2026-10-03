@@ -51,7 +51,15 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
       if (aborted) { await aborted.close(); throw new SourceError('SOURCE_CAPTURE_ABORTED', 'An aborted capture cannot become ready.') }
       const claim = await open(anchored(snapshot, 'commit.lock'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400)
       try { await claim.writeFile(manifest.manifestDigest); await claim.sync() } finally { await claim.close() }
-      for (const entry of manifest.entries) await this.readEntry(snapshot, entry)
+      const entries = manifest.entries.values()
+      let failed: { error: unknown } | undefined
+      await Promise.all(Array.from({ length: Math.min(8, manifest.entries.length) }, async () => {
+        for (const entry of entries) {
+          if (failed) break
+          try { await this.readEntry(snapshot, entry) } catch (error) { failed ??= { error } }
+        }
+      }))
+      if (failed) throw failed.error
       const file = await open(anchored(snapshot, 'manifest.pending'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400)
       try { await file.writeFile(JSON.stringify(manifest)); await file.sync() } finally { await file.close() }
       // Snapshot ID is allocated exclusively by capture. A commit replay cannot
