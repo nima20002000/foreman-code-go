@@ -184,7 +184,10 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
         let result: unknown
         try {
           const development = import.meta.url.endsWith('.ts')
-          const worker = fileURLToPath(new URL(`./schemaWorker.${development ? 'ts' : 'js'}`, import.meta.url))
+          let extension = 'js'
+          if (development) extension = 'ts'
+          else if (import.meta.url.endsWith('.mjs')) extension = 'mjs'
+          const worker = fileURLToPath(new URL(`./schemaWorker.${extension}`, import.meta.url))
           const args = development ? ['--import', createRequire(import.meta.url).resolve('tsx'), worker] : [worker]
           const checked = await command(process.execPath, [...args, harness, input], directory, environment, signal, 4096, processes, ownership)
           result = JSON.parse(checked.stdout)

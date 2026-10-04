@@ -66,11 +66,13 @@ const writerEntrypoint = 'apps/api/src/modules/byte-transfer/rsyncWriterCli.ts';
 const built = await build({ ...buildOptions, entryPoints: { cli: 'apps/worker/src/cli.mjs', worker: 'apps/worker/src/workerFactory.mjs' } });
 if (writerEntrypoint in built.metafile.inputs) throw new Error('Standalone rsync writer imported by normal worker graph');
 const writer = await build({ ...buildOptions, entryPoints: { 'rsync-writer': writerEntrypoint } });
-for (const source of new Set([...Object.keys(built.metafile.inputs), ...Object.keys(writer.metafile.inputs)])) {
+const schemaWorker = await build({ ...buildOptions,
+  entryPoints: { schemaWorker: 'apps/api/src/modules/harnesses/compatibility/schemaWorker.ts' } });
+for (const source of new Set([...Object.keys(built.metafile.inputs), ...Object.keys(writer.metafile.inputs), ...Object.keys(schemaWorker.metafile.inputs)])) {
   if (!source.startsWith('node_modules/') && !source.includes('/node_modules/')) snapshotSource(source);
   if (source.startsWith('apps/api/') && !allowedApiModules.has(source)) throw new Error(`Forbidden control-plane import: ${source}`);
 }
-for (const entry of [...Object.values(built.metafile.outputs), ...Object.values(writer.metafile.outputs)]) for (const dependency of entry.imports) {
+for (const entry of [...Object.values(built.metafile.outputs), ...Object.values(writer.metafile.outputs), ...Object.values(schemaWorker.metafile.outputs)]) for (const dependency of entry.imports) {
   if (dependency.external && !isBuiltin(dependency.path) && dependency.path !== 'sharp') throw new Error(`Unbundled dependency: ${dependency.path}`);
 }
 for (const name of ['installation.mjs', 'diagnostics.mjs', 'service.mjs', 'install-cli.mjs', 'runtime.mjs', 'setup.mjs', 'companion.mjs', 'setupInput.mjs', 'companionServer.mjs', 'companionService.mjs', 'harnessPath.mjs']) {

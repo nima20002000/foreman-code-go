@@ -7,6 +7,24 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 const artifact = process.env.GRAPHQL_WORKER_ARTIFACT_DIRECTORY;
+test('packaged schema checker accepts the actual pinned Codex export', {
+  skip: !artifact || !process.env.GRAPHQL_WORKER_CODEX_BINARY,
+}, async (t) => {
+  const directory = await mkdtemp('/var/tmp/worker-schema-check-');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const environment = { PATH: '/usr/bin:/bin', HOME: directory, CODEX_HOME: join(directory, 'codex') };
+  const exported = spawnSync(process.env.GRAPHQL_WORKER_CODEX_BINARY,
+    ['app-server', 'generate-json-schema', '--experimental', '--out', join(directory, 'schemas')],
+    { cwd: directory, env: environment, encoding: 'utf8', timeout: 10000 });
+  assert.equal(exported.status, 0, exported.stderr);
+  const schema = join(directory, 'schemas/codex_app_server_protocol.schemas.json');
+  const result = spawnSync(process.execPath, [join(artifact, 'src/schemaWorker.mjs'), 'codex', schema],
+    { cwd: directory, env: environment, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true, schemaSha256: createHash('sha256').update(await readFile(schema)).digest('hex'),
+  });
+});
 test('packaged rsync writer has separate source/output receipts and keeps diagnostics off protocol stdout', { skip: !artifact }, async () => {
   const manifest = JSON.parse(await readFile(join(artifact, 'manifest.json'), 'utf8'));
   const entrypoint = 'apps/api/src/modules/byte-transfer/rsyncWriterCli.ts';

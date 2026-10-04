@@ -44,6 +44,8 @@
   "apps/api/src/modules/harnesses/codexProtocol.ts",
   "apps/api/src/modules/harnesses/compatibility/errors.ts",
   "apps/api/src/modules/harnesses/compatibility/probe.ts",
+  "apps/api/src/modules/harnesses/compatibility/schema.ts",
+  "apps/api/src/modules/harnesses/compatibility/schemaWorker.ts",
   "apps/api/src/modules/harnesses/codexQualification.ts",
   "apps/api/src/modules/harnesses/codexStdioTransport.ts",
   "apps/api/src/modules/harnesses/errors.ts",
